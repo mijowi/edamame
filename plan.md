@@ -7,9 +7,10 @@
 3. [Architecture Overview](#architecture-overview)
 4. [Module Structure](#module-structure)
 5. [Key Design Decisions](#key-design-decisions)
-6. [Phase-by-Phase Implementation](#phase-by-phase-implementation)
-7. [Deferred Features](#deferred-features)
-8. [Open Questions](#open-questions)
+6. [Testing Strategy](#testing-strategy)
+7. [Phase-by-Phase Implementation](#phase-by-phase-implementation)
+8. [Deferred Features](#deferred-features)
+9. [Open Questions](#open-questions)
 
 ---
 
@@ -48,6 +49,7 @@
 | Crate | Version | Purpose |
 |---|---|---|
 | `ratatui-textarea` | latest (ratatui org fork) | Text editing widget — used for single-line raw-mode input within table cells and the active raw line; may be wrapped or partially reimplemented |
+| `arboard` | 3.x | OS clipboard read/write (Phase 1); WSL fallback via `clip.exe`/`powershell` |
 
 ### Rendering & Display
 
@@ -75,6 +77,18 @@
 | `anyhow` | 1 | Error propagation in application code |
 | `tracing` | 0.1 | Structured logging (to a file, never stdout) |
 | `tracing-appender` | 0.2 | Non-blocking log file writer |
+| `open` | 5.x | Open URLs in the system browser and local files via OS default (Phase 8) |
+| `ureq` | 2.x | Blocking HTTP for remote image fetching (Phase 7); runs on a background thread |
+
+### Testing
+
+These are `[dev-dependencies]` only — not shipped in release builds.
+
+| Crate | Version | Purpose |
+|---|---|---|
+| `insta` | 1.x | Snapshot testing for rendered output (AST → styled lines, widget frames) |
+| `proptest` | 1.x | Property-based testing for `Buffer` and `SourceMap` invariants |
+| `ratatui::backend::TestBackend` | (built-in) | Headless widget rendering; no real terminal needed |
 
 ### Library Candidates Reviewed and Decisions
 
@@ -114,8 +128,9 @@ The application is structured in horizontal layers. Higher layers depend on lowe
 ├──────────────────────────────────────────────────────────────────┤
 │                      Document Layer                              │
 │   - Buffer: wraps ropey::Rope; exposes edit ops with positions   │
-│   - ParsedDoc: pulldown-cmark AST + source-map offset index      │
+│   - ParsedDoc: pulldown-cmark AST + raw byte-span index          │
 │   - SourceMap: bidirectional char-offset ↔ rendered-line index   │
+│     (built from parse_offsets spans; owned here, not in markdown/)│
 │   - History: undo/redo stack of edit deltas                      │
 │   - Cursor: logical cursor (rope char offset + preferred column) │
 │   - Selection: anchor + active rope offsets                      │
@@ -134,17 +149,37 @@ The application is structured in horizontal layers. Higher layers depend on lowe
 
 ### Event Loop
 
-```
+All input and background-task notifications are routed through a single `mpsc` channel as an `AppEvent` enum. This avoids blocking the main thread on `crossterm::event::read()` while background threads (file watcher, image loader) need to wake the loop.
+
+```rust
+enum AppEvent {
+    Term(crossterm::event::Event),
+    FileChanged(PathBuf),
+    ImageReady(PathBuf, DynamicImage),
+}
+
+// Spawned once at startup:
+// - crossterm thread: calls event::read() in a loop, sends AppEvent::Term
+// - notify watcher: sends AppEvent::FileChanged (Phase 10)
+// - image loader pool: sends AppEvent::ImageReady (Phase 7)
+
 loop {
     terminal.draw(|frame| ui.render(frame, &editor_state))?;
 
-    let event = crossterm::event::read()?;
-    if let Some(action) = input_dispatcher.handle(event, &editor_state.mode) {
-        editor_state.apply(action)?;
+    match rx.recv()? {
+        AppEvent::Term(event) => {
+            if let Some(action) = input_dispatcher.handle(event, &editor_state.mode) {
+                editor_state.apply(action)?;
+            }
+        }
+        AppEvent::FileChanged(path) => editor_state.handle_external_change(path),
+        AppEvent::ImageReady(path, img) => editor_state.cache_image(path, img),
     }
     if editor_state.should_quit() { break; }
 }
 ```
+
+Background threads are spawned lazily: the image loader pool in Phase 7, the file watcher in Phase 10. The `AppEvent` enum gains new variants at those phases; earlier phases only ever see `AppEvent::Term`.
 
 ### Editor Modes
 
@@ -191,7 +226,7 @@ markdown-tui/
     ├── config/
     │   ├── mod.rs
     │   ├── config.rs               # Config struct; serde/toml loading + saving
-    │   ├── keymap.rs               # KeyMap: Action enum, default bindings, user overrides
+    │   ├── keymap.rs               # KeyMap: Action enum, compiled-in default bindings, override merging from [keybindings] config
     │   └── theme.rs                # Theme: named colour palette; default + user themes
     │
     ├── document/
@@ -226,7 +261,7 @@ markdown-tui/
     │   ├── parser.rs               # Thin wrapper: runs pulldown-cmark, returns Event stream
     │   ├── ast.rs                  # Typed AST built from pulldown-cmark events
     │   ├── renderer.rs             # AST → Vec<ratatui::text::Line<'_>> styled output
-    │   ├── source_map.rs           # Build offset index from pulldown-cmark offset iter
+    │   ├── parse_offsets.rs        # Collect raw (byte_start, byte_end) spans from pulldown-cmark offset iter; consumed by document::SourceMap
     │   └── table_layout.rs         # Column width calculation, cell text wrapping
     │
     ├── ui/
@@ -300,14 +335,46 @@ All colour and style values are routed through the `Theme` struct. There are no 
 A single TOML file at `$XDG_CONFIG_HOME/markdown-tui/config.toml` (fallback `~/.config/markdown-tui/config.toml`). Config sections:
 - `[editor]` — tab width, word wrap, auto-save, etc.
 - `[theme]` — colour overrides
-- `[keybindings]` — key → action overrides
+- `[keybindings]` — key → action overrides (see below)
 - `[modal]` — which modal handler to use (default: `"default"`)
 
 At startup, the default config is loaded, then user config is merged on top (not replaced). Missing keys always fall back to defaults. The config struct is validated at load time with informative errors.
 
+**Keybinding overrides**: `[keybindings]` is a TOML table mapping action names to key strings, e.g.:
+
+```toml
+[keybindings]
+Save = "ctrl+s"
+ToggleRawMode = "ctrl+`"
+Quit = "ctrl+q"
+```
+
+`KeyMap` is initialised with the full set of compiled-in defaults, then any keys present in `[keybindings]` are applied on top, replacing only those bindings. Action names are the string representation of the `Action` enum variants. An unrecognised action name or an unparseable key string is a hard error at startup (not silently ignored), so the user knows immediately if they've made a typo.
+
 ### 7. Logging Strategy
 
 `tracing` output is written **only** to a log file (`$XDG_DATA_HOME/markdown-tui/debug.log`) and never to stdout/stderr, because those would corrupt the TUI output. If an error occurs, we will show a popup to the user. We will not output errors or logs to a file unless in development mode, as determined by a flag in the config file.
+
+---
+
+## Testing Strategy
+
+**Philosophy**: Tests are written alongside or before each module (TDD). Each source file has an inline `#[cfg(test)]` module for unit tests. Integration tests live in `tests/`. Snapshot tests use `insta` and their fixtures live in `tests/snapshots/`.
+
+**What to test at each layer:**
+
+- **Document layer** (`buffer.rs`, `cursor.rs`, `history.rs`, `source_map.rs`): Pure data-structure logic. Unit test every public method. Use `proptest` for round-trip invariants (e.g. insert-then-delete returns original rope; source-map offsets are always monotonically increasing and within buffer bounds).
+- **Markdown layer** (`parser.rs`, `ast.rs`, `renderer.rs`, `table_layout.rs`): Snapshot-test the rendered `Vec<Line>` output for a fixed set of Markdown inputs using `insta::assert_debug_snapshot!`. Column-width computation in `table_layout.rs` is unit-testable with table string fixtures.
+- **Editor layer** (`edit_ops.rs`, `list_edit.rs`, `table_edit.rs`): Integration-style unit tests: construct an `EditorState`, dispatch a sequence of `Action`s, assert the resulting buffer content and cursor position. These are the most important TDD targets.
+- **UI layer** (`editor_view.rs`, `status_bar.rs`, etc.): Use `ratatui::backend::TestBackend` + `Terminal::new(TestBackend::new(w, h))` to render widgets to a buffer and snapshot the cell output with `insta`.
+- **Config layer** (`config.rs`, `keymap.rs`, `theme.rs`): Unit test TOML round-trips, missing-key fallback to defaults, and invalid-key error messages.
+
+**What not to test:**
+- Terminal capability detection (`capabilities.rs`) — depends on real terminal I/O; covered by manual smoke testing.
+- Cross-platform clipboard — tested manually on each target platform.
+- Mouse integration — covered by the manual acceptance criteria per phase.
+
+**Running tests**: `cargo test` runs all unit and integration tests. `cargo insta review` is run after any change that affects snapshot output, to review and accept updated snapshots.
 
 ---
 
@@ -320,6 +387,7 @@ At startup, the default config is loaded, then user config is merged on top (not
 - [ ] `cargo new markdown-tui` — set up workspace with `Cargo.toml`
 - [ ] Add `ratatui`, `crossterm`, `pulldown-cmark`, `ropey`, `serde`, `toml`, `dirs`, `thiserror`, `anyhow`, `tracing`, `tracing-appender` as dependencies
 - [ ] Implement `Config` with serde/toml deserialization; load from XDG path with defaults fallback
+- [ ] Implement `KeyMap` in `config/keymap.rs`: define the `Action` enum and all compiled-in default key bindings; after loading `Config`, iterate the `[keybindings]` table and override defaults — error at startup on unknown action names or unparseable key strings
 - [ ] Implement `Theme` with default dark-mode colour palette wired to all rendered elements
 - [ ] Implement `Buffer` wrapping `ropey::Rope` with `load_file` / `save_file` / `insert` / `delete` / `line` / `line_count`
 - [ ] Implement `parser.rs` — parse a `&str` with pulldown-cmark, return typed AST
@@ -328,7 +396,10 @@ At startup, the default config is loaded, then user config is merged on top (not
 - [ ] Implement `StatusBar` — shows filename, line count, mode label
 - [ ] Implement basic `App` event loop: draw → read event → handle Ctrl-C / q to quit, scroll with arrow keys / PgUp / PgDn / Home / End
 - [ ] Set up `tracing-appender` to write logs to file before TUI starts
-- [ ] Manual test: open several .md files, verify headings, bold, code, lists, blockquotes render correctly on Linux terminal and in a macOS terminal
+- [ ] Add `insta` and `proptest` as dev-dependencies in `Cargo.toml`
+- [ ] Write snapshot tests in `tests/renderer.rs` covering headings H1–H6, bold, italic, inline code, fenced code block, blockquote, bullet list, and horizontal rule — assert `Vec<Line>` output with `insta::assert_debug_snapshot!`
+- [ ] Write a `TestBackend` rendering test for `StatusBar` (filename, line count, mode label)
+- [ ] Manual smoke test: open several `.md` files in a Linux terminal and in macOS/WSL to verify no visual regressions beyond what automated tests cover
 
 **Acceptance criteria:** `markdown-tui path/to/file.md` opens the file in preview mode, renders styled Markdown, scrolls smoothly, and quits cleanly.
 
@@ -338,7 +409,10 @@ At startup, the default config is loaded, then user config is merged on top (not
 *Goal: editing in RenderedMode where the cursor line is shown raw, all other lines rendered.*
 
 **Tasks:**
+- [ ] Before implementing document-layer types: write unit tests for `Buffer` (insert, delete, boundary conditions, line indexing), `Cursor` (move left/right/up/down, preferred column behaviour at line ends), and `History` (undo/redo, undo past empty stack, redo cleared after new edit) — implement each module to make the tests pass
+- [ ] Write integration tests in `tests/editing.rs`: construct an `EditorState`, apply `InsertChar` / `Newline` / `DeleteChar` / `Undo` / `Redo` sequences, assert buffer content and cursor position after each step
 - [ ] Implement `SourceMap` — after parsing, build a `Vec<(usize, usize)>` of (start_offset, end_offset) per rendered line, using `pulldown-cmark`'s offset iterator
+- [ ] Write `proptest` round-trip tests for `SourceMap`: for any sequence of edits, every offset in the buffer maps to exactly one rendered line, and the ranges are non-overlapping and cover the full buffer
 - [ ] Implement `Cursor` — stores a rope char offset and a preferred visual column (for vertical movement)
 - [ ] Implement `Selection` — anchor + active rope offsets; None when no selection
 - [ ] Implement `History` — undo/redo stack; each entry is an `EditDelta { offset, removed: String, inserted: String }`; undo/redo reconstruct and replay deltas
@@ -347,7 +421,7 @@ At startup, the default config is loaded, then user config is merged on top (not
 - [ ] Implement `edit_ops.rs` — apply `Action` variants to `EditorState`, updating buffer, cursor, and history
 - [ ] Implement `RenderedView` — for each visual line, check if it contains the cursor; if so, render a raw inline text input widget for that line (using `ratatui-textarea` or a custom single-line widget); otherwise render the styled Markdown line
 - [ ] Implement `DefaultHandler` in `input/modal/default.rs` — map key events to `Action` values using a configurable `KeyMap`
-- [ ] Implement mode transitions: Preview → Rendered on typing/click, Rendered ↔ Raw on Ctrl-\`
+- [ ] Implement mode transitions: Preview → Rendered on typing, Rendered ↔ Raw on Ctrl-\`
 - [ ] Implement word-wrap for paragraph text in rendered mode (wrap at terminal width)
 - [ ] Implement auto-scroll: keep cursor line visible when editing
 - [ ] Implement `Save` action: write buffer to disk via `Buffer::save_file`
@@ -371,9 +445,10 @@ At startup, the default config is loaded, then user config is merged on top (not
 - [ ] Typing a `|` character within a cell is escaped as a literal character (raw `\|`), not treated as a column separator
 - [ ] Implement column width persistence: store per-file column widths in a trailing HTML comment `<!-- tui-columns: [20, 15, 30] -->` within the table; parse and apply on load (only for user-set column widths)
 - [ ] Implement table-aware `Newline` action: pressing Enter at the end of a table (outside a cell) inserts a new paragraph, not a new table row
-- [ ] Test with various tables: empty cells, cells with bold/italic, cells with code spans, wide Unicode characters
+- [ ] Write unit tests in `tests/table.rs` covering: cell content extraction for empty cells, cells with bold/italic, cells with code spans, and wide Unicode characters; column-width computation for various table widths; `|` escaping round-trip
+- [ ] Write `insta` snapshot tests for `TableView` rendering (box-drawing output for a 2×3 and a 3×3 table)
 
-**Acceptance criteria:** Opening a file with a GFM table shows a rendered bordered table. Clicking into a cell (or navigating with Tab) allows editing the cell content inline. Tab moves between cells. Column widths adjust sensibly. The underlying Markdown is valid and well-formed after every edit.
+**Acceptance criteria:** Opening a file with a GFM table shows a rendered bordered table. Navigating into a cell allows editing the cell content inline. Tab moves between cells. Column widths adjust sensibly. The underlying Markdown is valid and well-formed after every edit.
 
 ---
 
@@ -381,6 +456,7 @@ At startup, the default config is loaded, then user config is merged on top (not
 *Goal: numbered lists auto-continue and self-heal.*
 
 **Tasks:**
+- [ ] Before implementing, write tests in `tests/list_edit.rs` covering: bullet list continuation, numbered list continuation with correct next number, double-Enter exits the list, inserting an item mid-list renumbers subsequent items, nested lists at multiple indentation levels, task list continuation (`- [ ] `), and toggle-checkbox (`[ ]` ↔ `[x]`) — implement `list_edit.rs` to make each test pass
 - [ ] Implement `list_edit.rs` — detect when cursor is at the end of a list item line
 - [ ] On `Newline` inside a bullet list item: insert `- ` (or matching bullet character) at the start of the new line
 - [ ] On `Newline` inside a numbered list item: insert `N. ` where N is the correct next number
@@ -510,7 +586,10 @@ At startup, the default config is loaded, then user config is merged on top (not
 **Tasks:**
 - [ ] Add `notify` as a dependency; start a background watcher thread after opening each file
 - [ ] On file change notification: if the buffer is unmodified, offer to reload (status bar prompt: `[R]eload / [I]gnore`)
-- [ ] If the buffer is modified when a change is detected: show a `[modified externally]` warning and rerender in a diff view automatically; offer `[R]eload / [S]ave copy / [O]verwrite` ==COMMENT: WHAT DO THESE OPTIONS DO EXACTLY?==
+- [ ] If the buffer is modified when a change is detected: show a `[modified externally]` warning and render the diff view automatically; offer three options (keep the diff visible until the user confirms so they can see what they're choosing to keep or discard):
+  - **[R]eload** — discard in-memory changes, load the on-disk version
+  - **[S]ave copy** — write the in-memory buffer to a new file (auto-named `filename.bak.md` or user-prompted), then reload from disk, preserving both versions
+  - **[O]verwrite** — write the in-memory buffer to disk, discarding the external changes
 - [ ] Implement `DiffOverlay` using `similar` (Myers diff algorithm): compare in-memory buffer against on-disk content; render:
   - Deleted lines: red background, strikethrough
   - Added lines: green background
@@ -533,9 +612,13 @@ These features should be **architecturally anticipated** from Phase 0 but not im
 - Support for motions (`w`, `b`, `e`, `0`, `$`, `gg`, `G`, `f`/`F`/`t`/`T`), operators (`d`, `y`, `c`, `=`), text objects (`iw`, `aw`, `is`, `as`, `i"`, `a"`, etc.)
 - Ex commands (`:w`, `:q`, `:wq`, `:e`, `:bn`, `:bp`)
 - Visual mode selection with `v`, `V`, Ctrl-V
-- Substitution
+- Substitution (`:s/pattern/replacement/flags`)
+- **Count prefixes** (`3j`, `5dw`, `2dd`, etc.) — tracked as a numeric accumulator in `VimHandler` state before each motion or operator
+- **Search** (`/pattern`, `?pattern`, `n`, `N`, `*`, `#`) — highlights matches, jumps between them; search state lives entirely in `VimHandler`
+- **Dot repeat** (`.`) — repeats the last change; requires `VimHandler` to record the last operator + motion + inserted text
+- **Marks** (`ma` to set, `` `a `` / `'a` to jump) — a `HashMap<char, rope_offset>` in `VimHandler` state; `'a` jumps to the line, `` `a `` to the exact offset
+- Registers (`"ay`, `"ap`) and macros (`q`/`@`) are deferred further — complex and rarely essential for initial vim support
 - The `ModalHandler` trait ensures that **zero Vim-specific logic touches `EditorState`**
-- ==COMMENT: ARE THERE OTHER VIM FEATURES WE SHOULD IMPLEMENT?==
 
 ### Code Syntax Highlighting
 - In the AST renderer, when rendering a fenced code block, identify the language tag
@@ -546,7 +629,21 @@ These features should be **architecturally anticipated** from Phase 0 but not im
 ### Theming
 - The `Theme` struct is already wired in from Phase 0
 - Deferred work: document all theme keys, ship several built-in themes (dark, light, dracula, gruvbox, catppuccin, github dark/light)
-- Theme can be selected by name in `config.toml`; custom colours override individual keys
+- Theme can be selected by name (`theme = "dracula"`) in `config.toml`; resolved first from `~/.config/markdown-tui/themes/`, then from built-ins
+- Custom themes are standalone TOML files in `~/.config/markdown-tui/themes/<name>.toml`, mapping semantic keys to hex colour values:
+  ```toml
+  [ui]
+  background = "#1e1e2e"
+  foreground = "#cdd6f4"
+  cursor     = "#f5e0dc"
+
+  [markdown]
+  heading  = "#cba6f7"
+  bold     = "#f9e2af"
+  code_span = "#a6e3a1"
+  link     = "#89b4fa"
+  ```
+  Unknown keys are a hard error; missing keys fall back to the default theme
 - Implement a live theme preview mode in the settings overlay
 - Should support custom theming via a separate theme file. ==COMMENT: WHAT FORMAT SHOULD THIS BE?==
 
