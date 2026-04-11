@@ -48,7 +48,7 @@
 
 | Crate | Version | Purpose |
 |---|---|---|
-| `ratatui-textarea` | latest (ratatui org fork) | Text editing widget — used for single-line raw-mode input within table cells and the active raw line; may be wrapped or partially reimplemented |
+| `ratatui-textarea` | latest (ratatui org fork) | Text editing widget — used for UI input elements—not for editing the document
 | `arboard` | 3.x | OS clipboard read/write (Phase 1); WSL fallback via `clip.exe`/`powershell` |
 
 ### Rendering & Display
@@ -269,7 +269,7 @@ markdown-tui/
     │   ├── editor_view.rs          # Main editor widget: dispatches to preview/rendered/raw
     │   ├── preview.rs              # PreviewView: pure rendered output + scrolling
     │   ├── rendered_view.rs        # RenderedView: hybrid rendered+raw-line view
-    │   ├── raw_view.rs             # RawView: plain text editor (ratatui-textarea backed)
+    │   ├── raw_view.rs             # RawView: plain text editor, renders directly from ropey buffer
     │   ├── table_view.rs           # TableView: rendered table with raw-cell overlay
     │   ├── status_bar.rs           # StatusBar widget: mode, file, cursor pos, dirty flag
     │   ├── file_picker.rs          # FilePicker overlay widget
@@ -353,7 +353,7 @@ Quit = "ctrl+q"
 
 ### 7. Logging Strategy
 
-`tracing` output is written **only** to a log file (`$XDG_DATA_HOME/markdown-tui/debug.log`) and never to stdout/stderr, because those would corrupt the TUI output. If an error occurs, we will show a popup to the user. We will not output errors or logs to a file unless in development mode, as determined by a flag in the config file.
+`tracing` output is never written to stdout/stderr, because those would corrupt the TUI output. If an error occurs, we will show a popup to the user. Logging to a file (`$XDG_DATA_HOME/markdown-tui/debug.log`) is gated behind a `dev_mode = true` flag in `config.toml` (default: `false`). When `dev_mode` is enabled, `tracing-appender` writes structured logs to the file; when disabled, the tracing subscriber is not initialised and no log file is created.
 
 ---
 
@@ -395,7 +395,7 @@ Quit = "ctrl+q"
 - [ ] Implement `PreviewView` widget — renders styled lines with vertical scrolling (no cursor)
 - [ ] Implement `StatusBar` — shows filename, line count, mode label
 - [ ] Implement basic `App` event loop: draw → read event → handle Ctrl-C / q to quit, scroll with arrow keys / PgUp / PgDn / Home / End
-- [ ] Set up `tracing-appender` to write logs to file before TUI starts
+- [ ] Set up `tracing-appender` to write logs to file before TUI starts, gated behind `dev_mode` config flag (disabled by default)
 - [ ] Add `insta` and `proptest` as dev-dependencies in `Cargo.toml`
 - [ ] Write snapshot tests in `tests/renderer.rs` covering headings H1–H6, bold, italic, inline code, fenced code block, blockquote, bullet list, and horizontal rule — assert `Vec<Line>` output with `insta::assert_debug_snapshot!`
 - [ ] Write a `TestBackend` rendering test for `StatusBar` (filename, line count, mode label)
@@ -419,14 +419,14 @@ Quit = "ctrl+q"
 - [ ] Implement `EditorState` — owns `Buffer`, `Cursor`, `Selection`, `History`, `Mode`, `ParsedDoc`
 - [ ] Implement `actions.rs` — define `Action` enum: `InsertChar(char)`, `DeleteChar`, `DeleteWord`, `MoveLeft/Right/Up/Down`, `MoveLineStart/End`, `MoveDocStart/End`, `Newline`, `Undo`, `Redo`, `ToggleRawMode`, `EnterEditMode`, `ExitToPreview`, `Save`, `Quit`, etc.
 - [ ] Implement `edit_ops.rs` — apply `Action` variants to `EditorState`, updating buffer, cursor, and history
-- [ ] Implement `RenderedView` — for each visual line, check if it contains the cursor; if so, render a raw inline text input widget for that line (using `ratatui-textarea` or a custom single-line widget); otherwise render the styled Markdown line
+- [ ] Implement `RenderedView` — for each visual line, check if it contains the cursor; if so, render a raw inline text input widget for that line (using a custom single-line widget that reads from the rope buffer); otherwise render the styled Markdown line
 - [ ] Implement `DefaultHandler` in `input/modal/default.rs` — map key events to `Action` values using a configurable `KeyMap`
 - [ ] Implement mode transitions: Preview → Rendered on typing, Rendered ↔ Raw on Ctrl-\`
 - [ ] Implement word-wrap for paragraph text in rendered mode (wrap at terminal width)
 - [ ] Implement auto-scroll: keep cursor line visible when editing
 - [ ] Implement `Save` action: write buffer to disk via `Buffer::save_file`
 - [ ] Track dirty state; show `[modified]` in status bar
-- [ ] Implement basic clipboard: yank line (Ctrl-Y), paste (Ctrl-P); use OS clipboard via `arboard` if available, internal kill-ring otherwise
+- [ ] Implement basic clipboard: cut (Ctrl-Shift-X), copy (Ctrl-Shift-C), paste (Ctrl-Shift-V or Ctrl-Shift-P) (default keybinds) selection; use OS clipboard via `arboard` if available, internal kill-ring otherwise
 
 **Acceptance criteria:** Can open a .md file, navigate with arrow keys, type to edit, undo/redo, save with Ctrl-S. The cursor line appears raw while the rest of the document is rendered. Switching to Raw mode shows the whole document as plain text.
 
@@ -475,7 +475,7 @@ Quit = "ctrl+q"
 *Goal: detect what the terminal supports and gate features accordingly.*
 
 **Tasks:**
-- [ ] Implement `terminal/capabilities.rs` with a `Capabilities` struct: `{ colour_depth: ColourDepth, mouse: bool, image_protocol: Option<ImageProtocol>, sixel: bool, kitty_graphics: bool, iterm2: bool, unicode_full: bool }`
+- [ ] Implement `terminal/capabilities.rs` with a `Capabilities` struct: `{ colour_depth: ColourDepth, mouse: bool, image_protocol: Option<ImageProtocol>, unicode_full: bool }` — where `ImageProtocol` is an enum (`Sixel`, `KittyGraphics`, `ITerm2`, `Halfblocks`)
 - [ ] Probe at startup using crossterm queries and environment variable heuristics (`$TERM`, `$COLORTERM`, `$TERM_PROGRAM`, `$KITTY_WINDOW_ID`, etc.)
 - [ ] Use `ratatui-image`'s `Picker` API for image protocol detection (this handles the detailed probing)
 - [ ] Store capabilities in `App` and thread them through to features that need them
@@ -535,7 +535,7 @@ Quit = "ctrl+q"
   - Load images lazily (only when they scroll into the visible area)
   - Cache decoded+resized images keyed by (path, display_width, display_height)
   - Show a placeholder (alt text in brackets) while the image loads or if loading fails
-  - Support both local file paths and HTTP/HTTPS URLs (load URLs with `reqwest` or `ureq`, cache to disk in `$XDG_CACHE_HOME/markdown-tui/images/`).
+  - Support both local file paths and HTTP/HTTPS URLs (load URLs with `ureq`, cache to disk in `$XDG_CACHE_HOME/markdown-tui/images/`).
   - If HTTP/S URLs are present in the file, show a popup on startup asking if user wants to load images from remote server (always/never/this time only). This should be a hook in the renderer.
 - [ ] Respect terminal cell dimensions when computing image size
 - [ ] Implement a `[image]` config section: `max_width`, `max_height`, `enabled: bool`
@@ -594,7 +594,7 @@ Quit = "ctrl+q"
   - Deleted lines: red background, strikethrough
   - Added lines: green background
   - Changed lines: show both old (red) and new (green) inline
-- [ ] In the diff view, implement per-change accept/reject: navigate to each change with `]c` / `[c`; press `a` to accept (keep the new version) or `r` to reject (keep the buffer version)
+- [ ] In the diff view, implement per-change accept/reject as `Action` variants routed through `KeyMap`: `DiffNextChange` (default: Tab), `DiffPrevChange` (default: Shift-Tab), `DiffAccept` (default: Y — keep the on-disk version of this change), `DiffReject` (default: N — keep the in-memory version of this change)
 - [ ] After accepting/rejecting all changes, diff view closes and the buffer reflects the merged result
 - [ ] This feature is particularly useful for agentic workflows where an AI agent is editing the file concurrently
 
@@ -645,25 +645,22 @@ These features should be **architecturally anticipated** from Phase 0 but not im
   ```
   Unknown keys are a hard error; missing keys fall back to the default theme
 - Implement a live theme preview mode in the settings overlay
-- Should support custom theming via a separate theme file. ==COMMENT: WHAT FORMAT SHOULD THIS BE?==
 
 ---
 
 ## Open Questions
 
-1. **ratatui-textarea vs. custom raw-line widget**: `ratatui-textarea` provides a lot of editing functionality out of the box (undo/redo, Emacs bindings, search). However, it manages its own internal text state, which conflicts with our `ropey`-backed `Buffer` as single source of truth. The likely solution is to use `ratatui-textarea` **only** for ephemeral inline cell editing (the raw-line overlay), treating it as a short-lived input widget whose content is flushed back to the buffer on commit — similar to how an `<input>` element works in HTML. Investigate this in Phase 1.
-
-2. **Re-parse performance**: For large files (>10,000 lines), re-parsing the entire document on every keystroke may introduce latency. Consider:
+1. **Re-parse performance**: For large files (>10,000 lines), re-parsing the entire document on every keystroke may introduce latency. Consider:
    - Debouncing the re-parse to ~50ms after the last keystroke
    - Incremental parsing: `pulldown-cmark` does not natively support incremental parsing, but we can limit re-parsing to the changed block by identifying block boundaries around the edit and splicing the old and new rendered output
    - Benchmark in Phase 1 with large files to determine if this optimisation is needed
 
-3. **Table column width storage**: Storing column widths in an inline HTML comment is a pragmatic choice but slightly pollutes the Markdown file. An alternative is a sidecar file (`.filename.md.tui-meta`). The HTML comment approach is preferred because the file remains self-contained; document this behaviour clearly.
+2. **Table column width storage**: Storing column widths in an inline HTML comment is a pragmatic choice but slightly pollutes the Markdown file. An alternative is a sidecar file (`.filename.md.tui-meta`). The HTML comment approach is preferred because the file remains self-contained; document this behaviour clearly.
 
-4. **Scrolling in RenderedMode**: When the rendered document is taller than the raw source (e.g. due to table row expansion or long paragraphs wrapping), the visual scroll position and the rope cursor position can diverge. We need a clear mapping between "visual line on screen" and "rope offset". The `SourceMap` addresses this, but edge cases (images, collapsed/expanded blocks) need careful handling.
+3. **Scrolling in RenderedMode**: When the rendered document is taller than the raw source (e.g. due to table row expansion or long paragraphs wrapping), the visual scroll position and the rope cursor position can diverge. We need a clear mapping between "visual line on screen" and "rope offset". The `SourceMap` addresses this, but edge cases (images, collapsed/expanded blocks) need careful handling.
 
-5. **WSL clipboard**: On WSL, `arboard` may not have access to the Windows clipboard without additional configuration (`clip.exe` workaround or `win32yank`). Detect WSL via `$WSL_DISTRO_NAME` and fall back to `clip.exe` / `powershell.exe Get-Clipboard` as appropriate.
+4. **WSL clipboard**: On WSL, `arboard` may not have access to the Windows clipboard without additional configuration (`clip.exe` workaround or `win32yank`). Detect WSL via `$WSL_DISTRO_NAME` and fall back to `clip.exe` / `powershell.exe Get-Clipboard` as appropriate.
 
-6. **Terminal resize**: `crossterm` sends a `Resize(cols, rows)` event when the terminal window is resized. All layout calculations — especially table column widths and paragraph word wrap — must be recalculated on resize. Ensure the rendered view and source map are invalidated and rebuilt when this event is received. Rather than attempting to re-render WHILE the terminal is being resized, which would undoubtedly be laggy, we will simply re-render AFTER it has been resized. We could potentially blank the screen during the resize operation.
+5. **Terminal resize**: `crossterm` sends a `Resize(cols, rows)` event when the terminal window is resized. All layout calculations — especially table column widths and paragraph word wrap — must be recalculated on resize. Ensure the rendered view and source map are invalidated and rebuilt when this event is received. Rather than attempting to re-render WHILE the terminal is being resized, which would undoubtedly be laggy or flickery, we will simply re-render AFTER it has been resized. We could potentially blank the screen during the resize operation.
 
-7. **Kakoune / Helix modal mode**: The `ModalHandler` trait is designed to be swappable. A `KakouneHandler` or `HelixHandler` could be implemented as a community contribution without touching core editor logic. Document the trait contract clearly.
+6. **Kakoune / Helix modal mode**: The `ModalHandler` trait is designed to be swappable. A `KakouneHandler` or `HelixHandler` could be implemented as a community contribution without touching core editor logic. Document the trait contract clearly.
