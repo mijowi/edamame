@@ -347,9 +347,15 @@ At startup, the default config is loaded, then user config is merged on top (not
 Save = "ctrl+s"
 ToggleRawMode = "ctrl+`"
 Quit = "ctrl+q"
+Undo = "ctrl+z"
+Redo = "ctrl+y"
 ```
 
 `KeyMap` is initialised with the full set of compiled-in defaults, then any keys present in `[keybindings]` are applied on top, replacing only those bindings. Action names are the string representation of the `Action` enum variants. An unrecognised action name or an unparseable key string is a hard error at startup (not silently ignored), so the user knows immediately if they've made a typo.
+
+**Quit confirmation**: The `Quit` action always shows a confirmation dialog (e.g. "Save changes? [Y]es / [N]o / [C]ancel") when there are unsaved changes. When the buffer is clean the app quits immediately. `Ctrl-C` is intercepted (to prevent SIGINT leaving the terminal in raw mode) and treated as a secondary `Quit` binding subject to the same confirmation flow. `Escape` is the cancel/dismiss key for modals and dialogs; it does not trigger quit.
+
+**Undo/redo keybindings**: The compiled-in defaults are `Ctrl-Z` for undo and `Ctrl-Y` for redo. `Ctrl-Shift-Z` is registered as a secondary redo binding when the terminal supports the kitty keyboard enhancement protocol (`PushKeyboardEnhancementFlags`); without this protocol, `Ctrl-Shift-Z` is indistinguishable from `Ctrl-Z` at the byte level. Terminals known to support it: kitty, Alacritty, WezTerm, Ghostty, foot. In terminals that don't, only `Ctrl-Y` is available for redo. The keyboard enhancement flag is activated as part of Phase 4 capability detection and `Ctrl-Shift-Z` is only registered as a redo binding when the flag is successfully set.
 
 ### 7. Logging Strategy
 
@@ -394,7 +400,7 @@ Quit = "ctrl+q"
 - [ ] Implement `renderer.rs` — walk AST, produce `Vec<ratatui::text::Line>` with styling for: headings (H1–H6), bold, italic, code spans, fenced code blocks, blockquotes, bullet lists, horizontal rules, links (styled but not yet clickable)
 - [ ] Implement `PreviewView` widget — renders styled lines with vertical scrolling (no cursor)
 - [ ] Implement `StatusBar` — shows filename, line count, mode label
-- [ ] Implement basic `App` event loop: draw → read event → handle Ctrl-C / q to quit, scroll with arrow keys / PgUp / PgDn / Home / End
+- [ ] Implement basic `App` event loop: draw → read event → handle quit (Ctrl-Q / Ctrl-C with confirmation dialog), scroll with arrow keys / PgUp / PgDn / Home / End
 - [ ] Set up `tracing-appender` to write logs to file before TUI starts, gated behind `dev_mode` config flag (disabled by default)
 - [ ] Add `insta` and `proptest` as dev-dependencies in `Cargo.toml`
 - [ ] Write snapshot tests in `tests/renderer.rs` covering headings H1–H6, bold, italic, inline code, fenced code block, blockquote, bullet list, and horizontal rule — assert `Vec<Line>` output with `insta::assert_debug_snapshot!`
@@ -475,7 +481,7 @@ Quit = "ctrl+q"
 *Goal: detect what the terminal supports and gate features accordingly.*
 
 **Tasks:**
-- [ ] Implement `terminal/capabilities.rs` with a `Capabilities` struct: `{ colour_depth: ColourDepth, mouse: bool, image_protocol: Option<ImageProtocol>, unicode_full: bool }` — where `ImageProtocol` is an enum (`Sixel`, `KittyGraphics`, `ITerm2`, `Halfblocks`)
+- [ ] Implement `terminal/capabilities.rs` with a `Capabilities` struct: `{ colour_depth: ColourDepth, mouse: bool, image_protocol: Option<ImageProtocol>, unicode_full: bool, keyboard_enhancement: bool }` — where `ImageProtocol` is an enum (`Sixel`, `KittyGraphics`, `ITerm2`, `Halfblocks`); `keyboard_enhancement` indicates whether `PushKeyboardEnhancementFlags` succeeded (required for `Ctrl-Shift-Z` redo)
 - [ ] Probe at startup using crossterm queries and environment variable heuristics (`$TERM`, `$COLORTERM`, `$TERM_PROGRAM`, `$KITTY_WINDOW_ID`, etc.)
 - [ ] Use `ratatui-image`'s `Picker` API for image protocol detection (this handles the detailed probing)
 - [ ] Store capabilities in `App` and thread them through to features that need them
