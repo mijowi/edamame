@@ -1,0 +1,12 @@
+---
+source: tests/renderer.rs
+expression: output
+---
+[
+    "• Alpha",
+    "",
+    "• Beta",
+    "",
+    "• Gamma",
+    "",
+]

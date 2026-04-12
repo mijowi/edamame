@@ -1,0 +1,18 @@
+# Markdown TUI default configuration
+# Copy relevant sections to ~/.config/markdown-tui/config.toml to override.
+
+[editor]
+tab_width = 4
+dev_mode = false
+
+[theme]
+# Colour overrides (full theming deferred to a later phase)
+
+[keybindings]
+# Key binding overrides. Examples:
+# Quit = "ctrl+q"
+# ScrollDown = "down"
+# ScrollUp = "up"
+
+[modal]
+handler = "default"

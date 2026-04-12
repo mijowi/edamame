@@ -1,0 +1,9 @@
+---
+source: tests/renderer.rs
+expression: output
+---
+[
+    "▎ This is a blockquote. Second line.",
+    "▎ ",
+    "",
+]

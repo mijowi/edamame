@@ -388,26 +388,39 @@ Redo = "ctrl+y"
 
 ### Phase 0 — Foundation
 *Goal: a working skeleton that opens a file and renders it (read-only) with scrolling.*
+*Status: **Complete** — 2026-04-12. 113 tests passing. Manual cross-platform smoke test pending.*
 
 **Tasks:**
-- [ ] `cargo new markdown-tui` — set up workspace with `Cargo.toml`
-- [ ] Add `ratatui`, `crossterm`, `pulldown-cmark`, `ropey`, `serde`, `toml`, `dirs`, `thiserror`, `anyhow`, `tracing`, `tracing-appender` as dependencies
-- [ ] Implement `Config` with serde/toml deserialization; load from XDG path with defaults fallback
-- [ ] Implement `KeyMap` in `config/keymap.rs`: define the `Action` enum and all compiled-in default key bindings; after loading `Config`, iterate the `[keybindings]` table and override defaults — error at startup on unknown action names or unparseable key strings
-- [ ] Implement `Theme` with default dark-mode colour palette wired to all rendered elements
-- [ ] Implement `Buffer` wrapping `ropey::Rope` with `load_file` / `save_file` / `insert` / `delete` / `line` / `line_count`
-- [ ] Implement `parser.rs` — parse a `&str` with pulldown-cmark, return typed AST
-- [ ] Implement `renderer.rs` — walk AST, produce `Vec<ratatui::text::Line>` with styling for: headings (H1–H6), bold, italic, code spans, fenced code blocks, blockquotes, bullet lists, horizontal rules, links (styled but not yet clickable)
-- [ ] Implement `PreviewView` widget — renders styled lines with vertical scrolling (no cursor)
-- [ ] Implement `StatusBar` — shows filename, line count, mode label
-- [ ] Implement basic `App` event loop: draw → read event → handle quit (Ctrl-Q / Ctrl-C with confirmation dialog), scroll with arrow keys / PgUp / PgDn / Home / End
-- [ ] Set up `tracing-appender` to write logs to file before TUI starts, gated behind `dev_mode` config flag (disabled by default)
-- [ ] Add `insta` and `proptest` as dev-dependencies in `Cargo.toml`
-- [ ] Write snapshot tests in `tests/renderer.rs` covering headings H1–H6, bold, italic, inline code, fenced code block, blockquote, bullet list, and horizontal rule — assert `Vec<Line>` output with `insta::assert_debug_snapshot!`
-- [ ] Write a `TestBackend` rendering test for `StatusBar` (filename, line count, mode label)
+- [x] `cargo new markdown-tui` — set up workspace with `Cargo.toml`
+- [x] Add `ratatui`, `crossterm`, `pulldown-cmark`, `ropey`, `serde`, `toml`, `dirs`, `thiserror`, `anyhow`, `tracing`, `tracing-appender` as dependencies
+- [x] Implement `Config` with serde/toml deserialization; load from XDG path with defaults fallback
+- [x] Implement `KeyMap` in `config/keymap.rs`: define the `Action` enum and all compiled-in default key bindings; after loading `Config`, iterate the `[keybindings]` table and override defaults — error at startup on unknown action names or unparseable key strings
+- [x] Implement `Theme` with default dark-mode colour palette wired to all rendered elements
+- [x] Implement `Buffer` wrapping `ropey::Rope` with `load_file` / `save_file` / `insert` / `delete` / `line` / `line_count`
+- [x] Implement `parser.rs` — parse a `&str` with pulldown-cmark, return typed AST
+- [x] Implement `renderer.rs` — walk AST, produce `Vec<ratatui::text::Line>` with styling for: headings (H1–H6), bold, italic, code spans, fenced code blocks, blockquotes, bullet lists, horizontal rules, links (styled but not yet clickable)
+- [x] Implement `PreviewView` widget — renders styled lines with vertical scrolling (no cursor)
+- [x] Implement `StatusBar` — shows filename, line count, mode label
+- [x] Implement basic `App` event loop: draw → read event → handle quit (Ctrl-Q / Ctrl-C with confirmation dialog), scroll with arrow keys / PgUp / PgDn / Home / End
+- [x] Set up `tracing-appender` to write logs to file before TUI starts, gated behind `dev_mode` config flag (disabled by default)
+- [x] Add `insta` and `proptest` as dev-dependencies in `Cargo.toml`
+- [x] Write snapshot tests in `tests/renderer.rs` covering headings H1–H6, bold, italic, inline code, fenced code block, blockquote, bullet list, and horizontal rule — assert `Vec<Line>` output with `insta::assert_debug_snapshot!`
+- [x] Write a `TestBackend` rendering test for `StatusBar` (filename, line count, mode label)
 - [ ] Manual smoke test: open several `.md` files in a Linux terminal and in macOS/WSL to verify no visual regressions beyond what automated tests cover
 
 **Acceptance criteria:** `markdown-tui path/to/file.md` opens the file in preview mode, renders styled Markdown, scrolls smoothly, and quits cleanly.
+
+**Implementation notes (deviations and additions vs. original plan):**
+
+- **`src/lib.rs` added** — a library crate entry point was added (not in original plan) so that `tests/renderer.rs` and `tests/ui.rs` can import from `markdown_tui::`. Required by Rust's integration test model; integration tests cannot reference a binary-only crate.
+- **`src/editor/mode.rs` created in Phase 0** — the `Mode` enum (`Preview / Rendered / Raw`) was defined upfront to support type-safe mode handling in the app and status bar, even though only `Preview` is active in Phase 0.
+- **`src/ui/editor_view.rs` added** — a top-level `EditorView` stateful widget was added to compose `PreviewView` + `StatusBar` and act as the root UI widget. Dispatching to the Phase 1 `RenderedView` and `RawView` will simply be new `match` arms here.
+- **`src/terminal/capabilities.rs` stubbed** — minimal `Capabilities` struct created with `detect()` returning conservative defaults, ready for Phase 4 probing without any structural refactoring.
+- **Full `Action` enum defined upfront** — all actions across phases (Phase 1–3: editing, clipboard, selection, undo) were added to the enum in `config/keymap.rs` immediately, so keybindings are stable from day one. Phase 0 actions are implemented; later-phase actions are no-ops until their phase.
+- **Quit confirmation dialog deferred** — the plan specified "Ctrl-Q / Ctrl-C with confirmation dialog" for Phase 0. Since the Phase 0 buffer is always clean (read-only preview, never modified), quit is immediate. The confirmation dialog will be wired up in Phase 1 when the dirty flag becomes meaningful.
+- **Extra dev-dependency: `tempfile`** — added for file I/O tests in `buffer.rs`; not listed in the original dependency table.
+- **Extra dependencies: `unicode-width`, `unicode-segmentation`, `tracing-subscriber`** — `unicode-width` and `unicode-segmentation` added for correct Unicode column-width handling in the renderer; `tracing-subscriber` added to initialise the file-based logging subscriber. All were implied by the plan but not listed in the dependency table.
+- **Parser: additional options enabled** — `ENABLE_TASKLISTS`, `ENABLE_FOOTNOTES`, `ENABLE_SMART_PUNCTUATION` flags added to the pulldown-cmark parser in addition to the planned `ENABLE_TABLES` and `ENABLE_STRIKETHROUGH`. Task list checkboxes (`[ ]` / `[x]`) are fully parsed and rendered.
 
 ---
 

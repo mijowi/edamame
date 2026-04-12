@@ -1,0 +1,52 @@
+[package]
+name = "markdown-tui"
+version = "0.1.0"
+edition = "2021"
+description = "A fast, jank-free TUI Markdown editor and viewer"
+
+[[bin]]
+name = "markdown-tui"
+path = "src/main.rs"
+
+[lib]
+name = "markdown_tui"
+path = "src/lib.rs"
+
+[dependencies]
+# TUI framework and terminal backend
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Markdown parsing
+pulldown-cmark = "0.13"
+
+# Rope-based text buffer
+ropey = "1.6"
+
+# Config serialization
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Platform paths (XDG_CONFIG_HOME etc.)
+dirs = "5"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Structured logging (to file only; never stdout)
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+# Unicode helpers
+unicode-width = "0.2"
+unicode-segmentation = "1"
+
+[dev-dependencies]
+# Snapshot testing for rendered output
+insta = { version = "1", features = ["ron"] }
+# Property-based testing
+proptest = "1"
+# Temporary file helpers for I/O tests
+tempfile = "3"
