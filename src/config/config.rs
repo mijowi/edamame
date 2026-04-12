@@ -6,24 +6,13 @@ use serde::{Deserialize, Serialize};
 use super::keymap::KeyBindingOverrides;
 
 /// Top-level configuration loaded from `~/.config/markdown-tui/config.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub editor: EditorConfig,
     pub theme: ThemeConfig,
     pub keybindings: KeyBindingOverrides,
     pub modal: ModalConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            editor: EditorConfig::default(),
-            theme: ThemeConfig::default(),
-            keybindings: KeyBindingOverrides::default(),
-            modal: ModalConfig::default(),
-        }
-    }
 }
 
 impl Config {

@@ -1,3 +1,4 @@
+use std::io::Stdout;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -5,7 +6,6 @@ use anyhow::Result;
 use crossterm::event::{Event, KeyEventKind};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use std::io::Stdout;
 
 use crate::config::{Action, Config, KeyMap, Theme};
 use crate::document::Buffer;

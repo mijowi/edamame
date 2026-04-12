@@ -1,7 +1,3 @@
-pub mod capabilities;
-
-pub use capabilities::Capabilities;
-
 use std::io::Stdout;
 
 use anyhow::Result;

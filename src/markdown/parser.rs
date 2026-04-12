@@ -11,7 +11,7 @@ pub fn parse(text: &str) -> Vec<Block> {
         | Options::ENABLE_SMART_PUNCTUATION;
 
     let parser = Parser::new_ext(text, options);
-    let mut events = parser.into_iter().peekable();
+    let mut events = parser.peekable();
     parse_blocks(&mut events)
 }
 
