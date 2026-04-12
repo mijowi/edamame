@@ -349,11 +349,14 @@ ToggleRawMode = "ctrl+`"
 Quit = "ctrl+q"
 Undo = "ctrl+z"
 Redo = "ctrl+y"
+Cut = "ctrl+x"
+Copy = "ctrl+c"
+Paste = "ctrl+v"
 ```
 
 `KeyMap` is initialised with the full set of compiled-in defaults, then any keys present in `[keybindings]` are applied on top, replacing only those bindings. Action names are the string representation of the `Action` enum variants. An unrecognised action name or an unparseable key string is a hard error at startup (not silently ignored), so the user knows immediately if they've made a typo.
 
-**Quit confirmation**: The `Quit` action always shows a confirmation dialog (e.g. "Save changes? [Y]es / [N]o / [C]ancel") when there are unsaved changes. When the buffer is clean the app quits immediately. `Ctrl-C` is intercepted (to prevent SIGINT leaving the terminal in raw mode) and treated as a secondary `Quit` binding subject to the same confirmation flow. `Escape` is the cancel/dismiss key for modals and dialogs; it does not trigger quit.
+**Quit confirmation**: The `Quit` action (`Ctrl-Q`) always shows a confirmation dialog (e.g. "Save changes? [Y]es / [N]o / [C]ancel") when there are unsaved changes. When the buffer is clean the app quits immediately. `Ctrl-C` is bound to `Copy` and does not quit. `Escape` is the cancel/dismiss key for modals and dialogs; it does not trigger quit. Note: in crossterm raw mode `ISIG` is disabled, so `Ctrl-C` arrives as a key event rather than SIGINT — we must always intercept it explicitly to prevent SIGINT killing the process and leaving the terminal in raw mode; mapping it to `Copy` satisfies this.
 
 **Undo/redo keybindings**: The compiled-in defaults are `Ctrl-Z` for undo and `Ctrl-Y` for redo. `Ctrl-Shift-Z` is registered as a secondary redo binding when the terminal supports the kitty keyboard enhancement protocol (`PushKeyboardEnhancementFlags`); without this protocol, `Ctrl-Shift-Z` is indistinguishable from `Ctrl-Z` at the byte level. Terminals known to support it: kitty, Alacritty, WezTerm, Ghostty, foot. In terminals that don't, only `Ctrl-Y` is available for redo. The keyboard enhancement flag is activated as part of Phase 4 capability detection and `Ctrl-Shift-Z` is only registered as a redo binding when the flag is successfully set.
 
@@ -445,7 +448,8 @@ Redo = "ctrl+y"
 - [ ] Implement auto-scroll: keep cursor line visible when editing
 - [ ] Implement `Save` action: write buffer to disk via `Buffer::save_file`
 - [ ] Track dirty state; show `[modified]` in status bar
-- [ ] Implement basic clipboard: cut (Ctrl-Shift-X), copy (Ctrl-Shift-C), paste (Ctrl-Shift-V or Ctrl-Shift-P) (default keybinds) selection; use OS clipboard via `arboard` if available, internal kill-ring otherwise
+- [ ] Implement basic clipboard: cut (Ctrl-X), copy (Ctrl-C), paste (Ctrl-V) (default keybinds); use OS clipboard via `arboard` if available, internal kill-ring otherwise
+- [ ] Verify that no framework default or scaffold code quits on Ctrl-C; remove any such behaviour so that Ctrl-C is handled solely as `Copy` and only Ctrl-Q triggers quit
 
 **Acceptance criteria:** Can open a .md file, navigate with arrow keys, type to edit, undo/redo, save with Ctrl-S. The cursor line appears raw while the rest of the document is rendered. Switching to Raw mode shows the whole document as plain text.
 
