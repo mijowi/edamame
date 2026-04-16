@@ -47,6 +47,8 @@ cargo test --lib
 # Run a specific integration test file:
 cargo test --test renderer
 cargo test --test ui
+cargo test --test editing
+cargo test --test source_map
 
 # Review / accept updated insta snapshots:
 cargo insta review
@@ -73,28 +75,47 @@ src/
     config.rs       # Config, EditorConfig, ThemeConfig, ModalConfig (serde+toml)
     keymap.rs       # Action enum, KeyMap, parse_key()
     theme.rs        # Theme: all Style values; no hardcoded colors elsewhere
-  document.rs       # facade — re-exports Buffer
+  document.rs       # facade — re-exports Buffer, Cursor, EditDelta, History,
+                    #           ParsedDoc, Selection, SourceMap
   document/
     buffer.rs       # Buffer wrapping ropey::Rope; file I/O + edit primitives
-  editor.rs         # facade — re-exports Mode
+    cursor.rs       # Cursor: rope char offset + preferred visual column
+    history.rs      # History: undo/redo stack of EditDelta values
+    parsed_doc.rs   # ParsedDoc: re-parses on change, caches AST + source map
+    selection.rs    # Selection: anchor + active rope offsets
+    source_map.rs   # SourceMap: block byte-range ↔ rendered-line-index mapping
+  editor.rs         # facade — re-exports EditorState, Mode
   editor/
+    edit_ops.rs     # Action → EditorState mutations (cursor, buffer, history)
     mode.rs         # Mode enum: Preview | Rendered | Raw
+    state.rs        # EditorState: owns Buffer, Cursor, History, Mode, ParsedDoc
+  input/            # NOTE: uses mod.rs layout (not the facade pattern) — to migrate
+    mod.rs          # re-exports InputDispatcher, ModalHandler
+    dispatcher.rs   # InputDispatcher: crossterm Event → Action
+    modal/
+      mod.rs        # ModalHandler trait
+      default.rs    # DefaultHandler: non-modal keybinding implementation
   markdown.rs       # facade — re-exports parse, Renderer
   markdown/
     ast.rs          # Block, Inline, ListItem enums; inlines_to_plain()
+    parse_offsets.rs # Collect (byte_start, byte_end) spans from pulldown-cmark
     parser.rs       # pulldown-cmark → Vec<Block>
     renderer.rs     # Renderer: Vec<Block> → Vec<Line<'static>>
   terminal.rs       # facade — re-exports Capabilities, setup, restore
   terminal/
     capabilities.rs # Capabilities struct
     setup.rs        # setup() / restore() terminal functions
-  ui.rs             # facade — re-exports all widgets
+  ui.rs             # facade — re-exports all widgets and their state types
   ui/
-    editor_view.rs  # EditorView + EditorViewState (StatefulWidget)
+    editor_view.rs  # EditorView + EditorViewState (StatefulWidget); dispatches to sub-views
     preview.rs      # PreviewView + PreviewState (StatefulWidget)
-    status_bar.rs   # StatusBar widget (Widget — no mutable state)
+    raw_view.rs     # RawView + RawViewState: plain-text editor from rope buffer
+    rendered_view.rs # RenderedView + RenderedViewState: hybrid rendered+raw-line view
+    status_bar.rs   # StatusBar + StatusBarState
 tests/
+  editing.rs        # integration tests: EditorState action sequences → buffer/cursor asserts
   renderer.rs       # integration tests: parse + render → assert/snapshot
+  source_map.rs     # unit + proptest tests for SourceMap invariants
   ui.rs             # integration tests: TestBackend widget rendering
   snapshots/        # committed insta .snap files
 config/
@@ -103,12 +124,13 @@ config/
 
 **Architectural layers** (higher depends only on lower):
 1. `main` / `App` — event loop, terminal lifecycle
-2. `ui` — stateless ratatui widgets
-3. `editor` — `Mode` enum; editing state
-4. `config` — `Config`, `KeyMap`, `Theme` (loaded once at startup)
-5. `document` — `Buffer` (ropey rope)
-6. `markdown` — parser → ast → renderer pipeline
-7. `terminal` — raw terminal setup/teardown
+2. `ui` — ratatui widgets; `EditorView` dispatches to `PreviewView`, `RenderedView`, `RawView`
+3. `input` — `InputDispatcher`; `ModalHandler` trait + `DefaultHandler` implementation
+4. `editor` — `EditorState`; owns `Buffer`, `Cursor`, `History`, `Mode`, `ParsedDoc`
+5. `config` — `Config`, `KeyMap`, `Theme` (loaded once at startup)
+6. `document` — `Buffer`, `Cursor`, `History`, `ParsedDoc`, `Selection`, `SourceMap`
+7. `markdown` — parser → AST → renderer pipeline; `parse_offsets` feeds `SourceMap`
+8. `terminal` — raw terminal setup/teardown
 
 ## Module Facade Pattern
 
@@ -121,6 +143,11 @@ use crate::config::{Config, KeyMap, Theme};   // not crate::config::config::Conf
 ```
 
 Always follow this pattern when adding new top-level modules.
+
+**Known exception**: `src/input/` currently uses the old `mod.rs` layout
+(`src/input/mod.rs` and `src/input/modal/mod.rs`) instead of the facade pattern.
+It should be migrated to `src/input.rs` + `src/input/modal.rs` when convenient,
+but do not break the existing structure without also updating all import paths.
 
 ## Code Style
 
