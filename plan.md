@@ -474,39 +474,20 @@ Paste = "ctrl+v"
 
 **Architectural decisions consolidated from Phase 1 follow-up work:**
 
-These emerged from the "To Fix" iterations and are documented as gotchas in
-`AGENTS.md` ("Phase 1 Architectural Notes"). Summary for plan-reading agents:
+These emerged from the "To Fix" iterations and are documented as gotchas in `AGENTS.md` ("Phase 1 Architectural Notes"). Summary for plan-reading agents:
 
-- **Virtual blocks for blank lines**: `ParsedDoc::build` synthesises a one-byte
-  block per blank line (leading, between-block, and trailing). Replaced the
-  earlier use of `parse_offsets::covering_ranges` for cursor lookup, which
-  silently absorbed blank-line bytes into adjacent blocks.
-- **`per_block_own` vs. extended ranges**: `ParsedDoc` tracks both per-block
-  *own* rendered line counts (used by `RenderedView` to size the raw-replacement
-  region) and *extended* covering ranges (used for cursor-to-block lookup).
-- **Jitter-suppression reveal**: `RAW_REVEAL_DELAY = 120 ms`; `RenderedView`
-  keeps the cursor block fully rendered and overlays an inverted-cell cursor
-  indicator at `(cursor_col, cursor_row)` until the delay elapses. App loop
-  uses `recv_timeout(60 ms)` so the redraw fires without a keypress.
-- **Single shared `line_render` module**: `PreviewView` and `RenderedView` both
-  call `ui::line_render::render_line` for word-aware wrap and trailing-cell
-  background fill (so styled blocks like code blocks extend full width).
-- **NBSP padding in code blocks**: blank code-block lines pad with U+00A0,
-  not space, to work around a ratatui `WordWrapper` (`trim: false`) bug that
-  produces a spurious extra empty visual row for all-whitespace lines.
-- **Word-group undo merging**: `History::record` merges single alphanumeric
-  inserts into the prior delta when contiguous. Cursor moves break the group.
-- **Visual line navigation**: `move_up_visual` / `move_down_visual` and
-  `line_render::render_line` share the same wrap algorithm via
-  `visual_rows_of_str` / `sub_line_of_col`.
-- **Per-line raw replacement (not per-block)**: `RenderedView` replaces only
-  the single rendered line containing the cursor, not the whole block, when
-  the reveal delay elapses.
+- **Virtual blocks for blank lines**: `ParsedDoc::build` synthesises a one-byte block per blank line (leading, between-block, and trailing). Replaced the earlier use of `parse_offsets::covering_ranges` for cursor lookup, which silently absorbed blank-line bytes into adjacent blocks.
+- **`per_block_own` vs. extended ranges**: `ParsedDoc` tracks both per-block *own* rendered line counts (used by `RenderedView` to size the raw-replacement region) and *extended* covering ranges (used for cursor-to-block lookup).
+- **Jitter-suppression reveal**: `RAW_REVEAL_DELAY = 120 ms`; `RenderedView` keeps the cursor block fully rendered and overlays an inverted-cell cursor indicator at `(cursor_col, cursor_row)` until the delay elapses. App loop uses `recv_timeout(60 ms)` so the redraw fires without a keypress.
+- **Single shared `line_render` module**: `PreviewView` and `RenderedView` both call `ui::line_render::render_line` for word-aware wrap and trailing-cell background fill (so styled blocks like code blocks extend full width).
+- **NBSP padding in code blocks**: blank code-block lines pad with U+00A0, not space, to work around a ratatui `WordWrapper` (`trim: false`) bug that produces a spurious extra empty visual row for all-whitespace lines.a
+- **Word-group undo merging**: `History::record` merges single alphanumeric inserts into the prior delta when contiguous. Cursor moves break the group.
+- **Visual line navigation**: `move_up_visual` / `move_down_visual` and `line_render::render_line` share the same wrap algorithm via `visual_rows_of_str` / `sub_line_of_col`.
+- **Per-line raw replacement (not per-block)**: `RenderedView` replaces only the single rendered line containing the cursor, not the whole block, when the reveal delay elapses.
 
 **Known unfixed issues carried into later phases:**
 
-- Scrolling beyond the last element in raw and hybrid edit modes (cursor stops
-  at last line). Deferred to Phase 5 (Mouse Support); see "To Fix" entry.
+- Scrolling beyond the last element in raw and hybrid edit modes (cursor stops at last line). Deferred to Phase 5 (Mouse Support); see "To Fix" entry.
 - Click+drag text selection. Deferred to Phase 5 (Mouse Support).
 
 **Acceptance criteria:** Can open a .md file, navigate with arrow keys, type to edit, undo/redo, save with Ctrl-S. The cursor line appears raw while the rest of the document is rendered. Switching to Raw mode shows the whole document as plain text.
