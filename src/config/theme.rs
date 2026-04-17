@@ -23,7 +23,6 @@ pub struct Theme {
     pub highlight: Style,
     pub code_span: Style,
     pub link_text: Style,
-    pub link_url: Style,
     pub image_placeholder: Style,
 
     // ── Block elements ────────────────────────────────────────────
@@ -87,7 +86,6 @@ impl Default for Theme {
             link_text: Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::UNDERLINED),
-            link_url: Style::default().fg(Color::DarkGray),
             image_placeholder: Style::default()
                 .fg(Color::Blue)
                 .add_modifier(Modifier::ITALIC),

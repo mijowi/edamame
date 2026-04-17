@@ -587,10 +587,7 @@ mod tests {
         // Logical line: prefix that wraps at a space, followed by a long run
         // of 'a's. Width 40 gives row 0 = "Super long line of inline code ` "
         // (33 chars) and row 1+ = 40-char runs of 'a's.
-        let text = format!(
-            "Super long line of inline code ` {}`",
-            "a".repeat(150)
-        );
+        let text = format!("Super long line of inline code ` {}`", "a".repeat(150));
         let mut state = EditorState::new(Buffer::from_str(&text), theme());
         let width = 40;
 

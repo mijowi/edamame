@@ -1,9 +1,37 @@
-use ratatui::style::Style;
+use std::path::Path;
+
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::config::Theme;
 
-use super::ast::{Block, Inline, ListItem};
+use super::ast::{inlines_to_plain, Block, Inline, ListItem};
+
+const IMAGE_PREFIX: &str = "Image: ";
+
+/// Fallback display text for a link/image whose bracket content is empty:
+/// the full URL for web-style targets (anything with a scheme or a `#` fragment),
+/// otherwise the final path component of the file path.
+fn link_fallback(url: &str) -> String {
+    if has_url_scheme(url) || url.starts_with('#') {
+        return url.to_string();
+    }
+    Path::new(url)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| url.to_string())
+}
+
+fn has_url_scheme(url: &str) -> bool {
+    let Some((scheme, _)) = url.split_once(':') else {
+        return false;
+    };
+    !scheme.is_empty()
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
 
 /// Converts a `Vec<Block>` AST into a `Vec<Line<'static>>` ready for ratatui.
 pub struct Renderer<'t> {
@@ -279,12 +307,25 @@ impl<'t> Renderer<'t> {
             | Inline::Highlight(inner) => self.rendered_inlines_char_width(inner),
             // Code span adds " code " (2 extra chars for leading/trailing spaces).
             Inline::Code(c) => c.chars().count() + 2,
-            // Link renders as: text + " (url)".
+            // Link renders as just the visible text (bracket contents, or a
+            // URL/filename fallback when empty).
             Inline::Link { text, url, .. } => {
-                self.rendered_inlines_char_width(text) + 3 + url.chars().count()
+                let text_width = self.rendered_inlines_char_width(text);
+                if text_width == 0 {
+                    link_fallback(url).chars().count()
+                } else {
+                    text_width
+                }
             }
-            // Image renders as "[img: alt]".
-            Inline::Image { alt, .. } => alt.chars().count() + 7,
+            // Image renders as "[Image: <alt-or-filename>]".
+            Inline::Image { alt, url } => {
+                let name_width = if alt.trim().is_empty() {
+                    link_fallback(url).chars().count()
+                } else {
+                    alt.chars().count()
+                };
+                IMAGE_PREFIX.chars().count() + name_width + 2
+            }
             Inline::SoftBreak | Inline::HardBreak => 1,
         }
     }
@@ -527,16 +568,29 @@ impl<'t> Renderer<'t> {
             }
 
             Inline::Link { text, url, .. } => {
-                let mut spans = self.render_inlines(text, self.theme.link_text);
-                spans.push(Span::styled(format!(" ({})", url), self.theme.link_url));
-                spans
+                if inlines_to_plain(text).trim().is_empty() {
+                    vec![Span::styled(link_fallback(url), self.theme.link_text)]
+                } else {
+                    self.render_inlines(text, self.theme.link_text)
+                }
             }
 
-            Inline::Image { alt, url: _ } => {
-                vec![Span::styled(
-                    format!("[img: {}]", alt),
-                    self.theme.image_placeholder,
-                )]
+            Inline::Image { alt, url } => {
+                let name = if alt.trim().is_empty() {
+                    link_fallback(url)
+                } else {
+                    alt.clone()
+                };
+                vec![
+                    Span::styled(format!("[{}", IMAGE_PREFIX), self.theme.image_placeholder),
+                    Span::styled(
+                        name,
+                        self.theme
+                            .image_placeholder
+                            .add_modifier(Modifier::UNDERLINED),
+                    ),
+                    Span::styled("]", self.theme.image_placeholder),
+                ]
             }
 
             Inline::SoftBreak => vec![Span::raw(" ")],
@@ -635,5 +689,73 @@ mod tests {
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
         assert_eq!(texts, vec!["alpha", "beta", "gamma"]);
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn web_link_shows_only_text() {
+        let lines = render("[Google](https://google.com)\n");
+        assert_eq!(line_text(&lines[0]), "Google");
+    }
+
+    #[test]
+    fn file_link_shows_only_text() {
+        let lines = render("[Plan](./plan.md)\n");
+        assert_eq!(line_text(&lines[0]), "Plan");
+    }
+
+    #[test]
+    fn web_link_without_text_shows_url() {
+        let lines = render("[](https://google.com)\n");
+        assert_eq!(line_text(&lines[0]), "https://google.com");
+    }
+
+    #[test]
+    fn file_link_without_text_shows_filename_only() {
+        let lines = render("[](/home/mjw/Work/plan.md)\n");
+        assert_eq!(line_text(&lines[0]), "plan.md");
+    }
+
+    #[test]
+    fn image_with_alt_shows_alt_prefixed() {
+        let lines = render("![Cat](/home/mjw/Pictures/me.jpg)\n");
+        assert_eq!(line_text(&lines[0]), "[Image: Cat]");
+    }
+
+    #[test]
+    fn image_without_alt_shows_filename_prefixed() {
+        let lines = render("![](/home/mjw/Pictures/me.jpg)\n");
+        assert_eq!(line_text(&lines[0]), "[Image: me.jpg]");
+    }
+
+    #[test]
+    fn link_text_is_underlined() {
+        let lines = render("[Google](https://google.com)\n");
+        let span = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content == "Google")
+            .expect("link text span");
+        assert!(span.style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn image_name_is_underlined_but_prefix_is_not() {
+        let lines = render("![Cat](/tmp/x.jpg)\n");
+        let prefix = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content == "[Image: ")
+            .expect("prefix span");
+        let name = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content == "Cat")
+            .expect("name span");
+        assert!(!prefix.style.add_modifier.contains(Modifier::UNDERLINED));
+        assert!(name.style.add_modifier.contains(Modifier::UNDERLINED));
     }
 }
