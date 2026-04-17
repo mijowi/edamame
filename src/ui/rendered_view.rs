@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::config::Theme;
+use crate::editor::table_edit;
 use crate::editor::EditorState;
 
 use super::line_render::{render_line, render_line_with_cursor};
@@ -77,9 +78,17 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             cursor_position_in_block(editor, cursor_byte, &raw_block_source);
 
         // Map the cursor's raw source line to a rendered line within the block.
-        // Clamp to the block's own (non-gap) rendered lines to avoid replacing
-        // gap blank lines with raw text.
-        let cursor_in_block = cursor_raw_line.min(cursor_block_own.saturating_sub(1));
+        // For tables the renderer prepends a top border before the header and
+        // appends a bottom border after the last data row, so raw line i maps
+        // to rendered line i + 1 within the block — and we must never replace
+        // either border with raw text.
+        let is_table = table_edit::is_table_block(&raw_block_source);
+        let cursor_in_block = if is_table && cursor_block_own >= 3 {
+            let last_replaceable = cursor_block_own.saturating_sub(2);
+            (cursor_raw_line + 1).min(last_replaceable)
+        } else {
+            cursor_raw_line.min(cursor_block_own.saturating_sub(1))
+        };
         let cursor_rendered_line = cursor_block_lines.start + cursor_in_block;
 
         // Determine the scroll offset; sync from editor state.
@@ -107,10 +116,29 @@ impl<'a> StatefulWidget for RenderedView<'a> {
 
             let rows_used;
             if reveal_raw && virtual_idx == cursor_rendered_line {
-                // Show this one line as raw text with the cursor.
                 let raw_text = raw_lines.get(cursor_raw_line).copied().unwrap_or("");
-                let styled = make_raw_line(raw_text, Some(cursor_col), self.theme);
-                rows_used = render_line(&styled, area, buf, vis_y as u16, wrap) as usize;
+                // Prefer cell-scoped reveal for table rows — replace only the
+                // active cell's content area with raw text, keeping the box-
+                // drawing borders and neighbouring cells rendered.
+                let cell_overlay = if is_table {
+                    editor
+                        .parsed
+                        .lines
+                        .get(virtual_idx)
+                        .and_then(|line| compute_cell_overlay(raw_text, line, cursor_col))
+                } else {
+                    None
+                };
+                if let Some(overlay) = cell_overlay {
+                    let line = &editor.parsed.lines[virtual_idx];
+                    rows_used = render_line(line, area, buf, vis_y as u16, wrap) as usize;
+                    overlay_raw_cell(buf, area, vis_y as u16, &overlay, self.theme);
+                } else {
+                    // Fall back to full row-reveal (non-table blocks, or when
+                    // raw cell content won't fit in the rendered cell width).
+                    let styled = make_raw_line(raw_text, Some(cursor_col), self.theme);
+                    rows_used = render_line(&styled, area, buf, vis_y as u16, wrap) as usize;
+                }
             } else if !reveal_raw && virtual_idx == cursor_rendered_line {
                 // Still in jitter delay: show the rendered version with a cursor indicator
                 // at the cursor's column so there is no visible column-jump when it reveals.
@@ -169,6 +197,151 @@ fn make_raw_line(raw_text: &str, cursor_col: Option<usize>, theme: &Theme) -> Li
                 Span::styled(cursor_char, cursor_style),
                 Span::styled(after, theme.normal),
             ])
+        }
+    }
+}
+
+/// Metadata for overlaying a raw cell on top of a rendered table row.
+///
+/// The `rendered_start..rendered_end` char range spans the cell's content area
+/// between the two surrounding `│` box-drawing characters (exclusive of both
+/// pipes).  `raw_text` is padded/clamped to that width when painted, so the
+/// surrounding borders and neighbouring cells remain intact.
+struct CellOverlay {
+    rendered_start: usize,
+    rendered_end: usize,
+    raw_text: String,
+    /// Cursor offset within `raw_text` in chars; `None` if the cursor sits
+    /// outside the cell's overlay area (fallback path should be taken).
+    cursor_in_cell: Option<usize>,
+}
+
+/// Try to compute a cell-scoped overlay for the cursor's active cell.
+///
+/// Returns `None` when the row doesn't parse as a table row, when the rendered
+/// and raw pipe counts disagree (e.g. the cursor row is the alignment row,
+/// which renders as a `├─┼─┤` separator), or when the raw cell text is wider
+/// than the rendered cell area (in which case the caller falls back to the
+/// full row-reveal so the user can still see the content they're editing).
+fn compute_cell_overlay(
+    raw_row: &str,
+    rendered_line: &Line<'_>,
+    cursor_col: usize,
+) -> Option<CellOverlay> {
+    let raw_pipes = raw_pipe_positions(raw_row);
+    let rendered_pipes = rendered_pipe_positions(rendered_line);
+    if raw_pipes.len() < 2 || rendered_pipes.len() != raw_pipes.len() {
+        return None;
+    }
+
+    // Cell index: the number of raw pipes at or before the cursor, minus one
+    // (pipe 0 begins cell 0).  Clamp to [0, col_count-1].
+    let col_count = raw_pipes.len() - 1;
+    let preceding = raw_pipes.iter().take_while(|&&p| p < cursor_col).count();
+    let cell_idx = preceding.saturating_sub(1).min(col_count - 1);
+
+    let raw_cell_start = raw_pipes[cell_idx] + 1;
+    let raw_cell_end = raw_pipes[cell_idx + 1];
+    let raw_text: String = raw_row
+        .chars()
+        .skip(raw_cell_start)
+        .take(raw_cell_end - raw_cell_start)
+        .collect();
+
+    let rendered_start = rendered_pipes[cell_idx] + 1;
+    let rendered_end = rendered_pipes[cell_idx + 1];
+    let rendered_width = rendered_end.saturating_sub(rendered_start);
+
+    if raw_text.chars().count() > rendered_width {
+        return None;
+    }
+
+    let cursor_offset = cursor_col.saturating_sub(raw_cell_start);
+    let cursor_in_cell = if cursor_offset < rendered_width {
+        Some(cursor_offset)
+    } else if cursor_offset == rendered_width {
+        Some(rendered_width.saturating_sub(1))
+    } else {
+        None
+    };
+
+    Some(CellOverlay {
+        rendered_start,
+        rendered_end,
+        raw_text,
+        cursor_in_cell,
+    })
+}
+
+/// Char positions of unescaped `|` characters in a raw table row.  Preceding
+/// `\` escapes the pipe per GFM rules; `\\|` is a literal backslash followed
+/// by an unescaped pipe.
+fn raw_pipe_positions(row: &str) -> Vec<usize> {
+    let mut positions = Vec::new();
+    let mut escaped = false;
+    for (i, ch) in row.chars().enumerate() {
+        if ch == '|' && !escaped {
+            positions.push(i);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = !escaped;
+        } else {
+            escaped = false;
+        }
+    }
+    positions
+}
+
+/// Char positions of `│` box-drawing pipe characters in a rendered line.
+fn rendered_pipe_positions(line: &Line<'_>) -> Vec<usize> {
+    let mut positions = Vec::new();
+    let mut col = 0usize;
+    for span in &line.spans {
+        for ch in span.content.chars() {
+            if ch == '│' {
+                positions.push(col);
+            }
+            col += 1;
+        }
+    }
+    positions
+}
+
+/// Paint `overlay.raw_text` into the cell's rendered column range, inverting
+/// the character at `overlay.cursor_in_cell` to draw the cursor.  Writes
+/// directly to the `TuiBuf` — the caller must have already rendered the
+/// underlying row so the pipes and neighbouring cells are intact.
+fn overlay_raw_cell(
+    buf: &mut TuiBuf,
+    area: Rect,
+    visual_y: u16,
+    overlay: &CellOverlay,
+    theme: &Theme,
+) {
+    if visual_y >= area.height {
+        return;
+    }
+    let abs_y = area.y + visual_y;
+    let cell_width = overlay.rendered_end.saturating_sub(overlay.rendered_start);
+    let raw_chars: Vec<char> = overlay.raw_text.chars().collect();
+    let cursor_style = Style::default().add_modifier(Modifier::REVERSED);
+    let base_style = theme.normal;
+
+    for i in 0..cell_width {
+        let col = overlay.rendered_start + i;
+        let abs_x = area.x.saturating_add(col as u16);
+        if abs_x >= area.x.saturating_add(area.width) {
+            break;
+        }
+        let ch = raw_chars.get(i).copied().unwrap_or(' ');
+        let style = if overlay.cursor_in_cell == Some(i) {
+            cursor_style
+        } else {
+            base_style
+        };
+        if let Some(cell) = buf.cell_mut((abs_x, abs_y)) {
+            cell.set_char(ch);
+            cell.set_style(style);
         }
     }
 }

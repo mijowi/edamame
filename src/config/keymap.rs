@@ -85,6 +85,10 @@ pub enum Action {
     // Row/column deletion.
     TableDeleteRow,
     TableDeleteColumn,
+    // Shift+Enter inside a cell inserts a literal `<br>` (GFM supports this
+    // as the canonical way to get multi-line cells).  Outside a table it
+    // falls through to `Newline`.
+    TableInsertBreak,
 }
 
 impl fmt::Display for Action {
@@ -145,6 +149,7 @@ impl fmt::Display for Action {
             Action::TableInsertColumnRight => "TableInsertColumnRight",
             Action::TableDeleteRow => "TableDeleteRow",
             Action::TableDeleteColumn => "TableDeleteColumn",
+            Action::TableInsertBreak => "TableInsertBreak",
         };
         f.write_str(s)
     }
@@ -209,6 +214,7 @@ impl FromStr for Action {
             "TableInsertColumnRight" => Ok(Action::TableInsertColumnRight),
             "TableDeleteRow" => Ok(Action::TableDeleteRow),
             "TableDeleteColumn" => Ok(Action::TableDeleteColumn),
+            "TableInsertBreak" => Ok(Action::TableInsertBreak),
             other => Err(KeyMapError::UnknownAction(other.to_owned())),
         }
     }
@@ -327,7 +333,25 @@ impl KeyMap {
 
     /// Look up the action bound to a key event, if any.
     pub fn action_for(&self, event: &KeyEvent) -> Option<&Action> {
-        self.bindings.get(event)
+        // Normalize: strip `state` and force `kind: Press` so the kitty
+        // keyboard protocol (which reports KEYPAD / CAPS_LOCK state flags)
+        // does not prevent HashMap lookup. `KeyEvent`'s PartialEq/Hash
+        // compare all four fields, and `parse_key` always produces events
+        // with `state: EMPTY, kind: Press`.
+        let normalized = KeyEvent::new(event.code, event.modifiers);
+        if let Some(action) = self.bindings.get(&normalized) {
+            return Some(action);
+        }
+        // Some terminals report Shift+Tab as `KeyCode::BackTab` (with or
+        // without the SHIFT modifier set).  Normalize it to the canonical
+        // `Tab + SHIFT` form produced by `parse_key("shift+tab")` so bindings
+        // match regardless of which representation the terminal emits.
+        if event.code == KeyCode::BackTab {
+            let fallback =
+                KeyEvent::new(KeyCode::Tab, event.modifiers | KeyModifiers::SHIFT);
+            return self.bindings.get(&fallback);
+        }
+        None
     }
 
     /// Build the compiled-in default bindings.
@@ -418,6 +442,15 @@ impl KeyMap {
         bind!("alt+shift+right", Action::TableInsertColumnRight);
         bind!("alt+backspace", Action::TableDeleteRow);
         bind!("alt+shift+backspace", Action::TableDeleteColumn);
+        // Shift+Tab moves to the previous cell when the cursor is inside a
+        // table; it is a no-op elsewhere.  Tab / Enter remain bound to
+        // InsertTab / Newline so that context dispatch in edit_ops can decide
+        // whether to insert text or move between cells.
+        bind!("shift+tab", Action::TablePrevCell);
+        // Shift+Enter inserts a literal `<br>` when the cursor is inside a
+        // table cell; outside a table it has no binding and the default
+        // Shift+Enter behaviour (same as Enter) applies.
+        bind!("shift+enter", Action::TableInsertBreak);
 
         Self { bindings: b }
     }
@@ -462,6 +495,32 @@ mod tests {
         let mut overrides = KeyBindingOverrides::default();
         overrides.0.insert("Quit".into(), "superkey+q".into());
         assert!(KeyMap::build(&overrides).is_err());
+    }
+
+    #[test]
+    fn backtab_maps_to_shift_tab_binding() {
+        // Some terminals emit Shift+Tab as `KeyCode::BackTab` instead of the
+        // canonical `Tab + SHIFT` form.  `action_for` must match either way.
+        let km = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        let backtab_no_mod = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
+        assert_eq!(km.action_for(&backtab_no_mod), Some(&Action::TablePrevCell));
+        let backtab_shift = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(km.action_for(&backtab_shift), Some(&Action::TablePrevCell));
+    }
+
+    #[test]
+    fn action_lookup_ignores_kitty_state_flags() {
+        // The kitty keyboard protocol attaches non-default `state` flags
+        // (e.g. KEYPAD) to events. `action_for` must look past those.
+        use crossterm::event::{KeyEventKind, KeyEventState};
+        let km = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        let ctrl_q_with_state = KeyEvent {
+            code: KeyCode::Char('q'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::KEYPAD,
+        };
+        assert_eq!(km.action_for(&ctrl_q_with_state), Some(&Action::Quit));
     }
 
     #[test]

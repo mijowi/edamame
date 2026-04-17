@@ -98,6 +98,88 @@ fn snapshot_status_bar_modified() {
 }
 
 #[test]
+fn rendered_view_cell_scoped_reveal_keeps_neighbouring_pipes_rendered() {
+    use markdown_tui::document::Buffer;
+    use markdown_tui::editor::EditorState;
+    use markdown_tui::ui::{RenderedView, RenderedViewState};
+    use ratatui::style::Modifier;
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let src = "| aaa | bbb | ccc |\n|---|---|---|\n| 1 | 2 | 3 |\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    // Place the cursor on the first 'b' of the middle header cell. Chars
+    // 0..19 in src form the header row: `| aaa | bbb | ccc |`, so char 8 is
+    // the first 'b'. Leaving `cursor_block_entered_at` at its default (None)
+    // causes `cursor_block_revealed()` to return true immediately — bypassing
+    // the RAW_REVEAL_DELAY without any sleeping in the test.
+    state.cursor.offset = 8;
+
+    let backend = TestBackend::new(25, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let symbol_at = |x: u16, y: u16| {
+        buf.cell((x, y))
+            .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+    };
+
+    // Rendered layout, y=0 is the top border (┌──┬──┐), y=1 is the header row.
+    // Pipes (│) sit at cols 0, 6, 12, 18 on every data/header row.
+    for &x in &[0u16, 6, 12, 18] {
+        assert_eq!(symbol_at(x, 1), '│', "expected │ at ({x}, 1)");
+    }
+
+    // Neighbouring cells keep their rendered content — NOT replaced by raw.
+    for (x, ch) in [
+        (2u16, 'a'),
+        (3, 'a'),
+        (4, 'a'),
+        (14, 'c'),
+        (15, 'c'),
+        (16, 'c'),
+    ] {
+        assert_eq!(
+            symbol_at(x, 1),
+            ch,
+            "neighbouring cell char at ({x}, 1) should still be rendered"
+        );
+    }
+
+    // Active cell shows raw text "bbb" at cols 8-10 (between pipes at 6 and 12).
+    for x in 8u16..=10 {
+        assert_eq!(
+            symbol_at(x, 1),
+            'b',
+            "active cell should show raw 'b' at ({x}, 1)"
+        );
+    }
+
+    // Cursor indicator: REVERSED at (8, 1), NOT on the other two 'b' cells.
+    let cell_at = |x: u16, y: u16| buf.cell((x, y)).expect("cell in bounds");
+    assert!(
+        cell_at(8, 1).modifier.contains(Modifier::REVERSED),
+        "cursor cell at (8, 1) should carry REVERSED modifier"
+    );
+    for x in [9u16, 10] {
+        assert!(
+            !cell_at(x, 1).modifier.contains(Modifier::REVERSED),
+            "non-cursor cell at ({x}, 1) must not carry REVERSED modifier"
+        );
+    }
+}
+
+#[test]
 fn status_bar_shows_cursor_position() {
     let theme = Box::leak(Box::new(Theme::default()));
     let backend = TestBackend::new(80, 1);

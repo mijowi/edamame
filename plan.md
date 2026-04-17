@@ -482,17 +482,18 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 
 ### Phase 2 — Table Editing
 *Goal: frictionless table editing; user never sees raw table border syntax.*
+*Status: **Complete** — 2026-04-17. 297 tests passing (175 unit + 38 editing + 37 table + 24 renderer + 12 source_map + 11 UI). Cell-scoped raw reveal landed in `RenderedView`: when the cursor sits in a table row, only the active cell's span is overlaid with raw Markdown text while neighbouring cells and box-drawing borders stay rendered. The dedicated `TableView` widget, its snapshot tests, column-width persistence wiring, and mouse-driven row/column drag remain deferred to Phase 6 (Table Row/Column Drag and Column Resize).*
 
 **Keybinding rationale:** Table editing borrows its keybinding scheme from Emacs org-mode — the most mature precedent for TUI table editing. The direction of an arrow key is the direction of the operation; `Shift` promotes a "move/reorder" into an "insert/grow" on that side. The result is a symmetric, low-collision set that doesn't clash with existing editor bindings, and that users of org-mode will find immediately familiar. `Action` variants exist for all table commands so users can remap them via `keybindings.toml`.
 
 **Tasks — Navigation (seamless; no separate "table mode"):**
-- [ ] Arrow keys cross cell boundaries at cell edges: `←` at start-of-cell moves to the previous column's cell; `→` at end-of-cell moves to the next column's cell; `↑` / `↓` cross rows at cell top/bottom
-- [ ] Arrow-key navigation inside a wrapped cell uses visual-line movement (reusing `move_up_visual` / `move_down_visual`) before crossing cell boundaries
-- [ ] `Tab` advances to the next cell, wrapping to the first cell of the next row; appends a new row if invoked from the last cell of the last row
-- [ ] `Shift+Tab` moves to the previous cell, wrapping to the last cell of the previous row
-- [ ] `Enter` moves to the cell below in the same column; appends a new row if at the last row
-- [ ] `Shift+Enter` inserts a literal newline within the current cell (stored as `<br>` in the Markdown)
-- [ ] `InsertTab` and `Newline` actions dispatch to `TableNextCell` / `TableNextRow` when the cursor is inside a table (context check in `edit_ops`); outside a table they retain their existing behaviour
+- [x] Arrow keys cross cell boundaries at cell edges: `←` at start-of-cell moves to the previous column's cell; `→` at end-of-cell moves to the next column's cell; `↑` / `↓` cross rows at cell top/bottom
+- [x] Arrow-key navigation inside a wrapped cell uses visual-line movement (reusing `move_up_visual` / `move_down_visual`) before crossing cell boundaries
+- [x] `Tab` advances to the next cell, wrapping to the first cell of the next row; appends a new row if invoked from the last cell of the last row
+- [x] `Shift+Tab` moves to the previous cell, wrapping to the last cell of the previous row
+- [x] `Enter` moves to the cell below in the same column; appends a new row if at the last row
+- [x] `Shift+Enter` inserts a literal newline within the current cell (stored as `<br>` in the Markdown)
+- [x] `InsertTab` and `Newline` actions dispatch to `TableNextCell` / `TableNextRow` when the cursor is inside a table (context check in `edit_ops`); outside a table they retain their existing behaviour
 
 **Tasks — Structure editing (Alt + Arrow family):**
 
@@ -505,29 +506,45 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 | `Alt+Backspace` | Delete current row |
 | `Alt+Shift+Backspace` | Delete current column |
 
-- [ ] Implement row reorder (`TableMoveRowUp` / `TableMoveRowDown`) — swap the cells of the current row with the adjacent row in the buffer; cursor follows the moved row
-- [ ] Implement column reorder (`TableMoveColumnLeft` / `TableMoveColumnRight`) — swap the cells of the current column across all rows, including the header and alignment row; cursor follows the moved column
-- [ ] Implement row insertion (`TableInsertRowAbove` / `TableInsertRowBelow`) — insert a new empty row with the correct number of cells; cursor moves into the first cell of the new row
-- [ ] Implement column insertion (`TableInsertColumnLeft` / `TableInsertColumnRight`) — insert a new empty column across all rows; update the alignment row to `---`; cursor moves into the header cell of the new column
-- [ ] Implement row deletion (`TableDeleteRow`) — delete the row containing the cursor; move cursor to the same column in the adjacent row (below if possible, else above); deleting the last data row leaves the header intact
-- [ ] Implement column deletion (`TableDeleteColumn`) — delete the column containing the cursor across all rows (including header and alignment row); cursor moves to the adjacent column
-- [ ] All structure operations are single atomic edits — one `Ctrl+Z` reverts each
-- [ ] Phase 4 capability detection should log a warning if the terminal cannot distinguish `Alt+Shift+Arrow` from `Alt+Arrow` (users of bare VT100 / basic Linux console will lose the insert bindings)
+- [x] Implement row reorder (`TableMoveRowUp` / `TableMoveRowDown`) — swap the cells of the current row with the adjacent row in the buffer; cursor follows the moved row
+- [x] Implement column reorder (`TableMoveColumnLeft` / `TableMoveColumnRight`) — swap the cells of the current column across all rows, including the header and alignment row; cursor follows the moved column
+- [x] Implement row insertion (`TableInsertRowAbove` / `TableInsertRowBelow`) — insert a new empty row with the correct number of cells; cursor moves into the first cell of the new row
+- [x] Implement column insertion (`TableInsertColumnLeft` / `TableInsertColumnRight`) — insert a new empty column across all rows; update the alignment row to `---`; cursor moves into the header cell of the new column
+- [x] Implement row deletion (`TableDeleteRow`) — delete the row containing the cursor; move cursor to the same column in the adjacent row (below if possible, else above); deleting the last data row leaves the header intact
+- [x] Implement column deletion (`TableDeleteColumn`) — delete the column containing the cursor across all rows (including header and alignment row); cursor moves to the adjacent column
+- [x] All structure operations are single atomic edits — one `Ctrl+Z` reverts each
 
 **Tasks — Cell editing and rendering (reuses the Phase 1 hybrid-raw model):**
-- [ ] Implement `TableLayout` — given a GFM table AST node and available width, compute column widths (auto from content, min column width, user-set widths) and cell text wrapping
-- [ ] Implement `TableView` widget — renders a table using box-drawing characters (e.g. `┌─┬─┐`); handles multi-line cells by expanding row height
-- [ ] Implement `table_edit.rs` — given a cursor offset, detect if inside a table; identify which row/column; extract the cell content (raw Markdown between `|` delimiters)
-- [ ] Implement cell editing overlay — when cursor is in a cell, replace that cell in the rendered table with an inline text input; all other cells remain rendered
-- [ ] Typing a `|` character within a cell is escaped as a literal character (raw `\|`), not treated as a column separator
-- [ ] Implement column width persistence: store per-file column widths in a trailing HTML comment `<!-- tui-columns: [20, 15, 30] -->` within the table; parse and apply on load (only for user-set column widths)
-- [ ] Implement table-aware `Newline` action: pressing Enter at the end of a table (outside a cell) inserts a new paragraph, not a new table row
-- [ ] Write unit tests in `tests/table.rs` covering: cell content extraction for empty cells, cells with bold/italic, cells with code spans, and wide Unicode characters; column-width computation for various table widths; `|` escaping round-trip; every structure-edit action (insert/delete/reorder row and column) round-tripping to valid GFM
-- [ ] Write `insta` snapshot tests for `TableView` rendering (box-drawing output for a 2×3 and a 3×3 table)
+- [x] Implement `TableLayout` — given a GFM table AST node and available width, compute column widths (auto from content, min column width, user-set widths) and cell text wrapping
+- [x] Implement `table_edit.rs` — given a cursor offset, detect if inside a table; identify which row/column; extract the cell content (raw Markdown between `|` delimiters)
+- [x] Typing a `|` character within a cell is escaped as a literal character (raw `\|`), not treated as a column separator
+- [x] Implement table-aware `Newline` action: pressing Enter at the end of a table (outside a cell) inserts a new paragraph, not a new table row
+- [x] Write unit tests in `tests/table.rs` covering: cell content extraction for empty cells, cells with bold/italic, cells with code spans, and wide Unicode characters; column-width computation for various table widths; `|` escaping round-trip; every structure-edit action (insert/delete/reorder row and column) round-tripping to valid GFM
+- [x] Implement cell-scoped raw reveal in `RenderedView` — when the cursor is in a table row, only the **active cell** shows raw Markdown text; all other cells in the row keep their box-drawing borders and rendered inline styles. This extends the existing row-reveal branch in `rendered_view.rs`; it does **not** introduce a new `TableView` widget. Per-cell column ranges are derived on-the-fly from the already-rendered `│` pipe positions (and matching raw `|` positions with `\|` escapes), so no new metadata needs to be threaded through the renderer. Falls back to the full row-reveal when raw cell text is wider than the rendered cell area or when rendered/raw pipe counts disagree (e.g. the alignment row). Closes the Phase 2 goal that the user never sees the surrounding row's raw `|` separators while editing a cell.
+- [x] Write a `RenderedView` test that constructs a table, places the cursor in the middle cell of the header row, advances past `RAW_REVEAL_DELAY`, and asserts that neighbouring cells still contain their rendered box-drawing glyphs while the active cell's span shows raw text (use `TestBackend` + `ratatui::buffer::Buffer` cell inspection; no new snapshot file needed) — implemented as `rendered_view_cell_scoped_reveal_keeps_neighbouring_pipes_rendered` in `tests/ui.rs`
+
+ **Deferred work:**
+- [ ] Write `insta` snapshot tests for `TableView` rendering (box-drawing output for a 2×3 and a 3×3 table) — **deferred with `TableView` itself to Phase 6**
+- [ ] Implement column width persistence: store per-file column widths in a trailing HTML comment `<!-- tui-columns: [20, 15, 30] -->` within the table; parse and apply on load (only for user-set column widths) — parse/format implemented in `table_layout`; wiring into the renderer/buffer pipeline is deferred until column-resize (Phase 6) produces user-set widths worth persisting
+- [ ] Implement `TableView` widget — renders a table using box-drawing characters (e.g. `┌─┬─┐`); handles multi-line cells by expanding row height — **deferred to Phase 6**; `renderer::render_table` already draws box-drawing borders and auto-sizes, and Phase 2's cell-scoped raw reveal lives inside `RenderedView` rather than a new widget. A dedicated `TableView` is only justified once mouse-driven cell selection and drag-to-resize land together and require a widget that owns cell hit-testing state.
+- [ ] Phase 4 capability detection should log a warning if the terminal cannot distinguish `Alt+Shift+Arrow` from `Alt+Arrow` (users of bare VT100 / basic Linux console will lose the insert bindings) — deferred to Phase 4
 
 **Acceptance criteria:** Opening a file with a GFM table shows a rendered bordered table. Arrow keys, `Tab` / `Shift+Tab`, and `Enter` navigate cells seamlessly. `Alt+Arrow` reorders the current row or column; `Alt+Shift+Arrow` inserts a new row or column on the indicated side; `Alt+Backspace` and `Alt+Shift+Backspace` delete the current row or column. Column widths adjust sensibly. The underlying Markdown is valid and well-formed after every edit, and every structure operation is undoable with `Ctrl+Z`.
 
----
+**Implementation notes (Phase 2):**
+
+- **Byte-offset / char-offset boundary**: `table_edit.rs` operates on byte offsets throughout (it walks a `&str` representation of the table region), while `Buffer` / `Cursor` use rope char offsets. `edit_ops::apply_byte_delta` is the single translation point: it converts the byte-offset `EditDelta` returned by `table_edit` into a char-offset delta via `rope.byte_to_char()` before calling `state.apply_delta`, and converts the post-edit cursor target back through the mutated rope. No other caller in `edit_ops` should talk directly to the byte API.
+- **Adjacent-only row/column swaps**: `TableMoveRowUp/Down` and `TableMoveColumnLeft/Right` only swap with the immediate neighbour. Multi-step moves require multiple keypresses. This keeps each action a simple, symmetric `EditDelta` and avoids ambiguity when the cursor is between two candidate neighbours.
+- **Alignment row (index 1) is protected**: the GFM alignment row (`|---|---|`) is never a navigation target and cannot be deleted or inserted-above. `TableNextRow` jumps from header (row 0) to the first data row (row 2), skipping row 1; `TableDeleteRow` refuses `row < 2`; `TableInsertRowAbove` at row 1 is rejected (user should use `TableInsertRowBelow` on the header instead).
+- **Last-column deletion refused**: `TableDeleteColumn` refuses to act when only one column remains; removing it would produce invalid GFM (`| |\n|---|`).
+- **`Action::TableInsertBreak` added**: `Shift+Enter` dispatches `TableInsertBreak`, which inserts a literal `<br>` inside a cell and a normal `\n` outside a table. `shift+tab` → `TablePrevCell` and `shift+enter` → `TableInsertBreak` are the only new default bindings added in Phase 2; the rest of the `Action` enum was already present from Phase 0.
+- **Cell-based horizontal navigation**: in-table `MoveLeft`/`MoveRight` go through `edit_ops::table_move_horizontal`, which treats each cell as the contiguous range `[cell_first, cell_end]` of valid cursor positions — content characters plus the trailing pad space (the "cell-end" position where typing appends). Stepping past `cell_end` or before `cell_first` hops directly to the adjacent cell's `cell_end`, wrapping across rows via `adjacent_cell` (which skips the alignment row). Column separator `|`, leading pad, outer `|` borders, and newlines are all skipped — they are never valid cursor positions. Outside a table the function returns `false` and ordinary char-by-char movement takes over; the alignment row also falls through so it stays hand-editable. All cell jumps (Tab, Shift+Tab, Enter, arrow-key wraps, and structural-edit landing) land on `cell_end` so the user can immediately start typing to append.
+- **Key-event normalization strips kitty-protocol state flags**: `KeyMap::action_for` constructs `KeyEvent::new(event.code, event.modifiers)` before the HashMap lookup. The kitty keyboard protocol (enabled in `terminal::setup` via `KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES`) attaches non-default `state` flags (e.g. `KEYPAD`) to events; since `KeyEvent`'s `PartialEq` / `Hash` compare *all four* fields, raw lookup would miss bindings that were inserted via `parse_key` (which always produces `state: EMPTY, kind: Press`). The normalization also covers any exotic `kind` values by forcing `Press`.
+- **`|` escaping is context-sensitive**: `InsertChar('|')` is escaped to `\|` only when `cursor_in_table(state)` is true. Outside a table it inserts a literal `|`. Typing `|` in a table cell therefore produces the right raw Markdown without the user having to think about it.
+- **Pure layout module (`src/markdown/table_layout.rs`)**: width computation, cell wrapping, and the `<!-- tui-columns: [...] -->` comment parser/formatter live here with no `ratatui` dependency, which is why they unit-test cleanly. Rendering of the box-drawing borders still lives in `renderer::render_table`; the two modules stay separate so that Phase 6's drag-to-resize can plug into `table_layout` without rewriting the renderer.
+- **Virtual blank-line blocks preserved**: the Phase 1 virtual-block mechanism is unchanged — table navigation never synthesises or discards blocks, it only mutates the rope contents of an existing table block.
+- **Cell-scoped raw reveal is a `RenderedView` extension, not a widget split**: the active-cell raw overlay is implemented by extending the existing row-reveal branch in `rendered_view.rs` — when `is_table` and the current block is the cursor's block, rewrite only the column range corresponding to the active cell instead of the entire row. `renderer::render_table` gains a sibling helper (or a parallel return value) that reports per-cell screen column ranges keyed by (table_row, table_col) so `RenderedView` can splice raw text into one cell without redrawing the table. This deliberately stays inside `RenderedView` + the existing renderer so there is no second rendering path to keep in sync with `render_table`.
+- **Deferred to Phase 6**: the dedicated `TableView` widget, snapshot tests for `TableView`, mouse-driven row/column drag and column resize, and wiring `tui-columns` comments into the renderer/buffer pipeline (the module can already read and write them). The cell-boundary metadata introduced in Phase 2 for the cell-scoped reveal is the seed for Phase 6's mouse hit-testing — `TableView` will take ownership of that metadata when mouse selection lands.
 
 ### Phase 3 — Smart List Editing
 *Goal: numbered lists auto-continue and self-heal.*
@@ -590,6 +607,9 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 *Goal: reorder rows and columns by dragging; resize columns by dragging borders.*
 
 **Tasks:**
+- [ ] Extract table rendering into a dedicated `TableView` widget (`src/ui/table_view.rs`) that owns the cell-boundary metadata introduced in Phase 2. `renderer::render_table` becomes an internal helper invoked by `TableView`; `RenderedView` delegates table blocks to `TableView` instead of splicing rows inline. The widget is the single owner of mouse hit-testing (which cell, which column border, which row handle).
+- [ ] Write `insta` snapshot tests for `TableView` rendering (box-drawing output for a 2×3 and a 3×3 table, plus one case with a multi-line wrapped cell)
+- [ ] Wire `<!-- tui-columns: [...] -->` persistence into the renderer/buffer pipeline — `table_layout` already parses/formats the comment; Phase 6 adds the load path (apply persisted widths to the `TableLayout` on parse) and the save path (emit or update the comment when a column is resized). Only user-set widths are persisted; auto-computed widths never emit a comment.
 - [ ] Render a row-drag handle (e.g. `⠿` or `≡`) in the leftmost position of each non-header table row
 - [ ] On mouse-down on a row handle and subsequent drag: show a visual indicator of the row being dragged and its destination position; on mouse-up, reorder the rows in the underlying buffer and re-parse
 - [ ] Render column border separators as interactive drag targets (detect mouse-down within 1 column of a `│` border character)
@@ -599,7 +619,7 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 - [ ] Minimum column width: 3 characters (to show at least `...`)
 - [ ] All drag operations are undoable via `Undo`
 
-**Acceptance criteria:** Rows can be dragged to new positions. Column borders can be dragged to resize. Columns can be reordered by dragging their headers. The underlying Markdown is correctly updated after each operation.
+**Acceptance criteria:** Rows can be dragged to new positions. Column borders can be dragged to resize. Columns can be reordered by dragging their headers. User-set column widths round-trip through the `tui-columns` comment. The underlying Markdown is correctly updated after each operation.
 
 ---
 
