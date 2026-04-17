@@ -8,11 +8,29 @@ use super::ast::{Block, Inline, ListItem};
 /// Converts a `Vec<Block>` AST into a `Vec<Line<'static>>` ready for ratatui.
 pub struct Renderer<'t> {
     theme: &'t Theme,
+    /// Viewport width in terminal columns; used to size code block backgrounds.
+    viewport_width: usize,
+    /// Whether code block lines should wrap at viewport_width.
+    code_wrap: bool,
 }
 
 impl<'t> Renderer<'t> {
     pub fn new(theme: &'t Theme) -> Self {
-        Self { theme }
+        Self {
+            theme,
+            viewport_width: 80,
+            code_wrap: false,
+        }
+    }
+
+    pub fn with_viewport_width(mut self, width: usize) -> Self {
+        self.viewport_width = width;
+        self
+    }
+
+    pub fn with_code_wrap(mut self, wrap: bool) -> Self {
+        self.code_wrap = wrap;
+        self
     }
 
     /// Render a list of top-level blocks to styled lines.
@@ -22,6 +40,23 @@ impl<'t> Renderer<'t> {
             self.render_block(block, &mut lines, 0);
         }
         lines
+    }
+
+    /// Render blocks and also return the number of rendered lines each block produced.
+    ///
+    /// Returns `(lines, per_block_counts)` where `per_block_counts[i]` is the
+    /// number of entries that block `i` appended to `lines`.
+    pub fn render_with_counts(&self, blocks: &[Block]) -> (Vec<Line<'static>>, Vec<usize>) {
+        let mut lines = Vec::new();
+        let mut counts = Vec::with_capacity(blocks.len());
+
+        for block in blocks {
+            let before = lines.len();
+            self.render_block(block, &mut lines, 0);
+            counts.push(lines.len() - before);
+        }
+
+        (lines, counts)
     }
 
     // ── Block rendering ───────────────────────────────────────────
@@ -40,17 +75,21 @@ impl<'t> Renderer<'t> {
             Block::BlockQuote { blocks } => {
                 self.render_blockquote(blocks, out);
             }
-            Block::List { ordered, start, items } => {
+            Block::List {
+                ordered,
+                start,
+                items,
+            } => {
                 self.render_list(*ordered, *start, items, out, indent);
             }
             Block::HorizontalRule => {
-                out.push(Line::styled(
-                    "─".repeat(80),
-                    self.theme.rule,
-                ));
-                out.push(Line::raw(""));
+                out.push(Line::styled("─".repeat(80), self.theme.rule));
             }
-            Block::Table { col_count, headers, rows } => {
+            Block::Table {
+                col_count,
+                headers,
+                rows,
+            } => {
                 self.render_table(*col_count, headers, rows, out);
             }
             Block::Html(html) => {
@@ -61,7 +100,6 @@ impl<'t> Renderer<'t> {
                         self.theme.code_block_text,
                     ));
                 }
-                out.push(Line::raw(""));
             }
         }
     }
@@ -94,20 +132,16 @@ impl<'t> Renderer<'t> {
         if level == H1 {
             out.push(Line::styled("─".repeat(80), self.theme.h1_rule));
         }
-
-        out.push(Line::raw(""));
     }
 
     // ── Paragraph ─────────────────────────────────────────────────
 
-    fn render_paragraph(
-        &self,
-        inlines: &[Inline],
-        out: &mut Vec<Line<'static>>,
-        indent: usize,
-    ) {
+    fn render_paragraph(&self, inlines: &[Inline], out: &mut Vec<Line<'static>>, indent: usize) {
         let prefix = "  ".repeat(indent);
-        // Split at HardBreaks so each hard-break produces a new visual line.
+        // Split at both HardBreaks and SoftBreaks so every source-level line
+        // break produces its own visual line.  CommonMark collapses soft breaks
+        // into spaces, but in a TUI editor we preserve the author's line layout
+        // so rendered content mirrors the source line-for-line.
         let mut current_spans: Vec<Span<'static>> = Vec::new();
 
         if !prefix.is_empty() {
@@ -115,7 +149,7 @@ impl<'t> Renderer<'t> {
         }
 
         for inline in inlines {
-            if matches!(inline, Inline::HardBreak) {
+            if matches!(inline, Inline::HardBreak | Inline::SoftBreak) {
                 out.push(Line::from(std::mem::take(&mut current_spans)));
                 if !prefix.is_empty() {
                     current_spans.push(Span::raw(prefix.clone()));
@@ -130,8 +164,6 @@ impl<'t> Renderer<'t> {
         {
             out.push(Line::from(current_spans));
         }
-
-        out.push(Line::raw(""));
     }
 
     // ── Code block ────────────────────────────────────────────────
@@ -142,33 +174,83 @@ impl<'t> Renderer<'t> {
         content: &str,
         out: &mut Vec<Line<'static>>,
     ) {
-        // Top border with optional language tag
-        let lang_label: String = match language {
-            Some(lang) => format!(" {} ", lang),
-            None => String::new(),
-        };
-
-        let border_right_len = 80usize.saturating_sub(4 + lang_label.len());
-        let top_border = format!("╭─{}{} ╮", lang_label, "─".repeat(border_right_len));
-
-        out.push(Line::styled(top_border, self.theme.code_block_border));
-
-        for line in content.lines() {
-            let display = format!("│ {:<78} │", line);
-            out.push(Line::styled(display, self.theme.code_block_text));
+        // Split on '\n' and strip exactly one trailing empty string (the artifact
+        // of pulldown-cmark always ending code content with '\n').  This ensures
+        // that a genuine blank line *within* the code block is preserved while
+        // the final newline does not produce a spurious extra blank line.
+        let mut raw_lines: Vec<&str> = content.split('\n').collect();
+        if raw_lines.last() == Some(&"") {
+            raw_lines.pop();
         }
 
-        let bottom_border = format!("╰{}╯", "─".repeat(80 - 2));
-        out.push(Line::styled(bottom_border, self.theme.code_block_border));
-        out.push(Line::raw(""));
+        // Display width: capped at viewport_width so that short lines are never
+        // over-padded (which would cause them to wrap in the terminal and produce
+        // blank lines after every row of code).
+        let block_width = self.viewport_width.max(1);
+
+        // Optional language label shown above the block.
+        if let Some(lang) = language {
+            out.push(Line::styled(
+                format!(" {} ", lang),
+                self.theme.code_block_lang,
+            ));
+        }
+
+        if self.code_wrap {
+            // Wrap long lines at viewport_width.
+            let wrap_at = self.viewport_width.max(1);
+            for line in &raw_lines {
+                let chars: Vec<char> = line.chars().collect();
+                if chars.is_empty() {
+                    // Use NBSP (U+00A0) instead of regular spaces: ratatui's WordWrapper
+                    // treats NBSP as non-whitespace and won't produce a spurious extra
+                    // blank line for all-whitespace input.
+                    let padded = "\u{00A0}".repeat(block_width);
+                    out.push(Line::styled(padded, self.theme.code_block_text));
+                    continue;
+                }
+                let mut start = 0;
+                while start < chars.len() {
+                    let end = (start + wrap_at - 1).min(chars.len());
+                    let slice: String = chars[start..end].iter().collect();
+                    let padded = format!(" {:<width$}", slice, width = block_width - 1);
+                    out.push(Line::styled(padded, self.theme.code_block_text));
+                    start = end;
+                }
+            }
+        } else {
+            // No wrapping: each source line becomes one display line, padded to
+            // block_width with the code background so the coloured block fills
+            // the viewport edge.  Lines longer than viewport_width are not
+            // truncated here — the terminal clips them — but we never pad
+            // beyond viewport_width, so short lines do not wrap.
+            for line in &raw_lines {
+                if line.is_empty() {
+                    // Use NBSP (U+00A0) instead of regular spaces: ratatui's WordWrapper
+                    // treats NBSP as non-whitespace and won't produce a spurious extra
+                    // blank line for all-whitespace input (preview mode uses Paragraph::wrap).
+                    let padded = "\u{00A0}".repeat(block_width);
+                    out.push(Line::styled(padded, self.theme.code_block_text));
+                } else {
+                    let padded = format!(" {:<width$}", line, width = block_width - 1);
+                    out.push(Line::styled(padded, self.theme.code_block_text));
+                }
+            }
+        }
     }
 
     // ── Blockquote ────────────────────────────────────────────────
 
     fn render_blockquote(&self, blocks: &[Block], out: &mut Vec<Line<'static>>) {
-        // Render inner blocks to a temporary buffer, then prefix each with ▎
+        // Render inner blocks to a temporary buffer, inserting a blank line
+        // between consecutive child blocks so blank lines inside the source
+        // blockquote (e.g. `>` on its own between paragraphs) remain visible.
+        // Each inner line is then prefixed with the ▎ bar.
         let mut inner_lines: Vec<Line<'static>> = Vec::new();
-        for block in blocks {
+        for (i, block) in blocks.iter().enumerate() {
+            if i > 0 {
+                inner_lines.push(Line::from(""));
+            }
             self.render_block(block, &mut inner_lines, 0);
         }
 
@@ -182,8 +264,36 @@ impl<'t> Renderer<'t> {
             }
             out.push(Line::from(spans));
         }
+    }
 
-        out.push(Line::raw(""));
+    // ── Inline width helpers ──────────────────────────────────────
+
+    /// Character width of a single inline as it would appear when rendered.
+    /// Used for table column width calculation so borders align with content.
+    fn rendered_inline_char_width(&self, inline: &Inline) -> usize {
+        match inline {
+            Inline::Text(t) => t.chars().count(),
+            Inline::Bold(inner)
+            | Inline::Italic(inner)
+            | Inline::Strikethrough(inner)
+            | Inline::Highlight(inner) => self.rendered_inlines_char_width(inner),
+            // Code span adds " code " (2 extra chars for leading/trailing spaces).
+            Inline::Code(c) => c.chars().count() + 2,
+            // Link renders as: text + " (url)".
+            Inline::Link { text, url, .. } => {
+                self.rendered_inlines_char_width(text) + 3 + url.chars().count()
+            }
+            // Image renders as "[img: alt]".
+            Inline::Image { alt, .. } => alt.chars().count() + 7,
+            Inline::SoftBreak | Inline::HardBreak => 1,
+        }
+    }
+
+    fn rendered_inlines_char_width(&self, inlines: &[Inline]) -> usize {
+        inlines
+            .iter()
+            .map(|i| self.rendered_inline_char_width(i))
+            .sum()
     }
 
     // ── List ──────────────────────────────────────────────────────
@@ -200,15 +310,20 @@ impl<'t> Renderer<'t> {
         let mut counter = start.unwrap_or(1);
 
         for item in items {
-            let marker: String = if ordered {
+            let is_task = item.task.is_some();
+
+            // Task items have no bullet/number — the checkbox is the visual anchor.
+            let (marker, marker_style) = if is_task {
+                (indent_str.clone(), Style::default())
+            } else if ordered {
                 let s = format!("{}{}. ", indent_str, counter);
                 counter += 1;
-                s
+                (s, self.theme.list_number)
             } else {
-                format!("{}• ", indent_str)
+                (format!("{}• ", indent_str), self.theme.list_bullet)
             };
 
-            // Task list prefix
+            // Task list prefix (checkbox).
             let task_prefix: Option<Span<'static>> = item.task.map(|checked| {
                 if checked {
                     Span::styled("[x] ", self.theme.task_checked)
@@ -217,11 +332,24 @@ impl<'t> Renderer<'t> {
                 }
             });
 
-            let marker_style = if ordered {
-                self.theme.list_number
+            // Checked-item text style: optionally strikethrough.
+            let checked_text_style = if item.task == Some(true) {
+                if self.theme.task_strikethrough {
+                    self.theme
+                        .task_checked
+                        .add_modifier(ratatui::style::Modifier::CROSSED_OUT)
+                } else {
+                    self.theme.task_checked
+                }
             } else {
-                self.theme.list_bullet
+                Style::default()
             };
+
+            // Empty list item: render just the marker so the block produces ≥1 line.
+            if item.blocks.is_empty() {
+                out.push(Line::from(vec![Span::styled(marker.clone(), marker_style)]));
+                continue;
+            }
 
             // Render each block in the item.
             for (i, block) in item.blocks.iter().enumerate() {
@@ -233,21 +361,13 @@ impl<'t> Renderer<'t> {
                             if let Some(tp) = task_prefix.clone() {
                                 spans.push(tp);
                             }
-                            let inline_style = if item.task == Some(true) {
-                                self.theme.task_checked
-                            } else {
-                                Style::default()
-                            };
-                            spans.extend(self.render_inlines(inlines, inline_style));
+                            spans.extend(self.render_inlines(inlines, checked_text_style));
                             out.push(Line::from(spans));
-                            out.push(Line::raw(""));
+                            // No blank line after list items (tight-list style).
                         }
                         other => {
-                            // Non-paragraph first block: render marker alone, then block
-                            out.push(Line::from(vec![Span::styled(
-                                marker.clone(),
-                                marker_style,
-                            )]));
+                            // Non-paragraph first block: render marker alone, then block.
+                            out.push(Line::from(vec![Span::styled(marker.clone(), marker_style)]));
                             self.render_block(other, out, indent + 1);
                         }
                     }
@@ -272,19 +392,19 @@ impl<'t> Renderer<'t> {
             return;
         }
 
-        // Calculate column widths from content
+        // Calculate column widths based on the RENDERED character width of each
+        // cell (not plain-text byte length), so that inline decorations like
+        // `code spans` and [links](url) don't break border alignment.
         let mut widths: Vec<usize> = vec![3; col_count];
         for (i, cell) in headers.iter().enumerate() {
             if i < col_count {
-                let len = super::ast::inlines_to_plain(cell).len();
-                widths[i] = widths[i].max(len);
+                widths[i] = widths[i].max(self.rendered_inlines_char_width(cell));
             }
         }
         for row in rows {
             for (i, cell) in row.iter().enumerate() {
                 if i < col_count {
-                    let len = super::ast::inlines_to_plain(cell).len();
-                    widths[i] = widths[i].max(len);
+                    widths[i] = widths[i].max(self.rendered_inlines_char_width(cell));
                 }
             }
         }
@@ -296,7 +416,7 @@ impl<'t> Renderer<'t> {
         let top: String = std::iter::once("┌".to_string())
             .chain(widths.iter().enumerate().map(|(i, &w)| {
                 let sep = if i + 1 < col_count { "┬" } else { "┐" };
-                format!("{}{}",  "─".repeat(w + 2), sep)
+                format!("{}{}", "─".repeat(w + 2), sep)
             }))
             .collect();
         out.push(Line::styled(top, border_style));
@@ -328,7 +448,6 @@ impl<'t> Renderer<'t> {
             }))
             .collect();
         out.push(Line::styled(bottom, border_style));
-        out.push(Line::raw(""));
     }
 
     fn render_table_row(
@@ -343,18 +462,22 @@ impl<'t> Renderer<'t> {
 
         for i in 0..col_count {
             let cell_inlines: &[Inline] = cells.get(i).map(|v| v.as_slice()).unwrap_or(&[]);
-            let plain = super::ast::inlines_to_plain(cell_inlines);
             let width = widths.get(i).copied().unwrap_or(3);
-            let padded = format!(" {:<width$} ", plain, width = width);
 
             let cell_spans = if cell_inlines.is_empty() {
+                // Empty cell: pad with spaces to fill the column.
+                let padded = format!(" {:width$} ", "", width = width);
                 vec![Span::styled(padded, default_style)]
             } else {
+                // Render the cell content and measure its char width so the
+                // trailing-space padding keeps borders aligned regardless of
+                // what inline decorations are present.
+                let rendered = self.render_inlines(cell_inlines, default_style);
+                let rendered_width: usize =
+                    rendered.iter().map(|s| s.content.chars().count()).sum();
+                let pad = width.saturating_sub(rendered_width);
                 let mut s = vec![Span::styled(" ", default_style)];
-                s.extend(self.render_inlines(cell_inlines, default_style));
-                // Pad to width
-                let rendered_len = super::ast::inlines_to_plain(cell_inlines).len();
-                let pad = width.saturating_sub(rendered_len);
+                s.extend(rendered);
                 s.push(Span::styled(format!("{} ", " ".repeat(pad)), default_style));
                 s
             };
@@ -391,6 +514,11 @@ impl<'t> Renderer<'t> {
 
             Inline::Strikethrough(inner) => {
                 let style = base.patch(self.theme.strikethrough);
+                self.render_inlines(inner, style)
+            }
+
+            Inline::Highlight(inner) => {
+                let style = base.patch(self.theme.highlight);
                 self.render_inlines(inner, style)
             }
 
@@ -461,10 +589,10 @@ mod tests {
     }
 
     #[test]
-    fn code_block_has_borders() {
+    fn code_block_has_content() {
         let lines = render("```\nfoo\n```\n");
         let first_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(first_text.contains('╭'));
+        assert!(first_text.contains("foo"));
     }
 
     #[test]
@@ -472,5 +600,40 @@ mod tests {
         let lines = render("> quote\n");
         let first_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(first_text.contains('▎'));
+    }
+
+    /// A blank line inside a blockquote (`>` with nothing else) must remain
+    /// visible as a quoted blank row between the surrounding paragraphs.
+    #[test]
+    fn blockquote_blank_line_rendered() {
+        let lines = render("> first\n>\n> third\n");
+        // Expect three lines, all starting with the blockquote bar.
+        assert_eq!(lines.len(), 3, "got {} lines", lines.len());
+        for line in &lines {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                text.starts_with("▎"),
+                "line did not start with bar: {text:?}"
+            );
+        }
+        // Middle line's content (after the bar) should be empty / whitespace.
+        let middle: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            middle.trim_start_matches('▎').trim().is_empty(),
+            "middle line not blank: {middle:?}"
+        );
+    }
+
+    /// Soft breaks in the source should produce a new visual line — the TUI
+    /// editor preserves the author's line layout instead of collapsing to spaces.
+    #[test]
+    fn soft_break_produces_new_line() {
+        let lines = render("alpha\nbeta\ngamma\n");
+        assert_eq!(lines.len(), 3);
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(texts, vec!["alpha", "beta", "gamma"]);
     }
 }

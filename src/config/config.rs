@@ -51,6 +51,22 @@ pub struct EditorConfig {
     pub tab_width: usize,
     /// When true, write structured logs to the data directory.
     pub dev_mode: bool,
+    /// When true, code block lines that exceed the terminal width are wrapped.
+    /// Default: false (long lines extend beyond the visible area without wrapping).
+    pub code_block_wrap: bool,
+    /// When true, long lines in the document wrap at the terminal width.
+    /// Default: true.
+    pub line_wrap: bool,
+    /// When true, multiple consecutive blank lines in the source are rendered
+    /// as multiple blank lines in the output.  Standard Markdown collapses them
+    /// to a single blank line; this option preserves the author's intent.
+    /// Default: true.
+    pub preserve_blank_lines: bool,
+    /// When true (default), pressing Up/Down in rendered/hybrid mode moves the
+    /// cursor by **visual** lines (accounting for word-wrap), so the cursor
+    /// stays at the same horizontal column on the screen.  When false, movement
+    /// is by **logical** buffer lines (one `\n`-terminated line per step).
+    pub visual_line_nav: bool,
 }
 
 impl Default for EditorConfig {
@@ -58,6 +74,10 @@ impl Default for EditorConfig {
         Self {
             tab_width: 4,
             dev_mode: false,
+            code_block_wrap: false,
+            line_wrap: true,
+            preserve_blank_lines: true,
+            visual_line_nav: true,
         }
     }
 }

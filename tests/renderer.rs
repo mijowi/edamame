@@ -1,12 +1,11 @@
+use markdown_tui::config::Theme;
 /// Snapshot tests for the Markdown renderer.
 ///
 /// Each test parses a Markdown string, renders it, and checks the result with
 /// `insta::assert_debug_snapshot!`.  Run `cargo insta review` after any change
 /// that alters rendered output to review and accept updated snapshots.
-
 use markdown_tui::markdown::parser::parse;
 use markdown_tui::markdown::renderer::Renderer;
-use markdown_tui::config::Theme;
 
 fn render(md: &str) -> Vec<ratatui::text::Line<'static>> {
     let theme = Box::leak(Box::new(Theme::default()));
@@ -104,22 +103,30 @@ fn fenced_code_block_content() {
 }
 
 #[test]
-fn fenced_code_block_has_border() {
+fn fenced_code_block_has_background() {
     let lines = render("```\nhello\n```\n");
+    // Code block now renders with a coloured background, no box border.
+    // First line should be the code content (with leading space padding).
     let first_text = line_text(&lines[0]);
     assert!(
-        first_text.contains('╭'),
-        "Expected top border ╭, got: {first_text:?}"
+        first_text.contains("hello"),
+        "Expected code content, got: {first_text:?}"
+    );
+    // There should be no box border characters.
+    assert!(
+        !first_text.contains('╭'),
+        "Unexpected box border: {first_text:?}"
     );
 }
 
 #[test]
 fn fenced_code_block_language_tag() {
     let lines = render("```python\npass\n```\n");
+    // Language tag is shown on its own line above the code content.
     let first_text = line_text(&lines[0]);
     assert!(
         first_text.contains("python"),
-        "Expected language in border, got: {first_text:?}"
+        "Expected language label, got: {first_text:?}"
     );
 }
 

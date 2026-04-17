@@ -293,32 +293,32 @@ impl KeyMap {
             };
         }
 
-        // Quit
+        // Quit — Ctrl-Q only. Ctrl-C is Copy (see below).
         bind!("ctrl+q", Action::Quit);
-        bind!("ctrl+c", Action::Quit);
 
-        // Scrolling (preview mode and rendered mode)
-        bind!("up", Action::ScrollUp);
-        bind!("down", Action::ScrollDown);
-        bind!("k", Action::ScrollUp);
-        bind!("j", Action::ScrollDown);
-        bind!("page_up", Action::ScrollPageUp);
-        bind!("page_down", Action::ScrollPageDown);
-        bind!("home", Action::ScrollToTop);
-        bind!("end", Action::ScrollToBottom);
-        bind!("ctrl+home", Action::ScrollToTop);
-        bind!("ctrl+end", Action::ScrollToBottom);
-
-        // Cursor movement (Phase 1)
+        // Scrolling / cursor movement
+        // Arrow keys → cursor movement in all modes; MoveUp/Down act as
+        // ScrollUp/ScrollDown when in Preview mode (handled in app).
+        bind!("up", Action::MoveUp);
+        bind!("down", Action::MoveDown);
         bind!("left", Action::MoveLeft);
         bind!("right", Action::MoveRight);
         bind!("ctrl+left", Action::MoveWordLeft);
         bind!("ctrl+right", Action::MoveWordRight);
         bind!("ctrl+a", Action::MoveLineStart);
         bind!("ctrl+e", Action::MoveLineEnd);
+        bind!("ctrl+home", Action::MoveDocStart);
+        bind!("ctrl+end", Action::MoveDocEnd);
+
+        // Explicit scrolling (works in all modes)
+        bind!("page_up", Action::ScrollPageUp);
+        bind!("page_down", Action::ScrollPageDown);
+        bind!("home", Action::ScrollToTop);
+        bind!("end", Action::ScrollToBottom);
 
         // Editing (Phase 1)
         bind!("enter", Action::Newline);
+        bind!("tab", Action::InsertTab);
         bind!("backspace", Action::DeleteCharBack);
         bind!("delete", Action::DeleteCharForward);
         bind!("ctrl+backspace", Action::DeleteWordBack);
@@ -330,11 +330,26 @@ impl KeyMap {
         bind!("ctrl+y", Action::Redo);
 
         // Clipboard (Phase 1)
+        // Ctrl-C → Copy (not Quit). The app intercepts Ctrl-C in crossterm
+        // raw mode before it can generate SIGINT, so this is safe.
+        bind!("ctrl+c", Action::Copy);
+        bind!("ctrl+x", Action::Cut);
+        bind!("ctrl+v", Action::Paste);
+
+        // File operations
         bind!("ctrl+s", Action::Save);
         bind!("ctrl+o", Action::Open);
 
-        // Mode
+        // Mode transitions
         bind!("escape", Action::ExitToPreview);
+        bind!("ctrl+`", Action::ToggleRawMode);
+
+        // Selection (Phase 1) — Shift+Arrow extends the selection.
+        bind!("shift+left", Action::SelectLeft);
+        bind!("shift+right", Action::SelectRight);
+        bind!("shift+up", Action::SelectUp);
+        bind!("shift+down", Action::SelectDown);
+        bind!("ctrl+shift+a", Action::SelectAll);
 
         // List (Phase 3)
         bind!("ctrl+space", Action::ToggleCheckbox);
@@ -352,6 +367,13 @@ mod tests {
         let km = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
         let key = parse_key("ctrl+q").unwrap();
         assert_eq!(km.action_for(&key), Some(&Action::Quit));
+    }
+
+    #[test]
+    fn ctrl_c_is_copy_not_quit() {
+        let km = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        let key = parse_key("ctrl+c").unwrap();
+        assert_eq!(km.action_for(&key), Some(&Action::Copy));
     }
 
     #[test]

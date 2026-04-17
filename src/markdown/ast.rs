@@ -59,6 +59,7 @@ pub enum Inline {
         alt: String,
         url: String,
     },
+    Highlight(Vec<Inline>),
     SoftBreak,
     HardBreak,
 }
@@ -71,7 +72,10 @@ pub fn inlines_to_plain(inlines: &[Inline]) -> String {
     for inline in inlines {
         match inline {
             Inline::Text(t) => out.push_str(t),
-            Inline::Bold(inner) | Inline::Italic(inner) | Inline::Strikethrough(inner) => {
+            Inline::Bold(inner)
+            | Inline::Italic(inner)
+            | Inline::Strikethrough(inner)
+            | Inline::Highlight(inner) => {
                 out.push_str(&inlines_to_plain(inner));
             }
             Inline::Code(c) => out.push_str(c),

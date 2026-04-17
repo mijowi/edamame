@@ -425,33 +425,116 @@ Paste = "ctrl+v"
 - **Extra dependencies: `unicode-width`, `unicode-segmentation`, `tracing-subscriber`** — `unicode-width` and `unicode-segmentation` added for correct Unicode column-width handling in the renderer; `tracing-subscriber` added to initialise the file-based logging subscriber. All were implied by the plan but not listed in the dependency table.
 - **Parser: additional options enabled** — `ENABLE_TASKLISTS`, `ENABLE_FOOTNOTES`, `ENABLE_SMART_PUNCTUATION` flags added to the pulldown-cmark parser in addition to the planned `ENABLE_TABLES` and `ENABLE_STRIKETHROUGH`. Task list checkboxes (`[ ]` / `[x]`) are fully parsed and rendered.
 
+#### To Fix
+- [x] Add support for highlighting with double equals: `==Highlighted text==`. **Fixed 2026-04-13.** Added `Inline::Highlight` AST node; post-processing in parser splits `Text` events on `==…==` patterns; renderer applies `theme.highlight` (yellow-bg/black-fg); `inlines_to_plain` updated.
+- [x] When entering rendered edit mode from preview mode, the first keystroke should make the cursor appear and NOT write a character. Current behavior writes a character. **Fixed 2026-04-13.** `InsertChar`, `InsertTab`, and `Newline` now transition Preview→Rendered without performing the edit; the second keypress performs the action.
+- [x] Checklists currently show a bullet in front of the checkbox. Remove the bullet. **Fixed 2026-04-13.** Task items (`item.task.is_some()`) now use indentation-only as the marker instead of `•`.
+- [x] Checklists currently format a completed item with strike through. Add an option to strike through or not strike through completed items. **Fixed 2026-04-13.** Added `task_strikethrough: bool` to `Theme` (default `true`). `task_checked` style no longer contains `CROSSED_OUT`; the renderer applies it conditionally.
+- [x] Unordered and ordered lists currently have a blank line between items, but they should not. **Fixed 2026-04-13.** Removed the `Line::raw("")` that was appended after each list item's paragraph.
+- [x] The previous fix removing blank lines after list items has introduced a bug that causes list items to consume any blank lines below them. The desired end state is that list items do not *automatically* have a blank line below them, but if there is one, it is rendered, and signifies the end of the preceding list. **Fixed 2026-04-14.** Added a single trailing `Line::raw("")` at the end of `render_list`, consistent with all other block types. This separates the list from the next block without adding blank lines *between* items.
+- [x] There is an off by one glitch in the table row length calculation, leading to the column borders being 1 character offset to the right and not lining up with the header and bottom border. **Fixed 2026-04-14.** Column widths are now computed from the *rendered* char width of each cell (via `rendered_inlines_char_width`) rather than `inlines_to_plain(...).len()` (byte count). `render_table_row` likewise measures actual rendered span char count for padding. Additionally, `render_line` now applies `line.style.patch(span.style)` instead of `span.style` alone, so lines built with `Line::styled(str, style)` (which stores the style at the line level) are displayed correctly in rendered-edit mode.
+- [x] In raw edit mode, the cursor always remains on the screen when scrolling, but in rendered edit mode, when scrolling to the bottom of the document, the last few lines of the document are not visible and the cursor overflows out of the rendered area and is also not visible. **Fixed 2026-04-14.** `ensure_cursor_visible` in Rendered mode now computes the virtual last line of the cursor block using the raw source line count (via `raw_line_count_for_cursor`), which can differ from the rendered line count. `MoveDocEnd` also calls `ensure_cursor_visible` after `scroll_to_bottom`.
+- [x] Code blocks should be rendered in a block with a different colored background (the same color as inline code blocks) instead of within a table. The colored block should be the full width of the terminal at minimum (wider if the line is wider than the terminal and code line wrapping is not enabled). Add a configuration option for code in code blocks to wrap or not wrap when exceeding the terminal width (default no wrap). **Fixed 2026-04-14.** Replaced the box-border rendering with plain background-colored lines using `code_block_text` style (bg now matches inline code spans at `Color::Indexed(236)`). Each line is padded to `max(content_width, viewport_width)`. Added `code_block_wrap: bool` to `EditorConfig` (default `false`) and `Renderer::with_code_wrap`. Language tag shown on its own line above the block using `code_block_lang` style.
+- [x] In preview mode, lines that exceed the width of the terminal wrap, which is the desired default behavior (except for code blocks—see above). But in editing mode (both rendered and raw), long lines overflow outside the terminal instead of wrapping. The desired end state is that long lines will wrap by default in preview mode and both editing modes. This should be configurable. **Fixed 2026-04-14.** Both `RawView` and `RenderedView` now wrap long lines at the terminal width. `render_line` returns the number of visual rows consumed so the main loop can advance `vis_y` accordingly. Added `line_wrap: bool` to `EditorConfig` (default `true`); wiring to views is deferred to Phase 1.
+- [x] Tables borders are not colored correctly. The majority of the table border is one color, but the pipe symbols that make up the column borders are a different color. **Fixed 2026-04-14.** Root cause: `render_line` only consulted `span.style`, ignoring the line-level `Line::style` field. Border rows built with `Line::styled(str, border_style)` stored the style at the line level, so pipe spans (which carried `border_style` at span level) showed up in a different color. Fixed by using `line.style.patch(span.style)` in `render_line`.
+- [x] When switching from preview mode to editing mode (both raw and rendered), if you have scrolled in preview mode, the cursor is still at the top of the document, meaning you won't be able to see the cursor and there is a jarring jump back to the top when pressing a navigation key. Change the behavior so that the cursor moves with the page in preview mode, just like in editing mode, but is invisible until switching to edit mode. **Fixed 2026-04-14.** Added `sync_cursor_to_scroll` in `edit_ops.rs`, called on every Preview→edit transition (`EnterEditMode`, `ToggleRawMode`, `InsertChar`, `InsertTab`, `Newline`, `enter_edit_if_preview`). Uses `SourceMap::original_byte_for_rendered_line(scroll)` to move the cursor to the start of the topmost visible block.
+
 ---
 
 ### Phase 1 — Hybrid Rendered/Raw Editing
 *Goal: editing in RenderedMode where the cursor line is shown raw, all other lines rendered.*
 
+*Status: **Complete** — initial implementation 2026-04-12; follow-up fixes (see "To Fix" below) through 2026-04-16. 218 tests passing (134 unit + 38 editing integration + 24 renderer + 12 source_map (incl. 2 proptest) + 10 UI).*
+
 **Tasks:**
-- [ ] Before implementing document-layer types: write unit tests for `Buffer` (insert, delete, boundary conditions, line indexing), `Cursor` (move left/right/up/down, preferred column behaviour at line ends), and `History` (undo/redo, undo past empty stack, redo cleared after new edit) — implement each module to make the tests pass
-- [ ] Write integration tests in `tests/editing.rs`: construct an `EditorState`, apply `InsertChar` / `Newline` / `DeleteChar` / `Undo` / `Redo` sequences, assert buffer content and cursor position after each step
-- [ ] Implement `SourceMap` — after parsing, build a `Vec<(usize, usize)>` of (start_offset, end_offset) per rendered line, using `pulldown-cmark`'s offset iterator
-- [ ] Write `proptest` round-trip tests for `SourceMap`: for any sequence of edits, every offset in the buffer maps to exactly one rendered line, and the ranges are non-overlapping and cover the full buffer
-- [ ] Implement `Cursor` — stores a rope char offset and a preferred visual column (for vertical movement)
-- [ ] Implement `Selection` — anchor + active rope offsets; None when no selection
-- [ ] Implement `History` — undo/redo stack; each entry is an `EditDelta { offset, removed: String, inserted: String }`; undo/redo reconstruct and replay deltas
-- [ ] Implement `EditorState` — owns `Buffer`, `Cursor`, `Selection`, `History`, `Mode`, `ParsedDoc`
-- [ ] Implement `actions.rs` — define `Action` enum: `InsertChar(char)`, `DeleteChar`, `DeleteWord`, `MoveLeft/Right/Up/Down`, `MoveLineStart/End`, `MoveDocStart/End`, `Newline`, `Undo`, `Redo`, `ToggleRawMode`, `EnterEditMode`, `ExitToPreview`, `Save`, `Quit`, etc.
-- [ ] Implement `edit_ops.rs` — apply `Action` variants to `EditorState`, updating buffer, cursor, and history
-- [ ] Implement `RenderedView` — for each visual line, check if it contains the cursor; if so, render a raw inline text input widget for that line (using a custom single-line widget that reads from the rope buffer); otherwise render the styled Markdown line
-- [ ] Implement `DefaultHandler` in `input/modal/default.rs` — map key events to `Action` values using a configurable `KeyMap`
-- [ ] Implement mode transitions: Preview → Rendered on typing, Rendered ↔ Raw on Ctrl-\`
-- [ ] Implement word-wrap for paragraph text in rendered mode (wrap at terminal width)
-- [ ] Implement auto-scroll: keep cursor line visible when editing
-- [ ] Implement `Save` action: write buffer to disk via `Buffer::save_file`
-- [ ] Track dirty state; show `[modified]` in status bar
-- [ ] Implement basic clipboard: cut (Ctrl-X), copy (Ctrl-C), paste (Ctrl-V) (default keybinds); use OS clipboard via `arboard` if available, internal kill-ring otherwise
-- [ ] Verify that no framework default or scaffold code quits on Ctrl-C; remove any such behaviour so that Ctrl-C is handled solely as `Copy` and only Ctrl-Q triggers quit
+- [x] Before implementing document-layer types: write unit tests for `Buffer` (insert, delete, boundary conditions, line indexing), `Cursor` (move left/right/up/down, preferred column behaviour at line ends), and `History` (undo/redo, undo past empty stack, redo cleared after new edit) — implement each module to make the tests pass
+- [x] Write integration tests in `tests/editing.rs`: construct an `EditorState`, apply `InsertChar` / `Newline` / `DeleteChar` / `Undo` / `Redo` sequences, assert buffer content and cursor position after each step
+- [x] Implement `SourceMap` — after parsing, build a `Vec<(usize, usize)>` of (start_offset, end_offset) per rendered line, using `pulldown-cmark`'s offset iterator
+- [x] Write `proptest` round-trip tests for `SourceMap`: for any sequence of edits, every offset in the buffer maps to exactly one rendered line, and the ranges are non-overlapping and cover the full buffer
+- [x] Implement `Cursor` — stores a rope char offset and a preferred visual column (for vertical movement)
+- [x] Implement `Selection` — anchor + active rope offsets; None when no selection
+- [x] Implement `History` — undo/redo stack; each entry is an `EditDelta { offset, removed: String, inserted: String }`; undo/redo reconstruct and replay deltas
+- [x] Implement `EditorState` — owns `Buffer`, `Cursor`, `Selection`, `History`, `Mode`, `ParsedDoc`
+- [x] Implement `actions.rs` — define `Action` enum: `InsertChar(char)`, `DeleteChar`, `DeleteWord`, `MoveLeft/Right/Up/Down`, `MoveLineStart/End`, `MoveDocStart/End`, `Newline`, `Undo`, `Redo`, `ToggleRawMode`, `EnterEditMode`, `ExitToPreview`, `Save`, `Quit`, etc.
+- [x] Implement `edit_ops.rs` — apply `Action` variants to `EditorState`, updating buffer, cursor, and history
+- [x] Implement `RenderedView` — for each visual line, check if it contains the cursor; if so, render a raw inline text input widget for that line (using a custom single-line widget that reads from the rope buffer); otherwise render the styled Markdown line
+- [x] Implement `DefaultHandler` in `input/modal/default.rs` — map key events to `Action` values using a configurable `KeyMap`
+- [x] Implement mode transitions: Preview → Rendered on typing, Rendered ↔ Raw on Ctrl-\`
+- [x] Implement auto-scroll: keep cursor line visible when editing
+- [x] Implement `Save` action: write buffer to disk via `Buffer::save_file`
+- [x] Track dirty state; show `[modified]` in status bar
+- [x] Implement basic clipboard: cut (Ctrl-X), copy (Ctrl-C), paste (Ctrl-V) (default keybinds); use OS clipboard via `arboard` if available, internal kill-ring otherwise
+- [x] Verify that no framework default or scaffold code quits on Ctrl-C; remove any such behaviour so that Ctrl-C is handled solely as `Copy` and only Ctrl-Q triggers quit
+
+**Implementation notes:**
+- `SourceMap` uses block-granularity (not line-granularity): pulldown-cmark's offset iterator gives per-block byte ranges; `render_with_counts()` gives per-block rendered line counts. `covering_ranges()` absorbs blank-line gaps to guarantee complete coverage.
+- Empty list items (e.g. `*\n` with no content) rendered 0 lines; fixed by rendering the bullet marker even when `item.blocks` is empty. `rendered_lines_for_block` also has a defensive fallback for any remaining edge cases.
+- `DeleteWordForward` uses Emacs-style: deletes word chars then trailing whitespace.
+- Clipboard tests use kill-ring state rather than OS clipboard to avoid parallel-test race conditions.
+
+**Architectural decisions consolidated from Phase 1 follow-up work:**
+
+These emerged from the "To Fix" iterations and are documented as gotchas in
+`AGENTS.md` ("Phase 1 Architectural Notes"). Summary for plan-reading agents:
+
+- **Virtual blocks for blank lines**: `ParsedDoc::build` synthesises a one-byte
+  block per blank line (leading, between-block, and trailing). Replaced the
+  earlier use of `parse_offsets::covering_ranges` for cursor lookup, which
+  silently absorbed blank-line bytes into adjacent blocks.
+- **`per_block_own` vs. extended ranges**: `ParsedDoc` tracks both per-block
+  *own* rendered line counts (used by `RenderedView` to size the raw-replacement
+  region) and *extended* covering ranges (used for cursor-to-block lookup).
+- **Jitter-suppression reveal**: `RAW_REVEAL_DELAY = 120 ms`; `RenderedView`
+  keeps the cursor block fully rendered and overlays an inverted-cell cursor
+  indicator at `(cursor_col, cursor_row)` until the delay elapses. App loop
+  uses `recv_timeout(60 ms)` so the redraw fires without a keypress.
+- **Single shared `line_render` module**: `PreviewView` and `RenderedView` both
+  call `ui::line_render::render_line` for word-aware wrap and trailing-cell
+  background fill (so styled blocks like code blocks extend full width).
+- **NBSP padding in code blocks**: blank code-block lines pad with U+00A0,
+  not space, to work around a ratatui `WordWrapper` (`trim: false`) bug that
+  produces a spurious extra empty visual row for all-whitespace lines.
+- **Word-group undo merging**: `History::record` merges single alphanumeric
+  inserts into the prior delta when contiguous. Cursor moves break the group.
+- **Visual line navigation**: `move_up_visual` / `move_down_visual` and
+  `line_render::render_line` share the same wrap algorithm via
+  `visual_rows_of_str` / `sub_line_of_col`.
+- **Per-line raw replacement (not per-block)**: `RenderedView` replaces only
+  the single rendered line containing the cursor, not the whole block, when
+  the reveal delay elapses.
+
+**Known unfixed issues carried into later phases:**
+
+- Scrolling beyond the last element in raw and hybrid edit modes (cursor stops
+  at last line). Deferred to Phase 5 (Mouse Support); see "To Fix" entry.
+- Click+drag text selection. Deferred to Phase 5 (Mouse Support).
 
 **Acceptance criteria:** Can open a .md file, navigate with arrow keys, type to edit, undo/redo, save with Ctrl-S. The cursor line appears raw while the rest of the document is rendered. Switching to Raw mode shows the whole document as plain text.
+
+- To-do: Check clipboard functionality works.
+
+#### To Fix
+- [x] When scrolling in hybrid edit mode, it's jarring to see elements briefly de-render when scrolling quickly. Add a very short delay so that an element is only de-rendered when the user pauses the cursor on that line. **Fixed 2026-04-14.** Added `cursor_block_idx`, `cursor_block_entered_at`, and `RAW_REVEAL_DELAY` (120 ms) to `EditorState`. `RenderedView` checks `cursor_block_revealed()` before switching the cursor block to raw mode; during the delay the block stays rendered. `App::run` uses `recv_timeout(60 ms)` so the reveal triggers a redraw without waiting for a keypress.
+- [x] The previous scrolling render delay fix above seems to be timing how long the cursor is *within an element*, e.g. inside a table, rather than how long the cursor is on a line. This has the effect of the app being significantly more likely to render larger multiline elements than single or few-line elements when scrolling. The render delay should be based on the pause time *per line*, not per element. **Fixed 2026-04-14.** Added `cursor_line_idx` to `EditorState`; `update_cursor_block` now resets `cursor_block_entered_at` when the buffer line index changes rather than when the block index changes.
+- [x] The cursor should remain visible at all times when scrolling in hybrid edit mode. Current behavior is that the cursor is not visible when scrolling and only appears when the user pauses long enough to derender the current line. **Fixed 2026-04-14.** `RenderedView` now overlays an inverted first-character indicator on the approximate cursor line during the delay window.
+- [x] Line wraps should always break on the previous non-alphanumeric character (whitespace or punctuation, dashes, etc.) unless the length of the current word exceeds the width of the editor. Current behavior breaks in the middle of words. **Fixed 2026-04-14.** `render_line` in `rendered_view.rs` rewrote with a word-aware algorithm: searches backward from the column limit for the last non-alphanumeric char; falls back to hard break when no boundary found.
+- [x] When a line in a code block is longer than the width of the editor, it breaks the code block rendering by adding a blank line after every line of text. **Fixed 2026-04-14.** `block_width` is now capped at `viewport_width` so short lines are never over-padded beyond the terminal width.
+- [x] Add "hold shift to select", which should work with cut, copy, paste, delete, insert over (typing replaces the selection). Holding shift and navigating or click+drag selecting with the mouse should highlight text as selected. We must either incorporate or work around the terminal's built-in text selection. **Partially fixed 2026-04-14.** Shift+Arrow key bindings added to the default keymap (`shift+left/right/up/down` → `Select{Left,Right,Up,Down}`). The `Select*` actions already handled cut/copy/paste/delete correctly. Click+drag selection is deferred to Phase 5 (Mouse Support).
+- [x] In preview mode, blank lines in a code block are currently rendered as 2 blank lines, one with the editor background color and one with the code block background color. Hybrid edit mode correctly displays a single line with the code block background color. **Fixed 2026-04-14.** `render_code_block` now uses `content.split('\n')` and pops the trailing empty string (pulldown-cmark always appends `\n`) instead of `content.lines()`. **Re-fixed 2026-04-15.** Root cause was ratatui's `WordWrapper` with `trim: false`: all-whitespace lines (80 spaces) trigger a bug that produces an extra empty line. Fix: blank code lines now use U+00A0 (NBSP) padding instead of regular spaces; ratatui treats NBSP as non-whitespace so the WordWrapper bug is not triggered.
+- [x] In preview and hybrid edit mode, multiple blank lines are currently collapsed into one blank line. While this is in accordance with markdown convention, we will render multiple blank lines by default instead of collapsing. Add this as a configuration option. **Fixed 2026-04-14.** Added `preserve_blank_lines` to `EditorConfig` (default `true`). `ParsedDoc::build` counts `\n` in inter-block gaps and inserts extra `Line::raw("")` entries for each extra blank line. **Re-fixed 2026-04-15.** Gap blank lines were attributed to the preceding block in `rendered_to_block`. When the cursor was in that block, `RenderedView` replaced ALL attributed lines (including gap blanks) with raw source lines, collapsing the gaps. Fix: `ParsedDoc` now tracks per-block OWN rendered line counts (before gap inserts); `RenderedView` uses `cursor_block_own` (not `cursor_block_rendered`) when mapping virtual indices to rendered indices, so gap blank lines after the cursor block are always preserved.
+- [x] Allow scrolling the view up to one page below the last line of a document. The cursor should always remain visible, and when scrolled as far down as possible the cursor should be stopped on the very top line of the editor. **Fixed 2026-04-14.** `scroll_down` max changed to `total - 1` (last line at top of viewport). Added `clamp_cursor_to_viewport_top` called after `ScrollDown`/`ScrollPageDown` in `edit_ops`. **Re-fixed 2026-04-15.** `clamp_cursor_to_viewport_top` (Rendered mode) previously called `original_byte_for_rendered_line` which returns a block's START byte; if the block spans many rendered lines starting before scroll, the cursor was placed at the block start (before scroll) and stuck. Now scans forward from `self.scroll` until it finds the first block whose rendered start is ≥ scroll. **Review: Still not fixed.** Both raw and hybrid edit modes still do not scroll beyond the last element. We will address this in the mouse support phase instead.
+- [x] Hybrid mode should only de-render the line the cursor is currently on. The current behavior is to de-render the whole element. **Fixed 2026-04-16.** `RenderedView` now replaces only the single rendered line that corresponds to the cursor's position within the block, leaving all other lines of the block fully rendered.
+- [x] When returning to preview mode from edit mode, if the cursor has been moved, again entering edit mode will move the cursor to the top of the first element on the page. The cursor should remain in the same place it was in edit mode. **Fixed 2026-04-16.** `sync_cursor_to_scroll` now checks if the cursor is already within the visible viewport before moving it; if it is, the cursor position is preserved.
+- [x] Holding Ctrl and pressing backspace should delete the word preceding the cursor, up to the next non-alphanumeric character. This already works in the other direction with the delete key. **Fixed 2026-04-14.** The `ctrl+backspace` → `DeleteWordBack` binding already existed. Added a `DefaultHandler` fallback that maps `KeyCode::Char('\x08')` (raw BS sent by some terminals) to `DeleteWordBack`. **Re-fixed 2026-04-15.** Added a second fallback for terminals (e.g. urxvt, Alacritty) that send Ctrl+Backspace as `KeyCode::Char('\x7f')` with `KeyModifiers::CONTROL`. **Re-fixed 2026-04-16.** Consolidated all known encodings into a single `is_ctrl_backspace` predicate: accepts `Backspace + CONTROL`, raw `\x08` with or without modifiers, `\x7f + CONTROL`, and `h`/`H` + CONTROL (the ASCII equivalence Ctrl+H = BS used by some terminals). Modifier checks use `contains(CONTROL)` so combinations like Ctrl+Shift+Backspace also fire.
+- [x] The background color of code blocks should be the full width of the editor for all lines in the code block. The current behavior only applies the background color up to column 80 unless the line is longer than 80 characters. **Fixed 2026-04-16.** `render_line_with_cursor` now fills all remaining cells in each visual row with the line's background style after writing the line's content. **Re-fixed 2026-04-16.** Extracted `render_line` / `render_line_with_cursor` into a shared `ui::line_render` module and switched `PreviewView` to use it in place of ratatui's `Paragraph` widget, so the trailing-cell background fill applies in preview mode too. Added `code_block_bg_extends_to_viewport_edge` test covering a 100-column viewport where the renderer's internal `block_width` is still 80.
+- [x] A line in a code block that is long enough to wrap does not have the background color applied to the full width of the last line. Current behavior only applies the background to the characters on the last line. **Fixed 2026-04-16.** Same fix as above: the background fill is applied to trailing cells of every visual row, including wrapped rows. **Re-fixed 2026-04-16.** Preview now shares the same `render_line` path that fills trailing cells on every wrap row. Added `wrapped_code_block_bg_fills_last_row` test.
+- [x] In a wrapped line, navigating up/down should move the character to the same vertical position within the wrapped line, e.g. the same offset from the left visually, instead of the current behavior which is to move between logical lines. This should be a configuration item (default: cursor moves with visual lines, not logical lines). **Fixed 2026-04-14.** Added `visual_line_nav` to `EditorConfig` (default `true`) and `EditorState`. `edit_ops` calls `move_up_visual`/`move_down_visual` when enabled, computing visual sub-lines from `preferred_col / col_width`. **Re-fixed 2026-04-16.** Rewrote `move_up_visual` / `move_down_visual` to use the same word-aware wrap algorithm as `line_render::render_line` (extracted into `visual_rows_of_str` / `sub_line_of_col` helpers). Crossing a logical-line boundary upward now lands on the LAST visual sub-line of the previous logical line (and downward on the first sub-line of the next). `preferred_col` is treated as the target visual column, synced on horizontal moves via `sync_preferred_visual` in `edit_ops`.
+- [x] It seems that a blank line is inserted below all elements. This should not be the case. Extra blank lines can be inserted for spacing by the user if desired. **Fixed 2026-04-16.** Removed trailing `Line::raw("")` from all block renderers. Visual separation between blocks now derives entirely from blank lines present in the source (via `ParsedDoc::build`'s gap analysis). **Re-fixed 2026-04-16.** pulldown-cmark's top-level block ranges absorb a variable number of trailing newlines, so the previous `gap = &source[a.end..b.start]` count under-reported blank lines by one for every pair of adjacent blocks. Fixed by backing up past any trailing `\n` in each block's range (`content_end_of_block`), counting newlines from `content_end` to the next block's start, and subtracting 1 for the natural line break. Added preservation of leading and trailing blank lines around the first/last block. Source-to-rendered mapping of blank lines is now 1:1.
+- [x] Undo/redo currently operates on one character at a time, such that if the user types "cat" it would take 3 undos to remove the word. Instead, group adjacent alphanumeric characters (i.e. a word) into a single undo/redo action instead, such that undoing "cat" would be one undo action, assuming all 3 letters were typed in sequence with no other edits elsewhere in the document. This character grouping into words should use the same detection logic we already use for breaking in line wrapping. **Fixed 2026-04-16.** `History::record` now merges an incoming delta into the top of the undo stack via `can_merge_word_group` when (a) both deltas are pure insertions, (b) the new delta is a single alphanumeric char, (c) the top's last inserted char is also alphanumeric, and (d) the new offset is immediately after the top's inserted text. Cursor movement (via `MoveLeft` etc.) naturally breaks the group because the next insert lands at a different offset. Non-alphanumeric characters (spaces, punctuation) and multi-char inserts (tab, newline, paste) start fresh groups.
+- [x] In hybrid edit mode, when navigating between lines with the cursor not in the first column, the cursor briefly jumps to first column of the next line (i.e. the first character of the line), then moves to the correct position. For example, if the cursor is on line 3, column 3, then we press the down key to go to line 4, column 3, the cursor briefly jumps to line 4, column 1, before jumping to the correct position at line 4, column 3. The correct behavior should be to move directly to line 4 column 3. **Fixed 2026-04-16.** During the `RAW_REVEAL_DELAY` window `RenderedView` overlaid its cursor indicator at column 0 of the new line regardless of the actual column. Replaced the hardcoded `0` with `cursor_col` in `rendered_view.rs`, so the indicator is drawn at the cursor's real column from the first frame and there is no column-jump when the raw view later reveals.
+- [x] It seems like blank lines are being grouped into their preceding elements. The cursor never lands on a blank line, instead it jumps to the preceding non-blank line element and the last line of that element renders that as a blank line (or lines if there are multiple). Each blank line should be considered its own element and the cursor should land on each blank line. However, blank lines do not need to call the render/de-render logic since they will look the same. **Fixed 2026-04-16.** `ParsedDoc::build` now creates a **virtual block** for every blank line in the source (leading, between-block, and trailing). Each virtual block owns exactly the blank line's `\n` byte, has `per_block_own = 1`, and has its own entry in `rendered_to_block`. The cursor's byte-to-block lookup (`block_for_byte`) therefore lands on the blank line's own block rather than the preceding paragraph's extended range, so navigation stops on each blank line as its own element. Because a blank rendered line looks identical to a blank raw line, the reveal/de-render path is a visual no-op on blank lines. Replaces the previous use of `parse_offsets::covering_ranges`, which had absorbed blank-line bytes into the adjacent block.
+- [x] Checklist items have an extra 2 space indentation (where the "- " is in the source), which should not be there. **Fixed 2026-04-16.** `render_list` in `markdown/renderer.rs` used `format!("{}  ", indent_str)` as the task-item marker, reserving a 2-column stand-in for where a bullet would go. That produced a permanent 2-space indent at indent 0. The marker is now just `indent_str.clone()`, so the checkbox starts at column 0 on top-level items and nested items retain their proper 2-spaces-per-level indentation.
+- [x] When the app first starts, in preview mode, blank lines are not rendered. As soon as the user scrolls, blank lines are rendered correctly and remain rendered correctly, but this should be correct from first document load. **Fixed 2026-04-16.** `App::new` in `app.rs` built the initial preview lines by re-parsing the source and calling `Renderer::render` directly, bypassing `ParsedDoc::build` — which is the only place that applies `preserve_blank_lines`. The first sync of the editor's parsed lines into the preview state happened after the first event, so blank lines appeared as soon as the user scrolled. Now the initial `EditorViewState` is seeded with `editor.parsed.lines.clone()`, so the first frame already has the blank-line-preserving line list.
 
 ---
 
@@ -525,6 +608,8 @@ Paste = "ctrl+v"
 - [ ] Click on a rendered link → open in browser / navigate to local file (Phase 8 prerequisite, but register the hit-test region here)
 - [ ] Click on a task list checkbox `[ ]` / `[x]` → toggle it
 - [ ] Drag table row handle (leftmost column, rendered as `≡`) to reorder rows (prerequisite for Phase 6)
+- [ ] In terminals with mouse support, scrolling with the mouse should only move the page, not the cursor. The user can then click to move the cursor if desired. Since the cursor does not move when scrolling, there is no need to scroll line by line and we can use a smooth scroll instead, which is more visually pleasing.
+- [ ] Allow scrolling up to one page below the last line with the mouse only, such that the last line remains in view at the top of the editor. Scrolling with the keyboard should not have this effect since the cursor is constrained within the editor window.
 
 **Acceptance criteria:** Mouse clicks place the cursor correctly. Text can be selected by dragging. Scrolling works. Checkboxes toggle on click. No crashes or visual glitches on rapid mouse movement.
 
@@ -594,7 +679,9 @@ Paste = "ctrl+v"
 - [ ] Implement a command palette (Ctrl-P): fuzzy-searchable list of actions, opens as an overlay
 - [ ] Implement `FilePicker` overlay widget: shows directory tree (using `tui-tree-widget` or a custom implementation); navigable with arrows, filterable by typing
 - [ ] File picker opens with Ctrl-O; shows recent files at the top
-- [ ] Implement a settings overlay: key-value list of common settings, editable inline; changes are written back to config.toml
+- [ ] Implement a settings overlay, accessible from the command palette: key-value list of common settings, editable inline; changes are written back to config.toml upon confirmation. Include a button to open config.toml in the default editor. This overlay should not show keybinds settings.
+- [ ] Implement a keybinds overlay, accessible from the command palette: action-keybind list of all keybinds, editable inline; changes are written back to config.toml upon confirmation.
+- [ ] Add a markdown cheat sheet (tailored to the markdown supported by this app), accessible from the command palette.
 - [ ] Implement tab bar if multiple files are open (from link navigation or command line args)
 - [ ] Accept multiple file arguments on the command line: `markdown-tui file1.md file2.md`
 - [ ] Show key binding hints for the current mode at the bottom of the status bar (hideable via config)
@@ -625,9 +712,12 @@ Paste = "ctrl+v"
 
 ---
 
-## Deferred Features
+## Deferred Work
 
 These features should be **architecturally anticipated** from Phase 0 but not implemented until after the numbered phases are complete.
+
+### Useful undo/redo
+Undo/redo currently works on a per-character basic, which is not very useful. We should figure out how to make it more useful.
 
 ### Vim / Modal Editing
 - Implement `VimHandler` in `input/modal/vim.rs` implementing the `ModalHandler` trait
@@ -669,6 +759,30 @@ These features should be **architecturally anticipated** from Phase 0 but not im
   Unknown keys are a hard error; missing keys fall back to the default theme
 - Implement a live theme preview mode in the settings overlay
 
+### Optimization
+- **High CPU Usage**: We should see what optimizing we can do to improve the performance of the app. For one thing, idle CPU usage high on my machine, which I think should be significantly lower when the app is just displaying static output and not being interacted with. Interestingly, CPU usage seems to decrease over time. Memory usage is too low to even be outputted by `ps aux`, so that's fine.
+
+```
+markdown-tui main  ? ❯ ps aux|head -1
+USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+markdown-tui main  ? ❯ ps aux|grep markdown
+mjw      3192551  7.4  0.0  78956  7724 pts/11   Sl+  13:24   0:50 ./target/debug/markdown-tui example.md
+markdown-tui main  ? ❯ ps aux|grep markdown
+mjw      3192551  6.7  0.0  78956  7724 pts/11   Sl+  13:24   1:06 ./target/debug/markdown-tui example.md
+markdown-tui main  ? ❯ ps aux|grep markdown
+mjw      3192551  6.6  0.0  78956  7724 pts/11   Sl+  13:24   1:10 ./target/debug/markdown-tui example.md
+markdown-tui main  ? ❯ ps aux|grep markdown
+mjw      3192551  6.3  0.0  78956  7724 pts/11   Sl+  13:24   1:38 ./target/debug/markdown-tui example.md
+```
+
+- **Terminal resize**: `crossterm` sends a `Resize(cols, rows)` event when the terminal window is resized. All layout calculations — especially table column widths and paragraph word wrap — must be recalculated on resize. Ensure the rendered view and source map are invalidated and rebuilt when this event is received. Rather than attempting to re-render WHILE the terminal is being resized, which would undoubtedly be laggy or flickery, we will simply re-render AFTER it has been resized. We could potentially blank the screen during the resize operation.
+
+### Heading visual hierarchy — how to show H1–H6 at "larger" sizes
+Terminals use a fixed character-cell grid; the app cannot change font size at the cell level. Practical options in increasing complexity:
+
+- **Framing/rules** (zero new deps): H1 gets a full-width `═══` rule above and below; H2 gets one rule below; H3 gets a `───` rule below; H4–H6 stay colour+bold. Readable everywhere, zero overhead. This is the **immediate improvement** — do this now.
+- **`tui-big-text`** (one small dep): renders text with Unicode half-block characters (▀▄█) at 2×–3× visual height, works with ratatui's `TestBackend` and requires no terminal capability detection. H1 at ~3× and H2 at ~2× gives a genuine size hierarchy. Add as an opt-in `theme.headings.h1_big = true` flag. This is the **medium-term improvement** — implement in the theming phase.
+
 ---
 
 ## Open Questions
@@ -684,6 +798,23 @@ These features should be **architecturally anticipated** from Phase 0 but not im
 
 4. **WSL clipboard**: On WSL, `arboard` may not have access to the Windows clipboard without additional configuration (`clip.exe` workaround or `win32yank`). Detect WSL via `$WSL_DISTRO_NAME` and fall back to `clip.exe` / `powershell.exe Get-Clipboard` as appropriate.
 
-5. **Terminal resize**: `crossterm` sends a `Resize(cols, rows)` event when the terminal window is resized. All layout calculations — especially table column widths and paragraph word wrap — must be recalculated on resize. Ensure the rendered view and source map are invalidated and rebuilt when this event is received. Rather than attempting to re-render WHILE the terminal is being resized, which would undoubtedly be laggy or flickery, we will simply re-render AFTER it has been resized. We could potentially blank the screen during the resize operation.
+5. **Kakoune / Helix modal mode**: The `ModalHandler` trait is designed to be swappable. A `KakouneHandler` or `HelixHandler` could be implemented as a community contribution without touching core editor logic. Document the trait contract clearly.
 
-6. **Kakoune / Helix modal mode**: The `ModalHandler` trait is designed to be swappable. A `KakouneHandler` or `HelixHandler` could be implemented as a community contribution without touching core editor logic. Document the trait contract clearly.
+7. **Split `config.toml` into multiple files?**
+
+   The compelling argument for splitting is specifically themes: a `themes/` directory enables in-app theme switching and community theme sharing, mirroring the approach taken by Helix and Zellij. Moving keybinding configuration will more easily enable the keybinding overlay feature in Phase 9.
+
+   Adopted layout:
+   ```
+   ~/.config/markdown-tui/
+   ├── config.toml          # [editor] and [modal] only
+   ├── keybindings.toml     # [keybindings]
+   └── themes/
+       ├── default.toml     # written out on first run if missing
+       ├── catppuccin.toml
+       └── gruvbox.toml
+   ```
+
+   `Config::load()` reads `config.toml` for general settings, then `keybindings.toml` for keybinds, then loads `themes/<active_theme>.toml` (defaulting to `themes/default.toml`). The `ThemeConfig` struct should be populated now, before any user config files exist in the wild.
+
+   **Decision**: yes, extract themes into a `themes/` directory. Implement during the theming/config phase. Keybindings get moved to `keybindings.toml`.

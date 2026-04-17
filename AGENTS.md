@@ -80,8 +80,11 @@ src/
   document/
     buffer.rs       # Buffer wrapping ropey::Rope; file I/O + edit primitives
     cursor.rs       # Cursor: rope char offset + preferred visual column
-    history.rs      # History: undo/redo stack of EditDelta values
-    parsed_doc.rs   # ParsedDoc: re-parses on change, caches AST + source map
+    history.rs      # History: undo/redo stack of EditDelta values; merges
+                    #          adjacent alphanumeric inserts into word-groups
+    parsed_doc.rs   # ParsedDoc: re-parses on change, caches AST + source map;
+                    #          synthesises a virtual block per blank line so the
+                    #          cursor lands on each blank line independently
     selection.rs    # Selection: anchor + active rope offsets
     source_map.rs   # SourceMap: block byte-range ↔ rendered-line-index mapping
   editor.rs         # facade — re-exports EditorState, Mode
@@ -89,11 +92,11 @@ src/
     edit_ops.rs     # Action → EditorState mutations (cursor, buffer, history)
     mode.rs         # Mode enum: Preview | Rendered | Raw
     state.rs        # EditorState: owns Buffer, Cursor, History, Mode, ParsedDoc
-  input/            # NOTE: uses mod.rs layout (not the facade pattern) — to migrate
-    mod.rs          # re-exports InputDispatcher, ModalHandler
+  input.rs          # facade — re-exports InputDispatcher, ModalHandler
+  input/
     dispatcher.rs   # InputDispatcher: crossterm Event → Action
+    modal.rs        # facade — declares `default` submodule; ModalHandler trait
     modal/
-      mod.rs        # ModalHandler trait
       default.rs    # DefaultHandler: non-modal keybinding implementation
   markdown.rs       # facade — re-exports parse, Renderer
   markdown/
@@ -108,6 +111,9 @@ src/
   ui.rs             # facade — re-exports all widgets and their state types
   ui/
     editor_view.rs  # EditorView + EditorViewState (StatefulWidget); dispatches to sub-views
+    line_render.rs  # render_line / render_line_with_cursor: word-aware wrap,
+                    #          trailing-cell background fill; shared by Preview
+                    #          and Rendered views — update once, both views update
     preview.rs      # PreviewView + PreviewState (StatefulWidget)
     raw_view.rs     # RawView + RawViewState: plain-text editor from rope buffer
     rendered_view.rs # RenderedView + RenderedViewState: hybrid rendered+raw-line view
@@ -116,6 +122,7 @@ tests/
   editing.rs        # integration tests: EditorState action sequences → buffer/cursor asserts
   renderer.rs       # integration tests: parse + render → assert/snapshot
   source_map.rs     # unit + proptest tests for SourceMap invariants
+                    #   (proptest regressions saved in source_map.proptest-regressions)
   ui.rs             # integration tests: TestBackend widget rendering
   snapshots/        # committed insta .snap files
 config/
@@ -144,10 +151,51 @@ use crate::config::{Config, KeyMap, Theme};   // not crate::config::config::Conf
 
 Always follow this pattern when adding new top-level modules.
 
-**Known exception**: `src/input/` currently uses the old `mod.rs` layout
-(`src/input/mod.rs` and `src/input/modal/mod.rs`) instead of the facade pattern.
-It should be migrated to `src/input.rs` + `src/input/modal.rs` when convenient,
-but do not break the existing structure without also updating all import paths.
+## Phase 1 Architectural Notes (Hybrid Editing)
+
+These decisions emerged during Phase 1 and are easy to break if you don't know
+they exist:
+
+- **Virtual blocks for blank lines**: `ParsedDoc::build` synthesises a one-byte
+  block for every blank line in the source (leading, between-block, and
+  trailing). The cursor lands on each blank line as its own block, and the
+  blank line is preserved in `RenderedView` even when the surrounding cursor
+  block is replaced with raw text. Don't reintroduce `parse_offsets::covering_ranges`
+  for the cursor mapping — it absorbs blank-line bytes into adjacent blocks
+  and breaks navigation.
+- **`per_block_own` vs. extended ranges**: `ParsedDoc` tracks both per-block
+  *own* rendered line counts (for the raw-replacement region in `RenderedView`)
+  and *extended* covering ranges (for cursor lookup). Mixing them up causes
+  gap blank lines to be collapsed when the cursor enters the previous block.
+- **Jitter-suppression reveal**: `EditorState::cursor_block_revealed()` returns
+  false during a 120 ms `RAW_REVEAL_DELAY` after the cursor enters a new
+  *buffer line* (not block). `RenderedView` keeps the block fully rendered and
+  draws an inverted-cell cursor indicator at `(cursor_col, cursor_row)` until
+  the delay elapses. The App loop uses `rx.recv_timeout(60 ms)` so the redraw
+  fires without a keypress.
+- **Single shared `line_render` module**: `PreviewView` and `RenderedView` both
+  call into `ui::line_render`. The trailing-cell background fill and word-aware
+  wrap live there. If you change one view's wrap or fill behaviour, change the
+  shared function — don't fork it.
+- **NBSP padding in code blocks**: blank lines inside fenced code blocks use
+  U+00A0 (NBSP) padding, not regular spaces. This works around a ratatui
+  `WordWrapper` (`trim: false`) bug where an all-whitespace line produces an
+  extra empty visual row. Don't "simplify" this back to spaces.
+- **Word-group undo merging**: `History::record` merges single alphanumeric
+  inserts into the previous delta when offsets are contiguous. Cursor moves
+  break the group naturally (next insert lands at a different offset). Don't
+  mistake this for snapshot-based history — it's still delta-based.
+- **Visual line navigation**: `move_up_visual` / `move_down_visual` and
+  `line_render::render_line` must use the same wrap algorithm
+  (`visual_rows_of_str` / `sub_line_of_col`). Otherwise the cursor lands in a
+  different column than where it appears on screen.
+- **Action enum is fully defined upfront**: every action across phases lives in
+  `config/keymap.rs::Action` from Phase 0. Later-phase actions are no-ops in
+  `edit_ops` until their phase implements them; keybindings stay stable.
+- **Clipboard is feature-gated**: `arboard` is behind the `clipboard` Cargo
+  feature (on by default). When disabled, copy/cut/paste use the in-process
+  kill-ring only. Tests assert against the kill-ring, not the OS clipboard,
+  to avoid cross-test races.
 
 ## Code Style
 

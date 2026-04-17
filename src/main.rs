@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod document;
 mod editor;
+mod input;
 mod markdown;
 mod terminal;
 mod ui;

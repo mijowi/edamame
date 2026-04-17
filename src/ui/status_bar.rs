@@ -17,13 +17,17 @@ pub struct StatusBarState<'a> {
     pub line_count: usize,
     /// Whether the buffer has unsaved changes.
     pub modified: bool,
-    /// Optional scroll position (current top line / total lines).
+    /// Current scroll offset (rendered lines from top).
     pub scroll: usize,
+    /// Cursor line (1-indexed, `None` in Preview mode).
+    pub cursor_line: Option<usize>,
+    /// Cursor column (1-indexed, `None` in Preview mode).
+    pub cursor_col: Option<usize>,
 }
 
 /// A single-row status bar widget.
 ///
-/// Layout: `[mode] filename [modified?]   line_count lines  scroll%`
+/// Layout: `[mode] filename [modified?]   cursor_pos  line_count lines  scroll%`
 pub struct StatusBar<'a> {
     pub state: StatusBarState<'a>,
     pub theme: &'a Theme,
@@ -43,6 +47,13 @@ impl<'a> Widget for StatusBar<'a> {
         let filename_text = format!(" {}{} ", s.filename, modified_marker);
         let filename_span = Span::styled(filename_text, theme.status_filename);
 
+        // Cursor position (1-indexed line:col, only in edit modes)
+        let cursor_text = match (s.cursor_line, s.cursor_col) {
+            (Some(l), Some(c)) => format!(" {}:{} ", l, c),
+            _ => String::new(),
+        };
+        let cursor_span = Span::styled(cursor_text.clone(), theme.status_info);
+
         // Right-aligned info: line count and scroll %
         let pct = if s.line_count == 0 {
             100
@@ -53,15 +64,21 @@ impl<'a> Widget for StatusBar<'a> {
         let info_text = format!(" {} lines  {}% ", s.line_count, pct);
         let info_span = Span::styled(info_text, theme.status_info);
 
-        // Fill gap between left and right sides
+        // Fill gap between left and right sides.
         let left_width = mode_text.len() + filename_span.content.len();
-        let right_width = info_span.content.len();
+        let right_width = cursor_text.len() + info_span.content.len();
         let gap = (area.width as usize)
             .saturating_sub(left_width)
             .saturating_sub(right_width);
         let gap_span = Span::styled(" ".repeat(gap), theme.status_bar);
 
-        let line = Line::from(vec![mode_span, filename_span, gap_span, info_span]);
+        let line = Line::from(vec![
+            mode_span,
+            filename_span,
+            gap_span,
+            cursor_span,
+            info_span,
+        ]);
         Paragraph::new(line)
             .style(theme.status_bar)
             .render(area, buf);
@@ -86,6 +103,8 @@ mod tests {
                         line_count,
                         modified,
                         scroll: 0,
+                        cursor_line: None,
+                        cursor_col: None,
                     },
                     theme,
                 };
@@ -95,7 +114,10 @@ mod tests {
 
         let buf = terminal.backend().buffer().clone();
         (0..60u16)
-            .map(|x| buf.cell((x, 0)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' ')))
+            .map(|x| {
+                buf.cell((x, 0))
+                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+            })
             .collect()
     }
 
@@ -127,5 +149,40 @@ mod tests {
     fn no_modified_flag_when_clean() {
         let output = make_bar(Mode::Preview, "f.md", 5, false);
         assert!(!output.contains("[modified]"), "output was: {:?}", output);
+    }
+
+    #[test]
+    fn shows_cursor_position() {
+        let theme = Box::leak(Box::new(Theme::default()));
+        let backend = TestBackend::new(60, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let bar = StatusBar {
+                    state: StatusBarState {
+                        mode: Mode::Rendered,
+                        filename: "f.md",
+                        line_count: 10,
+                        modified: false,
+                        scroll: 0,
+                        cursor_line: Some(3),
+                        cursor_col: Some(7),
+                    },
+                    theme,
+                };
+                frame.render_widget(bar, frame.area());
+            })
+            .unwrap();
+
+        let output: String = (0..60u16)
+            .map(|x| {
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell((x, 0))
+                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+            })
+            .collect();
+        assert!(output.contains("3:7"), "output was: {:?}", output);
     }
 }

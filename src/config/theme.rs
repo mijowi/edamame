@@ -20,6 +20,7 @@ pub struct Theme {
     pub bold: Style,
     pub italic: Style,
     pub strikethrough: Style,
+    pub highlight: Style,
     pub code_span: Style,
     pub link_text: Style,
     pub link_url: Style,
@@ -39,7 +40,10 @@ pub struct Theme {
 
     // ── Task list ─────────────────────────────────────────────────
     pub task_unchecked: Style,
+    /// Style applied to the `[x]` marker for checked items.
     pub task_checked: Style,
+    /// Whether to render checked item text with strikethrough (default: true).
+    pub task_strikethrough: bool,
 
     // ── Table ─────────────────────────────────────────────────────
     pub table_border: Style,
@@ -78,19 +82,22 @@ impl Default for Theme {
             strikethrough: Style::default()
                 .add_modifier(Modifier::CROSSED_OUT)
                 .fg(Color::DarkGray),
+            highlight: Style::default().bg(Color::Yellow).fg(Color::Black),
             code_span: Style::default().fg(Color::Yellow).bg(Color::Indexed(236)),
             link_text: Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::UNDERLINED),
             link_url: Style::default().fg(Color::DarkGray),
-            image_placeholder: Style::default().fg(Color::Blue).add_modifier(Modifier::ITALIC),
+            image_placeholder: Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::ITALIC),
 
-            // Code block
+            // Code block — background matches inline code spans (Indexed(236)).
             code_block_border: Style::default().fg(Color::Indexed(240)),
             code_block_lang: Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::ITALIC),
-            code_block_text: Style::default().fg(Color::White).bg(Color::Indexed(234)),
+            code_block_text: Style::default().fg(Color::White).bg(Color::Indexed(236)),
 
             // Blockquote: muted vertical bar + slightly dim text
             blockquote_bar: Style::default().fg(Color::Blue),
@@ -105,9 +112,10 @@ impl Default for Theme {
 
             // Task list
             task_unchecked: Style::default().fg(Color::DarkGray),
-            task_checked: Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::CROSSED_OUT),
+            // task_checked styles the [x] marker; strikethrough on text is
+            // controlled separately by task_strikethrough.
+            task_checked: Style::default().fg(Color::Green),
+            task_strikethrough: true,
 
             // Table
             table_border: Style::default().fg(Color::Indexed(240)),

@@ -1,39 +1,47 @@
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
+    text::Line,
     widgets::{StatefulWidget, Widget},
 };
 
 use crate::config::Theme;
-use crate::editor::Mode;
+use crate::editor::{EditorState, Mode};
 
 use super::{
     preview::{PreviewState, PreviewView},
+    raw_view::{RawView, RawViewState},
+    rendered_view::{RenderedView, RenderedViewState},
     status_bar::{StatusBar, StatusBarState},
 };
 
-/// The top-level editor widget. Lays out the document area and the status bar.
-///
-/// Phase 0: only `PreviewMode` rendering is implemented; `RenderedMode` and
-/// `RawMode` will be added in Phase 1.
+/// Top-level editor widget. Lays out the document area and the status bar,
+/// then delegates rendering to the appropriate sub-view based on mode.
 pub struct EditorView<'a> {
+    pub state: &'a EditorState,
     pub theme: &'a Theme,
-    pub mode: Mode,
     pub filename: &'a str,
-    pub modified: bool,
 }
 
-/// State for the `EditorView`: essentially delegates to `PreviewState` in Phase 0.
+/// State for the `EditorView`.
 pub struct EditorViewState {
+    /// Used only in PreviewMode.
     pub preview: PreviewState,
+    pub rendered: RenderedViewState,
+    pub raw: RawViewState,
 }
 
 impl EditorViewState {
-    pub fn new(lines: Vec<ratatui::text::Line<'static>>) -> Self {
+    /// Create with the given initial rendered lines (for preview mode seeding).
+    pub fn new(lines: Vec<Line<'static>>) -> Self {
         Self {
             preview: PreviewState::new(lines),
+            rendered: RenderedViewState::default(),
+            raw: RawViewState::default(),
         }
     }
+
+    // ── Forwarded scroll helpers for Preview mode ─────────────────
 
     pub fn scroll_down(&mut self, n: usize, viewport_height: usize) {
         self.preview.scroll_down(n, viewport_height);
@@ -73,17 +81,60 @@ impl<'a> StatefulWidget for EditorView<'a> {
         let doc_area = chunks[0];
         let bar_area = chunks[1];
 
-        // Phase 0: always use PreviewView.
-        StatefulWidget::render(PreviewView, doc_area, buf, &mut state.preview);
+        let viewport_height = doc_area.height as usize;
 
-        // Status bar
+        // ── Document area ─────────────────────────────────────────
+        match self.state.mode {
+            Mode::Preview => {
+                // Keep preview state lines in sync with editor state.
+                // In preview mode the editor state scroll is the canonical scroll.
+                StatefulWidget::render(PreviewView, doc_area, buf, &mut state.preview);
+            }
+            Mode::Rendered => {
+                StatefulWidget::render(
+                    RenderedView {
+                        state: self.state,
+                        theme: self.theme,
+                    },
+                    doc_area,
+                    buf,
+                    &mut state.rendered,
+                );
+            }
+            Mode::Raw => {
+                StatefulWidget::render(
+                    RawView {
+                        state: self.state,
+                        theme: self.theme,
+                    },
+                    doc_area,
+                    buf,
+                    &mut state.raw,
+                );
+            }
+        }
+
+        // ── Status bar ────────────────────────────────────────────
+        let (cursor_line, cursor_col) = self.state.cursor.line_col(&self.state.buffer);
+        let line_count = match self.state.mode {
+            Mode::Preview => state.preview.total_lines(),
+            Mode::Raw => self.state.buffer.line_count(),
+            Mode::Rendered => self.state.parsed.line_count(),
+        };
+        let scroll = match self.state.mode {
+            Mode::Preview => state.preview.scroll,
+            _ => self.state.scroll,
+        };
+
         let bar = StatusBar {
             state: StatusBarState {
-                mode: self.mode,
+                mode: self.state.mode,
                 filename: self.filename,
-                line_count: state.preview.total_lines(),
-                modified: self.modified,
-                scroll: state.preview.scroll,
+                line_count,
+                modified: self.state.dirty,
+                scroll,
+                cursor_line: Some(cursor_line + 1), // 1-indexed display
+                cursor_col: Some(cursor_col + 1),
             },
             theme: self.theme,
         };

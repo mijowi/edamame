@@ -1,5 +1,4 @@
 /// Integration tests for UI widgets using `ratatui::backend::TestBackend`.
-
 use ratatui::{backend::TestBackend, Terminal};
 
 use markdown_tui::config::Theme;
@@ -26,6 +25,8 @@ fn render_status_bar(
                     line_count,
                     modified,
                     scroll: 0,
+                    cursor_line: None,
+                    cursor_col: None,
                 },
                 theme,
             };
@@ -94,4 +95,37 @@ fn snapshot_status_bar_preview() {
 fn snapshot_status_bar_modified() {
     let out = render_status_bar(Mode::Rendered, "notes.md", 42, true, 80);
     insta::assert_snapshot!(out);
+}
+
+#[test]
+fn status_bar_shows_cursor_position() {
+    let theme = Box::leak(Box::new(Theme::default()));
+    let backend = TestBackend::new(80, 1);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            let bar = StatusBar {
+                state: StatusBarState {
+                    mode: Mode::Rendered,
+                    filename: "f.md",
+                    line_count: 10,
+                    modified: false,
+                    scroll: 0,
+                    cursor_line: Some(5),
+                    cursor_col: Some(12),
+                },
+                theme,
+            };
+            frame.render_widget(bar, frame.area());
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let out: String = (0..80u16)
+        .map(|x| {
+            buf.cell((x, 0))
+                .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+        })
+        .collect();
+    assert!(out.contains("5:12"), "got: {out:?}");
 }

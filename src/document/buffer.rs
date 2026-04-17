@@ -23,6 +23,15 @@ impl Buffer {
         }
     }
 
+    /// Create a buffer pre-filled with `text` and no associated file.
+    /// Useful for tests and programmatic document creation.
+    pub fn from_str(text: &str) -> Self {
+        Self {
+            rope: Rope::from_str(text),
+            path: None,
+        }
+    }
+
     /// Load a file from disk into the buffer.
     pub fn load_file(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)

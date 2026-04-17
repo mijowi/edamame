@@ -43,6 +43,13 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 unicode-width = "0.2"
 unicode-segmentation = "1"
 
+# Clipboard (OS clipboard with kill-ring fallback)
+arboard = { version = "3", optional = true }
+
+[features]
+default = ["clipboard"]
+clipboard = ["arboard"]
+
 [dev-dependencies]
 # Snapshot testing for rendered output
 insta = { version = "1", features = ["ron"] }

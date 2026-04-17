@@ -1,6 +1,6 @@
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
-use super::ast::{Block, Inline, ListItem, inlines_to_plain};
+use super::ast::{inlines_to_plain, Block, Inline, ListItem};
 
 /// Parse a Markdown string into a list of `Block` AST nodes.
 pub fn parse(text: &str) -> Vec<Block> {
@@ -67,7 +67,11 @@ where
                     Some(Event::Start(Tag::CodeBlock(kind))) => match kind {
                         CodeBlockKind::Fenced(lang) => {
                             let s = lang.as_ref().trim().to_owned();
-                            if s.is_empty() { None } else { Some(s) }
+                            if s.is_empty() {
+                                None
+                            } else {
+                                Some(s)
+                            }
                         }
                         CodeBlockKind::Indented => None,
                     },
@@ -97,7 +101,11 @@ where
                 events.next();
                 let (headers, rows, col_count) = parse_table(events);
                 consume_end(events);
-                blocks.push(Block::Table { col_count, headers, rows });
+                blocks.push(Block::Table {
+                    col_count,
+                    headers,
+                    rows,
+                });
             }
 
             // ── Horizontal rule ──────────────────────────────────────
@@ -242,6 +250,42 @@ where
     cells
 }
 
+// ─── Highlight post-processing ────────────────────────────────────────────────
+
+/// Split a plain text string into `Inline`s, detecting `==highlight==` spans.
+///
+/// pulldown-cmark does not natively support `==text==` highlight syntax, so we
+/// post-process each `Text` event to find and convert those spans.
+fn parse_highlight_in_text(text: &str) -> Vec<Inline> {
+    let mut result = Vec::new();
+    let mut rest = text;
+
+    loop {
+        match rest.find("==") {
+            None => break,
+            Some(start) => {
+                let after_open = &rest[start + 2..];
+                match after_open.find("==") {
+                    None => break, // unclosed marker — treat the rest as plain text
+                    Some(rel_end) => {
+                        if start > 0 {
+                            result.push(Inline::Text(rest[..start].to_owned()));
+                        }
+                        let inner = &after_open[..rel_end];
+                        result.push(Inline::Highlight(vec![Inline::Text(inner.to_owned())]));
+                        rest = &after_open[rel_end + 2..];
+                    }
+                }
+            }
+        }
+    }
+
+    if !rest.is_empty() {
+        result.push(Inline::Text(rest.to_owned()));
+    }
+    result
+}
+
 // ─── Inline parsing ───────────────────────────────────────────────────────────
 
 fn parse_inlines<'a, I>(events: &mut std::iter::Peekable<I>) -> Vec<Inline>
@@ -269,7 +313,7 @@ where
         };
 
         match event {
-            Event::Text(text) => inlines.push(Inline::Text(text.into_string())),
+            Event::Text(text) => inlines.extend(parse_highlight_in_text(&text)),
             Event::Code(code) => inlines.push(Inline::Code(code.into_string())),
             Event::SoftBreak => inlines.push(Inline::SoftBreak),
             Event::HardBreak => inlines.push(Inline::HardBreak),
@@ -291,14 +335,20 @@ where
                 inlines.push(Inline::Strikethrough(inner));
             }
 
-            Event::Start(Tag::Link { dest_url, title, .. }) => {
+            Event::Start(Tag::Link {
+                dest_url, title, ..
+            }) => {
                 let text = parse_inlines(events);
                 consume_end(events);
                 let title_str = title.as_ref().to_owned();
                 inlines.push(Inline::Link {
                     text,
                     url: dest_url.into_string(),
-                    title: if title_str.is_empty() { None } else { Some(title_str) },
+                    title: if title_str.is_empty() {
+                        None
+                    } else {
+                        Some(title_str)
+                    },
                 });
             }
 
@@ -431,9 +481,7 @@ mod tests {
     #[test]
     fn parse_ordered_list() {
         let blocks = parse("1. first\n2. second\n");
-        assert!(
-            matches!(&blocks[0], Block::List { ordered: true, items, .. } if items.len() == 2)
-        );
+        assert!(matches!(&blocks[0], Block::List { ordered: true, items, .. } if items.len() == 2));
     }
 
     #[test]
