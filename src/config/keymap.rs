@@ -64,6 +64,27 @@ pub enum Action {
     Quit,
     // ── List editing (Phase 3) ─────────────────────────────────────
     ToggleCheckbox,
+    // ── Table editing (Phase 2) ────────────────────────────────────
+    // Cell navigation. Tab/Shift+Tab/Enter outside a table retain their
+    // normal behaviour; edit_ops redirects them when the cursor is inside
+    // a table (Phase 2 implementation).
+    TableNextCell,
+    TablePrevCell,
+    TableNextRow,
+    TablePrevRow,
+    // Row/column reorder (Alt+Arrow).
+    TableMoveRowUp,
+    TableMoveRowDown,
+    TableMoveColumnLeft,
+    TableMoveColumnRight,
+    // Row/column insertion (Alt+Shift+Arrow).
+    TableInsertRowAbove,
+    TableInsertRowBelow,
+    TableInsertColumnLeft,
+    TableInsertColumnRight,
+    // Row/column deletion.
+    TableDeleteRow,
+    TableDeleteColumn,
 }
 
 impl fmt::Display for Action {
@@ -110,6 +131,20 @@ impl fmt::Display for Action {
             Action::ToggleRawMode => "ToggleRawMode",
             Action::Quit => "Quit",
             Action::ToggleCheckbox => "ToggleCheckbox",
+            Action::TableNextCell => "TableNextCell",
+            Action::TablePrevCell => "TablePrevCell",
+            Action::TableNextRow => "TableNextRow",
+            Action::TablePrevRow => "TablePrevRow",
+            Action::TableMoveRowUp => "TableMoveRowUp",
+            Action::TableMoveRowDown => "TableMoveRowDown",
+            Action::TableMoveColumnLeft => "TableMoveColumnLeft",
+            Action::TableMoveColumnRight => "TableMoveColumnRight",
+            Action::TableInsertRowAbove => "TableInsertRowAbove",
+            Action::TableInsertRowBelow => "TableInsertRowBelow",
+            Action::TableInsertColumnLeft => "TableInsertColumnLeft",
+            Action::TableInsertColumnRight => "TableInsertColumnRight",
+            Action::TableDeleteRow => "TableDeleteRow",
+            Action::TableDeleteColumn => "TableDeleteColumn",
         };
         f.write_str(s)
     }
@@ -160,6 +195,20 @@ impl FromStr for Action {
             "ToggleRawMode" => Ok(Action::ToggleRawMode),
             "Quit" => Ok(Action::Quit),
             "ToggleCheckbox" => Ok(Action::ToggleCheckbox),
+            "TableNextCell" => Ok(Action::TableNextCell),
+            "TablePrevCell" => Ok(Action::TablePrevCell),
+            "TableNextRow" => Ok(Action::TableNextRow),
+            "TablePrevRow" => Ok(Action::TablePrevRow),
+            "TableMoveRowUp" => Ok(Action::TableMoveRowUp),
+            "TableMoveRowDown" => Ok(Action::TableMoveRowDown),
+            "TableMoveColumnLeft" => Ok(Action::TableMoveColumnLeft),
+            "TableMoveColumnRight" => Ok(Action::TableMoveColumnRight),
+            "TableInsertRowAbove" => Ok(Action::TableInsertRowAbove),
+            "TableInsertRowBelow" => Ok(Action::TableInsertRowBelow),
+            "TableInsertColumnLeft" => Ok(Action::TableInsertColumnLeft),
+            "TableInsertColumnRight" => Ok(Action::TableInsertColumnRight),
+            "TableDeleteRow" => Ok(Action::TableDeleteRow),
+            "TableDeleteColumn" => Ok(Action::TableDeleteColumn),
             other => Err(KeyMapError::UnknownAction(other.to_owned())),
         }
     }
@@ -353,6 +402,22 @@ impl KeyMap {
 
         // List (Phase 3)
         bind!("ctrl+space", Action::ToggleCheckbox);
+
+        // Table editing (Phase 2) — org-mode-style Alt+Arrow scheme.
+        // Arrow direction = operation direction; Shift promotes "reorder" to
+        // "insert" on that side. Cell navigation (Tab / Shift+Tab / Enter) is
+        // handled via context dispatch in edit_ops when the cursor is inside
+        // a table — they remain bound to InsertTab / Newline by default.
+        bind!("alt+up", Action::TableMoveRowUp);
+        bind!("alt+down", Action::TableMoveRowDown);
+        bind!("alt+left", Action::TableMoveColumnLeft);
+        bind!("alt+right", Action::TableMoveColumnRight);
+        bind!("alt+shift+up", Action::TableInsertRowAbove);
+        bind!("alt+shift+down", Action::TableInsertRowBelow);
+        bind!("alt+shift+left", Action::TableInsertColumnLeft);
+        bind!("alt+shift+right", Action::TableInsertColumnRight);
+        bind!("alt+backspace", Action::TableDeleteRow);
+        bind!("alt+shift+backspace", Action::TableDeleteColumn);
 
         Self { bindings: b }
     }

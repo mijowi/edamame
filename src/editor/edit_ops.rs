@@ -415,6 +415,22 @@ pub fn apply(
         // ── Phase 3+ — no-ops for now ─────────────────────────────
         Action::ToggleCheckbox => {}
 
+        // ── Phase 2 — table editing; no-ops until implemented ─────
+        Action::TableNextCell
+        | Action::TablePrevCell
+        | Action::TableNextRow
+        | Action::TablePrevRow
+        | Action::TableMoveRowUp
+        | Action::TableMoveRowDown
+        | Action::TableMoveColumnLeft
+        | Action::TableMoveColumnRight
+        | Action::TableInsertRowAbove
+        | Action::TableInsertRowBelow
+        | Action::TableInsertColumnLeft
+        | Action::TableInsertColumnRight
+        | Action::TableDeleteRow
+        | Action::TableDeleteColumn => {}
+
         // Scroll-only aliases already handled above.
         _ => {}
     }
