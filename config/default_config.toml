@@ -1,5 +1,5 @@
-# Markdown TUI default configuration
-# Copy relevant sections to ~/.config/markdown-tui/config.toml to override.
+# edamame default configuration
+# Copy relevant sections to ~/.config/edamame/config.toml to override.
 
 [editor]
 tab_width = 4

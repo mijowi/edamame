@@ -1,13 +1,13 @@
-# AGENTS.md — markdown-tui
+# AGENTS.md — edamame
 
 Guidance for agentic coding agents working in this repository.
 
 ## Project Overview
 
-`markdown-tui` is a Rust TUI application for viewing and editing Markdown files
+`edamame` is a Rust TUI application for viewing and editing Markdown files
 in the terminal. It uses `ratatui` for rendering, `pulldown-cmark` for parsing,
 and `ropey` for rope-based text editing. The crate is both a binary
-(`markdown-tui`) and a library (so integration tests can import it).
+(`edamame`) and a library (so integration tests can import it).
 
 ## Build Commands
 
@@ -305,7 +305,7 @@ when `dev_mode = true` in config, so tracing calls in production are no-ops.
 ### Tests
 
 - Every source file gets a `#[cfg(test)] mod tests { ... }` block for unit tests
-- Integration tests in `tests/` import from the library crate (`markdown_tui::`)
+- Integration tests in `tests/` import from the library crate (`edamame::`)
 - Use `insta::assert_debug_snapshot!` for complex output (ASTs, rendered lines)
 - Use `ratatui::backend::TestBackend` for widget rendering tests
 - Use `Box::leak(Box::new(Theme::default()))` to produce `&'static Theme` in

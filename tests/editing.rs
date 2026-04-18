@@ -4,9 +4,9 @@
 /// assert on buffer content and cursor position. They serve as TDD anchors for
 /// Phase 1 functionality: insert, delete, newline, undo, redo, cursor movement,
 /// mode transitions, save, and clipboard.
-use markdown_tui::config::{Action, Theme};
-use markdown_tui::document::Buffer;
-use markdown_tui::editor::{edit_ops, EditorState, Mode};
+use edamame::config::{Action, Theme};
+use edamame::document::Buffer;
+use edamame::editor::{edit_ops, EditorState, Mode};
 
 const VP: usize = 40; // viewport height for most tests
 const VW: usize = 80; // viewport width for most tests
@@ -464,7 +464,7 @@ fn insert_replaces_selection() {
     let mut st = state("hello world");
     st.mode = Mode::Rendered;
     // Select "world"
-    use markdown_tui::document::Selection;
+    use edamame::document::Selection;
     st.selection = Some(Selection {
         anchor: 6,
         active: 11,

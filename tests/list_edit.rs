@@ -14,9 +14,9 @@
 //! - toggle-checkbox (`[ ]` ↔ `[x]`) via `Action::ToggleCheckbox`
 //! - renumber-on-paste for ordered lists
 
-use markdown_tui::config::{Action, Theme};
-use markdown_tui::document::Buffer;
-use markdown_tui::editor::{edit_ops, EditorState, Mode};
+use edamame::config::{Action, Theme};
+use edamame::document::Buffer;
+use edamame::editor::{edit_ops, EditorState, Mode};
 
 const VP: usize = 40;
 const VW: usize = 80;

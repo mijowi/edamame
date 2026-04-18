@@ -70,6 +70,6 @@ fn setup_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
         .with_ansi(false)
         .init();
 
-    tracing::info!("markdown-tui starting");
+    tracing::info!("edamame starting");
     Some(guard)
 }

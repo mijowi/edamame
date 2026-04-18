@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::keymap::KeyBindingOverrides;
 
-/// Top-level configuration loaded from `~/.config/markdown-tui/config.toml`.
+/// Top-level configuration loaded from `~/.config/edamame/config.toml`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -35,12 +35,12 @@ impl Config {
 
     /// Returns the path to the user config file (may not exist yet).
     pub fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("markdown-tui").join("config.toml"))
+        dirs::config_dir().map(|d| d.join("edamame").join("config.toml"))
     }
 
     /// Returns the path to the log directory.
     pub fn log_dir() -> Option<PathBuf> {
-        dirs::data_dir().map(|d| d.join("markdown-tui"))
+        dirs::data_dir().map(|d| d.join("edamame"))
     }
 }
 

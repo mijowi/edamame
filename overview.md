@@ -1,4 +1,4 @@
-# Markdown TUI Editor
+# edamame
 
 ## Why make this
 Markdown is an excellent document format. It's great for creating documents with a low or medium amount of complexity, which is the vast majority. The constraints of the language offer just enough features to cover most use cases while keeping things simple and easy to reason about.

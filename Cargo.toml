@@ -1,15 +1,15 @@
 [package]
-name = "markdown-tui"
+name = "edamame"
 version = "0.1.0"
 edition = "2021"
 description = "A fast, jank-free TUI Markdown editor and viewer"
 
 [[bin]]
-name = "markdown-tui"
+name = "edamame"
 path = "src/main.rs"
 
 [lib]
-name = "markdown_tui"
+name = "edamame"
 path = "src/lib.rs"
 
 [dependencies]

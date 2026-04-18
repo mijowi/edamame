@@ -1,11 +1,11 @@
-use markdown_tui::config::Theme;
+use edamame::config::Theme;
 /// Snapshot tests for the Markdown renderer.
 ///
 /// Each test parses a Markdown string, renders it, and checks the result with
 /// `insta::assert_debug_snapshot!`.  Run `cargo insta review` after any change
 /// that alters rendered output to review and accept updated snapshots.
-use markdown_tui::markdown::parser::parse;
-use markdown_tui::markdown::renderer::Renderer;
+use edamame::markdown::parser::parse;
+use edamame::markdown::renderer::Renderer;
 
 fn render(md: &str) -> Vec<ratatui::text::Line<'static>> {
     let theme = Box::leak(Box::new(Theme::default()));

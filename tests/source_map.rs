@@ -9,10 +9,10 @@
 /// trigger a full re-parse).
 use proptest::prelude::*;
 
-use markdown_tui::config::Action;
-use markdown_tui::config::Theme;
-use markdown_tui::document::{Buffer, ParsedDoc};
-use markdown_tui::editor::{edit_ops, EditorState, Mode};
+use edamame::config::Action;
+use edamame::config::Theme;
+use edamame::document::{Buffer, ParsedDoc};
+use edamame::editor::{edit_ops, EditorState, Mode};
 
 fn theme() -> &'static Theme {
     Box::leak(Box::new(Theme::default()))

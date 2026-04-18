@@ -12,9 +12,9 @@
 //! - guardrails: no deletion of header/alignment/last column, adjacent-only
 //!   row/column swaps.
 
-use markdown_tui::config::{Action, Theme};
-use markdown_tui::document::Buffer;
-use markdown_tui::editor::{edit_ops, EditorState, Mode};
+use edamame::config::{Action, Theme};
+use edamame::document::Buffer;
+use edamame::editor::{edit_ops, EditorState, Mode};
 
 const VP: usize = 40;
 const VW: usize = 80;

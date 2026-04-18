@@ -1,4 +1,4 @@
-# Markdown TUI Editor — Development Plan
+# Edamame Editor — Development Plan
 
 ## Table of Contents
 
@@ -141,7 +141,7 @@ The application is structured in horizontal layers. Higher layers depend on lowe
 │   - ImageResolver: maps image paths/URLs → ratatui-image state   │
 ├──────────────────────────────────────────────────────────────────┤
 │                    Config / Theme Layer                          │
-│   - Config: loaded from ~/.config/markdown-tui/config.toml      │
+│   - Config: loaded from ~/.config/edamamey/config.toml      │
 │   - Theme: colour palette, applied to every rendered element     │
 │   - KeyMap: default bindings overridable in config               │
 └──────────────────────────────────────────────────────────────────┘
@@ -212,7 +212,7 @@ Background threads are spawned lazily: the image loader pool in Phase 7, the fil
 ## Module Structure
 
 ```
-markdown-tui/
+edamame/
 ├── Cargo.toml
 ├── README.md
 ├── plan.md
@@ -328,11 +328,11 @@ trait ModalHandler {
 
 ### 5. Theming from Day One
 
-All colour and style values are routed through the `Theme` struct. There are no hardcoded `ratatui::style::Color` literals in the UI layer. The default theme is defined in code and can be overridden via `~/.config/markdown-tui/config.toml`. This means adding full theme support later requires only exposing the theme config keys — no refactoring.
+All colour and style values are routed through the `Theme` struct. There are no hardcoded `ratatui::style::Color` literals in the UI layer. The default theme is defined in code and can be overridden via `~/.config/edamame/config.toml`. This means adding full theme support later requires only exposing the theme config keys — no refactoring.
 
 ### 6. Config File Architecture
 
-A single TOML file at `$XDG_CONFIG_HOME/markdown-tui/config.toml` (fallback `~/.config/markdown-tui/config.toml`). Config sections:
+A single TOML file at `$XDG_CONFIG_HOME/edamame/config.toml` (fallback `~/.config/edamame/config.toml`). Config sections:
 - `[editor]` — tab width, word wrap, auto-save, etc.
 - `[theme]` — colour overrides
 - `[keybindings]` — key → action overrides (see below)
@@ -362,7 +362,7 @@ Paste = "ctrl+v"
 
 ### 7. Logging Strategy
 
-`tracing` output is never written to stdout/stderr, because those would corrupt the TUI output. If an error occurs, we will show a popup to the user. Logging to a file (`$XDG_DATA_HOME/markdown-tui/debug.log`) is gated behind a `dev_mode = true` flag in `config.toml` (default: `false`). When `dev_mode` is enabled, `tracing-appender` writes structured logs to the file; when disabled, the tracing subscriber is not initialised and no log file is created.
+`tracing` output is never written to stdout/stderr, because those would corrupt the TUI output. If an error occurs, we will show a popup to the user. Logging to a file (`$XDG_DATA_HOME/edamame/debug.log`) is gated behind a `dev_mode = true` flag in `config.toml` (default: `false`). When `dev_mode` is enabled, `tracing-appender` writes structured logs to the file; when disabled, the tracing subscriber is not initialised and no log file is created.
 
 ---
 
@@ -394,7 +394,7 @@ Paste = "ctrl+v"
 *Status: **Complete** — 2026-04-12. 113 tests passing. Manual cross-platform smoke test pending.*
 
 **Tasks:**
-- [x] `cargo new markdown-tui` — set up workspace with `Cargo.toml`
+- [x] `cargo new edamame` — set up workspace with `Cargo.toml`
 - [x] Add `ratatui`, `crossterm`, `pulldown-cmark`, `ropey`, `serde`, `toml`, `dirs`, `thiserror`, `anyhow`, `tracing`, `tracing-appender` as dependencies
 - [x] Implement `Config` with serde/toml deserialization; load from XDG path with defaults fallback
 - [x] Implement `KeyMap` in `config/keymap.rs`: define the `Action` enum and all compiled-in default key bindings; after loading `Config`, iterate the `[keybindings]` table and override defaults — error at startup on unknown action names or unparseable key strings
@@ -411,11 +411,11 @@ Paste = "ctrl+v"
 - [x] Write a `TestBackend` rendering test for `StatusBar` (filename, line count, mode label)
 - [ ] Manual smoke test: open several `.md` files in a Linux terminal and in macOS/WSL to verify no visual regressions beyond what automated tests cover
 
-**Acceptance criteria:** `markdown-tui path/to/file.md` opens the file in preview mode, renders styled Markdown, scrolls smoothly, and quits cleanly.
+**Acceptance criteria:** `edamame path/to/file.md` opens the file in preview mode, renders styled Markdown, scrolls smoothly, and quits cleanly.
 
 **Implementation notes (deviations and additions vs. original plan):**
 
-- **`src/lib.rs` added** — a library crate entry point was added (not in original plan) so that `tests/renderer.rs` and `tests/ui.rs` can import from `markdown_tui::`. Required by Rust's integration test model; integration tests cannot reference a binary-only crate.
+- **`src/lib.rs` added** — a library crate entry point was added (not in original plan) so that `tests/renderer.rs` and `tests/ui.rs` can import from `edamame::`. Required by Rust's integration test model; integration tests cannot reference a binary-only crate.
 - **`src/editor/mode.rs` created in Phase 0** — the `Mode` enum (`Preview / Rendered / Raw`) was defined upfront to support type-safe mode handling in the app and status bar, even though only `Preview` is active in Phase 0.
 - **`src/ui/editor_view.rs` added** — a top-level `EditorView` stateful widget was added to compose `PreviewView` + `StatusBar` and act as the root UI widget. Dispatching to the Phase 1 `RenderedView` and `RawView` will simply be new `match` arms here.
 - **`src/terminal/capabilities.rs` stubbed** — minimal `Capabilities` struct created with `detect()` returning conservative defaults, ready for Phase 4 probing without any structural refactoring.
@@ -591,9 +591,9 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 - [ ] Store capabilities in `App` and thread them through to features that need them
 - [ ] Log detected capabilities to the tracing log file
 - [ ] Graceful degradation: if no colour support, render without ANSI styles; if no mouse, disable all mouse features without error
-- [ ] Show a one-time notice in the status bar if a required feature (e.g. mouse) is not available
+- [ ] Show a popup modal notice if any features (e.g. mouse) are not available, with `[Ok]` and `[Don't show this again]`. The latter should set a flag in the config file to suppress future warnings.
 
-**Acceptance criteria:** `markdown-tui` starts correctly in a minimal `xterm` (no mouse, 8 colours) and in a feature-rich terminal like Ghostty or Kitty, adapting its behaviour in both cases.
+**Acceptance criteria:** `edamame` starts correctly in a minimal `xterm` (no mouse, 8 colours) and in a feature-rich terminal like Ghostty or Kitty, adapting its behaviour in both cases.
 
 ---
 
@@ -650,7 +650,7 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
   - Load images lazily (only when they scroll into the visible area)
   - Cache decoded+resized images keyed by (path, display_width, display_height)
   - Show a placeholder (alt text in brackets) while the image loads or if loading fails
-  - Support both local file paths and HTTP/HTTPS URLs (load URLs with `ureq`, cache to disk in `$XDG_CACHE_HOME/markdown-tui/images/`).
+  - Support both local file paths and HTTP/HTTPS URLs (load URLs with `ureq`, cache to disk in `$XDG_CACHE_HOME/edamame/images/`).
   - If HTTP/S URLs are present in the file, show a popup on startup asking if user wants to load images from remote server (always/never/this time only). This should be a hook in the renderer.
 - [ ] Respect terminal cell dimensions when computing image size
 - [ ] Implement a `[image]` config section: `max_width`, `max_height`, `enabled: bool`
@@ -690,7 +690,7 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 - [ ] Implement a keybinds overlay, accessible from the command palette: action-keybind list of all keybinds, editable inline; changes are written back to config.toml upon confirmation.
 - [ ] Add a markdown cheat sheet (tailored to the markdown supported by this app), accessible from the command palette.
 - [ ] Implement tab bar if multiple files are open (from link navigation or command line args)
-- [ ] Accept multiple file arguments on the command line: `markdown-tui file1.md file2.md`
+- [ ] Accept multiple file arguments on the command line: `edamame file1.md file2.md`
 - [ ] Show key binding hints for the current mode at the bottom of the status bar (hideable via config)
 
 **Acceptance criteria:** Status bar shows all relevant information at a glance. File picker is fast and keyboard-navigable. Command palette lists all actions with their key bindings. Multiple files can be open simultaneously.
@@ -749,8 +749,8 @@ Undo/redo currently works on a per-character basic, which is not very useful. We
 ### Theming
 - The `Theme` struct is already wired in from Phase 0
 - Deferred work: document all theme keys, ship several built-in themes (dark, light, dracula, gruvbox, catppuccin, github dark/light)
-- Theme can be selected by name (`theme = "dracula"`) in `config.toml`; resolved first from `~/.config/markdown-tui/themes/`, then from built-ins
-- Custom themes are standalone TOML files in `~/.config/markdown-tui/themes/<name>.toml`, mapping semantic keys to hex colour values:
+- Theme can be selected by name (`theme = "dracula"`) in `config.toml`; resolved first from `~/.config/edamame/themes/`, then from built-ins
+- Custom themes are standalone TOML files in `~/.config/edamame/themes/<name>.toml`, mapping semantic keys to hex colour values:
   ```toml
   [ui]
   background = "#1e1e2e"
@@ -770,16 +770,16 @@ Undo/redo currently works on a per-character basic, which is not very useful. We
 - **High CPU Usage**: We should see what optimizing we can do to improve the performance of the app. For one thing, idle CPU usage high on my machine, which I think should be significantly lower when the app is just displaying static output and not being interacted with. Interestingly, CPU usage seems to decrease over time. Memory usage is too low to even be outputted by `ps aux`, so that's fine.
 
 ```
-markdown-tui main  ? ❯ ps aux|head -1
+edamame main  ? ❯ ps aux|head -1
 USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
-markdown-tui main  ? ❯ ps aux|grep markdown
-mjw      3192551  7.4  0.0  78956  7724 pts/11   Sl+  13:24   0:50 ./target/debug/markdown-tui example.md
-markdown-tui main  ? ❯ ps aux|grep markdown
-mjw      3192551  6.7  0.0  78956  7724 pts/11   Sl+  13:24   1:06 ./target/debug/markdown-tui example.md
-markdown-tui main  ? ❯ ps aux|grep markdown
-mjw      3192551  6.6  0.0  78956  7724 pts/11   Sl+  13:24   1:10 ./target/debug/markdown-tui example.md
-markdown-tui main  ? ❯ ps aux|grep markdown
-mjw      3192551  6.3  0.0  78956  7724 pts/11   Sl+  13:24   1:38 ./target/debug/markdown-tui example.md
+edamame main  ? ❯ ps aux|grep markdown
+mjw      3192551  7.4  0.0  78956  7724 pts/11   Sl+  13:24   0:50 ./target/debug/edamame example.md
+edamame main  ? ❯ ps aux|grep markdown
+mjw      3192551  6.7  0.0  78956  7724 pts/11   Sl+  13:24   1:06 ./target/debug/edamame example.md
+edamame main  ? ❯ ps aux|grep markdown
+mjw      3192551  6.6  0.0  78956  7724 pts/11   Sl+  13:24   1:10 ./target/debug/edamame example.md
+edamame main  ? ❯ ps aux|grep markdown
+mjw      3192551  6.3  0.0  78956  7724 pts/11   Sl+  13:24   1:38 ./target/debug/edamame example.md
 ```
 
 - **Terminal resize**: `crossterm` sends a `Resize(cols, rows)` event when the terminal window is resized. All layout calculations — especially table column widths and paragraph word wrap — must be recalculated on resize. Ensure the rendered view and source map are invalidated and rebuilt when this event is received. Rather than attempting to re-render WHILE the terminal is being resized, which would undoubtedly be laggy or flickery, we will simply re-render AFTER it has been resized. We could potentially blank the screen during the resize operation.
@@ -813,7 +813,7 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
    Adopted layout:
    ```
-   ~/.config/markdown-tui/
+   ~/.config/edamame/
    ├── config.toml          # [editor] and [modal] only
    ├── keybindings.toml     # [keybindings]
    └── themes/

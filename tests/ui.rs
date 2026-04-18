@@ -1,9 +1,9 @@
 /// Integration tests for UI widgets using `ratatui::backend::TestBackend`.
 use ratatui::{backend::TestBackend, Terminal};
 
-use markdown_tui::config::Theme;
-use markdown_tui::editor::Mode;
-use markdown_tui::ui::status_bar::{StatusBar, StatusBarState};
+use edamame::config::Theme;
+use edamame::editor::Mode;
+use edamame::ui::status_bar::{StatusBar, StatusBarState};
 
 fn render_status_bar(
     mode: Mode,
@@ -99,9 +99,9 @@ fn snapshot_status_bar_modified() {
 
 #[test]
 fn rendered_view_cell_scoped_reveal_keeps_neighbouring_pipes_rendered() {
-    use markdown_tui::document::Buffer;
-    use markdown_tui::editor::EditorState;
-    use markdown_tui::ui::{RenderedView, RenderedViewState};
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
     use ratatui::style::Modifier;
 
     let theme = Box::leak(Box::new(Theme::default()));
