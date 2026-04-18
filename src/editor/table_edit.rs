@@ -229,7 +229,14 @@ pub fn cursor_cell(info: &TableInfo, cursor_byte: usize) -> Option<(usize, usize
     if !info.rows.is_empty() && cursor_byte == info.end {
         let last = info.rows.len() - 1;
         let last_row = &info.rows[last];
-        return Some((last, last_row.cells.len().saturating_sub(1).min(info.col_count.saturating_sub(1))));
+        return Some((
+            last,
+            last_row
+                .cells
+                .len()
+                .saturating_sub(1)
+                .min(info.col_count.saturating_sub(1)),
+        ));
     }
     None
 }
@@ -295,7 +302,11 @@ pub fn insert_row(info: &TableInfo, row_idx: usize, below: bool) -> (EditDelta, 
     // — except possibly the final row when the buffer has no trailing newline.
     // In that case we prepend a `\n` to the new row instead.)
     let needs_newline_before = target_idx == info.rows.len()
-        && info.rows.last().map(|r| !r.raw_ends_with_newline()).unwrap_or(false);
+        && info
+            .rows
+            .last()
+            .map(|r| !r.raw_ends_with_newline())
+            .unwrap_or(false);
     let inserted = if needs_newline_before {
         format!("\n{new_row}")
     } else {
@@ -343,10 +354,7 @@ pub fn swap_rows(info: &TableInfo, a: usize, b: usize) -> Option<EditDelta> {
     let row_hi = &info.rows[hi];
     let start = row_lo.start;
     let end = row_hi.end;
-    let removed: String = info.rows[lo..=hi]
-        .iter()
-        .map(format_row_with_nl)
-        .collect();
+    let removed: String = info.rows[lo..=hi].iter().map(format_row_with_nl).collect();
     let inserted: String = [hi, lo]
         .into_iter()
         .map(|idx| format_row_with_nl(&info.rows[idx]))

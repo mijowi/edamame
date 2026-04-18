@@ -548,20 +548,36 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 
 ### Phase 3 — Smart List Editing
 *Goal: numbered lists auto-continue and self-heal.*
+*Status: **Complete** — 2026-04-17. 349 tests passing (188 unit + 38 editing + 37 list_edit + 26 renderer + 12 source_map + 37 table + 11 UI). `src/editor/list_edit.rs` follows the `table_edit.rs` byte-oriented pattern: `find_list_at` scans the cursor line's indent/marker family, `continue_item` / `exit_list` / `toggle_checkbox` produce `EditDelta`s, and `edit_ops` converts byte ↔ char via `apply_byte_delta`. Auto-renumber runs after every editing action that changes the buffer (detected via length or history-depth delta) so ordered-list markers in the raw Markdown stay monotonic; Undo/Redo are exempt. Follow-up fixes landed: empty task items render with their `[ ]` box; Backspace at `content_start` deletes the entire marker prefix and merges with the preceding line; horizontal cursor movement and a post-edit clamp treat the marker as non-navigable; `parse_key` now accepts `space`, so the default `ctrl+space` → `ToggleCheckbox` binding resolves.*
 
 **Tasks:**
-- [ ] Before implementing, write tests in `tests/list_edit.rs` covering: bullet list continuation, numbered list continuation with correct next number, double-Enter exits the list, inserting an item mid-list renumbers subsequent items, nested lists at multiple indentation levels, task list continuation (`- [ ] `), and toggle-checkbox (`[ ]` ↔ `[x]`) — implement `list_edit.rs` to make each test pass
-- [ ] Implement `list_edit.rs` — detect when cursor is at the end of a list item line
-- [ ] On `Newline` inside a bullet list item: insert `- ` (or matching bullet character) at the start of the new line
-- [ ] On `Newline` inside a numbered list item: insert `N. ` where N is the correct next number
-- [ ] On `Newline` on a blank list-item line (i.e. pressing Enter twice): exit the list by removing the list prefix and inserting a blank paragraph
-- [ ] Implement list renumbering: after any insert/delete/paste that changes a numbered list, scan the list and re-number all items sequentially
-- [ ] Implement renumbering on paste: if a block of lines is pasted into the middle of a numbered list, renumber the whole list
-- [ ] Handle nested lists: detect indentation level; continue the list at the same level
-- [ ] Handle task list items: `- [ ] ` → `- [ ] `; `- [x] ` → `- [ ] ` (new unchecked item)
-- [ ] Implement toggle-checkbox action (Ctrl-Space or T when cursor is on a task list item): toggles `[ ]` ↔ `[x]`
+- [x] Before implementing, write tests in `tests/list_edit.rs` covering: bullet list continuation, numbered list continuation with correct next number, double-Enter exits the list, inserting an item mid-list renumbers subsequent items, nested lists at multiple indentation levels, task list continuation (`- [ ] `), and toggle-checkbox (`[ ]` ↔ `[x]`) — implement `list_edit.rs` to make each test pass
+- [x] Implement `list_edit.rs` — detect when cursor is at the end of a list item line
+- [x] On `Newline` inside a bullet list item: insert `- ` (or matching bullet character) at the start of the new line
+- [x] On `Newline` inside a numbered list item: insert `N. ` where N is the correct next number
+- [x] On `Newline` on a blank list-item line (i.e. pressing Enter twice): exit the list by removing the list prefix and inserting a blank paragraph
+- [x] Implement list renumbering: after any insert/delete/paste that changes a numbered list, scan the list and re-number all items sequentially
+- [x] Implement renumbering on paste: if a block of lines is pasted into the middle of a numbered list, renumber the whole list
+- [x] Handle nested lists: detect indentation level; continue the list at the same level
+- [x] Handle task list items: `- [ ] ` → `- [ ] `; `- [x] ` → `- [ ] ` (new unchecked item)
+- [x] Implement toggle-checkbox action (Ctrl-Space or T when cursor is on a task list item): toggles `[ ]` ↔ `[x]`
 
 **Acceptance criteria:** Typing in a numbered list auto-continues with the correct next number. Pressing Enter twice exits the list. Inserting items into the middle of a list renumbers subsequent items correctly. Nested lists work at multiple indentation levels.
+
+**Implementation notes (Phase 3):**
+
+- **Byte-offset / char-offset boundary**: `list_edit.rs` operates on byte offsets throughout (it walks a `&str` slice of the buffer), while `Buffer` / `Cursor` use rope char offsets. `edit_ops::apply_byte_delta` is the single translation point; `list_handle_newline`, `list_toggle_checkbox`, and `list_renumber_at_cursor` are the only callers and each produces a `ContinueResult { delta, cursor_byte }` that round-trips through `apply_byte_delta`.
+- **List detection is cursor-line-indent-scoped**: `find_list_at` reads the cursor's line and, if it parses as a list-item line, scans up and down for contiguous items at the *same indent and marker family*. Blank lines, differently-indented lines, and lines with a different marker family all terminate the run. This means nested lists are naturally handled — the cursor's list is always the innermost list at the cursor's own indent level — without having to track nesting state explicitly.
+- **Empty-item exit is dispatched before continue**: `list_handle_newline` checks `item.content_is_empty()` first; when true it routes to `exit_list` (replaces the entire empty-item line with a single `\n`, leaving a blank paragraph). Otherwise it routes to `continue_item`. This is why the double-Enter flow works without any modal state.
+- **Continuation inside the marker falls through**: when the cursor is before `marker_end` (i.e. inside the indent, the marker characters, or the trailing space of the marker), `continue_item` / `list_handle_newline` return `false` and `edit_ops` inserts a plain `\n`. Placing a list marker in the middle of another marker would produce malformed output.
+- **Single atomic `EditDelta` per action**: every list-aware edit — continue-item, exit-list, toggle-checkbox, renumber — is one `EditDelta`, so `Ctrl+Z` reverts it in one step. Renumbering subsequent items after a continue-item is folded into the same delta (the insertion's `inserted` string contains both the new item and the rewritten marker prefixes of every later item).
+- **Task-list new items are always unchecked**: on Enter after `- [x] done`, the continuation is `- [ ] `, not `- [x] `. This matches the common editor convention that the user chooses the state of each new task.
+- **Paste-renumber runs after every paste**: `Action::Paste` calls `list_renumber_at_cursor` after the paste applies. If the cursor is now in an ordered list, `renumber_list` rewrites every item's marker so the sequence is monotonic starting from the first item's number. Bullet lists and non-list pastes are no-ops. `renumber_list` short-circuits when the sequence is already consistent, so the common "paste doesn't land in a list" path is cheap.
+- **Ordered-list delimiter is preserved per list**: `1. ` and `1) ` are distinct marker families. Continuing a `1) ` list produces `2) `, not `2. `. The `matches_list_line` predicate checks both indent and delim char.
+- **Post-action invariants (Phase 3 fixes)**: at the end of `edit_ops::apply()` the engine does two sweeps when the buffer was mutated in `Rendered` mode — `list_renumber_at_cursor` (self-healing ordered-list numbering) and `clamp_cursor_out_of_marker` (snap the caret to `content_start` if an action left it on a marker, e.g. after `DeleteLine`). Both are gated on `(buffer length changed OR history depth changed)` so no-op actions like cursor movement skip the pass, and both are skipped for `Undo` / `Redo` so those remain exact inverses of the recorded deltas.
+- **Marker as an atomic prefix**: horizontal arrow-key navigation (`list_move_horizontal`) and `Backspace` at `content_start` (`list_backspace_consumes_marker`) both treat the whole marker prefix — indent + `- ` / `N. ` + optional `[ ] ` — as a single indivisible unit. The cursor cannot land inside it, and the user cannot peel it off one character at a time. This is what makes list editing feel "managed" rather than textual.
+- **`parse_key` accepts `space`**: the bound key string `ctrl+space` failed silently in Phase 2 because `parse_key` only recognised single characters and a handful of named keys. `space` is now mapped to `KeyCode::Char(' ')`, so the default `ctrl+space` → `ToggleCheckbox` binding actually resolves.
+- **Empty task items render with `[ ]`**: `renderer::render_list` previously emitted only the marker text when a list item's blocks were empty. For task items the "marker" is just the indentation, so an empty `- [ ] ` line rendered as an invisible row. The fix appends the `task_prefix` span in the empty-blocks branch.
 
 ---
 

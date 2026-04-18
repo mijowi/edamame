@@ -386,9 +386,16 @@ impl<'t> Renderer<'t> {
                 Style::default()
             };
 
-            // Empty list item: render just the marker so the block produces ≥1 line.
+            // Empty list item: render the marker (and the task checkbox, if any)
+            // so the block produces ≥1 line.  Without the checkbox branch, an
+            // empty task item collapses to an invisible line because the "marker"
+            // for task items is just indentation.
             if item.blocks.is_empty() {
-                out.push(Line::from(vec![Span::styled(marker.clone(), marker_style)]));
+                let mut spans = vec![Span::styled(marker.clone(), marker_style)];
+                if let Some(tp) = task_prefix.clone() {
+                    spans.push(tp);
+                }
+                out.push(Line::from(spans));
                 continue;
             }
 

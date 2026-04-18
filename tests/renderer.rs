@@ -214,6 +214,41 @@ fn snapshot_bullet_list() {
 }
 
 #[test]
+fn empty_task_item_renders_checkbox() {
+    // An empty task item (`- [ ] ` with nothing after) must still render with
+    // its checkbox visible — otherwise users can create a "phantom" item by
+    // pressing Enter on a task row and find the new item invisible.
+    let lines = render("- [ ] ");
+    let output: Vec<String> = lines.iter().map(line_text).collect();
+    assert_eq!(
+        output.len(),
+        1,
+        "expected one rendered line, got: {output:?}"
+    );
+    assert!(
+        output[0].contains("[ ]"),
+        "empty task item should render with '[ ]', got: {output:?}"
+    );
+}
+
+#[test]
+fn empty_task_item_in_middle_of_list_renders_checkbox() {
+    let lines = render("- [ ] alpha\n- [ ] \n- [ ] beta\n");
+    let output: Vec<String> = lines.iter().map(line_text).collect();
+    assert_eq!(
+        output.len(),
+        3,
+        "expected three rendered lines, got: {output:?}"
+    );
+    for line in &output {
+        assert!(
+            line.contains("[ ]"),
+            "every task item should render with '[ ]', got: {output:?}"
+        );
+    }
+}
+
+#[test]
 fn snapshot_horizontal_rule() {
     let lines = render("---\n");
     let output: Vec<String> = lines.iter().map(line_text).collect();

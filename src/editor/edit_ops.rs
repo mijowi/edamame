@@ -1,8 +1,9 @@
 use crate::config::Action;
 use crate::document::{EditDelta, Selection};
+use crate::editor::list_edit::{self, ListInfo};
 use crate::editor::table_edit::{
-    self, RowKind, TableInfo, cell_cursor_offset, cell_end_cursor_offset, cursor_cell,
-    find_table_at,
+    self, cell_cursor_offset, cell_end_cursor_offset, cursor_cell, find_table_at, RowKind,
+    TableInfo,
 };
 use crate::editor::{EditorState, Mode};
 
@@ -19,6 +20,14 @@ pub fn apply(
     viewport_height: usize,
     viewport_width: usize,
 ) -> bool {
+    // Snapshot pre-action state so we can decide after the match whether an
+    // auto-renumber pass is warranted.  Undo/Redo must NOT trigger renumber —
+    // their whole job is to restore the previous buffer exactly, so any
+    // inconsistent numbering the user specifically reverted to must stick.
+    let buffer_len_before = state.buffer.len_chars();
+    let history_depth_before = state.history.undo_depth();
+    let suppress_autonumber = matches!(action, Action::Undo | Action::Redo);
+
     match action {
         // ── Quit ──────────────────────────────────────────────────
         Action::Quit => return true,
@@ -49,7 +58,9 @@ pub fn apply(
         Action::MoveLeft => {
             enter_edit_if_preview(state, viewport_height);
             state.selection = None;
-            if !table_move_horizontal(state, /*forward=*/ false) {
+            if !table_move_horizontal(state, /*forward=*/ false)
+                && !list_move_horizontal(state, /*forward=*/ false)
+            {
                 state.cursor.move_left(&state.buffer);
             }
             sync_preferred_visual(state, viewport_width);
@@ -59,7 +70,9 @@ pub fn apply(
         Action::MoveRight => {
             enter_edit_if_preview(state, viewport_height);
             state.selection = None;
-            if !table_move_horizontal(state, /*forward=*/ true) {
+            if !table_move_horizontal(state, /*forward=*/ true)
+                && !list_move_horizontal(state, /*forward=*/ true)
+            {
                 state.cursor.move_right(&state.buffer);
             }
             sync_preferred_visual(state, viewport_width);
@@ -263,7 +276,7 @@ pub fn apply(
             // user never has to leave the table to append rows.
             if cursor_in_table(state) {
                 table_next_row(state, viewport_height, viewport_width);
-            } else {
+            } else if !list_handle_newline(state) {
                 insert_text(state, "\n");
             }
         }
@@ -271,6 +284,8 @@ pub fn apply(
             enter_edit_if_preview(state, viewport_height);
             if let Some(sel) = state.selection.take() {
                 delete_selection(state, sel);
+            } else if state.mode == Mode::Rendered && list_backspace_consumes_marker(state) {
+                // Handled: the whole marker was deleted as a single atomic edit.
             } else if state.cursor.offset > 0 {
                 let offset = state.cursor.offset - 1;
                 let ch = state.buffer.rope().char(offset).to_string();
@@ -424,6 +439,8 @@ pub fn apply(
                 } else {
                     insert_text(state, &text);
                 }
+                // Ordered-list renumbering runs automatically at end of
+                // `apply()` when the buffer has changed.
             }
         }
 
@@ -437,8 +454,11 @@ pub fn apply(
             // File picker is deferred to Phase 9.
         }
 
-        // ── Phase 3+ — no-ops for now ─────────────────────────────
-        Action::ToggleCheckbox => {}
+        // ── Phase 3 — list editing ───────────────────────────────
+        Action::ToggleCheckbox => {
+            enter_edit_if_preview(state, viewport_height);
+            list_toggle_checkbox(state);
+        }
 
         // ── Phase 2 — table editing ───────────────────────────────
         Action::TableNextCell => {
@@ -472,19 +492,34 @@ pub fn apply(
             table_move_row(state, /*down=*/ true, viewport_height, viewport_width);
         }
         Action::TableMoveColumnLeft => {
-            table_move_column(state, /*right=*/ false, viewport_height, viewport_width);
+            table_move_column(
+                state,
+                /*right=*/ false,
+                viewport_height,
+                viewport_width,
+            );
         }
         Action::TableMoveColumnRight => {
             table_move_column(state, /*right=*/ true, viewport_height, viewport_width);
         }
         Action::TableInsertRowAbove => {
-            table_insert_row(state, /*below=*/ false, viewport_height, viewport_width);
+            table_insert_row(
+                state,
+                /*below=*/ false,
+                viewport_height,
+                viewport_width,
+            );
         }
         Action::TableInsertRowBelow => {
             table_insert_row(state, /*below=*/ true, viewport_height, viewport_width);
         }
         Action::TableInsertColumnLeft => {
-            table_insert_column(state, /*right=*/ false, viewport_height, viewport_width);
+            table_insert_column(
+                state,
+                /*right=*/ false,
+                viewport_height,
+                viewport_width,
+            );
         }
         Action::TableInsertColumnRight => {
             table_insert_column(state, /*right=*/ true, viewport_height, viewport_width);
@@ -507,7 +542,27 @@ pub fn apply(
                 insert_text(state, "\n");
             }
         }
+    }
 
+    // After any action that mutated the buffer (detected by a change in length
+    // or a new history entry), run a renumber pass so the raw Markdown of any
+    // surrounding ordered list stays monotonic.  We skip this for Undo/Redo so
+    // those actions remain exact inverses of the recorded deltas, and we skip
+    // it when the mode is not Rendered (Raw mode is deliberately raw).
+    let edited = state.buffer.len_chars() != buffer_len_before
+        || state.history.undo_depth() != history_depth_before;
+    if !suppress_autonumber && state.mode == Mode::Rendered && edited {
+        list_renumber_at_cursor(state);
+    }
+
+    // After any action that may have left the cursor on a list marker
+    // (`- `, `1. `, `- [ ] `, …) — e.g. `DeleteLine` positions the cursor at
+    // the start of the following line, which is the marker — snap it onto the
+    // item's content start so the user's next keystroke lands where they see
+    // the caret, not in the marker.  Skipped in Raw mode: there the cursor
+    // is expected to reach every byte.
+    if state.mode == Mode::Rendered && !suppress_autonumber {
+        clamp_cursor_out_of_marker(state);
     }
 
     false
@@ -820,7 +875,11 @@ fn try_move_cell_vertical(
 
     let target = if down {
         let t = row + 1;
-        if t == 1 { 2 } else { t }
+        if t == 1 {
+            2
+        } else {
+            t
+        }
     } else if row == 2 {
         0
     } else if row < 2 {
@@ -1042,7 +1101,11 @@ fn table_move_column(
     let Some((row, col)) = cursor_cell(&info, byte) else {
         return;
     };
-    let other = if right { col + 1 } else { col.saturating_sub(1) };
+    let other = if right {
+        col + 1
+    } else {
+        col.saturating_sub(1)
+    };
     if other >= info.col_count || other == col {
         return;
     }
@@ -1143,4 +1206,191 @@ fn table_delete_column(state: &mut EditorState, viewport_height: usize, viewport
     // clamped to the new column count.
     let new_col = col.min(info.col_count.saturating_sub(2));
     jump_to_cell(state, row, new_col, viewport_height, viewport_width);
+}
+
+// ── List editing helpers ──────────────────────────────────────────────────────
+//
+// `list_edit` (byte-oriented) mirrors `table_edit`.  These helpers look up the
+// list at the cursor, convert between byte and char offsets, and apply the
+// resulting `EditDelta`s through `apply_byte_delta`.
+
+/// If the cursor is inside a Markdown list, dispatch `Enter` to either
+/// `exit_list` (when the item is empty) or `continue_item` (otherwise), and
+/// return `true` to signal the caller that the newline has been handled.
+/// Returns `false` when the cursor is not in a list — the caller should fall
+/// through to a plain newline insert.
+fn list_handle_newline(state: &mut EditorState) -> bool {
+    let Some((source, info)) = current_list(state) else {
+        return false;
+    };
+    let byte = cursor_byte(state);
+    let Some(item_idx) = list_edit::cursor_item_idx(&info, byte) else {
+        return false;
+    };
+    let item = &info.items[item_idx];
+
+    // Cursor must be past the marker prefix for any list-aware handling.  If
+    // it's in the indent/marker itself, fall through to plain newline.
+    if byte < item.marker_end {
+        return false;
+    }
+
+    let result = if item.content_is_empty(&source) {
+        list_edit::exit_list(&info, &source, byte)
+    } else {
+        list_edit::continue_item(&info, &source, byte)
+    };
+
+    if let Some(res) = result {
+        apply_byte_delta(state, res.delta, res.cursor_byte);
+        true
+    } else {
+        false
+    }
+}
+
+/// Toggle the checkbox on the cursor's task-list item, if any.
+fn list_toggle_checkbox(state: &mut EditorState) {
+    let Some((source, info)) = current_list(state) else {
+        return;
+    };
+    let byte = cursor_byte(state);
+    let Some(res) = list_edit::toggle_checkbox(&info, &source, byte) else {
+        return;
+    };
+    apply_byte_delta(state, res.delta, res.cursor_byte);
+}
+
+/// After a paste that may have landed in or adjacent to an ordered list,
+/// renumber the surrounding list so the sequence stays monotonic.  No-op for
+/// bullet lists or when the cursor is outside a list.
+fn list_renumber_at_cursor(state: &mut EditorState) {
+    let Some((source, info)) = current_list(state) else {
+        return;
+    };
+    let byte_before = cursor_byte(state);
+    if let Some(delta) = list_edit::renumber_list(&info, &source) {
+        apply_byte_delta(state, delta, byte_before);
+    }
+}
+
+/// Look up the list surrounding the cursor, returning the source snapshot and
+/// parsed `ListInfo` so the caller need not re-fetch `buffer.contents()`.
+fn current_list(state: &EditorState) -> Option<(String, ListInfo)> {
+    let source = state.buffer.contents();
+    let byte = cursor_byte(state);
+    list_edit::find_list_at(&source, byte).map(|info| (source, info))
+}
+
+/// If the cursor sits exactly at `content_start` of a list item, delete the
+/// entire marker prefix (including the preceding `\n`, when one exists) so
+/// the user never has to remove the marker character-by-character.  The edit
+/// merges the current item's content with the end of the preceding line
+/// (or, for the first item, just removes the marker).  Returns `true` when
+/// the edit was applied.
+fn list_backspace_consumes_marker(state: &mut EditorState) -> bool {
+    let Some((source, info)) = current_list(state) else {
+        return false;
+    };
+    let byte = cursor_byte(state);
+    let Some(item_idx) = list_edit::cursor_item_idx(&info, byte) else {
+        return false;
+    };
+    let item = &info.items[item_idx];
+    if byte != item.content_start {
+        return false;
+    }
+
+    // Delete from the end of the preceding line (its `\n`) through
+    // content_start.  For the very first line of the buffer (no preceding
+    // line), delete from byte 0 through content_start.
+    let delete_start = if item.start > 0 && source.as_bytes().get(item.start - 1) == Some(&b'\n') {
+        item.start - 1
+    } else {
+        item.start
+    };
+    let removed = source[delete_start..item.content_start].to_owned();
+    if removed.is_empty() {
+        return false;
+    }
+    let delta = EditDelta {
+        offset: delete_start,
+        removed,
+        inserted: String::new(),
+    };
+    apply_byte_delta(state, delta, delete_start);
+    // Ordered-list renumbering runs automatically at end of `apply()` when
+    // the buffer has changed, so no explicit call is needed here.
+    true
+}
+
+/// If the cursor sits on a list-item marker (the indent + `- ` / `N. ` /
+/// `[ ] ` prefix), snap it to the item's `content_start`.  Called after
+/// editing actions that may leave the cursor on a marker (`DeleteLine`,
+/// `Paste` of non-list content into the middle of a list, etc.).
+fn clamp_cursor_out_of_marker(state: &mut EditorState) {
+    let Some((_, info)) = current_list(state) else {
+        return;
+    };
+    let byte = cursor_byte(state);
+    let Some(item_idx) = list_edit::cursor_item_idx(&info, byte) else {
+        return;
+    };
+    let item = &info.items[item_idx];
+    if byte >= item.start && byte < item.content_start {
+        set_cursor_byte(state, item.content_start);
+    }
+}
+
+/// Treat list-item markers as non-navigable when the cursor moves
+/// horizontally.  Within a list, the cursor only lands on positions between
+/// `content_start` and `line_end` for each item; stepping across those
+/// boundaries hops directly to the adjacent item (or out of the list when
+/// already at the first item's content start or the last item's line end).
+fn list_move_horizontal(state: &mut EditorState, forward: bool) -> bool {
+    let Some((source, info)) = current_list(state) else {
+        return false;
+    };
+    let byte = cursor_byte(state);
+    let Some(item_idx) = list_edit::cursor_item_idx(&info, byte) else {
+        return false;
+    };
+    let item = &info.items[item_idx];
+
+    if forward {
+        if byte >= item.line_end {
+            if let Some(next) = info.items.get(item_idx + 1) {
+                set_cursor_byte(state, next.content_start);
+                return true;
+            }
+            // Last item: step past the list entirely.  info.end sits just
+            // past the final `\n`, which is where the first post-list line
+            // begins.
+            set_cursor_byte(state, info.end.min(source.len()));
+            return true;
+        }
+        // Normal char-step, but if we'd land before the next item's content
+        // (because we stepped onto a marker char, which shouldn't happen for
+        // correctly-skipped cursors), clamp to content_start.
+        let new_char = (state.cursor.offset + 1).min(state.buffer.len_chars());
+        state.cursor.offset = new_char;
+        true
+    } else {
+        if byte <= item.content_start {
+            if item_idx > 0 {
+                let prev = &info.items[item_idx - 1];
+                set_cursor_byte(state, prev.line_end);
+                return true;
+            }
+            // First item: step out past the list's starting `\n`, if any.
+            if info.start > 0 {
+                set_cursor_byte(state, info.start - 1);
+            }
+            // else stay put at content_start.
+            return true;
+        }
+        let new_char = state.cursor.offset.saturating_sub(1);
+        state.cursor.offset = new_char;
+        true
+    }
 }

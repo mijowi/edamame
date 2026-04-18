@@ -274,6 +274,7 @@ pub fn parse_key(s: &str) -> Result<KeyEvent, KeyMapError> {
         "tab" => KeyCode::Tab,
         "backtab" => KeyCode::BackTab,
         "insert" => KeyCode::Insert,
+        "space" => KeyCode::Char(' '),
         "f1" => KeyCode::F(1),
         "f2" => KeyCode::F(2),
         "f3" => KeyCode::F(3),
@@ -347,8 +348,7 @@ impl KeyMap {
         // `Tab + SHIFT` form produced by `parse_key("shift+tab")` so bindings
         // match regardless of which representation the terminal emits.
         if event.code == KeyCode::BackTab {
-            let fallback =
-                KeyEvent::new(KeyCode::Tab, event.modifiers | KeyModifiers::SHIFT);
+            let fallback = KeyEvent::new(KeyCode::Tab, event.modifiers | KeyModifiers::SHIFT);
             return self.bindings.get(&fallback);
         }
         None
@@ -530,5 +530,14 @@ mod tests {
         assert!(parse_key("ctrl+s").is_ok());
         assert!(parse_key("ctrl+shift+z").is_ok());
         assert!(parse_key("escape").is_ok());
+        assert!(parse_key("space").is_ok());
+        assert!(parse_key("ctrl+space").is_ok());
+    }
+
+    #[test]
+    fn ctrl_space_maps_to_toggle_checkbox() {
+        let km = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        let key = parse_key("ctrl+space").unwrap();
+        assert_eq!(km.action_for(&key), Some(&Action::ToggleCheckbox));
     }
 }
