@@ -46,6 +46,11 @@ unicode-segmentation = "1"
 # Clipboard (OS clipboard with kill-ring fallback)
 arboard = { version = "3", optional = true }
 
+# Terminal image-protocol probing (Picker::from_query_stdio).
+# `chafa-dyn` is skipped to avoid a system-library dependency on libchafa —
+# we only use the Picker for detection, not for actual halfblock rendering.
+ratatui-image = { version = "9", default-features = false, features = ["crossterm", "image-defaults"] }
+
 [features]
 default = ["clipboard"]
 clipboard = ["arboard"]

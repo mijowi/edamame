@@ -10,6 +10,7 @@ mod ui;
 use anyhow::Result;
 use app::App;
 use config::Config;
+use terminal::{Capabilities, TerminalSetup};
 
 fn main() -> Result<()> {
     // ── Parse CLI arguments ────────────────────────────────────────
@@ -31,7 +32,10 @@ fn main() -> Result<()> {
     };
 
     // ── Initialise terminal ────────────────────────────────────────
-    let terminal = terminal::setup()?;
+    let TerminalSetup {
+        terminal,
+        keyboard_enhancement,
+    } = terminal::setup()?;
 
     // Install a panic hook so the terminal is always restored, even on panic.
     let orig_hook = std::panic::take_hook();
@@ -40,8 +44,15 @@ fn main() -> Result<()> {
         orig_hook(info);
     }));
 
+    // ── Detect capabilities ───────────────────────────────────────
+    // Must run AFTER EnterAlternateScreen so Picker::from_query_stdio is
+    // talking to the live terminal, and BEFORE app.run() spawns its event
+    // reader thread (competing reads would eat the escape-sequence replies).
+    let capabilities = Capabilities::detect(keyboard_enhancement);
+    log_capabilities(&capabilities);
+
     // ── Run the app ───────────────────────────────────────────────
-    let mut app = App::new(config, file_path)?;
+    let mut app = App::new(config, file_path, capabilities)?;
     let run_result = app.run(terminal);
 
     // ── Restore terminal ──────────────────────────────────────────
@@ -72,4 +83,16 @@ fn setup_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
 
     tracing::info!("edamame starting");
     Some(guard)
+}
+
+/// Write a one-line summary of the detected terminal capabilities to the log.
+fn log_capabilities(caps: &Capabilities) {
+    tracing::info!(
+        colour_depth = ?caps.colour_depth,
+        mouse = caps.mouse,
+        image_protocol = ?caps.image_protocol,
+        unicode_full = caps.unicode_full,
+        keyboard_enhancement = caps.keyboard_enhancement,
+        "terminal capabilities detected"
+    );
 }

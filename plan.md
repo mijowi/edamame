@@ -581,19 +581,25 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 
 ---
 
-### Phase 4 — Capability Detection
+### Phase 4 — Capability Detection ✅
 *Goal: detect what the terminal supports and gate features accordingly.*
 
 **Tasks:**
-- [ ] Implement `terminal/capabilities.rs` with a `Capabilities` struct: `{ colour_depth: ColourDepth, mouse: bool, image_protocol: Option<ImageProtocol>, unicode_full: bool, keyboard_enhancement: bool }` — where `ImageProtocol` is an enum (`Sixel`, `KittyGraphics`, `ITerm2`, `Halfblocks`); `keyboard_enhancement` indicates whether `PushKeyboardEnhancementFlags` succeeded (required for `Ctrl-Shift-Z` redo)
-- [ ] Probe at startup using crossterm queries and environment variable heuristics (`$TERM`, `$COLORTERM`, `$TERM_PROGRAM`, `$KITTY_WINDOW_ID`, etc.)
-- [ ] Use `ratatui-image`'s `Picker` API for image protocol detection (this handles the detailed probing)
-- [ ] Store capabilities in `App` and thread them through to features that need them
-- [ ] Log detected capabilities to the tracing log file
-- [ ] Graceful degradation: if no colour support, render without ANSI styles; if no mouse, disable all mouse features without error
-- [ ] Show a popup modal notice if any features (e.g. mouse) are not available, with `[Ok]` and `[Don't show this again]`. The latter should set a flag in the config file to suppress future warnings.
+- [x] Implement `terminal/capabilities.rs` with a `Capabilities` struct: `{ colour_depth: ColourDepth, mouse: bool, image_protocol: Option<ImageProtocol>, unicode_full: bool, keyboard_enhancement: bool }` — where `ImageProtocol` is an enum (`Sixel`, `KittyGraphics`, `ITerm2`, `Halfblocks`); `keyboard_enhancement` indicates whether `PushKeyboardEnhancementFlags` succeeded (required for `Ctrl-Shift-Z` redo)
+- [x] Probe at startup using crossterm queries and environment variable heuristics (`$TERM`, `$COLORTERM`, `$TERM_PROGRAM`, `$KITTY_WINDOW_ID`, etc.)
+- [x] Use `ratatui-image`'s `Picker` API for image protocol detection (this handles the detailed probing)
+- [x] Store capabilities in `App` and thread them through to features that need them
+- [x] Log detected capabilities to the tracing log file
+- [x] Graceful degradation: if no colour support, render without ANSI styles (`Theme::monochrome()`); if no mouse, disable all mouse features without error
+- [x] Show a popup modal notice if any features (e.g. mouse) are not available, with `[Ok]` and `[Don't show this again]`. The latter sets `editor.suppress_capability_warnings = true` in the config file via the new `Config::save()`. The `ui::modal` widget is generic enough to host the settings panel and confirm dialogs in later phases.
 
 **Acceptance criteria:** `edamame` starts correctly in a minimal `xterm` (no mouse, 8 colours) and in a feature-rich terminal like Ghostty or Kitty, adapting its behaviour in both cases.
+
+**Implementation notes:**
+- `ratatui-image` is pinned to `9.*` (not `10.*`) because 10 requires ratatui 0.30; default features are disabled to skip the `libchafa` system dependency (we only need the probing Picker, not halfblock rendering).
+- `terminal::setup()` now returns a `TerminalSetup { terminal, keyboard_enhancement }` struct so the App can tell whether kitty keyboard enhancement was actually enabled (crossterm's `supports_keyboard_enhancement()` can disagree with the actual push operation on some terminals, so we trust the push result).
+- Capability detection runs between `setup()` and `app.run()` so the Picker's escape-sequence probes aren't eaten by the App's event-reader thread.
+- Config persistence uses `toml::to_string_pretty` and creates `~/.config/edamame/` on demand.
 
 ---
 

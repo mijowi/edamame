@@ -38,6 +38,26 @@ impl Config {
         dirs::config_dir().map(|d| d.join("edamame").join("config.toml"))
     }
 
+    /// Persist the current config to disk at `config_path()`.
+    ///
+    /// Creates the parent directory if needed.  Returns an error when the
+    /// path can't be determined or the write fails; callers typically log
+    /// the error and continue rather than making it fatal.
+    pub fn save(&self) -> Result<()> {
+        let path = Self::config_path()
+            .context("Could not determine config directory (missing XDG_CONFIG_HOME/HOME)")?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create config directory: {}", parent.display())
+            })?;
+        }
+        let serialized =
+            toml::to_string_pretty(self).context("Failed to serialize config to TOML")?;
+        std::fs::write(&path, serialized)
+            .with_context(|| format!("Failed to write config file: {}", path.display()))?;
+        Ok(())
+    }
+
     /// Returns the path to the log directory.
     pub fn log_dir() -> Option<PathBuf> {
         dirs::data_dir().map(|d| d.join("edamame"))
@@ -67,6 +87,10 @@ pub struct EditorConfig {
     /// stays at the same horizontal column on the screen.  When false, movement
     /// is by **logical** buffer lines (one `\n`-terminated line per step).
     pub visual_line_nav: bool,
+    /// When true, the startup notice that lists unsupported terminal features
+    /// is skipped.  Set by the `[Don't show this again]` button on the notice
+    /// modal.
+    pub suppress_capability_warnings: bool,
 }
 
 impl Default for EditorConfig {
@@ -78,6 +102,7 @@ impl Default for EditorConfig {
             line_wrap: true,
             preserve_blank_lines: true,
             visual_line_nav: true,
+            suppress_capability_warnings: false,
         }
     }
 }
@@ -132,5 +157,15 @@ mod tests {
         assert!(config.editor.dev_mode);
         assert_eq!(config.editor.tab_width, 4); // default
         assert_eq!(config.modal.handler, "default"); // default
+    }
+
+    #[test]
+    fn suppress_capability_warnings_round_trips() {
+        let mut config = Config::default();
+        assert!(!config.editor.suppress_capability_warnings);
+        config.editor.suppress_capability_warnings = true;
+        let serialized = toml::to_string(&config).expect("serialize");
+        let deserialized: Config = toml::from_str(&serialized).expect("deserialize");
+        assert!(deserialized.editor.suppress_capability_warnings);
     }
 }

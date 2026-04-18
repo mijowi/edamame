@@ -56,6 +56,10 @@ pub struct Theme {
     pub status_info: Style,
     pub status_modified: Style,
 
+    // ── Modal popups ──────────────────────────────────────────────
+    pub modal_title: Style,
+    pub modal_button_focused: Style,
+
     // ── General text ──────────────────────────────────────────────
     pub normal: Style,
 }
@@ -132,6 +136,14 @@ impl Default for Theme {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
 
+            // Modal popups
+            modal_title: Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            modal_button_focused: Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+
             // General
             normal: Style::default(),
         }
@@ -149,6 +161,66 @@ impl Theme {
             H4 => self.h4,
             H5 => self.h5,
             H6 => self.h6,
+        }
+    }
+
+    /// Monochrome fallback theme — used when the terminal reports no colour
+    /// support (e.g. `TERM=dumb`).  All colours are stripped; text attributes
+    /// (bold, italic, underline, strikethrough) are preserved because they
+    /// work over SGR regardless of colour depth.
+    pub fn monochrome() -> Self {
+        let default = Self::default();
+        let strip = |s: Style| -> Style {
+            // Keep only the modifier bits (bold/italic/underline/etc).
+            Style::default().add_modifier(s.add_modifier)
+        };
+
+        Self {
+            h1: strip(default.h1),
+            h1_rule: Style::default(),
+            h2: strip(default.h2),
+            h3: strip(default.h3),
+            h4: strip(default.h4),
+            h5: strip(default.h5),
+            h6: strip(default.h6),
+
+            bold: strip(default.bold),
+            italic: strip(default.italic),
+            strikethrough: strip(default.strikethrough),
+            highlight: Style::default().add_modifier(Modifier::REVERSED),
+            code_span: Style::default().add_modifier(Modifier::REVERSED),
+            link_text: Style::default().add_modifier(Modifier::UNDERLINED),
+            image_placeholder: Style::default().add_modifier(Modifier::ITALIC),
+
+            code_block_border: Style::default(),
+            code_block_lang: Style::default().add_modifier(Modifier::ITALIC),
+            code_block_text: Style::default(),
+            blockquote_bar: Style::default(),
+            blockquote_text: Style::default().add_modifier(Modifier::ITALIC),
+            rule: Style::default(),
+
+            list_bullet: Style::default(),
+            list_number: Style::default(),
+
+            task_unchecked: Style::default(),
+            task_checked: Style::default().add_modifier(Modifier::BOLD),
+            task_strikethrough: true,
+
+            table_border: Style::default(),
+            table_header: Style::default().add_modifier(Modifier::BOLD),
+            table_cell: Style::default(),
+
+            status_bar: Style::default().add_modifier(Modifier::REVERSED),
+            status_mode: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            status_filename: Style::default().add_modifier(Modifier::REVERSED),
+            status_info: Style::default().add_modifier(Modifier::REVERSED),
+            status_modified: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+
+            modal_title: Style::default().add_modifier(Modifier::BOLD),
+            modal_button_focused: Style::default()
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+
+            normal: Style::default(),
         }
     }
 }

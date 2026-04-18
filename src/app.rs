@@ -4,7 +4,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::Event;
+use crossterm::event::{Event, KeyEventKind};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
@@ -13,7 +13,10 @@ use crate::document::Buffer;
 use crate::editor::{edit_ops, EditorState, Mode};
 use crate::input::modal::default::DefaultHandler;
 use crate::input::{InputDispatcher, ModalHandler};
-use crate::ui::{EditorView, EditorViewState, PreviewState};
+use crate::terminal::{Capabilities, ColourDepth};
+use crate::ui::{
+    EditorView, EditorViewState, ModalButton, ModalResponse, ModalState, ModalView, PreviewState,
+};
 
 /// Events that the main loop can receive.
 enum AppEvent {
@@ -21,22 +24,46 @@ enum AppEvent {
     Term(Event),
 }
 
+/// A modal popup currently shown on top of the editor.  We only model the
+/// startup capability-notice in Phase 4; the `ModalView` widget itself is
+/// generic enough to host other modals in later phases.
+struct StartupNotice {
+    body: Vec<String>,
+    buttons: Vec<ModalButton>,
+    state: ModalState,
+}
+
 /// The application: owns all state and drives the event loop.
 pub struct App {
     config: Config,
     theme: &'static Theme,
+    capabilities: Capabilities,
     file_path: Option<PathBuf>,
     editor: EditorState,
     view_state: EditorViewState,
     should_quit: bool,
+    /// When `Some`, a startup notice modal is displayed and absorbs key
+    /// events.  Cleared to `None` once the user dismisses it.
+    startup_notice: Option<StartupNotice>,
 }
 
 impl App {
     /// Create the app, loading the file if one is given.
-    pub fn new(config: Config, file_path: Option<PathBuf>) -> Result<Self> {
-        // Leak the theme so it can be stored as `&'static Theme`.
-        // This is intentional: the theme lives for the duration of the process.
-        let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
+    pub fn new(
+        config: Config,
+        file_path: Option<PathBuf>,
+        capabilities: Capabilities,
+    ) -> Result<Self> {
+        // Leak the theme so it can be stored as `&'static Theme`.  This is
+        // intentional: the theme lives for the duration of the process.
+        // When the terminal reports no colour support, fall back to the
+        // monochrome palette so style escapes don't produce garbled output.
+        let theme_value = if capabilities.colour_depth == ColourDepth::NoColour {
+            Theme::monochrome()
+        } else {
+            Theme::default()
+        };
+        let theme: &'static Theme = Box::leak(Box::new(theme_value));
 
         let buffer = match &file_path {
             Some(path) => Buffer::load_file(path)?,
@@ -55,14 +82,25 @@ impl App {
         // source bypasses the blank-line preservation pass in `ParsedDoc`).
         let view_state = EditorViewState::new(editor.parsed.lines.clone());
 
+        // Decide whether to show the capability-notice on startup.
+        let startup_notice = build_startup_notice(&capabilities, &config);
+
         Ok(Self {
             config,
             theme,
+            capabilities,
             file_path,
             editor,
             view_state,
             should_quit: false,
+            startup_notice,
         })
+    }
+
+    /// Expose detected capabilities to later phases (mouse, images, etc.).
+    #[allow(dead_code)]
+    pub fn capabilities(&self) -> &Capabilities {
+        &self.capabilities
     }
 
     /// Run the event loop until the user quits.
@@ -91,6 +129,7 @@ impl App {
             let editor_ref = &self.editor;
             let theme_ref = self.theme;
             let view_state_ref = &mut self.view_state;
+            let notice_ref = self.startup_notice.as_mut();
 
             terminal.draw(|frame| {
                 let view = EditorView {
@@ -99,6 +138,15 @@ impl App {
                     filename: &filename,
                 };
                 frame.render_stateful_widget(view, frame.area(), view_state_ref);
+                if let Some(notice) = notice_ref {
+                    let modal = ModalView {
+                        title: "Terminal capabilities",
+                        body: &notice.body,
+                        buttons: &notice.buttons,
+                        theme: theme_ref,
+                    };
+                    frame.render_stateful_widget(modal, frame.area(), &mut notice.state);
+                }
             })?;
 
             // ── Wait for event (with timeout for jitter redraws) ──
@@ -114,6 +162,16 @@ impl App {
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             };
+
+            // Startup notice absorbs all input while it's visible.
+            if self.startup_notice.is_some() {
+                if let Event::Key(key) = &event {
+                    if key.kind == KeyEventKind::Press {
+                        self.handle_startup_notice_key(*key);
+                    }
+                }
+                continue;
+            }
 
             let term_size = terminal.size()?;
             let viewport_height = term_size.height as usize;
@@ -145,6 +203,35 @@ impl App {
         Ok(())
     }
 
+    /// Apply a keypress targeted at the startup-notice modal.  On dismissal
+    /// clears the notice and, if the user chose "Don't show this again",
+    /// persists the preference.
+    fn handle_startup_notice_key(&mut self, key: crossterm::event::KeyEvent) {
+        let Some(notice) = self.startup_notice.as_mut() else {
+            return;
+        };
+        let num_buttons = notice.buttons.len();
+        let response = notice.state.handle_key(&key, num_buttons);
+        match response {
+            ModalResponse::Continue => {}
+            ModalResponse::Cancelled => {
+                self.startup_notice = None;
+            }
+            ModalResponse::ButtonPressed(idx) => {
+                // Button index 1 is "Don't show this again" (see
+                // `build_startup_notice`).  Any other button closes the
+                // modal without touching config.
+                if idx == 1 {
+                    self.config.editor.suppress_capability_warnings = true;
+                    if let Err(e) = self.config.save() {
+                        tracing::warn!(error = %e, "failed to persist capability-warning preference");
+                    }
+                }
+                self.startup_notice = None;
+            }
+        }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────
 
     fn display_filename(&self) -> String {
@@ -158,6 +245,28 @@ impl App {
     }
 }
 
+/// Construct the startup-notice modal when there's something worth reporting
+/// and the user hasn't asked to suppress it.
+fn build_startup_notice(caps: &Capabilities, config: &Config) -> Option<StartupNotice> {
+    if config.editor.suppress_capability_warnings {
+        return None;
+    }
+    if !caps.has_missing_features() {
+        return None;
+    }
+    let mut body = caps.missing_features_summary();
+    body.push(String::new());
+    body.push("Affected features will be disabled automatically.".to_owned());
+    Some(StartupNotice {
+        body,
+        buttons: vec![
+            ModalButton::new("Ok"),
+            ModalButton::new("Don't show this again"),
+        ],
+        state: ModalState::new(),
+    })
+}
+
 // ── Extension trait for DefaultHandler ───────────────────────────────────────
 
 /// Private extension trait so `DefaultHandler` can process raw crossterm events
@@ -169,7 +278,6 @@ trait HandleEvent {
 
 impl<'k> HandleEvent for DefaultHandler<'k> {
     fn handle_event(&mut self, event: Event, state: &EditorState) -> Option<crate::config::Action> {
-        use crossterm::event::KeyEventKind;
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle(key, state),
             _ => None,
