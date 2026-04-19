@@ -644,13 +644,6 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
   
 ---
 
-### Miscellaneous Issues
-- [ ] Table rows should have a bottom border. The header row should have an extra thick border.
-- [ ] Heading 1 and heading 2 elements coded with `===` or `---` below the text should de-render the text and the `===` or `---` simultaneously, when the cursor is on either line.
-- [ ] Clipboard operations work within the app, but we can't cut, copy, or paste, to or from external applications. We need to interface with the system clipboard.
-
----
-
 ### Phase 6 — Table Row/Column Drag and Column Resize
 *Goal: reorder rows and columns by dragging; resize columns by dragging borders.*
 
@@ -723,7 +716,8 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 - [ ] Add a markdown cheat sheet (tailored to the markdown supported by this app), accessible from the command palette.
 - [ ] Implement tab bar if multiple files are open (from link navigation or command line args)
 - [ ] Accept multiple file arguments on the command line: `edamame file1.md file2.md`
-- [ ] Show key binding hints for the current mode at the bottom of the status bar (hideable via config)
+
+> Contextual keybind hints at the bottom of the status bar are specified in Phase 11 (under "Contextual hint line"). Phase 9 provides the persistent left-hand status-bar info; Phase 11 provides the right-hand hint/message region.
 
 **Acceptance criteria:** Status bar shows all relevant information at a glance. File picker is fast and keyboard-navigable. Command palette lists all actions with their key bindings. Multiple files can be open simultaneously.
 
@@ -734,11 +728,11 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 
 **Tasks:**
 - [ ] Add `notify` as a dependency; start a background watcher thread after opening each file
-- [ ] On file change notification: if the buffer is unmodified, offer to reload (status bar prompt: `[R]eload / [I]gnore`)
+- [ ] On file change notification: if the buffer is unmodified, offer to reload (status bar prompt: `R Reload   I Ignore`)
 - [ ] If the buffer is modified when a change is detected: show a `[modified externally]` warning and render the diff view automatically; offer three options (keep the diff visible until the user confirms so they can see what they're choosing to keep or discard):
-  - **[R]eload** — discard in-memory changes, load the on-disk version
-  - **[S]ave copy** — write the in-memory buffer to a new file (auto-named `filename.bak.md` or user-prompted), then reload from disk, preserving both versions
-  - **[O]verwrite** — write the in-memory buffer to disk, discarding the external changes
+  - **R Reload** — discard in-memory changes, load the on-disk version
+  - **S Save copy** — write the in-memory buffer to a new file (auto-named `filename.bak.md` or user-prompted), then reload from disk, preserving both versions
+  - **O Overwrite** — write the in-memory buffer to disk, discarding the external changes
 - [ ] Implement `DiffOverlay` using `similar` (Myers diff algorithm): compare in-memory buffer against on-disk content; render:
   - Deleted lines: red background, strikethrough
   - Added lines: green background
@@ -754,16 +748,45 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 
 ### Phase 11 — More Polish
 *Goal: further UX work to make the app fun and easy to use*
-I'm thinking one line for keybind hints, and another line for status messages (e.g. saved, modified, press any key to edit, etc)
 
-- [ ] Add hints to the status bar, to include keybinds. Hints should change dynamically depending on where the cursor is.
-  - [ ] In preview mode, "Press any key to edit", "Ctrl- [C]opy [P] Menu [Q]uit
-  - [ ] In hybrid/raw edit mode, `Ctrl- [C]opy [X]Cut [V]Paste [S]ave [P]Menu [Q]uit` (Which of these is convention, `[X]Cut` or `[X] Cut` with a space?)
-  - [ ] In hybrid mode, in a table, show the table manipulation keybinds (switch/add rows/columns, etc). They will have to be abbreviated to fit.
-- [ ] Brief `Copied to clipboard` when text is copied. Cut and paste events are self-evident and don't need hints.
-- [ ] Brief `Autosaved` notification
-- [ ] Emoji usage and emoji capability detection
-- [ ] How can we automatically adjust table column widths to be most visually pleasing? We want to minimize whitespace in cells so that rows are not excessively long. What if we calculated average cell width in a column, not just maximum cell width, to determine how column widths should be distributed? 
+A single status-line that normally shows contextual keybind hints, briefly overridden by transient status messages (e.g. "Saved", "Copied") that time out back to hints. Keeps vertical space on small terminals; matches the helix/kakoune pattern.
+
+**Status-bar layout.** The status bar is split left/right:
+- **Left** — persistent state from Phase 9: mode indicator, file path, dirty marker, cursor `line:col`, selection size, detected image protocol.
+- **Right** — hint/message region owned by this phase. Normally shows the contextual keybind hints below; transient status messages overlay *only* this right region for ~1.5s, leaving the persistent left-hand info untouched.
+
+**Keybind notation convention.** Use plain letter-plus-label notation everywhere a key is surfaced to the user — hint line *and* prompt overlays. Examples: `^C Copy`, `^X Cut` for Ctrl-chords; `R Reload`, `I Ignore` for bare keys. This supersedes the `[R]eload / [I]gnore` bracket notation currently in Phase 10 — update that prompt (and any similar prompts) to match.
+
+- [ ] **Contextual hint line** — dynamic based on cursor context.
+  - [ ] Preview mode: `any key → edit   ^C Copy   ^P Menu   ^Q Quit`. Global chords (^C/^P/^Q) are reserved; "any other key" triggers the mode switch to edit.
+  - [ ] Hybrid / raw edit mode: `^C Copy  ^X Cut  ^V Paste  ^S Save  ^P Menu  ^Q Quit`. Use `^X Cut` notation rather than `[X]Cut` — more conventional, avoids the ambiguity of whether the bracketed letter is pressed bare or with a modifier.
+  - [ ] Hybrid mode, cursor inside a table: replace the hint line with table manipulation keybinds. Full names when terminal width allows, abbreviated fallback when it doesn't. A `?` popover exposes the full list when abbreviation is unavoidable.
+- [ ] **Transient status messages** — overlay the hint line for ~1.5s, then revert.
+  - [ ] `Copied` on both copy *and* cut (the deletion is self-evident; the clipboard side-effect is not). No notification on paste.
+  - [ ] `Autosaved` only on the dirty → clean transition, not on every autosave cycle, to avoid noise.
+- [ ] **Emoji support** — config opt-in, default off. No probing of terminal capabilities in this phase: no reliable query exists, and terminals that claim emoji support routinely miscompute cell widths and corrupt layout. Revisit if users request automatic detection.
+- [ ] **Smart table column widths** — adopt a min-max proportional distribution (the algorithm browsers use for `table-layout: auto` and what `rich` / `tabulate` converge on):
+      - Per column: `min = longest word`, `max = longest cell`.
+      - Distribute remaining viewport width weighted by `(max − min)`.
+      - Prose columns wrap onto multiple rendered rows when their allocation is below `max`; short/numeric columns stay at their `max`.
+      - *Rejected:* average-width-as-target — it breaks the invariant that content fits, forcing silent truncation of outlier cells.
+- [ ] Table row striping
+
+---
+
+### Phase 12 — Exporting
+*Goal: Export .md files to other basic formats*
+
+**Tasks:**
+- [ ] HTML export
+- [ ] PDF export
+
+---
+
+### Phase 13 — Diagrams
+*Goal: See if we can add support for mermaid diagrams*
+
+Terminals that support showing images should be able to show diagrams. We can hand off diagram code to a mermaid subroutine, have it generate an image, and display that.
 
 ---
 

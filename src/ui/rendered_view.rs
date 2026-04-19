@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::config::Theme;
+use crate::document::detect_setext;
 use crate::editor::table_edit;
 use crate::editor::EditorState;
 
@@ -78,14 +79,22 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             cursor_position_in_block(editor, cursor_byte, &raw_block_source);
 
         // Map the cursor's raw source line to a rendered line within the block.
-        // For tables the renderer prepends a top border before the header and
-        // appends a bottom border after the last data row, so raw line i maps
-        // to rendered line i + 1 within the block — and we must never replace
-        // either border with raw text.
+        // For tables the rendered layout is: top border, header, thick
+        // separator (alignment row), then (data row, thin separator)* ending
+        // with a data row and finally the bottom border.  Raw line 0 (header)
+        // → sub 1; raw line 1 (alignment) → sub 2 (the thick separator);
+        // raw line r ≥ 2 (data) → sub 2r − 1.  We must never replace a border
+        // or separator line with raw text.
         let is_table = table_edit::is_table_block(&raw_block_source);
+        let is_setext = detect_setext(&raw_block_source).is_some();
         let cursor_in_block = if is_table && cursor_block_own >= 3 {
             let last_replaceable = cursor_block_own.saturating_sub(2);
-            (cursor_raw_line + 1).min(last_replaceable)
+            let sub = match cursor_raw_line {
+                0 => 1,
+                1 => 2,
+                r => 2 * r - 1,
+            };
+            sub.min(last_replaceable)
         } else {
             cursor_raw_line.min(cursor_block_own.saturating_sub(1))
         };
@@ -127,7 +136,41 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             }
 
             let rows_used;
-            if reveal_raw && virtual_idx == cursor_rendered_line {
+            // Setext headings reveal all of their raw lines (the title and
+            // the `===` / `---` underline) at once, on their corresponding
+            // rendered positions — not just the single line the cursor is on.
+            let in_cursor_block =
+                virtual_idx >= cursor_block_lines.start && virtual_idx < cursor_block_lines.end;
+            if reveal_raw && is_setext && in_cursor_block {
+                let sub = virtual_idx - cursor_block_lines.start;
+                let raw_text = raw_lines.get(sub).copied().unwrap_or("");
+                let cursor_on_this = cursor_raw_line == sub;
+                let sel_cols = selection_bytes.and_then(|(sa, sb)| {
+                    let block_start = block_range_for_cursor.as_ref()?.start;
+                    let raw_line_start_in_block = raw_line_byte_start(&raw_block_source, sub);
+                    let raw_line_start_abs = block_start + raw_line_start_in_block;
+                    let raw_line_end_abs = raw_line_start_abs + raw_text.len();
+                    let start_byte = sa.max(raw_line_start_abs).min(raw_line_end_abs);
+                    let end_byte = sb.max(raw_line_start_abs).min(raw_line_end_abs);
+                    if start_byte >= end_byte {
+                        return None;
+                    }
+                    let start_col = raw_text[..start_byte - raw_line_start_abs].chars().count();
+                    let end_col = raw_text[..end_byte - raw_line_start_abs].chars().count();
+                    Some((start_col, end_col))
+                });
+                let styled = make_raw_line_with_selection(
+                    raw_text,
+                    if cursor_on_this {
+                        Some(cursor_col)
+                    } else {
+                        None
+                    },
+                    sel_cols,
+                    self.theme,
+                );
+                rows_used = render_line(&styled, area, buf, vis_y as u16, wrap) as usize;
+            } else if reveal_raw && virtual_idx == cursor_rendered_line {
                 let raw_text = raw_lines.get(cursor_raw_line).copied().unwrap_or("");
                 // Prefer cell-scoped reveal for table rows — replace only the
                 // active cell's content area with raw text, keeping the box-
@@ -234,7 +277,8 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             // NOT the cursor's raw-displayed line (that line was painted by
             // `make_raw_line_with_selection` and must not be re-painted).
             if let Some((sa, sb)) = selection_bytes {
-                if !(reveal_raw && virtual_idx == cursor_rendered_line) {
+                let setext_revealed = reveal_raw && is_setext && in_cursor_block;
+                if !(reveal_raw && virtual_idx == cursor_rendered_line) && !setext_revealed {
                     paint_selection_overlay(
                         editor,
                         buf,
@@ -364,10 +408,11 @@ fn paint_selection_overlay(
     let sub_idx_in_block = rendered_line_idx.saturating_sub(rendered_span.start);
     let is_table = table_edit::is_table_block(block_text);
     let raw_line_idx = if is_table {
-        // Table rendered layout: 0=top border, 1=header, 2=separator,
-        // 3..=N+1=data rows, N+2=bottom border.  Raw layout: 0=header,
-        // 1=alignment, 2..=N=data.  Border rendered lines have no raw
-        // source — skip highlighting them rather than flood-fill the row.
+        // Table rendered layout: sub 0 = top border, sub 1 = header,
+        // sub 2 = thick separator (= alignment raw row), then data rows at
+        // odd sub indexes ≥ 3, thin separators at even sub indexes between
+        // them, and the final sub = bottom border.  Only header and data
+        // rows map to raw lines that can carry selection highlighting.
         let own_count = editor.parsed.block_own_line_count(
             editor
                 .parsed
@@ -378,7 +423,11 @@ fn paint_selection_overlay(
         if sub_idx_in_block == 0 || sub_idx_in_block + 1 >= own_count {
             return;
         }
-        sub_idx_in_block - 1
+        match sub_idx_in_block {
+            1 => 0,
+            n if n >= 3 && n % 2 == 1 => (n + 1) / 2,
+            _ => return,
+        }
     } else {
         sub_idx_in_block
     };

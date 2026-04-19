@@ -473,19 +473,31 @@ impl<'t> Renderer<'t> {
         let header_line = self.render_table_row(headers, &widths, col_count, header_style);
         out.push(header_line);
 
-        // Separator: ├─────┼─────┤
-        let sep: String = std::iter::once("├".to_string())
+        // Thick separator under the header: ┝━━━━━┿━━━━━┥
+        // Uses the heavy-horizontal box-drawing glyph (`━`) with light-vertical
+        // joins so the stroke renders visibly thicker than the `─` used for
+        // inter-row separators while the side pipes stay light to match `│`.
+        let thick: String = std::iter::once("┝".to_string())
+            .chain(widths.iter().enumerate().map(|(i, &w)| {
+                let corner = if i + 1 < col_count { "┿" } else { "┥" };
+                format!("{}{}", "━".repeat(w + 2), corner)
+            }))
+            .collect();
+        out.push(Line::styled(thick, border_style));
+
+        // Data rows, each followed by a thin separator except the last.
+        let thin: String = std::iter::once("├".to_string())
             .chain(widths.iter().enumerate().map(|(i, &w)| {
                 let corner = if i + 1 < col_count { "┼" } else { "┤" };
                 format!("{}{}", "─".repeat(w + 2), corner)
             }))
             .collect();
-        out.push(Line::styled(sep, border_style));
-
-        // Data rows
-        for row in rows {
+        for (i, row) in rows.iter().enumerate() {
             let row_line = self.render_table_row(row, &widths, col_count, self.theme.table_cell);
             out.push(row_line);
+            if i + 1 < rows.len() {
+                out.push(Line::styled(thin.clone(), border_style));
+            }
         }
 
         // Bottom border: └─────┴─────┘
@@ -747,6 +759,30 @@ mod tests {
             .find(|s| s.content == "Google")
             .expect("link text span");
         assert!(span.style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    /// Tables render with a thick double-line separator beneath the header
+    /// and a thin separator between successive data rows — so every row
+    /// carries a visible bottom border.
+    #[test]
+    fn table_has_thick_header_separator_and_inter_row_borders() {
+        let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+        let lines = render(src);
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        // Expected layout: top, header, thick, data1, thin, data2, bottom.
+        assert_eq!(texts.len(), 7, "got {texts:#?}");
+        assert!(texts[0].starts_with('┌'), "top: {:?}", texts[0]);
+        assert!(
+            texts[2].starts_with('┝') && texts[2].contains('━') && texts[2].contains('┿'),
+            "thick sep: {:?}",
+            texts[2]
+        );
+        assert!(
+            texts[4].starts_with('├') && texts[4].contains('┼'),
+            "thin sep: {:?}",
+            texts[4]
+        );
+        assert!(texts[6].starts_with('└'), "bottom: {:?}", texts[6]);
     }
 
     #[test]

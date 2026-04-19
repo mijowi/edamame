@@ -150,6 +150,58 @@ fn rendered_view_paints_selection_across_multiple_rendered_blocks() {
 }
 
 #[test]
+fn setext_heading_reveals_both_title_and_underline_on_cursor() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // Setext H2 heading followed by a blank line + paragraph so the reveal
+    // region is isolated.
+    let src = "Title\n-----\n\nBody\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    // Cursor on the underline line (raw line 1).  Leaving `cursor_block_entered_at`
+    // as None makes `cursor_block_revealed` return true immediately.
+    state.cursor.offset = src.find('-').unwrap();
+
+    let backend = TestBackend::new(20, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |y: u16| -> String {
+        (0..20u16)
+            .map(|x| {
+                buf.cell((x, y))
+                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+            })
+            .collect()
+    };
+    // Row 0 must show the raw title "Title", not the styled heading glyph.
+    assert!(
+        row_text(0).starts_with("Title"),
+        "row 0 = {:?}",
+        row_text(0)
+    );
+    // Row 1 must show the raw underline "-----", not a rendered rule.
+    assert!(
+        row_text(1).starts_with("-----"),
+        "row 1 = {:?}",
+        row_text(1)
+    );
+}
+
+#[test]
 fn rendered_view_selection_in_table_cell_does_not_spill_into_borders() {
     use edamame::document::{Buffer, Selection};
     use edamame::editor::EditorState;

@@ -43,8 +43,12 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 unicode-width = "0.2"
 unicode-segmentation = "1"
 
-# Clipboard (OS clipboard with kill-ring fallback)
-arboard = { version = "3", optional = true }
+# Clipboard (OS clipboard with kill-ring fallback).  `wayland-data-control`
+# is NOT in arboard's default feature set but is required for read access on
+# pure-Wayland systems (Sway, GNOME without XWayland, etc.); without it
+# `Clipboard::new()` returns `Err` on Wayland and paste from external apps
+# silently falls back to the in-process kill-ring.
+arboard = { version = "3", optional = true, features = ["wayland-data-control"] }
 
 # Terminal image-protocol probing (Picker::from_query_stdio).
 # `chafa-dyn` is skipped to avoid a system-library dependency on libchafa —

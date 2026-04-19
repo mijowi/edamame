@@ -328,6 +328,83 @@ fn click_on_table_cell_stays_in_that_cell_despite_padding() {
     );
 }
 
+#[test]
+fn click_on_thick_header_separator_redirects_to_first_data_row() {
+    // Rendered layout: [0]=top, [1]=header, [2]=thick sep, [3]=data1,
+    // [4]=thin sep, [5]=data2, [6]=bottom.  Clicking the thick separator
+    // (the alignment-row line) must NOT leave the cursor parked on the
+    // structural `|---|` raw line — redirect to the first data row above.
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    let mut anchor = None;
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Click { col: 2, row: 2 },
+        &mut anchor,
+        VP,
+        VW,
+    );
+    let cursor_byte = st.buffer.rope().char_to_byte(st.cursor.offset);
+    let first_data_start = "| a | b |\n|---|---|\n".len();
+    let first_data_end = first_data_start + "| 1 | 2 |".len();
+    assert!(
+        (first_data_start..=first_data_end).contains(&cursor_byte),
+        "cursor landed at byte {cursor_byte}; expected inside first data row \
+         [{first_data_start}..={first_data_end}]"
+    );
+}
+
+#[test]
+fn click_on_second_data_row_lands_on_second_data_row() {
+    // Regression for the off-by-one: before the fix, `raw = sub - 1` mapped
+    // the second data row (sub 5) to raw line 4, which — in a 2-data-row
+    // table — lies past the block and the cursor overshot into the next
+    // block or clamped to end.
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    let mut anchor = None;
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Click { col: 2, row: 5 },
+        &mut anchor,
+        VP,
+        VW,
+    );
+    let cursor_byte = st.buffer.rope().char_to_byte(st.cursor.offset);
+    let second_data_start = "| a | b |\n|---|---|\n| 1 | 2 |\n".len();
+    let second_data_end = second_data_start + "| 3 | 4 |".len();
+    assert!(
+        (second_data_start..=second_data_end).contains(&cursor_byte),
+        "cursor landed at byte {cursor_byte}; expected inside second data row \
+         [{second_data_start}..={second_data_end}]"
+    );
+}
+
+#[test]
+fn click_on_thin_inter_row_separator_snaps_to_preceding_data_row() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    let mut anchor = None;
+    // sub 4 is the thin separator between the two data rows.
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Click { col: 2, row: 4 },
+        &mut anchor,
+        VP,
+        VW,
+    );
+    let cursor_byte = st.buffer.rope().char_to_byte(st.cursor.offset);
+    let first_data_start = "| a | b |\n|---|---|\n".len();
+    let first_data_end = first_data_start + "| 1 | 2 |".len();
+    assert!(
+        (first_data_start..=first_data_end).contains(&cursor_byte),
+        "cursor landed at byte {cursor_byte}; expected inside first data row"
+    );
+}
+
 // ── Selection expansion on release ─────────────────────────────────────────
 
 #[test]

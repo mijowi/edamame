@@ -703,12 +703,19 @@ fn delete_selection_text(state: &mut EditorState, sel: &Selection) {
     }
 }
 
-/// Write `text` to the OS clipboard if available; fall back to kill-ring.
+/// Write `text` to the OS clipboard (best-effort via arboard AND OSC 52)
+/// and always mirror into the in-process kill-ring so internal paste still
+/// works when neither external path is available.
 fn copy_to_clipboard(state: &mut EditorState, text: String) {
     #[cfg(feature = "clipboard")]
     {
         copy_to_system_clipboard(text.clone());
     }
+    // OSC 52 also reaches the terminal emulator's clipboard — the only path
+    // that works over SSH, on Wayland without `wayland-data-control`, and in
+    // WSL.  Any terminal that doesn't understand the escape silently ignores
+    // it, so emitting unconditionally is safe.
+    osc52_copy(&text);
     state.kill_ring = text;
 }
 
@@ -737,6 +744,43 @@ fn copy_to_system_clipboard(text: String) {
     }
 }
 
+/// Write `text` to the terminal emulator's clipboard via the OSC 52 escape
+/// sequence (`ESC ] 52 ; c ; <base64> BEL`).  Works across SSH, Wayland and
+/// WSL as long as the host terminal supports the escape; unsupported
+/// terminals silently ignore it.
+fn osc52_copy(text: &str) {
+    use std::io::Write;
+    let encoded = base64_encode(text.as_bytes());
+    let mut stdout = std::io::stdout();
+    let _ = write!(stdout, "\x1b]52;c;{encoded}\x07");
+    let _ = stdout.flush();
+}
+
+/// Minimal RFC-4648 base64 encoder.  Written out by hand to avoid adding a
+/// dependency for a one-caller helper.
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = chunk.get(1).copied().unwrap_or(0);
+        let b2 = chunk.get(2).copied().unwrap_or(0);
+        out.push(CHARS[(b0 >> 2) as usize] as char);
+        out.push(CHARS[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(CHARS[(((b1 & 0x0F) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(CHARS[(b2 & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
 /// Read from the OS clipboard if available; fall back to kill-ring.
 fn paste_from_clipboard(state: &EditorState) -> String {
     #[cfg(feature = "clipboard")]
@@ -748,6 +792,49 @@ fn paste_from_clipboard(state: &EditorState) -> String {
         }
     }
     state.kill_ring.clone()
+}
+
+/// Insert `text` at the cursor (or over the current selection) as if it came
+/// from a paste action.  Used by the bracketed-paste handler in `App` so
+/// terminal-level pastes (Ctrl-Shift-V, right-click-paste, etc.) land in the
+/// buffer without needing the OS clipboard to be reachable from this process.
+pub fn paste_text(
+    state: &mut EditorState,
+    text: &str,
+    viewport_height: usize,
+    viewport_width: usize,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let buffer_len_before = state.buffer.len_chars();
+    let history_depth_before = state.history.undo_depth();
+
+    enter_edit_if_preview(state, viewport_height);
+    if let Some(sel) = state.selection.take() {
+        let (start, end) = sel.range();
+        let removed = state
+            .buffer
+            .slice_to_string(start, end.min(state.buffer.len_chars()));
+        state.cursor.offset = start;
+        state.apply_delta(EditDelta {
+            offset: start,
+            removed,
+            inserted: text.to_owned(),
+        });
+    } else {
+        insert_text(state, text);
+    }
+
+    let edited = state.buffer.len_chars() != buffer_len_before
+        || state.history.undo_depth() != history_depth_before;
+    if state.mode == Mode::Rendered && edited {
+        list_renumber_at_cursor(state);
+    }
+    if state.mode == Mode::Rendered {
+        clamp_cursor_out_of_marker(state);
+    }
+    state.ensure_cursor_visible(viewport_height, viewport_width);
 }
 
 /// Move the cursor one visual step horizontally when inside a table.
@@ -1461,5 +1548,36 @@ fn list_move_horizontal(state: &mut EditorState, forward: bool) -> bool {
         let new_char = state.cursor.offset.saturating_sub(1);
         state.cursor.offset = new_char;
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::base64_encode;
+
+    #[test]
+    fn base64_encodes_empty() {
+        assert_eq!(base64_encode(b""), "");
+    }
+
+    #[test]
+    fn base64_encodes_one_byte() {
+        assert_eq!(base64_encode(b"f"), "Zg==");
+    }
+
+    #[test]
+    fn base64_encodes_two_bytes() {
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+    }
+
+    #[test]
+    fn base64_encodes_three_bytes() {
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+    }
+
+    #[test]
+    fn base64_encodes_rfc4648_vectors() {
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64_encode(b"Hello, world!"), "SGVsbG8sIHdvcmxkIQ==");
     }
 }

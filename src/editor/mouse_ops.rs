@@ -541,11 +541,21 @@ fn rendered_sub_line_to_offset(
         .rendered_lines_for_byte(block_start_byte);
     let sub_idx_in_block = rendered_line_idx.saturating_sub(rendered_span.start);
 
-    // Table box-drawing: top border is rendered line 0 of the block; the bottom
-    // border is the last rendered line.  Raw line N maps to rendered line N+1.
+    // Table box-drawing: sub 0 = top border, sub 1 = header (raw 0),
+    // sub 2 = thick separator (alignment raw row — not a click target;
+    // snap to the first data row), data rows at odd sub ≥ 3, thin
+    // separators at even sub ≥ 4 (snap to the preceding data row),
+    // and sub = own-1 is the bottom border (snap to the last data row).
     let is_table = table_edit::is_table_block(block_text);
     let raw_line_idx = if is_table {
-        sub_idx_in_block.saturating_sub(1)
+        let own = rendered_span.end.saturating_sub(rendered_span.start);
+        match sub_idx_in_block {
+            0 | 1 => 0,
+            2 => 2,
+            s if s + 1 >= own => 1 + (own.saturating_sub(3)) / 2,
+            s if s % 2 == 1 => (s + 1) / 2,
+            s => s / 2,
+        }
     } else {
         sub_idx_in_block
     };

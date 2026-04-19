@@ -3,8 +3,8 @@ use std::io::Stdout;
 use anyhow::Result;
 use crossterm::{
     event::{
-        DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags,
-        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -32,6 +32,12 @@ pub fn setup() -> Result<TerminalSetup> {
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
+    // Bracketed paste turns a terminal-native paste (Ctrl-Shift-V,
+    // middle-click, etc.) into a single `Event::Paste(String)` so we can
+    // insert the pasted content atomically — the only path that works when
+    // the host terminal can reach the system clipboard but this process
+    // cannot (SSH, Wayland without data-control, WSL, etc.).
+    let _ = execute!(stdout, EnableBracketedPaste);
     // Best-effort: terminals without the kitty protocol return an error here
     // and we remember that so the caller can report the degraded state.
     let keyboard_enhancement = execute!(
@@ -110,6 +116,7 @@ pub fn set_pointer_shape(shape: PointerShape) {
 pub fn restore() -> Result<()> {
     set_pointer_shape(PointerShape::Default);
     disable_mouse();
+    let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     disable_raw_mode()?;
     execute!(std::io::stdout(), LeaveAlternateScreen)?;

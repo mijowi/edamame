@@ -262,6 +262,25 @@ impl App {
                 continue;
             }
 
+            // ── Bracketed paste (terminal-level clipboard) ────────
+            // When the terminal emulator pastes into the TUI (Ctrl-Shift-V,
+            // middle-click, ⌘V on macOS Terminal, right-click-paste, etc.)
+            // it delivers the full paste as a single `Event::Paste(String)`.
+            // Route straight into the buffer so pasting from external apps
+            // always works, regardless of whether arboard can reach the OS
+            // clipboard from inside this process.
+            if let Event::Paste(text) = event {
+                edit_ops::paste_text(&mut self.editor, &text, doc_height, doc_width);
+                if self.editor.mode == Mode::Preview {
+                    let new_lines = self.editor.parsed.lines.clone();
+                    self.view_state.preview = PreviewState::new(new_lines);
+                    self.view_state.preview.scroll = self.editor.scroll;
+                    self.view_state.preview.selection = self.editor.visual_selection;
+                    self.view_state.preview.selection_style = self.theme.selection;
+                }
+                continue;
+            }
+
             // ── Dispatch event → Action ───────────────────────────
             let mut handler = DefaultHandler::new(&keymap);
             if let Some(action) = handler.handle_event(event, &self.editor) {

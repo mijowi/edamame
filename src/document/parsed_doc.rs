@@ -6,6 +6,41 @@ use crate::config::Theme;
 use crate::document::SourceMap;
 use crate::markdown::{parse, parse_offsets, Renderer};
 
+/// Setext heading style detected from raw block source.  `None` for ATX
+/// headings or non-heading blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetextKind {
+    H1,
+    H2,
+}
+
+/// Return the setext variant for `source` if it matches the pattern:
+/// a non-blank line that does not begin with `#`, followed by a second line
+/// consisting entirely of `=` (H1) or `-` (H2).  Trailing spaces on the
+/// underline are allowed per the CommonMark spec.
+pub fn detect_setext(source: &str) -> Option<SetextKind> {
+    let mut lines = source.lines();
+    let first = lines.next()?;
+    let second = lines.next()?;
+    if first.trim().is_empty() {
+        return None;
+    }
+    if first.trim_start().starts_with('#') {
+        return None;
+    }
+    let second = second.trim_end();
+    if second.is_empty() {
+        return None;
+    }
+    if second.chars().all(|c| c == '=') {
+        return Some(SetextKind::H1);
+    }
+    if second.chars().all(|c| c == '-') {
+        return Some(SetextKind::H2);
+    }
+    None
+}
+
 /// The parsed and rendered state of the document.
 ///
 /// Holds the fully-rendered lines (for use by PreviewView and RenderedView),
@@ -116,6 +151,21 @@ impl ParsedDoc {
                 }
             }
             rendered_src += count;
+
+            // Setext H2 headings have two raw lines (the title and the `---`
+            // underline) but the renderer produces only one styled line.  To
+            // make the reveal logic in `RenderedView` line up 1:1 with the
+            // raw source, append a thin rule here so the block owns two
+            // rendered lines — matching what setext H1 already does via
+            // `Renderer::render_heading`.
+            let block_source = &source[real_ranges[i].start..real_ranges[i].end.min(total_bytes)];
+            if count == 1 && matches!(detect_setext(block_source), Some(SetextKind::H2)) {
+                lines.push(Line::styled("─".repeat(80), theme.rule));
+                rendered_to_block.push(idx);
+                if let Some(n) = all_per_block_own.last_mut() {
+                    *n += 1;
+                }
+            }
 
             let content_end = content_end_of_block(source, &real_ranges[i]);
             let gap_end = if i + 1 < real_ranges.len() {
@@ -277,6 +327,44 @@ mod tests {
     fn empty_doc_builds_without_panic() {
         let doc = ParsedDoc::build("", theme(), false);
         assert_eq!(doc.line_count(), 0);
+    }
+
+    #[test]
+    fn detect_setext_recognises_h1_and_h2() {
+        assert_eq!(detect_setext("Title\n=====\n"), Some(SetextKind::H1));
+        assert_eq!(detect_setext("Title\n-----\n"), Some(SetextKind::H2));
+    }
+
+    #[test]
+    fn detect_setext_rejects_atx() {
+        assert_eq!(detect_setext("# Title\n"), None);
+        assert_eq!(detect_setext("## Title\n"), None);
+    }
+
+    #[test]
+    fn detect_setext_requires_underline() {
+        assert_eq!(detect_setext("Only one line"), None);
+        assert_eq!(detect_setext("Title\nbody\n"), None);
+    }
+
+    /// Setext H2 headings are given an extra rule line by `ParsedDoc::build`
+    /// so the block owns two rendered lines — matching the two raw lines
+    /// (title + `---` underline).  This parity lets `RenderedView` show both
+    /// lines of raw source simultaneously when the cursor lands on either.
+    #[test]
+    fn setext_h2_has_two_rendered_lines() {
+        let src = "Heading\n-------\n";
+        let doc = ParsedDoc::build(src, theme(), false);
+        let block = doc.source_map.block_for_byte(0).unwrap();
+        assert_eq!(doc.block_own_line_count(block), 2);
+    }
+
+    #[test]
+    fn setext_h1_has_two_rendered_lines() {
+        let src = "Heading\n=======\n";
+        let doc = ParsedDoc::build(src, theme(), false);
+        let block = doc.source_map.block_for_byte(0).unwrap();
+        assert_eq!(doc.block_own_line_count(block), 2);
     }
 
     /// A blank line between two paragraphs must own its own virtual block so
