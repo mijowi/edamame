@@ -24,9 +24,20 @@ impl<'k> DefaultHandler<'k> {
 }
 
 impl<'k> ModalHandler for DefaultHandler<'k> {
-    fn handle(&mut self, event: KeyEvent, _state: &EditorState) -> Option<Action> {
+    fn handle(&mut self, event: KeyEvent, state: &EditorState) -> Option<Action> {
         // 1. Check the keymap first (explicit bindings take priority).
         if let Some(action) = self.keymap.action_for(&event) {
+            // Preview-mode guard: Ctrl-* chords must not cause an implicit
+            // transition into edit mode — users want to read and copy in
+            // Preview without `Ctrl+Z`, `Ctrl+D`, `Ctrl+Left`, etc.
+            // exiting it on them.  Drop any Ctrl-bound action that isn't on
+            // the Preview-safe allow-list.
+            if state.mode == Mode::Preview
+                && event.modifiers.contains(KeyModifiers::CONTROL)
+                && !preview_safe_action(action)
+            {
+                return None;
+            }
             return Some(action.clone());
         }
 
@@ -37,6 +48,11 @@ impl<'k> ModalHandler for DefaultHandler<'k> {
         //    rather than strict equality so combinations like Ctrl+Shift+BS also
         //    delete a word back.
         if is_ctrl_backspace(&event) {
+            // Same Preview guard — ctrl+backspace is destructive, no-op in
+            // Preview.
+            if state.mode == Mode::Preview {
+                return None;
+            }
             return Some(Action::DeleteWordBack);
         }
 
@@ -56,6 +72,30 @@ impl<'k> ModalHandler for DefaultHandler<'k> {
     fn name(&self) -> &'static str {
         "default"
     }
+}
+
+/// Actions that are allowed to run in Preview mode when triggered by a
+/// Ctrl-* key chord.  Everything else gets suppressed by the handler so
+/// Preview-mode users can safely read and copy without their clipboard /
+/// quit / selection chords accidentally dropping them into edit mode.
+fn preview_safe_action(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Quit
+            | Action::Copy
+            | Action::SelectAll
+            | Action::Save
+            | Action::Open
+            | Action::ToggleRawMode
+            | Action::EnterEditMode
+            | Action::ExitToPreview
+            | Action::ScrollUp
+            | Action::ScrollDown
+            | Action::ScrollPageUp
+            | Action::ScrollPageDown
+            | Action::ScrollToTop
+            | Action::ScrollToBottom
+    )
 }
 
 /// Does this event represent Ctrl+Backspace in some terminal's encoding?
@@ -138,5 +178,50 @@ mod tests {
             handler.handle(event, &state(Mode::Rendered)),
             Some(Action::Copy)
         );
+    }
+
+    #[test]
+    fn preview_ctrl_c_and_ctrl_a_still_fire() {
+        let km = keymap();
+        let mut handler = DefaultHandler::new(&km);
+        // Clipboard and select-all are allowed in Preview.
+        assert_eq!(
+            handler.handle(
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                &state(Mode::Preview)
+            ),
+            Some(Action::Copy)
+        );
+        assert_eq!(
+            handler.handle(
+                KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+                &state(Mode::Preview)
+            ),
+            Some(Action::SelectAll)
+        );
+        // Quit must always be allowed.
+        assert_eq!(
+            handler.handle(
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+                &state(Mode::Preview)
+            ),
+            Some(Action::Quit)
+        );
+    }
+
+    #[test]
+    fn preview_suppresses_non_safelisted_ctrl_chords() {
+        let km = keymap();
+        let mut handler = DefaultHandler::new(&km);
+        // Ctrl+Z (Undo) and Ctrl+D (DeleteLine) would normally enter edit
+        // mode; in Preview they must drop out so the user stays in read mode.
+        for ch in ['z', 'd', 'x', 'v'] {
+            let event = KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL);
+            assert_eq!(
+                handler.handle(event, &state(Mode::Preview)),
+                None,
+                "ctrl+{ch} should be suppressed in Preview mode",
+            );
+        }
     }
 }

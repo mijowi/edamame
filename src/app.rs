@@ -4,16 +4,17 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{Event, KeyEventKind};
+use crossterm::event::{Event, KeyEventKind, MouseEventKind};
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use ratatui::Terminal;
 
 use crate::config::{Config, KeyMap, Theme};
 use crate::document::Buffer;
-use crate::editor::{edit_ops, EditorState, Mode};
+use crate::editor::{edit_ops, mouse_ops, EditorState, Mode};
 use crate::input::modal::default::DefaultHandler;
-use crate::input::{InputDispatcher, ModalHandler};
-use crate::terminal::{Capabilities, ColourDepth};
+use crate::input::{ModalHandler, MouseDispatcher};
+use crate::terminal::{set_pointer_shape, Capabilities, ColourDepth, PointerShape};
 use crate::ui::{
     EditorView, EditorViewState, ModalButton, ModalResponse, ModalState, ModalView, PreviewState,
 };
@@ -45,6 +46,17 @@ pub struct App {
     /// When `Some`, a startup notice modal is displayed and absorbs key
     /// events.  Cleared to `None` once the user dismisses it.
     startup_notice: Option<StartupNotice>,
+    /// Click-count tracking and drag state for mouse input.
+    mouse: MouseDispatcher,
+    /// Cursor char offset captured on mouse-down; subsequent Drag events
+    /// extend the selection from this anchor.  Cleared on Release or when a
+    /// non-drag action (double-click, checkbox toggle, scroll) supersedes it.
+    drag_anchor: Option<usize>,
+    /// Last pointer shape we asked the terminal for.  Used to avoid writing
+    /// an OSC 22 escape on every mouse-move event when the shape hasn't
+    /// actually changed — keeps the output stream quiet on terminals that do
+    /// honour the escape and doesn't matter on those that don't.
+    last_pointer_shape: PointerShape,
 }
 
 impl App {
@@ -94,6 +106,9 @@ impl App {
             view_state,
             should_quit: false,
             startup_notice,
+            mouse: MouseDispatcher::new(),
+            drag_anchor: None,
+            last_pointer_shape: PointerShape::Default,
         })
     }
 
@@ -105,6 +120,11 @@ impl App {
 
     /// Run the event loop until the user quits.
     pub fn run(&mut self, mut terminal: Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+        // Hint the terminal to show an I-beam pointer over the TUI area by
+        // default.  Terminals that don't implement OSC 22 silently ignore this.
+        if self.capabilities.mouse {
+            self.update_pointer_shape(PointerShape::Text);
+        }
         let (tx, rx) = mpsc::channel::<AppEvent>();
 
         // Spawn a thread to forward crossterm events.
@@ -177,6 +197,70 @@ impl App {
             let viewport_height = term_size.height as usize;
             let doc_height = viewport_height.saturating_sub(1); // minus status bar
             let doc_width = term_size.width as usize;
+            let doc_area = Rect {
+                x: 0,
+                y: 0,
+                width: term_size.width,
+                height: term_size.height.saturating_sub(1),
+            };
+
+            // ── Dispatch mouse events ─────────────────────────────
+            // Mouse events come through before key events get a chance so a
+            // mid-click key press doesn't erase an in-progress drag.
+            if let Event::Mouse(mouse_event) = event {
+                if self.capabilities.mouse {
+                    // Pointer-shape feedback: over a clickable element, ask the
+                    // terminal for a pointing-hand cursor; otherwise I-beam.
+                    // Event column/row are in terminal coords — translate to
+                    // doc-relative before hit-testing.
+                    let in_doc = mouse_event.column >= doc_area.x
+                        && mouse_event.column < doc_area.x + doc_area.width
+                        && mouse_event.row >= doc_area.y
+                        && mouse_event.row < doc_area.y + doc_area.height;
+                    let desired = if in_doc {
+                        let rel_col = mouse_event.column - doc_area.x;
+                        let rel_row = mouse_event.row - doc_area.y;
+                        if mouse_ops::hit_test_clickable(&self.editor, rel_col, rel_row, doc_width)
+                        {
+                            PointerShape::Hand
+                        } else {
+                            PointerShape::Text
+                        }
+                    } else {
+                        PointerShape::Default
+                    };
+                    self.update_pointer_shape(desired);
+
+                    // Moved-only events don't drive editor state; they're used
+                    // purely for pointer-shape tracking above.  Skip dispatch
+                    // to avoid emitting spurious actions.
+                    if matches!(mouse_event.kind, MouseEventKind::Moved) {
+                        continue;
+                    }
+
+                    if let Some(mouse_action) = self.mouse.dispatch(mouse_event, doc_area) {
+                        mouse_ops::apply(
+                            &mut self.editor,
+                            mouse_action,
+                            &mut self.drag_anchor,
+                            doc_height,
+                            doc_width,
+                        );
+                    }
+                }
+                // Preview mode reads scroll and selection from
+                // `view_state.preview`, but mouse events mutate editor state.
+                // Mirror the preview-scoped fields so the widget sees the
+                // latest scroll offset and visual selection.
+                if self.editor.mode == Mode::Preview {
+                    let new_lines = self.editor.parsed.lines.clone();
+                    self.view_state.preview = PreviewState::new(new_lines);
+                    self.view_state.preview.scroll = self.editor.scroll;
+                    self.view_state.preview.selection = self.editor.visual_selection;
+                    self.view_state.preview.selection_style = self.theme.selection;
+                }
+                continue;
+            }
 
             // ── Dispatch event → Action ───────────────────────────
             let mut handler = DefaultHandler::new(&keymap);
@@ -193,6 +277,8 @@ impl App {
                 let new_lines = self.editor.parsed.lines.clone();
                 self.view_state.preview = PreviewState::new(new_lines);
                 self.view_state.preview.scroll = self.editor.scroll;
+                self.view_state.preview.selection = self.editor.visual_selection;
+                self.view_state.preview.selection_style = self.theme.selection;
             }
 
             if self.should_quit {
@@ -230,6 +316,16 @@ impl App {
                 self.startup_notice = None;
             }
         }
+    }
+
+    /// Emit an OSC 22 escape to change the terminal pointer shape, but only
+    /// if the requested shape differs from the last one we asked for.
+    fn update_pointer_shape(&mut self, shape: PointerShape) {
+        if self.last_pointer_shape == shape {
+            return;
+        }
+        set_pointer_shape(shape);
+        self.last_pointer_shape = shape;
     }
 
     // ── Helpers ───────────────────────────────────────────────────

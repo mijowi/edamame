@@ -51,6 +51,17 @@ fn main() -> Result<()> {
     let capabilities = Capabilities::detect(keyboard_enhancement);
     log_capabilities(&capabilities);
 
+    // ── Enable mouse reporting ────────────────────────────────────
+    // Only on terminals that advertise mouse support — sending the enable
+    // sequence to a terminal that doesn't understand it (TERM=linux, dumb)
+    // leaves the bytes echoed as literal output.  Any failure is non-fatal:
+    // the app still runs, just without mouse input.
+    if capabilities.mouse {
+        if let Err(e) = terminal::enable_mouse() {
+            tracing::warn!(error = %e, "failed to enable mouse capture");
+        }
+    }
+
     // ── Run the app ───────────────────────────────────────────────
     let mut app = App::new(config, file_path, capabilities)?;
     let run_result = app.run(terminal);

@@ -603,25 +603,51 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 
 ---
 
-### Phase 5 — Mouse Support
+### Phase 5 — Mouse Support ✅
 *Goal: full mouse interaction — clicks, drags, scrolling, checkboxes.*
+*Status: **Complete** — 2026-04-17. 399 tests passing (229 unit + 38 editing + 37 list_edit + 37 table + 26 renderer + 12 source_map + 11 UI + 9 new mouse). New modules: `src/input/mouse.rs` (click-count / drag state machine producing `MouseAction`), `src/editor/mouse_ops.rs` (applies `MouseAction` to `EditorState` — placement, selection, scroll, checkbox, link hit-test).*
 
 **Tasks:**
-- [ ] Enable `crossterm::event::EnableMouseCapture` on startup (if `capabilities.mouse`)
-- [ ] Implement `mouse.rs` — parse `MouseEvent` variants: `Down`, `Up`, `Drag`, `ScrollUp`, `ScrollDown`
-- [ ] Click in PreviewMode → transition to RenderedMode, place cursor at clicked position (via source map)
-- [ ] Click in RenderedMode → move cursor to clicked position; if clicking a different table cell, switch active cell
-- [ ] Click-drag → begin text selection; update selection while dragging
-- [ ] Double-click → select word under cursor
-- [ ] Triple-click → select line under cursor
-- [ ] Scroll wheel → scroll view (in PreviewMode and RenderedMode when document is longer than screen)
-- [ ] Click on a rendered link → open in browser / navigate to local file (Phase 8 prerequisite, but register the hit-test region here)
-- [ ] Click on a task list checkbox `[ ]` / `[x]` → toggle it
-- [ ] Drag table row handle (leftmost column, rendered as `≡`) to reorder rows (prerequisite for Phase 6)
-- [ ] In terminals with mouse support, scrolling with the mouse should only move the page, not the cursor. The user can then click to move the cursor if desired. Since the cursor does not move when scrolling, there is no need to scroll line by line and we can use a smooth scroll instead, which is more visually pleasing.
-- [ ] Allow scrolling up to one page below the last line with the mouse only, such that the last line remains in view at the top of the editor. Scrolling with the keyboard should not have this effect since the cursor is constrained within the editor window.
+- [x] Enable `crossterm::event::EnableMouseCapture` on startup (if `capabilities.mouse`)
+- [x] Implement `mouse.rs` — parse `MouseEvent` variants: `Down`, `Up`, `Drag`, `ScrollUp`, `ScrollDown`
+- [x] Click in PreviewMode → transition to RenderedMode, place cursor at clicked position (via source map)
+- [x] Click in RenderedMode → move cursor to clicked position; if clicking a different table cell, switch active cell — cell switching falls out naturally: the click places the cursor in the target cell's byte range, and existing table navigation takes over
+- [x] Click-drag → begin text selection; update selection while dragging
+- [x] Double-click → select word under cursor
+- [x] Triple-click → select line under cursor
+- [x] Scroll wheel → scroll view (in PreviewMode and RenderedMode when document is longer than screen)
+- [x] Click on a rendered link → open in browser / navigate to local file (Phase 8 prerequisite, but register the hit-test region here) — Phase 5 detects the click and logs the URL via `tracing::info!(target: "mouse")`; Phase 8 replaces the log with an OS-open invocation
+- [x] Click on a task list checkbox `[ ]` / `[x]` → toggle it
+- [x] Drag table row handle (leftmost column, rendered as `≡`) to reorder rows (prerequisite for Phase 6) — mouse dispatch plumbing is in place; Phase 6 adds the handle glyph in `TableView` and consumes `Drag` events to reorder rows
+- [x] In terminals with mouse support, scrolling with the mouse should only move the page, not the cursor. Cursor stays put; `mouse_ops::scroll_by_mouse` never invokes `clamp_cursor_to_viewport_top`.
+- [x] Smooth scroll via `WHEEL_STEP = 3` lines per wheel tick (GUI convention; feels continuous without cursor-motion side-effects).
+- [x] Allow scrolling up to one page below the last line with the mouse only — `scroll_by_mouse` uses `max = total - 1` so the last line can sit at the top of the viewport; keyboard scrolling still uses `EditorState::scroll_down` with its cursor-bound clamp.
 
 **Acceptance criteria:** Mouse clicks place the cursor correctly. Text can be selected by dragging. Scrolling works. Checkboxes toggle on click. No crashes or visual glitches on rapid mouse movement.
+
+**Implementation notes (Phase 5):**
+
+- **Event gating by capability**: `Event::Mouse` is only dispatched to `MouseDispatcher` when `capabilities.mouse` is true — terminals without mouse reporting (TERM=dumb, linux framebuffer) never generate mouse events and the dispatcher is never called.  `terminal::enable_mouse()` is the same gated toggle at the escape-sequence level, so we never send `EnableMouseCapture` to a terminal that would echo the bytes literally.
+- **Mouse enable runs after capability detection**: `main.rs` calls `terminal::enable_mouse()` only after `Capabilities::detect()` completes — the Picker's image-protocol probe would otherwise compete with mouse reporting for stdin bytes.  `terminal::restore()` calls `disable_mouse()` unconditionally (best-effort) before `PopKeyboardEnhancementFlags` / `LeaveAlternateScreen`, matching th e tear-down order of the push operations in `setup()`.
+- **Click-count state machine**: `MouseDispatcher` tracks `last_click_time` + `last_click_cell` and emits `DoubleClick` / `TripleClick` when a second / third `Down` happens at the same cell within `MULTI_CLICK_WINDOW = 400 ms`.  The same-cell check is against the rel-coord of the previous click, so dragging the cursor a column between clicks resets the counter (treating it as a new click) — intentional, otherwise tiny hand tremors would inflate every click to a double-click.
+- **Drag anchor lives in `App`, not `EditorState`**: the drag anchor (cursor offset at mouse-down) is held by the app loop and threaded into `mouse_ops::apply` as `&mut Option<usize>` so it can persist across events.  It isn't stored in `EditorState` because a drag is a UI-layer interaction, not a document-layer fact.
+- **Selection on drag uses `Selection::anchor` for the captured offset**: mouse drag produces a `Selection { anchor, active }` where `anchor` is the down-offset and `active` is the current cursor offset.  This matches the keyboard selection semantics (Shift+Arrow uses the same struct), so clipboard / cut / copy actions work uniformly regardless of how the selection was made.
+- **Word-boundary for double-click matches `move_word_*` predicates**: `select_word_at_cursor` uses `char::is_alphanumeric || '_'` as the word-char predicate, matching the logic that Ctrl+Left / Ctrl+Right already use for keyboard word navigation.  When the cursor sits on punctuation, it expands across the contiguous punctuation run rather than producing an empty selection.
+- **Rendered click → buffer offset is approximate, not exact**: rendered inline formatting (`**bold**` → `bold`) shifts char positions between the raw source and the rendered line.  `rendered_sub_line_to_offset` maps the clicked visual column directly to the same column in the raw line, which is exact for blocks with no inline formatting (paragraphs without bold/italic, headings, code blocks, list items' first raw line) and off by a few chars for decorated spans.  Once the cursor lands in the block, the `RAW_REVEAL_DELAY` turns that line raw and the user can refine with a second click.  Tables prepend a top border so the click maps `sub_line_in_block - 1` to the raw row.
+- **Scroll wheel uses a separate bound**: `scroll_by_mouse` is not the same as `EditorState::scroll_down` — it uses `max = total - 1` (last line at top of viewport) AND deliberately does NOT call `clamp_cursor_to_viewport_top`.  Keyboard scroll still pulls the cursor along because the cursor is the focus of navigation there; mouse scroll leaves the cursor where the user last placed it.
+- **Link hit-test via source scanning**: `link_at_offset` walks the raw source line for `[text](url)` syntax using a balanced-bracket scanner (supports one level of nesting).  This is a best-effort Phase 8 prerequisite — autolinks (`<url>`) and reference links (`[text][id]`) are not detected and will need a proper AST-based hit-test registry when Phase 8 lands.
+- **Link clicks are logged, not opened**: Phase 5 surfaces detected URL clicks via `tracing::info!(target: "mouse")` so Phase 8 can replace the log with an OS-open invocation (`open` / `xdg-open` / `start`) without touching the dispatch path.
+- **Checkbox click is a distinct mode from click**: `Click` first tries `toggle_checkbox_at`; if the click falls within the 3-char `[ ]`/`[x]` glyph of a task-list item, the checkbox is toggled and the cursor does NOT move.  Clicks elsewhere on the same line fall through to normal cursor placement.  Flash-artifact fix: `toggle_checkbox_at` now saves and restores `cursor_block_idx` / `cursor_line_idx` / `cursor_block_entered_at` across the delta apply so the reveal timer isn't reset — the cursor's block stays in its current rendered/raw state instead of briefly flipping.
+
+#### Issues
+- [ ] Selecting from the first (or last) rendered character of an element should select from the first (or last) *raw* character of the element.  Deferred — implementing this cleanly requires the renderer to emit a per-char raw-byte map so edge-of-element detection is possible without reparsing.  Tracked as a Phase 6 (or later) refactor.
+  
+---
+
+### Miscellaneous Issues
+- [ ] Table rows should have a bottom border. The header row should have an extra thick border.
+- [ ] Heading 1 and heading 2 elements coded with `===` or `---` below the text should de-render the text and the `===` or `---` simultaneously, when the cursor is on either line.
+- [ ] Clipboard operations work within the app, but we can't cut, copy, or paste, to or from external applications. We need to interface with the system clipboard.
 
 ---
 
@@ -724,13 +750,26 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 **Acceptance criteria:** Editing a file in the editor while an external process modifies it triggers a notification. The diff overlay correctly shows all changes. Accepting/rejecting individual changes works correctly and the resulting buffer is coherent.
 
 ---
+ 
+
+### Phase 11 — More Polish
+*Goal: further UX work to make the app fun and easy to use*
+I'm thinking one line for keybind hints, and another line for status messages (e.g. saved, modified, press any key to edit, etc)
+
+- [ ] Add hints to the status bar, to include keybinds. Hints should change dynamically depending on where the cursor is.
+  - [ ] In preview mode, "Press any key to edit", "Ctrl- [C]opy [P] Menu [Q]uit
+  - [ ] In hybrid/raw edit mode, `Ctrl- [C]opy [X]Cut [V]Paste [S]ave [P]Menu [Q]uit` (Which of these is convention, `[X]Cut` or `[X] Cut` with a space?)
+  - [ ] In hybrid mode, in a table, show the table manipulation keybinds (switch/add rows/columns, etc). They will have to be abbreviated to fit.
+- [ ] Brief `Copied to clipboard` when text is copied. Cut and paste events are self-evident and don't need hints.
+- [ ] Brief `Autosaved` notification
+- [ ] Emoji usage and emoji capability detection
+- [ ] How can we automatically adjust table column widths to be most visually pleasing? We want to minimize whitespace in cells so that rows are not excessively long. What if we calculated average cell width in a column, not just maximum cell width, to determine how column widths should be distributed? 
+
+---
 
 ## Deferred Work
 
 These features should be **architecturally anticipated** from Phase 0 but not implemented until after the numbered phases are complete.
-
-### Useful undo/redo
-Undo/redo currently works on a per-character basic, which is not very useful. We should figure out how to make it more useful.
 
 ### Vim / Modal Editing
 - Implement `VimHandler` in `input/modal/vim.rs` implementing the `ModalHandler` trait

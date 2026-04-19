@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use crate::config::Theme;
-use crate::document::{Buffer, Cursor, EditDelta, History, ParsedDoc, Selection};
+use crate::document::{Buffer, Cursor, EditDelta, History, ParsedDoc, Selection, VisualSelection};
 use crate::editor::Mode;
 
 /// All mutable state owned by the editor.
@@ -13,6 +13,10 @@ pub struct EditorState {
     pub buffer: Buffer,
     pub cursor: Cursor,
     pub selection: Option<Selection>,
+    /// Preview-mode selection in rendered (visible) coordinates.  Populated
+    /// only when `mode == Mode::Preview` — switching to Rendered or Raw
+    /// clears it because those modes drive selection from the raw buffer.
+    pub visual_selection: Option<VisualSelection>,
     pub history: History,
     pub mode: Mode,
     pub parsed: ParsedDoc,
@@ -33,6 +37,12 @@ pub struct EditorState {
     /// without further movement on the same line, preventing jitter when scrolling
     /// quickly through multi-line elements such as tables.
     pub cursor_block_entered_at: Option<Instant>,
+    /// True while a mouse click-and-drag is in progress.  While true the
+    /// cursor's block is never de-rendered, so the user's drag selection
+    /// stays anchored to the rendered characters they clicked on — if the
+    /// block reveals to raw mid-drag, the visible columns shift and the
+    /// anchor would jump.
+    pub drag_in_progress: bool,
     /// Optional theme reference — used to re-render after edits.
     theme: &'static Theme,
     /// Whether to preserve multiple consecutive blank lines between blocks.
@@ -68,6 +78,7 @@ impl EditorState {
             buffer,
             cursor: Cursor::new(),
             selection: None,
+            visual_selection: None,
             history: History::new(),
             mode: Mode::Preview,
             parsed,
@@ -77,6 +88,7 @@ impl EditorState {
             cursor_block_idx: None,
             cursor_line_idx: None,
             cursor_block_entered_at: None,
+            drag_in_progress: false,
             theme,
             preserve_blank_lines,
             visual_line_nav,
@@ -152,8 +164,13 @@ impl EditorState {
 
     /// Returns true when the raw view for the cursor block should be shown.
     /// False during the `RAW_REVEAL_DELAY` window after the cursor entered a
-    /// new block (so rapidly-traversed blocks stay rendered).
+    /// new block (so rapidly-traversed blocks stay rendered), and false
+    /// while a mouse drag is in progress (so the user's visible click
+    /// anchor doesn't shift under the drag).
     pub fn cursor_block_revealed(&self) -> bool {
+        if self.drag_in_progress {
+            return false;
+        }
         match self.cursor_block_entered_at {
             None => true,
             Some(t) => t.elapsed() >= RAW_REVEAL_DELAY,

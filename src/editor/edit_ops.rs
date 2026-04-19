@@ -37,16 +37,19 @@ pub fn apply(
             if state.mode == Mode::Preview {
                 sync_cursor_to_scroll(state, viewport_height);
                 state.mode = Mode::Rendered;
+                state.visual_selection = None;
             }
         }
         Action::ExitToPreview => {
             state.mode = Mode::Preview;
             state.selection = None;
+            state.visual_selection = None;
         }
         Action::ToggleRawMode => {
             if state.mode == Mode::Preview {
                 sync_cursor_to_scroll(state, viewport_height);
             }
+            state.visual_selection = None;
             state.mode = match state.mode {
                 Mode::Preview => Mode::Rendered,
                 Mode::Rendered => Mode::Raw,
@@ -207,7 +210,25 @@ pub fn apply(
             });
         }
         Action::SelectAll => {
-            enter_edit_if_preview(state, viewport_height);
+            if state.mode == Mode::Preview {
+                // Preview mode: select the entire rendered document via a
+                // `VisualSelection` that spans from the first rendered line
+                // (col 0) to the last rendered line's final char.
+                let lines = &state.parsed.lines;
+                if !lines.is_empty() {
+                    let last = lines.len() - 1;
+                    let last_col: usize = lines[last]
+                        .spans
+                        .iter()
+                        .map(|s| s.content.chars().count())
+                        .sum();
+                    state.visual_selection = Some(crate::document::VisualSelection {
+                        anchor: (0, 0),
+                        active: (last, last_col),
+                    });
+                }
+                return false;
+            }
             state.selection = Some(Selection {
                 anchor: 0,
                 active: state.buffer.len_chars(),
@@ -386,7 +407,31 @@ pub fn apply(
 
         // ── Clipboard ─────────────────────────────────────────────
         Action::Copy => {
-            let text = if let Some(sel) = &state.selection {
+            // In Preview mode, the selection is over rendered characters
+            // (no raw Markdown markers), so copy the rendered text exactly
+            // as the user sees it.  In Rendered/Raw mode, copy the raw
+            // buffer slice covered by the raw selection.
+            let text = if state.mode == Mode::Preview {
+                if let Some(vs) = state.visual_selection {
+                    crate::editor::mouse_ops::visual_selection_to_rendered_text(
+                        vs,
+                        &state.parsed.lines,
+                    )
+                } else {
+                    // No selection — copy the rendered line under the scroll top.
+                    state
+                        .parsed
+                        .lines
+                        .get(state.scroll)
+                        .map(|line| {
+                            line.spans
+                                .iter()
+                                .flat_map(|s| s.content.chars())
+                                .collect::<String>()
+                        })
+                        .unwrap_or_default()
+                }
+            } else if let Some(sel) = &state.selection {
                 sel.selected_text(&state.buffer)
             } else {
                 // Copy current line.
@@ -574,6 +619,7 @@ fn enter_edit_if_preview(state: &mut EditorState, viewport_height: usize) {
     if state.mode == Mode::Preview {
         sync_cursor_to_scroll(state, viewport_height);
         state.mode = Mode::Rendered;
+        state.visual_selection = None;
     }
 }
 
@@ -661,11 +707,34 @@ fn delete_selection_text(state: &mut EditorState, sel: &Selection) {
 fn copy_to_clipboard(state: &mut EditorState, text: String) {
     #[cfg(feature = "clipboard")]
     {
-        if let Ok(mut cb) = arboard::Clipboard::new() {
-            let _ = cb.set_text(&text);
-        }
+        copy_to_system_clipboard(text.clone());
     }
     state.kill_ring = text;
+}
+
+/// Platform-aware copy.  On Linux the Wayland/X11 clipboard only holds data
+/// while a process owns the selection, and arboard prints a warning to
+/// *stderr* if the `Clipboard` is dropped too quickly after `set_text` —
+/// which corrupts the TUI.  Spawn a thread that owns the clipboard until
+/// another program takes over (or until the process exits).
+///
+/// On macOS and Windows the OS clipboard persists across process exit, so
+/// the simple path is fine and we don't need a background thread.
+#[cfg(all(feature = "clipboard", target_os = "linux"))]
+fn copy_to_system_clipboard(text: String) {
+    use arboard::SetExtLinux;
+    std::thread::spawn(move || {
+        if let Ok(mut cb) = arboard::Clipboard::new() {
+            let _ = cb.set().wait().text(text);
+        }
+    });
+}
+
+#[cfg(all(feature = "clipboard", not(target_os = "linux")))]
+fn copy_to_system_clipboard(text: String) {
+    if let Ok(mut cb) = arboard::Clipboard::new() {
+        let _ = cb.set_text(&text);
+    }
 }
 
 /// Read from the OS clipboard if available; fall back to kill-ring.

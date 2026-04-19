@@ -2,7 +2,10 @@ use std::io::Stdout;
 
 use anyhow::Result;
 use crossterm::{
-    event::{KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags},
+    event::{
+        DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -44,11 +47,69 @@ pub fn setup() -> Result<TerminalSetup> {
     })
 }
 
+/// Enable xterm mouse reporting so the app receives `Event::Mouse` events.
+///
+/// Called from `main` after capability detection when `capabilities.mouse` is
+/// true.  Terminals that don't actually support mouse reporting silently drop
+/// the enable sequence; the capability check prevents trying at all on
+/// `TERM=linux` / `TERM=dumb` where the escape bytes would end up echoed as
+/// literal output.
+pub fn enable_mouse() -> Result<()> {
+    execute!(std::io::stdout(), EnableMouseCapture)?;
+    Ok(())
+}
+
+/// Disable mouse capture.  Called by `restore()` (best-effort) so the terminal
+/// is never left reporting mouse events after the app exits.
+pub fn disable_mouse() {
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
+}
+
+/// Supported pointer shapes for [`set_pointer_shape`].
+///
+/// These map to CSS cursor names (the convention used by modern OSC 22
+/// terminals: Ghostty, kitty recent versions, wezterm).  Older terminals like
+/// xterm use X11 cursor-font names (`xterm`, `hand2`, `left_ptr`) — we emit
+/// both: the X11 name first, then a follow-up OSC 22 with the CSS name, so
+/// whichever the terminal understands wins.  Terminals that don't implement
+/// OSC 22 at all silently drop the sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerShape {
+    /// I-beam cursor: shown when the pointer is over editable text.
+    Text,
+    /// Pointing-hand cursor: shown over clickable elements (checkboxes, links).
+    Hand,
+    /// Default arrow cursor: used to restore the terminal's native cursor on
+    /// shutdown.
+    Default,
+}
+
+/// Emit the OSC 22 escape sequence that asks the terminal to change the
+/// pointer (mouse) cursor shape.  Best-effort — terminals that don't
+/// implement OSC 22 ignore the sequence.
+pub fn set_pointer_shape(shape: PointerShape) {
+    use std::io::Write;
+    // Emit both the X11 cursor-font name and the CSS name.  Any terminal that
+    // implements OSC 22 will pick whichever of the two it recognises; the
+    // other is ignored.  Emitting both costs ~20 bytes of escape per update
+    // and avoids having to probe which dialect the host terminal prefers.
+    let (x11, css) = match shape {
+        PointerShape::Text => ("xterm", "text"),
+        PointerShape::Hand => ("hand2", "pointer"),
+        PointerShape::Default => ("left_ptr", "default"),
+    };
+    let mut stdout = std::io::stdout();
+    let _ = write!(stdout, "\x1b]22;{x11}\x07\x1b]22;{css}\x07");
+    let _ = stdout.flush();
+}
+
 /// Restore the terminal to its normal state.
 ///
 /// Must be called before the process exits, even on error, to avoid leaving
 /// the terminal in raw mode.
 pub fn restore() -> Result<()> {
+    set_pointer_shape(PointerShape::Default);
+    disable_mouse();
     let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     disable_raw_mode()?;
     execute!(std::io::stdout(), LeaveAlternateScreen)?;

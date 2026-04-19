@@ -70,8 +70,8 @@ Table
 
 Another table
 | abc | defghi |
-:-: | -----------:
-bar | baz
+| --- | --- |
+| bar | baz |
 
 Table with escaped pipes
 | f\|oo  |

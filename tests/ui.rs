@@ -98,6 +98,177 @@ fn snapshot_status_bar_modified() {
 }
 
 #[test]
+fn rendered_view_paints_selection_across_multiple_rendered_blocks() {
+    use edamame::document::{Buffer, Selection};
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // Two paragraphs separated by a blank line.  Selection starts mid-first
+    // paragraph and ends mid-second.
+    let src = "first para here\n\nsecond para here\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    // Selection covers all of "para" in first and "second" in second.
+    // Use char offsets that span multiple blocks.
+    state.selection = Some(Selection {
+        anchor: 6,  // start of "para" in first
+        active: 23, // part-way into "second"
+    });
+    state.cursor.offset = 23;
+
+    let backend = TestBackend::new(25, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    // Row 0 is "first para here" — at least one cell on it must have the
+    // selection bg (cells 6+ for "para here").
+    let row_has_sel_bg = |y: u16| {
+        (0..25u16).any(|x| {
+            buf.cell((x, y))
+                .map(|c| c.style().bg == theme.selection.bg)
+                .unwrap_or(false)
+        })
+    };
+    assert!(row_has_sel_bg(0), "first paragraph row must show selection");
+    // Row 2 is the second paragraph.  It should also have selection bg on
+    // the covered portion.
+    assert!(
+        row_has_sel_bg(2),
+        "second paragraph row must show selection"
+    );
+}
+
+#[test]
+fn rendered_view_selection_in_table_cell_does_not_spill_into_borders() {
+    use edamame::document::{Buffer, Selection};
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // 3-row table; select just the "yy" bytes in the data row.
+    let src = "| a | bb | c |\n|---|----|---|\n| x | yy | z |\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    let yy_start = src.find("yy").unwrap();
+    state.selection = Some(Selection {
+        anchor: yy_start,
+        active: yy_start + 2,
+    });
+    // Place cursor elsewhere (col 0 of header) so the cursor block reveal
+    // path doesn't overlap the data cell's selection highlight.
+    state.cursor.offset = 0;
+
+    let backend = TestBackend::new(30, 6);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let has_sel_bg = |x: u16, y: u16| {
+        buf.cell((x, y))
+            .map(|c| c.style().bg == theme.selection.bg)
+            .unwrap_or(false)
+    };
+    // Row 0 is the top border (┌─┬─┐) — no selection bg anywhere.
+    for x in 0..30u16 {
+        assert!(
+            !has_sel_bg(x, 0),
+            "top border col {x} must not carry selection bg"
+        );
+    }
+    // Row 2 is the separator (├─┼─┤) — no selection bg.
+    for x in 0..30u16 {
+        assert!(
+            !has_sel_bg(x, 2),
+            "separator col {x} must not carry selection bg"
+        );
+    }
+    // Row 3 is the data row.  Some cells there MUST carry the selection bg
+    // (where "yy" is rendered).  We don't pin exact cols here — the renderer
+    // decides layout widths — but at least one cell must be highlighted.
+    let data_row_has_sel = (0..30u16).any(|x| has_sel_bg(x, 3));
+    assert!(
+        data_row_has_sel,
+        "data row must show selection bg on the 'yy' cell"
+    );
+}
+
+#[test]
+fn rendered_view_selection_inside_cursors_own_cell_survives_cell_overlay() {
+    // Regression for the Phase 5 issue: after click-drag selection within a
+    // table cell (or a double-/triple-click that lands the cursor inside its
+    // own cell) the highlight used to vanish because the cell overlay
+    // repainted the cell's rendered cells with raw text, clobbering whatever
+    // `paint_selection_overlay` had drawn.
+    use edamame::document::{Buffer, Selection};
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let src = "| aaa | bbb | ccc |\n|---|---|---|\n| 1 | 2 | 3 |\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+
+    // Cursor on the first 'b' of the middle header cell — char 8 in `src`.
+    // Leaving `cursor_block_entered_at` at None makes `cursor_block_revealed`
+    // return true immediately, so the cell overlay path is taken.
+    state.cursor.offset = 8;
+    // Select "bbb" — raw chars [8..11).
+    state.selection = Some(Selection {
+        anchor: 8,
+        active: 11,
+    });
+
+    let backend = TestBackend::new(25, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let has_sel_bg = |x: u16, y: u16| {
+        buf.cell((x, y))
+            .map(|c| c.style().bg == theme.selection.bg)
+            .unwrap_or(false)
+    };
+    // At least one cell across the active cell's rendered range (cols 7..11 on
+    // row 1 — the header with "bbb") must carry the selection bg.  Before the
+    // fix, all cells here were painted by `overlay_raw_cell` using only the
+    // base style, so the selection bg was lost entirely on this row.
+    let any_cell_highlighted = (7u16..=11).any(|x| has_sel_bg(x, 1));
+    assert!(
+        any_cell_highlighted,
+        "selection bg must survive the cell overlay for the cursor's own cell"
+    );
+}
+
+#[test]
 fn rendered_view_cell_scoped_reveal_keeps_neighbouring_pipes_rendered() {
     use edamame::document::Buffer;
     use edamame::editor::EditorState;

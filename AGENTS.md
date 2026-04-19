@@ -60,8 +60,12 @@ cargo insta review
 - `tempfile` — temporary files for I/O tests
 - `ratatui::backend::TestBackend` — headless widget rendering
 
-**Do not** write tests for: terminal capability detection, cross-platform
-clipboard, or mouse integration — these are covered by manual smoke testing.
+**Do not** write tests for: terminal capability detection that depends on
+live terminal probing (`Picker::from_query_stdio`), cross-platform clipboard
+(OS clipboard paths race between parallel tests), or the actual crossterm
+terminal-mouse wire protocol — these are covered by manual smoke testing.
+*Do* test mouse logic at the `MouseDispatcher` + `mouse_ops::apply` layer:
+both are pure functions of an input event and an editor state.
 
 ## Project Structure
 
@@ -90,14 +94,21 @@ src/
   editor.rs         # facade — re-exports EditorState, Mode
   editor/
     edit_ops.rs     # Action → EditorState mutations (cursor, buffer, history)
+    list_edit.rs    # List detection, continuation, checkbox toggle, renumber
     mode.rs         # Mode enum: Preview | Rendered | Raw
+    mouse_ops.rs    # MouseAction → EditorState mutations (click, drag, scroll,
+                    #          selection, checkbox toggle, link hit-test)
     state.rs        # EditorState: owns Buffer, Cursor, History, Mode, ParsedDoc
-  input.rs          # facade — re-exports InputDispatcher, ModalHandler
+    table_edit.rs   # Table detection, row/col structure edits
+  input.rs          # facade — re-exports InputDispatcher, ModalHandler,
+                    #          MouseAction, MouseDispatcher
   input/
     dispatcher.rs   # InputDispatcher: crossterm Event → Action
     modal.rs        # facade — declares `default` submodule; ModalHandler trait
     modal/
       default.rs    # DefaultHandler: non-modal keybinding implementation
+    mouse.rs        # MouseDispatcher: click-count + drag state machine that
+                    #          converts crossterm MouseEvents into MouseActions
   markdown.rs       # facade — re-exports parse, Renderer
   markdown/
     ast.rs          # Block, Inline, ListItem enums; inlines_to_plain()
@@ -120,9 +131,12 @@ src/
     status_bar.rs   # StatusBar + StatusBarState
 tests/
   editing.rs        # integration tests: EditorState action sequences → buffer/cursor asserts
+  list_edit.rs      # integration tests: list continuation, renumber, checkbox toggle
+  mouse.rs          # integration tests: mouse click / drag / scroll / checkbox
   renderer.rs       # integration tests: parse + render → assert/snapshot
   source_map.rs     # unit + proptest tests for SourceMap invariants
                     #   (proptest regressions saved in source_map.proptest-regressions)
+  table.rs          # integration tests: table navigation + structure edits
   ui.rs             # integration tests: TestBackend widget rendering
   snapshots/        # committed insta .snap files
 config/
@@ -196,6 +210,49 @@ they exist:
   feature (on by default). When disabled, copy/cut/paste use the in-process
   kill-ring only. Tests assert against the kill-ring, not the OS clipboard,
   to avoid cross-test races.
+
+## Phase 5 Architectural Notes (Mouse Support)
+
+- **Two-layer mouse dispatch**: `MouseDispatcher` (in `src/input/mouse.rs`) is
+  a pure state machine that turns crossterm `MouseEvent`s into semantic
+  `MouseAction`s (click-count, drag, scroll).  `mouse_ops::apply` (in
+  `src/editor/mouse_ops.rs`) is where those actions mutate `EditorState`.
+  Keep the split strict — coordinate translation belongs in `mouse_ops`, click
+  counting belongs in `MouseDispatcher`.
+- **Mouse enable is gated by capabilities**: `terminal::enable_mouse()` is
+  only called from `main` when `capabilities.mouse` is true.  The app also
+  gates `MouseDispatcher::dispatch` on `capabilities.mouse` so a fake mouse
+  event (e.g. injected via a test hook) can't drive the editor on a terminal
+  where mouse wasn't enabled.
+- **Drag anchor lives in `App`, not `EditorState`**: the `drag_anchor:
+  Option<usize>` on `App` persists the mouse-down offset across events so the
+  Drag handler can extend the selection.  It's intentionally not in
+  `EditorState` — it's a UI-layer fact, not a document-layer fact, and
+  clearing it doesn't need to go through the undo stack.
+- **Mouse scroll uses a different bound than keyboard scroll**:
+  `mouse_ops::scroll_by_mouse` allows `max = total - 1` (last line at top of
+  viewport) and never invokes `clamp_cursor_to_viewport_top`.  Keyboard scroll
+  (`Action::ScrollDown`) still uses `EditorState::scroll_down` which keeps the
+  cursor visible.  Do not merge the two paths — the Phase 5 requirement is
+  that mouse scroll specifically does not move the cursor.
+- **Click-to-offset is approximate for formatted text**: rendered inline
+  styling (`**bold**` → `bold`) shifts char positions between raw and
+  rendered.  `rendered_sub_line_to_offset` maps the visual column 1:1 to the
+  raw source column, which is exact for unformatted lines and off by a few
+  chars for styled spans.  The `RAW_REVEAL_DELAY` then turns the cursor's
+  line raw so the user can correct on a second click.  If you change the
+  renderer to collapse / expand more characters (e.g. rendering `~~strike~~`
+  as `strike`), expect click precision to drift in a corresponding way and
+  consider whether a proper char-map table is worth the complexity.
+- **Link hit-test is a source-scan shortcut**: `mouse_ops::link_at_offset`
+  scans the line's raw bytes for balanced `[...](...)` — it is NOT driven by
+  the AST.  Good enough for Phase 8 prerequisite (we only need to know
+  *whether* the click was on a link); upgrade to an AST-backed registry if
+  Phase 8 needs reference-style links or autolinks.
+- **Checkbox toggling short-circuits cursor placement**: `toggle_checkbox_at`
+  runs BEFORE `click_to_char_offset` in the `MouseAction::Click` arm.  A click
+  on the `[ ]` glyph toggles and returns immediately — the cursor does NOT
+  move.  Clicks elsewhere on the task line fall through to normal placement.
 
 ## Code Style
 

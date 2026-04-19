@@ -37,6 +37,8 @@ impl<'a> StatefulWidget for RawView<'a> {
         let (cursor_line, cursor_col) = self.state.cursor.line_col(&self.state.buffer);
         let line_count = self.state.buffer.line_count();
         let cursor_style = Style::default().add_modifier(Modifier::REVERSED);
+        let sel_style = self.theme.selection;
+        let selection_range = self.state.selection.map(|s| s.range());
 
         let mut vis_row: usize = 0;
         let mut buf_line = view_state.scroll;
@@ -67,12 +69,31 @@ impl<'a> StatefulWidget for RawView<'a> {
                 Line::raw(raw.to_owned())
             };
 
+            // Precompute the selection's char-col range within this buffer line.
+            let line_char_count = raw.chars().count();
+            let line_start_char = self.state.buffer.line_to_char(buf_line);
+            let line_end_char = line_start_char + line_char_count;
+            let line_sel_cols = selection_range.and_then(|(s, e)| {
+                if e <= line_start_char || s > line_end_char {
+                    None
+                } else {
+                    let start = s.saturating_sub(line_start_char);
+                    let end = e.saturating_sub(line_start_char).min(line_char_count);
+                    if start < end {
+                        Some((start, end))
+                    } else {
+                        None
+                    }
+                }
+            });
+
             // Write the line to the TUI buffer with wrapping.
+            let row_start = vis_row;
             let mut x = area.x;
+            let mut char_col = 0usize;
             for span in &display_line.spans {
                 for ch in span.content.chars() {
                     if x >= area.x + area.width {
-                        // Wrap to next visual row.
                         vis_row += 1;
                         if vis_row >= height {
                             break;
@@ -80,18 +101,26 @@ impl<'a> StatefulWidget for RawView<'a> {
                         x = area.x;
                     }
                     let y = area.y + vis_row as u16;
+                    let in_selection =
+                        matches!(line_sel_cols, Some((s, e)) if char_col >= s && char_col < e);
+                    let style = if in_selection {
+                        span.style.patch(sel_style)
+                    } else {
+                        span.style
+                    };
                     if let Some(cell) = buf.cell_mut((x, y)) {
                         cell.set_char(ch);
-                        cell.set_style(span.style);
+                        cell.set_style(style);
                     }
                     x += 1;
+                    char_col += 1;
                 }
                 if vis_row >= height {
                     break;
                 }
             }
+            let _ = row_start;
 
-            // Advance to the next visual row for the next buffer line.
             vis_row += 1;
             buf_line += 1;
         }
@@ -101,7 +130,7 @@ impl<'a> StatefulWidget for RawView<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::Buffer;
+    use crate::document::{Buffer, Selection};
     use crate::editor::EditorState;
     use ratatui::{backend::TestBackend, Terminal};
 
@@ -139,5 +168,44 @@ mod tests {
             .collect();
         // First line should contain "Hello" with cursor on 'H'.
         assert!(output.contains('H'), "output: {:?}", output);
+    }
+
+    #[test]
+    fn raw_view_paints_selection_background() {
+        let theme = theme();
+        let buf = Buffer::from_str("Hello world\n");
+        let mut state = EditorState::new(buf, theme);
+        state.selection = Some(Selection {
+            anchor: 0,
+            active: 5,
+        });
+        let mut view_state = RawViewState::default();
+
+        let backend = TestBackend::new(20, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let view = RawView {
+                    state: &state,
+                    theme,
+                };
+                StatefulWidget::render(view, frame.area(), frame.buffer_mut(), &mut view_state);
+            })
+            .unwrap();
+
+        let tbuf = terminal.backend().buffer().clone();
+        // Columns 0..5 should carry the selection background.
+        for x in 0..5u16 {
+            let cell = tbuf.cell((x, 0)).expect("cell in bounds");
+            assert_eq!(
+                cell.style().bg,
+                theme.selection.bg,
+                "col {} missing selection bg",
+                x
+            );
+        }
+        // Col 5 (the space) should not be selected.
+        let cell = tbuf.cell((5, 0)).expect("cell in bounds");
+        assert_ne!(cell.style().bg, theme.selection.bg);
     }
 }

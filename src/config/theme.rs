@@ -62,6 +62,11 @@ pub struct Theme {
 
     // ── General text ──────────────────────────────────────────────
     pub normal: Style,
+
+    /// Background style applied to characters inside an active text selection.
+    /// Renders on top of the character's own style so colour-coded content
+    /// stays legible.
+    pub selection: Style,
 }
 
 impl Default for Theme {
@@ -146,6 +151,10 @@ impl Default for Theme {
 
             // General
             normal: Style::default(),
+
+            // Selection: muted blue background, distinguishable from cursor
+            // which uses REVERSED.  Falls back to REVERSED in monochrome mode.
+            selection: Style::default().bg(Color::Indexed(24)),
         }
     }
 }
@@ -221,6 +230,7 @@ impl Theme {
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED),
 
             normal: Style::default(),
+            selection: Style::default().add_modifier(Modifier::REVERSED),
         }
     }
 }

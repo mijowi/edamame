@@ -12,6 +12,37 @@ pub struct Selection {
     pub active: usize,
 }
 
+/// A selection in the rendered (visible) view — stored as `(rendered_line,
+/// char_col)` tuples rather than raw buffer char offsets.  Used in Preview
+/// mode, where the user is selecting over the rendered output (no raw
+/// Markdown markers) and copy should produce the exact rendered text the
+/// user sees, not the underlying Markdown source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisualSelection {
+    /// `(rendered_line_idx, char_col)` at which the selection was started.
+    pub anchor: (usize, usize),
+    /// `(rendered_line_idx, char_col)` of the moveable end (mouse pointer).
+    pub active: (usize, usize),
+}
+
+impl VisualSelection {
+    /// Normalised range `(start, end)` where `start <= end` in row-major
+    /// ordering.  Convenience helper for highlight + copy code that needs a
+    /// deterministic forward span.
+    pub fn range(&self) -> ((usize, usize), (usize, usize)) {
+        if self.anchor <= self.active {
+            (self.anchor, self.active)
+        } else {
+            (self.active, self.anchor)
+        }
+    }
+
+    /// True when anchor and active coincide (zero-width selection).
+    pub fn is_empty(&self) -> bool {
+        self.anchor == self.active
+    }
+}
+
 impl Selection {
     /// Create a selection starting at `anchor` with zero width.
     pub fn new(anchor: usize) -> Self {

@@ -378,7 +378,9 @@ impl KeyMap {
         bind!("right", Action::MoveRight);
         bind!("ctrl+left", Action::MoveWordLeft);
         bind!("ctrl+right", Action::MoveWordRight);
-        bind!("ctrl+a", Action::MoveLineStart);
+        // Ctrl+A is SelectAll (typical GUI editor convention).  Unix shell
+        // users who want move-line-start can still use Home.
+        bind!("ctrl+a", Action::SelectAll);
         bind!("ctrl+e", Action::MoveLineEnd);
         bind!("ctrl+home", Action::MoveDocStart);
         bind!("ctrl+end", Action::MoveDocEnd);

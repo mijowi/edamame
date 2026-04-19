@@ -1,0 +1,1351 @@
+//! Apply [`MouseAction`] values to the editor state.
+//!
+//! Mirrors `edit_ops` but for mouse input: click placement, drag selection,
+//! word/line selection chords, wheel scrolling, and checkbox toggles.  All
+//! coordinate-to-buffer-offset translation happens here; the `mouse.rs`
+//! dispatcher only sees document-area-relative cells.
+
+use crate::document::{EditDelta, Selection, VisualSelection};
+use crate::editor::list_edit;
+use crate::editor::table_edit;
+use crate::editor::{EditorState, Mode};
+use crate::input::MouseAction;
+use crate::ui::line_render;
+use ratatui::text::Line;
+
+/// Number of lines a wheel tick scrolls beyond the last document line.
+///
+/// Mouse scrolling is allowed to park the last line near the top of the
+/// viewport so the user can comfortably read and edit the tail of a document.
+/// Keyboard scrolling uses the stricter bound in [`EditorState::scroll_down`]
+/// which keeps at least one line visible.
+pub const MOUSE_SCROLL_OVERSHOOT: usize = 0;
+
+/// Hit-test the position `(col, row)` (in document-area-relative coords) to
+/// determine whether it falls on a clickable element (task-list checkbox
+/// glyph or a Markdown link).
+///
+/// Used by the app's mouse-move handler to update the terminal pointer shape
+/// so the mouse cursor renders as a pointing hand over clickable regions.
+pub fn hit_test_clickable(state: &EditorState, col: u16, row: u16, viewport_width: usize) -> bool {
+    let c = col as usize;
+    let r = row as usize;
+    let Some((line, visual_col)) = rendered_line_at_row(state, r) else {
+        return false;
+    };
+    let total_width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    if c >= total_width {
+        // Past the end of the rendered line — nothing visible to hover.
+        return false;
+    }
+    let _ = visual_col;
+
+    // Link: check whether the rendered span at `c` was emitted with the
+    // `link_text` style.  The renderer is the only producer of UNDERLINED +
+    // Cyan spans, so the presence of the UNDERLINED modifier is a reliable
+    // marker that the hover landed on a link glyph.
+    if span_at_col_has_modifier(&line, c, ratatui::style::Modifier::UNDERLINED) {
+        return true;
+    }
+
+    // Checkbox: reuse the full click-to-offset translation, since the glyph is
+    // rendered as plain `[ ]` / `[x] ` text without a distinguishing style.
+    if let Some(offset) = click_to_char_offset(state, c, r, viewport_width) {
+        let source = state.buffer.contents();
+        let click_byte = state.buffer.rope().char_to_byte(offset);
+        if let Some(info) = list_edit::find_list_at(&source, click_byte) {
+            if let Some(item_idx) = list_edit::cursor_item_idx(&info, click_byte) {
+                let item = &info.items[item_idx];
+                if let Some(task_box) = item.task_box {
+                    if click_byte >= task_box && click_byte < task_box + 3 {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Look up the rendered `Line` and the visual column within it that
+/// correspond to document-area row `row`.  Accounts for scroll and wrap; the
+/// returned visual col is `row - y_of_first_row_of_line`.
+fn rendered_line_at_row(
+    state: &EditorState,
+    row: usize,
+) -> Option<(ratatui::text::Line<'static>, usize)> {
+    let lines = &state.parsed.lines;
+    if lines.is_empty() {
+        return None;
+    }
+    let mut y = 0usize;
+    for line in lines.iter().skip(state.scroll) {
+        let rows_used = line_render::visual_rows_for_line(line, usize::MAX).max(1);
+        if row < y + rows_used {
+            return Some((line.clone(), row - y));
+        }
+        y += rows_used;
+    }
+    None
+}
+
+/// True if the span covering char-col `col` in `line` has `modifier` set.
+fn span_at_col_has_modifier(
+    line: &ratatui::text::Line<'_>,
+    col: usize,
+    modifier: ratatui::style::Modifier,
+) -> bool {
+    let mut walk = 0usize;
+    for span in &line.spans {
+        let span_len = span.content.chars().count();
+        if col < walk + span_len {
+            return span.style.add_modifier.contains(modifier);
+        }
+        walk += span_len;
+    }
+    false
+}
+
+/// Apply a mouse action to the editor, returning `true` when the caller
+/// should suppress the jitter-suppression scroll clamp for this frame (mouse
+/// scrolls must not drag the cursor along).
+pub fn apply(
+    state: &mut EditorState,
+    action: MouseAction,
+    drag_anchor: &mut Option<usize>,
+    viewport_height: usize,
+    viewport_width: usize,
+) {
+    // Preview-mode clicks work over rendered coordinates and stay in
+    // Preview — the user may want to copy rendered text without entering
+    // edit mode (entering edit mode would expose raw Markdown markers and
+    // change the text under the pointer).  Keyboard actions still transition
+    // Preview → Rendered via `enter_edit_if_preview` in `edit_ops`.
+    if state.mode == Mode::Preview {
+        apply_preview(state, action, drag_anchor, viewport_width);
+        return;
+    }
+
+    match action {
+        MouseAction::Click { col, row } => {
+            if toggle_checkbox_at(state, col as usize, row as usize, viewport_width) {
+                *drag_anchor = None;
+                state.drag_in_progress = false;
+                return;
+            }
+            if let Some(offset) =
+                click_to_char_offset(state, col as usize, row as usize, viewport_width)
+            {
+                state.selection = None;
+                state.cursor.offset = offset.min(state.buffer.len_chars());
+                state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+                state.update_cursor_block();
+                state.ensure_cursor_visible(viewport_height, viewport_width);
+                *drag_anchor = Some(state.cursor.offset);
+                // Mouse button is down — suppress raw reveal for the block
+                // under the cursor so the user's click anchor stays visually
+                // aligned during any subsequent drag.
+                state.drag_in_progress = true;
+
+                // Phase 5 prerequisite for Phase 8: detect clicks on Markdown
+                // link syntax so Phase 8 can wire up URL opening without
+                // reworking the mouse-dispatch plumbing.  For now we merely
+                // surface the detected URL in the tracing log.
+                let source = state.buffer.contents();
+                let click_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
+                if let Some(url) = link_at_offset(&source, click_byte) {
+                    tracing::info!(target: "mouse", url = %url, "link clicked");
+                }
+            }
+        }
+        MouseAction::DoubleClick { col, row } => {
+            if let Some(offset) =
+                click_to_char_offset(state, col as usize, row as usize, viewport_width)
+            {
+                state.cursor.offset = offset.min(state.buffer.len_chars());
+                select_word_at_cursor(state);
+                state.update_cursor_block();
+                state.ensure_cursor_visible(viewport_height, viewport_width);
+                *drag_anchor = None;
+            }
+        }
+        MouseAction::TripleClick { col, row } => {
+            if let Some(offset) =
+                click_to_char_offset(state, col as usize, row as usize, viewport_width)
+            {
+                state.cursor.offset = offset.min(state.buffer.len_chars());
+                select_line_at_cursor(state);
+                state.update_cursor_block();
+                state.ensure_cursor_visible(viewport_height, viewport_width);
+                *drag_anchor = None;
+            }
+        }
+        MouseAction::Drag { col, row } => {
+            if let Some(anchor) = *drag_anchor {
+                if let Some(offset) =
+                    click_to_char_offset(state, col as usize, row as usize, viewport_width)
+                {
+                    let active = offset.min(state.buffer.len_chars());
+                    state.cursor.offset = active;
+                    state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+                    state.selection = Some(Selection { anchor, active });
+                    state.update_cursor_block();
+                    state.ensure_cursor_visible(viewport_height, viewport_width);
+                }
+            }
+        }
+        MouseAction::Release => {
+            // Selection is already live via Drag; nothing else to do for now.
+            if let Some(sel) = state.selection {
+                if sel.is_empty() {
+                    state.selection = None;
+                } else {
+                    // When the element under the cursor de-renders after the
+                    // reveal delay, any inline-formatting markers that flank
+                    // the selected content become visible.  Expand the
+                    // selection to include those markers so the highlight
+                    // matches what the user would expect to copy (`*cat*`
+                    // rather than the `cat` they saw while the block was
+                    // rendered).
+                    state.selection = Some(expand_selection_to_inline_markers(&state.buffer, sel));
+                }
+            }
+            state.drag_in_progress = false;
+        }
+        MouseAction::Scroll(delta) => {
+            scroll_by_mouse(state, delta, viewport_width);
+        }
+    }
+}
+
+/// Preview-mode mouse handling.  Selections are tracked in rendered
+/// coordinates (`(line_idx, char_col)`) so that `Copy` can produce the
+/// exact rendered text the user saw — a raw-buffer selection would include
+/// the Markdown markers (`*`, `` ` ``, link URLs, etc.) the user didn't.
+fn apply_preview(
+    state: &mut EditorState,
+    action: MouseAction,
+    drag_anchor: &mut Option<usize>,
+    viewport_width: usize,
+) {
+    match action {
+        MouseAction::Click { col, row } => {
+            // Preview clicks don't toggle checkboxes or follow links — those
+            // are editing semantics; users must be in Rendered mode for them.
+            let Some((line_idx, char_col)) = preview_pos(state, col as usize, row as usize) else {
+                state.visual_selection = None;
+                return;
+            };
+            state.visual_selection = Some(VisualSelection {
+                anchor: (line_idx, char_col),
+                active: (line_idx, char_col),
+            });
+            *drag_anchor = Some(0); // non-None sentinel: drag active in Preview
+            state.drag_in_progress = true;
+        }
+        MouseAction::DoubleClick { col, row } => {
+            if let Some((line_idx, char_col)) = preview_pos(state, col as usize, row as usize) {
+                if let Some(range) = preview_word_range(state, line_idx, char_col) {
+                    state.visual_selection = Some(VisualSelection {
+                        anchor: (line_idx, range.0),
+                        active: (line_idx, range.1),
+                    });
+                }
+            }
+            *drag_anchor = None;
+            state.drag_in_progress = false;
+        }
+        MouseAction::TripleClick { col, row } => {
+            if let Some((line_idx, _)) = preview_pos(state, col as usize, row as usize) {
+                let end_col = state
+                    .parsed
+                    .lines
+                    .get(line_idx)
+                    .map(|l| {
+                        l.spans
+                            .iter()
+                            .map(|s| s.content.chars().count())
+                            .sum::<usize>()
+                    })
+                    .unwrap_or(0);
+                state.visual_selection = Some(VisualSelection {
+                    anchor: (line_idx, 0),
+                    active: (line_idx, end_col),
+                });
+            }
+            *drag_anchor = None;
+            state.drag_in_progress = false;
+        }
+        MouseAction::Drag { col, row } => {
+            if drag_anchor.is_none() {
+                return;
+            }
+            if let Some(active) = preview_pos(state, col as usize, row as usize) {
+                if let Some(sel) = state.visual_selection.as_mut() {
+                    sel.active = active;
+                } else {
+                    state.visual_selection = Some(VisualSelection {
+                        anchor: active,
+                        active,
+                    });
+                }
+            }
+        }
+        MouseAction::Release => {
+            if let Some(sel) = state.visual_selection {
+                if sel.is_empty() {
+                    state.visual_selection = None;
+                }
+            }
+            state.drag_in_progress = false;
+        }
+        MouseAction::Scroll(delta) => {
+            scroll_by_mouse(state, delta, viewport_width);
+        }
+    }
+}
+
+/// Resolve `(col, row)` in document-area coords to `(rendered_line_idx,
+/// char_col)` within that line.  Returns `None` when the click falls on an
+/// empty line (past the last content row) or above the scroll region.
+fn preview_pos(state: &EditorState, col: usize, row: usize) -> Option<(usize, usize)> {
+    let lines = &state.parsed.lines;
+    if lines.is_empty() {
+        return None;
+    }
+    let mut y = 0usize;
+    for (idx, line) in lines.iter().enumerate().skip(state.scroll) {
+        let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+        let rows_used = line_render::visual_rows_for_line(line, usize::MAX).max(1);
+        if row < y + rows_used {
+            return Some((idx, col.min(total)));
+        }
+        y += rows_used;
+    }
+    None
+}
+
+/// Return the `[start_col, end_col)` char range of the word surrounding
+/// `char_col` on rendered line `line_idx`, using alphanumeric + '_' as the
+/// word-char predicate (same as keyboard word navigation).
+fn preview_word_range(
+    state: &EditorState,
+    line_idx: usize,
+    char_col: usize,
+) -> Option<(usize, usize)> {
+    let line = state.parsed.lines.get(line_idx)?;
+    let chars: Vec<char> = line.spans.iter().flat_map(|s| s.content.chars()).collect();
+    if chars.is_empty() {
+        return None;
+    }
+    let clamped = char_col.min(chars.len());
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut start = clamped;
+    while start > 0 && is_word(chars[start - 1]) {
+        start -= 1;
+    }
+    let mut end = clamped;
+    while end < chars.len() && is_word(chars[end]) {
+        end += 1;
+    }
+    if start == end {
+        // On whitespace or punctuation — no meaningful word.  Fall back to a
+        // single-char selection so the user still sees a response.
+        if clamped < chars.len() {
+            return Some((clamped, clamped + 1));
+        }
+        return None;
+    }
+    Some((start, end))
+}
+
+/// Extract the rendered text covered by `sel` from `lines`.  Lines between
+/// the anchor and active endpoints are fully included; the first and last
+/// lines are clipped to the selection's char columns.  A newline separates
+/// each rendered line so multi-line copies preserve structure.
+pub fn visual_selection_to_rendered_text(sel: VisualSelection, lines: &[Line<'_>]) -> String {
+    let (start, end) = sel.range();
+    let (start_line, start_col) = start;
+    let (end_line, end_col) = end;
+    if lines.is_empty() || start_line >= lines.len() {
+        return String::new();
+    }
+    let end_line = end_line.min(lines.len() - 1);
+
+    let mut out = String::new();
+    for idx in start_line..=end_line {
+        let line = &lines[idx];
+        let chars: Vec<char> = line.spans.iter().flat_map(|s| s.content.chars()).collect();
+        let lo = if idx == start_line { start_col } else { 0 };
+        let hi = if idx == end_line {
+            end_col
+        } else {
+            chars.len()
+        };
+        let lo = lo.min(chars.len());
+        let hi = hi.min(chars.len());
+        if lo < hi {
+            out.extend(chars[lo..hi].iter());
+        }
+        if idx < end_line {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+// ── Mode transitions ─────────────────────────────────────────────────────────
+
+fn enter_edit_from_preview(state: &mut EditorState) {
+    if state.mode == Mode::Preview {
+        state.mode = Mode::Rendered;
+    }
+}
+
+// ── Scrolling ────────────────────────────────────────────────────────────────
+
+/// Scroll by `delta` lines using the mouse-specific bound that allows the
+/// last rendered line to sit at the very top of the viewport.  Does not
+/// disturb the cursor.
+pub fn scroll_by_mouse(state: &mut EditorState, delta: i32, _viewport_width: usize) {
+    if delta == 0 {
+        return;
+    }
+    let total = match state.mode {
+        Mode::Raw => state.buffer.line_count(),
+        _ => state.parsed.line_count(),
+    };
+    if total == 0 {
+        state.scroll = 0;
+        return;
+    }
+    // Mouse scroll allows the last line to sit at the TOP of the viewport:
+    // max_scroll = total - 1.  `EditorState::scroll_down` already uses the
+    // same bound, but we re-implement it here to avoid triggering keyboard's
+    // companion `clamp_cursor_to_viewport_top`.
+    let max_scroll = total.saturating_sub(1) + MOUSE_SCROLL_OVERSHOOT;
+    if delta > 0 {
+        state.scroll = (state.scroll + delta as usize).min(max_scroll);
+    } else {
+        state.scroll = state.scroll.saturating_sub((-delta) as usize);
+    }
+}
+
+// ── Hit-testing ──────────────────────────────────────────────────────────────
+
+/// Translate a click at `(col, row)` in the document area to a buffer char
+/// offset.  Accounts for current scroll and visual-row wrap.
+///
+/// Returns `None` only when the buffer is empty — all clicks are clamped to
+/// the nearest valid position (end of line / end of buffer) so the caller
+/// never has to handle "click landed in whitespace past the document".
+pub fn click_to_char_offset(
+    state: &EditorState,
+    col: usize,
+    row: usize,
+    viewport_width: usize,
+) -> Option<usize> {
+    match state.mode {
+        Mode::Raw => Some(raw_click_to_offset(state, col, row)),
+        Mode::Preview | Mode::Rendered => {
+            Some(rendered_click_to_offset(state, col, row, viewport_width))
+        }
+    }
+}
+
+/// Raw-mode click: treat each visual row as one buffer line (the raw view's
+/// own wrap is a best-effort wrap that doesn't preserve a stable inverse
+/// mapping, so this is an acceptable approximation).
+fn raw_click_to_offset(state: &EditorState, col: usize, row: usize) -> usize {
+    let target_line = state.scroll + row;
+    let line_count = state.buffer.line_count();
+    if target_line >= line_count {
+        return state.buffer.len_chars();
+    }
+    let line_start = state.buffer.line_to_char(target_line);
+    let line = state.buffer.line(target_line).unwrap_or_default();
+    let line_len = line.trim_end_matches('\n').chars().count();
+    line_start + col.min(line_len)
+}
+
+/// Rendered/Preview click: walk through rendered lines from `state.scroll`,
+/// accumulating each line's visual-row count, and find which rendered line
+/// and sub-row the click landed on.  Then map that rendered sub-line back to
+/// a source byte using the source map.
+fn rendered_click_to_offset(
+    state: &EditorState,
+    col: usize,
+    row: usize,
+    viewport_width: usize,
+) -> usize {
+    let lines = &state.parsed.lines;
+    if lines.is_empty() {
+        return 0;
+    }
+    let mut y = 0usize;
+    for (idx, line) in lines.iter().enumerate().skip(state.scroll) {
+        let rows_used = line_render::visual_rows_for_line(line, viewport_width).max(1);
+        if row < y + rows_used {
+            let sub_row = row - y;
+            return rendered_sub_line_to_offset(state, idx, sub_row, col);
+        }
+        y += rows_used;
+    }
+    state.buffer.len_chars()
+}
+
+/// Map `(rendered_line_idx, sub_row_within_line, col)` to a buffer char
+/// offset.
+///
+/// Strategy:
+/// 1. Look up the block that produced the rendered line.
+/// 2. Compute which raw source line within the block corresponds to this
+///    rendered line (skipping the table-top border row when relevant).
+/// 3. Within that raw source line, advance `col` chars and convert to a char
+///    offset on the rope.
+///
+/// For blocks with inline formatting (`**bold**` rendering as `bold`), the
+/// rendered column may diverge slightly from the raw column.  Given the
+/// Phase 1 reveal semantics turn the cursor's line into raw text within
+/// `RAW_REVEAL_DELAY`, the click lands at an approximate position that the
+/// user can refine with a second click if needed.
+fn rendered_sub_line_to_offset(
+    state: &EditorState,
+    rendered_line_idx: usize,
+    sub_row_within_line: usize,
+    col: usize,
+) -> usize {
+    let buffer_len = state.buffer.len_chars();
+    let source = state.buffer.contents();
+    let Some(block_start_byte) = state
+        .parsed
+        .source_map
+        .original_byte_for_rendered_line(rendered_line_idx)
+    else {
+        return buffer_len;
+    };
+    let Some(block_range) = state
+        .parsed
+        .source_map
+        .original_range_for_byte(block_start_byte)
+    else {
+        return buffer_len;
+    };
+    let block_end = block_range.end.min(source.len());
+    let block_text = &source[block_range.start..block_end];
+
+    // How deep into the block's rendered lines did we click?
+    let rendered_span = state
+        .parsed
+        .source_map
+        .rendered_lines_for_byte(block_start_byte);
+    let sub_idx_in_block = rendered_line_idx.saturating_sub(rendered_span.start);
+
+    // Table box-drawing: top border is rendered line 0 of the block; the bottom
+    // border is the last rendered line.  Raw line N maps to rendered line N+1.
+    let is_table = table_edit::is_table_block(block_text);
+    let raw_line_idx = if is_table {
+        sub_idx_in_block.saturating_sub(1)
+    } else {
+        sub_idx_in_block
+    };
+
+    // Blank-line "virtual blocks" have no content.  The renderer produces
+    // a single empty line for them; place the cursor at block start.
+    if block_text.is_empty() {
+        return state.buffer.rope().byte_to_char(block_range.start);
+    }
+
+    // Walk raw source lines to find the byte start of the target raw line.
+    let mut byte_cursor = 0usize;
+    let mut line_byte_start = 0usize;
+    let mut line_byte_end = block_text.len();
+    let mut found_idx = 0usize;
+    for (i, line) in block_text.split('\n').enumerate() {
+        if i == raw_line_idx {
+            line_byte_start = byte_cursor;
+            line_byte_end = byte_cursor + line.len();
+            found_idx = i;
+            break;
+        }
+        byte_cursor += line.len() + 1;
+        if byte_cursor >= block_text.len() {
+            // Clamp when raw_line_idx points past the block's last line.
+            line_byte_start = byte_cursor.saturating_sub(line.len() + 1);
+            line_byte_end = block_text.len();
+            found_idx = i;
+            break;
+        }
+    }
+    let line_text = &block_text[line_byte_start..line_byte_end];
+    let rendered_line = &state.parsed.lines[rendered_line_idx];
+    let row_width = line_row_width(rendered_line, sub_row_within_line);
+    let clamped_col = col.min(row_width);
+
+    // Tables: rendered cells are padded to layout width, so a simple col →
+    // char mapping lands clicks on the wrong cell whenever the rendered cell
+    // is wider than its raw counterpart.  Map through the pipe positions
+    // instead so the click stays inside the cell the user clicked on.
+    let raw_col = if is_table && rendered_line.spans.iter().any(|s| s.content.contains('│')) {
+        if let Some(c) = table_click_to_raw_col(line_text, rendered_line, clamped_col) {
+            c
+        } else {
+            clamped_col
+        }
+    } else {
+        // Task-list items render without the `- ` / `N. ` prefix; the
+        // checkbox and text follow `[ ] ` starting at col = indent.  The
+        // rendered line is therefore shorter than the raw line by the
+        // list-marker width — shift the click col to the matching raw col
+        // so clicks on `[ ]` toggle the checkbox and clicks on text land on
+        // the intended character.
+        let shift = task_marker_offset(line_text);
+        clamped_col.saturating_add(shift)
+    };
+
+    // Advance `raw_col` chars into the raw line.
+    let line_char_count = line_text.chars().count();
+    let raw_col = raw_col.min(line_char_count);
+    let mut byte_offset_in_line = 0usize;
+    for (char_idx, ch) in line_text.chars().enumerate() {
+        if char_idx == raw_col {
+            break;
+        }
+        byte_offset_in_line += ch.len_utf8();
+    }
+    let max_byte_in_line = line_text.len();
+    let byte_in_block = line_byte_start + byte_offset_in_line.min(max_byte_in_line);
+    let absolute_byte = block_range.start + byte_in_block.min(block_text.len());
+
+    let _ = found_idx;
+    state
+        .buffer
+        .rope()
+        .byte_to_char(absolute_byte.min(source.len()))
+        .min(buffer_len)
+}
+
+/// If `raw_line` is a task-list item, return the byte length of the raw list
+/// marker (`- `, `* `, `1. `, …) that the renderer strips before the `[ ]`
+/// checkbox.  For non-task-list lines, returns 0.
+///
+/// Used by click-to-offset mapping to translate rendered columns to raw
+/// columns: the rendered task line is shorter than the raw line by this many
+/// chars, so `raw_col = rendered_col + task_marker_offset(line)`.
+fn task_marker_offset(raw_line: &str) -> usize {
+    let bytes = raw_line.as_bytes();
+    let indent_len = bytes
+        .iter()
+        .take_while(|&&b| b == b' ' || b == b'\t')
+        .count();
+    let after_indent = &raw_line[indent_len..];
+    let after_bytes = after_indent.as_bytes();
+    let marker_len = match after_bytes.first() {
+        Some(&b) if b == b'-' || b == b'*' || b == b'+' => {
+            if after_bytes.get(1) == Some(&b' ') {
+                2
+            } else {
+                return 0;
+            }
+        }
+        Some(&b) if b.is_ascii_digit() => {
+            let digits = after_bytes
+                .iter()
+                .take_while(|b| b.is_ascii_digit())
+                .count();
+            match after_bytes.get(digits) {
+                Some(&b'.') | Some(&b')') if after_bytes.get(digits + 1) == Some(&b' ') => {
+                    digits + 2
+                }
+                _ => return 0,
+            }
+        }
+        _ => return 0,
+    };
+    let after_marker = &after_indent[marker_len..];
+    if after_marker.starts_with("[ ] ")
+        || after_marker.starts_with("[x] ")
+        || after_marker.starts_with("[X] ")
+    {
+        marker_len
+    } else {
+        0
+    }
+}
+
+/// Cell-aware mapping from a rendered column to a raw column for table rows.
+///
+/// Locates the cell the click falls in by walking the rendered line's `│`
+/// positions, then maps the click's position *within* the rendered cell to
+/// the matching raw cell:
+/// - clicks on actual content chars map 1:1 to the raw content char,
+/// - clicks on leading padding land on the first raw content char,
+/// - clicks on trailing padding land just past the last non-whitespace char
+///   in the raw cell so the cursor never jumps into the next cell.
+///
+/// Returns `None` when the line doesn't parse as a table row (alignment
+/// separator, border) — caller falls back to the default char-by-char map.
+fn table_click_to_raw_col(
+    raw_line: &str,
+    rendered_line: &Line<'_>,
+    rendered_col: usize,
+) -> Option<usize> {
+    let raw_pipes = raw_pipe_positions(raw_line);
+    let rendered_pipes = rendered_line_pipe_positions(rendered_line);
+    if raw_pipes.len() < 2 || rendered_pipes.len() != raw_pipes.len() {
+        return None;
+    }
+    let col_count = rendered_pipes.len() - 1;
+
+    // Which cell does `rendered_col` fall in?  Cell `i` spans
+    // (rendered_pipes[i] + 1) .. rendered_pipes[i + 1] (content area).
+    let cell_idx = (0..col_count)
+        .find(|&i| rendered_col < rendered_pipes[i + 1])
+        .unwrap_or(col_count - 1);
+    let rend_cell_start = rendered_pipes[cell_idx] + 1;
+    let rend_cell_end = rendered_pipes[cell_idx + 1];
+    let raw_cell_start = raw_pipes[cell_idx] + 1;
+    let raw_cell_end = raw_pipes[cell_idx + 1];
+
+    let raw_cell_text: String = raw_line
+        .chars()
+        .skip(raw_cell_start)
+        .take(raw_cell_end - raw_cell_start)
+        .collect();
+
+    // Clamp the click into the rendered cell's span so clicks on the opening
+    // pipe land at the start of the cell's content.
+    let _ = rend_cell_end;
+    let clicked = rendered_col.max(rend_cell_start);
+    let rend_offset_in_cell = clicked.saturating_sub(rend_cell_start);
+
+    // Partition the raw cell into leading-ws / content / trailing-ws.
+    let raw_chars: Vec<char> = raw_cell_text.chars().collect();
+    let raw_leading = raw_chars.iter().take_while(|c| c.is_whitespace()).count();
+    let raw_trailing = raw_chars
+        .iter()
+        .rev()
+        .take_while(|c| c.is_whitespace())
+        .count();
+    let content_chars = raw_chars.len().saturating_sub(raw_leading + raw_trailing);
+
+    // The renderer always emits exactly one leading space before the cell
+    // content (see `render_table_row`).  A click on that leading space should
+    // land on the first raw content char; clicks past the content's last
+    // non-whitespace char clamp to "just past last content char" so the
+    // cursor never jumps into the next cell via trailing padding.
+    let raw_offset_in_cell = if rend_offset_in_cell <= 1 {
+        raw_leading
+    } else {
+        let content_col = rend_offset_in_cell - 1;
+        raw_leading + content_col.min(content_chars)
+    };
+
+    Some(raw_cell_start + raw_offset_in_cell)
+}
+
+/// Char positions of unescaped `|` characters in a raw table row.
+fn raw_pipe_positions(row: &str) -> Vec<usize> {
+    let mut positions = Vec::new();
+    let mut escaped = false;
+    for (i, ch) in row.chars().enumerate() {
+        if ch == '|' && !escaped {
+            positions.push(i);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = !escaped;
+        } else {
+            escaped = false;
+        }
+    }
+    positions
+}
+
+/// Char positions of `│` box-drawing pipe characters in a rendered line.
+fn rendered_line_pipe_positions(line: &Line<'_>) -> Vec<usize> {
+    let mut positions = Vec::new();
+    let mut col = 0usize;
+    for span in &line.spans {
+        for ch in span.content.chars() {
+            if ch == '│' {
+                positions.push(col);
+            }
+            col += 1;
+        }
+    }
+    positions
+}
+
+/// Width in cells of visual sub-row `sub_row` of the rendered line.  Clicks
+/// past the line's content are clamped to this bound before being mapped into
+/// the raw source, so the user can click "past the end" and still land at the
+/// line's last valid cursor position.
+///
+/// Currently returns the full character count of the line regardless of
+/// sub-row — a conservative upper bound that keeps clicks off the next line.
+/// A precise per-row bound would require re-running the line-wrap algorithm
+/// here; the conservative bound is correct at the character level and only
+/// loses precision for clicks deep in the padding of wrapped lines.
+fn line_row_width(line: &ratatui::text::Line<'_>, _sub_row: usize) -> usize {
+    line.spans.iter().map(|s| s.content.chars().count()).sum()
+}
+
+// ── Selection helpers ────────────────────────────────────────────────────────
+
+/// If the raw bytes immediately before `sel.start` and immediately after
+/// `sel.end` form a matching pair of inline formatting markers (`*…*`,
+/// `**…**`, `_…_`, `__…__`, `` `…` ``, `~~…~~`), expand the selection to
+/// include both markers so the highlight matches what the user sees when
+/// the element de-renders after the click-and-drag completes.
+///
+/// Only expands when the selection is entirely on a single source line —
+/// inline formatting doesn't span newlines in CommonMark.
+fn expand_selection_to_inline_markers(
+    buffer: &crate::document::Buffer,
+    sel: Selection,
+) -> Selection {
+    let (start_char, end_char) = sel.range();
+    if end_char <= start_char {
+        return sel;
+    }
+    let rope = buffer.rope();
+    let start_byte = rope.char_to_byte(start_char);
+    let end_byte = rope.char_to_byte(end_char);
+    let source = buffer.contents();
+    if end_byte > source.len() {
+        return sel;
+    }
+
+    // Same-line constraint.
+    if source[start_byte..end_byte].contains('\n') {
+        return sel;
+    }
+
+    // Try double-char markers first so `**foo**` doesn't get reduced to `*foo*`.
+    const DOUBLE_MARKERS: &[&str] = &["**", "__", "~~"];
+    const SINGLE_MARKERS: &[&str] = &["*", "_", "`"];
+
+    for m in DOUBLE_MARKERS.iter().chain(SINGLE_MARKERS.iter()) {
+        let len = m.len();
+        if start_byte < len || end_byte + len > source.len() {
+            continue;
+        }
+        let before = &source[start_byte - len..start_byte];
+        let after = &source[end_byte..end_byte + len];
+        if before == *m && after == *m {
+            // Don't cross a line boundary when expanding — redundant given
+            // the check above but cheap to verify.
+            if before.contains('\n') || after.contains('\n') {
+                continue;
+            }
+            let new_start_byte = start_byte - len;
+            let new_end_byte = end_byte + len;
+            let new_start = rope.byte_to_char(new_start_byte);
+            let new_end = rope.byte_to_char(new_end_byte);
+            // Preserve anchor/active direction.
+            let (anchor, active) = if sel.anchor <= sel.active {
+                (new_start, new_end)
+            } else {
+                (new_end, new_start)
+            };
+            return Selection { anchor, active };
+        }
+    }
+    sel
+}
+
+/// Expand the selection to the word under the cursor (double-click).
+fn select_word_at_cursor(state: &mut EditorState) {
+    let buf = &state.buffer;
+    let len = buf.len_chars();
+    let rope = buf.rope();
+    let offset = state.cursor.offset.min(len);
+
+    if len == 0 {
+        state.selection = None;
+        return;
+    }
+
+    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+
+    // If the cursor is on whitespace, fall back to selecting the run of
+    // whitespace instead of an empty selection.
+    let mut start = offset;
+    while start > 0 && is_word_char(rope.char(start - 1)) {
+        start -= 1;
+    }
+    let mut end = offset;
+    while end < len && is_word_char(rope.char(end)) {
+        end += 1;
+    }
+    if start == end {
+        // Not on a word — try expanding across non-alphanumeric chars (e.g.
+        // punctuation).  If there's no such run either, leave unchanged.
+        let mut s2 = offset;
+        while s2 > 0 {
+            let c = rope.char(s2 - 1);
+            if c.is_whitespace() || is_word_char(c) {
+                break;
+            }
+            s2 -= 1;
+        }
+        let mut e2 = offset;
+        while e2 < len {
+            let c = rope.char(e2);
+            if c.is_whitespace() || is_word_char(c) {
+                break;
+            }
+            e2 += 1;
+        }
+        if s2 != e2 {
+            state.selection = Some(Selection {
+                anchor: s2,
+                active: e2,
+            });
+            state.cursor.offset = e2;
+            return;
+        }
+        state.selection = None;
+        return;
+    }
+    state.selection = Some(Selection {
+        anchor: start,
+        active: end,
+    });
+    state.cursor.offset = end;
+    state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+}
+
+/// Expand the selection to the whole line (triple-click).
+///
+/// Inside a table the whole buffer line is `| cell | cell | cell |` — selecting
+/// that pulls in the borders and neighbouring cells, which almost never matches
+/// what the user wants.  When the cursor is in a table cell, select just the
+/// trimmed content of that cell instead.
+fn select_line_at_cursor(state: &mut EditorState) {
+    let source = state.buffer.contents();
+    let cursor_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
+    if let Some(info) = table_edit::find_table_at(&source, cursor_byte) {
+        if let Some((row_idx, col_idx)) = table_edit::cursor_cell(&info, cursor_byte) {
+            if let Some(row) = info.rows.get(row_idx) {
+                if let Some(cell) = row.cells.get(col_idx) {
+                    let raw_bytes = cell.raw.as_bytes();
+                    let leading = raw_bytes
+                        .iter()
+                        .take_while(|b| matches!(**b, b' ' | b'\t'))
+                        .count();
+                    let trailing = raw_bytes
+                        .iter()
+                        .rev()
+                        .take_while(|b| matches!(**b, b' ' | b'\t'))
+                        .count();
+                    let content_len = cell.raw.len().saturating_sub(leading + trailing);
+                    let start_byte = row.start + cell.content_start + leading;
+                    let end_byte = start_byte + content_len;
+                    let rope = state.buffer.rope();
+                    let anchor = rope.byte_to_char(start_byte);
+                    let active = rope.byte_to_char(end_byte);
+                    state.selection = Some(Selection { anchor, active });
+                    state.cursor.offset = active;
+                    state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+                    return;
+                }
+            }
+        }
+    }
+
+    let (line, _) = state.cursor.line_col(&state.buffer);
+    let start = state.buffer.line_to_char(line);
+    let end = if line + 1 < state.buffer.line_count() {
+        state.buffer.line_to_char(line + 1)
+    } else {
+        state.buffer.len_chars()
+    };
+    state.selection = Some(Selection {
+        anchor: start,
+        active: end,
+    });
+    state.cursor.offset = end;
+    state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+}
+
+// ── Link hit-testing (Phase 8 prerequisite) ─────────────────────────────────
+
+/// Scan the source line containing `click_byte` for Markdown link syntax
+/// `[text](url)` and return the URL when the click falls inside such a span.
+///
+/// Kept deliberately simple: operates on the raw line (no AST re-parse), so
+/// autolinks (`<url>`), reference links (`[text][id]`), and nested link
+/// constructs are not detected.  Phase 8 may upgrade this to a proper
+/// per-block hit-test registry once link opening is implemented.
+pub fn link_at_offset(source: &str, click_byte: usize) -> Option<String> {
+    let click_byte = click_byte.min(source.len());
+    let line_start = source[..click_byte].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let rel_after = source[click_byte..]
+        .find('\n')
+        .map(|i| click_byte + i)
+        .unwrap_or(source.len());
+    let line = &source[line_start..rel_after];
+    let col = click_byte.saturating_sub(line_start);
+
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'[' {
+            // Find matching `]`.  Brackets are balanced to support nested
+            // `[text containing [inner]]` constructs.
+            let mut depth = 1usize;
+            let mut j = i + 1;
+            while j < bytes.len() {
+                match bytes[j] {
+                    b'[' => depth += 1,
+                    b']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    b'\\' => {
+                        j += 1;
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+            if depth != 0 || j >= bytes.len() {
+                return None;
+            }
+            let close_bracket = j;
+            if close_bracket + 1 >= bytes.len() || bytes[close_bracket + 1] != b'(' {
+                i = close_bracket + 1;
+                continue;
+            }
+            let url_start = close_bracket + 2;
+            let mut pdepth = 1usize;
+            let mut k = url_start;
+            while k < bytes.len() {
+                match bytes[k] {
+                    b'(' => pdepth += 1,
+                    b')' => {
+                        pdepth -= 1;
+                        if pdepth == 0 {
+                            break;
+                        }
+                    }
+                    b'\\' => {
+                        k += 1;
+                    }
+                    _ => {}
+                }
+                k += 1;
+            }
+            if pdepth != 0 || k >= bytes.len() {
+                return None;
+            }
+            let url_end = k;
+            if col >= i && col <= url_end {
+                let url_bytes = &bytes[url_start..url_end];
+                let url = String::from_utf8_lossy(url_bytes).trim().to_owned();
+                return if url.is_empty() { None } else { Some(url) };
+            }
+            i = url_end + 1;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+// ── Checkbox toggling on click ──────────────────────────────────────────────
+
+/// If `(col, row)` falls on a task-list checkbox glyph, toggle it and return
+/// `true`.  Otherwise returns `false` so the caller can fall through to
+/// cursor-placement behaviour.
+fn toggle_checkbox_at(
+    state: &mut EditorState,
+    col: usize,
+    row: usize,
+    viewport_width: usize,
+) -> bool {
+    if state.mode == Mode::Raw {
+        return false;
+    }
+    // Locate the source line under the click by reusing the click-to-offset
+    // translation, then ask the list machinery whether the click sits inside
+    // a checkbox glyph.
+    let Some(offset) = click_to_char_offset(state, col, row, viewport_width) else {
+        return false;
+    };
+    let source = state.buffer.contents();
+    let click_byte = state.buffer.rope().char_to_byte(offset);
+    let Some(info) = list_edit::find_list_at(&source, click_byte) else {
+        return false;
+    };
+    // Find which item this is.  `cursor_item_idx` does the work.
+    let Some(item_idx) = list_edit::cursor_item_idx(&info, click_byte) else {
+        return false;
+    };
+    let item = &info.items[item_idx];
+    let Some(task_box) = item.task_box else {
+        return false;
+    };
+
+    // The checkbox is rendered as `[x] ` or `[ ] ` — four chars (`[`, state,
+    // `]`, trailing space) starting at `task_box`.  We consider the click to
+    // hit the checkbox iff its byte falls within the first three chars of that
+    // span (i.e. the `[x]` glyph itself, excluding the trailing space — clicks
+    // past the `]` are normal cursor placement).
+    let box_end = task_box + 3;
+    if click_byte >= task_box && click_byte < box_end {
+        if let Some(res) = list_edit::toggle_checkbox(&info, &source, click_byte) {
+            // Checkbox toggle is a 1-for-1 char replacement, so existing
+            // offsets stay valid.  Apply the edit without touching cursor
+            // tracking state (`update_cursor_block` would reset the reveal
+            // timer, causing the current cursor block to briefly re-render
+            // as "rendered" before snapping back to "raw").
+            let offset_char = state.buffer.rope().byte_to_char(res.delta.offset);
+            let delta = EditDelta {
+                offset: offset_char,
+                removed: res.delta.removed,
+                inserted: res.delta.inserted,
+            };
+            let saved_offset = state.cursor.offset;
+            let saved_preferred = state.cursor.preferred_col;
+            let saved_block_idx = state.cursor_block_idx;
+            let saved_line_idx = state.cursor_line_idx;
+            let saved_entered_at = state.cursor_block_entered_at;
+            state.apply_delta(delta);
+            state.cursor.offset = saved_offset.min(state.buffer.len_chars());
+            state.cursor.preferred_col = saved_preferred;
+            state.cursor_block_idx = saved_block_idx;
+            state.cursor_line_idx = saved_line_idx;
+            state.cursor_block_entered_at = saved_entered_at;
+            return true;
+        }
+    }
+    false
+}
+
+/// Apply a byte-offset `EditDelta` to the editor (mirrors the helper in
+/// `edit_ops`; duplicated here because `apply_byte_delta` there is private to
+/// that module).
+fn apply_byte_delta(state: &mut EditorState, byte_delta: EditDelta, cursor_byte_target: usize) {
+    let offset_char = state.buffer.rope().byte_to_char(byte_delta.offset);
+    let delta = EditDelta {
+        offset: offset_char,
+        removed: byte_delta.removed,
+        inserted: byte_delta.inserted,
+    };
+    state.apply_delta(delta);
+    let source = state.buffer.contents();
+    let clamped_byte = cursor_byte_target.min(source.len());
+    let char_off = state.buffer.rope().byte_to_char(clamped_byte);
+    state.cursor.offset = char_off.min(state.buffer.len_chars());
+    state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+    state.update_cursor_block();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Theme;
+    use crate::document::Buffer;
+
+    fn theme() -> &'static Theme {
+        Box::leak(Box::new(Theme::default()))
+    }
+
+    #[test]
+    fn scroll_down_mouse_respects_max() {
+        let mut state = EditorState::new(Buffer::from_str("a\nb\nc\nd\n"), theme());
+        state.mode = Mode::Rendered;
+        scroll_by_mouse(&mut state, 100, 80);
+        // Max scroll lands the last rendered line at the top.
+        assert_eq!(state.scroll, state.parsed.line_count().saturating_sub(1));
+    }
+
+    #[test]
+    fn scroll_up_clamps_at_zero() {
+        let mut state = EditorState::new(Buffer::from_str("hello\nworld\n"), theme());
+        state.mode = Mode::Rendered;
+        state.scroll = 1;
+        scroll_by_mouse(&mut state, -5, 80);
+        assert_eq!(state.scroll, 0);
+    }
+
+    #[test]
+    fn click_places_cursor_on_paragraph() {
+        let text = "Hello world\n";
+        let mut state = EditorState::new(Buffer::from_str(text), theme());
+        state.mode = Mode::Rendered;
+        let mut anchor = None;
+        apply(
+            &mut state,
+            MouseAction::Click { col: 6, row: 0 },
+            &mut anchor,
+            10,
+            80,
+        );
+        // "Hello world" — clicking col 6 lands on 'w'.
+        assert_eq!(state.cursor.offset, 6);
+        assert_eq!(state.selection, None);
+        assert_eq!(anchor, Some(6));
+    }
+
+    #[test]
+    fn double_click_selects_word() {
+        let text = "hello world";
+        let mut state = EditorState::new(Buffer::from_str(text), theme());
+        state.mode = Mode::Rendered;
+        state.cursor.offset = 7; // inside "world"
+        select_word_at_cursor(&mut state);
+        assert_eq!(
+            state.selection,
+            Some(Selection {
+                anchor: 6,
+                active: 11
+            })
+        );
+    }
+
+    #[test]
+    fn triple_click_selects_line() {
+        let text = "first line\nsecond\n";
+        let mut state = EditorState::new(Buffer::from_str(text), theme());
+        state.mode = Mode::Rendered;
+        state.cursor.offset = 3;
+        select_line_at_cursor(&mut state);
+        let sel = state.selection.expect("selection set");
+        assert_eq!(sel.anchor, 0);
+        assert_eq!(sel.active, 11); // up to end of "first line\n"
+    }
+
+    #[test]
+    fn drag_extends_selection() {
+        let text = "hello world";
+        let mut state = EditorState::new(Buffer::from_str(text), theme());
+        state.mode = Mode::Rendered;
+        let mut anchor = None;
+        apply(
+            &mut state,
+            MouseAction::Click { col: 0, row: 0 },
+            &mut anchor,
+            10,
+            80,
+        );
+        apply(
+            &mut state,
+            MouseAction::Drag { col: 5, row: 0 },
+            &mut anchor,
+            10,
+            80,
+        );
+        let sel = state.selection.expect("drag selects");
+        assert_eq!(sel.anchor, 0);
+        assert_eq!(sel.active, 5);
+    }
+
+    #[test]
+    fn click_in_preview_stays_in_preview_and_seeds_visual_selection() {
+        let mut state = EditorState::new(Buffer::from_str("hello"), theme());
+        assert_eq!(state.mode, Mode::Preview);
+        let mut anchor = None;
+        apply(
+            &mut state,
+            MouseAction::Click { col: 1, row: 0 },
+            &mut anchor,
+            10,
+            80,
+        );
+        // Preview clicks must NOT transition to Rendered any more — users
+        // copy rendered text from Preview mode.  A zero-width visual
+        // selection is seeded as the drag anchor.
+        assert_eq!(state.mode, Mode::Preview);
+        let vs = state.visual_selection.expect("visual selection seeded");
+        assert_eq!(vs.anchor, (0, 1));
+        assert_eq!(vs.active, (0, 1));
+    }
+
+    #[test]
+    fn click_on_checkbox_toggles_it() {
+        let text = "- [ ] todo\n";
+        let mut state = EditorState::new(Buffer::from_str(text), theme());
+        state.mode = Mode::Rendered;
+        let mut anchor = None;
+        // Task items render without their raw `- ` prefix, so the `[` sits at
+        // rendered col 0 and the inner space at rendered col 1.
+        apply(
+            &mut state,
+            MouseAction::Click { col: 1, row: 0 },
+            &mut anchor,
+            10,
+            80,
+        );
+        assert!(state.buffer.contents().contains("[x]"));
+    }
+
+    #[test]
+    fn click_past_end_of_line_clamps_to_line_end() {
+        let text = "hi\n";
+        let mut state = EditorState::new(Buffer::from_str(text), theme());
+        state.mode = Mode::Rendered;
+        let mut anchor = None;
+        apply(
+            &mut state,
+            MouseAction::Click { col: 50, row: 0 },
+            &mut anchor,
+            10,
+            80,
+        );
+        // Should land at end of "hi" (char 2) — clamped by line length.
+        assert!(state.cursor.offset <= 2);
+    }
+
+    #[test]
+    fn link_at_offset_detects_markdown_link() {
+        let src = "See [the docs](https://example.com) for more.\n";
+        // Click inside the bracket text.
+        assert_eq!(
+            link_at_offset(src, 8),
+            Some("https://example.com".to_owned())
+        );
+        // Click inside the URL.
+        assert_eq!(
+            link_at_offset(src, 20),
+            Some("https://example.com".to_owned())
+        );
+    }
+
+    #[test]
+    fn link_at_offset_returns_none_outside_link() {
+        let src = "See [the docs](https://example.com) for more.\n";
+        // Click past the closing paren.
+        assert_eq!(link_at_offset(src, 40), None);
+        // Click before the opening bracket.
+        assert_eq!(link_at_offset(src, 1), None);
+    }
+
+    #[test]
+    fn link_at_offset_handles_nested_brackets() {
+        let src = "[one [nested] two](https://ex.com)\n";
+        // Click inside the nested brackets still resolves to the outer URL.
+        assert_eq!(link_at_offset(src, 7), Some("https://ex.com".to_owned()));
+    }
+
+    #[test]
+    fn raw_mode_click_places_cursor_on_line() {
+        let text = "first\nsecond\nthird\n";
+        let mut state = EditorState::new(Buffer::from_str(text), theme());
+        state.mode = Mode::Raw;
+        let mut anchor = None;
+        apply(
+            &mut state,
+            MouseAction::Click { col: 2, row: 1 },
+            &mut anchor,
+            10,
+            80,
+        );
+        // Line 1 = "second" starting at char 6, col 2 → char 8.
+        assert_eq!(state.cursor.offset, 8);
+    }
+}

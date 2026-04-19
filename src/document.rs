@@ -9,5 +9,5 @@ pub use buffer::Buffer;
 pub use cursor::Cursor;
 pub use history::{EditDelta, History};
 pub use parsed_doc::ParsedDoc;
-pub use selection::Selection;
+pub use selection::{Selection, VisualSelection};
 pub use source_map::SourceMap;
