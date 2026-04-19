@@ -707,17 +707,17 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 *Goal: a polished UI chrome with file navigation and settings access.*
 
 **Tasks:**
-- [ ] Expand `StatusBar` to show: mode indicator, file path, dirty marker (`*`), cursor position (`line:col`), selection size (when selection active), detected image protocol
+- [ ] Expand `StatusBar` line 1 to show: mode indicator, file path, dirty marker (`*`), cursor position (`line:col`), selection size (when selection active). Detected image protocol is intentionally *not* surfaced here — users who want to see it can reach it via the settings overlay / an `:info` command.
 - [ ] Implement a command palette (Ctrl-P): fuzzy-searchable list of actions, opens as an overlay
 - [ ] Implement `FilePicker` overlay widget: shows directory tree (using `tui-tree-widget` or a custom implementation); navigable with arrows, filterable by typing
 - [ ] File picker opens with Ctrl-O; shows recent files at the top
 - [ ] Implement a settings overlay, accessible from the command palette: key-value list of common settings, editable inline; changes are written back to config.toml upon confirmation. Include a button to open config.toml in the default editor. This overlay should not show keybinds settings.
 - [ ] Implement a keybinds overlay, accessible from the command palette: action-keybind list of all keybinds, editable inline; changes are written back to config.toml upon confirmation.
 - [ ] Add a markdown cheat sheet (tailored to the markdown supported by this app), accessible from the command palette.
-- [ ] Implement tab bar if multiple files are open (from link navigation or command line args)
+- [ ] Implement tab bar — rendered **only when more than one file is open** (from link navigation or command-line args). Single-file sessions show no tab bar at all, saving a row. Users who want dedicated single-file windows can open another terminal.
 - [ ] Accept multiple file arguments on the command line: `edamame file1.md file2.md`
 
-> Contextual keybind hints at the bottom of the status bar are specified in Phase 11 (under "Contextual hint line"). Phase 9 provides the persistent left-hand status-bar info; Phase 11 provides the right-hand hint/message region.
+> The status region is **two lines**. Line 1 is the persistent info specified above (owned by Phase 9). Line 2 — contextual keybind hints, transient status messages, and modal prompts — is owned by Phase 11, which also defines an opt-in single-line compact mode. Phase 10's reload / save-copy prompts render on line 2.
 
 **Acceptance criteria:** Status bar shows all relevant information at a glance. File picker is fast and keyboard-navigable. Command palette lists all actions with their key bindings. Multiple files can be open simultaneously.
 
@@ -749,21 +749,30 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 ### Phase 11 — More Polish
 *Goal: further UX work to make the app fun and easy to use*
 
-A single status-line that normally shows contextual keybind hints, briefly overridden by transient status messages (e.g. "Saved", "Copied") that time out back to hints. Keeps vertical space on small terminals; matches the helix/kakoune pattern.
+A **two-line status region** by default. Line 1 carries persistent state (file path, mode, cursor, dirty marker, selection — owned by Phase 9). Line 2 carries contextual keybind hints, transient status messages ("Saved", "Copied", "Autosaved"), and modal prompts (Phase 10 reload / save-copy, future filename or search inputs). Because line 2 is a dedicated surface, transient messages never clobber the persistent info on line 1 — nothing flickers when a notification fires.
 
-**Status-bar layout.** The status bar is split left/right:
-- **Left** — persistent state from Phase 9: mode indicator, file path, dirty marker, cursor `line:col`, selection size, detected image protocol.
-- **Right** — hint/message region owned by this phase. Normally shows the contextual keybind hints below; transient status messages overlay *only* this right region for ~1.5s, leaving the persistent left-hand info untouched.
+**Rationale.** The common failure mode for a TUI is horizontal, not vertical: users routinely run edamame in a tmux pane or tiling-WM split that's 50–80 cols wide but still has full vertical height. A single-line status forces aggressive truncation of either info or hints exactly when both matter most. Two lines gives both regions room and gives Phase 10 prompts a natural home.
 
-**Keybind notation convention.** Use plain letter-plus-label notation everywhere a key is surfaced to the user — hint line *and* prompt overlays. Examples: `^C Copy`, `^X Cut` for Ctrl-chords; `R Reload`, `I Ignore` for bare keys. This supersedes the `[R]eload / [I]gnore` bracket notation currently in Phase 10 — update that prompt (and any similar prompts) to match.
+**Layout.**
+- **Line 1** (persistent, from Phase 9): mode indicator, file path, dirty marker, cursor `line:col`, selection size.
+- **Line 2** (dynamic, this phase):
+  - Default — contextual keybind hints (see below).
+  - Transient — status messages overlay line 2 for ~1.5s, then revert to hints.
+  - Modal — a prompt (Phase 10 reload / save-copy filename, future search, etc.) replaces the hints until dismissed.
+- **Compact mode** — optional `status_bar = "compact"` in `config.toml` collapses to a single line by dropping line 2 entirely. Keybinds become reachable via a `?` popover. Not the default; opt-in for users on very short terminals or who prefer minimal chrome.
 
-- [ ] **Contextual hint line** — dynamic based on cursor context.
+**Input during a transient message.** Input is never blocked. If `Copied` is on-screen and the user hits `^X`, the cut fires normally and the next message / hint revert proceeds.
+
+**Keybind notation convention.** Plain letter-plus-label everywhere a key is surfaced to the user — hint line *and* prompt overlays. Examples: `^C Copy`, `^X Cut` for Ctrl-chords; `R Reload`, `I Ignore` for bare keys. This supersedes the `[R]eload / [I]gnore` bracket notation previously in Phase 10 (already updated to match).
+
+- [ ] **Contextual hint line** — line 2 default content; adapts to cursor context.
   - [ ] Preview mode: `any key → edit   ^C Copy   ^P Menu   ^Q Quit`. Global chords (^C/^P/^Q) are reserved; "any other key" triggers the mode switch to edit.
-  - [ ] Hybrid / raw edit mode: `^C Copy  ^X Cut  ^V Paste  ^S Save  ^P Menu  ^Q Quit`. Use `^X Cut` notation rather than `[X]Cut` — more conventional, avoids the ambiguity of whether the bracketed letter is pressed bare or with a modifier.
+  - [ ] Hybrid / raw edit mode: `^C Copy  ^X Cut  ^V Paste  ^S Save  ^P Menu  ^Q Quit`.
   - [ ] Hybrid mode, cursor inside a table: replace the hint line with table manipulation keybinds. Full names when terminal width allows, abbreviated fallback when it doesn't. A `?` popover exposes the full list when abbreviation is unavoidable.
-- [ ] **Transient status messages** — overlay the hint line for ~1.5s, then revert.
+- [ ] **Transient status messages** — overlay line 2 for ~1.5s, then revert to hints.
   - [ ] `Copied` on both copy *and* cut (the deletion is self-evident; the clipboard side-effect is not). No notification on paste.
   - [ ] `Autosaved` only on the dirty → clean transition, not on every autosave cycle, to avoid noise.
+- [ ] **Compact-mode fallback** — honour `status_bar = "compact"` in `config.toml`: render only line 1; expose hints via a `?` popover.
 - [ ] **Emoji support** — config opt-in, default off. No probing of terminal capabilities in this phase: no reliable query exists, and terminals that claim emoji support routinely miscompute cell widths and corrupt layout. Revisit if users request automatic detection.
 - [ ] **Smart table column widths** — adopt a min-max proportional distribution (the algorithm browsers use for `table-layout: auto` and what `rich` / `tabulate` converge on):
       - Per column: `min = longest word`, `max = longest cell`.
