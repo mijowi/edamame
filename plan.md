@@ -544,7 +544,7 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 - **Pure layout module (`src/markdown/table_layout.rs`)**: width computation, cell wrapping, and the `<!-- tui-columns: [...] -->` comment parser/formatter live here with no `ratatui` dependency, which is why they unit-test cleanly. Rendering of the box-drawing borders still lives in `renderer::render_table`; the two modules stay separate so that Phase 6's drag-to-resize can plug into `table_layout` without rewriting the renderer.
 - **Virtual blank-line blocks preserved**: the Phase 1 virtual-block mechanism is unchanged — table navigation never synthesises or discards blocks, it only mutates the rope contents of an existing table block.
 - **Cell-scoped raw reveal is a `RenderedView` extension, not a widget split**: the active-cell raw overlay is implemented by extending the existing row-reveal branch in `rendered_view.rs` — when `is_table` and the current block is the cursor's block, rewrite only the column range corresponding to the active cell instead of the entire row. `renderer::render_table` gains a sibling helper (or a parallel return value) that reports per-cell screen column ranges keyed by (table_row, table_col) so `RenderedView` can splice raw text into one cell without redrawing the table. This deliberately stays inside `RenderedView` + the existing renderer so there is no second rendering path to keep in sync with `render_table`.
-- **Deferred to Phase 6**: the dedicated `TableView` widget, snapshot tests for `TableView`, mouse-driven row/column drag and column resize, and wiring `tui-columns` comments into the renderer/buffer pipeline (the module can already read and write them). The cell-boundary metadata introduced in Phase 2 for the cell-scoped reveal is the seed for Phase 6's mouse hit-testing — `TableView` will take ownership of that metadata when mouse selection lands.
+- **Deferred to Phase 6**: the dedicated `TableView` widget, snapshot tests for `TableView`, mouse-driven row/column drag and column resize, and wiring `tui-columns` comments into the renderer/buffer pipeline (the module can already read and write them). Phase 2 deliberately kept cell-boundary computation on-demand inside `rendered_view.rs` rather than introducing persistent metadata — Phase 6 extracts the private pipe-position / cell-range helpers (`raw_pipe_positions`, `rendered_pipe_positions`, `table_raw_col_to_rendered_col`, `compute_cell_overlay`) into `table_layout` so `TableView`'s mouse hit-testing and `RenderedView`'s reveal share one implementation.
 
 ### Phase 3 — Smart List Editing
 *Goal: numbered lists auto-continue and self-heal.*
@@ -618,7 +618,7 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 - [x] Scroll wheel → scroll view (in PreviewMode and RenderedMode when document is longer than screen)
 - [x] Click on a rendered link → open in browser / navigate to local file (Phase 8 prerequisite, but register the hit-test region here) — Phase 5 detects the click and logs the URL via `tracing::info!(target: "mouse")`; Phase 8 replaces the log with an OS-open invocation
 - [x] Click on a task list checkbox `[ ]` / `[x]` → toggle it
-- [x] Drag table row handle (leftmost column, rendered as `≡`) to reorder rows (prerequisite for Phase 6) — mouse dispatch plumbing is in place; Phase 6 adds the handle glyph in `TableView` and consumes `Drag` events to reorder rows
+- [x] Drag table row handle (leftmost column, rendered as `≡`) to reorder rows (prerequisite for Phase 6) — the generic `Click`/`Drag`/`Release` state machine is in place; Phase 6 adds drag-target classification (via a `DragTarget` enum replacing `drag_anchor`), the handle glyph in `TableView`'s external gutter, and the `table_edit::swap_rows` dispatch on `Release`
 - [x] In terminals with mouse support, scrolling with the mouse should only move the page, not the cursor. Cursor stays put; `mouse_ops::scroll_by_mouse` never invokes `clamp_cursor_to_viewport_top`.
 - [x] Smooth scroll via `WHEEL_STEP = 3` lines per wheel tick (GUI convention; feels continuous without cursor-motion side-effects).
 - [x] Allow scrolling up to one page below the last line with the mouse only — `scroll_by_mouse` uses `max = total - 1` so the last line can sit at the top of the viewport; keyboard scrolling still uses `EditorState::scroll_down` with its cursor-bound clamp.
@@ -647,20 +647,55 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 ### Phase 6 — Table Row/Column Drag and Column Resize
 *Goal: reorder rows and columns by dragging; resize columns by dragging borders.*
 
-**Tasks:**
-- [ ] Extract table rendering into a dedicated `TableView` widget (`src/ui/table_view.rs`) that owns the cell-boundary metadata introduced in Phase 2. `renderer::render_table` becomes an internal helper invoked by `TableView`; `RenderedView` delegates table blocks to `TableView` instead of splicing rows inline. The widget is the single owner of mouse hit-testing (which cell, which column border, which row handle).
-- [ ] Write `insta` snapshot tests for `TableView` rendering (box-drawing output for a 2×3 and a 3×3 table, plus one case with a multi-line wrapped cell)
-- [ ] Wire `<!-- tui-columns: [...] -->` persistence into the renderer/buffer pipeline — `table_layout` already parses/formats the comment; Phase 6 adds the load path (apply persisted widths to the `TableLayout` on parse) and the save path (emit or update the comment when a column is resized). Only user-set widths are persisted; auto-computed widths never emit a comment.
-- [ ] Render a row-drag handle (e.g. `⠿` or `≡`) in the leftmost position of each non-header table row
-- [ ] On mouse-down on a row handle and subsequent drag: show a visual indicator of the row being dragged and its destination position; on mouse-up, reorder the rows in the underlying buffer and re-parse
-- [ ] Render column border separators as interactive drag targets (detect mouse-down within 1 column of a `│` border character)
-- [ ] On drag of a column border: update the column width in real time as the mouse moves; commit on mouse-up; persist in the inline comment
-- [ ] Render a column-drag handle in the header row (e.g. `⇔` above each column) for reordering
-- [ ] On drag of a column header: reorder columns in the buffer (swap all cells in the column across all rows)
-- [ ] Minimum column width: 3 characters (to show at least `...`)
-- [ ] All drag operations are undoable via `Undo`
+**Context:** Phases 2 and 5 did not leave behind the cell-boundary metadata orthe drag-target plumbing that earlier drafts of this phase assumed. Phase 2'scell-scoped raw reveal computes cell ranges on demand via private helpers in`src/ui/rendered_view.rs` (`raw_pipe_positions`, `rendered_pipe_positions`,`table_raw_col_to_rendered_col`, `compute_cell_overlay` / `CellOverlay`), andPhase 5 only landed the generic `Click`/`Drag`/`Release` state machine plus achar-offset `drag_anchor` on `App` — every drag currently falls through totext selection. What Phase 6 *can* reuse without modification: the atomic`EditDelta` primitives in `src/editor/table_edit.rs` (`swap_rows`,`swap_columns`, `insert_row`/`column`, `delete_row`/`column`); the`compute_widths(user_widths: Option<&[usize]>)` override path and`parse_column_widths_comment` / `format_column_widths_comment` in`src/markdown/table_layout.rs` (all ready, currently `#![allow(dead_code)]`);and `MIN_COL_WIDTH = 3` from the same module (so the "minimum 3 characters"requirement is already encoded).
 
-**Acceptance criteria:** Rows can be dragged to new positions. Column borders can be dragged to resize. Columns can be reordered by dragging their headers. User-set column widths round-trip through the `tui-columns` comment. The underlying Markdown is correctly updated after each operation.
+**Tasks — layout & hit-test foundation:**
+- [ ]docs: update plan Extract the four private helpers from `rendered_view.rs`  (`raw_pipe_positions`, `rendered_pipe_positions`,  `table_raw_col_to_rendered_col`, `compute_cell_overlay` / `CellOverlay`)  into `src/markdown/table_layout.rs` as `pub` items. Move their unit-test  coverage with them. `RenderedView` imports them from the new location so  the cell-scoped reveal keeps working unchanged.
+- [ ] Introduce a `TableView` widget at `src/ui/table_view.rs` that owns a  per-frame `TableLayoutSnapshot { col_ranges: Vec<Range<u16>>, row_ranges:  Vec<Range<u16>>, row_handle_col: u16, header_handle_row: u16 }`. The  widget is the single owner of mouse hit-testing for tables and exposes  `hit_test(col, row) -> Option<TableHit>` where `TableHit = Cell(r, c) |  ColumnBorder(c) | RowHandle(r) | ColumnHandle(c)`. Scope is explicitly  **layout + hit-test + drag-handle rendering**: the cell-scoped raw reveal  stays in `RenderedView` and imports `TableLayoutSnapshot` for its cell  ranges rather than being subsumed by the new widget.
+- [ ] `renderer::render_table` becomes an internal helper invoked by  `TableView`. `RenderedView` delegates table blocks to `TableView` instead  of splicing rows inline.
+- [ ] `insta` snapshot tests for `TableView` rendering: 2×3 without handles,  2×3 with handles enabled, 3×3 with a multi-line wrapped cell, and one case  with a persisted `tui-columns` comment applied. Commit the snapshots.
+
+**Tasks — drag-target classification (prerequisite for every drag below):**
+- [ ] Replace `drag_anchor: Option<usize>` on `App` with a `DragTarget` enum:
+  ```rust
+  enum DragTarget {
+      TextSelection { anchor: usize },
+      TableRow { table_byte_start: usize, row_idx: usize },
+      TableColumnBorder { table_byte_start: usize, col_idx: usize, start_widths: Vec<usize> },
+      TableColumnHeader { table_byte_start: usize, col_idx: usize },
+  }
+  ```
+  On `MouseAction::Click`, `mouse_ops::apply` hit-tests against the current  frame's `TableLayoutSnapshot` (if any) and sets the target; subsequent  `Drag` events dispatch on the variant instead of always extending a text  selection. `Release` commits via the corresponding `table_edit` primitive  or the new width-comment writer. Existing text-selection drag remains the  fallthrough variant.
+
+**Tasks — column-width persistence (load + save paths split):**
+- [ ] **Load path**: extend `markdown::parser` (or add a renderer pre-pass) to  detect a trailing `<!-- tui-columns: [...] -->` HTML-comment row on each  table block, strip it from the AST, and attach the parsed widths to  `Block::Table` as an optional `user_widths: Option<Vec<usize>>` field.  `renderer::render_table` threads this into `table_layout::compute_widths`.
+- [ ] **Save path**: on column-resize commit, emit a single `EditDelta` that  inserts or replaces the `<!-- tui-columns: [...] -->` comment row  immediately after the table. Implement as a new `table_edit::  write_column_widths` helper next to the existing structure primitives so  the resize and the comment update sit in one undo step. Only user-set  widths are persisted; auto-computed widths never emit a comment.**Tasks — row reordering:**
+- [ ] Render a row-drag handle (`≡`) in an **external gutter** one cell wide  to the left of the table's outer `│`, for every data row (not header,  not alignment). `TableLayout::compute_widths` subtracts 1 from  `viewport_width` when handles are enabled so the handle never steals  cell content space.
+- [ ] Hit-test on the row-handle column produces `TableHit::RowHandle(r)`,  which sets `DragTarget::TableRow` on mouse-down. Drag highlights the  horizontal border between rows where the dragged row will be inserted  (background style change on the `├─┼─┤` separator, on the top border  when inserting before the first data row, or on the bottom border when  inserting after the last). `Release` commits via `table_edit::swap_rows`  applied repeatedly between source and destination.
+
+**Tasks — column border resize:**
+- [ ] Hit-test `±1` around each rendered `│` border produces  `TableHit::ColumnBorder(c)`. Mouse-down records `start_widths` (the  current `compute_widths` result) so drag deltas are additive rather than  cumulative across frames.
+- [ ] On `Drag`: adjust `user_widths[c]` and `user_widths[c+1]` by the  delta (preserving total budget); clamp each to `MIN_COL_WIDTH`; store on  the frame's `ParsedDoc` override so the next render picks them up  immediately. No buffer mutation during drag.
+- [ ] On `Release`: commit via `table_edit::write_column_widths` so the  `tui-columns` comment is inserted or updated in a single `EditDelta`.
+
+**Tasks — column reordering:**
+- [ ] Render a **column-handle row** above the top `┌─┬─┐` border, one  glyph (`⇔`) centred per column. This adds one screen row to each  rendered table but does not affect raw Markdown alignment.
+- [ ] Hit-test on the column-handle row produces `TableHit::ColumnHandle(c)`,  which sets `DragTarget::TableColumnHeader` on mouse-down. `Drag` highlights  the vertical `│` border between columns where the dragged column will be  inserted (or the outer left/right border when inserting at the table's  edge). `Release` commits via repeated `table_edit::swap_columns` between  source and destination.
+
+**Tasks — configuration & degradation:**
+- [ ] `[table] show_drag_handles: bool` in `Config`, defaulting to `true`  when `capabilities.mouse` is detected and `false` otherwise. Terminals  without mouse reporting must not render inert gutter glyphs.
+
+**Tasks — testing:**
+- [ ] Unit tests for the extracted pipe-position / cell-range helpers now  living in `table_layout` (pure functions).
+- [ ] Unit tests for `TableLayoutSnapshot::hit_test` — pure function of  snapshot + coordinates, covering every `TableHit` variant and  near-border misses.
+- [ ] `mouse_ops` integration tests for each drag flow: row-handle  Down→Drag→Up asserts swapped rows in the buffer; column-border  Down→Drag(+5)→Up asserts updated widths and an inserted/updated  `tui-columns` comment; column-handle Down→Drag→Up asserts swapped  columns across every row.
+- [ ] Manual smoke test (documented, not automated) in a mouse-reporting  terminal — mouse wire protocol testing is excluded per CLAUDE.md.
+
+**Tasks — invariants:**
+- [ ] All drag operations are undoable via `Undo` in a single step.
+- [ ] Minimum column width: `MIN_COL_WIDTH` (= 3), reused from  `table_layout`.
+
+**Acceptance criteria:** Rows can be dragged to new positions. Column borders can be dragged to resize. Columns can be reordered by dragging their headers. User-set column widths round-trip through the `tui-columns` comment. The underlying Markdown is correctly updated after each operation and every operation is a single-step undo. Drag handles are hidden on terminals without mouse reporting.
 
 ---
 
@@ -707,7 +742,7 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 *Goal: a polished UI chrome with file navigation and settings access.*
 
 **Tasks:**
-- [ ] Expand `StatusBar` line 1 to show: mode indicator, file path, dirty marker (`*`), cursor position (`line:col`), selection size (when selection active). Detected image protocol is intentionally *not* surfaced here — users who want to see it can reach it via the settings overlay / an `:info` command.
+- [ ] Expand `StatusBar` persistent line (the **lower** of the two status rows — see Phase 11 layout) to show: mode indicator, file path, dirty marker (`*`), cursor position (`line:col`), selection size (when selection active). Detected image protocol is intentionally *not* surfaced here — users who want to see it can reach it via the settings overlay / an `:info` command.
 - [ ] Implement a command palette (Ctrl-P): fuzzy-searchable list of actions, opens as an overlay
 - [ ] Implement `FilePicker` overlay widget: shows directory tree (using `tui-tree-widget` or a custom implementation); navigable with arrows, filterable by typing
 - [ ] File picker opens with Ctrl-O; shows recent files at the top
@@ -717,7 +752,7 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 - [ ] Implement tab bar — rendered **only when more than one file is open** (from link navigation or command-line args). Single-file sessions show no tab bar at all, saving a row. Users who want dedicated single-file windows can open another terminal.
 - [ ] Accept multiple file arguments on the command line: `edamame file1.md file2.md`
 
-> The status region is **two lines**. Line 1 is the persistent info specified above (owned by Phase 9). Line 2 — contextual keybind hints, transient status messages, and modal prompts — is owned by Phase 11, which also defines an opt-in single-line compact mode. Phase 10's reload / save-copy prompts render on line 2.
+> The status region is **two lines**, stacked immediately below the editor content: an upper **hint line** (contextual keybind hints, transient status messages, and modal prompts — owned by Phase 11) and a lower **status line** (the persistent info specified above — owned by Phase 9). Dynamic content sits adjacent to the editor; persistent state anchors the bottom edge. Phase 11 also defines an opt-in single-line compact mode. Phase 10's reload / save-copy prompts render on the hint line.
 
 **Acceptance criteria:** Status bar shows all relevant information at a glance. File picker is fast and keyboard-navigable. Command palette lists all actions with their key bindings. Multiple files can be open simultaneously.
 
@@ -749,30 +784,34 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 ### Phase 11 — More Polish
 *Goal: further UX work to make the app fun and easy to use*
 
-A **two-line status region** by default. Line 1 carries persistent state (file path, mode, cursor, dirty marker, selection — owned by Phase 9). Line 2 carries contextual keybind hints, transient status messages ("Saved", "Copied", "Autosaved"), and modal prompts (Phase 10 reload / save-copy, future filename or search inputs). Because line 2 is a dedicated surface, transient messages never clobber the persistent info on line 1 — nothing flickers when a notification fires.
+A **two-line status region** by default, stacked directly beneath the editor content:
 
-**Rationale.** The common failure mode for a TUI is horizontal, not vertical: users routinely run edamame in a tmux pane or tiling-WM split that's 50–80 cols wide but still has full vertical height. A single-line status forces aggressive truncation of either info or hints exactly when both matter most. Two lines gives both regions room and gives Phase 10 prompts a natural home.
+- **Hint line** (upper, adjacent to content) — owned by this phase. Carries contextual keybind hints, transient status messages ("Saved", "Copied", "Autosaved"), and modal prompts (Phase 10 reload / save-copy, future filename or search inputs).
+- **Status line** (lower, at the bottom edge) — owned by Phase 9. Carries persistent state: mode indicator, file path, dirty marker, cursor `line:col`, selection size.
 
-**Layout.**
-- **Line 1** (persistent, from Phase 9): mode indicator, file path, dirty marker, cursor `line:col`, selection size.
-- **Line 2** (dynamic, this phase):
-  - Default — contextual keybind hints (see below).
-  - Transient — status messages overlay line 2 for ~1.5s, then revert to hints.
-  - Modal — a prompt (Phase 10 reload / save-copy filename, future search, etc.) replaces the hints until dismissed.
-- **Compact mode** — optional `status_bar = "compact"` in `config.toml` collapses to a single line by dropping line 2 entirely. Keybinds become reachable via a `?` popover. Not the default; opt-in for users on very short terminals or who prefer minimal chrome.
+The dynamic surface sits closest to the cursor because it describes *"what can I do here"* — putting it adjacent to content minimises eye travel, and transient messages appear right next to the action that triggered them. Persistent info anchors the bottom edge as stable reference data, matching the nano / mc / htop convention.
+
+**Rationale for two lines (vs. one).** The common failure mode for a TUI is horizontal, not vertical: users routinely run edamame in a tmux pane or tiling-WM split that's 50–80 cols wide but still has full vertical height. A single-line status forces aggressive truncation of either info or hints exactly when both matter most. Two lines gives both regions room and gives Phase 10 prompts a natural home.
+
+**Hint-line states** (mutually exclusive):
+- *Default* — contextual keybind hints (see task list below).
+- *Transient message* — a status notification overlays for ~1.5s, then reverts to hints. Errors stick until dismissed.
+- *Modal prompt* — a prompt (Phase 10 reload / save-copy filename, future search, etc.) replaces the hints until dismissed.
+
+**Compact mode.** Optional `status_bar = "compact"` in `config.toml` collapses to a single line by dropping the hint line entirely — only the persistent status line remains. Keybinds become reachable via a `?` popover. Not the default; opt-in for users on very short terminals or who prefer minimal chrome.
 
 **Input during a transient message.** Input is never blocked. If `Copied` is on-screen and the user hits `^X`, the cut fires normally and the next message / hint revert proceeds.
 
 **Keybind notation convention.** Plain letter-plus-label everywhere a key is surfaced to the user — hint line *and* prompt overlays. Examples: `^C Copy`, `^X Cut` for Ctrl-chords; `R Reload`, `I Ignore` for bare keys. This supersedes the `[R]eload / [I]gnore` bracket notation previously in Phase 10 (already updated to match).
 
-- [ ] **Contextual hint line** — line 2 default content; adapts to cursor context.
+- [ ] **Contextual hint line** — default hint-line content; adapts to cursor context.
   - [ ] Preview mode: `any key → edit   ^C Copy   ^P Menu   ^Q Quit`. Global chords (^C/^P/^Q) are reserved; "any other key" triggers the mode switch to edit.
   - [ ] Hybrid / raw edit mode: `^C Copy  ^X Cut  ^V Paste  ^S Save  ^P Menu  ^Q Quit`.
   - [ ] Hybrid mode, cursor inside a table: replace the hint line with table manipulation keybinds. Full names when terminal width allows, abbreviated fallback when it doesn't. A `?` popover exposes the full list when abbreviation is unavoidable.
-- [ ] **Transient status messages** — overlay line 2 for ~1.5s, then revert to hints.
+- [ ] **Transient status messages** — overlay the hint line for ~1.5s, then revert to hints. Errors stick until dismissed.
   - [ ] `Copied` on both copy *and* cut (the deletion is self-evident; the clipboard side-effect is not). No notification on paste.
   - [ ] `Autosaved` only on the dirty → clean transition, not on every autosave cycle, to avoid noise.
-- [ ] **Compact-mode fallback** — honour `status_bar = "compact"` in `config.toml`: render only line 1; expose hints via a `?` popover.
+- [ ] **Compact-mode fallback** — honour `status_bar = "compact"` in `config.toml`: render only the persistent status line; expose hints via a `?` popover.
 - [ ] **Emoji support** — config opt-in, default off. No probing of terminal capabilities in this phase: no reliable query exists, and terminals that claim emoji support routinely miscompute cell widths and corrupt layout. Revisit if users request automatic detection.
 - [ ] **Smart table column widths** — adopt a min-max proportional distribution (the algorithm browsers use for `table-layout: auto` and what `rich` / `tabulate` converge on):
       - Per column: `min = longest word`, `max = longest cell`.
@@ -780,6 +819,37 @@ A **two-line status region** by default. Line 1 carries persistent state (file p
       - Prose columns wrap onto multiple rendered rows when their allocation is below `max`; short/numeric columns stay at their `max`.
       - *Rejected:* average-width-as-target — it breaks the invariant that content fits, forcing silent truncation of outlier cells.
 - [ ] Table row striping
+- [ ] **Hide HTML comments in rendered and preview modes** — `<!-- ... -->`
+      is annotation, not content. Today `renderer::render_table`'s sibling
+      `Block::Html` arm (`src/markdown/renderer.rs:123`) renders all HTML as
+      muted text; comments should render as zero lines in rendered and
+      preview modes while staying visible in raw mode (raw reads the buffer
+      directly, so this falls out for free).
+      - [ ] Parser: detect comment-only `Block::Html` (content matches
+            `<!-- ... -->` with optional surrounding whitespace) and promote
+            to a `Block::HtmlComment(String)` variant — keeps the byte
+            range in the AST for source-map fidelity without conflating
+            with renderable HTML.
+      - [ ] Inline path: `parser.rs:320` currently pushes `Event::Html` as
+            `Inline::Text`; add an `Inline::HtmlComment` branch for inline
+            `<!-- ... -->` so paragraphs containing comments don't show
+            them as body text.
+      - [ ] Renderer: `Block::HtmlComment` and `Inline::HtmlComment` emit
+            zero lines / zero spans in `Preview` and `Rendered` modes.
+            `Raw` mode is untouched.
+      - [ ] Cursor navigation: hybrid-mode vertical movement skips
+            zero-rendered-line blocks so the cursor doesn't stall on an
+            invisible comment. Clicking a comment in hybrid mode is
+            impossible (no screen cells belong to it); switching raw → hybrid
+            with the cursor inside a comment snaps the cursor to the start
+            of the next visible block.
+      - [ ] Phase 6's `tui-columns` handling becomes a specialisation:
+            after the generic comment-hide pass, `markdown::parser` /
+            `ParsedDoc::build` additionally strips trailing
+            `<!-- tui-columns: ... -->` blocks from a table's byte range and
+            attaches `user_widths` to `Block::Table`. The two passes don't
+            conflict — the first hides the comment visually, the second
+            extracts semantic data from it.
 
 ---
 
