@@ -571,3 +571,48 @@ fn cursor_steps_through_each_blank_line() {
         "should land on 'B' line"
     );
 }
+
+// ── Raw mode: cursor is plain-text and doesn't skip table structure ─────────
+
+#[test]
+fn raw_mode_cursor_walks_through_table_pipes_one_char_at_a_time() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Raw;
+    st.cursor.offset = 0;
+
+    // Walk five chars forward: |, ' ', 'a', ' ', '|'.
+    for expected in 1..=5 {
+        apply(&mut st, Action::MoveRight);
+        assert_eq!(
+            st.cursor.offset, expected,
+            "raw mode MoveRight should advance one char at a time (got {} at step {expected})",
+            st.cursor.offset
+        );
+    }
+}
+
+#[test]
+fn raw_mode_down_lands_on_alignment_row() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Raw;
+    st.cursor.offset = 2; // inside 'a' in header
+
+    apply(&mut st, Action::MoveDown);
+    // In Rendered mode this would skip the alignment row; in Raw it lands on it.
+    assert_eq!(st.cursor.line_col(&st.buffer).0, 1);
+}
+
+#[test]
+fn raw_mode_insert_pipe_is_literal_not_escaped() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Raw;
+    // Place cursor inside the first cell and type `|`.
+    st.cursor.offset = 2; // just before 'a'
+    apply(&mut st, Action::InsertChar('|'));
+    // Raw mode: the `|` must appear literally (no `\|` escape).
+    assert!(st.contents().contains("| |a | b |"));
+    assert!(!st.contents().contains(r"\|"));
+}

@@ -49,6 +49,13 @@ pub struct EditorState {
     preserve_blank_lines: bool,
     /// Whether Up/Down navigate by visual lines (true) or logical lines (false).
     pub visual_line_nav: bool,
+    /// Phase 6 live-preview scratch for the column-resize drag.  When
+    /// `Some((table_byte_start, widths))`, the table whose first row begins
+    /// at `table_byte_start` renders with `widths` applied as a
+    /// `user_widths` override — without touching the buffer.  Cleared on
+    /// release (when the drag commits via `write_column_widths`) or on any
+    /// non-resize action that invalidates the drag.
+    pub live_table_widths: Option<(usize, Vec<Option<usize>>)>,
 }
 
 /// How long the cursor must rest on a block before it is shown in raw mode.
@@ -92,6 +99,7 @@ impl EditorState {
             theme,
             preserve_blank_lines,
             visual_line_nav,
+            live_table_widths: None,
         }
     }
 
@@ -110,7 +118,12 @@ impl EditorState {
     /// Re-parse and re-render after an edit. Called automatically by `edit_ops`.
     pub(crate) fn refresh_parsed(&mut self) {
         let content = self.buffer.contents();
-        self.parsed = ParsedDoc::build(&content, self.theme, self.preserve_blank_lines);
+        self.parsed = ParsedDoc::build_with_overrides(
+            &content,
+            self.theme,
+            self.preserve_blank_lines,
+            self.live_table_widths.as_ref(),
+        );
     }
 
     /// Set the cursor offset and clamp it to buffer bounds.

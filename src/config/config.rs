@@ -13,6 +13,7 @@ pub struct Config {
     pub theme: ThemeConfig,
     pub keybindings: KeyBindingOverrides,
     pub modal: ModalConfig,
+    pub table: TableConfig,
 }
 
 impl Config {
@@ -125,6 +126,29 @@ impl Default for ModalConfig {
     fn default() -> Self {
         Self {
             handler: "default".into(),
+        }
+    }
+}
+
+/// Table-editing configuration.
+///
+/// `show_drag_handles` governs whether Phase 6's row/column drag handles
+/// (`≡` gutter glyph on each data row and `⇔` glyphs above each column) are
+/// rendered and hit-tested.  Defaults to `true`: the renderer still checks
+/// the terminal's detected `Capabilities::mouse` flag before enabling the
+/// feature at runtime, so setting this to `true` on a mouseless terminal is
+/// a no-op — `App::new` overrides it to `false` when `capabilities.mouse` is
+/// absent so persisted config stays faithful to what the user actually sees.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TableConfig {
+    pub show_drag_handles: bool,
+}
+
+impl Default for TableConfig {
+    fn default() -> Self {
+        Self {
+            show_drag_handles: true,
         }
     }
 }

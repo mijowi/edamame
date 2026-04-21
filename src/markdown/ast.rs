@@ -29,6 +29,15 @@ pub enum Block {
         col_count: usize,
         headers: Vec<Vec<Inline>>,
         rows: Vec<Vec<Vec<Inline>>>,
+        /// Column widths persisted by the user via a trailing
+        /// `<!-- tui-columns: [..] -->` HTML comment.  The outer `Option`
+        /// distinguishes "no comment present" from "comment with one or
+        /// more user-set columns".  Each inner `Option<usize>` is `Some(w)`
+        /// for columns the user has pinned to a specific width, and `None`
+        /// (represented in the comment as `_`) for columns that should
+        /// auto-size.  The parser strips the comment from the AST so the
+        /// rendered output never shows it as an HTML block.
+        user_widths: Option<Vec<Option<usize>>>,
     },
     /// Raw HTML — rendered as a plain fenced block for now.
     Html(String),

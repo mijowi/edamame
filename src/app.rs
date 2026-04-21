@@ -48,10 +48,12 @@ pub struct App {
     startup_notice: Option<StartupNotice>,
     /// Click-count tracking and drag state for mouse input.
     mouse: MouseDispatcher,
-    /// Cursor char offset captured on mouse-down; subsequent Drag events
-    /// extend the selection from this anchor.  Cleared on Release or when a
-    /// non-drag action (double-click, checkbox toggle, scroll) supersedes it.
-    drag_anchor: Option<usize>,
+    /// Active drag target, set on mouse-down and read by each subsequent
+    /// `Drag` event.  `DragTarget::TextSelection` covers normal click-drag
+    /// text selection (the Phase 5 fallthrough); the other variants carry
+    /// Phase 6's table-specific row / column / border drags.  Cleared on
+    /// `Release`.
+    drag_target: Option<mouse_ops::DragTarget>,
     /// Last pointer shape we asked the terminal for.  Used to avoid writing
     /// an OSC 22 escape on every mouse-move event when the shape hasn't
     /// actually changed — keeps the output stream quiet on terminals that do
@@ -62,7 +64,7 @@ pub struct App {
 impl App {
     /// Create the app, loading the file if one is given.
     pub fn new(
-        config: Config,
+        mut config: Config,
         file_path: Option<PathBuf>,
         capabilities: Capabilities,
     ) -> Result<Self> {
@@ -76,6 +78,13 @@ impl App {
             Theme::default()
         };
         let theme: &'static Theme = Box::leak(Box::new(theme_value));
+
+        // Table drag handles depend on mouse reporting; disable them on
+        // terminals that don't deliver mouse events so we never render inert
+        // gutter glyphs.
+        if !capabilities.mouse {
+            config.table.show_drag_handles = false;
+        }
 
         let buffer = match &file_path {
             Some(path) => Buffer::load_file(path)?,
@@ -107,7 +116,7 @@ impl App {
             should_quit: false,
             startup_notice,
             mouse: MouseDispatcher::new(),
-            drag_anchor: None,
+            drag_target: None,
             last_pointer_shape: PointerShape::Default,
         })
     }
@@ -151,11 +160,13 @@ impl App {
             let view_state_ref = &mut self.view_state;
             let notice_ref = self.startup_notice.as_mut();
 
+            let show_handles = self.config.table.show_drag_handles;
             terminal.draw(|frame| {
                 let view = EditorView {
                     state: editor_ref,
                     theme: theme_ref,
                     filename: &filename,
+                    show_table_handles: show_handles,
                 };
                 frame.render_stateful_widget(view, frame.area(), view_state_ref);
                 if let Some(notice) = notice_ref {
@@ -239,10 +250,12 @@ impl App {
                     }
 
                     if let Some(mouse_action) = self.mouse.dispatch(mouse_event, doc_area) {
+                        let snapshots = self.view_state.rendered.table_snapshots.clone();
                         mouse_ops::apply(
                             &mut self.editor,
                             mouse_action,
-                            &mut self.drag_anchor,
+                            &mut self.drag_target,
+                            &snapshots,
                             doc_height,
                             doc_width,
                         );

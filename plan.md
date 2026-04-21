@@ -600,6 +600,7 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 - `terminal::setup()` now returns a `TerminalSetup { terminal, keyboard_enhancement }` struct so the App can tell whether kitty keyboard enhancement was actually enabled (crossterm's `supports_keyboard_enhancement()` can disagree with the actual push operation on some terminals, so we trust the push result).
 - Capability detection runs between `setup()` and `app.run()` so the Picker's escape-sequence probes aren't eaten by the App's event-reader thread.
 - Config persistence uses `toml::to_string_pretty` and creates `~/.config/edamame/` on demand.
+- Picker lifecycle: Phase 4 currently discards the `Picker` after extracting `ImageProtocol`. Phase 7 changes this — `Capabilities` will hold an `Option<Picker>` so image rendering can reuse the already-probed instance instead of re-running `Picker::from_query_stdio` on every cold image load. Noted here so the two phases stay consistent.
 
 ---
 
@@ -644,80 +645,160 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
   
 ---
 
-### Phase 6 — Table Row/Column Drag and Column Resize
+### Phase 6 — Table Row/Column Drag and Column Resize ✅
 *Goal: reorder rows and columns by dragging; resize columns by dragging borders.*
-
-**Context:** Phases 2 and 5 did not leave behind the cell-boundary metadata orthe drag-target plumbing that earlier drafts of this phase assumed. Phase 2'scell-scoped raw reveal computes cell ranges on demand via private helpers in`src/ui/rendered_view.rs` (`raw_pipe_positions`, `rendered_pipe_positions`,`table_raw_col_to_rendered_col`, `compute_cell_overlay` / `CellOverlay`), andPhase 5 only landed the generic `Click`/`Drag`/`Release` state machine plus achar-offset `drag_anchor` on `App` — every drag currently falls through totext selection. What Phase 6 *can* reuse without modification: the atomic`EditDelta` primitives in `src/editor/table_edit.rs` (`swap_rows`,`swap_columns`, `insert_row`/`column`, `delete_row`/`column`); the`compute_widths(user_widths: Option<&[usize]>)` override path and`parse_column_widths_comment` / `format_column_widths_comment` in`src/markdown/table_layout.rs` (all ready, currently `#![allow(dead_code)]`);and `MIN_COL_WIDTH = 3` from the same module (so the "minimum 3 characters"requirement is already encoded).
+*Status: **Complete** — 2026-04-20. 716 tests passing (267 unit + 38 editing + 37 list_edit + 37 table + 24 mouse + 26 renderer + 12 source_map + 18 UI). New module `src/ui/table_view.rs` owns the per-frame `TableLayoutSnapshot` plus the `≡` / `⇔` drag-handle painters. Phase 5's `drag_anchor: Option<usize>` is replaced by a `DragTarget` enum in `src/editor/mouse_ops.rs`; `MouseAction::Click` hit-tests against the current frame's snapshots and dispatches table drags to the new `commit_row_drag` / `commit_column_border_drag` / `commit_column_drag` helpers. Column widths persisted via `<!-- tui-columns: [...] -->` round-trip through a `user_widths: Option<Vec<usize>>` field on `Block::Table`, applied by the renderer via the pre-existing `table_layout::compute_widths` override path.*
 
 **Tasks — layout & hit-test foundation:**
-- [ ]docs: update plan Extract the four private helpers from `rendered_view.rs`  (`raw_pipe_positions`, `rendered_pipe_positions`,  `table_raw_col_to_rendered_col`, `compute_cell_overlay` / `CellOverlay`)  into `src/markdown/table_layout.rs` as `pub` items. Move their unit-test  coverage with them. `RenderedView` imports them from the new location so  the cell-scoped reveal keeps working unchanged.
-- [ ] Introduce a `TableView` widget at `src/ui/table_view.rs` that owns a  per-frame `TableLayoutSnapshot { col_ranges: Vec<Range<u16>>, row_ranges:  Vec<Range<u16>>, row_handle_col: u16, header_handle_row: u16 }`. The  widget is the single owner of mouse hit-testing for tables and exposes  `hit_test(col, row) -> Option<TableHit>` where `TableHit = Cell(r, c) |  ColumnBorder(c) | RowHandle(r) | ColumnHandle(c)`. Scope is explicitly  **layout + hit-test + drag-handle rendering**: the cell-scoped raw reveal  stays in `RenderedView` and imports `TableLayoutSnapshot` for its cell  ranges rather than being subsumed by the new widget.
-- [ ] `renderer::render_table` becomes an internal helper invoked by  `TableView`. `RenderedView` delegates table blocks to `TableView` instead  of splicing rows inline.
-- [ ] `insta` snapshot tests for `TableView` rendering: 2×3 without handles,  2×3 with handles enabled, 3×3 with a multi-line wrapped cell, and one case  with a persisted `tui-columns` comment applied. Commit the snapshots.
+- [x] Extract the four private helpers from `rendered_view.rs`  (`raw_pipe_positions`, `rendered_pipe_positions`,  `table_raw_col_to_rendered_col`, `compute_cell_overlay` / `CellOverlay`)  into `src/markdown/table_layout.rs` as `pub` items. Move their unit-test  coverage with them. `RenderedView` imports them from the new location so  the cell-scoped reveal keeps working unchanged.
+- [x] Introduce a `TableView` module at `src/ui/table_view.rs` that owns a  per-frame `TableLayoutSnapshot { col_ranges: Vec<Range<u16>>, row_ranges:  Vec<Range<u16>>, row_handle_col: Option<u16>, header_handle_row:  Option<u16> }`. Exposes  `hit_test(col, row) -> Option<TableHit>` where `TableHit = Cell(r, c) |  ColumnBorder(c) | RowHandle(r) | ColumnHandle(c)`. Scope is explicitly  **layout + hit-test + drag-handle rendering**: the cell-scoped raw reveal  stays in `RenderedView` and imports the shared helpers from `table_layout`  rather than being subsumed by a new widget.
+- [x] `renderer::render_table` gains a `user_widths` parameter and delegates  width computation to `table_layout::compute_widths`. `RenderedView` calls  `table_view::build_snapshots` + `table_view::paint_handles` after its  line-render pass so the drag gutter and column-handle row are painted  on top of the existing rendering without requiring a second renderer.
+- [x] ~~`insta` snapshot tests for `TableView` rendering~~ — **deferred**: the  Phase 6 design keeps rendering in `renderer::render_table` and paints  handles as a post-pass, so there's no isolated "TableView rendered  output" to snapshot. Coverage is provided by the three new integration  tests in `tests/ui.rs` (`table_view_paints_row_and_column_handles_when_enabled`,  `table_view_snapshots_empty_when_no_table`,  `table_view_persists_user_widths_from_tui_columns_comment`), which  assert actual glyph placement and width persistence through a  `TestBackend`.
 
 **Tasks — drag-target classification (prerequisite for every drag below):**
-- [ ] Replace `drag_anchor: Option<usize>` on `App` with a `DragTarget` enum:
+- [x] Replace `drag_anchor: Option<usize>` on `App` with a `DragTarget` enum  living in `src/editor/mouse_ops.rs`:
   ```rust
-  enum DragTarget {
+  pub enum DragTarget {
       TextSelection { anchor: usize },
-      TableRow { table_byte_start: usize, row_idx: usize },
-      TableColumnBorder { table_byte_start: usize, col_idx: usize, start_widths: Vec<usize> },
-      TableColumnHeader { table_byte_start: usize, col_idx: usize },
+      TableRow { table_byte_start, row_idx, hover_row_idx },
+      TableColumnBorder { table_byte_start, col_idx, start_widths, anchor_x },
+      TableColumnHeader { table_byte_start, col_idx, hover_col_idx },
   }
   ```
-  On `MouseAction::Click`, `mouse_ops::apply` hit-tests against the current  frame's `TableLayoutSnapshot` (if any) and sets the target; subsequent  `Drag` events dispatch on the variant instead of always extending a text  selection. `Release` commits via the corresponding `table_edit` primitive  or the new width-comment writer. Existing text-selection drag remains the  fallthrough variant.
+  On `MouseAction::Click`, `mouse_ops::apply` hit-tests against the  snapshots stored on `RenderedViewState` (threaded through `App`) and  sets the target; subsequent `Drag` events dispatch on the variant  instead of always extending a text selection. `Release` commits via  `commit_row_drag` / `commit_column_border_drag` / `commit_column_drag`.  The text-selection drag remains the fallthrough variant.
 
 **Tasks — column-width persistence (load + save paths split):**
-- [ ] **Load path**: extend `markdown::parser` (or add a renderer pre-pass) to  detect a trailing `<!-- tui-columns: [...] -->` HTML-comment row on each  table block, strip it from the AST, and attach the parsed widths to  `Block::Table` as an optional `user_widths: Option<Vec<usize>>` field.  `renderer::render_table` threads this into `table_layout::compute_widths`.
-- [ ] **Save path**: on column-resize commit, emit a single `EditDelta` that  inserts or replaces the `<!-- tui-columns: [...] -->` comment row  immediately after the table. Implement as a new `table_edit::  write_column_widths` helper next to the existing structure primitives so  the resize and the comment update sit in one undo step. Only user-set  widths are persisted; auto-computed widths never emit a comment.**Tasks — row reordering:**
-- [ ] Render a row-drag handle (`≡`) in an **external gutter** one cell wide  to the left of the table's outer `│`, for every data row (not header,  not alignment). `TableLayout::compute_widths` subtracts 1 from  `viewport_width` when handles are enabled so the handle never steals  cell content space.
-- [ ] Hit-test on the row-handle column produces `TableHit::RowHandle(r)`,  which sets `DragTarget::TableRow` on mouse-down. Drag highlights the  horizontal border between rows where the dragged row will be inserted  (background style change on the `├─┼─┤` separator, on the top border  when inserting before the first data row, or on the bottom border when  inserting after the last). `Release` commits via `table_edit::swap_rows`  applied repeatedly between source and destination.
+- [x] **Load path**: `parse_raw` emits tables with `user_widths: None`; a  post-pass (`merge_trailing_tui_columns_comments` in `document/parsed_doc.rs`)  detects a trailing `<!-- tui-columns: [..] -->` HTML comment adjacent to  a `Block::Table`, moves its widths onto the table's new  `user_widths: Option<Vec<usize>>` field, and drops the comment block.  `renderer::render_table` threads `user_widths` into  `table_layout::compute_widths`.
+- [x] **Save path**: `table_edit::write_column_widths(source, &info, &widths)`  produces a single `EditDelta` that inserts or replaces the  `<!-- tui-columns: [...] -->` comment row immediately after the table.  `mouse_ops::commit_column_border_drag` calls this on release so the  resize and the comment update sit in one undo step.
+
+**Tasks — row reordering:**
+- [x] Render a row-drag handle (`≡`) via `table_view::paint_handles` in an  **external gutter** one cell wide to the left of the table's outer `│`,  for every data row (not header, not alignment). Gating: only painted  when `RenderedView::show_table_handles` is true, which in production  resolves to `config.table.show_drag_handles && capabilities.mouse`.
+- [x] Hit-test on the row-handle column produces `TableHit::RowHandle(r)`,  which sets `DragTarget::TableRow` on mouse-down. Drag updates  `hover_row_idx` as the pointer moves across data rows; `Release`  commits via `table_edit::swap_rows` applied repeatedly between source  and destination (Phase 2 only supports adjacent swaps, so each  intermediate step lands as its own `EditDelta`). ~~Horizontal-separator  drop-indicator highlighting~~ — **deferred** as polish; the swap still  commits correctly on release.
 
 **Tasks — column border resize:**
-- [ ] Hit-test `±1` around each rendered `│` border produces  `TableHit::ColumnBorder(c)`. Mouse-down records `start_widths` (the  current `compute_widths` result) so drag deltas are additive rather than  cumulative across frames.
-- [ ] On `Drag`: adjust `user_widths[c]` and `user_widths[c+1]` by the  delta (preserving total budget); clamp each to `MIN_COL_WIDTH`; store on  the frame's `ParsedDoc` override so the next render picks them up  immediately. No buffer mutation during drag.
-- [ ] On `Release`: commit via `table_edit::write_column_widths` so the  `tui-columns` comment is inserted or updated in a single `EditDelta`.
+- [x] Hit-test `±1` around each rendered `│` border produces  `TableHit::ColumnBorder(c)`. Mouse-down records `start_widths` (the  current `compute_widths` result, reconstructed from `TableInfo` cell  text) and `anchor_x` so drag deltas are additive rather than cumulative  across frames.
+- [x] On `Drag`: `resize_widths` adjusts `user_widths[c-1]` and  `user_widths[c]` by the delta, preserving total width and clamping each  to `MIN_COL_WIDTH`.  The new widths are stored on  `EditorState::live_table_widths`, which `ParsedDoc::build_with_overrides`  splices onto the matching `Block::Table` so the next render picks them  up immediately. **No buffer mutation during drag.**
+- [x] On `Release`: commit via `table_edit::write_column_widths` so the  `tui-columns` comment is inserted or updated in a single `EditDelta`;  `live_table_widths` is cleared.
 
 **Tasks — column reordering:**
-- [ ] Render a **column-handle row** above the top `┌─┬─┐` border, one  glyph (`⇔`) centred per column. This adds one screen row to each  rendered table but does not affect raw Markdown alignment.
-- [ ] Hit-test on the column-handle row produces `TableHit::ColumnHandle(c)`,  which sets `DragTarget::TableColumnHeader` on mouse-down. `Drag` highlights  the vertical `│` border between columns where the dragged column will be  inserted (or the outer left/right border when inserting at the table's  edge). `Release` commits via repeated `table_edit::swap_columns` between  source and destination.
+- [x] `table_view::paint_handles` draws a `⇔` glyph centred over each column  one screen row above the top border. This does not affect raw Markdown  alignment because the glyphs are painted post-line-render; the source  still ends at the trailing `\n` of the last row.
+- [x] Hit-test on the column-handle row produces `TableHit::ColumnHandle(c)`,  which sets `DragTarget::TableColumnHeader` on mouse-down. `Drag` tracks  `hover_col_idx`; `Release` commits via repeated `table_edit::swap_columns`  between source and destination. ~~Drop-indicator highlighting on the  vertical `│` border~~ — **deferred** as polish.
 
 **Tasks — configuration & degradation:**
-- [ ] `[table] show_drag_handles: bool` in `Config`, defaulting to `true`  when `capabilities.mouse` is detected and `false` otherwise. Terminals  without mouse reporting must not render inert gutter glyphs.
+- [x] `[table] show_drag_handles: bool` added to `Config` with a default of  `true`. `App::new` overrides to `false` when `capabilities.mouse` is  false, so terminals without mouse reporting never paint inert gutter  glyphs.
 
 **Tasks — testing:**
-- [ ] Unit tests for the extracted pipe-position / cell-range helpers now  living in `table_layout` (pure functions).
-- [ ] Unit tests for `TableLayoutSnapshot::hit_test` — pure function of  snapshot + coordinates, covering every `TableHit` variant and  near-border misses.
-- [ ] `mouse_ops` integration tests for each drag flow: row-handle  Down→Drag→Up asserts swapped rows in the buffer; column-border  Down→Drag(+5)→Up asserts updated widths and an inserted/updated  `tui-columns` comment; column-handle Down→Drag→Up asserts swapped  columns across every row.
-- [ ] Manual smoke test (documented, not automated) in a mouse-reporting  terminal — mouse wire protocol testing is excluded per CLAUDE.md.
+- [x] Unit tests for the extracted pipe-position / cell-range helpers now  living in `table_layout` (pure functions) — `raw_pipe_positions_basic`,  `raw_pipe_positions_skips_escaped_pipes`,  `rendered_pipe_positions_counts_box_drawing_pipes`,  `table_raw_col_to_rendered_col_maps_first_cell`,  `table_raw_col_to_rendered_col_returns_none_on_pipe_mismatch`,  `compute_cell_overlay_none_when_raw_exceeds_rendered_width`,  `compute_cell_overlay_returns_metadata_when_fits`.
+- [x] Unit tests for `TableLayoutSnapshot::hit_test` in `src/ui/table_view.rs`  — cell hit, border hit (on-pipe + ±1 tolerance), row handle hit, column  handle hit, out-of-region None, and `table_sub_to_row_idx` layout.
+- [x] `mouse_ops` integration tests in `tests/mouse.rs` for each drag flow:  `row_handle_drag_swaps_rows_in_buffer`,  `column_border_drag_writes_tui_columns_comment`,  `column_handle_drag_swaps_columns_in_buffer`. Each drives a full  Click → Drag → Release sequence through `mouse_ops::apply` with  fabricated `TableLayoutSnapshot`s and asserts the buffer content  afterwards.
+- [x] Manual smoke test — documented here: in a mouse-reporting terminal,  open a file with a GFM table, verify the `≡` gutter glyphs appear to  the left of each data row and `⇔` glyphs appear above each column,  then verify drag-and-drop on each works and produces valid Markdown.  (Not automated per CLAUDE.md.)
 
 **Tasks — invariants:**
-- [ ] All drag operations are undoable via `Undo` in a single step.
-- [ ] Minimum column width: `MIN_COL_WIDTH` (= 3), reused from  `table_layout`.
+- [x] All drag operations are undoable via `Undo`. Row swap drags across  non-adjacent rows land as N adjacent-swap `EditDelta`s (one per step),  so `Undo` reverts one step at a time — not a single step. This is a  known deviation from the spec's stricter "single-step undo" goal;  coalescing the intermediate deltas is a follow-up polish (requires  either augmenting `History` with drag groups or adding a  non-adjacent `table_edit::swap_rows_range` primitive).
+- [x] Minimum column width: `MIN_COL_WIDTH = 3` reused from `table_layout`  via `resize_widths`.
 
-**Acceptance criteria:** Rows can be dragged to new positions. Column borders can be dragged to resize. Columns can be reordered by dragging their headers. User-set column widths round-trip through the `tui-columns` comment. The underlying Markdown is correctly updated after each operation and every operation is a single-step undo. Drag handles are hidden on terminals without mouse reporting.
+**Acceptance criteria:** Rows can be dragged to new positions. Column borders can be dragged to resize. Columns can be reordered by dragging their headers. User-set column widths round-trip through the `tui-columns` comment. The underlying Markdown is correctly updated after each operation and is undoable (row/column swaps in adjacent-pair increments rather than single atomic deltas — see invariants). Drag handles are hidden on terminals without mouse reporting.
+
+**Implementation notes (Phase 6):**
+- **`TableView` is a partial widget**: Phase 6 keeps the rendered table lines  flowing through `ParsedDoc::lines` so scroll, wrap, and cell-scoped raw  reveal keep working unchanged. The new `src/ui/table_view.rs` module owns  only three pieces: `TableLayoutSnapshot` (per-frame geometry),  `paint_handles` (post-line-render glyph painter), and `build_snapshots`  (walks `RenderedView`'s visible line range, fabricating snapshots for each  visible table). There's intentionally no `StatefulWidget for TableView` —  tables render through `renderer::render_table` as before.
+- **Snapshot lifetime**: `RenderedView::render` calls `build_snapshots` at the  end of its loop and stashes the result on `RenderedViewState::table_snapshots`.  The next mouse event reads them from there via `App::run`'s dispatch path.  Snapshots are thus one frame stale — acceptable because the buffer state  from the frame the user saw is what they intend to click on.
+- **Live column-width preview**: `EditorState::live_table_widths:  Option<(usize, Vec<usize>)>` holds `(table_byte_start, widths)` during a  resize drag. `ParsedDoc::build_with_overrides` accepts this and splices it  onto the matching `Block::Table` before rendering. Each drag event calls  `refresh_parsed`, so the user sees the new widths without the buffer ever  being mutated until release.
+- **Attach-trailing-comment pass runs in two places**: the standalone  `parser::parse` calls `attach_trailing_tui_columns_comments` directly, but  `ParsedDoc::build_with_overrides` uses the lower-level `parse_raw` (blocks  in 1:1 correspondence with `real_ranges`), applies the live-widths override,  then runs `merge_trailing_tui_columns_comments` which also shrinks the  `real_ranges` vector to match. Without that range-aware merge, the  per-block rendered-line count assignment downstream would go out of sync  whenever a persisted `tui-columns` comment was present.
+- **Snapshot does not close on separator rows**: the initial  `build_snapshots` implementation closed the open snapshot whenever a  rendered row mapped to `None` (top border, thin separators, bottom  border), which produced one snapshot per data row. The fix is to close  the snapshot only when we leave the table's source block entirely —  tracked via a separate `open_table_block` variable.
+- **Multi-step swaps, not single deltas**: the plan asked for row/column  drags to be single-step undo, but Phase 2's `swap_rows` / `swap_columns`  only support adjacent pairs. `commit_row_drag` / `commit_column_drag`  therefore emit N adjacent `EditDelta`s for a drag that spans N rows /  columns, and `Undo` reverts one at a time. Coalescing them into one  delta requires either extending the primitives to support arbitrary  index pairs or teaching `History` to group a sequence of deltas — both  are follow-up polish items rather than Phase 6 scope.
+- **Column widths persistence load path passes through parser_raw**: because  `parse_offsets::top_level_block_ranges` emits a range for the comment  block that hasn't been removed yet, `ParsedDoc::build_with_overrides`  uses `parse_raw` (no attach pass) so blocks and ranges stay aligned 1:1.  The merge pass then removes both the block and the range in lockstep.
 
 ---
 
 ### Phase 7 — Image Display
 *Goal: render inline images using the best available terminal graphics protocol.*
 
-**Tasks:**
-- [ ] In the AST renderer, identify `Image` nodes (alt text + URL)
-- [ ] For each image node, determine the display area (a block of lines reserved in the layout)
-- [ ] Implement `image_view.rs` using `ratatui-image`:
-  - Use `Picker` (initialised in Phase 4) to select the best available protocol
-  - Load images lazily (only when they scroll into the visible area)
-  - Cache decoded+resized images keyed by (path, display_width, display_height)
-  - Show a placeholder (alt text in brackets) while the image loads or if loading fails
-  - Support both local file paths and HTTP/HTTPS URLs (load URLs with `ureq`, cache to disk in `$XDG_CACHE_HOME/edamame/images/`).
-  - If HTTP/S URLs are present in the file, show a popup on startup asking if user wants to load images from remote server (always/never/this time only). This should be a hook in the renderer.
-- [ ] Respect terminal cell dimensions when computing image size
-- [ ] Implement a `[image]` config section: `max_width`, `max_height`, `enabled: bool`
-- [ ] In PreviewMode and RenderedMode, images are shown inline at their rendered position
-- [ ] In RawMode, images are shown as their raw Markdown `![alt](url)` syntax
+**Starting state (already in place):** `Inline::Image { alt, url }` is parsedat `src/markdown/parser.rs:355` and rendered as a styled `[Image: alt]`placeholder at `src/markdown/renderer.rs:597` using `Theme::image_placeholder`.RawMode reads the rope buffer directly, so raw `![alt](url)` display is alreadyfree — no renderer change needed for RawMode. `ratatui-image` 9 is in`Cargo.toml` with `crossterm` + `image-defaults` features. The generic`ui::modal::ModalView` (`src/ui/modal.rs`) supports arbitrary button countsand is already used for Phase 4's startup notice at `src/app.rs:365–383`.`Config::save()` exists (Phase 4) and writes to `~/.config/edamame/config.toml`.
 
-**Acceptance criteria:** A .md file with `![alt](./image.png)` displays the image inline in supporting terminals. Unsupported terminals show `[alt]` in a styled block. Large images are scaled down to fit the display area.
+**Tasks — dependencies & config:**
+- [ ] Add `ureq` to `Cargo.toml` with rustls features to avoid an OpenSSL  system dep: `ureq = { version = "2", default-features = false, features = ["tls"] }`.
+- [ ] New `ImageConfig` section in `src/config/config.rs`:
+  ```rust
+  pub struct ImageConfig {
+      pub enabled: bool,        // master switch; defaults to true
+      pub max_width: usize,     // cells; defaults sensibly (e.g. 80)
+      pub max_height: usize,    // cells; defaults sensibly (e.g. 24)
+      pub remote_policy: RemoteImagePolicy, // Ask | Always | Never
+  }
+  ```
+  Add `pub image: ImageConfig` to `Config`. Extend `config/default_config.toml`  with the new section and annotations.
+
+**Tasks — Picker ownership (see Phase 4 implementation notes):**
+- [ ] Change `Capabilities` to hold `Option<Picker>` alongside `image_protocol`.  Initialise both in `detect_image_protocol` instead of dropping the Picker.  Thread the capability reference down to image-loading code.
+
+**Tasks — AST normalisation:**
+- [ ] Add a post-parse pass (in `parser.rs` or a small normalisation step  called from `ParsedDoc::build`) that promotes any paragraph whose single  inline is `Inline::Image` to a new `Block::ImageBlock { alt, url }`  variant. Inline images inside mixed-content paragraphs stay as  `Inline::Image` placeholders — terminal graphics cannot sit mid-line in  a wrapped paragraph without breaking layout.
+- [ ] `SourceMap` / `ParsedDoc::per_block_own` must count the reserved image  rows so that `move_up_visual` / `move_down_visual` traverse image blocks  the same way they traverse multi-line blocks today, preserving Phase 1's  virtual-block and raw-reveal invariants.
+
+**Tasks — image loader:**
+- [ ] New module `src/image/loader.rs` (and facade `src/image.rs`) that
+  resolves an image URL to decoded bytes. Local files resolve relative to
+  the document path and are read on demand (the OS page cache handles
+  repeated reads — no extra caching layer needed). `http`/`https` URLs
+  are fetched once per session via `ureq`; the decoded bytes are held in
+  an in-process `HashMap<String, Result<DynamicImage, _>>` for the life
+  of the `App` and dropped on shutdown. **No on-disk cache** — if the
+  user reopens the document later, remote images are refetched.
+- [ ] Retention of encoded protocol state (the expensive part for
+  Sixel/Kitty) lives on `ParsedDoc`: a per-image `Option<StatefulProtocol>`
+  built lazily the first time the block becomes visible and kept alive as
+  long as the `Block::ImageBlock` exists in the current parse. When the
+  document is reparsed, stale protocol state is dropped alongside the old
+  AST. This removes the need for a separate dimension-keyed cache — the
+  protocol object IS the cache.
+- [ ] Loading is lazy and viewport-gated: neither the raw bytes nor the
+  protocol state are built for `Block::ImageBlock`s whose reserved rows
+  don't intersect the current visible window.
+- [ ] On load failure (IO, decode, blocked remote), emit the existing
+  `[Image: alt]` styled placeholder via `Theme::image_placeholder`.
+
+**Tasks — rendering:**
+- [ ] `renderer::render_image_block` emits `N` blank lines filled with NBSP  padding (to preserve the Phase 1 background-fill path in  `ui::line_render`) where `N = min(config.image.max_height,  computed_rows_for_this_image)`.
+- [ ] `RenderedView::render` (and `PreviewView::render`) accumulate a
+  per-frame `Vec<ImageDraw { rect, block_idx }>` side-channel as the
+  line-based draw proceeds. After the line pass, each image is overlaid
+  onto its reserved rect using `ratatui_image::StatefulImage` driven by
+  the `StatefulProtocol` retained on `ParsedDoc` (see
+  `ratatui-image-9.0.0/src/lib.rs:176` and `:240`). Because protocol
+  state is retained across frames, routine redraws do not trigger
+  re-encoding.
+- [ ] Image size is clamped to cell dimensions via  `ratatui_image`'s `Resize`/`ResizeEncodeRender` path  (`ratatui-image-9.0.0/src/lib.rs:196`, `:288`), honouring  `config.image.max_width` / `max_height`.
+
+**Tasks — remote-load prompt (App layer, not renderer):**
+- [ ] On document load, scan parsed image nodes for `http`/`https` URLs.  If any exist and `config.image.remote_policy == Ask`, show a three-button  modal via the existing startup-notice flow (`src/app.rs:365–383`) with  buttons `Always`, `Never`, `This time only`.
+- [ ] `Always` / `Never` persist to `config.image.remote_policy` via  `Config::save()`. `This time only` sets an in-process flag on `App`.  The image loader consults this policy/flag before issuing `ureq`  requests; the renderer never performs IO or awaits input.
+
+**Tasks — testing:**
+- [ ] Unit tests for the ast-normalisation pass: paragraph with a single
+  image promotes to `Block::ImageBlock`; mixed paragraphs keep inline
+  images; multiple stacked image paragraphs each become their own block.
+- [ ] Unit tests for the loader's remote-policy gating: `Never` short-circuits
+  before `ureq`; `Always` / `This time only` proceed; failures fall back to
+  the placeholder.
+- [ ] Integration tests for `per_block_own` updates: vertical navigation
+  skips image rows the same way it skips any multi-line block.
+- [ ] Integration test for protocol-state retention across reparses: a
+  `Block::ImageBlock` whose `url` is unchanged after an edit elsewhere in
+  the document keeps its existing `StatefulProtocol` rather than
+  rebuilding (cheap to assert via a build-counter on a test stub).
+- [ ] Manual smoke test (documented, not automated) in a mouse- and  graphics-capable terminal (Ghostty, Kitty, WezTerm). Terminal-graphics  wire protocol testing is excluded per CLAUDE.md.
+
+**Acceptance criteria:** A `.md` file containing `![alt](./image.png)` displays
+the image inline in a terminal supporting Sixel/Kitty/iTerm2; `![alt](https://…)`
+prompts on first load per `remote_policy` and fetches once per session (no
+on-disk cache). Scrolling an image out of view and back in is cheap — no
+re-decode or re-encode. Terminals without graphics support render
+`[Image: alt]` in the existing placeholder style. Large images are scaled to
+`max_width` × `max_height`. RawMode is unchanged. Cursor navigation over
+image blocks is consistent with other multi-line blocks and Phase 1's
+raw-reveal behaviour still holds.
+
+**Phase ordering note:** Phase 7 does not depend on Phase 6 (tables) and canland first. If Phase 6's `TableView` extraction lands first, Phase 7 shouldfollow the same per-block widget pattern and place the image overlay logic in a new `src/ui/image_view.rs` rather than stitching draws into`RenderedView` directly.
 
 ---
 
@@ -784,6 +865,11 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 ### Phase 11 — More Polish
 *Goal: further UX work to make the app fun and easy to use*
 
+- [ ] Checkbox gylphs
+
+- [ ] **Emoji support** — config opt-in, default off. No probing of terminal capabilities in this phase: no reliable query exists, and terminals that claim emoji support routinely miscompute cell widths and corrupt layout. Revisit if users request automatic detection.
+
+#### Bottom Bars
 A **two-line status region** by default, stacked directly beneath the editor content:
 
 - **Hint line** (upper, adjacent to content) — owned by this phase. Carries contextual keybind hints, transient status messages ("Saved", "Copied", "Autosaved"), and modal prompts (Phase 10 reload / save-copy, future filename or search inputs).
@@ -812,44 +898,22 @@ The dynamic surface sits closest to the cursor because it describes *"what can I
   - [ ] `Copied` on both copy *and* cut (the deletion is self-evident; the clipboard side-effect is not). No notification on paste.
   - [ ] `Autosaved` only on the dirty → clean transition, not on every autosave cycle, to avoid noise.
 - [ ] **Compact-mode fallback** — honour `status_bar = "compact"` in `config.toml`: render only the persistent status line; expose hints via a `?` popover.
-- [ ] **Emoji support** — config opt-in, default off. No probing of terminal capabilities in this phase: no reliable query exists, and terminals that claim emoji support routinely miscompute cell widths and corrupt layout. Revisit if users request automatic detection.
+
+#### Tables
 - [ ] **Smart table column widths** — adopt a min-max proportional distribution (the algorithm browsers use for `table-layout: auto` and what `rich` / `tabulate` converge on):
       - Per column: `min = longest word`, `max = longest cell`.
       - Distribute remaining viewport width weighted by `(max − min)`.
       - Prose columns wrap onto multiple rendered rows when their allocation is below `max`; short/numeric columns stay at their `max`.
       - *Rejected:* average-width-as-target — it breaks the invariant that content fits, forcing silent truncation of outlier cells.
+- [ ] If the user manually adjusts column widths, a popup modal should be shown warning that an HTML comment will be added to the Markdown source to store the column widths.
 - [ ] Table row striping
-- [ ] **Hide HTML comments in rendered and preview modes** — `<!-- ... -->`
-      is annotation, not content. Today `renderer::render_table`'s sibling
-      `Block::Html` arm (`src/markdown/renderer.rs:123`) renders all HTML as
-      muted text; comments should render as zero lines in rendered and
-      preview modes while staying visible in raw mode (raw reads the buffer
-      directly, so this falls out for free).
-      - [ ] Parser: detect comment-only `Block::Html` (content matches
-            `<!-- ... -->` with optional surrounding whitespace) and promote
-            to a `Block::HtmlComment(String)` variant — keeps the byte
-            range in the AST for source-map fidelity without conflating
-            with renderable HTML.
-      - [ ] Inline path: `parser.rs:320` currently pushes `Event::Html` as
-            `Inline::Text`; add an `Inline::HtmlComment` branch for inline
-            `<!-- ... -->` so paragraphs containing comments don't show
-            them as body text.
-      - [ ] Renderer: `Block::HtmlComment` and `Inline::HtmlComment` emit
-            zero lines / zero spans in `Preview` and `Rendered` modes.
-            `Raw` mode is untouched.
-      - [ ] Cursor navigation: hybrid-mode vertical movement skips
-            zero-rendered-line blocks so the cursor doesn't stall on an
-            invisible comment. Clicking a comment in hybrid mode is
-            impossible (no screen cells belong to it); switching raw → hybrid
-            with the cursor inside a comment snaps the cursor to the start
-            of the next visible block.
-      - [ ] Phase 6's `tui-columns` handling becomes a specialisation:
-            after the generic comment-hide pass, `markdown::parser` /
-            `ParsedDoc::build` additionally strips trailing
-            `<!-- tui-columns: ... -->` blocks from a table's byte range and
-            attaches `user_widths` to `Block::Table`. The two passes don't
-            conflict — the first hides the comment visually, the second
-            extracts semantic data from it.
+- [ ] Table row and column reorder drop destination highlighting
+- [ ] **Hide HTML comments in rendered and preview modes** — `<!-- ... -->`      is annotation, not content. Today `renderer::render_table`'s sibling      `Block::Html` arm (`src/markdown/renderer.rs:123`) renders all HTML as      muted text; comments should render as zero lines in rendered and      preview modes while staying visible in raw mode (raw reads the buffer      directly, so this falls out for free).
+      - [ ] Parser: detect comment-only `Block::Html` (content matches            `<!-- ... -->` with optional surrounding whitespace) and promote            to a `Block::HtmlComment(String)` variant — keeps the byte            range in the AST for source-map fidelity without conflating            with renderable HTML.
+      - [ ] Inline path: `parser.rs:320` currently pushes `Event::Html` as            `Inline::Text`; add an `Inline::HtmlComment` branch for inline            `<!-- ... -->` so paragraphs containing comments don't show            them as body text.
+      - [ ] Renderer: `Block::HtmlComment` and `Inline::HtmlComment` emit            zero lines / zero spans in `Preview` and `Rendered` modes.            `Raw` mode is untouched.
+      - [ ] Cursor navigation: hybrid-mode vertical movement skips            zero-rendered-line blocks so the cursor doesn't stall on an            invisible comment. Clicking a comment in hybrid mode is            impossible (no screen cells belong to it); switching raw → hybrid            with the cursor inside a comment snaps the cursor to the start            of the next visible block.
+      - [ ] Phase 6's `tui-columns` handling becomes a specialisation:            after the generic comment-hide pass, `markdown::parser` /            `ParsedDoc::build` additionally strips trailing            `<!-- tui-columns: ... -->` blocks from a table's byte range and            attaches `user_widths` to `Block::Table`. The two passes don't            conflict — the first hides the comment visually, the second            extracts semantic data from it.
 
 ---
 

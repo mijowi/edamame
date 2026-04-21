@@ -6,6 +6,7 @@ use ratatui::text::{Line, Span};
 use crate::config::Theme;
 
 use super::ast::{inlines_to_plain, Block, Inline, ListItem};
+use super::table_layout;
 
 const IMAGE_PREFIX: &str = "Image: ";
 
@@ -117,8 +118,9 @@ impl<'t> Renderer<'t> {
                 col_count,
                 headers,
                 rows,
+                user_widths,
             } => {
-                self.render_table(*col_count, headers, rows, out);
+                self.render_table(*col_count, headers, rows, user_widths.as_deref(), out);
             }
             Block::Html(html) => {
                 // Render raw HTML as a muted code-like block.
@@ -434,28 +436,41 @@ impl<'t> Renderer<'t> {
         col_count: usize,
         headers: &[Vec<Inline>],
         rows: &[Vec<Vec<Inline>>],
+        user_widths: Option<&[Option<usize>]>,
         out: &mut Vec<Line<'static>>,
     ) {
         if col_count == 0 {
             return;
         }
 
-        // Calculate column widths based on the RENDERED character width of each
-        // cell (not plain-text byte length), so that inline decorations like
-        // `code spans` and [links](url) don't break border alignment.
-        let mut widths: Vec<usize> = vec![3; col_count];
-        for (i, cell) in headers.iter().enumerate() {
-            if i < col_count {
-                widths[i] = widths[i].max(self.rendered_inlines_char_width(cell));
-            }
-        }
+        // Natural widths — one row of natural per-cell widths per table row.
+        // Fed into `table_layout::compute_widths`, which applies the user
+        // override when provided and otherwise shrinks to fit the viewport.
+        let mut cell_widths: Vec<Vec<usize>> = Vec::with_capacity(rows.len() + 1);
+        cell_widths.push(
+            headers
+                .iter()
+                .take(col_count)
+                .map(|c| self.rendered_inlines_char_width(c))
+                .collect(),
+        );
         for row in rows {
-            for (i, cell) in row.iter().enumerate() {
-                if i < col_count {
-                    widths[i] = widths[i].max(self.rendered_inlines_char_width(cell));
-                }
-            }
+            cell_widths.push(
+                row.iter()
+                    .take(col_count)
+                    .map(|c| self.rendered_inlines_char_width(c))
+                    .collect(),
+            );
         }
+
+        // Until cell wrapping lands, always render at natural widths (or the
+        // user's override).  Passing `self.viewport_width` here would cause
+        // `compute_widths` to shrink columns below their content width, which
+        // overflows the right-hand cells past the trailing `│` because
+        // `render_table_row` doesn't truncate.  The viewport-aware shrink
+        // path is only safe to enable once multi-line cell wrapping is wired
+        // up (see Phase 7+ polish).
+        let widths = table_layout::compute_widths(&cell_widths, col_count, usize::MAX, user_widths);
 
         let border_style = self.theme.table_border;
         let header_style = self.theme.table_header;

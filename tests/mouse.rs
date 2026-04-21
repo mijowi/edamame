@@ -65,16 +65,19 @@ fn click_on_paragraph_in_rendered_mode_places_cursor() {
     let mut st = state("Hello, world!\n");
     st.mode = Mode::Rendered;
     let mut mouse = MouseDispatcher::new();
-    let mut anchor = None;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
     let action = mouse
         .dispatch(click_event(7, 0), area())
         .expect("click dispatched");
     assert!(matches!(action, MouseAction::Click { .. }));
-    mouse_ops::apply(&mut st, action, &mut anchor, VP, VW);
+    mouse_ops::apply(&mut st, action, &mut anchor, &[], VP, VW);
 
     assert_eq!(st.mode, Mode::Rendered);
     assert_eq!(st.cursor.offset, 7); // start of "world!"
-    assert_eq!(anchor, Some(7));
+    assert_eq!(
+        anchor,
+        Some(mouse_ops::DragTarget::TextSelection { anchor: 7 })
+    );
 }
 
 #[test]
@@ -82,9 +85,9 @@ fn click_in_preview_seeds_visual_selection_without_mode_change() {
     let mut st = state("Hello, world!\n");
     assert_eq!(st.mode, Mode::Preview);
     let mut mouse = MouseDispatcher::new();
-    let mut anchor = None;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
     if let Some(a) = mouse.dispatch(click_event(7, 0), area()) {
-        mouse_ops::apply(&mut st, a, &mut anchor, VP, VW);
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
     }
     // Preview mode stays — clicks no longer force entry into edit mode.
     assert_eq!(st.mode, Mode::Preview);
@@ -104,7 +107,7 @@ fn wheel_scroll_does_not_move_cursor() {
 
     // 5 wheel-down ticks (each scrolls WHEEL_STEP lines).
     for _ in 0..5 {
-        mouse_ops::apply(&mut st, MouseAction::Scroll(3), &mut None, VP, VW);
+        mouse_ops::apply(&mut st, MouseAction::Scroll(3), &mut None, &[], VP, VW);
     }
 
     assert!(st.scroll > 0, "scroll did advance");
@@ -122,7 +125,7 @@ fn wheel_scroll_can_go_past_last_line() {
     let total = st.parsed.line_count();
 
     for _ in 0..20 {
-        mouse_ops::apply(&mut st, MouseAction::Scroll(3), &mut None, 5, VW);
+        mouse_ops::apply(&mut st, MouseAction::Scroll(3), &mut None, &[], 5, VW);
     }
 
     assert_eq!(st.scroll, total.saturating_sub(1));
@@ -135,17 +138,17 @@ fn click_drag_extends_selection_anchor_to_release_position() {
     let mut st = state("the quick brown fox\n");
     st.mode = Mode::Rendered;
     let mut mouse = MouseDispatcher::new();
-    let mut anchor = None;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
 
     // Click at col 0, drag to col 10.
     if let Some(a) = mouse.dispatch(click_event(0, 0), area()) {
-        mouse_ops::apply(&mut st, a, &mut anchor, VP, VW);
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
     }
     if let Some(a) = mouse.dispatch(drag_event(10, 0), area()) {
-        mouse_ops::apply(&mut st, a, &mut anchor, VP, VW);
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
     }
     if let Some(a) = mouse.dispatch(up_event(10, 0), area()) {
-        mouse_ops::apply(&mut st, a, &mut anchor, VP, VW);
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
     }
 
     let sel = st.selection.expect("drag creates selection");
@@ -163,16 +166,16 @@ fn double_click_selects_word_under_pointer() {
     let mut st = state("alpha bravo charlie\n");
     st.mode = Mode::Rendered;
     let mut mouse = MouseDispatcher::new();
-    let mut anchor = None;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
     // Click on 'r' in "bravo" (col 7).
     if let Some(a) = mouse.dispatch(click_event(7, 0), area()) {
-        mouse_ops::apply(&mut st, a, &mut anchor, VP, VW);
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
     }
     if let Some(a) = mouse.dispatch(up_event(7, 0), area()) {
-        mouse_ops::apply(&mut st, a, &mut anchor, VP, VW);
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
     }
     if let Some(a) = mouse.dispatch(click_event(7, 0), area()) {
-        mouse_ops::apply(&mut st, a, &mut anchor, VP, VW);
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
     }
 
     let sel = st.selection.expect("double-click selects");
@@ -185,14 +188,14 @@ fn triple_click_selects_line() {
     let mut st = state("first line\nsecond line\nthird line\n");
     st.mode = Mode::Rendered;
     let mut mouse = MouseDispatcher::new();
-    let mut anchor = None;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
     // Click col 3, row 1 (inside "second line").
     for _ in 0..3 {
         if let Some(a) = mouse.dispatch(click_event(3, 1), area()) {
-            mouse_ops::apply(&mut st, a, &mut anchor, VP, VW);
+            mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
         }
         if let Some(a) = mouse.dispatch(up_event(3, 1), area()) {
-            mouse_ops::apply(&mut st, a, &mut anchor, VP, VW);
+            mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
         }
     }
     let sel = st.selection.expect("triple-click selects line");
@@ -210,7 +213,7 @@ fn triple_click_selects_line() {
 fn click_on_checkbox_in_task_list_toggles_it() {
     let mut st = state("- [ ] todo one\n- [x] todo two\n");
     st.mode = Mode::Rendered;
-    let mut anchor = None;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
 
     // Click on the middle of the rendered `[ ]` glyph.  Task-list items
     // render without their raw bullet prefix, so `[` sits at rendered col 0.
@@ -218,6 +221,7 @@ fn click_on_checkbox_in_task_list_toggles_it() {
         &mut st,
         MouseAction::Click { col: 1, row: 0 },
         &mut anchor,
+        &[],
         VP,
         VW,
     );
@@ -228,6 +232,7 @@ fn click_on_checkbox_in_task_list_toggles_it() {
         &mut st,
         MouseAction::Click { col: 1, row: 1 },
         &mut anchor,
+        &[],
         VP,
         VW,
     );
@@ -240,7 +245,7 @@ fn click_on_checkbox_on_another_line_toggles_without_moving_cursor() {
     st.mode = Mode::Rendered;
     st.cursor.offset = 0; // on the first line
 
-    let mut anchor = None;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
     // Click the `[` of the second row at rendered col 0, row 1.  Cursor is on
     // row 0, so before the fix the click would land on the second line (moving
     // the cursor and de-rendering the block), without toggling.
@@ -248,6 +253,7 @@ fn click_on_checkbox_on_another_line_toggles_without_moving_cursor() {
         &mut st,
         MouseAction::Click { col: 0, row: 1 },
         &mut anchor,
+        &[],
         VP,
         VW,
     );
@@ -277,13 +283,13 @@ fn triple_click_in_table_cell_selects_only_cell_content() {
     // Rendered col 11 on rendered row 3 is the 'r' of "bravo" (row 3 is the
     // data row: border=0, header=1, separator=2, data=3).
     let mut mouse = MouseDispatcher::new();
-    let mut anchor = None;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
     for _ in 0..3 {
         if let Some(a) = mouse.dispatch(click_event(11, 3), area()) {
-            mouse_ops::apply(&mut st, a, &mut anchor, VP, VW);
+            mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
         }
         if let Some(a) = mouse.dispatch(up_event(11, 3), area()) {
-            mouse_ops::apply(&mut st, a, &mut anchor, VP, VW);
+            mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
         }
     }
     let sel = st.selection.expect("triple-click sets selection");
@@ -305,13 +311,14 @@ fn click_on_table_cell_stays_in_that_cell_despite_padding() {
     let mut st = state("| longheader | short | c |\n|---|---|---|\n| a | b | c |\n");
     st.mode = Mode::Rendered;
 
-    let mut anchor = None;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
     // Row 3 of the rendered block is the data row: [0]=top border, [1]=header,
     // [2]=separator, [3]=data.  Click deep into cell 1's trailing padding.
     mouse_ops::apply(
         &mut st,
         MouseAction::Click { col: 18, row: 3 },
         &mut anchor,
+        &[],
         VP,
         VW,
     );
@@ -337,11 +344,12 @@ fn click_on_thick_header_separator_redirects_to_first_data_row() {
     let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
     let mut st = state(src);
     st.mode = Mode::Rendered;
-    let mut anchor = None;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
     mouse_ops::apply(
         &mut st,
         MouseAction::Click { col: 2, row: 2 },
         &mut anchor,
+        &[],
         VP,
         VW,
     );
@@ -364,11 +372,12 @@ fn click_on_second_data_row_lands_on_second_data_row() {
     let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
     let mut st = state(src);
     st.mode = Mode::Rendered;
-    let mut anchor = None;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
     mouse_ops::apply(
         &mut st,
         MouseAction::Click { col: 2, row: 5 },
         &mut anchor,
+        &[],
         VP,
         VW,
     );
@@ -387,12 +396,13 @@ fn click_on_thin_inter_row_separator_snaps_to_preceding_data_row() {
     let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
     let mut st = state(src);
     st.mode = Mode::Rendered;
-    let mut anchor = None;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
     // sub 4 is the thin separator between the two data rows.
     mouse_ops::apply(
         &mut st,
         MouseAction::Click { col: 2, row: 4 },
         &mut anchor,
+        &[],
         VP,
         VW,
     );
@@ -421,8 +431,9 @@ fn drag_release_expands_selection_to_enclosing_markers() {
     });
     // Simulate the mouse release that follows the drag.  `drag_anchor` is
     // Some(...) during drag; Release doesn't touch it otherwise.
-    let mut anchor = Some(0usize);
-    mouse_ops::apply(&mut st, MouseAction::Release, &mut anchor, VP, VW);
+    let mut anchor: Option<mouse_ops::DragTarget> =
+        Some(mouse_ops::DragTarget::TextSelection { anchor: 0 });
+    mouse_ops::apply(&mut st, MouseAction::Release, &mut anchor, &[], VP, VW);
 
     // Expected: selection expands to include the `*…*` markers → raw `*cat*`.
     let sel = st.selection.expect("selection still present");
@@ -444,8 +455,9 @@ fn drag_release_expands_double_markers_to_strong() {
         anchor: 8,
         active: 12,
     });
-    let mut anchor = Some(0usize);
-    mouse_ops::apply(&mut st, MouseAction::Release, &mut anchor, VP, VW);
+    let mut anchor: Option<mouse_ops::DragTarget> =
+        Some(mouse_ops::DragTarget::TextSelection { anchor: 0 });
+    mouse_ops::apply(&mut st, MouseAction::Release, &mut anchor, &[], VP, VW);
     let sel = st.selection.unwrap();
     let (s, e) = sel.range();
     assert_eq!(st.buffer.slice_to_string(s, e), "**bold**");
@@ -460,15 +472,15 @@ fn preview_click_drag_produces_rendered_text_on_copy() {
     let mut st = state("alpha *emph* beta\n");
     assert_eq!(st.mode, Mode::Preview);
     let mut mouse = MouseDispatcher::new();
-    let mut anchor = None;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
     if let Some(a) = mouse.dispatch(click_event(6, 0), area()) {
-        mouse_ops::apply(&mut st, a, &mut anchor, VP, VW);
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
     }
     if let Some(a) = mouse.dispatch(drag_event(10, 0), area()) {
-        mouse_ops::apply(&mut st, a, &mut anchor, VP, VW);
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
     }
     if let Some(a) = mouse.dispatch(up_event(10, 0), area()) {
-        mouse_ops::apply(&mut st, a, &mut anchor, VP, VW);
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
     }
     assert_eq!(st.mode, Mode::Preview);
     let vs = st.visual_selection.expect("drag creates visual selection");
@@ -516,17 +528,17 @@ fn hit_test_returns_true_over_markdown_link() {
 fn rapid_clicks_and_drags_do_not_crash() {
     let mut st = state("short doc\n");
     let mut mouse = MouseDispatcher::new();
-    let mut anchor = None;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
     for row in 0..5u16 {
         for col in 0..20u16 {
             if let Some(a) = mouse.dispatch(click_event(col, row), area()) {
-                mouse_ops::apply(&mut st, a, &mut anchor, VP, VW);
+                mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
             }
             if let Some(a) = mouse.dispatch(drag_event(col + 1, row), area()) {
-                mouse_ops::apply(&mut st, a, &mut anchor, VP, VW);
+                mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
             }
             if let Some(a) = mouse.dispatch(up_event(col + 1, row), area()) {
-                mouse_ops::apply(&mut st, a, &mut anchor, VP, VW);
+                mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
             }
         }
     }
@@ -542,4 +554,462 @@ fn link_at_offset_detection_works_via_public_api() {
         Some("https://example.com".to_owned())
     );
     assert_eq!(mouse_ops::link_at_offset(src, 1), None);
+}
+
+// ── Phase 6: table drag flows ───────────────────────────────────────────────
+
+use edamame::ui::table_view::TableLayoutSnapshot;
+
+/// Build a snapshot for a table whose first row begins at `table_byte_start`,
+/// sized to simulate what the Phase 6 `build_snapshots` function would have
+/// produced.  We fabricate the snapshot directly rather than driving it
+/// through a full render, because the headless `TestBackend` renderer isn't
+/// wired up in these mouse tests and the drag-flow logic is exercised
+/// entirely through the snapshot.
+fn fake_snapshot(
+    table_byte_start: usize,
+    table_byte_end: usize,
+    col_count: usize,
+    row_count: usize,
+    col_ranges: Vec<std::ops::Range<u16>>,
+    row_ranges: Vec<std::ops::Range<u16>>,
+    row_handle_col: Option<u16>,
+    top_border_row: Option<u16>,
+) -> TableLayoutSnapshot {
+    TableLayoutSnapshot {
+        table_byte_start,
+        table_byte_end,
+        col_count,
+        row_count,
+        col_ranges,
+        row_ranges,
+        row_handle_col,
+        top_border_row,
+        header_row: None,
+    }
+}
+
+#[test]
+fn row_handle_drag_swaps_rows_in_buffer() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    // Fabricate a snapshot whose row handle sits at x=0 and whose two data
+    // rows occupy y=3 and y=5.  The column content spans x=2..5 and x=6..9.
+    let snap = fake_snapshot(
+        0,                // table_byte_start
+        src.len(),        // table_byte_end
+        2,                // col_count
+        4,                // row_count
+        vec![2..5, 6..9], // col_ranges
+        vec![3..4, 5..6], // row_ranges (data rows only)
+        Some(0),          // row_handle_col
+        Some(0),          // top_border_row
+    );
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    // Click on the first row's handle (x=0, y=3 — row_idx 2).
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Click { col: 0, row: 3 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    assert!(matches!(
+        target,
+        Some(mouse_ops::DragTarget::TableRow { row_idx: 2, .. })
+    ));
+
+    // Drag down to the second row (y=5 — row_idx 3).
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Drag { col: 0, row: 5 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+
+    // Release — should commit a row swap.
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Release,
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+
+    let after = st.contents();
+    let row_order: Vec<&str> = after.lines().skip(2).collect();
+    // After dragging row 2 (| 1 | 2 |) onto row 3 (| 3 | 4 |), row order is
+    // `| 3 | 4 |` then `| 1 | 2 |`.
+    assert_eq!(row_order[0], "| 3 | 4 |");
+    assert_eq!(row_order[1], "| 1 | 2 |");
+}
+
+#[test]
+fn column_border_drag_writes_tui_columns_comment() {
+    // Use wider data so the initial natural widths are well above MIN_COL_WIDTH;
+    // otherwise the clamp in `resize_widths` yields no movement and nothing
+    // gets persisted.
+    let src = "| headerA | headerB |\n|-----|-----|\n| foo   | bar   |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    // Column content: col 0 at x=2..12, col 1 at x=13..23.  The interior
+    // border sits at x=12 (col_ranges[0].end).
+    let snap = fake_snapshot(
+        0,
+        src.len(),
+        2,
+        3,
+        vec![2..12, 13..23],
+        vec![3..4],
+        None,
+        None,
+    );
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    // Click on the interior border at x=12.
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Click { col: 12, row: 3 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    assert!(matches!(
+        target,
+        Some(mouse_ops::DragTarget::TableColumnBorder { col_idx: 1, .. })
+    ));
+
+    // Drag right by 2 cells.
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Drag { col: 14, row: 3 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+
+    // Release.
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Release,
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+
+    let after = st.contents();
+    assert!(
+        after.contains("<!-- tui-columns:"),
+        "expected tui-columns comment after release, got: {after:?}"
+    );
+}
+
+/// Dragging a column border wider must grow the table (pinning ONLY the
+/// resized column) rather than zero-sum shrinking the neighbour.  The
+/// persisted comment must therefore use `_` for the still-auto column.
+#[test]
+fn column_border_drag_widens_table_and_leaves_neighbour_auto() {
+    // Natural widths: col 0 = 3 ("abc"), col 1 = 6 ("defghi").  Table total
+    // (pre-resize) is 3 + 6 = 9 content cells.  Dragging the interior border
+    // right by 2 should pin col 0 to 5 while col 1 stays auto — not shrink
+    // col 1 to 4.
+    let src = "| abc | defghi |\n| --- | --- |\n| bar | baz |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    // Rendered layout: col 0 content area spans x = 1..6 (pipe + ' abc ' +
+    // pipe), col 1 spans x = 7..15.  The interior border sits at x = 6.
+    let snap = fake_snapshot(
+        0,
+        src.len(),
+        2,
+        3,
+        vec![1..6, 7..15],
+        vec![3..4],
+        None,
+        None,
+    );
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Click { col: 6, row: 3 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Drag { col: 8, row: 3 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Release,
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+
+    let after = st.contents();
+    assert!(
+        after.contains("<!-- tui-columns: [5, _] -->"),
+        "expected col 0 pinned to 5 and col 1 auto, got: {after:?}"
+    );
+}
+
+/// The right outer border is a resize target too — dragging it widens the
+/// last column (not the first), pinning it in the persisted comment.
+#[test]
+fn right_outer_border_drag_resizes_last_column() {
+    let src = "| abc | defghi |\n| --- | --- |\n| bar | baz |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    // Rendered layout (natural widths): col 0 at x = 1..6, col 1 at x = 7..15.
+    // The right outer border sits at x = 15.
+    let snap = fake_snapshot(
+        0,
+        src.len(),
+        2,
+        3,
+        vec![1..6, 7..15],
+        vec![3..4],
+        None,
+        None,
+    );
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Click { col: 15, row: 3 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    assert!(
+        matches!(
+            target,
+            Some(mouse_ops::DragTarget::TableColumnBorder { col_idx: 2, .. })
+        ),
+        "expected ColumnBorder {{ col_idx: 2 }} (right outer), got: {target:?}"
+    );
+
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Drag { col: 18, row: 3 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Release,
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+
+    let after = st.contents();
+    assert!(
+        after.contains("<!-- tui-columns: [_, 9] -->"),
+        "expected col 0 auto and col 1 pinned to 9, got: {after:?}"
+    );
+}
+
+#[test]
+fn column_handle_drag_swaps_columns_in_buffer() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    // top_border_row at y=0, cols at x=2..5 and x=6..9.
+    let snap = fake_snapshot(
+        0,
+        src.len(),
+        2,
+        3,
+        vec![2..5, 6..9],
+        vec![3..4],
+        None,
+        Some(0),
+    );
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    // Click on column 0's handle (y=0, any x within col 0's range).
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Click { col: 3, row: 0 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    assert!(matches!(
+        target,
+        Some(mouse_ops::DragTarget::TableColumnHeader { col_idx: 0, .. })
+    ));
+
+    // Drag to column 1's handle.
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Drag { col: 7, row: 0 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+
+    // Release — should commit a column swap.
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Release,
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+
+    let after = st.contents();
+    // Header row should now read `| b | a |` after the swap.
+    assert!(
+        after.starts_with("| b | a |"),
+        "expected swapped header, got: {after:?}"
+    );
+}
+
+/// Regression: after a column reorder, the cursor must NOT land on the
+/// trailing `<!-- tui-columns: ... -->` comment line.  If it did, the
+/// raw-reveal in `RenderedView` would overlay the comment's text onto
+/// the last data row until the next cursor movement.
+#[test]
+fn column_reorder_leaves_cursor_off_persisted_comment_line() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n<!-- tui-columns: [4, 5] -->\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    let snap = fake_snapshot(
+        0,
+        src.len(),
+        2,
+        3,
+        vec![1..4, 5..8],
+        vec![3..4],
+        None,
+        Some(0),
+    );
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Click { col: 2, row: 0 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Drag { col: 6, row: 0 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Release,
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+
+    let source = st.contents();
+    let comment_start = source.find("<!--").expect("comment preserved");
+    let cursor_byte = st.buffer.rope().char_to_byte(st.cursor.offset);
+    assert!(
+        cursor_byte < comment_start,
+        "cursor leaked onto comment line at byte {cursor_byte} (comment starts at {comment_start})",
+    );
+}
+
+/// Same invariant as `column_reorder_leaves_cursor_off_persisted_comment_line`
+/// but for row reorder — the bug is symmetrical.
+#[test]
+fn row_reorder_leaves_cursor_off_persisted_comment_line() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n<!-- tui-columns: [4, 5] -->\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    let snap = fake_snapshot(
+        0,
+        src.len(),
+        2,
+        4,
+        vec![2..5, 6..9],
+        vec![3..4, 5..6],
+        Some(0),
+        None,
+    );
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Click { col: 0, row: 3 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Drag { col: 0, row: 5 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Release,
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+
+    let source = st.contents();
+    let comment_start = source.find("<!--").expect("comment preserved");
+    let cursor_byte = st.buffer.rope().char_to_byte(st.cursor.offset);
+    assert!(
+        cursor_byte < comment_start,
+        "cursor leaked onto comment line at byte {cursor_byte} (comment starts at {comment_start})",
+    );
 }

@@ -4,6 +4,18 @@ use super::ast::{inlines_to_plain, Block, Inline, ListItem};
 
 /// Parse a Markdown string into a list of `Block` AST nodes.
 pub fn parse(text: &str) -> Vec<Block> {
+    let mut blocks = parse_raw(text);
+    attach_trailing_tui_columns_comments(&mut blocks);
+    blocks
+}
+
+/// Lower-level parse that returns blocks without the post-pass that merges
+/// trailing `<!-- tui-columns: [..] -->` comments into preceding tables.
+/// Callers that need to walk blocks alongside `parse_offsets::
+/// top_level_block_ranges` in a 1:1 correspondence must use this and apply
+/// [`attach_trailing_tui_columns_comments`] themselves after any range-aware
+/// mutations.
+pub fn parse_raw(text: &str) -> Vec<Block> {
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_STRIKETHROUGH
@@ -13,6 +25,36 @@ pub fn parse(text: &str) -> Vec<Block> {
     let parser = Parser::new_ext(text, options);
     let mut events = parser.peekable();
     parse_blocks(&mut events)
+}
+
+/// Post-pass: any `Block::Html` whose body is a valid
+/// `<!-- tui-columns: [..] -->` marker and that directly follows a
+/// `Block::Table` gets consumed — its widths are moved onto the table's
+/// `user_widths` field, and the Html block is removed from the list.  Other
+/// HTML blocks (including `<!-- tui-columns: [..] -->` comments that aren't
+/// adjacent to a table) are left intact.
+pub fn attach_trailing_tui_columns_comments(blocks: &mut Vec<Block>) {
+    let mut i = 0;
+    while i + 1 < blocks.len() {
+        let is_pair = matches!(
+            (&blocks[i], &blocks[i + 1]),
+            (Block::Table { user_widths: None, .. }, Block::Html(body))
+                if crate::markdown::table_layout::parse_column_widths_comment(body).is_some()
+        );
+        if is_pair {
+            let body = match &blocks[i + 1] {
+                Block::Html(s) => s.clone(),
+                _ => unreachable!(),
+            };
+            let widths = crate::markdown::table_layout::parse_column_widths_comment(&body).unwrap();
+            if let Block::Table { user_widths, .. } = &mut blocks[i] {
+                *user_widths = Some(widths);
+            }
+            blocks.remove(i + 1);
+            continue;
+        }
+        i += 1;
+    }
 }
 
 // ─── Block parsing ────────────────────────────────────────────────────────────
@@ -105,6 +147,7 @@ where
                     col_count,
                     headers,
                     rows,
+                    user_widths: None,
                 });
             }
 
@@ -114,7 +157,34 @@ where
                 blocks.push(Block::HorizontalRule);
             }
 
-            // ── Raw HTML ─────────────────────────────────────────────
+            // ── Raw HTML block ───────────────────────────────────────
+            // pulldown-cmark 0.11+ wraps HTML blocks in Start(HtmlBlock) /
+            // End(HtmlBlock) around one-or-more Html(...) events.  Consume
+            // the wrapper so the outer loop's `End(_) => break` doesn't
+            // swallow the rest of the document when content follows an HTML
+            // block (e.g. a persisted `<!-- tui-columns: ... -->` comment
+            // between a table and subsequent paragraphs).
+            Some(Event::Start(Tag::HtmlBlock)) => {
+                events.next();
+                let mut body = String::new();
+                loop {
+                    match events.peek() {
+                        None => break,
+                        Some(Event::End(TagEnd::HtmlBlock)) => {
+                            events.next();
+                            break;
+                        }
+                        _ => match events.next() {
+                            Some(Event::Html(h)) => body.push_str(&h),
+                            Some(Event::Text(t)) => body.push_str(&t),
+                            Some(_) | None => {}
+                        },
+                    }
+                }
+                blocks.push(Block::Html(body));
+            }
+
+            // Bare HTML event (pulldown-cmark < 0.11 compatibility path).
             Some(Event::Html(_)) => {
                 if let Some(Event::Html(html)) = events.next() {
                     blocks.push(Block::Html(html.into_string()));
@@ -488,6 +558,54 @@ mod tests {
     fn parse_blockquote() {
         let blocks = parse("> quoted\n");
         assert!(matches!(&blocks[0], Block::BlockQuote { .. }));
+    }
+
+    #[test]
+    fn table_picks_up_trailing_tui_columns_comment() {
+        let src = "| a | b |\n|---|---|\n| 1 | 2 |\n<!-- tui-columns: [10, 20] -->\n";
+        let blocks = parse(src);
+        assert_eq!(blocks.len(), 1, "expected one block, got: {blocks:?}");
+        match &blocks[0] {
+            Block::Table {
+                user_widths: Some(w),
+                ..
+            } => assert_eq!(w, &vec![Some(10), Some(20)]),
+            other => panic!("expected Table with user_widths, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn content_after_tui_columns_comment_is_preserved() {
+        // Regression: pulldown-cmark 0.11+ wraps HTML blocks in
+        // Start/End(HtmlBlock).  Without explicit handling in `parse_blocks`,
+        // the End(HtmlBlock) event terminates the top-level block loop and
+        // every paragraph after an HTML block vanishes.
+        let src =
+            "| a | b |\n|---|---|\n| 1 | 2 |\n<!-- tui-columns: [10, 20] -->\n\nContent below\n";
+        let blocks = parse(src);
+        assert_eq!(
+            blocks.len(),
+            2,
+            "expected Table + Paragraph, got: {blocks:?}"
+        );
+        assert!(matches!(
+            &blocks[0],
+            Block::Table {
+                user_widths: Some(_),
+                ..
+            }
+        ));
+        assert!(matches!(&blocks[1], Block::Paragraph { .. }));
+    }
+
+    #[test]
+    fn table_without_tui_columns_has_none_widths() {
+        let src = "| a | b |\n|---|---|\n| 1 | 2 |\n";
+        let blocks = parse(src);
+        match &blocks[0] {
+            Block::Table { user_widths, .. } => assert!(user_widths.is_none()),
+            other => panic!("expected Table, got: {other:?}"),
+        }
     }
 
     #[test]

@@ -109,6 +109,7 @@ fn is_block_tag(tag: &Tag<'_>) -> bool {
             | Tag::BlockQuote(_)
             | Tag::List(_)
             | Tag::Table(_)
+            | Tag::HtmlBlock
     )
 }
 
@@ -121,6 +122,7 @@ fn is_block_end_tag(tag_end: &TagEnd) -> bool {
             | TagEnd::BlockQuote(_)
             | TagEnd::List(_)
             | TagEnd::Table
+            | TagEnd::HtmlBlock
     )
 }
 

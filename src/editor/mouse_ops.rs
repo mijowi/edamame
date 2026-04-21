@@ -10,8 +10,60 @@ use crate::editor::list_edit;
 use crate::editor::table_edit;
 use crate::editor::{EditorState, Mode};
 use crate::input::MouseAction;
+use crate::markdown::table_layout::{self, MIN_COL_WIDTH, PER_COL_OVERHEAD, ROW_END_OVERHEAD};
 use crate::ui::line_render;
+use crate::ui::table_view::{TableHit, TableLayoutSnapshot};
 use ratatui::text::Line;
+
+/// What a mouse-down/drag interaction currently targets.
+///
+/// Phase 6 replaced the old `Option<usize>` drag anchor with this enum so
+/// `MouseAction::Drag` events can dispatch on the user's original intent —
+/// text selection remains the fallback when the click didn't land on any
+/// table-specific region.
+///
+/// All variants carry only the state that's invariant across a single drag;
+/// the live mouse-event coordinates arrive with each `Drag` and get folded
+/// into whatever commit the `Release` produces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DragTarget {
+    /// Plain text selection anchored at a buffer char offset.
+    TextSelection { anchor: usize },
+    /// Row-handle drag in the table that begins at `table_byte_start`.
+    /// `row_idx` is a `TableInfo` row index (≥ 2 — header and alignment
+    /// aren't draggable).  Tracked across mouse-move events; the release
+    /// handler swaps rows between this starting index and the final drop.
+    TableRow {
+        table_byte_start: usize,
+        row_idx: usize,
+        /// Most-recent hover target (updated by `Drag`).  Used by rendering
+        /// to highlight the drop indicator and by `Release` to pick the
+        /// swap destination.
+        hover_row_idx: usize,
+    },
+    /// Column-border resize drag at border `col_idx` (the border between
+    /// columns `col_idx - 1` and `col_idx`; `col_idx == 0` is the left
+    /// outer border, unused here; `col_idx == col_count` is the right
+    /// outer border, also unused).  `start_widths` captures the rendered
+    /// widths at mouse-down so drag deltas are additive from the starting
+    /// point; `start_user_widths` captures which columns were already
+    /// user-pinned so the drag preserves prior pins on other columns
+    /// (partial-pin support — the comment can mix `[10, _, 15]` entries).
+    TableColumnBorder {
+        table_byte_start: usize,
+        col_idx: usize,
+        start_widths: Vec<usize>,
+        start_user_widths: Vec<Option<usize>>,
+        anchor_x: u16,
+    },
+    /// Column-header drag in the table at `table_byte_start`, starting at
+    /// column `col_idx`.  `hover_col_idx` is the current drop target.
+    TableColumnHeader {
+        table_byte_start: usize,
+        col_idx: usize,
+        hover_col_idx: usize,
+    },
+}
 
 /// Number of lines a wheel tick scrolls beyond the last document line.
 ///
@@ -106,13 +158,18 @@ fn span_at_col_has_modifier(
     false
 }
 
-/// Apply a mouse action to the editor, returning `true` when the caller
-/// should suppress the jitter-suppression scroll clamp for this frame (mouse
-/// scrolls must not drag the cursor along).
+/// Apply a mouse action to the editor.
+///
+/// `drag_target` persists state across a click → drag → release sequence.
+/// `snapshots` are the per-frame table layout snapshots captured at the end
+/// of the last render; they drive hit-testing for table-specific drag
+/// classification (row handles, column borders, column handles).  Pass an
+/// empty slice when no tables are visible.
 pub fn apply(
     state: &mut EditorState,
     action: MouseAction,
-    drag_anchor: &mut Option<usize>,
+    drag_target: &mut Option<DragTarget>,
+    snapshots: &[TableLayoutSnapshot],
     viewport_height: usize,
     viewport_width: usize,
 ) {
@@ -122,14 +179,73 @@ pub fn apply(
     // change the text under the pointer).  Keyboard actions still transition
     // Preview → Rendered via `enter_edit_if_preview` in `edit_ops`.
     if state.mode == Mode::Preview {
-        apply_preview(state, action, drag_anchor, viewport_width);
+        apply_preview(state, action, drag_target, viewport_width);
         return;
     }
 
     match action {
         MouseAction::Click { col, row } => {
+            // Phase 6: hit-test the click against every visible table's
+            // layout snapshot.  Row-handle / column-handle / column-border
+            // hits set a table-specific `DragTarget`; Cell hits fall through
+            // to normal cursor placement (the cursor lands inside the cell).
+            if let Some((snap, hit)) = snapshots
+                .iter()
+                .find_map(|s| s.hit_test(col, row).map(|h| (s, h)))
+            {
+                match hit {
+                    TableHit::RowHandle { row_idx } => {
+                        *drag_target = Some(DragTarget::TableRow {
+                            table_byte_start: snap.table_byte_start,
+                            row_idx,
+                            hover_row_idx: row_idx,
+                        });
+                        state.drag_in_progress = true;
+                        return;
+                    }
+                    TableHit::ColumnHandle { col_idx } => {
+                        *drag_target = Some(DragTarget::TableColumnHeader {
+                            table_byte_start: snap.table_byte_start,
+                            col_idx,
+                            hover_col_idx: col_idx,
+                        });
+                        state.drag_in_progress = true;
+                        return;
+                    }
+                    TableHit::ColumnBorder { col_idx } => {
+                        // Resize targets: every interior border AND the
+                        // rightmost outer border (the latter resizes the
+                        // last column).  The leftmost outer border
+                        // (`col_idx == 0`) has no column to its left, so it
+                        // stays inert.
+                        if col_idx > 0 && col_idx <= snap.col_count {
+                            let source = state.buffer.contents();
+                            if let Some(info) =
+                                table_edit::find_table_at(&source, snap.table_byte_start)
+                            {
+                                let (start_widths, start_user_widths) =
+                                    current_widths_for_table(state, &info);
+                                *drag_target = Some(DragTarget::TableColumnBorder {
+                                    table_byte_start: info.start,
+                                    col_idx,
+                                    start_widths,
+                                    start_user_widths,
+                                    anchor_x: col,
+                                });
+                                state.drag_in_progress = true;
+                                return;
+                            }
+                        }
+                        // Outer border — fall through to cell placement.
+                    }
+                    TableHit::Cell { .. } => {
+                        // Fall through to normal cell placement below.
+                    }
+                }
+            }
+
             if toggle_checkbox_at(state, col as usize, row as usize, viewport_width) {
-                *drag_anchor = None;
+                *drag_target = None;
                 state.drag_in_progress = false;
                 return;
             }
@@ -141,7 +257,9 @@ pub fn apply(
                 state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
                 state.update_cursor_block();
                 state.ensure_cursor_visible(viewport_height, viewport_width);
-                *drag_anchor = Some(state.cursor.offset);
+                *drag_target = Some(DragTarget::TextSelection {
+                    anchor: state.cursor.offset,
+                });
                 // Mouse button is down — suppress raw reveal for the block
                 // under the cursor so the user's click anchor stays visually
                 // aligned during any subsequent drag.
@@ -166,7 +284,7 @@ pub fn apply(
                 select_word_at_cursor(state);
                 state.update_cursor_block();
                 state.ensure_cursor_visible(viewport_height, viewport_width);
-                *drag_anchor = None;
+                *drag_target = None;
             }
         }
         MouseAction::TripleClick { col, row } => {
@@ -177,11 +295,12 @@ pub fn apply(
                 select_line_at_cursor(state);
                 state.update_cursor_block();
                 state.ensure_cursor_visible(viewport_height, viewport_width);
-                *drag_anchor = None;
+                *drag_target = None;
             }
         }
-        MouseAction::Drag { col, row } => {
-            if let Some(anchor) = *drag_anchor {
+        MouseAction::Drag { col, row } => match drag_target {
+            Some(DragTarget::TextSelection { anchor }) => {
+                let anchor = *anchor;
                 if let Some(offset) =
                     click_to_char_offset(state, col as usize, row as usize, viewport_width)
                 {
@@ -193,22 +312,96 @@ pub fn apply(
                     state.ensure_cursor_visible(viewport_height, viewport_width);
                 }
             }
-        }
-        MouseAction::Release => {
-            // Selection is already live via Drag; nothing else to do for now.
-            if let Some(sel) = state.selection {
-                if sel.is_empty() {
-                    state.selection = None;
-                } else {
-                    // When the element under the cursor de-renders after the
-                    // reveal delay, any inline-formatting markers that flank
-                    // the selected content become visible.  Expand the
-                    // selection to include those markers so the highlight
-                    // matches what the user would expect to copy (`*cat*`
-                    // rather than the `cat` they saw while the block was
-                    // rendered).
-                    state.selection = Some(expand_selection_to_inline_markers(&state.buffer, sel));
+            Some(DragTarget::TableRow {
+                table_byte_start,
+                hover_row_idx,
+                ..
+            }) => {
+                // Update `hover_row_idx` to the data-row under the pointer
+                // (if any) so Release has a destination to swap toward.
+                if let Some(snap) = snapshots
+                    .iter()
+                    .find(|s| s.table_byte_start == *table_byte_start)
+                {
+                    if let Some(TableHit::RowHandle { row_idx })
+                    | Some(TableHit::Cell { row_idx, .. }) = snap.hit_test(col, row)
+                    {
+                        if row_idx >= 2 {
+                            *hover_row_idx = row_idx;
+                        }
+                    }
                 }
+            }
+            Some(DragTarget::TableColumnBorder {
+                table_byte_start,
+                col_idx,
+                start_widths,
+                start_user_widths,
+                anchor_x,
+            }) => {
+                let delta = col as i32 - *anchor_x as i32;
+                if let Some(new_user_widths) = resize_widths(
+                    start_widths,
+                    start_user_widths,
+                    *col_idx,
+                    delta,
+                    viewport_width,
+                ) {
+                    state.live_table_widths = Some((*table_byte_start, new_user_widths));
+                    state.refresh_parsed();
+                }
+            }
+            Some(DragTarget::TableColumnHeader {
+                table_byte_start,
+                hover_col_idx,
+                ..
+            }) => {
+                if let Some(snap) = snapshots
+                    .iter()
+                    .find(|s| s.table_byte_start == *table_byte_start)
+                {
+                    if let Some(TableHit::ColumnHandle { col_idx })
+                    | Some(TableHit::Cell { col_idx, .. }) = snap.hit_test(col, row)
+                    {
+                        *hover_col_idx = col_idx;
+                    }
+                }
+            }
+            None => {}
+        },
+        MouseAction::Release => {
+            // Commit per-target semantics, then clear the drag.
+            match drag_target.take() {
+                Some(DragTarget::TextSelection { .. }) => {
+                    if let Some(sel) = state.selection {
+                        if sel.is_empty() {
+                            state.selection = None;
+                        } else {
+                            state.selection =
+                                Some(expand_selection_to_inline_markers(&state.buffer, sel));
+                        }
+                    }
+                }
+                Some(DragTarget::TableRow {
+                    table_byte_start,
+                    row_idx,
+                    hover_row_idx,
+                }) => {
+                    commit_row_drag(state, table_byte_start, row_idx, hover_row_idx);
+                }
+                Some(DragTarget::TableColumnBorder {
+                    table_byte_start, ..
+                }) => {
+                    commit_column_border_drag(state, table_byte_start);
+                }
+                Some(DragTarget::TableColumnHeader {
+                    table_byte_start,
+                    col_idx,
+                    hover_col_idx,
+                }) => {
+                    commit_column_drag(state, table_byte_start, col_idx, hover_col_idx);
+                }
+                None => {}
             }
             state.drag_in_progress = false;
         }
@@ -218,6 +411,254 @@ pub fn apply(
     }
 }
 
+// ── Phase 6 drag commit helpers ──────────────────────────────────────────────
+
+/// Recompute the currently-displayed column widths and the user-override
+/// snapshot for `info`'s table.
+///
+/// Returns `(rendered_widths, user_widths)` where `rendered_widths` is the
+/// actual `Vec<usize>` that's on screen for this table right now, and
+/// `user_widths` is the per-column `Option<usize>` override vector
+/// (`Some(w)` pinned, `None` auto) to carry into the drag.
+///
+/// Preference order for the user-widths snapshot:
+///   1. The `live_table_widths` drag preview (if one's already in flight for
+///      this table — e.g. the user resizes column A, releases, then grabs
+///      column B's border without the drag being reset).
+///   2. The persisted `<!-- tui-columns: [..] -->` comment immediately after
+///      the table, parsed out of the buffer.
+///   3. No overrides (`Vec` of all `None`) — every column auto-sizes.
+///
+/// Without (1) and (2), resizing a second column would revert the first
+/// column's prior resize because the override would snap back to naturals.
+fn current_widths_for_table(
+    state: &EditorState,
+    info: &table_edit::TableInfo,
+) -> (Vec<usize>, Vec<Option<usize>>) {
+    let natural = natural_widths(info);
+
+    // (1) Live preview in progress?
+    if let Some((start, widths)) = state.live_table_widths.as_ref() {
+        if *start == info.start && widths.len() == info.col_count {
+            let rendered = apply_user_widths(&natural, widths);
+            return (rendered, widths.clone());
+        }
+    }
+
+    // (2) Persisted `tui-columns` comment on the line immediately after.
+    let source = state.buffer.contents();
+    if info.end < source.len() {
+        let comment_line_end = source[info.end..]
+            .find('\n')
+            .map(|i| info.end + i)
+            .unwrap_or(source.len());
+        let comment_line = &source[info.end..comment_line_end];
+        if let Some(persisted) = table_layout::parse_column_widths_comment(comment_line) {
+            if persisted.len() == info.col_count {
+                let rendered = apply_user_widths(&natural, &persisted);
+                return (rendered, persisted);
+            }
+        }
+    }
+
+    // (3) Natural widths only — no overrides.
+    (natural, vec![None; info.col_count])
+}
+
+fn natural_widths(info: &table_edit::TableInfo) -> Vec<usize> {
+    let col_count = info.col_count;
+    let mut cell_widths: Vec<Vec<usize>> = Vec::with_capacity(info.rows.len());
+    for row in &info.rows {
+        let mut row_widths = Vec::with_capacity(col_count);
+        for cell in row.cells.iter().take(col_count) {
+            row_widths.push(cell.raw.trim().chars().count());
+        }
+        while row_widths.len() < col_count {
+            row_widths.push(0);
+        }
+        cell_widths.push(row_widths);
+    }
+    table_layout::compute_widths(&cell_widths, col_count, usize::MAX, None)
+}
+
+fn apply_user_widths(natural: &[usize], user: &[Option<usize>]) -> Vec<usize> {
+    let mut out = natural.to_vec();
+    for (i, u) in user.iter().take(out.len()).enumerate() {
+        if let Some(w) = u {
+            out[i] = (*w).max(MIN_COL_WIDTH);
+        }
+    }
+    out
+}
+
+/// Resize the left column of the border at `col_idx` by `delta` cells.
+///
+/// Unlike a spreadsheet-style drag (where widening one column shrinks the
+/// next), this pins ONLY the left column of the border.  The right column
+/// retains whatever pin it already had (if any) or stays auto — so widening
+/// a column lets the table grow up to `viewport_width` instead of squeezing
+/// neighbouring cells.
+///
+/// Returns the new `user_widths` vector (each entry `Some(w)` pinned,
+/// `None` auto).  Other columns' pins carry over from
+/// `start_user_widths` unchanged.
+fn resize_widths(
+    start_widths: &[usize],
+    start_user_widths: &[Option<usize>],
+    col_idx: usize,
+    delta: i32,
+    viewport_width: usize,
+) -> Option<Vec<Option<usize>>> {
+    let n = start_widths.len();
+    if col_idx == 0 || col_idx > n {
+        return None;
+    }
+    let left = col_idx - 1;
+
+    // Border + padding overhead: PER_COL_OVERHEAD per column + ROW_END once.
+    let border_budget = PER_COL_OVERHEAD * n + ROW_END_OVERHEAD;
+    let other_total: usize = start_widths
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != left)
+        .map(|(_, w)| *w)
+        .sum();
+
+    // Upper bound: grow up to the viewport edge, leaving room for other
+    // columns + borders.  Lower bound: MIN_COL_WIDTH.
+    let max_left = viewport_width
+        .saturating_sub(border_budget + other_total)
+        .max(MIN_COL_WIDTH);
+    let target = (start_widths[left] as i32 + delta).max(MIN_COL_WIDTH as i32) as usize;
+    let new_left = target.min(max_left);
+
+    let mut out = start_user_widths.to_vec();
+    while out.len() < n {
+        out.push(None);
+    }
+    out[left] = Some(new_left);
+    Some(out)
+}
+
+/// Commit a row-drag release: swap the source row to the hover destination
+/// via a chain of adjacent-swap `EditDelta`s.  Note that Phase 2's
+/// `table_edit::swap_rows` only supports adjacent swaps, so we apply
+/// `|row_idx - hover_row_idx|` of them in the right direction.  Each swap
+/// lands in history as its own undo step — acceptable for Phase 6; a future
+/// pass can coalesce them into one delta.
+fn commit_row_drag(
+    state: &mut EditorState,
+    table_byte_start: usize,
+    src_idx: usize,
+    dst_idx: usize,
+) {
+    if src_idx == dst_idx || src_idx < 2 || dst_idx < 2 {
+        return;
+    }
+    // Preserve the pre-drag cursor offset.  `apply_delta` unconditionally
+    // moves the cursor to `delta.redo_cursor()` — for a structural swap
+    // that lands at `info.end`, which after the trailing-comment merge
+    // sits on the `<!-- tui-columns: ... -->` line.  The raw-reveal in
+    // `RenderedView` then paints the comment text into the last data
+    // row until the user moves the cursor somewhere else.  Since
+    // swap_rows preserves total buffer length the saved offset remains
+    // a valid char offset after every intermediate swap.
+    let saved_cursor = state.cursor.offset;
+    let mut cur = src_idx;
+    while cur != dst_idx {
+        let step = if cur < dst_idx { cur + 1 } else { cur - 1 };
+        let source = state.buffer.contents();
+        let Some(info) = table_edit::find_table_at(&source, table_byte_start) else {
+            break;
+        };
+        let Some(delta) = table_edit::swap_rows(&info, cur, step) else {
+            break;
+        };
+        let rope = state.buffer.rope();
+        let char_delta = crate::document::EditDelta {
+            offset: rope.byte_to_char(delta.offset),
+            removed: delta.removed,
+            inserted: delta.inserted,
+        };
+        state.apply_delta(char_delta);
+        cur = step;
+    }
+    state.cursor.offset = saved_cursor.min(state.buffer.len_chars());
+    state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+    state.update_cursor_block();
+}
+
+/// Commit a column-resize release: if `live_table_widths` holds the
+/// preview for this table, write the widths into the buffer as a
+/// `tui-columns` comment and clear the live override.
+fn commit_column_border_drag(state: &mut EditorState, table_byte_start: usize) {
+    let live_widths = state
+        .live_table_widths
+        .as_ref()
+        .filter(|(start, _)| *start == table_byte_start)
+        .map(|(_, w)| w.clone());
+    state.live_table_widths = None;
+    let Some(widths) = live_widths else {
+        state.refresh_parsed();
+        return;
+    };
+    let source = state.buffer.contents();
+    let Some(info) = table_edit::find_table_at(&source, table_byte_start) else {
+        state.refresh_parsed();
+        return;
+    };
+    let byte_delta = table_edit::write_column_widths(&source, &info, &widths);
+    let rope = state.buffer.rope();
+    let char_delta = crate::document::EditDelta {
+        offset: rope.byte_to_char(byte_delta.offset),
+        removed: byte_delta.removed,
+        inserted: byte_delta.inserted,
+    };
+    state.apply_delta(char_delta);
+}
+
+/// Commit a column-drag release: swap the source column to the hover
+/// destination via a chain of adjacent-swap `EditDelta`s.  Mirrors
+/// `commit_row_drag` but for columns.
+fn commit_column_drag(
+    state: &mut EditorState,
+    table_byte_start: usize,
+    src_idx: usize,
+    dst_idx: usize,
+) {
+    if src_idx == dst_idx {
+        return;
+    }
+    // See `commit_row_drag` for why the pre-drag cursor offset must be
+    // restored after each swap: otherwise the cursor ends up at
+    // `info.end`, which after the trailing-`tui-columns`-comment merge
+    // points onto the comment line and the raw-reveal then overlays the
+    // comment's raw text into the table's last data row.
+    let saved_cursor = state.cursor.offset;
+    let mut cur = src_idx;
+    while cur != dst_idx {
+        let step = if cur < dst_idx { cur + 1 } else { cur - 1 };
+        let source = state.buffer.contents();
+        let Some(info) = table_edit::find_table_at(&source, table_byte_start) else {
+            break;
+        };
+        let Some(delta) = table_edit::swap_columns(&info, cur, step) else {
+            break;
+        };
+        let rope = state.buffer.rope();
+        let char_delta = crate::document::EditDelta {
+            offset: rope.byte_to_char(delta.offset),
+            removed: delta.removed,
+            inserted: delta.inserted,
+        };
+        state.apply_delta(char_delta);
+        cur = step;
+    }
+    state.cursor.offset = saved_cursor.min(state.buffer.len_chars());
+    state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+    state.update_cursor_block();
+}
+
 /// Preview-mode mouse handling.  Selections are tracked in rendered
 /// coordinates (`(line_idx, char_col)`) so that `Copy` can produce the
 /// exact rendered text the user saw — a raw-buffer selection would include
@@ -225,7 +666,7 @@ pub fn apply(
 fn apply_preview(
     state: &mut EditorState,
     action: MouseAction,
-    drag_anchor: &mut Option<usize>,
+    drag_target: &mut Option<DragTarget>,
     viewport_width: usize,
 ) {
     match action {
@@ -240,7 +681,7 @@ fn apply_preview(
                 anchor: (line_idx, char_col),
                 active: (line_idx, char_col),
             });
-            *drag_anchor = Some(0); // non-None sentinel: drag active in Preview
+            *drag_target = Some(DragTarget::TextSelection { anchor: 0 });
             state.drag_in_progress = true;
         }
         MouseAction::DoubleClick { col, row } => {
@@ -252,7 +693,7 @@ fn apply_preview(
                     });
                 }
             }
-            *drag_anchor = None;
+            *drag_target = None;
             state.drag_in_progress = false;
         }
         MouseAction::TripleClick { col, row } => {
@@ -273,11 +714,11 @@ fn apply_preview(
                     active: (line_idx, end_col),
                 });
             }
-            *drag_anchor = None;
+            *drag_target = None;
             state.drag_in_progress = false;
         }
         MouseAction::Drag { col, row } => {
-            if drag_anchor.is_none() {
+            if drag_target.is_none() {
                 return;
             }
             if let Some(active) = preview_pos(state, col as usize, row as usize) {
@@ -298,6 +739,7 @@ fn apply_preview(
                 }
             }
             state.drag_in_progress = false;
+            *drag_target = None;
         }
         MouseAction::Scroll(delta) => {
             scroll_by_mouse(state, delta, viewport_width);
@@ -700,8 +1142,8 @@ fn table_click_to_raw_col(
     rendered_line: &Line<'_>,
     rendered_col: usize,
 ) -> Option<usize> {
-    let raw_pipes = raw_pipe_positions(raw_line);
-    let rendered_pipes = rendered_line_pipe_positions(rendered_line);
+    let raw_pipes = table_layout::raw_pipe_positions(raw_line);
+    let rendered_pipes = table_layout::rendered_pipe_positions(rendered_line);
     if raw_pipes.len() < 2 || rendered_pipes.len() != raw_pipes.len() {
         return None;
     }
@@ -752,38 +1194,6 @@ fn table_click_to_raw_col(
     };
 
     Some(raw_cell_start + raw_offset_in_cell)
-}
-
-/// Char positions of unescaped `|` characters in a raw table row.
-fn raw_pipe_positions(row: &str) -> Vec<usize> {
-    let mut positions = Vec::new();
-    let mut escaped = false;
-    for (i, ch) in row.chars().enumerate() {
-        if ch == '|' && !escaped {
-            positions.push(i);
-            escaped = false;
-        } else if ch == '\\' {
-            escaped = !escaped;
-        } else {
-            escaped = false;
-        }
-    }
-    positions
-}
-
-/// Char positions of `│` box-drawing pipe characters in a rendered line.
-fn rendered_line_pipe_positions(line: &Line<'_>) -> Vec<usize> {
-    let mut positions = Vec::new();
-    let mut col = 0usize;
-    for span in &line.spans {
-        for ch in span.content.chars() {
-            if ch == '│' {
-                positions.push(col);
-            }
-            col += 1;
-        }
-    }
-    positions
 }
 
 /// Width in cells of visual sub-row `sub_row` of the rendered line.  Clicks
@@ -1188,18 +1598,19 @@ mod tests {
         let text = "Hello world\n";
         let mut state = EditorState::new(Buffer::from_str(text), theme());
         state.mode = Mode::Rendered;
-        let mut anchor = None;
+        let mut target: Option<DragTarget> = None;
         apply(
             &mut state,
             MouseAction::Click { col: 6, row: 0 },
-            &mut anchor,
+            &mut target,
+            &[],
             10,
             80,
         );
         // "Hello world" — clicking col 6 lands on 'w'.
         assert_eq!(state.cursor.offset, 6);
         assert_eq!(state.selection, None);
-        assert_eq!(anchor, Some(6));
+        assert_eq!(target, Some(DragTarget::TextSelection { anchor: 6 }));
     }
 
     #[test]
@@ -1235,18 +1646,20 @@ mod tests {
         let text = "hello world";
         let mut state = EditorState::new(Buffer::from_str(text), theme());
         state.mode = Mode::Rendered;
-        let mut anchor = None;
+        let mut target: Option<DragTarget> = None;
         apply(
             &mut state,
             MouseAction::Click { col: 0, row: 0 },
-            &mut anchor,
+            &mut target,
+            &[],
             10,
             80,
         );
         apply(
             &mut state,
             MouseAction::Drag { col: 5, row: 0 },
-            &mut anchor,
+            &mut target,
+            &[],
             10,
             80,
         );
@@ -1259,11 +1672,12 @@ mod tests {
     fn click_in_preview_stays_in_preview_and_seeds_visual_selection() {
         let mut state = EditorState::new(Buffer::from_str("hello"), theme());
         assert_eq!(state.mode, Mode::Preview);
-        let mut anchor = None;
+        let mut target: Option<DragTarget> = None;
         apply(
             &mut state,
             MouseAction::Click { col: 1, row: 0 },
-            &mut anchor,
+            &mut target,
+            &[],
             10,
             80,
         );
@@ -1281,13 +1695,14 @@ mod tests {
         let text = "- [ ] todo\n";
         let mut state = EditorState::new(Buffer::from_str(text), theme());
         state.mode = Mode::Rendered;
-        let mut anchor = None;
+        let mut target: Option<DragTarget> = None;
         // Task items render without their raw `- ` prefix, so the `[` sits at
         // rendered col 0 and the inner space at rendered col 1.
         apply(
             &mut state,
             MouseAction::Click { col: 1, row: 0 },
-            &mut anchor,
+            &mut target,
+            &[],
             10,
             80,
         );
@@ -1299,11 +1714,12 @@ mod tests {
         let text = "hi\n";
         let mut state = EditorState::new(Buffer::from_str(text), theme());
         state.mode = Mode::Rendered;
-        let mut anchor = None;
+        let mut target: Option<DragTarget> = None;
         apply(
             &mut state,
             MouseAction::Click { col: 50, row: 0 },
-            &mut anchor,
+            &mut target,
+            &[],
             10,
             80,
         );
@@ -1347,11 +1763,12 @@ mod tests {
         let text = "first\nsecond\nthird\n";
         let mut state = EditorState::new(Buffer::from_str(text), theme());
         state.mode = Mode::Raw;
-        let mut anchor = None;
+        let mut target: Option<DragTarget> = None;
         apply(
             &mut state,
             MouseAction::Click { col: 2, row: 1 },
-            &mut anchor,
+            &mut target,
+            &[],
             10,
             80,
         );

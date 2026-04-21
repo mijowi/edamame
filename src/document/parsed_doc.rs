@@ -4,7 +4,7 @@ use ratatui::text::Line;
 
 use crate::config::Theme;
 use crate::document::SourceMap;
-use crate::markdown::{parse, parse_offsets, Renderer};
+use crate::markdown::{parse_offsets, parse_raw, Renderer};
 
 /// Setext heading style detected from raw block source.  `None` for ATX
 /// headings or non-heading blocks.
@@ -74,12 +74,34 @@ impl ParsedDoc {
     /// inserted after the first block's rendered lines.  This overrides
     /// Markdown's default behaviour of collapsing multiple blank lines to one.
     pub fn build(source: &str, theme: &Theme, preserve_blank_lines: bool) -> Self {
+        Self::build_with_overrides(source, theme, preserve_blank_lines, None)
+    }
+
+    /// Like [`build`], but applies a live `user_widths` override to the
+    /// table whose first row begins at `live_table_widths.0`.  Used by
+    /// Phase 6's column-resize drag to preview widths without writing the
+    /// `tui-columns` comment to the buffer on every mouse-move event.
+    pub fn build_with_overrides(
+        source: &str,
+        theme: &Theme,
+        preserve_blank_lines: bool,
+        live_table_widths: Option<&(usize, Vec<Option<usize>>)>,
+    ) -> Self {
         // 1. Extract top-level block byte ranges.
-        let real_ranges = parse_offsets::top_level_block_ranges(source);
+        let mut real_ranges = parse_offsets::top_level_block_ranges(source);
         let total_bytes = source.len();
 
-        // 2. Parse into AST.
-        let blocks = parse(source);
+        // 2. Parse into raw AST (blocks here match `real_ranges` 1:1 — the
+        //    `tui-columns` comment post-pass hasn't run yet).  The merge pass
+        //    MUST run before the live-widths override: merging checks for
+        //    `user_widths: None`, so applying the override first would
+        //    prevent the Html comment block from being absorbed and the
+        //    comment would flash into the rendered view between drag events.
+        let mut blocks = parse_raw(source);
+        merge_trailing_tui_columns_comments(&mut blocks, &mut real_ranges);
+        if let Some((override_start, widths)) = live_table_widths {
+            apply_live_table_widths(&mut blocks, &real_ranges, *override_start, widths);
+        }
 
         // 3. Render, tracking per-block rendered line counts.
         let renderer = Renderer::new(theme);
@@ -237,6 +259,73 @@ impl ParsedDoc {
     /// NOT counting any inter-block gap blank lines inserted by `preserve_blank_lines`.
     pub fn block_own_line_count(&self, block_idx: usize) -> usize {
         self.per_block_own.get(block_idx).copied().unwrap_or(0)
+    }
+}
+
+/// Pair AST blocks with their byte ranges and splice a `user_widths` override
+/// onto the `Block::Table` whose range starts at `override_start`.  Used by
+/// Phase 6's column-resize drag to preview widths without buffer mutation.
+fn apply_live_table_widths(
+    blocks: &mut [crate::markdown::ast::Block],
+    real_ranges: &[Range<usize>],
+    override_start: usize,
+    widths: &[Option<usize>],
+) {
+    use crate::markdown::ast::Block;
+    // `parse_raw` and `parse_offsets::top_level_block_ranges` emit blocks
+    // and ranges in the same order, so `blocks[i]` pairs with
+    // `real_ranges[i]` before the trailing-comment merge runs.
+    let mut block_i = 0usize;
+    while block_i < blocks.len() && block_i < real_ranges.len() {
+        if real_ranges[block_i].start == override_start {
+            if let Block::Table { user_widths, .. } = &mut blocks[block_i] {
+                *user_widths = Some(widths.to_vec());
+            }
+        }
+        block_i += 1;
+    }
+}
+
+/// Merge trailing `<!-- tui-columns: [..] -->` HTML blocks into their
+/// preceding tables, AND update `real_ranges` so the (block, range) pairing
+/// remains 1:1 after the merge.  Mirrors `markdown::parser::
+/// attach_trailing_tui_columns_comments` but also rewrites the range vector
+/// so the ParsedDoc downstream can keep using index alignment.
+fn merge_trailing_tui_columns_comments(
+    blocks: &mut Vec<crate::markdown::ast::Block>,
+    real_ranges: &mut Vec<Range<usize>>,
+) {
+    use crate::markdown::ast::Block;
+    let mut i = 0;
+    while i + 1 < blocks.len() {
+        let is_pair = matches!(
+            (&blocks[i], &blocks[i + 1]),
+            (Block::Table { user_widths: None, .. }, Block::Html(body))
+                if crate::markdown::table_layout::parse_column_widths_comment(body).is_some()
+        );
+        if is_pair {
+            let body = match &blocks[i + 1] {
+                Block::Html(s) => s.clone(),
+                _ => unreachable!(),
+            };
+            let widths = crate::markdown::table_layout::parse_column_widths_comment(&body).unwrap();
+            if let Block::Table { user_widths, .. } = &mut blocks[i] {
+                *user_widths = Some(widths);
+            }
+            blocks.remove(i + 1);
+            // Absorb the comment's range into the preceding table's range
+            // so the remaining ranges stay 1:1 with blocks.  The table's
+            // extended range already ends at the next block's start, so
+            // we can just drop `real_ranges[i + 1]` and let the downstream
+            // covering-ranges pass stretch `real_ranges[i]` to fill the gap.
+            if i + 1 < real_ranges.len() {
+                let absorbed_end = real_ranges[i + 1].end;
+                real_ranges[i] = real_ranges[i].start..absorbed_end;
+                real_ranges.remove(i + 1);
+            }
+            continue;
+        }
+        i += 1;
     }
 }
 
@@ -408,6 +497,25 @@ mod tests {
         let b4 = doc.source_map.block_for_byte(4).unwrap();
         assert_ne!(b2, b3);
         assert_ne!(b3, b4);
+    }
+
+    /// Regression: during a column-resize drag, `live_table_widths` stuffs
+    /// `user_widths = Some(...)` onto the table.  If the merge pass then
+    /// checked `user_widths: None` before running, the trailing
+    /// `tui-columns` HTML comment would NOT get absorbed and would flash
+    /// into the rendered view below the table on every drag event.
+    #[test]
+    fn live_widths_preview_still_hides_trailing_tui_columns_comment() {
+        let src = "| a | b |\n|---|---|\n| 1 | 2 |\n<!-- tui-columns: [5, 6] -->\n";
+        let live = (0usize, vec![Some(7), None]);
+        let doc = ParsedDoc::build_with_overrides(src, theme(), true, Some(&live));
+        for line in &doc.lines {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                !text.contains("tui-columns"),
+                "comment leaked into rendered output: {text:?}"
+            );
+        }
     }
 
     /// Each blank line's rendered-line range must map back to that same line

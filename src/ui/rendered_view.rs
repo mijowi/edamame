@@ -10,8 +10,12 @@ use crate::config::Theme;
 use crate::document::detect_setext;
 use crate::editor::table_edit;
 use crate::editor::EditorState;
+use crate::markdown::table_layout::{
+    compute_cell_overlay, table_raw_col_to_rendered_col, CellOverlay,
+};
 
 use super::line_render::{render_line, render_line_with_cursor};
+use super::table_view::{self, TableLayoutSnapshot};
 
 /// State for the `RenderedView` widget.
 ///
@@ -20,6 +24,10 @@ use super::line_render::{render_line, render_line_with_cursor};
 pub struct RenderedViewState {
     /// First visible rendered line (scroll offset).
     pub scroll: usize,
+    /// Snapshots of every visible table, captured at the end of the last
+    /// render.  Used by mouse-event handling to hit-test against the columns,
+    /// borders, and drag handles of the table under the pointer.
+    pub table_snapshots: Vec<TableLayoutSnapshot>,
 }
 
 /// Hybrid rendered/raw editing view.
@@ -30,6 +38,12 @@ pub struct RenderedViewState {
 pub struct RenderedView<'a> {
     pub state: &'a EditorState,
     pub theme: &'a Theme,
+    /// When true, the table renderer paints `≡` row-drag handles in an
+    /// external left-side gutter and `⇔` column-drag handles one row above
+    /// each table's top border.  Controlled by `config.table.show_drag_handles`
+    /// AND `capabilities.mouse` (the App zeros the first when the second is
+    /// false), so terminals without mouse reporting never show inert glyphs.
+    pub show_table_handles: bool,
 }
 
 impl<'a> StatefulWidget for RenderedView<'a> {
@@ -296,6 +310,14 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             vis_y += rows_used.max(1);
             virtual_idx += 1;
         }
+
+        // Phase 6: build per-frame snapshots of every visible table, then
+        // paint the drag-handle glyphs over the rendered content.  The
+        // snapshots are retained on `RenderedViewState` so the next mouse
+        // event can hit-test against them.
+        let snapshots = table_view::build_snapshots(self.state, area, self.show_table_handles);
+        view_state.table_snapshots = snapshots;
+        table_view::paint_handles(&view_state.table_snapshots, area, buf, self.theme);
     }
 }
 
@@ -588,172 +610,6 @@ fn task_marker_shift(raw_line: &str) -> usize {
     } else {
         0
     }
-}
-
-/// For a table row, map a raw char column in `raw_row` to the matching
-/// rendered column in `rendered_line`, using both pipe-position sequences.
-/// Returns `None` when pipe counts don't match (e.g. alignment row, border).
-fn table_raw_col_to_rendered_col(
-    raw_row: &str,
-    rendered_line: &Line<'_>,
-    raw_col: usize,
-) -> Option<usize> {
-    let raw_pipes = raw_pipe_positions(raw_row);
-    let rendered_pipes = rendered_pipe_positions(rendered_line);
-    if raw_pipes.len() < 2 || rendered_pipes.len() != raw_pipes.len() {
-        return None;
-    }
-    let col_count = raw_pipes.len() - 1;
-
-    // Which raw cell does `raw_col` fall in?  Cell `i` spans
-    // (raw_pipes[i] + 1) .. raw_pipes[i + 1].
-    let cell_idx = (0..col_count)
-        .find(|&i| raw_col < raw_pipes[i + 1])
-        .unwrap_or(col_count - 1);
-    let raw_cell_start = raw_pipes[cell_idx] + 1;
-    let rend_cell_start = rendered_pipes[cell_idx] + 1;
-    let rend_cell_end = rendered_pipes[cell_idx + 1];
-
-    // Align on the one-space leading padding the renderer always emits.
-    let raw_offset_in_cell = raw_col.saturating_sub(raw_cell_start);
-    let raw_cell_text: String = raw_row
-        .chars()
-        .skip(raw_cell_start)
-        .take(raw_pipes[cell_idx + 1].saturating_sub(raw_cell_start))
-        .collect();
-    let raw_leading = raw_cell_text
-        .chars()
-        .take_while(|c| c.is_whitespace())
-        .count();
-    // Rendered cell = `<space><content><pad_spaces><space>`.  Map a click
-    // inside the raw content region to 1 + (offset past raw leading).
-    let rend_offset_in_cell = if raw_offset_in_cell <= raw_leading {
-        0
-    } else {
-        1 + (raw_offset_in_cell - raw_leading)
-    };
-    let rend_cell_width = rend_cell_end.saturating_sub(rend_cell_start);
-    Some(rend_cell_start + rend_offset_in_cell.min(rend_cell_width))
-}
-
-/// Metadata for overlaying a raw cell on top of a rendered table row.
-///
-/// The `rendered_start..rendered_end` char range spans the cell's content area
-/// between the two surrounding `│` box-drawing characters (exclusive of both
-/// pipes).  `raw_text` is padded/clamped to that width when painted, so the
-/// surrounding borders and neighbouring cells remain intact.
-struct CellOverlay {
-    rendered_start: usize,
-    rendered_end: usize,
-    raw_text: String,
-    /// Cursor offset within `raw_text` in chars; `None` if the cursor sits
-    /// outside the cell's overlay area (fallback path should be taken).
-    cursor_in_cell: Option<usize>,
-    /// Byte offset within the raw row at which this cell's content starts
-    /// (the byte immediately after the cell's opening `|`).  Used by the
-    /// caller to align an absolute selection byte range onto `raw_text` so
-    /// the overlay can repaint selection highlighting over the raw chars.
-    raw_cell_byte_start: usize,
-}
-
-/// Try to compute a cell-scoped overlay for the cursor's active cell.
-///
-/// Returns `None` when the row doesn't parse as a table row, when the rendered
-/// and raw pipe counts disagree (e.g. the cursor row is the alignment row,
-/// which renders as a `├─┼─┤` separator), or when the raw cell text is wider
-/// than the rendered cell area (in which case the caller falls back to the
-/// full row-reveal so the user can still see the content they're editing).
-fn compute_cell_overlay(
-    raw_row: &str,
-    rendered_line: &Line<'_>,
-    cursor_col: usize,
-) -> Option<CellOverlay> {
-    let raw_pipes = raw_pipe_positions(raw_row);
-    let rendered_pipes = rendered_pipe_positions(rendered_line);
-    if raw_pipes.len() < 2 || rendered_pipes.len() != raw_pipes.len() {
-        return None;
-    }
-
-    // Cell index: the number of raw pipes at or before the cursor, minus one
-    // (pipe 0 begins cell 0).  Clamp to [0, col_count-1].
-    let col_count = raw_pipes.len() - 1;
-    let preceding = raw_pipes.iter().take_while(|&&p| p < cursor_col).count();
-    let cell_idx = preceding.saturating_sub(1).min(col_count - 1);
-
-    let raw_cell_start = raw_pipes[cell_idx] + 1;
-    let raw_cell_end = raw_pipes[cell_idx + 1];
-    let raw_text: String = raw_row
-        .chars()
-        .skip(raw_cell_start)
-        .take(raw_cell_end - raw_cell_start)
-        .collect();
-
-    // Byte offset of the cell's content within the raw row — needed so the
-    // caller can intersect an absolute-byte selection range with this cell.
-    let raw_cell_byte_start = raw_row
-        .char_indices()
-        .nth(raw_cell_start)
-        .map(|(b, _)| b)
-        .unwrap_or(raw_row.len());
-
-    let rendered_start = rendered_pipes[cell_idx] + 1;
-    let rendered_end = rendered_pipes[cell_idx + 1];
-    let rendered_width = rendered_end.saturating_sub(rendered_start);
-
-    if raw_text.chars().count() > rendered_width {
-        return None;
-    }
-
-    let cursor_offset = cursor_col.saturating_sub(raw_cell_start);
-    let cursor_in_cell = if cursor_offset < rendered_width {
-        Some(cursor_offset)
-    } else if cursor_offset == rendered_width {
-        Some(rendered_width.saturating_sub(1))
-    } else {
-        None
-    };
-
-    Some(CellOverlay {
-        rendered_start,
-        rendered_end,
-        raw_text,
-        cursor_in_cell,
-        raw_cell_byte_start,
-    })
-}
-
-/// Char positions of unescaped `|` characters in a raw table row.  Preceding
-/// `\` escapes the pipe per GFM rules; `\\|` is a literal backslash followed
-/// by an unescaped pipe.
-fn raw_pipe_positions(row: &str) -> Vec<usize> {
-    let mut positions = Vec::new();
-    let mut escaped = false;
-    for (i, ch) in row.chars().enumerate() {
-        if ch == '|' && !escaped {
-            positions.push(i);
-            escaped = false;
-        } else if ch == '\\' {
-            escaped = !escaped;
-        } else {
-            escaped = false;
-        }
-    }
-    positions
-}
-
-/// Char positions of `│` box-drawing pipe characters in a rendered line.
-fn rendered_pipe_positions(line: &Line<'_>) -> Vec<usize> {
-    let mut positions = Vec::new();
-    let mut col = 0usize;
-    for span in &line.spans {
-        for ch in span.content.chars() {
-            if ch == '│' {
-                positions.push(col);
-            }
-            col += 1;
-        }
-    }
-    positions
 }
 
 /// Paint `overlay.raw_text` into the cell's rendered column range, inverting

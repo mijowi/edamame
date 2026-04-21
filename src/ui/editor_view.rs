@@ -21,6 +21,11 @@ pub struct EditorView<'a> {
     pub state: &'a EditorState,
     pub theme: &'a Theme,
     pub filename: &'a str,
+    /// Passed through to `RenderedView::show_table_handles`.  Callers in
+    /// production pass `config.table.show_drag_handles && capabilities.mouse`;
+    /// unit tests default to `false` so they don't paint the gutter glyphs
+    /// over their assertions.
+    pub show_table_handles: bool,
 }
 
 /// State for the `EditorView`.
@@ -95,6 +100,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                     RenderedView {
                         state: self.state,
                         theme: self.theme,
+                        show_table_handles: self.show_table_handles,
                     },
                     doc_area,
                     buf,

@@ -123,6 +123,7 @@ fn rendered_view_paints_selection_across_multiple_rendered_blocks() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                show_table_handles: false,
                 state: &state,
                 theme,
             };
@@ -171,6 +172,7 @@ fn setext_heading_reveals_both_title_and_underline_on_cursor() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                show_table_handles: false,
                 state: &state,
                 theme,
             };
@@ -227,6 +229,7 @@ fn rendered_view_selection_in_table_cell_does_not_spill_into_borders() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                show_table_handles: false,
                 state: &state,
                 theme,
             };
@@ -296,6 +299,7 @@ fn rendered_view_selection_inside_cursors_own_cell_survives_cell_overlay() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                show_table_handles: false,
                 state: &state,
                 theme,
             };
@@ -344,6 +348,7 @@ fn rendered_view_cell_scoped_reveal_keeps_neighbouring_pipes_rendered() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                show_table_handles: false,
                 state: &state,
                 theme,
             };
@@ -400,6 +405,202 @@ fn rendered_view_cell_scoped_reveal_keeps_neighbouring_pipes_rendered() {
             "non-cursor cell at ({x}, 1) must not carry REVERSED modifier"
         );
     }
+}
+
+#[test]
+fn table_view_paints_row_and_column_handles_when_enabled() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let src = "| aa | bb |\n|---|---|\n| 1  | 2  |\n| 3  | 4  |\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+
+    let backend = TestBackend::new(30, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                state: &state,
+                theme,
+                show_table_handles: true,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let symbol_at = |x: u16, y: u16| {
+        buf.cell((x, y))
+            .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+    };
+
+    // The snapshot-build pass should have produced exactly one snapshot with
+    // the row-reorder gutter, the top-border row (column-reorder glyph site),
+    // and the header row (column-resize glyph site) all populated.
+    assert_eq!(view_state.table_snapshots.len(), 1);
+    let snap = &view_state.table_snapshots[0];
+    assert!(
+        snap.row_handle_col.is_some(),
+        "row handle col must be set when handles enabled"
+    );
+    assert!(
+        snap.top_border_row.is_some(),
+        "top border row must be set when handles enabled"
+    );
+    assert!(
+        snap.header_row.is_some(),
+        "header row must be set when handles enabled"
+    );
+
+    // Row-reorder: `⠿` on the left gutter for each data row.
+    let handle_col = snap.row_handle_col.unwrap();
+    let mut row_handle_count = 0;
+    for y_range in &snap.row_ranges {
+        if symbol_at(handle_col, y_range.start) == '⠿' {
+            row_handle_count += 1;
+        }
+    }
+    assert_eq!(
+        row_handle_count,
+        snap.row_ranges.len(),
+        "every data row should show a ⠿ reorder glyph in the gutter"
+    );
+
+    // Column-reorder: `⠿` centered on each column's top border.
+    let top_y = snap.top_border_row.unwrap();
+    let col_reorder_count = snap
+        .col_ranges
+        .iter()
+        .filter(|r| {
+            let mid = r.start + (r.end - r.start) / 2;
+            symbol_at(mid, top_y) == '⠿'
+        })
+        .count();
+    assert_eq!(
+        col_reorder_count,
+        snap.col_ranges.len(),
+        "every column should show a ⠿ reorder glyph on the top border"
+    );
+
+    // Column-resize: `⇔` on every header-row `│` — interior borders AND
+    // the rightmost outer border (which resizes the last column).
+    let header_y = snap.header_row.unwrap();
+    let resize_count = snap
+        .col_ranges
+        .iter()
+        .filter(|r| symbol_at(r.end, header_y) == '⇔')
+        .count();
+    assert_eq!(
+        resize_count,
+        snap.col_ranges.len(),
+        "every border (interior + right outer) should show a ⇔ resize glyph"
+    );
+}
+
+#[test]
+fn table_view_snapshots_empty_when_no_table() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let state = EditorState::new(Buffer::from_str("plain paragraph\n"), theme);
+
+    let backend = TestBackend::new(30, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                state: &state,
+                theme,
+                show_table_handles: true,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    assert!(view_state.table_snapshots.is_empty());
+}
+
+/// Partial user widths (issue 2): columns marked `_` in the comment should
+/// auto-size while numeric columns stay pinned.
+#[test]
+fn table_view_partial_user_widths_honours_auto_underscore_entries() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // Natural widths: col 0 = 3 ("abc"), col 1 = 6 ("defghi").  With
+    // `[5, _]` col 0 pins to 5 and col 1 stays at its natural 6.
+    let src = "| abc | defghi |\n| --- | --- |\n| bar | baz |\n<!-- tui-columns: [5, _] -->\n";
+    let state = EditorState::new(Buffer::from_str(src), theme);
+
+    let header = state
+        .parsed
+        .lines
+        .iter()
+        .find(|l| l.spans.iter().any(|s| s.content.contains('│')))
+        .expect("rendered a header row");
+    let mut pipes = Vec::new();
+    let mut col = 0usize;
+    for span in &header.spans {
+        for ch in span.content.chars() {
+            if ch == '│' {
+                pipes.push(col);
+            }
+            col += 1;
+        }
+    }
+    assert_eq!(pipes.len(), 3);
+    // Col 0 content area = pinned width (5) + 2 padding = 7.
+    assert_eq!(pipes[1] - pipes[0] - 1, 7);
+    // Col 1 content area = natural (6) + 2 padding = 8.
+    assert_eq!(pipes[2] - pipes[1] - 1, 8);
+}
+
+#[test]
+fn table_view_persists_user_widths_from_tui_columns_comment() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n<!-- tui-columns: [10, 20] -->\n";
+    let state = EditorState::new(Buffer::from_str(src), theme);
+
+    // The parsed doc's first block should be a table whose rendering uses
+    // the persisted widths — we can verify this by measuring the pipe
+    // positions on the rendered header row.
+    let first_line = state
+        .parsed
+        .lines
+        .iter()
+        .find(|l| l.spans.iter().any(|s| s.content.contains('│')))
+        .expect("rendered a header row");
+    let pipes: Vec<usize> = {
+        let mut positions = Vec::new();
+        let mut col = 0usize;
+        for span in &first_line.spans {
+            for ch in span.content.chars() {
+                if ch == '│' {
+                    positions.push(col);
+                }
+                col += 1;
+            }
+        }
+        positions
+    };
+    assert_eq!(pipes.len(), 3, "header has two cells + three pipes");
+    // Col 0 content width: widths[0]=10, plus a 1-char pad on each side = 12.
+    let col0_width = pipes[1] - pipes[0] - 1;
+    assert_eq!(col0_width, 12);
+    // Col 1 content width: widths[1]=20, plus 1+1 pad = 22.
+    let col1_width = pipes[2] - pipes[1] - 1;
+    assert_eq!(col1_width, 22);
 }
 
 #[test]

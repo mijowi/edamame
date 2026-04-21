@@ -61,7 +61,12 @@ pub fn apply(
         Action::MoveLeft => {
             enter_edit_if_preview(state, viewport_height);
             state.selection = None;
-            if !table_move_horizontal(state, /*forward=*/ false)
+            // Raw mode: every character is a valid cursor position — including
+            // table borders and the alignment row.  The user owns the risk of
+            // breaking formatting by editing the raw source directly.
+            if state.mode == Mode::Raw {
+                state.cursor.move_left(&state.buffer);
+            } else if !table_move_horizontal(state, /*forward=*/ false)
                 && !list_move_horizontal(state, /*forward=*/ false)
             {
                 state.cursor.move_left(&state.buffer);
@@ -73,7 +78,9 @@ pub fn apply(
         Action::MoveRight => {
             enter_edit_if_preview(state, viewport_height);
             state.selection = None;
-            if !table_move_horizontal(state, /*forward=*/ true)
+            if state.mode == Mode::Raw {
+                state.cursor.move_right(&state.buffer);
+            } else if !table_move_horizontal(state, /*forward=*/ true)
                 && !list_move_horizontal(state, /*forward=*/ true)
             {
                 state.cursor.move_right(&state.buffer);
@@ -88,7 +95,19 @@ pub fn apply(
                 return false;
             }
             state.selection = None;
-            if !try_move_cell_vertical(state, /*down=*/ false, viewport_height, viewport_width) {
+            if state.mode == Mode::Raw {
+                // Plain visual/logical line step — don't skip the alignment row.
+                if state.visual_line_nav && viewport_width > 0 {
+                    state.move_up_visual(viewport_width);
+                } else {
+                    state.cursor.move_up(&state.buffer);
+                }
+            } else if !try_move_cell_vertical(
+                state,
+                /*down=*/ false,
+                viewport_height,
+                viewport_width,
+            ) {
                 move_line_skipping_alignment(state, /*down=*/ false, viewport_width);
             }
             state.update_cursor_block();
@@ -100,7 +119,18 @@ pub fn apply(
                 return false;
             }
             state.selection = None;
-            if !try_move_cell_vertical(state, /*down=*/ true, viewport_height, viewport_width) {
+            if state.mode == Mode::Raw {
+                if state.visual_line_nav && viewport_width > 0 {
+                    state.move_down_visual(viewport_width);
+                } else {
+                    state.cursor.move_down(&state.buffer);
+                }
+            } else if !try_move_cell_vertical(
+                state,
+                /*down=*/ true,
+                viewport_height,
+                viewport_width,
+            ) {
                 move_line_skipping_alignment(state, /*down=*/ true, viewport_width);
             }
             state.update_cursor_block();
@@ -961,6 +991,15 @@ fn cursor_byte(state: &EditorState) -> usize {
 /// alongside the parsed `TableInfo` so the caller doesn't have to re-fetch
 /// `buffer.contents()`.
 fn current_table(state: &EditorState) -> Option<(String, TableInfo)> {
+    // Raw mode is a plain-text view — the user should be able to type `|`
+    // literally, move one char at a time through cell boundaries, and have
+    // Tab/Enter insert a literal tab/newline rather than jumping cells.
+    // Suppressing table detection here short-circuits every table-aware
+    // code path (`|` escaping, InsertTab → TableNextCell, Backspace merging,
+    // etc.) without any callsite changes.
+    if state.mode == Mode::Raw {
+        return None;
+    }
     let source = state.buffer.contents();
     let byte = cursor_byte(state);
     find_table_at(&source, byte).map(|info| (source, info))
@@ -1433,6 +1472,13 @@ fn list_renumber_at_cursor(state: &mut EditorState) {
 /// Look up the list surrounding the cursor, returning the source snapshot and
 /// parsed `ListInfo` so the caller need not re-fetch `buffer.contents()`.
 fn current_list(state: &EditorState) -> Option<(String, ListInfo)> {
+    // Mirrors the Raw-mode bail-out in `current_table`: every list-aware
+    // editing path should defer to plain text behaviour in Raw mode so the
+    // user can edit markers and checkboxes directly without the engine
+    // "helpfully" rewriting them.
+    if state.mode == Mode::Raw {
+        return None;
+    }
     let source = state.buffer.contents();
     let byte = cursor_byte(state);
     list_edit::find_list_at(&source, byte).map(|info| (source, info))

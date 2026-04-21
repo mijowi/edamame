@@ -18,6 +18,7 @@
 //! AST back to exact byte offsets.
 
 use crate::document::EditDelta;
+use crate::markdown::table_layout;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -458,6 +459,81 @@ pub fn swap_columns(info: &TableInfo, a: usize, b: usize) -> Option<EditDelta> {
         removed,
         inserted,
     })
+}
+
+// ─── Column-width persistence ────────────────────────────────────────────────
+
+/// Produce an `EditDelta` that inserts or replaces the
+/// `<!-- tui-columns: [..] -->` HTML-comment row immediately after the table.
+///
+/// Given the byte range just past the table's final `\n` (`info.end`), scan
+/// forward in `source` to determine whether a `tui-columns` comment already
+/// exists on the next non-blank line.  When one is found we replace it;
+/// otherwise we insert a fresh comment line.
+///
+/// The delta preserves the single-`EditDelta` contract so the resize action
+/// plus the comment update undo/redo as one step.
+pub fn write_column_widths(source: &str, info: &TableInfo, widths: &[Option<usize>]) -> EditDelta {
+    let mut comment = table_layout::format_column_widths_comment(widths);
+    comment.push('\n');
+
+    // The table's trailing newline is already included in `info.end` (when
+    // present).  Determine whether the immediately following line is an
+    // existing `tui-columns` comment — if so, replace it in place; otherwise
+    // insert a new line before whatever comes next.
+    if let Some(existing) = find_existing_widths_comment(source, info.end) {
+        let removed_end = advance_past_one_newline(source, existing.end);
+        EditDelta {
+            offset: existing.start,
+            removed: source[existing.start..removed_end].to_owned(),
+            inserted: comment,
+        }
+    } else {
+        // Insert immediately after `info.end` — this is already the byte
+        // offset just past the trailing `\n` of the last table row, so the
+        // comment starts on a fresh line.
+        EditDelta {
+            offset: info.end,
+            removed: String::new(),
+            inserted: comment,
+        }
+    }
+}
+
+/// Byte range (start..end, exclusive of trailing `\n`) of any existing
+/// `<!-- tui-columns: [..] -->` line found at exactly `search_start`.
+///
+/// Returns `None` if the line at `search_start` isn't a recognisable
+/// `tui-columns` comment.  We deliberately don't scan past intervening
+/// blank lines — the comment MUST be the line immediately following the
+/// table for the round-trip parser to pair it correctly.
+fn find_existing_widths_comment(
+    source: &str,
+    search_start: usize,
+) -> Option<std::ops::Range<usize>> {
+    let len = source.len();
+    if search_start >= len {
+        return None;
+    }
+    let line_end = source.as_bytes()[search_start..]
+        .iter()
+        .position(|&b| b == b'\n')
+        .map(|i| search_start + i)
+        .unwrap_or(len);
+    let line = &source[search_start..line_end];
+    if table_layout::parse_column_widths_comment(line).is_some() {
+        Some(search_start..line_end)
+    } else {
+        None
+    }
+}
+
+fn advance_past_one_newline(source: &str, pos: usize) -> usize {
+    if source.as_bytes().get(pos) == Some(&b'\n') {
+        pos + 1
+    } else {
+        pos
+    }
 }
 
 // ─── Row text helpers ────────────────────────────────────────────────────────
@@ -910,6 +986,38 @@ mod tests {
         let cursor = src.find("---").unwrap();
         let info = find_table_at(src, cursor).unwrap();
         assert_eq!(info.col_count, 2);
+    }
+
+    #[test]
+    fn write_column_widths_inserts_new_comment() {
+        let src = "| a | b |\n|---|---|\n| 1 | 2 |\n";
+        let info = find_table_at(src, 0).unwrap();
+        let delta = write_column_widths(src, &info, &[Some(10), Some(20)]);
+        assert_eq!(delta.offset, info.end);
+        assert_eq!(delta.removed, "");
+        assert_eq!(delta.inserted, "<!-- tui-columns: [10, 20] -->\n");
+    }
+
+    #[test]
+    fn write_column_widths_replaces_existing_comment() {
+        let src = "| a | b |\n|---|---|\n| 1 | 2 |\n<!-- tui-columns: [5, 7] -->\n";
+        let info = find_table_at(src, 0).unwrap();
+        let delta = write_column_widths(src, &info, &[Some(10), Some(20)]);
+        // Replace the existing comment line in place.
+        let mut new_src = String::new();
+        new_src.push_str(&src[..delta.offset]);
+        new_src.push_str(&delta.inserted);
+        new_src.push_str(&src[delta.offset + delta.removed.len()..]);
+        assert!(new_src.contains("<!-- tui-columns: [10, 20] -->"));
+        assert!(!new_src.contains("[5, 7]"));
+    }
+
+    #[test]
+    fn write_column_widths_emits_underscore_for_auto_entries() {
+        let src = "| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |\n";
+        let info = find_table_at(src, 0).unwrap();
+        let delta = write_column_widths(src, &info, &[Some(8), None, Some(12)]);
+        assert_eq!(delta.inserted, "<!-- tui-columns: [8, _, 12] -->\n");
     }
 
     #[test]
