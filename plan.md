@@ -710,14 +710,15 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 
 ---
 
-### Phase 7 — Image Display
+### Phase 7 — Image Display ✅
 *Goal: render inline images using the best available terminal graphics protocol.*
+*Status: **Complete** — 2026-04-20.  791 tests passing (294 unit/lib × 2 + 44 editing + 37 list_edit + 28 mouse + 26 renderer + 12 source_map + 37 table + 19 ui).  New modules: `src/image/loader.rs` (URL-to-DynamicImage resolution with `http`/`https` via `ureq`, `file://` and bare paths, remote-policy gating), `src/image/cache.rs` (URL-keyed `ImageCache` with per-(url, w, h) `StatefulProtocol` reuse — retained across reparses on `EditorState`, NOT on `ParsedDoc`, so ordinary keystrokes don't invalidate the expensive encoding), `src/ui/image_view.rs` (per-frame `ImageLayoutSnapshot` + `paint_images` post-render overlay).  `Block::ImageBlock { alt, url }` AST variant; `promote_image_paragraphs` post-parse pass promotes single-image paragraphs; renderer emits `[Image: alt]` on row 0 with NBSP padding up to `image_max_height`.  `Capabilities` retains the `Picker` from Phase 4's probe (was dropped before).  `AppEvent::ImageReady` variant carries worker-thread decode results; `App::dispatch_image_decodes` scans `editor.parsed.image_blocks` on load and after every edit, spawning one thread per newly-requested URL.  Remote-image prompt via the existing `ModalView` with three buttons (`Always` / `Never` / `This time only`); persists policy to `config.toml` or sets session-only flag.  Images render in Preview + Rendered modes; Raw mode shows plain Markdown source unchanged.  The cursor's image block is suppressed from the overlay during `RAW_REVEAL_DELAY` so the user sees raw `![alt](url)` when editing.*
 
 **Starting state (already in place):** `Inline::Image { alt, url }` is parsedat `src/markdown/parser.rs:355` and rendered as a styled `[Image: alt]`placeholder at `src/markdown/renderer.rs:597` using `Theme::image_placeholder`.RawMode reads the rope buffer directly, so raw `![alt](url)` display is alreadyfree — no renderer change needed for RawMode. `ratatui-image` 9 is in`Cargo.toml` with `crossterm` + `image-defaults` features. The generic`ui::modal::ModalView` (`src/ui/modal.rs`) supports arbitrary button countsand is already used for Phase 4's startup notice at `src/app.rs:365–383`.`Config::save()` exists (Phase 4) and writes to `~/.config/edamame/config.toml`.
 
 **Tasks — dependencies & config:**
-- [ ] Add `ureq` to `Cargo.toml` with rustls features to avoid an OpenSSL  system dep: `ureq = { version = "2", default-features = false, features = ["tls"] }`.
-- [ ] New `ImageConfig` section in `src/config/config.rs`:
+- [x] Add `ureq` to `Cargo.toml` with rustls features to avoid an OpenSSL  system dep: `ureq = { version = "2", default-features = false, features = ["tls"] }`.
+- [x] New `ImageConfig` section in `src/config/config.rs`:
   ```rust
   pub struct ImageConfig {
       pub enabled: bool,        // master switch; defaults to true
@@ -729,93 +730,250 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
   Add `pub image: ImageConfig` to `Config`. Extend `config/default_config.toml`  with the new section and annotations.
 
 **Tasks — Picker ownership (see Phase 4 implementation notes):**
-- [ ] Change `Capabilities` to hold `Option<Picker>` alongside `image_protocol`.  Initialise both in `detect_image_protocol` instead of dropping the Picker.  Thread the capability reference down to image-loading code.
+- [x] Change `Capabilities` to hold `Option<Picker>` alongside `image_protocol`.  Initialise both in `detect_image_protocol` instead of dropping the Picker.  Thread the capability reference down to image-loading code.
 
 **Tasks — AST normalisation:**
-- [ ] Add a post-parse pass (in `parser.rs` or a small normalisation step  called from `ParsedDoc::build`) that promotes any paragraph whose single  inline is `Inline::Image` to a new `Block::ImageBlock { alt, url }`  variant. Inline images inside mixed-content paragraphs stay as  `Inline::Image` placeholders — terminal graphics cannot sit mid-line in  a wrapped paragraph without breaking layout.
-- [ ] `SourceMap` / `ParsedDoc::per_block_own` must count the reserved image  rows so that `move_up_visual` / `move_down_visual` traverse image blocks  the same way they traverse multi-line blocks today, preserving Phase 1's  virtual-block and raw-reveal invariants.
+- [x] Add a post-parse pass (in `parser.rs` or a small normalisation step  called from `ParsedDoc::build`) that promotes any paragraph whose single  inline is `Inline::Image` to a new `Block::ImageBlock { alt, url }`  variant. Inline images inside mixed-content paragraphs stay as  `Inline::Image` placeholders — terminal graphics cannot sit mid-line in  a wrapped paragraph without breaking layout.
+- [x] `SourceMap` / `ParsedDoc::per_block_own` must count the reserved image  rows so that `move_up_visual` / `move_down_visual` traverse image blocks  the same way they traverse multi-line blocks today, preserving Phase 1's  virtual-block and raw-reveal invariants.
 
 **Tasks — image loader:**
-- [ ] New module `src/image/loader.rs` (and facade `src/image.rs`) that
-  resolves an image URL to decoded bytes. Local files resolve relative to
-  the document path and are read on demand (the OS page cache handles
-  repeated reads — no extra caching layer needed). `http`/`https` URLs
-  are fetched once per session via `ureq`; the decoded bytes are held in
-  an in-process `HashMap<String, Result<DynamicImage, _>>` for the life
-  of the `App` and dropped on shutdown. **No on-disk cache** — if the
-  user reopens the document later, remote images are refetched.
-- [ ] Retention of encoded protocol state (the expensive part for
-  Sixel/Kitty) lives on `ParsedDoc`: a per-image `Option<StatefulProtocol>`
-  built lazily the first time the block becomes visible and kept alive as
-  long as the `Block::ImageBlock` exists in the current parse. When the
-  document is reparsed, stale protocol state is dropped alongside the old
-  AST. This removes the need for a separate dimension-keyed cache — the
-  protocol object IS the cache.
-- [ ] Loading is lazy and viewport-gated: neither the raw bytes nor the
-  protocol state are built for `Block::ImageBlock`s whose reserved rows
-  don't intersect the current visible window.
-- [ ] On load failure (IO, decode, blocked remote), emit the existing
-  `[Image: alt]` styled placeholder via `Theme::image_placeholder`.
+- [x] New module `src/image/loader.rs` (and facade `src/image.rs`) that  resolves an image URL to decoded bytes. Local files resolve relative to  the document path and are read on demand (the OS page cache handles  repeated reads — no extra caching layer needed). `http`/`https` URLs  are fetched once per session via `ureq`; the decoded bytes are held in  an in-process `HashMap<String, Result<DynamicImage, _>>` for the life  of the `App` and dropped on shutdown. **No on-disk cache** — if the  user reopens the document later, remote images are refetched.
+- [x] Retention of encoded protocol state (the expensive part for  Sixel/Kitty) lives on `ParsedDoc`: a per-image `Option<StatefulProtocol>`  built lazily the first time the block becomes visible and kept alive as  long as the `Block::ImageBlock` exists in the current parse. When the  document is reparsed, stale protocol state is dropped alongside the old  AST. This removes the need for a separate dimension-keyed cache — the  protocol object IS the cache.
+- [x] Loading is lazy and viewport-gated: neither the raw bytes nor the  protocol state are built for `Block::ImageBlock`s whose reserved rows  don't intersect the current visible window.
+- [x] On load failure (IO, decode, blocked remote), emit the existing  `[Image: alt]` styled placeholder via `Theme::image_placeholder`.
 
 **Tasks — rendering:**
-- [ ] `renderer::render_image_block` emits `N` blank lines filled with NBSP  padding (to preserve the Phase 1 background-fill path in  `ui::line_render`) where `N = min(config.image.max_height,  computed_rows_for_this_image)`.
-- [ ] `RenderedView::render` (and `PreviewView::render`) accumulate a
-  per-frame `Vec<ImageDraw { rect, block_idx }>` side-channel as the
-  line-based draw proceeds. After the line pass, each image is overlaid
-  onto its reserved rect using `ratatui_image::StatefulImage` driven by
-  the `StatefulProtocol` retained on `ParsedDoc` (see
-  `ratatui-image-9.0.0/src/lib.rs:176` and `:240`). Because protocol
-  state is retained across frames, routine redraws do not trigger
-  re-encoding.
-- [ ] Image size is clamped to cell dimensions via  `ratatui_image`'s `Resize`/`ResizeEncodeRender` path  (`ratatui-image-9.0.0/src/lib.rs:196`, `:288`), honouring  `config.image.max_width` / `max_height`.
+- [x] `renderer::render_image_block` emits `N` blank lines filled with NBSP  padding (to preserve the Phase 1 background-fill path in  `ui::line_render`) where `N = min(config.image.max_height,  computed_rows_for_this_image)`.
+- [x] `RenderedView::render` (and `PreviewView::render`) accumulate a  per-frame `Vec<ImageDraw { rect, block_idx }>` side-channel as the  line-based draw proceeds. After the line pass, each image is overlaid  onto its reserved rect using `ratatui_image::StatefulImage` driven by  the `StatefulProtocol` retained on `ParsedDoc` (see  `ratatui-image-9.0.0/src/lib.rs:176` and `:240`). Because protocol  state is retained across frames, routine redraws do not trigger  re-encoding.
+- [x] Image size is clamped to cell dimensions via  `ratatui_image`'s `Resize`/`ResizeEncodeRender` path  (`ratatui-image-9.0.0/src/lib.rs:196`, `:288`), honouring  `config.image.max_width` / `max_height`.
 
 **Tasks — remote-load prompt (App layer, not renderer):**
-- [ ] On document load, scan parsed image nodes for `http`/`https` URLs.  If any exist and `config.image.remote_policy == Ask`, show a three-button  modal via the existing startup-notice flow (`src/app.rs:365–383`) with  buttons `Always`, `Never`, `This time only`.
-- [ ] `Always` / `Never` persist to `config.image.remote_policy` via  `Config::save()`. `This time only` sets an in-process flag on `App`.  The image loader consults this policy/flag before issuing `ureq`  requests; the renderer never performs IO or awaits input.
+- [x] On document load, scan parsed image nodes for `http`/`https` URLs.  If any exist and `config.image.remote_policy == Ask`, show a three-button  modal via the existing startup-notice flow (`src/app.rs:365–383`) with  buttons `Always`, `Never`, `This time only`.
+- [x] `Always` / `Never` persist to `config.image.remote_policy` via  `Config::save()`. `This time only` sets an in-process flag on `App`.  The image loader consults this policy/flag before issuing `ureq`  requests; the renderer never performs IO or awaits input.
 
 **Tasks — testing:**
-- [ ] Unit tests for the ast-normalisation pass: paragraph with a single
-  image promotes to `Block::ImageBlock`; mixed paragraphs keep inline
-  images; multiple stacked image paragraphs each become their own block.
-- [ ] Unit tests for the loader's remote-policy gating: `Never` short-circuits
-  before `ureq`; `Always` / `This time only` proceed; failures fall back to
-  the placeholder.
-- [ ] Integration tests for `per_block_own` updates: vertical navigation
-  skips image rows the same way it skips any multi-line block.
-- [ ] Integration test for protocol-state retention across reparses: a
-  `Block::ImageBlock` whose `url` is unchanged after an edit elsewhere in
-  the document keeps its existing `StatefulProtocol` rather than
-  rebuilding (cheap to assert via a build-counter on a test stub).
-- [ ] Manual smoke test (documented, not automated) in a mouse- and  graphics-capable terminal (Ghostty, Kitty, WezTerm). Terminal-graphics  wire protocol testing is excluded per CLAUDE.md.
+- [x] Unit tests for the ast-normalisation pass: paragraph with a single  image promotes to `Block::ImageBlock`; mixed paragraphs keep inline  images; multiple stacked image paragraphs each become their own block.
+- [x] Unit tests for the loader's remote-policy gating: `Never` short-circuits  before `ureq`; `Always` / `This time only` proceed; failures fall back to  the placeholder.
+- [x] Integration tests for `per_block_own` updates: vertical navigation  skips image rows the same way it skips any multi-line block.
+- [x] Integration test for protocol-state retention across reparses: a  `Block::ImageBlock` whose `url` is unchanged after an edit elsewhere in  the document keeps its existing `StatefulProtocol` rather than  rebuilding (cheap to assert via a build-counter on a test stub).
+- [x] Manual smoke test (documented, not automated) in a mouse- and  graphics-capable terminal (Ghostty, Kitty, WezTerm). Terminal-graphics  wire protocol testing is excluded per CLAUDE.md.
 
-**Acceptance criteria:** A `.md` file containing `![alt](./image.png)` displays
-the image inline in a terminal supporting Sixel/Kitty/iTerm2; `![alt](https://…)`
-prompts on first load per `remote_policy` and fetches once per session (no
-on-disk cache). Scrolling an image out of view and back in is cheap — no
-re-decode or re-encode. Terminals without graphics support render
-`[Image: alt]` in the existing placeholder style. Large images are scaled to
-`max_width` × `max_height`. RawMode is unchanged. Cursor navigation over
-image blocks is consistent with other multi-line blocks and Phase 1's
-raw-reveal behaviour still holds.
+**Acceptance criteria:** A `.md` file containing `![alt](./image.png)` displaysthe image inline in a terminal supporting Sixel/Kitty/iTerm2; `![alt](https://…)`prompts on first load per `remote_policy` and fetches once per session (noon-disk cache). Scrolling an image out of view and back in is cheap — nore-decode or re-encode. Terminals without graphics support render`[Image: alt]` in the existing placeholder style. Large images are scaled to`max_width` × `max_height`. RawMode is unchanged. Cursor navigation overimage blocks is consistent with other multi-line blocks and Phase 1'sraw-reveal behaviour still holds.
 
 **Phase ordering note:** Phase 7 does not depend on Phase 6 (tables) and canland first. If Phase 6's `TableView` extraction lands first, Phase 7 shouldfollow the same per-block widget pattern and place the image overlay logic in a new `src/ui/image_view.rs` rather than stitching draws into`RenderedView` directly.
+
+**Implementation notes (Phase 7):**
+
+- **Decoded-image cache lives on `EditorState`, not `ParsedDoc`** (deviation from the original spec at `plan.md:740`).  `ParsedDoc` is rebuilt on every buffer mutation, so attaching `StatefulProtocol` retention to the parse tree would mean re-encoding every image on every keystroke.  The cache is instead a URL-keyed `ImageCache` on `EditorState` (`src/editor/state.rs`); it survives reparses because edits almost never change the image URL set.  Protocols are additionally keyed by `(url, width, height)` so terminal resizes invalidate only affected entries.  See `src/image/cache.rs`.
+- **Fixed-height row reservation**: the renderer reserves exactly `image_max_height` rows per `Block::ImageBlock`, regardless of the image's actual aspect ratio.  This keeps `per_block_own` stable across the decode lifecycle (cursor navigation doesn't depend on a decode completing).  Short images leave bottom padding.  Aspect-aware reservation is a noted follow-up.
+- **Image rendering happens in `EditorView`, not the per-mode widgets**: `RenderedView::render` and `PreviewView::render` populate `image_snapshots` on their respective states during the line-render pass, but the actual `paint_images` call is in `EditorView::render` after the sub-widget returns.  This is the only way to satisfy the borrow checker: `paint_images` needs `&mut EditorState::images` while the sub-widgets hold `&EditorState`.  `EditorView` therefore takes `state: &'a mut EditorState` (changed from `&'a EditorState`).
+- **Image overlay suppression on raw-reveal**: `EditorView` passes `state.cursor_block_idx` as `suppress_block_idx` to `paint_images` when `cursor_block_revealed()` returns true, so the user sees the raw `![alt](url)` text instead of the image when editing the source line.  Outside the reveal delay, the image paints over the placeholder normally.
+- **Decode worker threads over async**: each newly-requested URL spawns a std::thread that calls `loader::resolve` (blocking IO) and reports completion via `AppEvent::ImageReady`.  No async runtime, no tokio.  The thread count per session is bounded by the number of distinct image URLs in the document; typical docs have ≤ 10.
+- **Remote-load prompt stacks behind the startup notice**: both modals are rendered via the same `ModalView` widget, but the remote prompt only shows after the capability notice is dismissed.  Escape on the prompt is a dismissal, not `This time only` — the user has to explicitly choose a button to enable remote loads.
+- **Module name collision with the `image` crate**: `src/image/` is our module, but `image` is also a Cargo dependency (transitively from `ratatui-image`; made explicit in `Cargo.toml` so we can use `image::load_from_memory` and `image::DynamicImage` in our code).  The Rust 2018+ path-resolution rules treat `use image::…` in `src/image/loader.rs` as the external crate, not the current module.  No renaming needed; confirmed by the passing loader tests.
 
 ---
 
 ### Phase 8 — Clickable Links and File Navigation
 *Goal: follow links on click; open other Markdown files in the editor.*
 
-**Tasks:**
-- [ ] During rendering, register link areas in a `HitMap`: `Vec<(Rect, LinkTarget)>` where `LinkTarget` is `Url(String)` or `LocalFile(PathBuf)` or `AnchorId(String)`
-- [ ] On left-click over a link area (detected in `mouse.rs`): dispatch a `FollowLink` action
-- [ ] `FollowLink(Url)` → open the URL in the system browser via `open` crate (cross-platform)
-- [ ] `FollowLink(LocalFile)` → if the file is a .md file, push it onto a navigation stack and render it; otherwise open with the OS default application
-- [ ] Implement a navigation stack: `Vec<(PathBuf, ScrollPosition, CursorOffset)>`; Backspace or Alt-Left pops back
-- [ ] `FollowLink(AnchorId)` → scroll to the heading with the matching slug within the current document
-- [ ] Show the link target in the status bar when the cursor hovers over a link
-- [ ] In RawMode, Ctrl-click (or a keybinding) follows a link from the raw `[text](url)` syntax by parsing it inline
+**Starting state (already in place after Phases 4–7):**
+- `Inline::Link { text, url, title }` is parsed at `src/markdown/parser.rs` and
+  rendered by `src/markdown/renderer.rs` as an UNDERLINED + `Theme::link_text`
+  span.  The `title` field is parsed but currently unused — Phase 8 can surface
+  it on hover.
+- `mouse_ops::link_at_offset` (`src/editor/mouse_ops.rs:1401`) scans the raw
+  line for balanced `[text](url)` and returns the URL.  Today Phase 5 only
+  logs the detected URL via `tracing::info!(target: "mouse")` — Phase 8
+  replaces the log with action dispatch without touching the mouse-dispatch
+  plumbing.
+- `mouse_ops::hit_test_clickable` + `App::update_pointer_shape` already switch
+  the terminal pointer to `PointerShape::Hand` when the cursor hovers a link
+  span (detected via the renderer's `UNDERLINED` modifier) or a task-list
+  checkbox.  Phase 8 does **not** need to add hover detection — only to
+  extend the hover channel so hovered-link *target* metadata is also emitted
+  for the hint-line tooltip (see below).
+- `ui::ModalView` (`src/ui/modal.rs`) hosts Phase 4's startup notice and
+  Phase 7's remote-image prompt with arbitrary button counts.  Phase 8
+  reuses it for the unsaved-changes guard on forward navigation.
+- `AppEvent` (`src/app.rs:23`) already supports worker-thread notifications
+  (`ImageReady`).  Phase 8 adds `LinkOpenResult` so `open::that` can run off
+  the main thread without blocking the UI on a slow `xdg-open` / `start`
+  invocation.
+- `Action` enum (`src/config/keymap.rs:15`) is extended phase-by-phase in
+  practice — Phase 8 adds `FollowLinkUnderCursor` / `NavigateBack` /
+  `NavigateForward`.  The CLAUDE.md claim that every action lives in Phase 0
+  is aspirational; follow the existing convention of adding them here.
+- The document's base directory for resolving relative paths is
+  `App::file_path.parent()` — the same convention used by
+  `src/image/loader.rs`.  Reuse, don't reinvent.
 
-**Acceptance criteria:** Clicking a URL link opens the browser. Clicking a relative `.md` path opens that file in the editor. Back-navigation returns to the previous file and position. Heading anchors scroll correctly.
+**Tasks — dependencies:**
+- [ ] Add `open = "5"` to `Cargo.toml`.  No system-library dependency; the
+      crate shells out to `xdg-open` / `open` / `start` per platform.
+
+**Tasks — AST-backed link hit-test (upgrade from Phase 5's source scan):**
+- [ ] New module `src/ui/link_view.rs` modelled on `ui::image_view` and
+      `ui::table_view`.  Owns `LinkLayoutSnapshot { rect: Rect, target:
+      LinkTarget }` and a `build_snapshots(state, area, scroll)` entry point
+      that walks the visible rendered-line range, consulting the AST rather
+      than re-scanning the raw line.  Covers three AST-level targets:
+      - `Inline::Link { url, .. }` — the common case; also reachable from
+        inside paragraph, heading, list-item, and table-cell inlines.
+      - GFM autolinks emitted by `pulldown-cmark` as `Event::Start(Link)`
+        with `LinkType::Autolink` / `Email` — **confirm** that our parser
+        already surfaces these as `Inline::Link` (they should, since no
+        dedicated variant exists); add a parser test if so, or a new
+        branch if not.
+      - Reference-style links `[text][id]` — requires preserving the link
+        definition table during parse.  `pulldown-cmark` resolves reference
+        links to the same `Tag::Link` event as inline links when the
+        definition exists, so nothing extra is needed beyond confirming
+        this in a parser test.
+- [ ] `LinkTarget` enum in `src/editor/link.rs` (new module):
+      ```rust
+      pub enum LinkTarget {
+          Url(String),            // http, https, mailto, …
+          LocalFile(PathBuf),     // relative or absolute, any extension
+          Anchor(String),         // `#slug` within the current document
+      }
+      ```
+      Classification happens once at snapshot build time via
+      `LinkTarget::parse(url: &str, base_dir: Option<&Path>) -> LinkTarget`:
+      `#foo` → `Anchor`; RFC-3986 scheme (or `mailto:`) → `Url`; everything
+      else → `LocalFile`, resolved relative to the document dir.
+- [ ] `RenderedViewState::link_snapshots: Vec<LinkLayoutSnapshot>` and
+      `PreviewState::link_snapshots: Vec<LinkLayoutSnapshot>`, populated
+      at the end of each `render()` pass.  The `App` hit-tests against
+      the appropriate state when dispatching mouse actions, matching the
+      pattern from Phase 6's `table_snapshots` and Phase 7's
+      `image_snapshots`.
+- [ ] **Raw-reveal fallback**: when the cursor's block is in the
+      `RAW_REVEAL_DELAY` window, the revealed line shows raw
+      `[text](url)` — the AST-backed snapshot won't have spans for the
+      raw bytes.  `mouse_ops` falls back to `link_at_offset` against the
+      raw source only for the revealed block.  Both paths produce a
+      `LinkTarget` via the same parser so downstream dispatch is uniform.
+
+**Tasks — click / keyboard dispatch:**
+- [ ] Extend `MouseAction::Click` (and `DoubleClick`, `TripleClick`) to
+      carry the `KeyModifiers` from `crossterm::event::MouseEvent`.
+      `MouseDispatcher::dispatch` threads the modifier bits through; today
+      they're dropped.  Without this, Ctrl-click can't be distinguished
+      from a plain click in `mouse_ops::apply`.
+- [ ] `mouse_ops::apply` click handling, per mode:
+      - **Preview**: plain click on a `LinkLayoutSnapshot` → `FollowLink`
+        (the document is read-only; link click is the unambiguous intent).
+        Click off-link falls through to the existing Phase 5 behaviour
+        (transition to Rendered, place cursor).
+      - **Rendered**: plain click places the cursor (existing behaviour);
+        `Ctrl`-click on a `LinkLayoutSnapshot` → `FollowLink`.
+      - **Raw**: same as Rendered.  The raw-reveal fallback path handles
+        the revealed-block case.
+- [ ] Add `Action::FollowLinkUnderCursor`, `Action::NavigateBack`,
+      `Action::NavigateForward` to `config/keymap.rs`.  Default bindings:
+      - `FollowLinkUnderCursor`: `Enter` in Preview; unbound in edit modes
+        to avoid conflict with `Newline` (users get the Ctrl-click path).
+      - `NavigateBack`: `Alt+Left`.  **Not** `Backspace` — that's already
+        `Action::DeleteCharBack` in edit modes.
+      - `NavigateForward`: `Alt+Right`.
+- [ ] `FollowLinkUnderCursor` resolves the link at the cursor's rope
+      offset by consulting the AST (same classification as the mouse
+      path), so the action works identically whether invoked by keyboard
+      or mouse.
+
+**Tasks — `FollowLink` dispatch by target:**
+- [ ] `LinkTarget::Url` — spawn a worker thread that calls `open::that(&url)`
+      and reports completion via a new `AppEvent::LinkOpenResult(Result<(),
+      String>)`.  On failure, surface the error on the hint line (Phase 11
+      transient message; until Phase 11 lands, fall back to `tracing::warn!`
+      and no user-visible indication).  Do **not** block the main loop —
+      slow `xdg-open` invocations would stall the UI for several hundred ms.
+- [ ] `LinkTarget::LocalFile` with `.md` extension (case-insensitive) →
+      push the current `(PathBuf, scroll, cursor_offset)` onto a navigation
+      stack on `App` (not `EditorState` — same UI-layer-fact rationale as
+      `drag_target`), load the new file into `EditorState::load_file`,
+      rebuild the `ImageCache` since image URLs are now relative to a new
+      base dir, and reset scroll/cursor to document start.
+- [ ] `LinkTarget::LocalFile` with any other extension → `open::that(&path)`
+      on the worker thread (same path as `Url`), letting the OS pick the
+      handler.
+- [ ] `LinkTarget::Anchor(slug)` → resolve via a new
+      `ParsedDoc::heading_anchors: HashMap<String, usize>` (slug → rendered
+      line index), built during `ParsedDoc::build` from each
+      `Block::Heading`'s plain-text `inlines_to_plain`.  Slug algorithm
+      matches GFM: lowercase, strip characters not in `[a-z0-9 -]`, replace
+      runs of whitespace with `-`, uniquify with `-N` suffix on collision.
+      On miss, no-op (do **not** open an unrelated file with that name).
+      Scrolls the viewport so the heading sits at the top; in edit modes
+      also places the cursor on the heading's first line.
+
+**Tasks — navigation stack:**
+- [ ] `App::nav_back: Vec<NavEntry>` and `App::nav_forward: Vec<NavEntry>`
+      where `NavEntry = { path: PathBuf, scroll: usize, cursor_offset: usize,
+      mode: Mode }`.  `NavigateBack` pops `nav_back` and pushes the current
+      state onto `nav_forward`; `NavigateForward` is the inverse.  Following
+      a new link clears `nav_forward` (browser semantics).
+- [ ] **Dirty-buffer guard**: when `FollowLink` would navigate away from
+      the current file and `editor.buffer.is_dirty()`, display a three-
+      button `ModalView` (`Save` / `Discard` / `Cancel`) — same pattern as
+      the Phase 7 remote-image prompt.  `Save` persists and continues;
+      `Discard` continues without saving; `Cancel` aborts.
+- [ ] Phase 9 note: this navigation stack is per-tab-history, not a
+      replacement for Phase 9's tab bar.  The tab bar in Phase 9 renders
+      one entry per *currently open* file; the nav stack is the linear
+      history *within* a single tab.  Phase 9 can lift the stack into a
+      `Vec<Tab { path, nav_back, nav_forward, editor_state }>` without
+      re-architecting.
+
+**Tasks — hover target display:**
+- [ ] Extend `hit_test_clickable` to return the hovered `LinkTarget`
+      (not just a bool) so `App` can stash the currently hovered link on
+      `App::hovered_link: Option<LinkTarget>`.  Phase 11 will surface the
+      target (and `Inline::Link::title`, when present) on the contextual
+      hint line.  Until Phase 11 lands, wire the field but don't render
+      it — the pointer-shape change is already a sufficient affordance.
+
+**Tasks — testing:**
+- [ ] Unit tests for `LinkTarget::parse`:  `#heading` → `Anchor`;
+      `https://example.com` → `Url`; `mailto:a@b.c` → `Url`;
+      `./sibling.md` → `LocalFile(absolute)`; `../other.md` → `LocalFile`
+      resolving through the base dir; bare `foo.md` with no base dir stays
+      relative.
+- [ ] Unit tests for GFM slug generation: round-trip `"Hello, World!"` →
+      `"hello-world"`, collision uniquification (`"Foo"` twice → `"foo"` +
+      `"foo-1"`), Unicode stripping.
+- [ ] Unit tests for `ParsedDoc::heading_anchors` — one entry per heading,
+      correct line index, stable across reparses when headings are
+      unchanged.
+- [ ] Integration tests in `tests/mouse.rs`: plain click on a link in
+      Preview opens (assert the `FollowLink` action was dispatched via a
+      test hook / recorded side-effect; we don't actually spawn
+      `xdg-open`).  Plain click on a link in Rendered places cursor.
+      Ctrl-click on a link in Rendered opens.
+- [ ] Integration test for the nav stack: open file A, follow link to
+      file B, `NavigateBack` returns to A at the original scroll and
+      cursor position; `NavigateForward` returns to B.
+- [ ] Integration test for the dirty-buffer guard: dirty A + click a link
+      to B shows the modal; `Cancel` leaves A unchanged; `Discard` loads B.
+- [ ] Integration test for the raw-reveal fallback: cursor in block, click
+      the revealed `[text](url)` syntax — `FollowLink` fires with the
+      correct target.
+
+**Tasks — deferred to later phases:**
+- [ ] Hint-line tooltip with link target + title (Phase 11 — hint line
+      ownership).
+- [ ] Tab-bar integration of the nav stack (Phase 9 — tab bar ownership).
+
+**Acceptance criteria:** Clicking a URL link in Preview opens the browser.
+Ctrl-click on a link in Rendered/Raw mode opens it without moving the
+cursor. `Enter` on a link in Preview follows it. Clicking a relative `.md`
+path navigates to that file in the same editor window, reusing the image
+cache's base-dir-resolution convention. `Alt+Left` / `Alt+Right` walk the
+navigation history. Heading anchors (`#slug`) scroll to the matching
+heading. Dirty buffers prompt before being replaced. The pointer shape
+already changes on hover (Phase 5); the hint-line tooltip is explicitly
+deferred to Phase 11.
 
 ---
 
@@ -832,6 +990,7 @@ raw-reveal behaviour still holds.
 - [ ] Add a markdown cheat sheet (tailored to the markdown supported by this app), accessible from the command palette.
 - [ ] Implement tab bar — rendered **only when more than one file is open** (from link navigation or command-line args). Single-file sessions show no tab bar at all, saving a row. Users who want dedicated single-file windows can open another terminal.
 - [ ] Accept multiple file arguments on the command line: `edamame file1.md file2.md`
+- [ ] Any time the configuration file is updated by the app, we want this to be evident to the user. Add a temporary "Configuration updated" notification to the status bar. This should not be hardcoded into each possible place where the configuration might be updated. Instead, write once and call from everywhere that it's needed. For example, when the remote images modal pops up, if the user selects "Always" or "Never" to load remote images, the "Configuration updated" notification should be displayed. This is a clue to the user that they can go back and change this in the configuration file if they desire.
 
 > The status region is **two lines**, stacked immediately below the editor content: an upper **hint line** (contextual keybind hints, transient status messages, and modal prompts — owned by Phase 11) and a lower **status line** (the persistent info specified above — owned by Phase 9). Dynamic content sits adjacent to the editor; persistent state anchors the bottom edge. Phase 11 also defines an opt-in single-line compact mode. Phase 10's reload / save-copy prompts render on the hint line.
 
@@ -868,6 +1027,12 @@ raw-reveal behaviour still holds.
 - [ ] Checkbox gylphs
 
 - [ ] **Emoji support** — config opt-in, default off. No probing of terminal capabilities in this phase: no reliable query exists, and terminals that claim emoji support routinely miscompute cell widths and corrupt layout. Revisit if users request automatic detection.
+
+- [ ] Add a contrasting background for all keybind hints, like nano.
+
+- [ ] Quit without saving confirmation modal
+
+- [ ] Experiment with 1- and 2-line scrolling instead of 3-line. Maybe it will feel smoother and still be fast.
 
 #### Bottom Bars
 A **two-line status region** by default, stacked directly beneath the editor content:
@@ -914,6 +1079,16 @@ The dynamic surface sits closest to the cursor because it describes *"what can I
       - [ ] Renderer: `Block::HtmlComment` and `Inline::HtmlComment` emit            zero lines / zero spans in `Preview` and `Rendered` modes.            `Raw` mode is untouched.
       - [ ] Cursor navigation: hybrid-mode vertical movement skips            zero-rendered-line blocks so the cursor doesn't stall on an            invisible comment. Clicking a comment in hybrid mode is            impossible (no screen cells belong to it); switching raw → hybrid            with the cursor inside a comment snaps the cursor to the start            of the next visible block.
       - [ ] Phase 6's `tui-columns` handling becomes a specialisation:            after the generic comment-hide pass, `markdown::parser` /            `ParsedDoc::build` additionally strips trailing            `<!-- tui-columns: ... -->` blocks from a table's byte range and            attaches `user_widths` to `Block::Table`. The two passes don't            conflict — the first hides the comment visually, the second            extracts semantic data from it.
+
+---
+
+### Phase 14 — Security
+*Goal: Ensure the application is not vulnerable to unintenional code execution*
+- [ ] Check if input sanitization is needed. edamame should not run any code in files it opens.
+- [ ] Check if sanitization is needed for images.
+- [ ] Dependencies—supply chain vulnerabilities
+- [ ] Any other security concerns?
+
 
 ---
 

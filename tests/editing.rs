@@ -616,3 +616,108 @@ fn raw_mode_insert_pipe_is_literal_not_escaped() {
     assert!(st.contents().contains("| |a | b |"));
     assert!(!st.contents().contains(r"\|"));
 }
+
+// ── Phase 7: Image block navigation and source-map stability ─────────────────
+
+#[test]
+fn cursor_traverses_image_block_as_one_line() {
+    // An `![alt](url)` line is ONE logical buffer line, regardless of how
+    // many rows its `Block::ImageBlock` reserves in the rendered view.
+    // MoveDown from the line before should land on the image's source line,
+    // and MoveDown again should land on the next line.
+    let src = "Above.\n![cat](cat.png)\nBelow.\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    // Start at end of first line.
+    st.cursor.offset = st.buffer.line_to_char(0) + 6; // "Above." (6 chars) + 0
+    let line_before = st.cursor.line_col(&st.buffer).0;
+    assert_eq!(line_before, 0);
+
+    apply(&mut st, Action::MoveDown);
+    let line_image = st.cursor.line_col(&st.buffer).0;
+    assert_eq!(line_image, 1, "MoveDown should land on image source line");
+
+    apply(&mut st, Action::MoveDown);
+    let line_after = st.cursor.line_col(&st.buffer).0;
+    assert_eq!(line_after, 2, "MoveDown should land on line below image");
+}
+
+#[test]
+fn typing_next_to_image_block_keeps_source_map_consistent() {
+    // Editing text adjacent to an image block must not corrupt the source
+    // map — every buffer byte must map to some rendered line.
+    let src = "Intro.\n\n![cat](cat.png)\n\nEnd.\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    // Move cursor to end of "End." and append more text.
+    let last_line = st.buffer.line_count() - 2; // "End." (last line before trailing newline)
+    let line_start = st.buffer.line_to_char(last_line);
+    st.cursor.offset = line_start + 4; // after "End."
+    apply_all(
+        &mut st,
+        &[
+            Action::InsertChar('!'),
+            Action::InsertChar(' '),
+            Action::InsertChar('X'),
+        ],
+    );
+    // Source map should still map every byte of the buffer.
+    let src_now = st.contents();
+    for b in 0..src_now.len() {
+        let range = st.parsed.source_map.rendered_lines_for_byte(b);
+        assert!(
+            !range.is_empty(),
+            "byte {} in {src_now:?} lost its rendered-line mapping",
+            b,
+        );
+    }
+}
+
+#[test]
+fn editor_state_tracks_image_block_urls_in_parsed_doc() {
+    // EditorState::parsed.image_blocks is populated from the parse and
+    // used by the App to dispatch decodes.  Verify round-trip.
+    let src = "![a](a.png)\n\n![b](http://example.com/b.jpg)\n\nplain paragraph\n";
+    let st = state(src);
+    let urls: Vec<&str> = st
+        .parsed
+        .image_blocks
+        .iter()
+        .map(|b| b.url.as_str())
+        .collect();
+    assert_eq!(urls, vec!["a.png", "http://example.com/b.jpg"]);
+}
+
+#[test]
+fn image_cache_survives_reparse_on_unrelated_edit() {
+    // Phase 7 architectural invariant: the decoded-image cache lives on
+    // EditorState::images (URL-keyed) rather than ParsedDoc, so editing
+    // text elsewhere in the document does not invalidate expensive
+    // image decodes / protocol encodings.
+    use edamame::image::DecodeStatus;
+    let src = "Intro.\n\n![cat](cat.png)\n\nEnd.\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    // Simulate a completed decode by inserting a fake entry.
+    st.images.request("cat.png");
+    st.images
+        .set_decoded("cat.png", image::DynamicImage::new_rgba8(1, 1));
+    assert!(matches!(
+        st.images.status("cat.png"),
+        Some(DecodeStatus::Ready(_))
+    ));
+
+    // Perform an edit that reparses — append a char at the document end.
+    st.cursor.offset = st.buffer.len_chars();
+    apply(&mut st, Action::InsertChar('Z'));
+
+    // The cache entry for cat.png should still be there.
+    assert!(matches!(
+        st.images.status("cat.png"),
+        Some(DecodeStatus::Ready(_))
+    ));
+    // And the image block is still in the reparsed doc.
+    assert_eq!(st.parsed.image_blocks.len(), 1);
+    assert_eq!(st.parsed.image_blocks[0].url, "cat.png");
+}

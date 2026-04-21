@@ -14,6 +14,7 @@ pub struct Config {
     pub keybindings: KeyBindingOverrides,
     pub modal: ModalConfig,
     pub table: TableConfig,
+    pub image: ImageConfig,
 }
 
 impl Config {
@@ -149,6 +150,54 @@ impl Default for TableConfig {
     fn default() -> Self {
         Self {
             show_drag_handles: true,
+        }
+    }
+}
+
+/// Policy for fetching images referenced by `http(s)://` URLs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteImagePolicy {
+    /// Prompt the user the first time a document with remote images is opened.
+    Ask,
+    /// Always fetch remote images without prompting.
+    Always,
+    /// Never fetch remote images; always fall back to the placeholder.
+    Never,
+}
+
+impl Default for RemoteImagePolicy {
+    fn default() -> Self {
+        Self::Ask
+    }
+}
+
+/// Image-rendering configuration.
+///
+/// `max_width` / `max_height` are ceilings in terminal cells; each image
+/// reserves at most this many rows, and the inline renderer clamps to this
+/// width so a single oversized image never takes over the viewport.  Values
+/// are applied verbatim by `ratatui_image`'s `Resize::Fit` path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImageConfig {
+    /// Master switch — set to `false` to disable all image rendering.
+    pub enabled: bool,
+    /// Maximum width (in terminal cells) for a single image.
+    pub max_width: usize,
+    /// Maximum height (in terminal cells) for a single image.
+    pub max_height: usize,
+    /// Policy for fetching `http(s)://` images.
+    pub remote_policy: RemoteImagePolicy,
+}
+
+impl Default for ImageConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_width: 80,
+            max_height: 24,
+            remote_policy: RemoteImagePolicy::Ask,
         }
     }
 }

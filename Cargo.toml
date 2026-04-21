@@ -55,6 +55,16 @@ arboard = { version = "3", optional = true, features = ["wayland-data-control"] 
 # we only use the Picker for detection, not for actual halfblock rendering.
 ratatui-image = { version = "9", default-features = false, features = ["crossterm", "image-defaults"] }
 
+# Image format decoding — transitively pulled by ratatui-image, listed
+# explicitly so `DynamicImage` and `ImageError` are reachable from our own
+# code and the decode branches in `src/image/loader.rs` can compile
+# independently of whether ratatui-image re-exports them.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
+
+# Blocking HTTP client for remote image fetches (Phase 7).  Uses rustls
+# (not native-tls/OpenSSL) so we have no system-library dependency.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
 [features]
 default = ["clipboard"]
 clipboard = ["arboard"]

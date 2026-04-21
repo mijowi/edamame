@@ -4,7 +4,9 @@ use ratatui::text::Line;
 
 use crate::config::Theme;
 use crate::document::SourceMap;
-use crate::markdown::{parse_offsets, parse_raw, Renderer};
+use crate::markdown::{
+    parse_offsets, parse_raw, promote_image_paragraphs, ImageRowOverride, Renderer,
+};
 
 /// Setext heading style detected from raw block source.  `None` for ATX
 /// headings or non-heading blocks.
@@ -41,6 +43,19 @@ pub fn detect_setext(source: &str) -> Option<SetextKind> {
     None
 }
 
+/// Metadata for a single `Block::ImageBlock` — the block index in
+/// `source_map`'s space (so callers can look up its rendered-line range),
+/// plus the alt text and URL for the image loader + placeholder.
+#[derive(Debug, Clone)]
+pub struct ImageBlockInfo {
+    /// Index in the `SourceMap`'s virtual-block space.  Use
+    /// `source_map.rendered_lines_for_block(block_idx)` to get the
+    /// rendered-line range this image reserves.
+    pub block_idx: usize,
+    pub alt: String,
+    pub url: String,
+}
+
 /// The parsed and rendered state of the document.
 ///
 /// Holds the fully-rendered lines (for use by PreviewView and RenderedView),
@@ -63,6 +78,12 @@ pub struct ParsedDoc {
     /// `RenderedView` uses this to avoid treating gap blank lines as part of the
     /// cursor block's raw replacement region.
     per_block_own: Vec<usize>,
+    /// Metadata for every `Block::ImageBlock` in the document, in the
+    /// order they appear.  Populated during `build_with_overrides` so
+    /// downstream code (the decode-dispatch scan in `App`, the paint
+    /// pass in `ui::image_view`) doesn't have to walk the block list
+    /// independently.
+    pub image_blocks: Vec<ImageBlockInfo>,
 }
 
 impl ParsedDoc {
@@ -73,19 +94,42 @@ impl ParsedDoc {
     /// separated by N blank lines, N-1 extra `Line::raw("")` entries are
     /// inserted after the first block's rendered lines.  This overrides
     /// Markdown's default behaviour of collapsing multiple blank lines to one.
-    pub fn build(source: &str, theme: &Theme, preserve_blank_lines: bool) -> Self {
-        Self::build_with_overrides(source, theme, preserve_blank_lines, None)
+    ///
+    /// `image_max_height` is the ceiling (in rendered rows) used for each
+    /// `Block::ImageBlock`; propagated from `ImageConfig::max_height` via
+    /// `EditorState`.
+    pub fn build(
+        source: &str,
+        theme: &Theme,
+        preserve_blank_lines: bool,
+        image_max_height: usize,
+    ) -> Self {
+        Self::build_with_overrides(
+            source,
+            theme,
+            preserve_blank_lines,
+            image_max_height,
+            None,
+            None,
+        )
     }
 
     /// Like [`build`], but applies a live `user_widths` override to the
     /// table whose first row begins at `live_table_widths.0`.  Used by
     /// Phase 6's column-resize drag to preview widths without writing the
     /// `tui-columns` comment to the buffer on every mouse-move event.
+    ///
+    /// `image_row_override` is an optional URL → row-count callback used
+    /// to reserve exactly the rows each decoded image will occupy
+    /// (aspect-aware).  When the callback returns `None` for a URL (or is
+    /// itself `None`), the renderer falls back to `image_max_height`.
     pub fn build_with_overrides(
         source: &str,
         theme: &Theme,
         preserve_blank_lines: bool,
+        image_max_height: usize,
         live_table_widths: Option<&(usize, Vec<Option<usize>>)>,
+        image_row_override: Option<ImageRowOverride>,
     ) -> Self {
         // 1. Extract top-level block byte ranges.
         let mut real_ranges = parse_offsets::top_level_block_ranges(source);
@@ -99,12 +143,20 @@ impl ParsedDoc {
         //    comment would flash into the rendered view between drag events.
         let mut blocks = parse_raw(source);
         merge_trailing_tui_columns_comments(&mut blocks, &mut real_ranges);
+        // Promote paragraphs that contain only an image inline into
+        // `Block::ImageBlock` so the renderer can reserve multi-row space
+        // for terminal-graphics overlay.  Promotion happens in-place and
+        // keeps blocks:real_ranges alignment 1:1 (no blocks are removed).
+        promote_image_paragraphs(&mut blocks, Some(&mut real_ranges));
         if let Some((override_start, widths)) = live_table_widths {
             apply_live_table_widths(&mut blocks, &real_ranges, *override_start, widths);
         }
 
         // 3. Render, tracking per-block rendered line counts.
-        let renderer = Renderer::new(theme);
+        let mut renderer = Renderer::new(theme).with_image_max_height(image_max_height);
+        if let Some(override_fn) = image_row_override {
+            renderer = renderer.with_image_row_override(override_fn);
+        }
         let (rendered_lines, real_per_block_counts) = renderer.render_with_counts(&blocks);
 
         // 4. Build the final line list and source-map structures.  Each blank
@@ -162,10 +214,21 @@ impl ParsedDoc {
 
         // Real blocks, each followed by any blank lines in the gap after it.
         let mut rendered_src = 0usize;
+        let mut image_blocks = Vec::new();
         for (i, &count) in real_per_block_counts.iter().enumerate() {
             let idx = all_original.len();
             all_original.push(real_ranges[i].clone());
             all_per_block_own.push(count);
+            // Record image-block metadata keyed by the virtual block index
+            // we just allocated, so the decode-dispatch scan and the paint
+            // pass don't need to walk `blocks` again.
+            if let crate::markdown::ast::Block::ImageBlock { alt, url } = &blocks[i] {
+                image_blocks.push(ImageBlockInfo {
+                    block_idx: idx,
+                    alt: alt.clone(),
+                    url: url.clone(),
+                });
+            }
             for j in 0..count {
                 if let Some(line) = rendered_lines.get(rendered_src + j) {
                     lines.push(line.clone());
@@ -247,6 +310,7 @@ impl ParsedDoc {
             lines,
             source_map,
             per_block_own: all_per_block_own,
+            image_blocks,
         }
     }
 
@@ -379,7 +443,7 @@ mod tests {
 
     #[test]
     fn build_single_paragraph() {
-        let doc = ParsedDoc::build("Hello world\n", theme(), false);
+        let doc = ParsedDoc::build("Hello world\n", theme(), false, 24);
         assert!(!doc.lines.is_empty());
         assert!(doc.source_map.block_count() >= 1);
     }
@@ -387,7 +451,7 @@ mod tests {
     #[test]
     fn build_heading_and_paragraph() {
         let src = "# Heading\n\nParagraph text\n";
-        let doc = ParsedDoc::build(src, theme(), false);
+        let doc = ParsedDoc::build(src, theme(), false, 24);
         // Should have at least as many rendered lines as there are blocks.
         assert!(doc.line_count() >= 2);
         // Both bytes of the heading and paragraph should map to some line.
@@ -400,7 +464,7 @@ mod tests {
     #[test]
     fn every_byte_maps_to_some_line() {
         let src = "# Hello\n\nWorld\n\n---\n";
-        let doc = ParsedDoc::build(src, theme(), false);
+        let doc = ParsedDoc::build(src, theme(), false, 24);
         for b in 0..src.len() {
             let range = doc.source_map.rendered_lines_for_byte(b);
             assert!(
@@ -414,7 +478,7 @@ mod tests {
 
     #[test]
     fn empty_doc_builds_without_panic() {
-        let doc = ParsedDoc::build("", theme(), false);
+        let doc = ParsedDoc::build("", theme(), false, 24);
         assert_eq!(doc.line_count(), 0);
     }
 
@@ -440,10 +504,24 @@ mod tests {
     /// so the block owns two rendered lines — matching the two raw lines
     /// (title + `---` underline).  This parity lets `RenderedView` show both
     /// lines of raw source simultaneously when the cursor lands on either.
+    /// A paragraph consisting solely of an image inline should promote to a
+    /// `Block::ImageBlock` that reserves `image_max_height` rendered rows,
+    /// so `move_up_visual` / `move_down_visual` traverse the reserved area
+    /// consistently with other multi-line blocks.
+    #[test]
+    fn image_paragraph_promotes_and_reserves_rows() {
+        let src = "Above.\n\n![cat](local.png)\n\nBelow.\n";
+        let doc = ParsedDoc::build(src, theme(), true, 10);
+        // The byte offset of `![cat]...` — find the '!' after the first blank.
+        let image_byte = src.find('!').expect("image exists");
+        let image_block = doc.source_map.block_for_byte(image_byte).unwrap();
+        assert_eq!(doc.block_own_line_count(image_block), 10);
+    }
+
     #[test]
     fn setext_h2_has_two_rendered_lines() {
         let src = "Heading\n-------\n";
-        let doc = ParsedDoc::build(src, theme(), false);
+        let doc = ParsedDoc::build(src, theme(), false, 24);
         let block = doc.source_map.block_for_byte(0).unwrap();
         assert_eq!(doc.block_own_line_count(block), 2);
     }
@@ -451,7 +529,7 @@ mod tests {
     #[test]
     fn setext_h1_has_two_rendered_lines() {
         let src = "Heading\n=======\n";
-        let doc = ParsedDoc::build(src, theme(), false);
+        let doc = ParsedDoc::build(src, theme(), false, 24);
         let block = doc.source_map.block_for_byte(0).unwrap();
         assert_eq!(doc.block_own_line_count(block), 2);
     }
@@ -462,7 +540,7 @@ mod tests {
     #[test]
     fn blank_line_is_its_own_block() {
         let src = "First\n\nSecond\n";
-        let doc = ParsedDoc::build(src, theme(), true);
+        let doc = ParsedDoc::build(src, theme(), true, 24);
 
         // Byte layout: F i r s t \n \n S e c o n d \n
         //              0 1 2 3 4 5  6  7 8 9 ...
@@ -487,7 +565,7 @@ mod tests {
     #[test]
     fn multiple_blank_lines_each_own_block() {
         let src = "A\n\n\n\nB\n";
-        let doc = ParsedDoc::build(src, theme(), true);
+        let doc = ParsedDoc::build(src, theme(), true, 24);
 
         // Bytes: A \n \n \n \n B \n
         //        0 1  2  3  4  5 6
@@ -508,7 +586,7 @@ mod tests {
     fn live_widths_preview_still_hides_trailing_tui_columns_comment() {
         let src = "| a | b |\n|---|---|\n| 1 | 2 |\n<!-- tui-columns: [5, 6] -->\n";
         let live = (0usize, vec![Some(7), None]);
-        let doc = ParsedDoc::build_with_overrides(src, theme(), true, Some(&live));
+        let doc = ParsedDoc::build_with_overrides(src, theme(), true, 24, Some(&live), None);
         for line in &doc.lines {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert!(
@@ -523,7 +601,7 @@ mod tests {
     #[test]
     fn blank_line_rendered_range_is_blank_line() {
         let src = "First\n\nSecond\n";
-        let doc = ParsedDoc::build(src, theme(), true);
+        let doc = ParsedDoc::build(src, theme(), true, 24);
 
         let first_range = doc.source_map.rendered_lines_for_byte(2);
         let blank_range = doc.source_map.rendered_lines_for_byte(6);

@@ -50,49 +50,49 @@ fn assert_coverage(source: &str, doc: &ParsedDoc) {
 
 #[test]
 fn coverage_empty() {
-    let doc = ParsedDoc::build("", theme(), false);
+    let doc = ParsedDoc::build("", theme(), false, 24);
     assert_coverage("", &doc);
 }
 
 #[test]
 fn coverage_single_paragraph() {
     let src = "Hello world\n";
-    let doc = ParsedDoc::build(src, theme(), false);
+    let doc = ParsedDoc::build(src, theme(), false, 24);
     assert_coverage(src, &doc);
 }
 
 #[test]
 fn coverage_heading_paragraph_rule() {
     let src = "# Hello\n\nSome text.\n\n---\n";
-    let doc = ParsedDoc::build(src, theme(), false);
+    let doc = ParsedDoc::build(src, theme(), false, 24);
     assert_coverage(src, &doc);
 }
 
 #[test]
 fn coverage_code_block() {
     let src = "```rust\nfn main() {}\n```\n\nText after.\n";
-    let doc = ParsedDoc::build(src, theme(), false);
+    let doc = ParsedDoc::build(src, theme(), false, 24);
     assert_coverage(src, &doc);
 }
 
 #[test]
 fn coverage_list() {
     let src = "- item one\n- item two\n- item three\n";
-    let doc = ParsedDoc::build(src, theme(), false);
+    let doc = ParsedDoc::build(src, theme(), false, 24);
     assert_coverage(src, &doc);
 }
 
 #[test]
 fn coverage_blockquote() {
     let src = "> A quoted paragraph.\n>\n> Another quoted paragraph.\n";
-    let doc = ParsedDoc::build(src, theme(), false);
+    let doc = ParsedDoc::build(src, theme(), false, 24);
     assert_coverage(src, &doc);
 }
 
 #[test]
 fn coverage_table() {
     let src = "| A | B |\n|---|---|\n| 1 | 2 |\n";
-    let doc = ParsedDoc::build(src, theme(), false);
+    let doc = ParsedDoc::build(src, theme(), false, 24);
     assert_coverage(src, &doc);
 }
 
@@ -150,7 +150,7 @@ proptest! {
     fn proptest_coverage_arbitrary_doc(
         src in r"[a-zA-Z0-9 \n#*`_>-]{0,200}"
     ) {
-        let doc = ParsedDoc::build(&src, theme(), false);
+        let doc = ParsedDoc::build(&src, theme(), false, 24);
         if !src.is_empty() {
             assert_coverage(&src, &doc);
         }

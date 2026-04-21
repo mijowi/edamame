@@ -6,6 +6,7 @@ use super::ast::{inlines_to_plain, Block, Inline, ListItem};
 pub fn parse(text: &str) -> Vec<Block> {
     let mut blocks = parse_raw(text);
     attach_trailing_tui_columns_comments(&mut blocks);
+    promote_image_paragraphs(&mut blocks, None);
     blocks
 }
 
@@ -25,6 +26,48 @@ pub fn parse_raw(text: &str) -> Vec<Block> {
     let parser = Parser::new_ext(text, options);
     let mut events = parser.peekable();
     parse_blocks(&mut events)
+}
+
+/// Post-pass: collapse a `Block::Paragraph` whose only substantive inline
+/// is an `Inline::Image` into a `Block::ImageBlock`.  Whitespace-only
+/// leading/trailing `Inline::Text` and soft/hard breaks are tolerated and
+/// stripped.  If `real_ranges` is provided, it is kept 1:1 with `blocks`
+/// (the promotion does not remove blocks, so the range vector is
+/// unchanged; the parameter exists so callers that care about range
+/// alignment can stay symmetric with [`attach_trailing_tui_columns_comments`]).
+pub fn promote_image_paragraphs(
+    blocks: &mut [Block],
+    _real_ranges: Option<&mut Vec<std::ops::Range<usize>>>,
+) {
+    for block in blocks.iter_mut() {
+        if let Block::Paragraph { inlines } = block {
+            if let Some((alt, url)) = extract_lone_image(inlines) {
+                *block = Block::ImageBlock { alt, url };
+            }
+        }
+    }
+}
+
+/// Return `Some((alt, url))` iff `inlines` contains exactly one
+/// `Inline::Image` plus optional whitespace-only `Inline::Text` and break
+/// inlines surrounding it.  Returns `None` for paragraphs with mixed
+/// content — those keep their placeholder treatment.
+fn extract_lone_image(inlines: &[Inline]) -> Option<(String, String)> {
+    let mut image: Option<(String, String)> = None;
+    for inline in inlines {
+        match inline {
+            Inline::Image { alt, url } => {
+                if image.is_some() {
+                    return None;
+                }
+                image = Some((alt.clone(), url.clone()));
+            }
+            Inline::Text(t) if t.trim().is_empty() => {}
+            Inline::SoftBreak | Inline::HardBreak => {}
+            _ => return None,
+        }
+    }
+    image
 }
 
 /// Post-pass: any `Block::Html` whose body is a valid
@@ -623,5 +666,59 @@ mod tests {
         } else {
             panic!("Expected List");
         }
+    }
+
+    #[test]
+    fn image_only_paragraph_promotes_to_image_block() {
+        let blocks = parse("![cat](cat.png)\n");
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::ImageBlock { alt, url } => {
+                assert_eq!(alt, "cat");
+                assert_eq!(url, "cat.png");
+            }
+            other => panic!("expected ImageBlock, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn image_with_surrounding_whitespace_still_promotes() {
+        // pulldown-cmark can attach zero-width text inlines around an image
+        // (e.g. from trailing spaces).  The promotion pass must tolerate them.
+        let blocks = parse("   ![dog](dog.png)   \n");
+        assert!(
+            matches!(&blocks[0], Block::ImageBlock { url, .. } if url == "dog.png"),
+            "got {:?}",
+            blocks[0]
+        );
+    }
+
+    #[test]
+    fn mixed_content_paragraph_keeps_inline_image() {
+        let blocks = parse("Prefix ![cat](cat.png) suffix\n");
+        match &blocks[0] {
+            Block::Paragraph { inlines } => {
+                assert!(inlines.iter().any(|i| matches!(i, Inline::Image { .. })));
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multiple_stacked_image_paragraphs_each_promote() {
+        let blocks = parse("![a](a.png)\n\n![b](b.png)\n");
+        let image_blocks: Vec<_> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::ImageBlock { .. }))
+            .collect();
+        assert_eq!(image_blocks.len(), 2);
+    }
+
+    #[test]
+    fn paragraph_with_two_images_does_not_promote() {
+        // Two images in one paragraph = mixed content; keep as-is so both
+        // render as inline `[Image: alt]` placeholders.
+        let blocks = parse("![a](a.png) ![b](b.png)\n");
+        assert!(matches!(&blocks[0], Block::Paragraph { .. }));
     }
 }

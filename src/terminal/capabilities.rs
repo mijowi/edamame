@@ -19,6 +19,8 @@
 
 use std::env;
 
+use ratatui_image::picker::Picker;
+
 /// Colour bit-depth supported by the terminal.
 ///
 /// Values are ordered from poorest to richest so comparisons like
@@ -59,6 +61,20 @@ pub struct Capabilities {
     /// Image protocol detected by `ratatui-image`, or `None` when image display
     /// is not supported.
     pub image_protocol: Option<ImageProtocol>,
+    /// The `Picker` instance returned by `ratatui_image`'s startup probe.
+    /// Retained (Phase 7) so image rendering can reuse the already-probed
+    /// configuration instead of re-running `Picker::from_query_stdio` on
+    /// every cold image load.  `None` iff `image_protocol` is also `None`.
+    pub image_picker: Option<Picker>,
+    /// A second `Picker` forced to `ProtocolType::Halfblocks`, built from
+    /// the same font-size reported by the native picker (no extra stdin
+    /// probe).  Used by the Phase 7 halfblocks-fallback path: during
+    /// partial visibility or active scrolling on non-Kitty terminals, we
+    /// render via halfblocks (which is position-independent and cheap to
+    /// cell-copy) and upgrade back to the native protocol once the image
+    /// is fully visible and scroll has quiesced.  `None` iff image
+    /// support is absent altogether.
+    pub halfblocks_picker: Option<Picker>,
     /// Whether `$LC_ALL` / `$LC_CTYPE` / `$LANG` advertise a UTF-8 locale.
     /// Used as a proxy for "full Unicode support".
     pub unicode_full: bool,
@@ -84,12 +100,25 @@ impl Capabilities {
         let colour_depth = detect_colour_depth(&term);
         let mouse = detect_mouse(&term);
         let unicode_full = detect_unicode_full();
-        let image_protocol = detect_image_protocol();
+        let (image_protocol, image_picker) = detect_image_protocol();
+        // Reuse the native picker's font_size so the halfblocks
+        // encoding renders at the same pixel-to-cell aspect ratio as
+        // the native one — crucial for images that cross the
+        // native↔halfblocks boundary during scroll.  `from_fontsize`
+        // is deprecated in ratatui-image 9 but `Picker::halfblocks()`
+        // hardcodes font_size to (10, 20), which is wrong for any
+        // non-default terminal; we need the probed value here.
+        #[allow(deprecated)]
+        let halfblocks_picker = image_picker
+            .as_ref()
+            .map(|p| Picker::from_fontsize(p.font_size()));
 
         Self {
             colour_depth,
             mouse,
             image_protocol,
+            image_picker,
+            halfblocks_picker,
             unicode_full,
             keyboard_enhancement: kbd_enhancement,
         }
@@ -104,6 +133,8 @@ impl Capabilities {
             colour_depth: ColourDepth::Ansi16,
             mouse: false,
             image_protocol: None,
+            image_picker: None,
+            halfblocks_picker: None,
             unicode_full: false,
             keyboard_enhancement: false,
         }
@@ -226,27 +257,30 @@ fn detect_unicode_full() -> bool {
     false
 }
 
-/// Ask `ratatui_image` to probe for an image protocol.  Returns `None` when
-/// probing fails or the terminal advertises only halfblock support.
+/// Ask `ratatui_image` to probe for an image protocol.  Returns the detected
+/// protocol and the `Picker` instance; the Picker is retained (Phase 7) and
+/// passed through to the image-rendering layer so cold image loads reuse
+/// the already-probed configuration.
 ///
 /// Halfblocks are reported as `Some(ImageProtocol::Halfblocks)` — they are
 /// still a usable protocol, just lower-fidelity than sixel/kitty/iterm2.
-fn detect_image_protocol() -> Option<ImageProtocol> {
-    use ratatui_image::picker::{Picker, ProtocolType};
+fn detect_image_protocol() -> (Option<ImageProtocol>, Option<Picker>) {
+    use ratatui_image::picker::ProtocolType;
 
     // Picker::from_query_stdio may write escape sequences; a panic here would
     // be disastrous (corrupted terminal state), so we catch-and-swallow.
     let result = std::panic::catch_unwind(Picker::from_query_stdio);
     let picker = match result {
         Ok(Ok(p)) => p,
-        _ => return None,
+        _ => return (None, None),
     };
-    Some(match picker.protocol_type() {
+    let protocol = match picker.protocol_type() {
         ProtocolType::Sixel => ImageProtocol::Sixel,
         ProtocolType::Kitty => ImageProtocol::KittyGraphics,
         ProtocolType::Iterm2 => ImageProtocol::ITerm2,
         ProtocolType::Halfblocks => ImageProtocol::Halfblocks,
-    })
+    };
+    (Some(protocol), Some(picker))
 }
 
 #[cfg(test)]
@@ -401,6 +435,8 @@ mod tests {
             colour_depth: ColourDepth::Ansi16,
             mouse: true,
             image_protocol: Some(ImageProtocol::KittyGraphics),
+            image_picker: None,
+            halfblocks_picker: None,
             unicode_full: true,
             keyboard_enhancement: true,
         };
@@ -413,6 +449,8 @@ mod tests {
             colour_depth: ColourDepth::NoColour,
             mouse: true,
             image_protocol: Some(ImageProtocol::KittyGraphics),
+            image_picker: None,
+            halfblocks_picker: None,
             unicode_full: true,
             keyboard_enhancement: true,
         };
@@ -425,6 +463,8 @@ mod tests {
             colour_depth: ColourDepth::TrueColor,
             mouse: true,
             image_protocol: Some(ImageProtocol::KittyGraphics),
+            image_picker: None,
+            halfblocks_picker: None,
             unicode_full: true,
             keyboard_enhancement: true,
         };

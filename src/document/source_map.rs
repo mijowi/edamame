@@ -145,6 +145,12 @@ impl SourceMap {
         let block_idx = *self.rendered_to_block.get(rendered_line)?;
         self.original_ranges.get(block_idx).map(|r| r.start)
     }
+
+    /// Return the original byte range for `block_idx`, or `None` if the
+    /// index is out of range.  Symmetric with `rendered_lines_for_block`.
+    pub fn original_range_for_block(&self, block_idx: usize) -> Option<Range<usize>> {
+        self.original_ranges.get(block_idx).cloned()
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

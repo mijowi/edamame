@@ -16,6 +16,13 @@ pub struct PreviewState {
     pub selection: Option<VisualSelection>,
     /// Background style to apply over selected cells.
     pub selection_style: Style,
+    /// Snapshots of every visible `Block::ImageBlock`, populated in
+    /// `App::run` before the draw call so `EditorView` can overlay the
+    /// image pixels after the line-render pass.  PreviewView itself
+    /// doesn't populate this because it renders from its own `lines`
+    /// vector rather than `EditorState::parsed.lines`; the App does the
+    /// scan against `editor.parsed.image_blocks` directly.
+    pub image_snapshots: Vec<super::ImageLayoutSnapshot>,
 }
 
 impl PreviewState {
@@ -25,6 +32,7 @@ impl PreviewState {
             scroll: 0,
             selection: None,
             selection_style: Style::default(),
+            image_snapshots: Vec::new(),
         }
     }
 

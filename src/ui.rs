@@ -1,4 +1,5 @@
 pub mod editor_view;
+pub mod image_view;
 pub mod line_render;
 pub mod modal;
 pub mod preview;
@@ -8,6 +9,7 @@ pub mod status_bar;
 pub mod table_view;
 
 pub use editor_view::{EditorView, EditorViewState};
+pub use image_view::{ImageHit, ImageLayoutSnapshot};
 pub use modal::{ModalButton, ModalResponse, ModalState, ModalView};
 pub use preview::{PreviewState, PreviewView};
 pub use raw_view::{RawView, RawViewState};

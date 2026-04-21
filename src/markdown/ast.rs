@@ -41,6 +41,15 @@ pub enum Block {
     },
     /// Raw HTML — rendered as a plain fenced block for now.
     Html(String),
+    /// A paragraph whose sole inline content is an image, promoted to a
+    /// block so the renderer can reserve a multi-row region for the
+    /// terminal-graphics overlay.  Paragraphs with mixed inline content
+    /// keep their `Inline::Image` placeholders — terminal graphics can't
+    /// sit mid-paragraph without breaking wrap.
+    ImageBlock {
+        alt: String,
+        url: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

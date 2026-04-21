@@ -31,3 +31,16 @@ dev_mode = false
 
 [modal]
 handler = "default"
+
+[image]
+# Master switch for inline image rendering. When false, images always
+# render as `[Image: alt]` placeholders even on graphics-capable terminals.
+enabled = true
+# Ceilings in terminal cells. Images are scaled to fit within
+# max_width × max_height while preserving aspect ratio.
+max_width = 80
+max_height = 24
+# Policy for `http(s)://` image URLs: "ask" | "always" | "never".
+# "ask" prompts the first time a document with remote images is opened;
+# the choice can be persisted via the prompt itself.
+remote_policy = "ask"

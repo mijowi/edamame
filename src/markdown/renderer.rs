@@ -10,6 +10,10 @@ use super::table_layout;
 
 const IMAGE_PREFIX: &str = "Image: ";
 
+/// Callback used by the renderer to look up the aspect-aware row count
+/// for an image block.  See `Renderer::with_image_row_override`.
+pub type ImageRowOverride<'t> = &'t dyn Fn(&str) -> Option<usize>;
+
 /// Fallback display text for a link/image whose bracket content is empty:
 /// the full URL for web-style targets (anything with a scheme or a `#` fragment),
 /// otherwise the final path component of the file path.
@@ -41,6 +45,16 @@ pub struct Renderer<'t> {
     viewport_width: usize,
     /// Whether code block lines should wrap at viewport_width.
     code_wrap: bool,
+    /// Maximum reserved rows per `Block::ImageBlock`; fed through from
+    /// `ImageConfig::max_height` so the editor and renderer agree on the
+    /// row count.  Ignored when a block isn't an image block.
+    image_max_height: usize,
+    /// Optional per-image row override keyed by URL.  Returns the aspect-
+    /// aware row count when the image has been decoded; `None` when the
+    /// image is still pending / failed / absent from the cache.  The
+    /// renderer falls back to `image_max_height` whenever this returns
+    /// `None`, so pre-decode layout is stable.
+    image_row_override: Option<ImageRowOverride<'t>>,
 }
 
 impl<'t> Renderer<'t> {
@@ -49,6 +63,8 @@ impl<'t> Renderer<'t> {
             theme,
             viewport_width: 80,
             code_wrap: false,
+            image_max_height: 24,
+            image_row_override: None,
         }
     }
 
@@ -59,6 +75,20 @@ impl<'t> Renderer<'t> {
 
     pub fn with_code_wrap(mut self, wrap: bool) -> Self {
         self.code_wrap = wrap;
+        self
+    }
+
+    pub fn with_image_max_height(mut self, rows: usize) -> Self {
+        self.image_max_height = rows.max(1);
+        self
+    }
+
+    /// Install a URL → row-count callback that overrides `image_max_height`
+    /// per image whenever the callback returns `Some(n)`.  Used to reserve
+    /// exactly the rows a decoded image will occupy so wide images don't
+    /// leave blank padding rows beneath them.
+    pub fn with_image_row_override(mut self, override_fn: ImageRowOverride<'t>) -> Self {
+        self.image_row_override = Some(override_fn);
         self
     }
 
@@ -131,6 +161,53 @@ impl<'t> Renderer<'t> {
                     ));
                 }
             }
+            Block::ImageBlock { alt, url } => {
+                self.render_image_block(alt, url, out);
+            }
+        }
+    }
+
+    // ── Image block ───────────────────────────────────────────────
+    //
+    // Emits N rows: the first carries the `[Image: alt]` placeholder (so
+    // unsupported terminals and raw-reveal still have something textual
+    // to show), the remaining rows are empty `Line::raw` entries so the
+    // block reserves vertical space for a graphics-capable terminal's
+    // image overlay (painted by `ui::image_view::paint_images` after the
+    // line-render pass).
+    //
+    // `N` is:
+    //   * The `image_row_override` callback's value when the image has
+    //     been decoded, so wide images reserve exactly their aspect
+    //     height and don't leave blank rows underneath.
+    //   * `image_max_height` otherwise — keeps `per_block_own` stable
+    //     during the pending / failed states so navigation doesn't
+    //     depend on decode order.
+
+    fn render_image_block(&self, alt: &str, url: &str, out: &mut Vec<Line<'static>>) {
+        let name = if alt.trim().is_empty() {
+            link_fallback(url)
+        } else {
+            alt.to_owned()
+        };
+        let placeholder = Line::from(vec![
+            Span::styled(format!("[{}", IMAGE_PREFIX), self.theme.image_placeholder),
+            Span::styled(
+                name,
+                self.theme
+                    .image_placeholder
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+            Span::styled("]", self.theme.image_placeholder),
+        ]);
+        out.push(placeholder);
+        let rows = self
+            .image_row_override
+            .and_then(|f| f(url))
+            .unwrap_or(self.image_max_height)
+            .max(1);
+        for _ in 1..rows {
+            out.push(Line::raw(""));
         }
     }
 

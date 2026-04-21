@@ -28,8 +28,9 @@ Also Heading 2
 
 [File link](./plan.md)
 
-![Image on disk (this is alt text)](/home/mjw/Pictures/me.jpg)
+![Me underwater in USVI](/home/mjw/Pictures/me.jpg)
 
+![Github's Mona](https://brand.github.com/_next/static/media/mascots-01.fc6009a2.png)
 
 * Unordered list
 * Foo

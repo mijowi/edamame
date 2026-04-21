@@ -3,6 +3,7 @@ use std::time::Instant;
 use crate::config::Theme;
 use crate::document::{Buffer, Cursor, EditDelta, History, ParsedDoc, Selection, VisualSelection};
 use crate::editor::Mode;
+use crate::image::ImageCache;
 
 /// All mutable state owned by the editor.
 ///
@@ -49,6 +50,27 @@ pub struct EditorState {
     preserve_blank_lines: bool,
     /// Whether Up/Down navigate by visual lines (true) or logical lines (false).
     pub visual_line_nav: bool,
+    /// Ceiling (in rendered rows) for each `Block::ImageBlock` — propagated
+    /// from `Config::image::max_height` so the renderer, navigation, and
+    /// `image_view::paint_images` all agree on the reserved row count.
+    pub image_max_height: usize,
+    /// Ceiling (in rendered cells) for the horizontal extent of an
+    /// image block's bounding box.  Used alongside `image_max_height`
+    /// and `image_font_size` to compute the aspect-aware row count per
+    /// decoded image — wide images reserve fewer rows than
+    /// `image_max_height` because they fit in width before height.
+    pub image_max_width: usize,
+    /// Font size (width, height) in pixels reported by the detected
+    /// image picker.  Default `(10, 20)` mirrors
+    /// `Picker::from_fontsize`'s Halfblocks default.  Together with
+    /// `image_max_width × image_max_height` this sets the bounding box
+    /// in pixels used for aspect-aware row computation.
+    pub image_font_size: (u16, u16),
+    /// Decoded-image cache keyed by URL, retained across reparses so
+    /// ordinary edits don't invalidate the expensive `StatefulProtocol`
+    /// encoding.  Populated by the App's image-decode worker thread via
+    /// `AppEvent::ImageReady` / `AppEvent::ImageFailed`.
+    pub images: ImageCache,
     /// Phase 6 live-preview scratch for the column-resize drag.  When
     /// `Some((table_byte_start, widths))`, the table whose first row begins
     /// at `table_byte_start` renders with `widths` applied as a
@@ -70,7 +92,7 @@ impl EditorState {
     /// Callers typically pass `Box::leak(Box::new(Theme::default()))` or a
     /// static reference.
     pub fn new(buffer: Buffer, theme: &'static Theme) -> Self {
-        Self::new_with_config(buffer, theme, true, true)
+        Self::new_with_config(buffer, theme, true, true, 24)
     }
 
     pub fn new_with_config(
@@ -78,9 +100,34 @@ impl EditorState {
         theme: &'static Theme,
         preserve_blank_lines: bool,
         visual_line_nav: bool,
+        image_max_height: usize,
+    ) -> Self {
+        Self::new_with_image_config(
+            buffer,
+            theme,
+            preserve_blank_lines,
+            visual_line_nav,
+            image_max_height,
+            80,       // default image_max_width (matches ImageConfig::default)
+            (10, 20), // default font_size (matches Picker::from_fontsize default)
+        )
+    }
+
+    /// Full constructor with explicit image-layout inputs.  Callers that
+    /// know the probed font-size and configured max width (i.e. the App
+    /// after terminal capability detection) should use this so
+    /// aspect-aware row computation is driven by real values.
+    pub fn new_with_image_config(
+        buffer: Buffer,
+        theme: &'static Theme,
+        preserve_blank_lines: bool,
+        visual_line_nav: bool,
+        image_max_height: usize,
+        image_max_width: usize,
+        image_font_size: (u16, u16),
     ) -> Self {
         let content = buffer.contents();
-        let parsed = ParsedDoc::build(&content, theme, preserve_blank_lines);
+        let parsed = ParsedDoc::build(&content, theme, preserve_blank_lines, image_max_height);
         Self {
             buffer,
             cursor: Cursor::new(),
@@ -99,6 +146,10 @@ impl EditorState {
             theme,
             preserve_blank_lines,
             visual_line_nav,
+            image_max_height,
+            image_max_width,
+            image_font_size,
+            images: ImageCache::new(),
             live_table_widths: None,
         }
     }
@@ -118,11 +169,23 @@ impl EditorState {
     /// Re-parse and re-render after an edit. Called automatically by `edit_ops`.
     pub(crate) fn refresh_parsed(&mut self) {
         let content = self.buffer.contents();
+        // Build a row-override closure that consults the image cache.
+        // Captures by reference so the cache isn't cloned.  The closure
+        // returns None when the image hasn't been decoded yet, in which
+        // case the renderer falls back to `image_max_height` — stable
+        // layout during pending decodes.
+        let images = &self.images;
+        let max_w = self.image_max_width as u16;
+        let max_h = self.image_max_height as u16;
+        let font_size = self.image_font_size;
+        let override_fn = |url: &str| images.aspect_rows(url, max_w, max_h, font_size);
         self.parsed = ParsedDoc::build_with_overrides(
             &content,
             self.theme,
             self.preserve_blank_lines,
+            self.image_max_height,
             self.live_table_widths.as_ref(),
+            Some(&override_fn),
         );
     }
 

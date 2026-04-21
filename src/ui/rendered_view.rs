@@ -14,6 +14,7 @@ use crate::markdown::table_layout::{
     compute_cell_overlay, table_raw_col_to_rendered_col, CellOverlay,
 };
 
+use super::image_view::{self, ImageLayoutSnapshot};
 use super::line_render::{render_line, render_line_with_cursor};
 use super::table_view::{self, TableLayoutSnapshot};
 
@@ -28,6 +29,11 @@ pub struct RenderedViewState {
     /// render.  Used by mouse-event handling to hit-test against the columns,
     /// borders, and drag handles of the table under the pointer.
     pub table_snapshots: Vec<TableLayoutSnapshot>,
+    /// Snapshots of every visible `Block::ImageBlock`, captured at the end
+    /// of the last render.  Phase 7 uses them as the hit-test surface
+    /// for images (click detection); future phases may add expand /
+    /// open UX.
+    pub image_snapshots: Vec<ImageLayoutSnapshot>,
 }
 
 /// Hybrid rendered/raw editing view.
@@ -318,6 +324,12 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         let snapshots = table_view::build_snapshots(self.state, area, self.show_table_handles);
         view_state.table_snapshots = snapshots;
         table_view::paint_handles(&view_state.table_snapshots, area, buf, self.theme);
+
+        // Phase 7: build per-frame snapshots of every visible image block.
+        // Image painting itself happens in `EditorView::render` (after this
+        // widget returns) because it needs mutable access to the cache.
+        view_state.image_snapshots =
+            image_view::build_snapshots(self.state, area, self.state.scroll);
     }
 }
 
