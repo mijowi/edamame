@@ -778,58 +778,22 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 *Goal: follow links on click; open other Markdown files in the editor.*
 
 **Starting state (already in place after Phases 4–7):**
-- `Inline::Link { text, url, title }` is parsed at `src/markdown/parser.rs` and
-  rendered by `src/markdown/renderer.rs` as an UNDERLINED + `Theme::link_text`
-  span.  The `title` field is parsed but currently unused — Phase 8 can surface
-  it on hover.
-- `mouse_ops::link_at_offset` (`src/editor/mouse_ops.rs:1401`) scans the raw
-  line for balanced `[text](url)` and returns the URL.  Today Phase 5 only
-  logs the detected URL via `tracing::info!(target: "mouse")` — Phase 8
-  replaces the log with action dispatch without touching the mouse-dispatch
-  plumbing.
-- `mouse_ops::hit_test_clickable` + `App::update_pointer_shape` already switch
-  the terminal pointer to `PointerShape::Hand` when the cursor hovers a link
-  span (detected via the renderer's `UNDERLINED` modifier) or a task-list
-  checkbox.  Phase 8 does **not** need to add hover detection — only to
-  extend the hover channel so hovered-link *target* metadata is also emitted
-  for the hint-line tooltip (see below).
-- `ui::ModalView` (`src/ui/modal.rs`) hosts Phase 4's startup notice and
-  Phase 7's remote-image prompt with arbitrary button counts.  Phase 8
-  reuses it for the unsaved-changes guard on forward navigation.
-- `AppEvent` (`src/app.rs:23`) already supports worker-thread notifications
-  (`ImageReady`).  Phase 8 adds `LinkOpenResult` so `open::that` can run off
-  the main thread without blocking the UI on a slow `xdg-open` / `start`
-  invocation.
-- `Action` enum (`src/config/keymap.rs:15`) is extended phase-by-phase in
-  practice — Phase 8 adds `FollowLinkUnderCursor` / `NavigateBack` /
-  `NavigateForward`.  The CLAUDE.md claim that every action lives in Phase 0
-  is aspirational; follow the existing convention of adding them here.
-- The document's base directory for resolving relative paths is
-  `App::file_path.parent()` — the same convention used by
-  `src/image/loader.rs`.  Reuse, don't reinvent.
+- `Inline::Link { text, url, title }` is parsed at `src/markdown/parser.rs` and rendered by `src/markdown/renderer.rs` as an UNDERLINED + `Theme::link_text` span.  The `title` field is parsed but currently unused — Phase 8 can surface it on hover.
+- `mouse_ops::link_at_offset` (`src/editor/mouse_ops.rs:1401`) scans the raw line for balanced `[text](url)` and returns the URL.  Today Phase 5 only logs the detected URL via `tracing::info!(target: "mouse")` — Phase 8 replaces the log with action dispatch without touching the mouse-dispatch plumbing.
+- `mouse_ops::hit_test_clickable` + `App::update_pointer_shape` already switch the terminal pointer to `PointerShape::Hand` when the cursor hovers a link span (detected via the renderer's `UNDERLINED` modifier) or a task-list checkbox.  Phase 8 does **not** need to add hover detection — only to extend the hover channel so hovered-link *target* metadata is also emitted for the hint-line tooltip (see below).
+- `ui::ModalView` (`src/ui/modal.rs`) hosts Phase 4's startup notice and Phase 7's remote-image prompt with arbitrary button counts.  Phase 8 reuses it for the unsaved-changes guard on forward navigation.
+- `AppEvent` (`src/app.rs:23`) already supports worker-thread notifications (`ImageReady`).  Phase 8 adds `LinkOpenResult` so `open::that` can run off the main thread without blocking the UI on a slow `xdg-open` / `start` invocation.
+- `Action` enum (`src/config/keymap.rs:15`) is extended phase-by-phase in practice — Phase 8 adds `FollowLinkUnderCursor` / `NavigateBack` / `NavigateForward`.  The CLAUDE.md claim that every action lives in Phase 0 is aspirational; follow the existing convention of adding them here.
+- The document's base directory for resolving relative paths is `App::file_path.parent()` — the same convention used by `src/image/loader.rs`.  Reuse, don't reinvent.
 
 **Tasks — dependencies:**
-- [ ] Add `open = "5"` to `Cargo.toml`.  No system-library dependency; the
-      crate shells out to `xdg-open` / `open` / `start` per platform.
+- [ ] Add `open = "5"` to `Cargo.toml`.  No system-library dependency; the crate shells out to `xdg-open` / `open` / `start` per platform.
 
 **Tasks — AST-backed link hit-test (upgrade from Phase 5's source scan):**
-- [ ] New module `src/ui/link_view.rs` modelled on `ui::image_view` and
-      `ui::table_view`.  Owns `LinkLayoutSnapshot { rect: Rect, target:
-      LinkTarget }` and a `build_snapshots(state, area, scroll)` entry point
-      that walks the visible rendered-line range, consulting the AST rather
-      than re-scanning the raw line.  Covers three AST-level targets:
-      - `Inline::Link { url, .. }` — the common case; also reachable from
-        inside paragraph, heading, list-item, and table-cell inlines.
-      - GFM autolinks emitted by `pulldown-cmark` as `Event::Start(Link)`
-        with `LinkType::Autolink` / `Email` — **confirm** that our parser
-        already surfaces these as `Inline::Link` (they should, since no
-        dedicated variant exists); add a parser test if so, or a new
-        branch if not.
-      - Reference-style links `[text][id]` — requires preserving the link
-        definition table during parse.  `pulldown-cmark` resolves reference
-        links to the same `Tag::Link` event as inline links when the
-        definition exists, so nothing extra is needed beyond confirming
-        this in a parser test.
+- [ ] New module `src/ui/link_view.rs` modelled on `ui::image_view` and `ui::table_view`.  Owns `LinkLayoutSnapshot { rect: Rect, target: LinkTarget }` and a `build_snapshots(state, area, scroll)` entry point that walks the visible rendered-line range, consulting the AST rather than re-scanning the raw line.  Covers three AST-level targets:
+      - `Inline::Link { url, .. }` — the common case; also reachable from inside paragraph, heading, list-item, and table-cell inlines.
+      - GFM autolinks emitted by `pulldown-cmark` as `Event::Start(Link)` with `LinkType::Autolink` / `Email` — **confirm** that our parser already surfaces these as `Inline::Link` (they should, since no dedicated variant exists); add a parser test if so, or a new branch if not.
+      - Reference-style links `[text][id]` — requires preserving the link definition table during parse.  `pulldown-cmark` resolves reference links to the same `Tag::Link` event as inline links when the definition exists, so nothing extra is needed beyond confirming this in a parser test.
 - [ ] `LinkTarget` enum in `src/editor/link.rs` (new module):
       ```rust
       pub enum LinkTarget {
@@ -838,142 +802,52 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
           Anchor(String),         // `#slug` within the current document
       }
       ```
-      Classification happens once at snapshot build time via
-      `LinkTarget::parse(url: &str, base_dir: Option<&Path>) -> LinkTarget`:
-      `#foo` → `Anchor`; RFC-3986 scheme (or `mailto:`) → `Url`; everything
-      else → `LocalFile`, resolved relative to the document dir.
-- [ ] `RenderedViewState::link_snapshots: Vec<LinkLayoutSnapshot>` and
-      `PreviewState::link_snapshots: Vec<LinkLayoutSnapshot>`, populated
-      at the end of each `render()` pass.  The `App` hit-tests against
-      the appropriate state when dispatching mouse actions, matching the
-      pattern from Phase 6's `table_snapshots` and Phase 7's
-      `image_snapshots`.
-- [ ] **Raw-reveal fallback**: when the cursor's block is in the
-      `RAW_REVEAL_DELAY` window, the revealed line shows raw
-      `[text](url)` — the AST-backed snapshot won't have spans for the
-      raw bytes.  `mouse_ops` falls back to `link_at_offset` against the
-      raw source only for the revealed block.  Both paths produce a
-      `LinkTarget` via the same parser so downstream dispatch is uniform.
+      Classification happens once at snapshot build time via `LinkTarget::parse(url: &str, base_dir: Option<&Path>) -> LinkTarget`: `#foo` → `Anchor`; RFC-3986 scheme (or `mailto:`) → `Url`; everything else → `LocalFile`, resolved relative to the document dir.
+- [ ] `RenderedViewState::link_snapshots: Vec<LinkLayoutSnapshot>` and `PreviewState::link_snapshots: Vec<LinkLayoutSnapshot>`, populated at the end of each `render()` pass.  The `App` hit-tests against the appropriate state when dispatching mouse actions, matching the pattern from Phase 6's `table_snapshots` and Phase 7's `image_snapshots`.
+- [ ] **Raw-reveal fallback**: when the cursor's block is in the `RAW_REVEAL_DELAY` window, the revealed line shows raw `[text](url)` — the AST-backed snapshot won't have spans for the raw bytes.  `mouse_ops` falls back to `link_at_offset` against the raw source only for the revealed block.  Both paths produce a `LinkTarget` via the same parser so downstream dispatch is uniform.
 
 **Tasks — click / keyboard dispatch:**
-- [ ] Extend `MouseAction::Click` (and `DoubleClick`, `TripleClick`) to
-      carry the `KeyModifiers` from `crossterm::event::MouseEvent`.
-      `MouseDispatcher::dispatch` threads the modifier bits through; today
-      they're dropped.  Without this, Ctrl-click can't be distinguished
-      from a plain click in `mouse_ops::apply`.
+- [ ] Extend `MouseAction::Click` (and `DoubleClick`, `TripleClick`) to carry the `KeyModifiers` from `crossterm::event::MouseEvent`. `MouseDispatcher::dispatch` threads the modifier bits through; today they're dropped.  Without this, Ctrl-click can't be distinguished from a plain click in `mouse_ops::apply`.
 - [ ] `mouse_ops::apply` click handling, per mode:
-      - **Preview**: plain click on a `LinkLayoutSnapshot` → `FollowLink`
-        (the document is read-only; link click is the unambiguous intent).
-        Click off-link falls through to the existing Phase 5 behaviour
-        (transition to Rendered, place cursor).
-      - **Rendered**: plain click places the cursor (existing behaviour);
-        `Ctrl`-click on a `LinkLayoutSnapshot` → `FollowLink`.
-      - **Raw**: same as Rendered.  The raw-reveal fallback path handles
-        the revealed-block case.
+      - **Preview**: plain click OR `Ctrl`-click on a `LinkLayoutSnapshot` → `FollowLink` (the document is read-only; link click is the unambiguous intent).
+      - **Rendered**: plain click places the cursor (existing behaviour); `Ctrl`-click on a `LinkLayoutSnapshot` → `FollowLink`.
+      - **Raw**: same as Rendered.  The raw-reveal fallback path handles the revealed-block case.
 - [ ] Add `Action::FollowLinkUnderCursor`, `Action::NavigateBack`,
       `Action::NavigateForward` to `config/keymap.rs`.  Default bindings:
-      - `FollowLinkUnderCursor`: `Enter` in Preview; unbound in edit modes
-        to avoid conflict with `Newline` (users get the Ctrl-click path).
-      - `NavigateBack`: `Alt+Left`.  **Not** `Backspace` — that's already
-        `Action::DeleteCharBack` in edit modes.
+      - `FollowLinkUnderCursor`: `Ctrl-Enter` in edit modes. Preview mode does not have a cursor but users get the click path.
+      - `NavigateBack`: `Alt+Left`.  **Not** `Backspace` — that's already `Action::DeleteCharBack` in edit modes.
       - `NavigateForward`: `Alt+Right`.
-- [ ] `FollowLinkUnderCursor` resolves the link at the cursor's rope
-      offset by consulting the AST (same classification as the mouse
-      path), so the action works identically whether invoked by keyboard
-      or mouse.
+      - Navigation actions only apply when navigating between Markdown files that open in edamame. There is no concept of navigating forward or back when opening a link in a different app.
+- [ ] `FollowLinkUnderCursor` resolves the link at the cursor's rope offset by consulting the AST (same classification as the mouse path), so the action works identically whether invoked by keyboard or mouse.
 
 **Tasks — `FollowLink` dispatch by target:**
-- [ ] `LinkTarget::Url` — spawn a worker thread that calls `open::that(&url)`
-      and reports completion via a new `AppEvent::LinkOpenResult(Result<(),
-      String>)`.  On failure, surface the error on the hint line (Phase 11
-      transient message; until Phase 11 lands, fall back to `tracing::warn!`
-      and no user-visible indication).  Do **not** block the main loop —
-      slow `xdg-open` invocations would stall the UI for several hundred ms.
-- [ ] `LinkTarget::LocalFile` with `.md` extension (case-insensitive) →
-      push the current `(PathBuf, scroll, cursor_offset)` onto a navigation
-      stack on `App` (not `EditorState` — same UI-layer-fact rationale as
-      `drag_target`), load the new file into `EditorState::load_file`,
-      rebuild the `ImageCache` since image URLs are now relative to a new
-      base dir, and reset scroll/cursor to document start.
-- [ ] `LinkTarget::LocalFile` with any other extension → `open::that(&path)`
-      on the worker thread (same path as `Url`), letting the OS pick the
-      handler.
-- [ ] `LinkTarget::Anchor(slug)` → resolve via a new
-      `ParsedDoc::heading_anchors: HashMap<String, usize>` (slug → rendered
-      line index), built during `ParsedDoc::build` from each
-      `Block::Heading`'s plain-text `inlines_to_plain`.  Slug algorithm
-      matches GFM: lowercase, strip characters not in `[a-z0-9 -]`, replace
-      runs of whitespace with `-`, uniquify with `-N` suffix on collision.
-      On miss, no-op (do **not** open an unrelated file with that name).
-      Scrolls the viewport so the heading sits at the top; in edit modes
-      also places the cursor on the heading's first line.
+- [ ] `LinkTarget::Url` — spawn a worker thread that calls `open::that(&url)` and reports completion via a new `AppEvent::LinkOpenResult(Result<(), String>)`.  On failure, surface the error on the hint line (Phase 11 transient message; until Phase 11 lands, fall back to `tracing::warn!` and no user-visible indication).  Do **not** block the main loop — slow `xdg-open` invocations would stall the UI for several hundred ms.
+- [ ] `LinkTarget::LocalFile` with `.md` extension (case-insensitive) → push the current `(PathBuf, scroll, cursor_offset)` onto a navigation stack on `App` (not `EditorState` — same UI-layer-fact rationale as `drag_target`), load the new file into `EditorState::load_file`, rebuild the `ImageCache` since image URLs are now relative to a new base dir, and reset scroll/cursor to document start.
+- [ ] `LinkTarget::LocalFile` with any other extension → `open::that(&path)` on the worker thread (same path as `Url`), letting the OS pick the handler.
+- [ ] `LinkTarget::Anchor(slug)` → resolve via a new `ParsedDoc::heading_anchors: HashMap<String, usize>` (slug → rendered line index), built during `ParsedDoc::build` from each `Block::Heading`'s plain-text `inlines_to_plain`.  Slug algorithm matches GFM: lowercase, strip characters not in `[a-z0-9 -]`, replace runs of whitespace with `-`, uniquify with `-N` suffix on collision. On miss, no-op (do **not** open an unrelated file with that name). Scrolls the viewport so the heading sits at the top; in edit modes also places the cursor on the heading's first line.
 
 **Tasks — navigation stack:**
-- [ ] `App::nav_back: Vec<NavEntry>` and `App::nav_forward: Vec<NavEntry>`
-      where `NavEntry = { path: PathBuf, scroll: usize, cursor_offset: usize,
-      mode: Mode }`.  `NavigateBack` pops `nav_back` and pushes the current
-      state onto `nav_forward`; `NavigateForward` is the inverse.  Following
-      a new link clears `nav_forward` (browser semantics).
-- [ ] **Dirty-buffer guard**: when `FollowLink` would navigate away from
-      the current file and `editor.buffer.is_dirty()`, display a three-
-      button `ModalView` (`Save` / `Discard` / `Cancel`) — same pattern as
-      the Phase 7 remote-image prompt.  `Save` persists and continues;
-      `Discard` continues without saving; `Cancel` aborts.
-- [ ] Phase 9 note: this navigation stack is per-tab-history, not a
-      replacement for Phase 9's tab bar.  The tab bar in Phase 9 renders
-      one entry per *currently open* file; the nav stack is the linear
-      history *within* a single tab.  Phase 9 can lift the stack into a
-      `Vec<Tab { path, nav_back, nav_forward, editor_state }>` without
-      re-architecting.
+- [ ] `App::nav_back: Vec<NavEntry>` and `App::nav_forward: Vec<NavEntry>` where `NavEntry = { path: PathBuf, scroll: usize, cursor_offset: usize, mode: Mode }`.  `NavigateBack` pops `nav_back` and pushes the current state onto `nav_forward`; `NavigateForward` is the inverse.  Following a new link clears `nav_forward` (browser semantics).
+- [ ] **Dirty-buffer guard**: when `FollowLink` would navigate away from the current file and `editor.buffer.is_dirty()`, display a three- button `ModalView` (`Save` / `Discard` / `Cancel`) — same pattern as the Phase 7 remote-image prompt.  `Save` persists and continues; `Discard` continues without saving; `Cancel` aborts.
+- [ ] Phase 9 note: this navigation stack is per-tab-history, not a replacement for Phase 9's tab bar.  The tab bar in Phase 9 renders one entry per *currently open* file; the nav stack is the linear history *within* a single tab.  Phase 9 can lift the stack into a `Vec<Tab { path, nav_back, nav_forward, editor_state }>` without re-architecting.
 
 **Tasks — hover target display:**
-- [ ] Extend `hit_test_clickable` to return the hovered `LinkTarget`
-      (not just a bool) so `App` can stash the currently hovered link on
-      `App::hovered_link: Option<LinkTarget>`.  Phase 11 will surface the
-      target (and `Inline::Link::title`, when present) on the contextual
-      hint line.  Until Phase 11 lands, wire the field but don't render
-      it — the pointer-shape change is already a sufficient affordance.
+- [ ] Extend `hit_test_clickable` to return the hovered `LinkTarget` (not just a bool) so `App` can stash the currently hovered link on `App::hovered_link: Option<LinkTarget>`.  Phase 11 will surface the target (and `Inline::Link::title`, when present) on the contextual hint line.  Until Phase 11 lands, wire the field but don't render it — the pointer-shape change is already a sufficient affordance.
 
 **Tasks — testing:**
-- [ ] Unit tests for `LinkTarget::parse`:  `#heading` → `Anchor`;
-      `https://example.com` → `Url`; `mailto:a@b.c` → `Url`;
-      `./sibling.md` → `LocalFile(absolute)`; `../other.md` → `LocalFile`
-      resolving through the base dir; bare `foo.md` with no base dir stays
-      relative.
-- [ ] Unit tests for GFM slug generation: round-trip `"Hello, World!"` →
-      `"hello-world"`, collision uniquification (`"Foo"` twice → `"foo"` +
-      `"foo-1"`), Unicode stripping.
-- [ ] Unit tests for `ParsedDoc::heading_anchors` — one entry per heading,
-      correct line index, stable across reparses when headings are
-      unchanged.
-- [ ] Integration tests in `tests/mouse.rs`: plain click on a link in
-      Preview opens (assert the `FollowLink` action was dispatched via a
-      test hook / recorded side-effect; we don't actually spawn
-      `xdg-open`).  Plain click on a link in Rendered places cursor.
-      Ctrl-click on a link in Rendered opens.
-- [ ] Integration test for the nav stack: open file A, follow link to
-      file B, `NavigateBack` returns to A at the original scroll and
-      cursor position; `NavigateForward` returns to B.
-- [ ] Integration test for the dirty-buffer guard: dirty A + click a link
-      to B shows the modal; `Cancel` leaves A unchanged; `Discard` loads B.
-- [ ] Integration test for the raw-reveal fallback: cursor in block, click
-      the revealed `[text](url)` syntax — `FollowLink` fires with the
-      correct target.
+- [ ] Unit tests for `LinkTarget::parse`:  `#heading` → `Anchor`; `https://example.com` → `Url`; `mailto:a@b.c` → `Url`; `./sibling.md` → `LocalFile(absolute)`; `../other.md` → `LocalFile` resolving through the base dir; bare `foo.md` with no base dir stays relative.
+- [ ] Unit tests for GFM slug generation: round-trip `"Hello, World!"` → `"hello-world"`, collision uniquification (`"Foo"` twice → `"foo"` + `"foo-1"`), Unicode stripping.
+- [ ] Unit tests for `ParsedDoc::heading_anchors` — one entry per heading, correct line index, stable across reparses when headings are unchanged.
+- [ ] Integration tests in `tests/mouse.rs`: plain click on a link in Preview opens (assert the `FollowLink` action was dispatched via a test hook / recorded side-effect; we don't actually spawn `xdg-open`).  Plain click on a link in Rendered places cursor. Ctrl-click on a link in Rendered opens.
+- [ ] Integration test for the nav stack: open file A, follow link to file B, `NavigateBack` returns to A at the original scroll and cursor position; `NavigateForward` returns to B.
+- [ ] Integration test for the dirty-buffer guard: dirty A + click a link to B shows the modal; `Cancel` leaves A unchanged; `Discard` loads B.
+- [ ] Integration test for the raw-reveal fallback: cursor in block, click       the revealed `[text](url)` syntax — `FollowLink` fires with the correct target.
 
 **Tasks — deferred to later phases:**
-- [ ] Hint-line tooltip with link target + title (Phase 11 — hint line
-      ownership).
+- [ ] Hint-line tooltip with link target + title (Phase 11 — hint line      ownership).
 - [ ] Tab-bar integration of the nav stack (Phase 9 — tab bar ownership).
 
-**Acceptance criteria:** Clicking a URL link in Preview opens the browser.
-Ctrl-click on a link in Rendered/Raw mode opens it without moving the
-cursor. `Enter` on a link in Preview follows it. Clicking a relative `.md`
-path navigates to that file in the same editor window, reusing the image
-cache's base-dir-resolution convention. `Alt+Left` / `Alt+Right` walk the
-navigation history. Heading anchors (`#slug`) scroll to the matching
-heading. Dirty buffers prompt before being replaced. The pointer shape
-already changes on hover (Phase 5); the hint-line tooltip is explicitly
-deferred to Phase 11.
+**Acceptance criteria:** Clicking a URL link in Preview opens the browser. `Ctrl`-click on a link in Rendered/Raw mode opens it without moving the cursor. `Ctrl-Enter` on a link in rendered/raw mode follows it. Clicking a relative `.md`path navigates to that file in the same editor window, reusing the imagecache's base-dir-resolution convention. `Alt+Left` / `Alt+Right` walk the navigation history. Heading anchors (`#slug`) scroll to the matching heading. Dirty buffers prompt before being replaced. The pointer shape already changes on hover (Phase 5); the hint-line tooltip is explicitly deferred to Phase 11.
 
 ---
 
@@ -1033,6 +907,8 @@ deferred to Phase 11.
 - [ ] Quit without saving confirmation modal
 
 - [ ] Experiment with 1- and 2-line scrolling instead of 3-line. Maybe it will feel smoother and still be fast.
+
+- [ ] Add a "It looks like your terminal is capapble of displaying images. When do you want edamame to display images?" modal—"This time only" (default), "Always", "Never"
 
 #### Bottom Bars
 A **two-line status region** by default, stacked directly beneath the editor content:
