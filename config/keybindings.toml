@@ -1,0 +1,75 @@
+# edamame keybindings
+#
+# Every line below is a configurable action with its default key. Uncomment a
+# line and change the key to override the default; any action you leave
+# commented keeps its compiled-in binding.
+#
+# Syntax: <ActionName> = "<modifiers>+<key>"
+#   modifiers: "ctrl", "alt", "shift" (combine with `+`)
+#   key:       single character, "up", "down", "left", "right",
+#              "space", "enter", "tab", "backspace", "delete",
+#              "home", "end", "pageup", "pagedown", "esc", or "f1".."f12"
+#
+# Examples:
+#   Quit = "ctrl+q"
+#   Save = "ctrl+s"
+
+# ── File ──────────────────────────────────────────────────────────────────────
+# Save                   = "ctrl+s"
+# Open                   = "ctrl+o"
+# Quit                   = "ctrl+q"
+
+# ── Clipboard ─────────────────────────────────────────────────────────────────
+# Cut                    = "ctrl+x"
+# Copy                   = "ctrl+c"
+# Paste                  = "ctrl+v"
+
+# ── History ───────────────────────────────────────────────────────────────────
+# Undo                   = "ctrl+z"
+# Redo                   = "ctrl+y"
+
+# ── View ──────────────────────────────────────────────────────────────────────
+# ToggleRawMode          = "ctrl+`"
+
+# ── List ──────────────────────────────────────────────────────────────────────
+# ToggleCheckbox         = "ctrl+space"
+
+# ── Links ─────────────────────────────────────────────────────────────────────
+# FollowLinkUnderCursor  = "ctrl+enter"
+#
+# NavigateBack and NavigateForward have no dedicated default key — they are
+# triggered by Alt+Left / Alt+Right whenever the cursor is outside a table
+# (inside a table, those keys reorder columns). Uncomment and set a key to
+# bind them unconditionally.
+# NavigateBack           = ""
+# NavigateForward        = ""
+
+# ── Table — cell navigation ──────────────────────────────────────────────────
+# TablePrevCell          = "shift+tab"
+#
+# TableNextCell and TableNextRow have no dedicated default key — Tab and Enter
+# do the same thing when the cursor is inside a table (and insert a tab or
+# newline otherwise). TablePrevRow is unbound by default. Uncomment and set
+# a key to bind any of these unconditionally.
+# TableNextCell          = ""
+# TableNextRow           = ""
+# TablePrevRow           = ""
+
+# ── Table — reorder rows/columns ─────────────────────────────────────────────
+# TableMoveRowUp         = "alt+up"
+# TableMoveRowDown       = "alt+down"
+# TableMoveColumnLeft    = "alt+left"
+# TableMoveColumnRight   = "alt+right"
+
+# ── Table — insert rows/columns ──────────────────────────────────────────────
+# TableInsertRowAbove    = "alt+shift+up"
+# TableInsertRowBelow    = "alt+shift+down"
+# TableInsertColumnLeft  = "alt+shift+left"
+# TableInsertColumnRight = "alt+shift+right"
+
+# ── Table — delete rows/columns ──────────────────────────────────────────────
+# TableDeleteRow         = "alt+backspace"
+# TableDeleteColumn      = "alt+shift+backspace"
+
+# ── Table — cell line break ──────────────────────────────────────────────────
+# TableInsertBreak       = "shift+enter"

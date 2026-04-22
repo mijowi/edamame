@@ -318,6 +318,54 @@ pub fn parse_key(s: &str) -> Result<KeyEvent, KeyMapError> {
     Ok(KeyEvent::new(code, modifiers))
 }
 
+/// Render `ev` as a human-readable key string roughly matching what
+/// [`parse_key`] accepts.  Used by the Phase 9 cheat-sheet popover to
+/// display bindings; the inverse of `parse_key` is good enough here
+/// even if it's not strictly round-tripping (e.g. we emit `Ctrl-C`
+/// rather than `ctrl+c` for readability).
+fn format_key(ev: &KeyEvent) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if ev.modifiers.contains(KeyModifiers::CONTROL) {
+        parts.push("Ctrl".into());
+    }
+    if ev.modifiers.contains(KeyModifiers::ALT) {
+        parts.push("Alt".into());
+    }
+    if ev.modifiers.contains(KeyModifiers::SHIFT) {
+        parts.push("Shift".into());
+    }
+    let code = match ev.code {
+        KeyCode::Char(' ') => "Space".into(),
+        KeyCode::Char(c) => {
+            let s: String = c.to_string();
+            if c.is_ascii_alphabetic() {
+                s.to_ascii_uppercase()
+            } else {
+                s
+            }
+        }
+        KeyCode::Up => "Up".into(),
+        KeyCode::Down => "Down".into(),
+        KeyCode::Left => "Left".into(),
+        KeyCode::Right => "Right".into(),
+        KeyCode::Home => "Home".into(),
+        KeyCode::End => "End".into(),
+        KeyCode::PageUp => "PgUp".into(),
+        KeyCode::PageDown => "PgDn".into(),
+        KeyCode::Enter => "Enter".into(),
+        KeyCode::Backspace => "Backspace".into(),
+        KeyCode::Delete => "Delete".into(),
+        KeyCode::Esc => "Esc".into(),
+        KeyCode::Tab => "Tab".into(),
+        KeyCode::BackTab => "Shift-Tab".into(),
+        KeyCode::Insert => "Insert".into(),
+        KeyCode::F(n) => format!("F{n}"),
+        other => format!("{:?}", other),
+    };
+    parts.push(code);
+    parts.join("-")
+}
+
 // ─── KeyBindingOverrides ──────────────────────────────────────────────────────
 
 /// The `[keybindings]` section of config.toml. Maps action name strings to key
@@ -350,6 +398,26 @@ impl KeyMap {
         }
 
         Ok(map)
+    }
+
+    /// Return the first key (in insertion order, which HashMap does not
+    /// guarantee but is fine for an approximate lookup) bound to
+    /// `action`, formatted as a human-readable string.  Used by the
+    /// Phase 9 cheat-sheet popover to surface the current binding for
+    /// each known action.  When multiple keys are bound, only one is
+    /// returned — callers that need every binding should iterate
+    /// `bindings()` themselves.
+    pub fn first_key_for(&self, action: &Action) -> Option<String> {
+        self.bindings
+            .iter()
+            .find(|(_, a)| *a == action)
+            .map(|(k, _)| format_key(k))
+    }
+
+    /// Iterate every `(KeyEvent, Action)` binding.  Exposed so the
+    /// cheat-sheet can list all bindings when asked.
+    pub fn bindings(&self) -> impl Iterator<Item = (&KeyEvent, &Action)> {
+        self.bindings.iter()
     }
 
     /// Look up the action bound to a key event, if any.

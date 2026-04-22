@@ -5,7 +5,7 @@
 # themes/custom.toml, edit, then set `theme = "custom"` to switch.
 theme = "default"
 
-### Editor #####################################################################
+## Editor ######################################################################
 [editor]
 tab_width = 4
 dev_mode = false
@@ -17,12 +17,19 @@ suppress_capability_warnings = false
 # for which 1 might feel better. Keyboard scrolling always steps by one line and
 # is unaffected by this setting.
 mouse_scroll_lines = 1
+# Phase 9 — bottom status region layout.
+#   "two_line"  (default) — contextual hint line above persistent status line.
+#   "compact"             — persistent status line only; hints via `?` popover.
+status_bar = "two_line"
+# Duration (ms) that a transient hint-line notification lingers before
+# auto-expiring. Error messages ignore this and stay until dismissed with Esc.
+transient_ms = 1500
 
-### Modal ######################################################################
+## Modal #######################################################################
 [modal]
 handler = "default"
 
-### Image ######################################################################
+## Image #######################################################################
 [image]
 # Master switch for inline image rendering. When false, images always
 # render as `[Image: alt]` placeholders even on graphics-capable terminals.
