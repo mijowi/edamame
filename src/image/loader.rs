@@ -78,9 +78,9 @@ const REMOTE_TIMEOUT: Duration = Duration::from_secs(10);
 ///   App shows the prompt on document load and flips the flag based on
 ///   the user's choice.
 /// * `session_allow_remote` — set by the remote-load prompt's
-///   `This time only` / `Always` buttons.  Takes precedence over a
-///   `Never` persisted policy only if the caller has already verified
-///   its provenance (the prompt itself defers to policy).
+///   `Yes` / `Always` buttons.  Takes precedence over a `Never`
+///   persisted policy only if the caller has already verified its
+///   provenance (the prompt itself defers to policy).
 /// * `max_cells` / `font_size` — the target ceiling for pre-resizing
 ///   the decoded image so the main thread never has to resize on a
 ///   render path.  Passing `None` disables pre-resize (the main thread

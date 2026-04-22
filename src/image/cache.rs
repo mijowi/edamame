@@ -409,6 +409,36 @@ impl ImageCache {
         ))
     }
 
+    /// Row count the renderer should reserve for this image's block.
+    ///
+    /// * `Ready` → `Some(aspect_rows)` so wide images don't leave blank
+    ///   rows underneath.
+    /// * `Failed` → `Some(1)` so the block collapses to just the
+    ///   `[Image: alt]` placeholder row; no blank space is reserved for
+    ///   an image that won't load (e.g. `RemoteBlocked` after the user
+    ///   declined the remote-image prompt).
+    /// * `Pending` / not yet requested → `None`.  The renderer falls
+    ///   back to the configured `image_max_height` while the decode is
+    ///   in flight so layout is stable until real dimensions are known.
+    pub fn reserved_rows(
+        &self,
+        url: &str,
+        max_width_cells: u16,
+        max_height_cells: u16,
+        font_size: (u16, u16),
+    ) -> Option<usize> {
+        match self.decoded.get(url) {
+            Some(DecodeStatus::Ready(img)) => Some(aspect_rows_of(
+                img,
+                max_width_cells,
+                max_height_cells,
+                font_size,
+            )),
+            Some(DecodeStatus::Failed(_)) => Some(1),
+            Some(DecodeStatus::Pending) | None => None,
+        }
+    }
+
     /// Clear `Failed` entries so a subsequent `request` can retry.  Called
     /// by the App after the user promotes the remote-image policy —
     /// entries that failed with `RemoteBlocked` can now succeed.
@@ -742,5 +772,30 @@ mod tests {
         cache.request("thin.png");
         cache.set_decoded("thin.png", DynamicImage::new_rgba8(10, 2));
         assert_eq!(cache.aspect_rows("thin.png", 80, 24, (10, 20)), Some(8));
+    }
+
+    #[test]
+    fn reserved_rows_collapses_failed_to_one() {
+        let mut cache = ImageCache::new();
+        cache.request("broken.png");
+        cache.set_failed("broken.png", "RemoteBlocked".to_owned());
+        assert_eq!(cache.reserved_rows("broken.png", 80, 24, (10, 20)), Some(1));
+    }
+
+    #[test]
+    fn reserved_rows_pending_returns_none() {
+        let mut cache = ImageCache::new();
+        cache.request("in_flight.png");
+        assert!(cache
+            .reserved_rows("in_flight.png", 80, 24, (10, 20))
+            .is_none());
+    }
+
+    #[test]
+    fn reserved_rows_ready_returns_aspect_rows() {
+        let mut cache = ImageCache::new();
+        cache.request("wide.png");
+        cache.set_decoded("wide.png", DynamicImage::new_rgba8(1600, 400));
+        assert_eq!(cache.reserved_rows("wide.png", 80, 24, (10, 20)), Some(10));
     }
 }

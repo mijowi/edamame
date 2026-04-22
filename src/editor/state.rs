@@ -200,15 +200,17 @@ impl EditorState {
     pub(crate) fn refresh_parsed(&mut self) {
         let content = self.buffer.contents();
         // Build a row-override closure that consults the image cache.
-        // Captures by reference so the cache isn't cloned.  The closure
-        // returns None when the image hasn't been decoded yet, in which
-        // case the renderer falls back to `image_max_height` — stable
-        // layout during pending decodes.
+        // Captures by reference so the cache isn't cloned.  See
+        // `ImageCache::reserved_rows` for the per-status decision —
+        // `Ready` → aspect rows, `Failed` → 1 (collapsed placeholder),
+        // `Pending` / unknown → `None` so the renderer falls back to
+        // `image_max_height` for stable layout while the decode is in
+        // flight.
         let images = &self.images;
         let max_w = self.image_max_width as u16;
         let max_h = self.image_max_height as u16;
         let font_size = self.image_font_size;
-        let override_fn = |url: &str| images.aspect_rows(url, max_w, max_h, font_size);
+        let override_fn = |url: &str| images.reserved_rows(url, max_w, max_h, font_size);
         self.parsed = ParsedDoc::build_with_overrides(
             &content,
             self.theme,

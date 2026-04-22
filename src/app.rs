@@ -75,8 +75,9 @@ struct StartupNotice {
 
 /// Phase 7 remote-image prompt: shown when `config.image.remote_policy`
 /// is `Ask` and the open document references at least one `http(s)://`
-/// image.  Three buttons: `Always` (persist config), `Never` (persist
-/// config), `This time only` (in-memory flag for this session).
+/// image.  Four buttons: `Yes` (in-memory allow for this session),
+/// `No` (dismiss without fetching), `Always` (persist config),
+/// `Never` (persist config).
 struct RemoteImagePrompt {
     body: Vec<String>,
     buttons: Vec<ModalButton>,
@@ -117,9 +118,9 @@ pub struct App {
     /// actually changed — keeps the output stream quiet on terminals that do
     /// honour the escape and doesn't matter on those that don't.
     last_pointer_shape: PointerShape,
-    /// Once the user picks `This time only` / `Always` on the remote-load
-    /// prompt, this flag stays set for the rest of the process so further
-    /// image loads can proceed without a second prompt.  Persists only in
+    /// Once the user picks `Yes` / `Always` on the remote-load prompt,
+    /// this flag stays set for the rest of the process so further image
+    /// loads can proceed without a second prompt.  Persists only in
     /// memory; `Always` also writes back to `config.image.remote_policy`.
     session_allow_remote: bool,
     /// Sender for the main loop's mpsc channel; retained so background
@@ -382,6 +383,11 @@ impl App {
                 Ok(AppEvent::ImageReady(Err((url, message)))) => {
                     tracing::debug!(target: "image", %url, %message, "image decode failed");
                     self.editor.images.set_failed(&url, message);
+                    // A failure collapses the block's reserved rows to 1
+                    // (see `ImageCache::reserved_rows`), so the parsed
+                    // doc must be rebuilt to drop the placeholder's
+                    // extra blank rows.
+                    self.images_dirty = true;
                 }
                 Ok(AppEvent::ProtocolReady(Ok(resp))) => {
                     self.editor.images.apply_resize_response(resp);
@@ -685,11 +691,14 @@ impl App {
                     Ok(AppEvent::ImageReady(Err((url, message)))) => {
                         tracing::debug!(target: "image", %url, %message, "image decode failed");
                         self.editor.images.set_failed(&url, message);
+                        // A failure collapses the block's reserved rows
+                        // to 1 (see `ImageCache::reserved_rows`), so the
+                        // parsed doc must be rebuilt to drop the blank
+                        // rows under the placeholder.
+                        self.images_dirty = true;
                         self.needs_draw = true;
-                        // Failed decodes don't change the parsed doc
-                        // (they leave the placeholder visible) but may
-                        // still come in bursts — drain so we don't
-                        // iterate the loop once per failure.
+                        // Failures may come in bursts — drain so we
+                        // don't iterate the loop once per failure.
                         self.drain_pending_image_ready(&rx);
                         continue;
                     }
@@ -1285,16 +1294,17 @@ impl App {
         }
     }
 
-    /// Apply a keypress to the remote-image prompt.  The three buttons
+    /// Apply a keypress to the remote-image prompt.  The four buttons
     /// map to:
-    ///   * index 0 "Always" — persist `RemoteImagePolicy::Always`, allow
+    ///   * index 0 "Yes" — set `session_allow_remote = true` in-memory;
+    ///     config is unchanged (policy stays `Ask` for future sessions).
+    ///   * index 1 "No" — dismiss without fetching; policy unchanged.
+    ///   * index 2 "Always" — persist `RemoteImagePolicy::Always`, allow
     ///     future sessions to fetch automatically.
-    ///   * index 1 "Never" — persist `RemoteImagePolicy::Never`, all
+    ///   * index 3 "Never" — persist `RemoteImagePolicy::Never`, all
     ///     remote images stay as placeholders.
-    ///   * index 2 "This time only" — set `session_allow_remote = true`
-    ///     in-memory; config is unchanged.
     ///
-    /// In all three cases we dispatch decode jobs immediately after so
+    /// For "Yes"/"Always" we dispatch decode jobs immediately after so
     /// newly-allowed URLs start loading without waiting for a keypress.
     fn handle_remote_image_prompt_key(&mut self, key: crossterm::event::KeyEvent) {
         let Some(prompt) = self.remote_image_prompt.as_mut() else {
@@ -1305,40 +1315,45 @@ impl App {
         match response {
             ModalResponse::Continue => {}
             ModalResponse::Cancelled => {
-                // Escape → treat as "This time only: no" — just dismiss,
-                // no policy change.  Remote decodes will continue to fail
-                // with `RemoteBlocked`.
+                // Escape → treat as "No" — just dismiss, no policy change.
+                // Remote decodes will continue to fail with `RemoteBlocked`.
                 self.remote_image_prompt = None;
             }
             ModalResponse::ButtonPressed(idx) => {
                 // Button order defined in `build_remote_image_prompt`:
-                //   0 → This time only (session-only, no config change)
-                //   1 → Never          (persist `RemoteImagePolicy::Never`)
-                //   2 → Always         (persist `RemoteImagePolicy::Always`)
-                match idx {
+                //   0 → Yes    (session-only, no config change)
+                //   1 → No     (dismiss, no config change)
+                //   2 → Always (persist `RemoteImagePolicy::Always`)
+                //   3 → Never  (persist `RemoteImagePolicy::Never`)
+                let allow_now = match idx {
                     0 => {
                         self.session_allow_remote = true;
+                        true
                     }
-                    1 => {
-                        self.config.image.remote_policy = crate::config::RemoteImagePolicy::Never;
-                        if let Err(e) = self.config.save() {
-                            tracing::warn!(error = %e, "failed to persist remote_policy=Never");
-                        }
-                    }
-                    _ => {
+                    1 => false,
+                    2 => {
                         self.config.image.remote_policy = crate::config::RemoteImagePolicy::Always;
                         if let Err(e) = self.config.save() {
                             tracing::warn!(error = %e, "failed to persist remote_policy=Always");
                         }
+                        true
                     }
-                }
+                    _ => {
+                        self.config.image.remote_policy = crate::config::RemoteImagePolicy::Never;
+                        if let Err(e) = self.config.save() {
+                            tracing::warn!(error = %e, "failed to persist remote_policy=Never");
+                        }
+                        false
+                    }
+                };
                 self.remote_image_prompt = None;
-                // New policy / session flag means decode requests that
-                // previously failed with `RemoteBlocked` can proceed.
-                // The cache records failures permanently, so we clear
-                // those entries before re-dispatching.
-                self.editor.images.clear_failures_for_remote_reopening();
-                self.dispatch_image_decodes();
+                if allow_now {
+                    // Newly-allowed URLs may have been recorded as failed
+                    // with `RemoteBlocked`; clear those entries so the
+                    // decode workers re-attempt them.
+                    self.editor.images.clear_failures_for_remote_reopening();
+                    self.dispatch_image_decodes();
+                }
             }
         }
     }
@@ -1525,19 +1540,20 @@ fn build_remote_image_prompt(editor: &EditorState, config: &Config) -> Option<Re
         "This document references one or more remote images.".to_owned(),
         "Fetching them sends HTTP requests from your machine.".to_owned(),
         String::new(),
-        "When would you like edamame to fetch remote images?".to_owned(),
+        "Would you like edamame to fetch remote images?".to_owned(),
     ];
     // Button order is intentional: the leftmost button is the default
-    // focus (`ModalState::new` sets `focused = 0`).  "This time only"
-    // is the least-committal choice, so it's the safe default if the
-    // user hammers Enter without reading.  The destructive persistent
-    // choices ("Never", "Always") come after.
+    // focus (`ModalState::new` sets `focused = 0`).  "Yes" allows the
+    // fetch for this session only and is the safe default if the user
+    // hammers Enter without reading.  "No" dismisses without fetching.
+    // The persistent choices ("Always", "Never") come after.
     Some(RemoteImagePrompt {
         body,
         buttons: vec![
-            ModalButton::new("This time only"),
-            ModalButton::new("Never"),
+            ModalButton::new("Yes"),
+            ModalButton::new("No"),
             ModalButton::new("Always"),
+            ModalButton::new("Never"),
         ],
         state: ModalState::new(),
     })
