@@ -10,34 +10,27 @@
 //! cells are **position-independent** and can be cell-copied from one
 //! buffer to another without any encoding work.
 //!
-//! `paint_halfblocks_partial` exploits this: it renders the full image
-//! into a scratch buffer (one encode, reused across frames by
-//! `StatefulProtocol`'s internal cache when the rect is stable) and
-//! copies only the visible rows into the destination buffer.  The
-//! technique only works for halfblocks-encoded cells; callers guarantee
-//! that by passing a halfblocks-built `StatefulProtocol`.
+//! `paint_halfblocks_partial` exploits this: it takes a pre-rendered
+//! scratch `Buffer` (built synchronously by `ImageCache` when the pair
+//! is first constructed) and copies only the visible rows into the
+//! destination buffer.  The encoding work has already been done by the
+//! time this function is called — each frame is only cell-copies.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::widgets::StatefulWidget;
-use ratatui_image::protocol::StatefulProtocol;
-use ratatui_image::{Resize, StatefulImage};
 
-/// Render a halfblocks-encoded `protocol` into `buf`, clipped to the
-/// visible `dst_rect` and offset vertically by `src_y_offset` image
-/// rows.
+/// Copy a pre-rendered halfblocks `scratch` buffer into `buf`, clipped
+/// to the visible `dst_rect` and offset vertically by `src_y_offset`
+/// image rows.
 ///
 /// Parameters:
 ///
-/// * `protocol` — a `StatefulProtocol` built from the halfblocks
-///   `Picker`.  Calling with a Kitty/Sixel/iTerm2 protocol is a bug; the
-///   produced cells carry encoded escape sequences that only work when
-///   placed at the exact coordinates the protocol computed for them.
+/// * `scratch` — a `Buffer` containing the halfblocks cells for the
+///   full image at `full_rect`'s dimensions.  Built by `ImageCache` on
+///   cold path; reused across every frame.
 /// * `full_rect` — the image's natural rectangle (stable across frames):
 ///   `width = image_max_width`, `height = image_max_height`, origin
-///   `(0, 0)`.  We render into a scratch buffer of this size so the
-///   halfblocks encoder always sees the same target, which keeps its
-///   internal caches warm.
+///   `(0, 0)`.
 /// * `src_y_offset` — how many image rows have scrolled past the top.
 ///   When the image's top is above the viewport, this is positive;
 ///   when fully visible, it's zero.
@@ -53,7 +46,7 @@ use ratatui_image::{Resize, StatefulImage};
 /// desired behaviour when an image is scrolling off the bottom of the
 /// viewport.
 pub fn paint_halfblocks_partial(
-    protocol: &mut StatefulProtocol,
+    scratch: &Buffer,
     full_rect: Rect,
     src_y_offset: u16,
     dst_rect: Rect,
@@ -63,14 +56,6 @@ pub fn paint_halfblocks_partial(
     {
         return;
     }
-    // Render the full image into a scratch buffer at (0, 0).  Using the
-    // same full-rect every frame means `StatefulProtocol` hits its no-re-
-    // encode fast path after the first call.
-    let scratch_rect = Rect::new(0, 0, full_rect.width, full_rect.height);
-    let mut scratch = Buffer::empty(scratch_rect);
-    StatefulImage::default()
-        .resize(Resize::Fit(None))
-        .render(scratch_rect, &mut scratch, protocol);
 
     // Cell-copy the clipped portion into the destination.  Bounds on
     // `scratch` clip when `src_y_offset + dy` exceeds `full_rect.height`
@@ -105,56 +90,26 @@ mod tests {
     use super::*;
 
     use image::DynamicImage;
+    use ratatui::widgets::StatefulWidget;
     use ratatui_image::picker::Picker;
+    use ratatui_image::{Resize, StatefulImage};
 
-    fn halfblocks_protocol(w: u32, h: u32) -> StatefulProtocol {
-        // Picker::from_fontsize defaults to ProtocolType::Halfblocks.
+    /// Build a halfblocks scratch buffer the same way `ImageCache` does
+    /// on cold path — render a uniform image through a halfblocks
+    /// picker into a Buffer sized to `rect`.
+    fn halfblocks_scratch(rect: Rect) -> Buffer {
         let picker = Picker::from_fontsize((1, 2));
-        // A 4-channel RGBA image; pixel content doesn't matter — we only
-        // care that encoding produces non-default cells we can compare
-        // against.
         let img = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
-            w,
-            h,
+            u32::from(rect.width) * 2,
+            u32::from(rect.height) * 4,
             image::Rgba([40, 80, 120, 255]),
         ));
-        picker.new_resize_protocol(img)
-    }
-
-    /// With `src_y_offset = 0` and `dst_rect.height = full_rect.height`,
-    /// the helper should produce cell-for-cell identical output to a
-    /// direct `StatefulImage::render` into the same destination.
-    #[test]
-    fn src_offset_zero_matches_direct_render() {
-        let mut protocol_helper = halfblocks_protocol(16, 16);
-        let mut protocol_direct = halfblocks_protocol(16, 16);
-
-        let full = Rect::new(0, 0, 8, 4);
-        let mut buf_helper = Buffer::empty(Rect::new(0, 0, 8, 4));
-        let mut buf_direct = Buffer::empty(Rect::new(0, 0, 8, 4));
-
-        paint_halfblocks_partial(
-            &mut protocol_helper,
-            full,
-            0,
-            Rect::new(0, 0, 8, 4),
-            &mut buf_helper,
-        );
-        StatefulImage::default().resize(Resize::Fit(None)).render(
-            full,
-            &mut buf_direct,
-            &mut protocol_direct,
-        );
-
-        // Cells should match — halfblocks is position-independent.
-        for y in 0..4u16 {
-            for x in 0..8u16 {
-                let h = buf_helper.cell((x, y)).unwrap();
-                let d = buf_direct.cell((x, y)).unwrap();
-                assert_eq!(h.symbol(), d.symbol(), "symbol mismatch at ({x},{y})");
-                assert_eq!(h.style(), d.style(), "style mismatch at ({x},{y})");
-            }
-        }
+        let mut protocol = picker.new_resize_protocol(img);
+        let mut buf = Buffer::empty(rect);
+        StatefulImage::default()
+            .resize(Resize::Fit(None))
+            .render(rect, &mut buf, &mut protocol);
+        buf
     }
 
     /// `src_y_offset = k` should map destination row `dy` to source row
@@ -163,23 +118,14 @@ mod tests {
     #[test]
     fn positive_src_offset_shifts_source_rows() {
         let full = Rect::new(0, 0, 8, 6);
-        // Build a reference frame of the full image.
-        let mut protocol_ref = halfblocks_protocol(16, 24);
-        let mut full_buf = Buffer::empty(Rect::new(0, 0, 8, 6));
-        StatefulImage::default().resize(Resize::Fit(None)).render(
-            full,
-            &mut full_buf,
-            &mut protocol_ref,
-        );
+        let scratch = halfblocks_scratch(full);
 
-        // Paint only rows 2..5 of the image, into destination rows 0..3.
-        let mut protocol = halfblocks_protocol(16, 24);
         let mut dst_buf = Buffer::empty(Rect::new(0, 0, 8, 3));
-        paint_halfblocks_partial(&mut protocol, full, 2, Rect::new(0, 0, 8, 3), &mut dst_buf);
+        paint_halfblocks_partial(&scratch, full, 2, Rect::new(0, 0, 8, 3), &mut dst_buf);
         for dy in 0..3u16 {
             for dx in 0..8u16 {
                 let dst_cell = dst_buf.cell((dx, dy)).unwrap();
-                let src_cell = full_buf.cell((dx, 2 + dy)).unwrap();
+                let src_cell = scratch.cell((dx, 2 + dy)).unwrap();
                 assert_eq!(dst_cell.symbol(), src_cell.symbol());
                 assert_eq!(dst_cell.style(), src_cell.style());
             }
@@ -192,11 +138,11 @@ mod tests {
     #[test]
     fn destination_clipping_silently_drops_out_of_bounds_cells() {
         let full = Rect::new(0, 0, 8, 4);
-        let mut protocol = halfblocks_protocol(16, 16);
+        let scratch = halfblocks_scratch(full);
         // A 4×2 destination buffer with a 6×3 write rect at origin — the
         // extra 2 cols + 1 row must not panic.
         let mut buf = Buffer::empty(Rect::new(0, 0, 4, 2));
-        paint_halfblocks_partial(&mut protocol, full, 0, Rect::new(0, 0, 6, 3), &mut buf);
+        paint_halfblocks_partial(&scratch, full, 0, Rect::new(0, 0, 6, 3), &mut buf);
     }
 
     /// When `src_y_offset` leaves fewer image rows than the destination
@@ -204,9 +150,9 @@ mod tests {
     #[test]
     fn src_offset_past_image_leaves_dst_default() {
         let full = Rect::new(0, 0, 8, 4);
-        let mut protocol = halfblocks_protocol(16, 16);
+        let scratch = halfblocks_scratch(full);
         let mut buf = Buffer::empty(Rect::new(0, 0, 8, 6));
-        paint_halfblocks_partial(&mut protocol, full, 5, Rect::new(0, 0, 8, 6), &mut buf);
+        paint_halfblocks_partial(&scratch, full, 5, Rect::new(0, 0, 8, 6), &mut buf);
         // src_y_offset 5 > full.height 4 → nothing should have been
         // written; every cell stays default.
         for y in 0..6u16 {
@@ -220,17 +166,17 @@ mod tests {
     /// Zero-area inputs are a no-op.
     #[test]
     fn zero_area_is_noop() {
-        let mut protocol = halfblocks_protocol(16, 16);
+        let scratch = halfblocks_scratch(Rect::new(0, 0, 4, 4));
         let mut buf = Buffer::empty(Rect::new(0, 0, 4, 4));
         paint_halfblocks_partial(
-            &mut protocol,
+            &scratch,
             Rect::new(0, 0, 0, 4),
             0,
             Rect::new(0, 0, 4, 4),
             &mut buf,
         );
         paint_halfblocks_partial(
-            &mut protocol,
+            &scratch,
             Rect::new(0, 0, 4, 4),
             0,
             Rect::new(0, 0, 0, 4),

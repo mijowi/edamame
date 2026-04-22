@@ -19,8 +19,7 @@ use std::ops::Range;
 
 use ratatui::buffer::Buffer as TuiBuf;
 use ratatui::layout::Rect;
-use ratatui::widgets::StatefulWidget;
-use ratatui_image::{Resize, StatefulImage};
+use ratatui_image::{Resize, ResizeEncodeRender};
 
 use crate::editor::EditorState;
 use crate::image::{paint_halfblocks_partial, ImageCache};
@@ -105,6 +104,26 @@ impl ImageLayoutSnapshot {
 /// `StatefulProtocol` encoding.  The rect's `y` may be negative
 /// (represented as saturating to 0 within `area.y` bounds); callers
 /// should check `rect` fits fully inside `area` before painting.
+/// Refresh `snapshots` in place when the cache key (`scroll`, `area`,
+/// `parsed_version`) differs from the previous frame's, otherwise leave
+/// both the vector and the key untouched.  Caches the geometry scan so
+/// idle redraws and non-layout-affecting events don't pay the
+/// O(lines × images) cost every frame.
+pub fn build_snapshots_cached(
+    state: &EditorState,
+    area: Rect,
+    scroll: usize,
+    snapshots: &mut Vec<ImageLayoutSnapshot>,
+    cache_key: &mut Option<(usize, Rect, u64)>,
+) {
+    let key = (scroll, area, state.parsed_version);
+    if *cache_key == Some(key) {
+        return;
+    }
+    *snapshots = build_snapshots(state, area, scroll);
+    *cache_key = Some(key);
+}
+
 pub fn build_snapshots(state: &EditorState, area: Rect, scroll: usize) -> Vec<ImageLayoutSnapshot> {
     let mut out = Vec::new();
     if area.height == 0 {
@@ -204,18 +223,26 @@ pub struct PaintContext<'a> {
 /// Render each image onto its reserved rect, overlaying the `[Image: alt]`
 /// placeholder emitted by the text renderer.
 ///
-/// Decision per snapshot (see "Rule set" in the follow-up plan):
+/// The cache builds the halfblocks scratch synchronously on cold path,
+/// so a halfblocks rendering of every decoded image is always available
+/// as a fallback.  `native` (Kitty / Sixel / iTerm2) is encoded off-
+/// thread by the worker and gated on `pair.native_ready`; until that
+/// flag flips, we render halfblocks.
 ///
-/// | Image state                                             | Protocol used |
-/// |---------------------------------------------------------|---------------|
-/// | Fully visible AND not scrolling                         | native        |
-/// | Fully visible AND scrolling, native is Kitty            | native        |
-/// | Fully visible AND scrolling, native is Sixel/iTerm2     | halfblocks    |
-/// | Partially visible (any protocol / scroll state)         | halfblocks    |
+/// Decision per snapshot:
 ///
-/// Halfblocks-only terminals collapse the first two rules (native IS
-/// halfblocks), so there's only one protocol and `ProtocolPair::halfblocks`
-/// is `None` — the "native" branch draws the halfblocks encoding.
+/// | Image state                                       | Rendering  |
+/// |---------------------------------------------------|------------|
+/// | Native picker IS halfblocks                       | scratch    |
+/// | Native not ready yet                              | scratch    |
+/// | Fully visible, not scrolling                      | native     |
+/// | Fully visible, scrolling, native is Kitty         | native     |
+/// | Fully visible, scrolling, native is Sixel/iTerm2  | scratch    |
+/// | Partially visible (any state)                     | scratch    |
+///
+/// The halfblocks scratch path is a cell-copy from the pre-rendered
+/// `Buffer` held on the pair, so per-frame cost is O(rect area) with no
+/// encoding work.
 pub fn paint_images(snapshots: &[ImageLayoutSnapshot], ctx: PaintContext) {
     if ctx.native_picker.is_none() || ctx.native_protocol.is_none() {
         return;
@@ -223,7 +250,6 @@ pub fn paint_images(snapshots: &[ImageLayoutSnapshot], ctx: PaintContext) {
     let viewport_top = ctx.area.y as isize;
     let viewport_bottom = (ctx.area.y as isize) + ctx.area.height as isize;
     let native_is_kitty = ctx.native_protocol == Some(ImageProtocol::KittyGraphics);
-    let native_is_halfblocks = ctx.native_protocol == Some(ImageProtocol::Halfblocks);
 
     for snap in snapshots {
         if Some(snap.block_idx) == ctx.suppress_block_idx {
@@ -237,78 +263,103 @@ pub fn paint_images(snapshots: &[ImageLayoutSnapshot], ctx: PaintContext) {
         }
         let fully_visible = top >= viewport_top && bottom <= viewport_bottom;
 
-        // Build / fetch the protocol pair for this image at its stable
-        // reserved dimensions.  Pair construction is one-time per (url,
-        // w, h); subsequent frames hit the cache.
-        let Some(pair) = ctx.images.get_protocol_pair(
-            &snap.url,
-            snap.rect.width,
-            snap.rect.height,
-            ctx.native_picker,
-            ctx.halfblocks_picker,
-        ) else {
-            // Decode pending / failed — placeholder stays visible.
-            continue;
-        };
-
-        // Decide which protocol to use this frame.  When native IS
-        // halfblocks the rule collapses (there's no second encoding).
-        let use_native =
-            native_is_halfblocks || (fully_visible && (!ctx.is_scrolling || native_is_kitty));
-
-        if use_native {
-            // Full-rect native render.  Only reachable when the image is
-            // fully visible OR native is halfblocks (halfblocks can
-            // render partial by itself, but we take the full-rect path
-            // for simplicity — the "partial" path is for rows clipped
-            // against a non-full rect, not for short buffer writes).
-            if fully_visible {
-                StatefulImage::default().resize(Resize::Fit(None)).render(
-                    snap.rect,
-                    ctx.buf,
-                    &mut pair.native,
-                );
-            } else {
-                // Not fully visible but native IS halfblocks — use the
-                // partial helper on the native encoding since it's
-                // position-independent.
-                paint_partial(&mut pair.native, snap, &ctx.area, ctx.buf);
-            }
+        // Ensure the protocol pair exists for this (url, w, h).  Cold
+        // path builds the halfblocks scratch synchronously and a
+        // ThreadProtocol for the native encode that is still in flight.
+        if ctx
+            .images
+            .get_protocol_pair(
+                &snap.url,
+                snap.rect.width,
+                snap.rect.height,
+                ctx.native_picker,
+                ctx.halfblocks_picker,
+            )
+            .is_none()
+        {
             continue;
         }
 
-        // Halfblocks fallback for partial visibility or mid-scroll on
-        // non-Kitty terminals.  If we have no separate halfblocks
-        // encoding (shouldn't happen once native_is_halfblocks is
-        // already handled above, but be defensive), the placeholder
-        // stays.
-        let Some(halfblocks) = pair.halfblocks.as_mut() else {
-            continue;
-        };
-        paint_partial(halfblocks, snap, &ctx.area, ctx.buf);
+        let use_native = fully_visible && (!ctx.is_scrolling || native_is_kitty);
+
+        if use_native {
+            paint_native(ctx.images, snap, ctx.buf);
+        } else {
+            paint_scratch_partial(ctx.images, snap, &ctx.area, ctx.buf);
+        }
     }
 }
 
-/// Copy the halfblocks encoding of `snap` into `buf`, clipping to the
-/// portion that lies inside `area`.  Used for both partial-visibility
-/// fallback and mid-scroll fallback on Sixel/iTerm2 terminals.
-fn paint_partial(
-    protocol: &mut ratatui_image::protocol::StatefulProtocol,
+/// Render the pair's native `ThreadProtocol` into `buf`, shipping a
+/// resize-encode request to the worker on the cold path and tracking it
+/// on the cache's pending FIFO.  If the native protocol isn't yet
+/// encoded (`native_ready == false`), falls back to the halfblocks
+/// scratch so the user never sees a placeholder flash.
+fn paint_native(images: &mut ImageCache, snap: &ImageLayoutSnapshot, buf: &mut TuiBuf) {
+    let resize = Resize::Fit(None);
+    let needs_encode = {
+        let pair = match images.protocol_pair_mut(&snap.url, snap.rect.width, snap.rect.height) {
+            Some(p) => p,
+            None => return,
+        };
+        let full_rect = Rect::new(0, 0, snap.rect.width, snap.rect.height);
+
+        // No native (terminal's preferred protocol IS halfblocks) —
+        // scratch IS the rendering.
+        let Some(native) = pair.native.as_mut() else {
+            if let Some(scratch) = pair.halfblocks_scratch.as_ref() {
+                paint_halfblocks_partial(scratch, full_rect, 0, snap.rect, buf);
+            }
+            return;
+        };
+
+        // Ship an encode request if needed.  ThreadProtocol::resize_encode
+        // takes the inner StatefulProtocol and sends it to the worker;
+        // render() is a no-op while the response is in flight.  We fall
+        // back to the scratch until `native_ready` flips.
+        let needs = native.needs_resize(&resize, snap.rect).is_some();
+        if let Some(new_area) = native.needs_resize(&resize, snap.rect) {
+            native.resize_encode(&resize, new_area);
+        }
+        if pair.native_ready {
+            native.render(snap.rect, buf);
+        } else if let Some(scratch) = pair.halfblocks_scratch.as_ref() {
+            paint_halfblocks_partial(scratch, full_rect, 0, snap.rect, buf);
+        }
+        needs
+    };
+    if needs_encode {
+        images.track_pending_resize(&snap.url, snap.rect.width, snap.rect.height);
+    }
+}
+
+/// Cell-copy the halfblocks scratch into `buf`, clipping to the visible
+/// portion of `area`.  Used whenever native isn't appropriate for this
+/// frame (scrolling + non-Kitty, partial visibility, or native still
+/// pre-encoding).
+fn paint_scratch_partial(
+    images: &mut ImageCache,
     snap: &ImageLayoutSnapshot,
     area: &Rect,
     buf: &mut TuiBuf,
 ) {
+    let pair = match images.protocol_pair_mut(&snap.url, snap.rect.width, snap.rect.height) {
+        Some(p) => p,
+        None => return,
+    };
+    let Some(scratch) = pair.halfblocks_scratch.as_ref() else {
+        return;
+    };
+
     let viewport_top = area.y as isize;
     let viewport_bottom = (area.y as isize) + area.height as isize;
     let top = snap.natural_top;
     let bottom = top + snap.rect.height as isize;
-    // How many image rows above the viewport top.
     let clip_top = if top < viewport_top {
         (viewport_top - top) as u16
     } else {
         0
     };
-    // Visible height of the image inside the viewport.
     let visible_top = top.max(viewport_top);
     let visible_bottom = bottom.min(viewport_bottom);
     if visible_bottom <= visible_top {
@@ -322,7 +373,7 @@ fn paint_partial(
         snap.rect.width,
         visible_height,
     );
-    paint_halfblocks_partial(protocol, full_rect, clip_top, dst_rect, buf);
+    paint_halfblocks_partial(scratch, full_rect, clip_top, dst_rect, buf);
 }
 
 #[cfg(test)]
@@ -352,6 +403,27 @@ mod tests {
         // Each snapshot reserves `image_max_height` rows.
         assert_eq!(snaps[0].rect.height, 4);
         assert_eq!(snaps[1].rect.height, 4);
+    }
+
+    #[test]
+    fn build_snapshots_cached_reuses_output_when_key_matches() {
+        let src = "Intro.\n\n![cat](cat.png)\n\nOutro.\n";
+        let state = state_from(src, 4);
+        let area = Rect::new(0, 0, 20, 30);
+        let mut snapshots = Vec::new();
+        let mut key = None;
+        build_snapshots_cached(&state, area, 0, &mut snapshots, &mut key);
+        assert_eq!(snapshots.len(), 1);
+        let populated_key = key;
+
+        // Identical inputs → key preserved, snapshots still one entry.
+        build_snapshots_cached(&state, area, 0, &mut snapshots, &mut key);
+        assert_eq!(key, populated_key);
+        assert_eq!(snapshots.len(), 1);
+
+        // Scroll change → cache invalidates and repopulates.
+        build_snapshots_cached(&state, area, 10, &mut snapshots, &mut key);
+        assert_ne!(key, populated_key);
     }
 
     #[test]

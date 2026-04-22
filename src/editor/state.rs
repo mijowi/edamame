@@ -71,6 +71,13 @@ pub struct EditorState {
     /// encoding.  Populated by the App's image-decode worker thread via
     /// `AppEvent::ImageReady` / `AppEvent::ImageFailed`.
     pub images: ImageCache,
+    /// Monotonically-increasing version counter, bumped every time
+    /// `refresh_parsed` rebuilds the `ParsedDoc`.  Consumed by the view
+    /// state to invalidate per-frame snapshot caches only when the parse
+    /// tree actually changed — a scroll-only change leaves the version
+    /// alone, so `build_snapshots` can reuse the previous frame's
+    /// geometry.
+    pub parsed_version: u64,
     /// Phase 6 live-preview scratch for the column-resize drag.  When
     /// `Some((table_byte_start, widths))`, the table whose first row begins
     /// at `table_byte_start` renders with `widths` applied as a
@@ -150,6 +157,7 @@ impl EditorState {
             image_max_width,
             image_font_size,
             images: ImageCache::new(),
+            parsed_version: 0,
             live_table_widths: None,
         }
     }
@@ -187,6 +195,7 @@ impl EditorState {
             self.live_table_widths.as_ref(),
             Some(&override_fn),
         );
+        self.parsed_version = self.parsed_version.wrapping_add(1);
     }
 
     /// Set the cursor offset and clamp it to buffer bounds.

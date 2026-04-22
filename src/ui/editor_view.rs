@@ -109,8 +109,13 @@ impl<'a> StatefulWidget for EditorView<'a> {
                 // startup / mode switch), so we have to populate its
                 // image snapshots from here using the canonical
                 // `EditorState::parsed` block list.
-                state.preview.image_snapshots =
-                    image_view::build_snapshots(self.state, doc_area, state.preview.scroll);
+                image_view::build_snapshots_cached(
+                    self.state,
+                    doc_area,
+                    state.preview.scroll,
+                    &mut state.preview.image_snapshots,
+                    &mut state.preview.image_snapshots_key,
+                );
                 // Keep preview state lines in sync with editor state.
                 // In preview mode the editor state scroll is the canonical scroll.
                 StatefulWidget::render(PreviewView, doc_area, buf, &mut state.preview);

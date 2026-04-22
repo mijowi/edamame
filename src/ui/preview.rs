@@ -23,6 +23,10 @@ pub struct PreviewState {
     /// vector rather than `EditorState::parsed.lines`; the App does the
     /// scan against `editor.parsed.image_blocks` directly.
     pub image_snapshots: Vec<super::ImageLayoutSnapshot>,
+    /// Cache key for `image_snapshots`: `(scroll, area, parsed_version)`.
+    /// When the tuple matches the current frame, the snapshot vector is
+    /// reused instead of rebuilt.
+    pub image_snapshots_key: Option<(usize, ratatui::layout::Rect, u64)>,
 }
 
 impl PreviewState {
@@ -33,6 +37,7 @@ impl PreviewState {
             selection: None,
             selection_style: Style::default(),
             image_snapshots: Vec::new(),
+            image_snapshots_key: None,
         }
     }
 

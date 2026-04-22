@@ -34,6 +34,11 @@ pub struct RenderedViewState {
     /// for images (click detection); future phases may add expand /
     /// open UX.
     pub image_snapshots: Vec<ImageLayoutSnapshot>,
+    /// Cache key for `image_snapshots`: `(scroll, area, parsed_version)`.
+    /// When the tuple matches on the next frame, the snapshot vector is
+    /// reused instead of recomputed — avoids the O(lines × images)
+    /// geometry scan when nothing that affects image layout has changed.
+    pub image_snapshots_key: Option<(usize, Rect, u64)>,
 }
 
 /// Hybrid rendered/raw editing view.
@@ -328,8 +333,16 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // Phase 7: build per-frame snapshots of every visible image block.
         // Image painting itself happens in `EditorView::render` (after this
         // widget returns) because it needs mutable access to the cache.
-        view_state.image_snapshots =
-            image_view::build_snapshots(self.state, area, self.state.scroll);
+        // The `_cached` variant skips the O(lines × images) scan when
+        // scroll, area, and parsed-doc version all match the previous
+        // frame's.
+        image_view::build_snapshots_cached(
+            self.state,
+            area,
+            self.state.scroll,
+            &mut view_state.image_snapshots,
+            &mut view_state.image_snapshots_key,
+        );
     }
 }
 

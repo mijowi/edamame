@@ -28,6 +28,13 @@ enum AppEvent {
     /// `EditorState::images`; `Err((url, message))` records the failure
     /// so we don't retry on every render.
     ImageReady(Result<crate::image::LoadedImage, (String, String)>),
+    /// Encoder-thread notification that a `ResizeRequest` finished.
+    /// `Ok(response)` is routed to its originating `ThreadProtocol` via
+    /// `ImageCache::apply_resize_response`.  `Err(_)` is only used to
+    /// keep the pending-request FIFO balanced — the failed entry is
+    /// popped and the placeholder stays visible until a subsequent
+    /// frame re-enqueues the encode.
+    ProtocolReady(Result<ratatui_image::thread::ResizeResponse, ratatui_image::errors::Errors>),
 }
 
 /// A modal popup currently shown on top of the editor.  We only model the
@@ -101,6 +108,12 @@ pub struct App {
     /// `refresh_parsed` call instead of N.  Avoids stalling scroll
     /// input when several image workers complete in quick succession.
     images_dirty: bool,
+    /// Wall-clock timestamp of the last `terminal.draw()` call.  Used by
+    /// the main-loop frame throttle: events can arrive faster than we
+    /// want to draw (every wheel tick is an event), so we coalesce by
+    /// skipping the draw when less than `MIN_FRAME_INTERVAL` has elapsed
+    /// since the previous draw.  `None` before the first draw.
+    last_draw_at: Option<Instant>,
     /// A `Term` event pulled off the channel by `drain_pending_image_ready`
     /// (which uses `try_recv` and can't put the event back).  Processed
     /// on the next loop iteration before calling `recv_timeout` again.
@@ -113,6 +126,14 @@ pub struct App {
 /// never fires during continuous scroll input (typical wheel tick gap
 /// is well under 50 ms).
 const SCROLL_QUIESCE: Duration = Duration::from_millis(150);
+
+/// Minimum interval between successive `terminal.draw()` calls.  The
+/// event loop processes events as fast as they arrive, but draws are
+/// coalesced to at most one per this interval (~60 fps).  Under this
+/// threshold, events still mutate state; the accumulated changes show
+/// up on the next draw that actually fires.  Tuned so a wheel-tick
+/// burst produces a handful of draws instead of one per tick.
+const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
 /// Pure helper: true when `last_scroll_at` is `Some` and its elapsed
 /// time is shorter than `quiesce`.  Extracted so tests can exercise it
@@ -241,6 +262,7 @@ impl App {
             session_allow_remote: false,
             app_tx: None,
             last_scroll_at: None,
+            last_draw_at: None,
             images_dirty: false,
             pending_term_event: None,
         })
@@ -270,6 +292,14 @@ impl App {
                 Ok(AppEvent::ImageReady(Err((url, message)))) => {
                     tracing::debug!(target: "image", %url, %message, "image decode failed");
                     self.editor.images.set_failed(&url, message);
+                }
+                Ok(AppEvent::ProtocolReady(Ok(resp))) => {
+                    self.editor.images.apply_resize_response(resp);
+                }
+                Ok(AppEvent::ProtocolReady(Err(err))) => {
+                    tracing::debug!(target: "image", %err, "encoder request failed");
+                    // Keep the pending FIFO balanced — see ImageCache.
+                    self.editor.images.drop_pending_front();
                 }
                 // A Term event pulled via `try_recv` cannot be put back
                 // into the channel, so stash it for the next iteration
@@ -319,6 +349,24 @@ impl App {
             }
         });
 
+        // Spawn the encoder worker.  Every resize-encode for every
+        // visible image funnels through this single thread: encoding is
+        // CPU-bound, so serial execution preserves cache locality and
+        // avoids contention on the terminal's graphics state.  The UI
+        // thread NEVER encodes — it only enqueues `ResizeRequest`s and
+        // paints the pre-encoded bytes once the worker responds.
+        let (resize_tx, resize_rx) = mpsc::channel::<ratatui_image::thread::ResizeRequest>();
+        self.editor.images.attach_resize_sender(resize_tx);
+        let tx_encoder = tx.clone();
+        std::thread::spawn(move || {
+            while let Ok(req) = resize_rx.recv() {
+                let result = req.resize_encode();
+                if tx_encoder.send(AppEvent::ProtocolReady(result)).is_err() {
+                    break;
+                }
+            }
+        });
+
         // Build the keymap once and keep it alive for the event loop.
         let keymap = KeyMap::build(&self.config.keybindings)?;
 
@@ -347,61 +395,81 @@ impl App {
             self.dispatch_visible_image_decodes(self.editor.scroll, doc_height_lines);
 
             // ── Draw ──────────────────────────────────────────────
-            let filename = self.display_filename();
-            let is_scrolling = self.is_scrolling();
-            let show_handles = self.config.table.show_drag_handles;
-            let editor_ref = &mut self.editor;
-            let theme_ref = self.theme;
-            let capabilities_ref = &self.capabilities;
-            let view_state_ref = &mut self.view_state;
-            let notice_ref = self.startup_notice.as_mut();
-            // Only show the remote prompt once the capability notice has
-            // been dismissed so the user never sees two modals stacked.
-            let remote_prompt_ref = if notice_ref.is_none() {
-                self.remote_image_prompt.as_mut()
-            } else {
-                None
-            };
-            terminal.draw(|frame| {
-                let view = EditorView {
-                    state: editor_ref,
-                    theme: theme_ref,
-                    filename: &filename,
-                    show_table_handles: show_handles,
-                    capabilities: capabilities_ref,
-                    is_scrolling,
+            // Coalesce consecutive frames: if we drew less than
+            // MIN_FRAME_INTERVAL ago, skip the draw this iteration.  The
+            // accumulated state changes show up on whichever draw fires
+            // next.  Scroll bursts and other rapid-event sequences
+            // therefore produce at most ~60 draws/second instead of one
+            // per event.
+            let since_draw = self.last_draw_at.map(|t| t.elapsed());
+            let should_draw = since_draw.is_none_or(|d| d >= MIN_FRAME_INTERVAL);
+            if should_draw {
+                let filename = self.display_filename();
+                let is_scrolling = self.is_scrolling();
+                let show_handles = self.config.table.show_drag_handles;
+                let editor_ref = &mut self.editor;
+                let theme_ref = self.theme;
+                let capabilities_ref = &self.capabilities;
+                let view_state_ref = &mut self.view_state;
+                let notice_ref = self.startup_notice.as_mut();
+                // Only show the remote prompt once the capability notice
+                // has been dismissed so the user never sees two modals
+                // stacked.
+                let remote_prompt_ref = if notice_ref.is_none() {
+                    self.remote_image_prompt.as_mut()
+                } else {
+                    None
                 };
-                frame.render_stateful_widget(view, frame.area(), view_state_ref);
-                if let Some(notice) = notice_ref {
-                    let modal = ModalView {
-                        title: "Terminal capabilities",
-                        body: &notice.body,
-                        buttons: &notice.buttons,
+                terminal.draw(|frame| {
+                    let view = EditorView {
+                        state: editor_ref,
                         theme: theme_ref,
+                        filename: &filename,
+                        show_table_handles: show_handles,
+                        capabilities: capabilities_ref,
+                        is_scrolling,
                     };
-                    frame.render_stateful_widget(modal, frame.area(), &mut notice.state);
-                } else if let Some(prompt) = remote_prompt_ref {
-                    let modal = ModalView {
-                        title: "Remote Images",
-                        body: &prompt.body,
-                        buttons: &prompt.buttons,
-                        theme: theme_ref,
-                    };
-                    frame.render_stateful_widget(modal, frame.area(), &mut prompt.state);
-                }
-            })?;
+                    frame.render_stateful_widget(view, frame.area(), view_state_ref);
+                    if let Some(notice) = notice_ref {
+                        let modal = ModalView {
+                            title: "Terminal capabilities",
+                            body: &notice.body,
+                            buttons: &notice.buttons,
+                            theme: theme_ref,
+                        };
+                        frame.render_stateful_widget(modal, frame.area(), &mut notice.state);
+                    } else if let Some(prompt) = remote_prompt_ref {
+                        let modal = ModalView {
+                            title: "Remote Images",
+                            body: &prompt.body,
+                            buttons: &prompt.buttons,
+                            theme: theme_ref,
+                        };
+                        frame.render_stateful_widget(modal, frame.area(), &mut prompt.state);
+                    }
+                })?;
+                self.last_draw_at = Some(Instant::now());
+            }
 
             // ── Wait for event (with timeout for jitter redraws) ──
             // Use a short timeout so that when the cursor has recently moved
             // to a new block, the view redraws after the reveal delay has
             // elapsed and shows the raw cursor-block view.
+            //
+            // When we skipped a draw because of frame-rate coalescing,
+            // shrink the timeout to the remaining frame budget so we
+            // don't block past the next scheduled draw.
+            let wait = match since_draw {
+                Some(elapsed) if elapsed < MIN_FRAME_INTERVAL => MIN_FRAME_INTERVAL - elapsed,
+                _ => Duration::from_millis(60),
+            };
             // If a Term event was stashed by `drain_pending_image_ready`
             // on the previous iteration, process it first so channel
             // order is preserved.
             let event = if let Some(e) = self.pending_term_event.take() {
                 e
             } else {
-                match rx.recv_timeout(Duration::from_millis(60)) {
+                match rx.recv_timeout(wait) {
                     Ok(AppEvent::Term(e)) => e,
                     Ok(AppEvent::ImageReady(Ok(loaded))) => {
                         self.editor.images.set_decoded(&loaded.url, loaded.image);
@@ -416,6 +484,17 @@ impl App {
                         // (they leave the placeholder visible) but may
                         // still come in bursts — drain so we don't
                         // iterate the loop once per failure.
+                        self.drain_pending_image_ready(&rx);
+                        continue;
+                    }
+                    Ok(AppEvent::ProtocolReady(Ok(resp))) => {
+                        self.editor.images.apply_resize_response(resp);
+                        self.drain_pending_image_ready(&rx);
+                        continue;
+                    }
+                    Ok(AppEvent::ProtocolReady(Err(err))) => {
+                        tracing::debug!(target: "image", %err, "encoder request failed");
+                        self.editor.images.drop_pending_front();
                         self.drain_pending_image_ready(&rx);
                         continue;
                     }
