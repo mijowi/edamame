@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ops::Range;
 
 use ratatui::text::Line;
@@ -5,7 +6,8 @@ use ratatui::text::Line;
 use crate::config::Theme;
 use crate::document::SourceMap;
 use crate::markdown::{
-    parse_offsets, parse_raw, promote_image_paragraphs, ImageRowOverride, Renderer,
+    inlines_to_plain, parse_offsets, parse_raw, promote_image_paragraphs, Block, ImageRowOverride,
+    Renderer,
 };
 
 /// Setext heading style detected from raw block source.  `None` for ATX
@@ -84,6 +86,14 @@ pub struct ParsedDoc {
     /// pass in `ui::image_view`) doesn't have to walk the block list
     /// independently.
     pub image_blocks: Vec<ImageBlockInfo>,
+    /// GFM-slug → rendered-line-index map for every `Block::Heading`
+    /// in the document.  Consumed by Phase 8's `#anchor` navigation —
+    /// `LinkTarget::Anchor(slug)` dispatches against this table.
+    ///
+    /// Slugs follow the GitHub Flavored Markdown algorithm: lowercase,
+    /// strip characters not in `[a-z0-9 -]`, replace runs of whitespace
+    /// with `-`, uniquify with a `-N` suffix on collisions.
+    pub heading_anchors: HashMap<String, usize>,
 }
 
 impl ParsedDoc {
@@ -215,6 +225,8 @@ impl ParsedDoc {
         // Real blocks, each followed by any blank lines in the gap after it.
         let mut rendered_src = 0usize;
         let mut image_blocks = Vec::new();
+        let mut heading_anchors: HashMap<String, usize> = HashMap::new();
+        let mut anchor_counts: HashMap<String, usize> = HashMap::new();
         for (i, &count) in real_per_block_counts.iter().enumerate() {
             let idx = all_original.len();
             all_original.push(real_ranges[i].clone());
@@ -222,12 +234,24 @@ impl ParsedDoc {
             // Record image-block metadata keyed by the virtual block index
             // we just allocated, so the decode-dispatch scan and the paint
             // pass don't need to walk `blocks` again.
-            if let crate::markdown::ast::Block::ImageBlock { alt, url } = &blocks[i] {
+            if let Block::ImageBlock { alt, url } = &blocks[i] {
                 image_blocks.push(ImageBlockInfo {
                     block_idx: idx,
                     alt: alt.clone(),
                     url: url.clone(),
                 });
+            }
+            // Record heading anchors (GFM slug → first rendered line of
+            // the heading).  Collisions get a `-N` suffix so later
+            // headings don't clobber earlier ones.
+            if let Block::Heading { inlines, .. } = &blocks[i] {
+                let plain = inlines_to_plain(inlines);
+                let base_slug = gfm_slug(&plain);
+                let slug = uniquify_slug(&base_slug, &mut anchor_counts);
+                // lines.len() here is the rendered-line index where this
+                // heading's first line will land (before we push the
+                // block's own lines below).
+                heading_anchors.insert(slug, lines.len());
             }
             for j in 0..count {
                 if let Some(line) = rendered_lines.get(rendered_src + j) {
@@ -311,6 +335,7 @@ impl ParsedDoc {
             source_map,
             per_block_own: all_per_block_own,
             image_blocks,
+            heading_anchors,
         }
     }
 
@@ -324,6 +349,49 @@ impl ParsedDoc {
     pub fn block_own_line_count(&self, block_idx: usize) -> usize {
         self.per_block_own.get(block_idx).copied().unwrap_or(0)
     }
+}
+
+/// Produce a GitHub Flavored Markdown slug for `text`.
+///
+/// Algorithm: lowercase every character, drop characters that aren't
+/// `[a-z0-9 -]`, then replace runs of whitespace with a single `-`.
+/// Leading / trailing dashes are preserved (matching GFM's behaviour)
+/// but a heading that produces an empty slug is returned as an empty
+/// string — callers that want to skip empty slugs should do so
+/// explicitly.
+pub fn gfm_slug(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut prev_ws = false;
+    for ch in text.chars().flat_map(|c| c.to_lowercase()) {
+        if ch.is_whitespace() {
+            if !prev_ws {
+                out.push('-');
+            }
+            prev_ws = true;
+            continue;
+        }
+        prev_ws = false;
+        if ch.is_ascii_alphanumeric() || ch == '-' {
+            out.push(ch);
+        }
+        // Other characters (punctuation, non-ASCII) are stripped.
+    }
+    out
+}
+
+/// Append a `-N` suffix to `base` when it collides with a previously
+/// issued slug.  `counts` tracks how many times each base slug has
+/// appeared so far — first use returns `base` unchanged, second use
+/// `base-1`, third `base-2`, etc., matching GitHub's behaviour.
+fn uniquify_slug(base: &str, counts: &mut HashMap<String, usize>) -> String {
+    let entry = counts.entry(base.to_owned()).or_insert(0);
+    let slug = if *entry == 0 {
+        base.to_owned()
+    } else {
+        format!("{base}-{}", *entry)
+    };
+    *entry += 1;
+    slug
 }
 
 /// Pair AST blocks with their byte ranges and splice a `user_widths` override
@@ -594,6 +662,69 @@ mod tests {
                 "comment leaked into rendered output: {text:?}"
             );
         }
+    }
+
+    #[test]
+    fn gfm_slug_basic_cases() {
+        assert_eq!(gfm_slug("Hello, World!"), "hello-world");
+        assert_eq!(gfm_slug("Foo"), "foo");
+        assert_eq!(gfm_slug("  spaces   here  "), "-spaces-here-");
+        // Non-ASCII chars are stripped; surrounding spaces collapse.  The
+        // three letters here are removed, leaving "  " (two runs of
+        // whitespace separated by nothing), which produces two dashes.
+        assert_eq!(gfm_slug("α β γ"), "--");
+        assert_eq!(gfm_slug("API v2 — Release Notes"), "api-v2--release-notes");
+        assert_eq!(gfm_slug("Hello World"), "hello-world");
+    }
+
+    #[test]
+    fn uniquify_slug_appends_suffix_on_collision() {
+        let mut counts = HashMap::new();
+        assert_eq!(uniquify_slug("foo", &mut counts), "foo");
+        assert_eq!(uniquify_slug("foo", &mut counts), "foo-1");
+        assert_eq!(uniquify_slug("foo", &mut counts), "foo-2");
+        assert_eq!(uniquify_slug("bar", &mut counts), "bar");
+    }
+
+    #[test]
+    fn heading_anchors_has_one_entry_per_heading() {
+        let src = "# First\n\nPara.\n\n## Second Heading\n\nMore.\n";
+        let doc = ParsedDoc::build(src, theme(), true, 24);
+        assert!(doc.heading_anchors.contains_key("first"));
+        assert!(doc.heading_anchors.contains_key("second-heading"));
+        // Stable across a reparse of an identical source.
+        let doc2 = ParsedDoc::build(src, theme(), true, 24);
+        assert_eq!(doc.heading_anchors, doc2.heading_anchors);
+    }
+
+    #[test]
+    fn heading_anchors_uniquify_on_collision() {
+        let src = "# Foo\n\n## Foo\n\n### Foo\n";
+        let doc = ParsedDoc::build(src, theme(), true, 24);
+        assert!(doc.heading_anchors.contains_key("foo"));
+        assert!(doc.heading_anchors.contains_key("foo-1"));
+        assert!(doc.heading_anchors.contains_key("foo-2"));
+    }
+
+    #[test]
+    fn heading_anchor_indexes_point_to_rendered_heading_line() {
+        let src = "Intro paragraph.\n\n# Target\n\nBody.\n";
+        let doc = ParsedDoc::build(src, theme(), true, 24);
+        let &idx = doc
+            .heading_anchors
+            .get("target")
+            .expect("heading anchor present");
+        // The rendered line at `idx` should belong to the heading's block,
+        // which is the block that contains the `Target` bytes.
+        let target_byte = src.find("Target").unwrap();
+        let heading_lines = doc.source_map.rendered_lines_for_byte(target_byte);
+        assert!(
+            heading_lines.contains(&idx),
+            "anchor {} points to line {} but heading spans {:?}",
+            "target",
+            idx,
+            heading_lines
+        );
     }
 
     /// Each blank line's rendered-line range must map back to that same line

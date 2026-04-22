@@ -89,6 +89,20 @@ pub enum Action {
     // as the canonical way to get multi-line cells).  Outside a table it
     // falls through to `Newline`.
     TableInsertBreak,
+    // ── Link navigation (Phase 8) ──────────────────────────────────
+    /// Follow the link at the cursor's rope offset (if any).  In
+    /// Preview mode users reach links via mouse click; in Rendered /
+    /// Raw mode this action is the keyboard equivalent.  Handled by
+    /// the `App`, not `edit_ops`, so the dispatch happens against UI
+    /// state (nav stack, in-flight worker threads).
+    FollowLinkUnderCursor,
+    /// Pop the navigation history: move the current (path, scroll,
+    /// cursor, mode) onto the forward stack and restore the most
+    /// recent back-entry.  App-level.
+    NavigateBack,
+    /// Mirror of [`Action::NavigateBack`] operating on the forward
+    /// stack.
+    NavigateForward,
 }
 
 impl fmt::Display for Action {
@@ -150,6 +164,9 @@ impl fmt::Display for Action {
             Action::TableDeleteRow => "TableDeleteRow",
             Action::TableDeleteColumn => "TableDeleteColumn",
             Action::TableInsertBreak => "TableInsertBreak",
+            Action::FollowLinkUnderCursor => "FollowLinkUnderCursor",
+            Action::NavigateBack => "NavigateBack",
+            Action::NavigateForward => "NavigateForward",
         };
         f.write_str(s)
     }
@@ -215,6 +232,9 @@ impl FromStr for Action {
             "TableDeleteRow" => Ok(Action::TableDeleteRow),
             "TableDeleteColumn" => Ok(Action::TableDeleteColumn),
             "TableInsertBreak" => Ok(Action::TableInsertBreak),
+            "FollowLinkUnderCursor" => Ok(Action::FollowLinkUnderCursor),
+            "NavigateBack" => Ok(Action::NavigateBack),
+            "NavigateForward" => Ok(Action::NavigateForward),
             other => Err(KeyMapError::UnknownAction(other.to_owned())),
         }
     }
@@ -453,6 +473,15 @@ impl KeyMap {
         // table cell; outside a table it has no binding and the default
         // Shift+Enter behaviour (same as Enter) applies.
         bind!("shift+enter", Action::TableInsertBreak);
+
+        // Phase 8 — link navigation.  Alt+Left / Alt+Right are NOT bound to
+        // NavigateBack/NavigateForward here: those keys remain bound to
+        // TableMoveColumnLeft / TableMoveColumnRight so tables keep their
+        // column-reorder semantics, and the `App` dispatches them to
+        // NavigateBack/Forward only when the cursor is outside any table.
+        // Users can still rebind NavigateBack/Forward to any key via the
+        // keybindings config.
+        bind!("ctrl+enter", Action::FollowLinkUnderCursor);
 
         Self { bindings: b }
     }

@@ -28,6 +28,8 @@ Also Heading 2
 
 [File link](./plan.md)
 
+[Heading link](#escape-characters)
+
 ![Me underwater in USVI](/home/mjw/Pictures/me.jpg)
 
 ![Github's Mona](https://brand.github.com/_next/static/media/mascots-01.fc6009a2.png)
@@ -112,7 +114,7 @@ fn setup_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
 }
 ```
 
-Escaped characters
+## Escape characters
 \*not emphasized*
 \<br/> not a tag
 \[not a link](/foo)

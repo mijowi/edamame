@@ -1,5 +1,5 @@
 use std::io::Stdout;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -9,8 +9,9 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
-use crate::config::{Config, KeyMap, Theme};
+use crate::config::{Action, Config, KeyMap, Theme};
 use crate::document::Buffer;
+use crate::editor::link::LinkTarget;
 use crate::editor::{edit_ops, mouse_ops, EditorState, Mode};
 use crate::input::modal::default::DefaultHandler;
 use crate::input::{ModalHandler, MouseDispatcher};
@@ -35,6 +36,34 @@ enum AppEvent {
     /// popped and the placeholder stays visible until a subsequent
     /// frame re-enqueues the encode.
     ProtocolReady(Result<ratatui_image::thread::ResizeResponse, ratatui_image::errors::Errors>),
+    /// Phase 8 — worker-thread report that `open::that` finished on a
+    /// URL or non-Markdown local file.  Currently only logged; Phase 9
+    /// will surface failures on the hint line.
+    LinkOpenResult(std::result::Result<(), String>),
+}
+
+/// One entry on [`App::nav_back`] / [`App::nav_forward`] — records
+/// enough state to restore the exact scroll / cursor / mode we were in
+/// when we left a particular document.
+#[derive(Debug, Clone)]
+struct NavEntry {
+    path: PathBuf,
+    scroll: usize,
+    cursor_offset: usize,
+    mode: Mode,
+}
+
+/// Phase 8 three-button `Save / Discard / Cancel` prompt shown when
+/// following a link would navigate away from a dirty buffer.  Carries
+/// the pending target across the modal's lifetime so we can resume the
+/// navigation once the user picks a button.
+struct DirtyGuardPrompt {
+    body: Vec<String>,
+    buttons: Vec<ModalButton>,
+    state: ModalState,
+    /// The destination that was about to be followed when the guard
+    /// fired.  Stored so we can re-dispatch after `Save` or `Discard`.
+    pending: PathBuf,
 }
 
 /// A modal popup currently shown on top of the editor.  We only model the
@@ -118,6 +147,23 @@ pub struct App {
     /// (which uses `try_recv` and can't put the event back).  Processed
     /// on the next loop iteration before calling `recv_timeout` again.
     pending_term_event: Option<Event>,
+    /// Phase 8 back-stack: `NavigateBack` pops the most-recent entry
+    /// and restores it.  A new link-follow clears `nav_forward`
+    /// (browser semantics).
+    nav_back: Vec<NavEntry>,
+    /// Phase 8 forward-stack: `NavigateBack` pushes the current state
+    /// here so `NavigateForward` can redo the navigation.
+    nav_forward: Vec<NavEntry>,
+    /// Dirty-buffer guard shown before navigating away from an unsaved
+    /// document.  `Some(prompt)` means the modal is currently
+    /// displayed; click / key events are absorbed by the modal until
+    /// dismissed.
+    dirty_guard: Option<DirtyGuardPrompt>,
+    /// Phase 8 — target of the link currently under the mouse
+    /// pointer, updated on every `MouseEventKind::Moved` event.
+    /// Phase 9 will render this (plus the link's `title`) on the hint
+    /// line.  Until then the field is wired through but not displayed.
+    hovered_link: Option<LinkTarget>,
 }
 
 /// After the scroll position stops changing for this long, images
@@ -265,6 +311,10 @@ impl App {
             last_draw_at: None,
             images_dirty: false,
             pending_term_event: None,
+            nav_back: Vec::new(),
+            nav_forward: Vec::new(),
+            dirty_guard: None,
+            hovered_link: None,
         })
     }
 
@@ -300,6 +350,14 @@ impl App {
                     tracing::debug!(target: "image", %err, "encoder request failed");
                     // Keep the pending FIFO balanced — see ImageCache.
                     self.editor.images.drop_pending_front();
+                }
+                Ok(AppEvent::LinkOpenResult(result)) => {
+                    // Phase 8: `open::that` finished in a worker.  Only
+                    // log — Phase 9 will surface failures on the hint
+                    // line.
+                    if let Err(msg) = result {
+                        tracing::warn!(target: "link", error = %msg, "link open failed");
+                    }
                 }
                 // A Term event pulled via `try_recv` cannot be put back
                 // into the channel, so stash it for the next iteration
@@ -420,6 +478,14 @@ impl App {
                 } else {
                     None
                 };
+                // Phase 8 dirty-guard takes priority over the remote
+                // prompt so the user's link-follow action isn't
+                // overshadowed by a startup-ish prompt.
+                let dirty_guard_ref = if notice_ref.is_none() && remote_prompt_ref.is_none() {
+                    self.dirty_guard.as_mut()
+                } else {
+                    None
+                };
                 terminal.draw(|frame| {
                     let view = EditorView {
                         state: editor_ref,
@@ -446,6 +512,14 @@ impl App {
                             theme: theme_ref,
                         };
                         frame.render_stateful_widget(modal, frame.area(), &mut prompt.state);
+                    } else if let Some(guard) = dirty_guard_ref {
+                        let modal = ModalView {
+                            title: "Unsaved changes",
+                            body: &guard.body,
+                            buttons: &guard.buttons,
+                            theme: theme_ref,
+                        };
+                        frame.render_stateful_widget(modal, frame.area(), &mut guard.state);
                     }
                 })?;
                 self.last_draw_at = Some(Instant::now());
@@ -498,6 +572,12 @@ impl App {
                         self.drain_pending_image_ready(&rx);
                         continue;
                     }
+                    Ok(AppEvent::LinkOpenResult(result)) => {
+                        if let Err(msg) = result {
+                            tracing::warn!(target: "link", error = %msg, "link open failed");
+                        }
+                        continue;
+                    }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         // No event — just redraw to apply any jitter-delay reveals.
                         continue;
@@ -505,6 +585,21 @@ impl App {
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             };
+
+            // Dirty-guard modal absorbs all input while it's visible.
+            // Evaluated before the other modal checks so the guard (which
+            // is opened on user action, not startup) always takes
+            // precedence.
+            if self.dirty_guard.is_some() {
+                if let Event::Key(key) = &event {
+                    if key.kind == KeyEventKind::Press {
+                        let doc_w = term_size.width as usize;
+                        let doc_h = term_size.height.saturating_sub(1) as usize;
+                        self.handle_dirty_guard_key(*key, doc_h, doc_w);
+                    }
+                }
+                continue;
+            }
 
             // Remote-image prompt absorbs all input while it's visible
             // (and only when the startup notice has already been dismissed).
@@ -555,6 +650,18 @@ impl App {
                     let desired = if in_doc {
                         let rel_col = mouse_event.column - doc_area.x;
                         let rel_row = mouse_event.row - doc_area.y;
+                        // Phase 8: also record the hovered link target
+                        // (or clear it) for the hint-line tooltip that
+                        // Phase 9 will surface.  Keeping this update in
+                        // the pointer-shape path means it fires on
+                        // every mouse-move, tracking the hover in real
+                        // time without an extra scan.
+                        self.hovered_link = mouse_ops::hovered_link_target(
+                            &self.editor,
+                            rel_col,
+                            rel_row,
+                            doc_width,
+                        );
                         if mouse_ops::hit_test_clickable(&self.editor, rel_col, rel_row, doc_width)
                         {
                             PointerShape::Hand
@@ -562,6 +669,7 @@ impl App {
                             PointerShape::Text
                         }
                     } else {
+                        self.hovered_link = None;
                         PointerShape::Default
                     };
                     self.update_pointer_shape(desired);
@@ -586,6 +694,12 @@ impl App {
                         );
                         if self.editor.scroll != scroll_before {
                             self.mark_scrolling();
+                        }
+                        // Phase 8: mouse click may have requested a link
+                        // follow.  Consume it before the preview-state
+                        // sync below so the navigation runs first.
+                        if let Some(target) = self.editor.pending_link_follow.take() {
+                            self.follow_link(target, doc_height, doc_width);
                         }
                     }
                 }
@@ -625,13 +739,26 @@ impl App {
             // ── Dispatch event → Action ───────────────────────────
             let mut handler = DefaultHandler::new(&keymap);
             if let Some(action) = handler.handle_event(event, &self.editor) {
-                let scroll_before = self.editor.scroll;
-                let quit = edit_ops::apply(&mut self.editor, action, doc_height, doc_width);
-                if quit {
-                    self.should_quit = true;
-                }
-                if self.editor.scroll != scroll_before {
-                    self.mark_scrolling();
+                // Phase 8 — App-level actions intercepted BEFORE the
+                // generic `edit_ops::apply` dispatch.  Link navigation
+                // mutates App state (nav stack, file load) that
+                // `EditorState` doesn't own, so these paths stay here.
+                let handled = self.handle_app_action(&action, doc_height, doc_width);
+                if !handled {
+                    let scroll_before = self.editor.scroll;
+                    let quit = edit_ops::apply(&mut self.editor, action, doc_height, doc_width);
+                    if quit {
+                        self.should_quit = true;
+                    }
+                    if self.editor.scroll != scroll_before {
+                        self.mark_scrolling();
+                    }
+                    // Edit actions may have set `pending_link_follow`
+                    // (FollowLinkUnderCursor doesn't hit `handle_app_action`
+                    // path only when the action ISN'T App-level).
+                    if let Some(target) = self.editor.pending_link_follow.take() {
+                        self.follow_link(target, doc_height, doc_width);
+                    }
                 }
                 // New decodes (e.g. from an edit that added an image
                 // inside the viewport, or a scroll that brought one
@@ -657,6 +784,326 @@ impl App {
 
         Ok(())
     }
+
+    // ── Phase 8 — link navigation ─────────────────────────────────────────
+
+    /// Intercept App-level actions (`FollowLinkUnderCursor`,
+    /// `NavigateBack`, `NavigateForward`) before they hit `edit_ops::apply`.
+    /// `TableMoveColumnLeft` / `TableMoveColumnRight` outside a table
+    /// also short-circuit to navigation so the default Alt+Arrow
+    /// keybinding feels natural even without an override.
+    ///
+    /// Returns `true` when the action was fully handled here; `false`
+    /// means the caller should fall through to `edit_ops::apply`.
+    fn handle_app_action(&mut self, action: &Action, doc_height: usize, doc_width: usize) -> bool {
+        match action {
+            Action::FollowLinkUnderCursor => {
+                if let Some(target) = self.resolve_link_at_cursor() {
+                    self.follow_link(target, doc_height, doc_width);
+                }
+                true
+            }
+            Action::NavigateBack => {
+                self.navigate_back(doc_height, doc_width);
+                true
+            }
+            Action::NavigateForward => {
+                self.navigate_forward(doc_height, doc_width);
+                true
+            }
+            // Default Alt+Arrow bindings land on the table actions; when
+            // the cursor is outside any table, redirect them to nav.
+            Action::TableMoveColumnLeft if !cursor_in_table(&self.editor) => {
+                self.navigate_back(doc_height, doc_width);
+                true
+            }
+            Action::TableMoveColumnRight if !cursor_in_table(&self.editor) => {
+                self.navigate_forward(doc_height, doc_width);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Resolve the link under the keyboard cursor by scanning the
+    /// current raw line for `[text](url)` syntax and classifying the
+    /// URL.  Mirrors `mouse_ops::link_at_offset` — keyboard and mouse
+    /// paths use the same fallback scan so they behave identically
+    /// regardless of which input device fired `FollowLink`.
+    fn resolve_link_at_cursor(&self) -> Option<LinkTarget> {
+        let cursor_byte = self
+            .editor
+            .buffer
+            .rope()
+            .char_to_byte(self.editor.cursor.offset);
+        let source = self.editor.buffer.contents();
+        let url = mouse_ops::link_at_offset(&source, cursor_byte)?;
+        let base_dir = self.file_path.as_deref().and_then(|p| p.parent());
+        Some(LinkTarget::parse(&url, base_dir))
+    }
+
+    /// Central dispatch: follow `target` based on its classified kind.
+    /// Returns without doing anything when `target` is an empty anchor
+    /// (`url == "#"`), an unknown heading slug, or when the dirty
+    /// guard intercepts the navigation.
+    fn follow_link(&mut self, target: LinkTarget, doc_height: usize, doc_width: usize) {
+        match target {
+            LinkTarget::Url(url) => {
+                self.spawn_open_worker(url);
+            }
+            LinkTarget::Anchor(slug) => {
+                self.scroll_to_heading(&slug, doc_height, doc_width);
+            }
+            LinkTarget::LocalFile(path) => {
+                if is_markdown_path(&path) {
+                    if self.editor.dirty {
+                        self.open_dirty_guard(path);
+                    } else {
+                        self.navigate_to_file(path);
+                    }
+                } else {
+                    // Non-Markdown local file — defer to the OS handler
+                    // via the same worker path as remote URLs.
+                    let url = path.to_string_lossy().into_owned();
+                    self.spawn_open_worker(url);
+                }
+            }
+        }
+    }
+
+    /// Spawn a worker thread that calls `open::that` and reports the
+    /// outcome via `AppEvent::LinkOpenResult`.  Keeps the UI thread
+    /// responsive — `xdg-open` can take several hundred milliseconds
+    /// on some desktops.
+    fn spawn_open_worker(&self, target: String) {
+        let Some(tx) = self.app_tx.clone() else {
+            return;
+        };
+        std::thread::spawn(move || {
+            let result = open::that(&target).map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::LinkOpenResult(result));
+        });
+    }
+
+    /// Scroll so `slug`'s heading sits at the top of the viewport.
+    /// No-op if the slug isn't in the current document's anchor table.
+    /// In editing modes (Rendered / Raw) also moves the cursor onto
+    /// the heading so subsequent navigation feels anchored.
+    fn scroll_to_heading(&mut self, slug: &str, doc_height: usize, doc_width: usize) {
+        let Some(&line_idx) = self.editor.parsed.heading_anchors.get(slug) else {
+            return;
+        };
+        self.editor.scroll = line_idx;
+        if self.editor.mode != Mode::Preview {
+            // Move cursor to the heading's first byte so subsequent
+            // keyboard edits operate on that block.
+            if let Some(byte) = self
+                .editor
+                .parsed
+                .source_map
+                .original_byte_for_rendered_line(line_idx)
+            {
+                let char_offset = self.editor.buffer.rope().byte_to_char(byte);
+                self.editor.cursor.offset = char_offset.min(self.editor.buffer.len_chars());
+                self.editor.update_cursor_block();
+                self.editor.ensure_cursor_visible(doc_height, doc_width);
+            }
+        }
+        self.mark_scrolling();
+    }
+
+    /// Push the current (file, scroll, cursor, mode) onto `nav_back`
+    /// and load `path` into the editor.  Clears `nav_forward` to match
+    /// browser semantics.
+    fn navigate_to_file(&mut self, path: PathBuf) {
+        let entry = self.current_nav_entry();
+        if let Err(err) = self.load_file_into_editor(path.clone()) {
+            tracing::warn!(target: "link", path = %path.display(), error = %err, "failed to load linked file");
+            return;
+        }
+        if let Some(e) = entry {
+            self.nav_back.push(e);
+        }
+        self.nav_forward.clear();
+    }
+
+    /// Replace the editor's buffer with the contents of `path` and
+    /// refresh dependent caches.  Does NOT touch the nav stack — the
+    /// caller decides whether the transition should record history.
+    fn load_file_into_editor(&mut self, path: PathBuf) -> Result<()> {
+        let buffer = Buffer::load_file(&path)?;
+        let new_editor = EditorState::new_with_image_config(
+            buffer,
+            self.theme,
+            self.config.editor.preserve_blank_lines,
+            self.config.editor.visual_line_nav,
+            self.config.image.max_height,
+            self.config.image.max_width,
+            self.capabilities
+                .image_picker
+                .as_ref()
+                .map(|p| p.font_size())
+                .unwrap_or((10, 20)),
+        );
+        self.editor = new_editor;
+        // Image cache is owned by `EditorState`, so swapping to a new
+        // editor resets it — image URLs on the new doc are resolved
+        // against the new base directory on the next draw.
+        self.file_path = Some(path);
+        self.view_state = EditorViewState::new(self.editor.parsed.lines.clone());
+        self.images_dirty = true;
+        Ok(())
+    }
+
+    /// Snapshot the editor's current nav state.  Returns `None` when
+    /// there's no associated file path — we can't push an entry we
+    /// can't restore.
+    fn current_nav_entry(&self) -> Option<NavEntry> {
+        self.file_path.clone().map(|path| NavEntry {
+            path,
+            scroll: self.editor.scroll,
+            cursor_offset: self.editor.cursor.offset,
+            mode: self.editor.mode,
+        })
+    }
+
+    /// Pop `nav_back` (if any), push the current state onto
+    /// `nav_forward`, and load the popped file.  Respects the dirty
+    /// guard the same way forward navigation does.
+    fn navigate_back(&mut self, doc_height: usize, doc_width: usize) {
+        let Some(dest) = self.nav_back.pop() else {
+            return;
+        };
+        if self.editor.dirty {
+            // Dirty guard path: restore the popped entry onto the back
+            // stack (so Cancel is a true no-op) and prompt the user.
+            let target = dest.path.clone();
+            self.nav_back.push(dest);
+            self.open_dirty_guard(target);
+            return;
+        }
+        self.navigate_to_entry(dest, doc_height, doc_width, /*forward=*/ false);
+    }
+
+    fn navigate_forward(&mut self, doc_height: usize, doc_width: usize) {
+        let Some(dest) = self.nav_forward.pop() else {
+            return;
+        };
+        if self.editor.dirty {
+            let target = dest.path.clone();
+            self.nav_forward.push(dest);
+            self.open_dirty_guard(target);
+            return;
+        }
+        self.navigate_to_entry(dest, doc_height, doc_width, /*forward=*/ true);
+    }
+
+    /// Shared back/forward dispatch: push the current state onto the
+    /// opposite stack, then load `dest` and restore the recorded
+    /// scroll/cursor/mode.
+    fn navigate_to_entry(
+        &mut self,
+        dest: NavEntry,
+        doc_height: usize,
+        doc_width: usize,
+        forward: bool,
+    ) {
+        let current = self.current_nav_entry();
+        if let Err(err) = self.load_file_into_editor(dest.path.clone()) {
+            tracing::warn!(target: "link", path = %dest.path.display(), error = %err, "nav load failed");
+            return;
+        }
+        if let Some(e) = current {
+            if forward {
+                self.nav_back.push(e);
+            } else {
+                self.nav_forward.push(e);
+            }
+        }
+        // Restore the saved scroll / cursor / mode on the loaded doc.
+        self.editor.scroll = dest
+            .scroll
+            .min(self.editor.parsed.line_count().saturating_sub(1));
+        self.editor.cursor.offset = dest.cursor_offset.min(self.editor.buffer.len_chars());
+        self.editor.mode = dest.mode;
+        self.editor.update_cursor_block();
+        self.editor.ensure_cursor_visible(doc_height, doc_width);
+    }
+
+    /// Show the three-button `Save / Discard / Cancel` modal for the
+    /// pending link-follow destination.  Caller supplies the resolved
+    /// destination path.
+    fn open_dirty_guard(&mut self, pending: PathBuf) {
+        let display = self
+            .file_path
+            .as_deref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "current file".to_owned());
+        let body = vec![
+            format!("{} has unsaved changes.", display),
+            String::new(),
+            format!("Opening {} will abandon them.", pending.display()),
+            String::new(),
+            "What would you like to do?".to_owned(),
+        ];
+        self.dirty_guard = Some(DirtyGuardPrompt {
+            body,
+            buttons: vec![
+                ModalButton::new("Save"),
+                ModalButton::new("Discard"),
+                ModalButton::new("Cancel"),
+            ],
+            state: ModalState::new(),
+            pending,
+        });
+    }
+
+    /// Apply a keypress to the dirty-guard modal.  The three buttons
+    /// map to: 0 = Save (persist, continue), 1 = Discard (continue
+    /// without saving), 2 = Cancel (abort).  Escape is Cancel.
+    fn handle_dirty_guard_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+        doc_height: usize,
+        doc_width: usize,
+    ) {
+        let Some(guard) = self.dirty_guard.as_mut() else {
+            return;
+        };
+        let num_buttons = guard.buttons.len();
+        let response = guard.state.handle_key(&key, num_buttons);
+        match response {
+            ModalResponse::Continue => {}
+            ModalResponse::Cancelled => {
+                self.dirty_guard = None;
+            }
+            ModalResponse::ButtonPressed(idx) => {
+                let pending = guard.pending.clone();
+                self.dirty_guard = None;
+                match idx {
+                    0 => {
+                        if self.editor.buffer.save_file().is_ok() {
+                            self.editor.dirty = false;
+                            self.navigate_to_file(pending);
+                        } else {
+                            tracing::warn!(target: "link", "save-before-navigate failed");
+                        }
+                    }
+                    1 => {
+                        self.editor.dirty = false;
+                        self.navigate_to_file(pending);
+                    }
+                    _ => {}
+                }
+                // Whichever button ran, kick a redraw so the modal
+                // disappears.
+                self.editor.ensure_cursor_visible(doc_height, doc_width);
+            }
+        }
+    }
+
+    // ── End Phase 8 navigation helpers ────────────────────────────────────
 
     /// Apply a keypress targeted at the startup-notice modal.  On dismissal
     /// clears the notice and, if the user chose "Don't show this again",
@@ -928,6 +1375,28 @@ fn build_startup_notice(caps: &Capabilities, config: &Config) -> Option<StartupN
         ],
         state: ModalState::new(),
     })
+}
+
+/// True when `path` ends in `.md` / `.markdown` (case-insensitive).
+/// Used by `App::follow_link` to decide whether a LocalFile link
+/// should be opened in-editor or handed off to the OS default app.
+fn is_markdown_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            let lower = e.to_ascii_lowercase();
+            lower == "md" || lower == "markdown"
+        })
+        .unwrap_or(false)
+}
+
+/// True when the editor's cursor sits inside a table block.  Mirrors
+/// the check used by `edit_ops::cursor_in_table`; re-implemented here
+/// to keep the App free of a cross-module private dep.
+fn cursor_in_table(state: &EditorState) -> bool {
+    let cursor_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
+    let source = state.buffer.contents();
+    crate::editor::table_edit::find_table_at(&source, cursor_byte).is_some()
 }
 
 // ── Extension trait for DefaultHandler ───────────────────────────────────────

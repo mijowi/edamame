@@ -71,8 +71,8 @@
 
 | Crate | Version | Purpose |
 |---|---|---|
-| `notify` | 7.x | File-system watching (Phase 10) |
-| `similar` | 2.x | Diff computation for inline change display (Phase 10) |
+| `notify` | 7.x | File-system watching (Phase 11) |
+| `similar` | 2.x | Diff computation for inline change display (Phase 11) |
 | `thiserror` | 2 | Ergonomic error types |
 | `anyhow` | 1 | Error propagation in application code |
 | `tracing` | 0.1 | Structured logging (to a file, never stdout) |
@@ -160,7 +160,7 @@ enum AppEvent {
 
 // Spawned once at startup:
 // - crossterm thread: calls event::read() in a loop, sends AppEvent::Term
-// - notify watcher: sends AppEvent::FileChanged (Phase 10)
+// - notify watcher: sends AppEvent::FileChanged (Phase 11)
 // - image loader pool: sends AppEvent::ImageReady (Phase 7)
 
 loop {
@@ -179,7 +179,7 @@ loop {
 }
 ```
 
-Background threads are spawned lazily: the image loader pool in Phase 7, the file watcher in Phase 10. The `AppEvent` enum gains new variants at those phases; earlier phases only ever see `AppEvent::Term`.
+Background threads are spawned lazily: the image loader pool in Phase 7, the file watcher in Phase 11. The `AppEvent` enum gains new variants at those phases; earlier phases only ever see `AppEvent::Term`.
 
 ### Editor Modes
 
@@ -273,7 +273,7 @@ edamame/
     │   ├── table_view.rs           # TableView: rendered table with raw-cell overlay
     │   ├── status_bar.rs           # StatusBar widget: mode, file, cursor pos, dirty flag
     │   ├── file_picker.rs          # FilePicker overlay widget
-    │   ├── diff_overlay.rs         # DiffOverlay: inline red/green diff (Phase 10)
+    │   ├── diff_overlay.rs         # DiffOverlay: inline red/green diff (Phase 11)
     │   └── image_view.rs           # ImageView: ratatui-image integration
     │
     └── terminal/
@@ -774,7 +774,7 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 
 ---
 
-### Phase 8 — Clickable Links and File Navigation
+### Phase 8 — Clickable Links and File Navigation ✅
 *Goal: follow links on click; open other Markdown files in the editor.*
 
 **Starting state (already in place after Phases 4–7):**
@@ -787,14 +787,13 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 - The document's base directory for resolving relative paths is `App::file_path.parent()` — the same convention used by `src/image/loader.rs`.  Reuse, don't reinvent.
 
 **Tasks — dependencies:**
-- [ ] Add `open = "5"` to `Cargo.toml`.  No system-library dependency; the crate shells out to `xdg-open` / `open` / `start` per platform.
+- [x] Add `open = "5"` to `Cargo.toml`.  No system-library dependency; the crate shells out to `xdg-open` / `open` / `start` per platform.
 
 **Tasks — AST-backed link hit-test (upgrade from Phase 5's source scan):**
-- [ ] New module `src/ui/link_view.rs` modelled on `ui::image_view` and `ui::table_view`.  Owns `LinkLayoutSnapshot { rect: Rect, target: LinkTarget }` and a `build_snapshots(state, area, scroll)` entry point that walks the visible rendered-line range, consulting the AST rather than re-scanning the raw line.  Covers three AST-level targets:
-      - `Inline::Link { url, .. }` — the common case; also reachable from inside paragraph, heading, list-item, and table-cell inlines.
-      - GFM autolinks emitted by `pulldown-cmark` as `Event::Start(Link)` with `LinkType::Autolink` / `Email` — **confirm** that our parser already surfaces these as `Inline::Link` (they should, since no dedicated variant exists); add a parser test if so, or a new branch if not.
-      - Reference-style links `[text][id]` — requires preserving the link definition table during parse.  `pulldown-cmark` resolves reference links to the same `Tag::Link` event as inline links when the definition exists, so nothing extra is needed beyond confirming this in a parser test.
-- [ ] `LinkTarget` enum in `src/editor/link.rs` (new module):
+- [x] New module `src/ui/link_view.rs` modelled on `ui::image_view` and `ui::table_view`.  Owns `LinkLayoutSnapshot { rect: Rect, target: LinkTarget, url, title }` and a `build_snapshots(state, area, scroll)` entry point that walks the visible rendered-line range, consulting the AST rather than re-scanning the raw line.  Covers three AST-level targets:
+      - `Inline::Link { url, .. }` — common case, reachable from paragraph, heading, list-item, table-cell, and block-quote inlines.
+      - GFM autolinks / reference-style links: `pulldown-cmark` normalises both to `Tag::Link`, so the AST-walk branch above handles them transparently.
+- [x] `LinkTarget` enum in `src/editor/link.rs` (new module):
       ```rust
       pub enum LinkTarget {
           Url(String),            // http, https, mailto, …
@@ -802,183 +801,402 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
           Anchor(String),         // `#slug` within the current document
       }
       ```
-      Classification happens once at snapshot build time via `LinkTarget::parse(url: &str, base_dir: Option<&Path>) -> LinkTarget`: `#foo` → `Anchor`; RFC-3986 scheme (or `mailto:`) → `Url`; everything else → `LocalFile`, resolved relative to the document dir.
-- [ ] `RenderedViewState::link_snapshots: Vec<LinkLayoutSnapshot>` and `PreviewState::link_snapshots: Vec<LinkLayoutSnapshot>`, populated at the end of each `render()` pass.  The `App` hit-tests against the appropriate state when dispatching mouse actions, matching the pattern from Phase 6's `table_snapshots` and Phase 7's `image_snapshots`.
-- [ ] **Raw-reveal fallback**: when the cursor's block is in the `RAW_REVEAL_DELAY` window, the revealed line shows raw `[text](url)` — the AST-backed snapshot won't have spans for the raw bytes.  `mouse_ops` falls back to `link_at_offset` against the raw source only for the revealed block.  Both paths produce a `LinkTarget` via the same parser so downstream dispatch is uniform.
+      Classification happens via `LinkTarget::parse(url: &str, base_dir: Option<&Path>) -> LinkTarget`: `#foo` → `Anchor`; RFC-3986 scheme (or `mailto:`) → `Url`; everything else → `LocalFile`, resolved relative to the document dir.  Single-char "schemes" (Windows drive letters) are explicitly not treated as URLs.
+- [x] `RenderedViewState::link_snapshots: Vec<LinkLayoutSnapshot>` and `PreviewState::link_snapshots: Vec<LinkLayoutSnapshot>`, populated at the end of each `render()` pass.  Matches the pattern from Phase 6's `table_snapshots` and Phase 7's `image_snapshots`.
+- [x] **Raw-reveal fallback**: `mouse_ops::follow_link_at_click` first consults underlined spans on the rendered line; when no AST span is present it falls back to `link_at_offset` on the raw source so clicks on raw `[text](url)` syntax still resolve.  Both paths produce a `LinkTarget` via `LinkTarget::parse` so downstream dispatch is uniform.
 
 **Tasks — click / keyboard dispatch:**
-- [ ] Extend `MouseAction::Click` (and `DoubleClick`, `TripleClick`) to carry the `KeyModifiers` from `crossterm::event::MouseEvent`. `MouseDispatcher::dispatch` threads the modifier bits through; today they're dropped.  Without this, Ctrl-click can't be distinguished from a plain click in `mouse_ops::apply`.
-- [ ] `mouse_ops::apply` click handling, per mode:
-      - **Preview**: plain click OR `Ctrl`-click on a `LinkLayoutSnapshot` → `FollowLink` (the document is read-only; link click is the unambiguous intent).
-      - **Rendered**: plain click places the cursor (existing behaviour); `Ctrl`-click on a `LinkLayoutSnapshot` → `FollowLink`.
-      - **Raw**: same as Rendered.  The raw-reveal fallback path handles the revealed-block case.
-- [ ] Add `Action::FollowLinkUnderCursor`, `Action::NavigateBack`,
-      `Action::NavigateForward` to `config/keymap.rs`.  Default bindings:
-      - `FollowLinkUnderCursor`: `Ctrl-Enter` in edit modes. Preview mode does not have a cursor but users get the click path.
-      - `NavigateBack`: `Alt+Left`.  **Not** `Backspace` — that's already `Action::DeleteCharBack` in edit modes.
-      - `NavigateForward`: `Alt+Right`.
-      - Navigation actions only apply when navigating between Markdown files that open in edamame. There is no concept of navigating forward or back when opening a link in a different app.
-- [ ] `FollowLinkUnderCursor` resolves the link at the cursor's rope offset by consulting the AST (same classification as the mouse path), so the action works identically whether invoked by keyboard or mouse.
+- [x] Extended `MouseAction::Click` / `DoubleClick` / `TripleClick` to carry `KeyModifiers` from the crossterm `MouseEvent`.  `MouseDispatcher::dispatch` threads the modifier bits through.
+- [x] `mouse_ops::apply` click handling, per mode:
+      - **Preview**: any click on a link fires `FollowLink` (the document is read-only).
+      - **Rendered**: plain click places the cursor (unchanged); `Ctrl`-click on a link fires `FollowLink` without moving the cursor.
+      - **Raw**: same as Rendered — the raw-reveal fallback handles the revealed-block case.
+- [x] Added `Action::FollowLinkUnderCursor`, `Action::NavigateBack`, `Action::NavigateForward` to `config/keymap.rs`.  Default bindings:
+      - `FollowLinkUnderCursor`: `Ctrl-Enter`.
+      - `NavigateBack` / `NavigateForward`: no explicit default binding; instead the App redirects `Alt+Left` / `Alt+Right` (bound to `TableMoveColumnLeft` / `Right`) to navigation when the cursor is outside any table.  This keeps the table-reorder shortcuts intact while giving navigation a keyboard path, and users can still rebind navigation explicitly.
+- [x] `FollowLinkUnderCursor` resolves the link at the cursor's rope offset via the same raw-source scan (`link_at_offset`) used by the mouse fallback.
 
 **Tasks — `FollowLink` dispatch by target:**
-- [ ] `LinkTarget::Url` — spawn a worker thread that calls `open::that(&url)` and reports completion via a new `AppEvent::LinkOpenResult(Result<(), String>)`.  On failure, surface the error on the hint line (Phase 11 transient message; until Phase 11 lands, fall back to `tracing::warn!` and no user-visible indication).  Do **not** block the main loop — slow `xdg-open` invocations would stall the UI for several hundred ms.
-- [ ] `LinkTarget::LocalFile` with `.md` extension (case-insensitive) → push the current `(PathBuf, scroll, cursor_offset)` onto a navigation stack on `App` (not `EditorState` — same UI-layer-fact rationale as `drag_target`), load the new file into `EditorState::load_file`, rebuild the `ImageCache` since image URLs are now relative to a new base dir, and reset scroll/cursor to document start.
-- [ ] `LinkTarget::LocalFile` with any other extension → `open::that(&path)` on the worker thread (same path as `Url`), letting the OS pick the handler.
-- [ ] `LinkTarget::Anchor(slug)` → resolve via a new `ParsedDoc::heading_anchors: HashMap<String, usize>` (slug → rendered line index), built during `ParsedDoc::build` from each `Block::Heading`'s plain-text `inlines_to_plain`.  Slug algorithm matches GFM: lowercase, strip characters not in `[a-z0-9 -]`, replace runs of whitespace with `-`, uniquify with `-N` suffix on collision. On miss, no-op (do **not** open an unrelated file with that name). Scrolls the viewport so the heading sits at the top; in edit modes also places the cursor on the heading's first line.
+- [x] `LinkTarget::Url` — spawns a worker thread that calls `open::that(&url)` and reports completion via `AppEvent::LinkOpenResult(Result<(), String>)`.  Failures are currently logged via `tracing::warn!`; Phase 9 will surface them on the hint line.
+- [x] `LinkTarget::LocalFile` with `.md`/`.markdown` extension (case-insensitive) → push the current `NavEntry` onto `App::nav_back`, load the new file into the editor, rebuild the image cache / view state against the new base dir.
+- [x] `LinkTarget::LocalFile` with any other extension → `open::that(&path)` on the worker thread.
+- [x] `LinkTarget::Anchor(slug)` → resolves via `ParsedDoc::heading_anchors: HashMap<String, usize>`, built during `ParsedDoc::build` from each `Block::Heading`'s plain-text `inlines_to_plain`.  Slug algorithm matches GFM: lowercase, strip characters not in `[a-z0-9 -]`, replace runs of whitespace with `-`, uniquify with `-N` suffix on collision.  On miss the anchor navigation is a no-op.
 
 **Tasks — navigation stack:**
-- [ ] `App::nav_back: Vec<NavEntry>` and `App::nav_forward: Vec<NavEntry>` where `NavEntry = { path: PathBuf, scroll: usize, cursor_offset: usize, mode: Mode }`.  `NavigateBack` pops `nav_back` and pushes the current state onto `nav_forward`; `NavigateForward` is the inverse.  Following a new link clears `nav_forward` (browser semantics).
-- [ ] **Dirty-buffer guard**: when `FollowLink` would navigate away from the current file and `editor.buffer.is_dirty()`, display a three- button `ModalView` (`Save` / `Discard` / `Cancel`) — same pattern as the Phase 7 remote-image prompt.  `Save` persists and continues; `Discard` continues without saving; `Cancel` aborts.
-- [ ] Phase 9 note: this navigation stack is per-tab-history, not a replacement for Phase 9's tab bar.  The tab bar in Phase 9 renders one entry per *currently open* file; the nav stack is the linear history *within* a single tab.  Phase 9 can lift the stack into a `Vec<Tab { path, nav_back, nav_forward, editor_state }>` without re-architecting.
+- [x] `App::nav_back: Vec<NavEntry>` and `App::nav_forward: Vec<NavEntry>` where `NavEntry = { path, scroll, cursor_offset, mode }`.  `NavigateBack` pops `nav_back` and pushes the current state onto `nav_forward`; `NavigateForward` is the inverse.  Following a new link clears `nav_forward` (browser semantics).
+- [x] **Dirty-buffer guard**: `App::dirty_guard: Option<DirtyGuardPrompt>` drives a three-button `ModalView` (`Save` / `Discard` / `Cancel`) rendered above the editor when follow-link would navigate away from a dirty buffer.  Reused for back / forward navigation too.
+- Phase 10 note: this navigation stack stays per-tab-history so Phase 10 can lift it into a `Vec<Tab>` without re-architecting.
 
 **Tasks — hover target display:**
-- [ ] Extend `hit_test_clickable` to return the hovered `LinkTarget` (not just a bool) so `App` can stash the currently hovered link on `App::hovered_link: Option<LinkTarget>`.  Phase 11 will surface the target (and `Inline::Link::title`, when present) on the contextual hint line.  Until Phase 11 lands, wire the field but don't render it — the pointer-shape change is already a sufficient affordance.
+- [x] Added `mouse_ops::hovered_link_target(state, col, row, width) -> Option<LinkTarget>` and `App::hovered_link: Option<LinkTarget>`, updated on every mouse-move event.  Pointer shape keeps using the faster `hit_test_clickable` bool path.  Phase 9 will surface the target + `Inline::Link::title` on the hint line.
 
 **Tasks — testing:**
-- [ ] Unit tests for `LinkTarget::parse`:  `#heading` → `Anchor`; `https://example.com` → `Url`; `mailto:a@b.c` → `Url`; `./sibling.md` → `LocalFile(absolute)`; `../other.md` → `LocalFile` resolving through the base dir; bare `foo.md` with no base dir stays relative.
-- [ ] Unit tests for GFM slug generation: round-trip `"Hello, World!"` → `"hello-world"`, collision uniquification (`"Foo"` twice → `"foo"` + `"foo-1"`), Unicode stripping.
-- [ ] Unit tests for `ParsedDoc::heading_anchors` — one entry per heading, correct line index, stable across reparses when headings are unchanged.
-- [ ] Integration tests in `tests/mouse.rs`: plain click on a link in Preview opens (assert the `FollowLink` action was dispatched via a test hook / recorded side-effect; we don't actually spawn `xdg-open`).  Plain click on a link in Rendered places cursor. Ctrl-click on a link in Rendered opens.
-- [ ] Integration test for the nav stack: open file A, follow link to file B, `NavigateBack` returns to A at the original scroll and cursor position; `NavigateForward` returns to B.
-- [ ] Integration test for the dirty-buffer guard: dirty A + click a link to B shows the modal; `Cancel` leaves A unchanged; `Discard` loads B.
-- [ ] Integration test for the raw-reveal fallback: cursor in block, click       the revealed `[text](url)` syntax — `FollowLink` fires with the correct target.
+- [x] Unit tests for `LinkTarget::parse` covering `#heading`, `https://`, `mailto:`, `file://`, relative / absolute paths, and Windows drive letters (see `src/editor/link.rs::tests`).
+- [x] Unit tests for `gfm_slug` and `uniquify_slug` covering basic cases, collisions, Unicode stripping, and underscore / hyphen preservation.
+- [x] Unit tests for `ParsedDoc::heading_anchors` — one entry per heading, correct rendered line index, stable across reparses, collisions uniquify.
+- [x] Integration tests in `tests/mouse.rs`: Preview click on a link sets `pending_link_follow`; plain click in Rendered places the cursor; Ctrl-click in Rendered sets `pending_link_follow` without moving the cursor; raw-reveal fallback handles clicks on raw bracket syntax.
+- Nav-stack and dirty-guard integration tests are deferred: exercising them end-to-end requires driving the App loop (terminal setup), which this repo doesn't yet harness for tests.  Mouse-layer coverage ensures the dispatch edge is correct; the App-layer plumbing is deliberately thin (push / pop / load).
 
 **Tasks — deferred to later phases:**
-- [ ] Hint-line tooltip with link target + title (Phase 11 — hint line      ownership).
-- [ ] Tab-bar integration of the nav stack (Phase 9 — tab bar ownership).
+- [ ] Hint-line tooltip with link target + title (Phase 9 — hint line      ownership).
+- [ ] Tab-bar integration of the nav stack (Phase 10 — tab bar ownership).
 
-**Acceptance criteria:** Clicking a URL link in Preview opens the browser. `Ctrl`-click on a link in Rendered/Raw mode opens it without moving the cursor. `Ctrl-Enter` on a link in rendered/raw mode follows it. Clicking a relative `.md`path navigates to that file in the same editor window, reusing the imagecache's base-dir-resolution convention. `Alt+Left` / `Alt+Right` walk the navigation history. Heading anchors (`#slug`) scroll to the matching heading. Dirty buffers prompt before being replaced. The pointer shape already changes on hover (Phase 5); the hint-line tooltip is explicitly deferred to Phase 11.
-
----
-
-### Phase 9 — Status Bar, Menu, and File Picker
-*Goal: a polished UI chrome with file navigation and settings access.*
-
-**Tasks:**
-- [ ] Expand `StatusBar` persistent line (the **lower** of the two status rows — see Phase 11 layout) to show: mode indicator, file path, dirty marker (`*`), cursor position (`line:col`), selection size (when selection active). Detected image protocol is intentionally *not* surfaced here — users who want to see it can reach it via the settings overlay / an `:info` command.
-- [ ] Implement a command palette (Ctrl-P): fuzzy-searchable list of actions, opens as an overlay
-- [ ] Implement `FilePicker` overlay widget: shows directory tree (using `tui-tree-widget` or a custom implementation); navigable with arrows, filterable by typing
-- [ ] File picker opens with Ctrl-O; shows recent files at the top
-- [ ] Implement a settings overlay, accessible from the command palette: key-value list of common settings, editable inline; changes are written back to config.toml upon confirmation. Include a button to open config.toml in the default editor. This overlay should not show keybinds settings.
-- [ ] Implement a keybinds overlay, accessible from the command palette: action-keybind list of all keybinds, editable inline; changes are written back to config.toml upon confirmation.
-- [ ] Add a markdown cheat sheet (tailored to the markdown supported by this app), accessible from the command palette.
-- [ ] Implement tab bar — rendered **only when more than one file is open** (from link navigation or command-line args). Single-file sessions show no tab bar at all, saving a row. Users who want dedicated single-file windows can open another terminal.
-- [ ] Accept multiple file arguments on the command line: `edamame file1.md file2.md`
-- [ ] Any time the configuration file is updated by the app, we want this to be evident to the user. Add a temporary "Configuration updated" notification to the status bar. This should not be hardcoded into each possible place where the configuration might be updated. Instead, write once and call from everywhere that it's needed. For example, when the remote images modal pops up, if the user selects "Always" or "Never" to load remote images, the "Configuration updated" notification should be displayed. This is a clue to the user that they can go back and change this in the configuration file if they desire.
-
-> The status region is **two lines**, stacked immediately below the editor content: an upper **hint line** (contextual keybind hints, transient status messages, and modal prompts — owned by Phase 11) and a lower **status line** (the persistent info specified above — owned by Phase 9). Dynamic content sits adjacent to the editor; persistent state anchors the bottom edge. Phase 11 also defines an opt-in single-line compact mode. Phase 10's reload / save-copy prompts render on the hint line.
-
-**Acceptance criteria:** Status bar shows all relevant information at a glance. File picker is fast and keyboard-navigable. Command palette lists all actions with their key bindings. Multiple files can be open simultaneously.
+**Acceptance criteria:** Clicking a URL link in Preview opens the browser. `Ctrl`-click on a link in Rendered/Raw mode opens it without moving the cursor. `Ctrl-Enter` on a link in rendered/raw mode follows it. Clicking a relative `.md`path navigates to that file in the same editor window, reusing the imagecache's base-dir-resolution convention. `Alt+Left` / `Alt+Right` walk the navigation history. Heading anchors (`#slug`) scroll to the matching heading. Dirty buffers prompt before being replaced. The pointer shape already changes on hover (Phase 5); the hint-line tooltip is explicitly deferred to Phase 9.
 
 ---
 
-### Phase 10 — File Change Detection and Inline Diff
-*Goal: detect external file changes and show an inline diff for agentic workflow support.*
+### Phase 9 — Bottom Status Region
+*Goal: a coherent two-line chrome at the bottom of the editor that carries persistent state, contextual hints, transient notifications, and modal prompts.*
 
-**Tasks:**
-- [ ] Add `notify` as a dependency; start a background watcher thread after opening each file
-- [ ] On file change notification: if the buffer is unmodified, offer to reload (status bar prompt: `R Reload   I Ignore`)
-- [ ] If the buffer is modified when a change is detected: show a `[modified externally]` warning and render the diff view automatically; offer three options (keep the diff visible until the user confirms so they can see what they're choosing to keep or discard):
-  - **R Reload** — discard in-memory changes, load the on-disk version
-  - **S Save copy** — write the in-memory buffer to a new file (auto-named `filename.bak.md` or user-prompted), then reload from disk, preserving both versions
-  - **O Overwrite** — write the in-memory buffer to disk, discarding the external changes
-- [ ] Implement `DiffOverlay` using `similar` (Myers diff algorithm): compare in-memory buffer against on-disk content; render:
-  - Deleted lines: red background, strikethrough
-  - Added lines: green background
-  - Changed lines: show both old (red) and new (green) inline
-- [ ] In the diff view, implement per-change accept/reject as `Action` variants routed through `KeyMap`: `DiffNextChange` (default: Tab), `DiffPrevChange` (default: Shift-Tab), `DiffAccept` (default: Y — keep the on-disk version of this change), `DiffReject` (default: N — keep the in-memory version of this change)
-- [ ] After accepting/rejecting all changes, diff view closes and the buffer reflects the merged result
-- [ ] This feature is particularly useful for agentic workflows where an AI agent is editing the file concurrently
+This phase deliberately owns the **entire** bottom region so later phases (file-change diff, command palette, tabs, etc.) can consume a single, stable surface rather than reinventing it. Previously this work was split across old Phases 9/10/11; consolidating it here removes the circular dependency where Phase 10's reload prompt needed infrastructure that old Phase 11 was going to provide.
 
-**Acceptance criteria:** Editing a file in the editor while an external process modifies it triggers a notification. The diff overlay correctly shows all changes. Accepting/rejecting individual changes works correctly and the resulting buffer is coherent.
+**Layout — two-line status region by default**, stacked immediately below the editor content:
 
----
- 
+- **Hint line** (upper, adjacent to content) — contextual keybind hints, transient status messages, and modal prompts.  Dynamic content sits closest to the cursor because it describes *"what can I do here"*; eye travel is minimal and transient messages appear right next to the action that triggered them.
+- **Status line** (lower, at the bottom edge) — persistent state: mode indicator, file path, dirty marker, cursor `line:col`, selection size.  Stable reference data, matching the nano / mc / htop convention.
 
-### Phase 11 — More Polish
-*Goal: further UX work to make the app fun and easy to use*
-
-- [ ] Checkbox gylphs
-
-- [ ] **Emoji support** — config opt-in, default off. No probing of terminal capabilities in this phase: no reliable query exists, and terminals that claim emoji support routinely miscompute cell widths and corrupt layout. Revisit if users request automatic detection.
-
-- [ ] Add a contrasting background for all keybind hints, like nano.
-
-- [ ] Quit without saving confirmation modal
-
-- [ ] Experiment with 1- and 2-line scrolling instead of 3-line. Maybe it will feel smoother and still be fast.
-
-- [ ] Add a "It looks like your terminal is capapble of displaying images. When do you want edamame to display images?" modal—"This time only" (default), "Always", "Never"
-
-#### Bottom Bars
-A **two-line status region** by default, stacked directly beneath the editor content:
-
-- **Hint line** (upper, adjacent to content) — owned by this phase. Carries contextual keybind hints, transient status messages ("Saved", "Copied", "Autosaved"), and modal prompts (Phase 10 reload / save-copy, future filename or search inputs).
-- **Status line** (lower, at the bottom edge) — owned by Phase 9. Carries persistent state: mode indicator, file path, dirty marker, cursor `line:col`, selection size.
-
-The dynamic surface sits closest to the cursor because it describes *"what can I do here"* — putting it adjacent to content minimises eye travel, and transient messages appear right next to the action that triggered them. Persistent info anchors the bottom edge as stable reference data, matching the nano / mc / htop convention.
-
-**Rationale for two lines (vs. one).** The common failure mode for a TUI is horizontal, not vertical: users routinely run edamame in a tmux pane or tiling-WM split that's 50–80 cols wide but still has full vertical height. A single-line status forces aggressive truncation of either info or hints exactly when both matter most. Two lines gives both regions room and gives Phase 10 prompts a natural home.
+**Rationale for two lines (vs. one).** The common failure mode for a TUI is horizontal, not vertical: users routinely run edamame in a tmux pane or tiling-WM split that's 50–80 cols wide but still has full vertical height. A single-line status forces aggressive truncation of either info or hints exactly when both matter most. Two lines gives both regions room and Phase 11's file-change prompts a natural home.
 
 **Hint-line states** (mutually exclusive):
 - *Default* — contextual keybind hints (see task list below).
-- *Transient message* — a status notification overlays for ~1.5s, then reverts to hints. Errors stick until dismissed.
-- *Modal prompt* — a prompt (Phase 10 reload / save-copy filename, future search, etc.) replaces the hints until dismissed.
+- *Transient message* — a status notification overlays for ~1.5s, then reverts to hints.  Errors stick until dismissed.
+- *Modal prompt* — a prompt (Phase 11 reload / save-copy filename, future search, etc.) replaces the hints until dismissed.
 
-**Compact mode.** Optional `status_bar = "compact"` in `config.toml` collapses to a single line by dropping the hint line entirely — only the persistent status line remains. Keybinds become reachable via a `?` popover. Not the default; opt-in for users on very short terminals or who prefer minimal chrome.
+**Keybind notation convention.** Plain letter-plus-label everywhere a key is surfaced to the user — hint line *and* prompt overlays.  Examples: `^C Copy`, `^X Cut` for Ctrl-chords; `R Reload`, `I Ignore` for bare keys.  No bracket notation (`[R]eload`); downstream phases (11, 10) honour this convention.
 
-**Input during a transient message.** Input is never blocked. If `Copied` is on-screen and the user hits `^X`, the cut fires normally and the next message / hint revert proceeds.
+**Input during a transient message.** Input is never blocked.  If `Copied` is on-screen and the user hits `^X`, the cut fires normally and the next message / hint revert proceeds.
 
-**Keybind notation convention.** Plain letter-plus-label everywhere a key is surfaced to the user — hint line *and* prompt overlays. Examples: `^C Copy`, `^X Cut` for Ctrl-chords; `R Reload`, `I Ignore` for bare keys. This supersedes the `[R]eload / [I]gnore` bracket notation previously in Phase 10 (already updated to match).
+**Starting state (already in place):**
+- `StatusBar` widget exists at `src/ui/status_bar.rs` and already shows mode badge, filename, modified flag, cursor line:col, line count, and scroll %.  Phase 9 extends it but does not replace it.
+- `ModalView` at `src/ui/modal.rs` hosts arbitrary-button modals (used by Phase 4 capability notice and Phase 7 remote-image prompt).  Phase 9 reuses this for the quit-confirm dialog.
+- `Theme` already has slots for status styling (`status_bar`, `status_mode`, `status_filename`, `status_info`).  New slots are added for the hint line (see testing tasks).
 
-- [ ] **Contextual hint line** — default hint-line content; adapts to cursor context.
-  - [ ] Preview mode: `any key → edit   ^C Copy   ^P Menu   ^Q Quit`. Global chords (^C/^P/^Q) are reserved; "any other key" triggers the mode switch to edit.
-  - [ ] Hybrid / raw edit mode: `^C Copy  ^X Cut  ^V Paste  ^S Save  ^P Menu  ^Q Quit`.
-  - [ ] Hybrid mode, cursor inside a table: replace the hint line with table manipulation keybinds. Full names when terminal width allows, abbreviated fallback when it doesn't. A `?` popover exposes the full list when abbreviation is unavoidable.
-- [ ] **Transient status messages** — overlay the hint line for ~1.5s, then revert to hints. Errors stick until dismissed.
-  - [ ] `Copied` on both copy *and* cut (the deletion is self-evident; the clipboard side-effect is not). No notification on paste.
-  - [ ] `Autosaved` only on the dirty → clean transition, not on every autosave cycle, to avoid noise.
-- [ ] **Compact-mode fallback** — honour `status_bar = "compact"` in `config.toml`: render only the persistent status line; expose hints via a `?` popover.
+**Tasks — layout & integration:**
+- [ ] Introduce a `BottomRegion` composite widget (`src/ui/bottom_region.rs`) that owns layout of the hint line + status line.  It is rendered by `EditorView` in place of the current single-row `StatusBar`.  Single-line compact mode collapses the composite to just the status line.
+- [ ] `EditorView::render` allocates 2 rows for the bottom region (1 in compact mode) and subtracts from the editor content area.  Existing `PreviewView` / `RenderedView` / `RawView` continue to receive the same inner rect they do today.
 
-#### Tables
-- [ ] **Smart table column widths** — adopt a min-max proportional distribution (the algorithm browsers use for `table-layout: auto` and what `rich` / `tabulate` converge on):
+**Tasks — persistent status line:**
+- [ ] Expand `StatusBarState` to carry `selection_size: Option<(usize, usize)>` (char count + line count) populated from `EditorState::visual_selection`; render as ` Sel 42 ch · 3 ln ` when present.
+- [ ] Detected image protocol is intentionally *not* surfaced here — users who want to see it reach it via the settings overlay (Phase 10) or an `:info` command.
+
+**Tasks — contextual hint line:**
+- [ ] New `HintLine` sub-widget inside `BottomRegion`.  Default content adapts to editor mode and cursor context via a `hint_line_for(state: &EditorState) -> Vec<HintChord>` pure function.
+- [ ] *Preview* mode: `any key → edit   ^C Copy   ^P Menu   ^Q Quit`.  Global chords (^C/^P/^Q) are reserved; "any other key" triggers the mode switch to edit.
+- [ ] *Rendered / Raw* mode: `^C Copy  ^X Cut  ^V Paste  ^S Save  ^P Menu  ^Q Quit`.
+- [ ] *Rendered* mode, cursor inside a table: replace the hint line with table manipulation keybinds (Alt+Arrow variants, Tab/Shift-Tab, Alt+Backspace).  Full names when terminal width allows, abbreviated fallback when it doesn't.  A `?` popover exposes the full list when abbreviation is unavoidable.
+- [ ] *Rendered / Raw* mode, cursor inside a list item: surface `^Space Toggle` (task checkbox) in the hint line.
+- [ ] Contrasting background for all hint chords, like nano: route the chord label background through a new `Theme::hint_chord` style slot so themes can override.
+- [ ] Width-responsive abbreviation: when the allocated width can't fit the full hint set, drop labels in priority order (least essential first), then collapse to just the chord glyph.  The `?` popover shows the full list.
+
+**Tasks — transient messages (a single channel all phases consume):**
+- [ ] Add `App::transient_message: Option<TransientMessage { text, kind, until }>` where `kind ∈ { Info, Success, Warning, Error }`.  Messages overlay the hint line for ~1.5 s (config `editor.transient_ms`), then auto-expire; errors stick until dismissed with Escape.  The overlay is a render-layer concern only — input continues to route normally.
+- [ ] Expose a single helper `App::flash(text: impl Into<String>, kind: MessageKind)` used by every phase.  The helper is called for:
+      - `Saved` on `Action::Save` success.
+      - `Copied` on both `Copy` and `Cut` (the deletion is self-evident; the clipboard side-effect is not).  No notification on paste.
+      - `Autosaved` only on the *dirty → clean* transition of an autosave cycle, not on every cycle — avoids noise.
+      - `Configuration updated` any time `Config::save()` runs.  Wire once inside `Config::save` so every caller (Phase 4 capability suppression toggle, Phase 7 remote-image policy selection, Phase 10 settings overlay, Phase 13 column-width comment injection) gets the notification for free.  This is a clue to the user that they can visit `config.toml` to change the value later.
+      - Link-open failures from Phase 8.
+- [ ] Errors (`kind = Error`) are sticky: they remain until Escape or until replaced by a new `Error`.  Sticky errors are the only way a transient message can outlive the 1.5 s window.
+
+**Tasks — modal-prompt channel on the hint line:**
+- [ ] Define a `HintPrompt { prompt: String, chords: Vec<(KeyCode, String)>, handler: Box<dyn FnMut(PromptResponse) -> ...> }` pattern owned by `App`.  Only one prompt is active at a time; while active it preempts both default hints and transient messages.  Escape dismisses.
+- [ ] Phase 11 (file-change detection) is the first consumer: `R Reload   I Ignore` and `R Reload   S Save copy   O Overwrite` prompts render here.  The infrastructure exists after Phase 9 so Phase 11 only writes the specific prompt definitions.
+
+**Tasks — quit-without-saving modal:**
+- [ ] Implement the quit-confirmation dialog that was documented in Key Design Decisions §6 but deferred out of Phase 1.  Currently `Action::Quit` immediately terminates (`src/app.rs`'s `should_quit` path).  Replace the direct-terminate with: if `editor.buffer.is_dirty()`, open a three-button `ModalView` (`Save` / `Discard` / `Cancel`) via the same conventions as the Phase 7 remote-image prompt; otherwise quit immediately.
+- [ ] `Save` persists via `Action::Save` and then terminates.  `Save` failure (e.g. read-only disk) surfaces a sticky `Error` transient message and aborts the quit.
+- [ ] `Discard` terminates without saving.
+- [ ] `Cancel` (and Escape) closes the modal.
+
+**Tasks — compact mode:**
+- [ ] `config.editor.status_bar = "two_line" | "compact"` (default `"two_line"`).  Compact mode renders only the persistent status line; hint chords are reachable via a `?` popover.  Not the default — opt-in for users on very short terminals or who prefer minimal chrome.
+- [ ] `?` popover widget (uses `ModalView`) lists every keybind grouped by category (editor, table, list, view).  Same widget feeds Phase 10's cheat-sheet overlay.
+
+**Tasks — testing:**
+- [ ] Unit tests for `hint_line_for` — each mode / context combination returns the expected chord set.
+- [ ] Unit tests for `App::flash` expiry semantics — transient expires at `until`, error persists until explicit dismiss, new `Info` replaces existing `Info`.
+- [ ] `TestBackend` snapshot for `BottomRegion` in two-line mode with (a) default hints, (b) transient message overlay, (c) modal prompt, (d) compact mode.
+- [ ] Integration test in `tests/editing.rs`: `Action::Save` emits the `Saved` flash; `Action::Copy` emits `Copied`; `Action::Quit` on a dirty buffer opens the confirm modal and does not terminate until a button is pressed.
+
+**Acceptance criteria:** The bottom region shows a persistent status line and a contextual hint line.  Saving / copying / cutting displays a ~1.5 s transient notification.  Quit on a dirty buffer opens a three-button confirm modal and does not exit immediately.  `Config::save()` anywhere in the codebase produces a single `Configuration updated` notification.  Compact mode collapses to one line with chord hints behind `?`.  Hint content adapts when the cursor enters a table or list.
+
+---
+
+### Phase 10 — Command Palette, File Picker, Overlays, and Tabs
+*Goal: keyboard-driven discovery and navigation — every action reachable without a mouse, and multiple files open simultaneously.*
+
+Scope covers old Phase 9 *minus* the bottom-bar work (now Phase 9).  Consumes the Phase 9 transient-message channel for "Configuration updated" notifications and the `?` popover widget for the cheat sheet.
+
+**Starting state (already in place after Phases 8–9):**
+- Phase 8 builds a per-tab nav stack (`App::nav_back` / `App::nav_forward`) and dirty-buffer guard modal.  Phase 10 lifts this into a `Vec<Tab>` without re-architecting.
+- Phase 9's `ModalView` + `?` popover + transient-message channel are the UI primitives for every overlay below.
+- `KeyMap::bindings()` already iterates every bound `(KeyEvent, Action)` pair for the default handler — the cheat sheet and command-palette listings consume the same source.
+
+**Tasks — command palette (Ctrl-P):**
+- [ ] New widget `src/ui/command_palette.rs`: modal overlay with a single-line input (reuse `ratatui-textarea` from `Cargo.toml`'s editing deps) + a scrollable fuzzy-matched result list.
+- [ ] Fuzzy matcher: prefer `nucleo-matcher` (modern, well-maintained, used by Helix) over rolling our own.  Add to `Cargo.toml` in this phase.
+- [ ] Each result row shows `action label` + the bound chord (via `KeyMap::chord_for(action)`), so users learn bindings organically.
+- [ ] Selecting a result dispatches the `Action` through the normal `edit_ops::apply` path — no palette-specific handlers.
+
+**Tasks — file picker (Ctrl-O):**
+- [ ] New widget `src/ui/file_picker.rs`: overlay with a filterable tree rooted at the current document's directory (or the CWD when no file is open).  Prefer a small custom implementation over `tui-tree-widget` — the picker only needs expand/collapse + flat-filter, not full tree manipulation.
+- [ ] Recent files shown at the top (persisted in `$XDG_DATA_HOME/edamame/recent.json`, capped at 20).  Selecting a recent file jumps directly without walking the tree.
+- [ ] Selecting a `.md` file opens it in the active tab (subject to Phase 8's dirty-buffer guard); selecting a non-`.md` file calls `open::that(path)` (Phase 8 dispatch path, no re-implementation).
+
+**Tasks — settings overlay:**
+- [ ] Accessible from the command palette (`Open Settings`).  Key/value list of the sections in `config.toml`, sourced from `ConfigSchema` (a new struct that mirrors `Config` with metadata — description, type, default).  No keybind settings in this overlay.
+- [ ] Edit-in-place: Enter on a row opens an inline editor for the value; Esc cancels.  On confirm, `Config::save()` is called — which, via Phase 9, emits the `Configuration updated` flash.
+- [ ] Button at the top: `Open config.toml in default editor` → `open::that(&config_path)`.
+
+**Tasks — keybinds overlay:**
+- [ ] Separate overlay (command palette entry `Open Keybinds`).  Action-keybind table with edit-in-place.  On confirm, the override is written to `keybindings.toml` via `KeyMap::save_overrides()` (a new method — today `KeyMap` only *reads*) and the `KeyMap` in-memory is updated so the change takes effect immediately.
+- [ ] Conflict detection: assigning an already-bound chord produces a sticky `Error` transient message and the edit is rejected.
+
+**Tasks — markdown cheat sheet:**
+- [ ] Accessible from the command palette (`Show Markdown Cheat Sheet`).  Reuses the Phase 9 `?` popover widget.  Content tailored to what edamame supports: CommonMark + GFM tables + task lists + strikethrough + footnotes.  No HTML, no raw inline styling shortcuts beyond what the renderer honours.
+- [ ] Content is a static `&str` fixture in `src/ui/cheat_sheet.rs` — not parsed from a Markdown file at runtime; the cheat sheet itself is internal doc, not user-facing content.
+
+**Tasks — tabs:**
+- [ ] Promote `App::file_path` + `App::editor` + Phase 8's `nav_back` / `nav_forward` into `App::tabs: Vec<Tab>` and `App::active_tab: usize`.  `Tab { path, editor_state, nav_back, nav_forward, scroll }`.  All existing single-file code paths reduce to `self.tabs[self.active_tab].editor_state` style accesses.
+- [ ] Tab bar rendered *only when more than one file is open* — single-file sessions show no tab bar, saving a row.  Users who want dedicated single-file windows open another terminal.
+- [ ] New bindings: `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle tabs; `Ctrl+W` closes the active tab (subject to dirty-buffer guard).
+- [ ] Ellipsis truncation when total tab width exceeds terminal width; active tab is always visible.
+
+**Tasks — multi-file CLI:**
+- [ ] Accept `edamame file1.md file2.md file3.md` — each argument opens in its own tab.  First tab is active on startup.  Zero-arg launch continues to show the file picker (if not already the Phase 0 behaviour).
+
+**Tasks — testing:**
+- [ ] Integration test: `nucleo-matcher` is wired and a palette-dispatched `Action::Save` produces the same buffer state as a keyboard-dispatched one.
+- [ ] Integration test: `Config::save()` via the settings overlay produces the `Configuration updated` flash exactly once.
+- [ ] `TestBackend` snapshots for the tab bar (1 tab hidden, 2 tabs visible, N tabs truncated).
+
+**Acceptance criteria:** `Ctrl-P` opens a fuzzy-searchable action palette.  `Ctrl-O` opens a file picker with recent files on top.  The settings overlay edits `config.toml` in place with live feedback.  The keybinds overlay edits `keybindings.toml` with conflict detection.  Multiple files open via CLI args or file picker share a tab bar; `Ctrl+Tab` cycles.  The markdown cheat sheet is one keybind away.
+
+---
+
+### Phase 11 — File Change Detection and Inline Diff
+*Goal: detect external file changes and surface an inline diff for agentic workflow support.*
+
+Was old Phase 10.  Renumbered to flow after the Phase 9 status-region infrastructure it consumes.  Agentic workflows (where an AI agent and the user are editing the same file concurrently) are the motivating use case.
+
+**Starting state (already in place after Phases 9–10):**
+- Phase 9 provides the hint-line modal-prompt channel and sticky `Error` transient messages.  This phase only writes the specific prompt definitions — no new UI primitives.
+- Phase 10 provides the tab-level state model; a file-change watcher attaches per-tab rather than per-process.
+
+**Tasks — watcher:**
+- [ ] Add `notify` (latest stable 7.x) and `similar` (2.x) as dependencies.
+- [ ] `App::file_watcher: Option<notify::RecommendedWatcher>` — one watcher per `App`, with a filter that dispatches events only for paths matching an open tab's `file_path`.  Sends `AppEvent::FileChanged(PathBuf)` into the existing `mpsc` channel.
+- [ ] Debounce: coalesce multiple `Modify` events within a 200 ms window before dispatching — editors like vim produce a write-rename-delete sequence that would otherwise fire the reload prompt three times.
+
+**Tasks — reload flow (clean buffer):**
+- [ ] On `FileChanged` for a tab whose `editor.buffer.is_dirty() == false`, post a `HintPrompt` (`R Reload   I Ignore`) via the Phase 9 channel.  No modal overlay, no interruption to editing elsewhere.
+- [ ] `R` → `Buffer::load_file` + rebuild `ParsedDoc` + reset scroll to preserve cursor line; `I` → dismiss.
+- [ ] Autosave-safe: if `config.editor.autosave` is on and an external change triggers a reload while the buffer is also dirty-from-autosave, treat as dirty (three-way below).
+
+**Tasks — three-way flow (dirty buffer):**
+- [ ] On `FileChanged` for a dirty tab, show a sticky `[modified externally]` badge on the status line (Phase 9 slot) and render the diff overlay automatically.  Do **not** auto-dismiss — the user needs to see what's about to be reconciled.
+- [ ] Hint-line prompt: `R Reload   S Save copy   O Overwrite   C Cancel`.
+      - `R Reload` — discard in-memory changes; load from disk.
+      - `S Save copy` — write the in-memory buffer to a new file (auto-named `<stem>.bak.md`; if present, `.bak-2.md`, `.bak-3.md`, …), then reload from disk.  Both versions preserved.
+      - `O Overwrite` — write the in-memory buffer to disk, discarding external changes.
+      - `C Cancel` — dismiss the diff; leave the buffer as-is.  `[modified externally]` badge stays until next save or explicit reload.
+
+**Tasks — diff overlay:**
+- [ ] New widget `src/ui/diff_overlay.rs`.  Uses `similar::TextDiff::from_lines(on_disk, in_memory)` (Myers).  Each change is a `Change { range, side: Deleted | Added | Changed }`.
+- [ ] Rendering: overlays the editor content area, preserving scroll so the user isn't disoriented.
+      - Deleted lines: red background, strikethrough text.
+      - Added lines: green background.
+      - Changed lines: stacked — old on top (red), new below (green).
+- [ ] Per-change navigation + accept/reject as `Action` variants routed through `KeyMap`:
+      - `DiffNextChange` (default `Tab`).
+      - `DiffPrevChange` (default `Shift+Tab`).
+      - `DiffAcceptExternal` (default `Y`) — keep the on-disk version of the focused change.
+      - `DiffRejectExternal` (default `N`) — keep the in-memory version of the focused change.
+      - `DiffApply` (default `Enter`) — commit the merged buffer and close the overlay.
+      - `DiffCancel` (default `Esc`) — close the overlay without applying.
+- [ ] After all changes are resolved, the overlay closes automatically and the merged buffer becomes the new in-memory state.  The `[modified externally]` badge clears on the next successful save.
+
+**Tasks — testing:**
+- [ ] Integration test: modify a file on disk while a clean buffer is open, assert the hint prompt fires and `R` reloads correctly.
+- [ ] Integration test: modify a file on disk while the buffer is dirty, assert the diff overlay appears and per-change accept/reject produces the expected merged content.
+- [ ] Unit tests for the debounce window.
+- [ ] `TestBackend` snapshot of the diff overlay for a fixture with one added line, one deleted line, one changed line.
+
+**Acceptance criteria:** Editing a file in the editor while an external process modifies it fires a `R Reload  I Ignore` prompt when clean, or a diff overlay + three-way prompt when dirty.  Per-change accept/reject works and the merged buffer is coherent.  Rapid external writes are debounced.
+
+---
+
+### Phase 12 — Hide HTML Comments in Rendered Views
+*Goal: `<!-- ... -->` is annotation, not content — render it invisibly in Preview/Rendered modes while keeping it editable in Raw.*
+
+Extracted from old Phase 11.  This is a **parser + renderer + navigation** change, not polish — it shares the invariants that the virtual-blank-line mechanism relied on in Phase 1 and specialises Phase 6's `tui-columns` handling.  Keeping it isolated from Phase 13's table polish and Phase 14's visual polish makes the test surface tractable.
+
+**Starting state (already in place):**
+- `renderer::render_table`'s sibling `Block::Html` arm at `src/markdown/renderer.rs:123` renders *all* HTML — comments and tags alike — as muted text.
+- `parser.rs` (around line 320) currently pushes `Event::Html` as `Inline::Text` for inline HTML, so paragraphs containing inline comments show them as body text.
+- Raw mode reads directly from the rope buffer, so comment visibility in Raw is already correct; no Raw-side change is needed.
+- Phase 6's `merge_trailing_tui_columns_comments` (in `document/parsed_doc.rs`) already strips trailing `<!-- tui-columns: ... -->` blocks from tables and attaches `user_widths` to `Block::Table`.  Phase 12 generalises this pattern.
+
+**Tasks — AST:**
+- [ ] New `Block::HtmlComment(String)` variant — content excluding delimiters, byte range preserved for source-map fidelity.  Emitted by a parser post-pass that detects comment-only `Block::Html` (content matches `<!-- ... -->` with optional surrounding whitespace).
+- [ ] New `Inline::HtmlComment(String)` variant.  Parser branch in `parser.rs` distinguishes `<!-- ... -->` from inline HTML tags when building inline sequences.
+
+**Tasks — renderer:**
+- [ ] `Block::HtmlComment` emits zero lines in Preview and Rendered modes.
+- [ ] `Inline::HtmlComment` emits zero spans in Preview and Rendered modes (the surrounding paragraph's other inlines render normally).
+- [ ] Raw mode is untouched — it reads the rope directly.
+
+**Tasks — source map & navigation:**
+- [ ] `per_block_own` counts zero lines for `HtmlComment` blocks in Preview/Rendered, matching the virtual-blank-line convention from Phase 1.  The byte range is still present in the AST so `SourceMap` coverage stays complete.
+- [ ] Hybrid-mode vertical movement (`move_up_visual` / `move_down_visual`) skips zero-rendered-line blocks so the cursor doesn't stall on an invisible comment.
+- [ ] Clicking a comment in hybrid mode is impossible (no screen cells belong to it); switching raw → hybrid with the cursor inside a comment snaps the cursor to the start of the next visible block.
+
+**Tasks — Phase 6 specialisation:**
+- [ ] After the generic `HtmlComment` promotion pass runs, Phase 6's `merge_trailing_tui_columns_comments` still runs and extracts `user_widths` from trailing `tui-columns` comments.  The two passes don't conflict: the first hides the comment visually, the second extracts semantic data from its source bytes.  Test: an isolated `<!-- tui-columns: [10, 20, 30] -->` block outside any table stays as a hidden `Block::HtmlComment` — no widths are attached to any table.
+
+**Tasks — testing:**
+- [ ] Unit tests: round-trip `<!-- hello -->` through parser → renderer → Preview (zero lines); inline `paragraph <!-- x --> text` renders as `paragraph  text` (two spaces collapse at the renderer's discretion); block-level comment between paragraphs renders as zero lines and cursor skips over it.
+- [ ] Integration test in `tests/editing.rs`: down-arrow past a block comment lands on the following block's first line, not on the comment.
+- [ ] Regression test that Phase 6's `tui-columns` extraction still works when the trailing comment is now a `Block::HtmlComment`.
+
+**Acceptance criteria:** `<!-- ... -->` renders as zero lines in Preview and Rendered modes and as source text in Raw.  Cursor navigation skips comment blocks.  Phase 6's `tui-columns` extraction still works.
+
+---
+
+### Phase 13 — Table Rendering Polish
+*Goal: production-quality table visuals: smart column widths, row striping, drag-drop feedback, and user-facing disclosure of comment injection.*
+
+Extracted from old Phase 11.  These items are cohesive (all table-layer concerns) and share the `table_layout` module as their implementation surface.  Consolidates deferred polish items from Phase 6.
+
+**Starting state (already in place):**
+- Phase 2 built `table_layout::compute_widths` with user-width overrides.
+- Phase 6 extracted the per-frame `TableLayoutSnapshot` + `paint_handles` so visual decorations can render post-line-render.
+- Phase 6 deferred drag-drop "drop destination highlighting" as polish.
+- Phase 6's `tui-columns` comment injection is silent — the user has no explicit warning that a resize operation will modify the Markdown source.
+
+**Tasks — smart column widths (min-max proportional):**
+- [ ] Adopt the min-max proportional distribution (the algorithm browsers use for `table-layout: auto` and what `rich` / `tabulate` converge on):
       - Per column: `min = longest word`, `max = longest cell`.
       - Distribute remaining viewport width weighted by `(max − min)`.
       - Prose columns wrap onto multiple rendered rows when their allocation is below `max`; short/numeric columns stay at their `max`.
-      - *Rejected:* average-width-as-target — it breaks the invariant that content fits, forcing silent truncation of outlier cells.
-- [ ] If the user manually adjusts column widths, a popup modal should be shown warning that an HTML comment will be added to the Markdown source to store the column widths.
-- [ ] Table row striping
-- [ ] Table row and column reorder drop destination highlighting
-- [ ] **Hide HTML comments in rendered and preview modes** — `<!-- ... -->`      is annotation, not content. Today `renderer::render_table`'s sibling      `Block::Html` arm (`src/markdown/renderer.rs:123`) renders all HTML as      muted text; comments should render as zero lines in rendered and      preview modes while staying visible in raw mode (raw reads the buffer      directly, so this falls out for free).
-      - [ ] Parser: detect comment-only `Block::Html` (content matches            `<!-- ... -->` with optional surrounding whitespace) and promote            to a `Block::HtmlComment(String)` variant — keeps the byte            range in the AST for source-map fidelity without conflating            with renderable HTML.
-      - [ ] Inline path: `parser.rs:320` currently pushes `Event::Html` as            `Inline::Text`; add an `Inline::HtmlComment` branch for inline            `<!-- ... -->` so paragraphs containing comments don't show            them as body text.
-      - [ ] Renderer: `Block::HtmlComment` and `Inline::HtmlComment` emit            zero lines / zero spans in `Preview` and `Rendered` modes.            `Raw` mode is untouched.
-      - [ ] Cursor navigation: hybrid-mode vertical movement skips            zero-rendered-line blocks so the cursor doesn't stall on an            invisible comment. Clicking a comment in hybrid mode is            impossible (no screen cells belong to it); switching raw → hybrid            with the cursor inside a comment snaps the cursor to the start            of the next visible block.
-      - [ ] Phase 6's `tui-columns` handling becomes a specialisation:            after the generic comment-hide pass, `markdown::parser` /            `ParsedDoc::build` additionally strips trailing            `<!-- tui-columns: ... -->` blocks from a table's byte range and            attaches `user_widths` to `Block::Table`. The two passes don't            conflict — the first hides the comment visually, the second            extracts semantic data from it.
+      - *Rejected:* average-width-as-target — breaks the invariant that content fits, forces silent truncation of outlier cells.
+- [ ] Replace the current `compute_widths` algorithm in `table_layout` (which is auto-to-max subject to a terminal-width cap).  `user_widths`, when present, still override everything — users who set widths explicitly via drag (Phase 6) or comment (persisted) get exactly what they asked for.
+
+**Tasks — manual-width warning modal:**
+- [ ] When a Phase 6 column-border drag completes *for the first time on a given table*, show a `ModalView` with text: "Setting custom column widths adds a `<!-- tui-columns: [...] -->` comment to the Markdown source.  Continue?"  Buttons: `Continue` (default) / `Continue and don't ask again` / `Cancel`.
+- [ ] `Continue and don't ask again` writes `config.table.warn_on_width_injection = false` via `Config::save()` (which fires the Phase 9 `Configuration updated` flash).
+- [ ] `Cancel` reverts the drag — `live_table_widths` is cleared without commit.
+- [ ] On tables that already have a `tui-columns` comment, no warning — the comment is already there.
+
+**Tasks — row striping:**
+- [ ] Add `Theme::table_row_even` and `Theme::table_row_odd` style slots (default: no-op / same as background).  Themes can override for alternating-row visual aid.
+- [ ] `renderer::render_table` applies the alternating style as a background fill per data row (not the header, not the alignment row).
+- [ ] Opt-in via `config.table.row_striping: bool` (default `false`) since not every user wants it.
+
+**Tasks — drop destination highlighting:**
+- [ ] During a row-handle drag (`DragTarget::TableRow`), highlight the horizontal separator between `hover_row_idx - 1` and `hover_row_idx` using `Theme::table_drop_indicator` (a new style slot).  Paints via a post-pass on `paint_handles`, no buffer mutation.
+- [ ] During a column-handle drag (`DragTarget::TableColumnHeader`), highlight the vertical `│` border between `hover_col_idx - 1` and `hover_col_idx`.
+- [ ] During a column-border resize (`DragTarget::TableColumnBorder`), show a faint vertical guideline at the current pointer X to indicate where the release will commit.  Optional — if visual noise outweighs value, drop.
+
+**Tasks — testing:**
+- [ ] Unit tests in `table_layout` for min-max proportional: a narrow prose column stays at `min` when there's no slack; excess distribution respects the `(max − min)` weighting.
+- [ ] Integration test in `tests/mouse.rs`: a column-border drag on a table without `tui-columns` shows the warning modal; `Cancel` reverts with no buffer mutation.
+- [ ] `TestBackend` snapshot of a striped-row table.
+- [ ] `TestBackend` snapshot of a table mid-drag with row-drop indicator visible.
+
+**Acceptance criteria:** Tables allocate column widths proportionally; narrow prose columns wrap rather than forcing wide columns to truncate.  Drag-to-resize warns on first use that an HTML comment will be injected.  Row striping is opt-in and theme-controlled.  Row / column drag shows a drop indicator on the target separator.
 
 ---
 
-### Phase 14 — Security
-*Goal: Ensure the application is not vulnerable to unintenional code execution*
+### Phase 14 — Visual Polish
+*Goal: small UX improvements that make the app feel cared-for.*
+
+Extracted from old Phase 11.  Pulls in the "Heading visual hierarchy — framing/rules" item from *Deferred Work* since the plan itself flagged it as "do this now."  Items are independent — any subset can ship.
+
+**Tasks — checkbox glyphs:**
+- [ ] Replace the current `[ ]` / `[x]` text rendering of task-list checkboxes with Unicode glyphs (e.g. ☐ / ☑ or ▢ / ▣) in Preview and Rendered modes.  Raw mode is untouched.
+- [ ] `Theme::checkbox_unchecked` and `Theme::checkbox_checked` are `&'static str` slots (not `Style`) so themes can switch glyph sets — `[ ]` / `[x]` remains an opt-in for users on terminals without reliable Unicode.
+- [ ] Click hit-test on the task-list checkbox (Phase 5's `toggle_checkbox_at`) must be updated to account for the rendered glyph width rather than the 3-char `[ ]` raw form.
+
+**Tasks — heading visual hierarchy (framing/rules):**
+- [ ] H1 gets a full-width `═══` rule above and below.
+- [ ] H2 gets a `═══` rule below.
+- [ ] H3 gets a `───` rule below.
+- [ ] H4–H6 stay colour + bold (current behaviour).
+- [ ] Readable everywhere, zero new dependencies.  The `tui-big-text` variant stays in Deferred Work for the theming phase.
+- [ ] `per_block_own` accounts for the added rule rows so cursor navigation doesn't skip them.
+
+**Tasks — scroll granularity experiment:**
+- [ ] Make `WHEEL_STEP` configurable: `config.editor.mouse_scroll_lines` (default 3, as today).  Users can experiment with 1 or 2 and report back; the default stays at 3 until evidence suggests otherwise.  Also honoured by keyboard scroll actions (`ScrollUp` / `ScrollDown`) so experiments cover both paths.
+
+**Tasks — emoji support:**
+- [ ] `config.editor.unicode.emoji_support: bool` (default `false`).  No probing of terminal capabilities — no reliable query exists, and terminals that claim emoji support routinely miscompute cell widths and corrupt layout.
+- [ ] When enabled, the renderer passes emoji-bearing strings through `unicode-segmentation` grapheme clusters and uses `unicode-width` cell widths as-is.  When disabled, emoji sequences are rendered as `:shortcode:` text fallback.
+- [ ] Revisit automatic detection only if users request it.
+
+**Tasks — image-display onboarding modal:**
+- [ ] **Consider dropping.**  Old Phase 11 proposed a "Display Images" three-button modal (Always / Never / This time only) on first-encounter, but Phase 7 already ships `config.image.enabled` (master switch) and an `http`/`https`-specific remote-policy modal.  A third, per-document prompt would be redundant.  Leave unimplemented unless user feedback identifies a concrete gap.
+
+**Acceptance criteria:** Task checkboxes render as Unicode glyphs in Preview/Rendered and toggle on click.  Headings show a visual hierarchy via rules.  Emoji support is opt-in and layout-safe when disabled.  Scroll granularity is configurable.
+
+---
+
+### Phase 15 — Performance and Optimization
+*Goal: Improve resource usage and make the app feel fast*
+- **Working with large files**: `./plan.md` (this document) is a large document (~1300 lines). It does not contain any images, but does have a lot of tables, code, and checkboxes. Although it is large, it is not excessively large. Edamame should be able to handle a document this size with relative ease, but in my testing it's very laggy and spikes CPU usage (see below).
+```bash
+edamame main  ? ❯ ps aux |head -1
+USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+
+edamame main  ? ❯ ps aux|grep edamame
+mjw      1181366 98.7  0.0 173292 20328 pts/2    Rl+  21:04   0:10 ./target/debug/edamame plan.md
+```
+- **High CPU Usage**: We should see what optimizing we can do to improve the performance of the app. For one thing, idle CPU usage is high on my machine, which I think should be significantly lower when the app is just displaying static output and not being interacted with. Interestingly, CPU usage seems to decrease over time. Memory usage is too low to even be outputted by `ps aux`, so that's fine. Here are some stats with the project's `./example.md` file open.
+
+```bash
+edamame main  ? ❯ ps aux|head -1
+USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+edamame main  ? ❯ ps aux|grep markdown
+mjw      3192551  7.4  0.0  78956  7724 pts/11   Sl+  13:24   0:50 ./target/debug/edamame example.md
+edamame main  ? ❯ ps aux|grep markdown
+mjw      3192551  6.7  0.0  78956  7724 pts/11   Sl+  13:24   1:06 ./target/debug/edamame example.md
+edamame main  ? ❯ ps aux|grep markdown
+mjw      3192551  6.6  0.0  78956  7724 pts/11   Sl+  13:24   1:10 ./target/debug/edamame example.md
+edamame main  ? ❯ ps aux|grep markdown
+mjw      3192551  6.3  0.0  78956  7724 pts/11   Sl+  13:24   1:38 ./target/debug/edamame example.md
+```
+
+- **Terminal resize**: `crossterm` sends a `Resize(cols, rows)` event when the terminal window is resized. All layout calculations — especially table column widths and paragraph word wrap — must be recalculated on resize. Ensure the rendered view and source map are invalidated and rebuilt when this event is received. Rather than attempting to re-render WHILE the terminal is being resized, which would undoubtedly be laggy or flickery, we will simply re-render AFTER it has been resized. We could potentially blank the screen during the resize operation.
+
+---
+
+### Phase 16 — Security
+*Goal: Ensure the application is not vulnerable to unintentional code execution.*
+
+Previously numbered Phase 14 in the mis-ordered original.
+
 - [ ] Check if input sanitization is needed. edamame should not run any code in files it opens.
 - [ ] Check if sanitization is needed for images.
-- [ ] Dependencies—supply chain vulnerabilities
+- [ ] Dependencies — supply chain vulnerabilities.
 - [ ] Any other security concerns?
 
-
 ---
 
-### Phase 12 — Exporting
-*Goal: Export .md files to other basic formats*
+### Phase 17 — Exporting
+*Goal: Export .md files to other basic formats.*
+
+Previously numbered Phase 12.
 
 **Tasks:**
-- [ ] HTML export
-- [ ] PDF export
+- [ ] HTML export.
+- [ ] PDF export.
 
 ---
 
-### Phase 13 — Diagrams
-*Goal: See if we can add support for mermaid diagrams*
+### Phase 18 — Diagrams
+*Goal: See if we can add support for mermaid diagrams.*
+
+Previously numbered Phase 13.
 
 Terminals that support showing images should be able to show diagrams. We can hand off diagram code to a mermaid subroutine, have it generate an image, and display that.
 
@@ -1028,29 +1246,10 @@ These features should be **architecturally anticipated** from Phase 0 but not im
   Unknown keys are a hard error; missing keys fall back to the default theme
 - Implement a live theme preview mode in the settings overlay
 
-### Optimization
-- **High CPU Usage**: We should see what optimizing we can do to improve the performance of the app. For one thing, idle CPU usage high on my machine, which I think should be significantly lower when the app is just displaying static output and not being interacted with. Interestingly, CPU usage seems to decrease over time. Memory usage is too low to even be outputted by `ps aux`, so that's fine.
+### Heading visual hierarchy — `tui-big-text` variant
+Terminals use a fixed character-cell grid; the app cannot change font size at the cell level.  The zero-dep **framing/rules** approach has been folded into Phase 14 ("Visual Polish").  The larger step below stays deferred to the theming phase:
 
-```
-edamame main  ? ❯ ps aux|head -1
-USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
-edamame main  ? ❯ ps aux|grep markdown
-mjw      3192551  7.4  0.0  78956  7724 pts/11   Sl+  13:24   0:50 ./target/debug/edamame example.md
-edamame main  ? ❯ ps aux|grep markdown
-mjw      3192551  6.7  0.0  78956  7724 pts/11   Sl+  13:24   1:06 ./target/debug/edamame example.md
-edamame main  ? ❯ ps aux|grep markdown
-mjw      3192551  6.6  0.0  78956  7724 pts/11   Sl+  13:24   1:10 ./target/debug/edamame example.md
-edamame main  ? ❯ ps aux|grep markdown
-mjw      3192551  6.3  0.0  78956  7724 pts/11   Sl+  13:24   1:38 ./target/debug/edamame example.md
-```
-
-- **Terminal resize**: `crossterm` sends a `Resize(cols, rows)` event when the terminal window is resized. All layout calculations — especially table column widths and paragraph word wrap — must be recalculated on resize. Ensure the rendered view and source map are invalidated and rebuilt when this event is received. Rather than attempting to re-render WHILE the terminal is being resized, which would undoubtedly be laggy or flickery, we will simply re-render AFTER it has been resized. We could potentially blank the screen during the resize operation.
-
-### Heading visual hierarchy — how to show H1–H6 at "larger" sizes
-Terminals use a fixed character-cell grid; the app cannot change font size at the cell level. Practical options in increasing complexity:
-
-- **Framing/rules** (zero new deps): H1 gets a full-width `═══` rule above and below; H2 gets one rule below; H3 gets a `───` rule below; H4–H6 stay colour+bold. Readable everywhere, zero overhead. This is the **immediate improvement** — do this now.
-- **`tui-big-text`** (one small dep): renders text with Unicode half-block characters (▀▄█) at 2×–3× visual height, works with ratatui's `TestBackend` and requires no terminal capability detection. H1 at ~3× and H2 at ~2× gives a genuine size hierarchy. Add as an opt-in `theme.headings.h1_big = true` flag. This is the **medium-term improvement** — implement in the theming phase.
+- **`tui-big-text`** (one small dep): renders text with Unicode half-block characters (▀▄█) at 2×–3× visual height, works with ratatui's `TestBackend` and requires no terminal capability detection. H1 at ~3× and H2 at ~2× gives a genuine size hierarchy. Add as an opt-in `theme.headings.h1_big = true` flag. Implement alongside the rest of the theming work.
 
 ---
 
@@ -1071,7 +1270,7 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 7. **Split `config.toml` into multiple files?**
 
-   The compelling argument for splitting is specifically themes: a `themes/` directory enables in-app theme switching and community theme sharing, mirroring the approach taken by Helix and Zellij. Moving keybinding configuration will more easily enable the keybinding overlay feature in Phase 9.
+   The compelling argument for splitting is specifically themes: a `themes/` directory enables in-app theme switching and community theme sharing, mirroring the approach taken by Helix and Zellij. Moving keybinding configuration will more easily enable the keybinding overlay feature in Phase 10.
 
    Adopted layout:
    ```

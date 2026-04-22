@@ -65,6 +65,11 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # (not native-tls/OpenSSL) so we have no system-library dependency.
 ureq = { version = "2", default-features = false, features = ["tls"] }
 
+# Cross-platform URL / file opener used by Phase 8 link navigation.
+# Shells out to `xdg-open` / `open` / `start` depending on platform — no
+# system-library dependency.
+open = "5"
+
 [features]
 default = ["clipboard"]
 clipboard = ["arboard"]

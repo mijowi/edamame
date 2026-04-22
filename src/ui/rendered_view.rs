@@ -16,6 +16,7 @@ use crate::markdown::table_layout::{
 
 use super::image_view::{self, ImageLayoutSnapshot};
 use super::line_render::{render_line, render_line_with_cursor};
+use super::link_view::{self, LinkLayoutSnapshot};
 use super::table_view::{self, TableLayoutSnapshot};
 
 /// State for the `RenderedView` widget.
@@ -39,6 +40,11 @@ pub struct RenderedViewState {
     /// reused instead of recomputed — avoids the O(lines × images)
     /// geometry scan when nothing that affects image layout has changed.
     pub image_snapshots_key: Option<(usize, Rect, u64)>,
+    /// Snapshots of every visible Markdown link, captured at the end of
+    /// the last render.  Used by Phase 8's mouse dispatch to hit-test
+    /// against link spans — plain click in Preview or Ctrl-click in
+    /// Rendered/Raw fires `FollowLink`.
+    pub link_snapshots: Vec<LinkLayoutSnapshot>,
 }
 
 /// Hybrid rendered/raw editing view.
@@ -343,6 +349,12 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             &mut view_state.image_snapshots,
             &mut view_state.image_snapshots_key,
         );
+
+        // Phase 8: build link snapshots for mouse hit-testing.  Scoped
+        // per frame like the table / image snapshots; rebuilt every
+        // render for simplicity (links are rare compared to chars, so
+        // the O(blocks) walk is cheap).
+        view_state.link_snapshots = link_view::build_snapshots(self.state, area, self.state.scroll);
     }
 }
 

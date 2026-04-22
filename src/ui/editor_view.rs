@@ -10,7 +10,7 @@ use crate::editor::{EditorState, Mode};
 use crate::terminal::Capabilities;
 
 use super::{
-    image_view,
+    image_view, link_view,
     preview::{PreviewState, PreviewView},
     raw_view::{RawView, RawViewState},
     rendered_view::{RenderedView, RenderedViewState},
@@ -116,6 +116,9 @@ impl<'a> StatefulWidget for EditorView<'a> {
                     &mut state.preview.image_snapshots,
                     &mut state.preview.image_snapshots_key,
                 );
+                // Phase 8 — link snapshots for preview-mode click dispatch.
+                state.preview.link_snapshots =
+                    link_view::build_snapshots(self.state, doc_area, state.preview.scroll);
                 // Keep preview state lines in sync with editor state.
                 // In preview mode the editor state scroll is the canonical scroll.
                 StatefulWidget::render(PreviewView, doc_area, buf, &mut state.preview);

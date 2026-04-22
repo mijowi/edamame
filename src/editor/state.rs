@@ -85,6 +85,13 @@ pub struct EditorState {
     /// release (when the drag commits via `write_column_widths`) or on any
     /// non-resize action that invalidates the drag.
     pub live_table_widths: Option<(usize, Vec<Option<usize>>)>,
+    /// Phase 8 — mouse-ops and edit-ops set this when a click / keypress
+    /// requests a link be followed.  The App consumes it on the next
+    /// loop iteration and dispatches to its own navigation stack /
+    /// worker threads.  Storing the intent on `EditorState` keeps
+    /// `mouse_ops::apply` pure w.r.t. its `&mut EditorState` contract —
+    /// it doesn't need an extra out-parameter or a reference to the App.
+    pub pending_link_follow: Option<crate::editor::link::LinkTarget>,
 }
 
 /// How long the cursor must rest on a block before it is shown in raw mode.
@@ -159,6 +166,7 @@ impl EditorState {
             images: ImageCache::new(),
             parsed_version: 0,
             live_table_widths: None,
+            pending_link_follow: None,
         }
     }
 

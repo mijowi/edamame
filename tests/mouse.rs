@@ -31,6 +31,23 @@ fn click_event(col: u16, row: u16) -> MouseEvent {
     }
 }
 
+fn ctrl_click_event(col: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: col,
+        row,
+        modifiers: KeyModifiers::CONTROL,
+    }
+}
+
+fn click(col: u16, row: u16) -> MouseAction {
+    MouseAction::Click {
+        col,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
 fn drag_event(col: u16, row: u16) -> MouseEvent {
     MouseEvent {
         kind: MouseEventKind::Drag(MouseButton::Left),
@@ -217,25 +234,11 @@ fn click_on_checkbox_in_task_list_toggles_it() {
 
     // Click on the middle of the rendered `[ ]` glyph.  Task-list items
     // render without their raw bullet prefix, so `[` sits at rendered col 0.
-    mouse_ops::apply(
-        &mut st,
-        MouseAction::Click { col: 1, row: 0 },
-        &mut anchor,
-        &[],
-        VP,
-        VW,
-    );
+    mouse_ops::apply(&mut st, click(1, 0), &mut anchor, &[], VP, VW);
     assert!(st.contents().starts_with("- [x] todo one"));
 
     // Click on the `[x]` of row 1 to uncheck.
-    mouse_ops::apply(
-        &mut st,
-        MouseAction::Click { col: 1, row: 1 },
-        &mut anchor,
-        &[],
-        VP,
-        VW,
-    );
+    mouse_ops::apply(&mut st, click(1, 1), &mut anchor, &[], VP, VW);
     assert!(st.contents().contains("- [ ] todo two"));
 }
 
@@ -249,14 +252,7 @@ fn click_on_checkbox_on_another_line_toggles_without_moving_cursor() {
     // Click the `[` of the second row at rendered col 0, row 1.  Cursor is on
     // row 0, so before the fix the click would land on the second line (moving
     // the cursor and de-rendering the block), without toggling.
-    mouse_ops::apply(
-        &mut st,
-        MouseAction::Click { col: 0, row: 1 },
-        &mut anchor,
-        &[],
-        VP,
-        VW,
-    );
+    mouse_ops::apply(&mut st, click(0, 1), &mut anchor, &[], VP, VW);
     assert!(
         st.contents().contains("- [x] todo two"),
         "expected second checkbox to flip, got: {:?}",
@@ -314,14 +310,7 @@ fn click_on_table_cell_stays_in_that_cell_despite_padding() {
     let mut anchor: Option<mouse_ops::DragTarget> = None;
     // Row 3 of the rendered block is the data row: [0]=top border, [1]=header,
     // [2]=separator, [3]=data.  Click deep into cell 1's trailing padding.
-    mouse_ops::apply(
-        &mut st,
-        MouseAction::Click { col: 18, row: 3 },
-        &mut anchor,
-        &[],
-        VP,
-        VW,
-    );
+    mouse_ops::apply(&mut st, click(18, 3), &mut anchor, &[], VP, VW);
     // The cursor should land inside cell 1 ("b"), not past the next pipe.
     // In the raw source `| a | b | c |`, cell 1 is bytes 5..9 (` b `). The
     // post-fix fix clamps clicks past `b` to the position immediately after it.
@@ -345,14 +334,7 @@ fn click_on_thick_header_separator_redirects_to_first_data_row() {
     let mut st = state(src);
     st.mode = Mode::Rendered;
     let mut anchor: Option<mouse_ops::DragTarget> = None;
-    mouse_ops::apply(
-        &mut st,
-        MouseAction::Click { col: 2, row: 2 },
-        &mut anchor,
-        &[],
-        VP,
-        VW,
-    );
+    mouse_ops::apply(&mut st, click(2, 2), &mut anchor, &[], VP, VW);
     let cursor_byte = st.buffer.rope().char_to_byte(st.cursor.offset);
     let first_data_start = "| a | b |\n|---|---|\n".len();
     let first_data_end = first_data_start + "| 1 | 2 |".len();
@@ -373,14 +355,7 @@ fn click_on_second_data_row_lands_on_second_data_row() {
     let mut st = state(src);
     st.mode = Mode::Rendered;
     let mut anchor: Option<mouse_ops::DragTarget> = None;
-    mouse_ops::apply(
-        &mut st,
-        MouseAction::Click { col: 2, row: 5 },
-        &mut anchor,
-        &[],
-        VP,
-        VW,
-    );
+    mouse_ops::apply(&mut st, click(2, 5), &mut anchor, &[], VP, VW);
     let cursor_byte = st.buffer.rope().char_to_byte(st.cursor.offset);
     let second_data_start = "| a | b |\n|---|---|\n| 1 | 2 |\n".len();
     let second_data_end = second_data_start + "| 3 | 4 |".len();
@@ -398,14 +373,7 @@ fn click_on_thin_inter_row_separator_snaps_to_preceding_data_row() {
     st.mode = Mode::Rendered;
     let mut anchor: Option<mouse_ops::DragTarget> = None;
     // sub 4 is the thin separator between the two data rows.
-    mouse_ops::apply(
-        &mut st,
-        MouseAction::Click { col: 2, row: 4 },
-        &mut anchor,
-        &[],
-        VP,
-        VW,
-    );
+    mouse_ops::apply(&mut st, click(2, 4), &mut anchor, &[], VP, VW);
     let cursor_byte = st.buffer.rope().char_to_byte(st.cursor.offset);
     let first_data_start = "| a | b |\n|---|---|\n".len();
     let first_data_end = first_data_start + "| 1 | 2 |".len();
@@ -611,14 +579,7 @@ fn row_handle_drag_swaps_rows_in_buffer() {
     let mut target: Option<mouse_ops::DragTarget> = None;
 
     // Click on the first row's handle (x=0, y=3 — row_idx 2).
-    mouse_ops::apply(
-        &mut st,
-        MouseAction::Click { col: 0, row: 3 },
-        &mut target,
-        &snapshots,
-        VP,
-        VW,
-    );
+    mouse_ops::apply(&mut st, click(0, 3), &mut target, &snapshots, VP, VW);
     assert!(matches!(
         target,
         Some(mouse_ops::DragTarget::TableRow { row_idx: 2, .. })
@@ -677,14 +638,7 @@ fn column_border_drag_writes_tui_columns_comment() {
     let mut target: Option<mouse_ops::DragTarget> = None;
 
     // Click on the interior border at x=12.
-    mouse_ops::apply(
-        &mut st,
-        MouseAction::Click { col: 12, row: 3 },
-        &mut target,
-        &snapshots,
-        VP,
-        VW,
-    );
+    mouse_ops::apply(&mut st, click(12, 3), &mut target, &snapshots, VP, VW);
     assert!(matches!(
         target,
         Some(mouse_ops::DragTarget::TableColumnBorder { col_idx: 1, .. })
@@ -745,14 +699,7 @@ fn column_border_drag_widens_table_and_leaves_neighbour_auto() {
     let snapshots = [snap];
     let mut target: Option<mouse_ops::DragTarget> = None;
 
-    mouse_ops::apply(
-        &mut st,
-        MouseAction::Click { col: 6, row: 3 },
-        &mut target,
-        &snapshots,
-        VP,
-        VW,
-    );
+    mouse_ops::apply(&mut st, click(6, 3), &mut target, &snapshots, VP, VW);
     mouse_ops::apply(
         &mut st,
         MouseAction::Drag { col: 8, row: 3 },
@@ -800,14 +747,7 @@ fn right_outer_border_drag_resizes_last_column() {
     let snapshots = [snap];
     let mut target: Option<mouse_ops::DragTarget> = None;
 
-    mouse_ops::apply(
-        &mut st,
-        MouseAction::Click { col: 15, row: 3 },
-        &mut target,
-        &snapshots,
-        VP,
-        VW,
-    );
+    mouse_ops::apply(&mut st, click(15, 3), &mut target, &snapshots, VP, VW);
     assert!(
         matches!(
             target,
@@ -861,14 +801,7 @@ fn column_handle_drag_swaps_columns_in_buffer() {
     let mut target: Option<mouse_ops::DragTarget> = None;
 
     // Click on column 0's handle (y=0, any x within col 0's range).
-    mouse_ops::apply(
-        &mut st,
-        MouseAction::Click { col: 3, row: 0 },
-        &mut target,
-        &snapshots,
-        VP,
-        VW,
-    );
+    mouse_ops::apply(&mut st, click(3, 0), &mut target, &snapshots, VP, VW);
     assert!(matches!(
         target,
         Some(mouse_ops::DragTarget::TableColumnHeader { col_idx: 0, .. })
@@ -925,14 +858,7 @@ fn column_reorder_leaves_cursor_off_persisted_comment_line() {
     let snapshots = [snap];
     let mut target: Option<mouse_ops::DragTarget> = None;
 
-    mouse_ops::apply(
-        &mut st,
-        MouseAction::Click { col: 2, row: 0 },
-        &mut target,
-        &snapshots,
-        VP,
-        VW,
-    );
+    mouse_ops::apply(&mut st, click(2, 0), &mut target, &snapshots, VP, VW);
     mouse_ops::apply(
         &mut st,
         MouseAction::Drag { col: 6, row: 0 },
@@ -980,14 +906,7 @@ fn row_reorder_leaves_cursor_off_persisted_comment_line() {
     let snapshots = [snap];
     let mut target: Option<mouse_ops::DragTarget> = None;
 
-    mouse_ops::apply(
-        &mut st,
-        MouseAction::Click { col: 0, row: 3 },
-        &mut target,
-        &snapshots,
-        VP,
-        VW,
-    );
+    mouse_ops::apply(&mut st, click(0, 3), &mut target, &snapshots, VP, VW);
     mouse_ops::apply(
         &mut st,
         MouseAction::Drag { col: 0, row: 5 },
@@ -1011,5 +930,132 @@ fn row_reorder_leaves_cursor_off_persisted_comment_line() {
     assert!(
         cursor_byte < comment_start,
         "cursor leaked onto comment line at byte {cursor_byte} (comment starts at {comment_start})",
+    );
+}
+
+// ── Phase 8: clickable links and navigation ────────────────────────────────
+
+use edamame::editor::link::LinkTarget;
+
+#[test]
+fn preview_click_on_link_sets_pending_follow_target() {
+    let mut st = state("See [docs](https://example.com) for more.\n");
+    // Preview is the default mode; click on the rendered link text.
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    let mut mouse = MouseDispatcher::new();
+    // Rendered text for `[docs](https://example.com)` is just `docs`
+    // (4 chars starting at rendered col 4).
+    if let Some(a) = mouse.dispatch(click_event(5, 0), area()) {
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+    }
+    let pending = st.pending_link_follow.take().expect("follow target set");
+    assert!(
+        matches!(&pending, LinkTarget::Url(u) if u == "https://example.com"),
+        "expected URL target, got {pending:?}"
+    );
+}
+
+#[test]
+fn plain_click_in_rendered_on_link_places_cursor_does_not_follow() {
+    // Per plan: in Rendered mode, plain click places the cursor — only
+    // Ctrl-click follows the link.
+    let mut st = state("See [docs](https://example.com) for more.\n");
+    st.mode = Mode::Rendered;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    let mut mouse = MouseDispatcher::new();
+    if let Some(a) = mouse.dispatch(click_event(5, 0), area()) {
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+    }
+    // No pending follow — the plain click in rendered mode fell through
+    // to cursor placement.
+    assert!(st.pending_link_follow.is_none());
+    assert!(st.selection.is_none());
+}
+
+#[test]
+fn ctrl_click_in_rendered_on_link_follows_without_moving_cursor() {
+    let mut st = state("See [docs](https://example.com) for more.\n");
+    st.mode = Mode::Rendered;
+    let cursor_before = st.cursor.offset;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    let mut mouse = MouseDispatcher::new();
+    if let Some(a) = mouse.dispatch(ctrl_click_event(5, 0), area()) {
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+    }
+    let pending = st
+        .pending_link_follow
+        .take()
+        .expect("ctrl-click sets target");
+    assert!(matches!(&pending, LinkTarget::Url(u) if u == "https://example.com"));
+    // Ctrl-click should NOT move the cursor away from its prior position.
+    assert_eq!(st.cursor.offset, cursor_before);
+}
+
+#[test]
+fn raw_reveal_fallback_detects_link_in_bracket_syntax() {
+    // Click on the raw `[text](url)` bytes (which will happen when the
+    // cursor block is revealed as raw) — the fallback path uses
+    // `link_at_offset` and produces the same LinkTarget classification.
+    let src = "See [docs](https://example.com) for more.\n";
+    let mut st = state(src);
+    st.mode = Mode::Raw;
+    // Raw mode: every col maps directly to a buffer byte.  Click col 5
+    // (inside `docs` bracket text).
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    let mut mouse = MouseDispatcher::new();
+    if let Some(a) = mouse.dispatch(ctrl_click_event(5, 0), area()) {
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+    }
+    let pending = st
+        .pending_link_follow
+        .take()
+        .expect("raw-mode click follows link");
+    assert!(matches!(&pending, LinkTarget::Url(u) if u == "https://example.com"));
+}
+
+#[test]
+fn click_on_non_link_text_does_not_set_pending_follow() {
+    let mut st = state("A paragraph with no links.\n");
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    let mut mouse = MouseDispatcher::new();
+    if let Some(a) = mouse.dispatch(click_event(4, 0), area()) {
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+    }
+    assert!(st.pending_link_follow.is_none());
+}
+
+#[test]
+fn hovered_link_target_returns_url_on_link_hover() {
+    let st = state("See [docs](https://example.com) for more.\n");
+    let target = mouse_ops::hovered_link_target(&st, 5, 0, VW);
+    assert!(matches!(target, Some(LinkTarget::Url(ref u)) if u == "https://example.com"));
+}
+
+#[test]
+fn hovered_link_target_none_outside_link_span() {
+    let st = state("See [docs](https://example.com) for more.\n");
+    // Col 0 is the leading 'S', not a link.
+    assert!(mouse_ops::hovered_link_target(&st, 0, 0, VW).is_none());
+}
+
+#[test]
+fn link_target_parse_classifies_inputs_correctly() {
+    use std::path::PathBuf;
+    assert_eq!(
+        LinkTarget::parse("#section", None),
+        LinkTarget::Anchor("section".to_owned())
+    );
+    assert_eq!(
+        LinkTarget::parse("https://example.com", None),
+        LinkTarget::Url("https://example.com".to_owned())
+    );
+    assert_eq!(
+        LinkTarget::parse("mailto:a@b.c", None),
+        LinkTarget::Url("mailto:a@b.c".to_owned())
+    );
+    let base = PathBuf::from("/docs");
+    assert_eq!(
+        LinkTarget::parse("sibling.md", Some(&base)),
+        LinkTarget::LocalFile(base.join("sibling.md"))
     );
 }

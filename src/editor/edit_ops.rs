@@ -617,6 +617,13 @@ pub fn apply(
                 insert_text(state, "\n");
             }
         }
+
+        // ── Phase 8 — link navigation ───────────────────────────────
+        // These are App-level actions: the event loop intercepts them
+        // before calling `edit_ops::apply`, so reaching them here means
+        // the App isn't wired up (e.g. a unit test driving edit_ops
+        // directly).  No-op so tests don't panic.
+        Action::FollowLinkUnderCursor | Action::NavigateBack | Action::NavigateForward => {}
     }
 
     // After any action that mutated the buffer (detected by a change in length

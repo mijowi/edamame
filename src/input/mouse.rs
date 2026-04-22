@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant};
 
-use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
 /// Maximum interval between consecutive clicks that still count as a "chord"
@@ -31,14 +31,29 @@ pub const WHEEL_STEP: usize = 3;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseAction {
     /// Single left-button click at `(col, row)`.  Places the cursor, clears
-    /// any selection, and becomes the anchor for a subsequent drag.
-    Click { col: u16, row: u16 },
+    /// any selection, and becomes the anchor for a subsequent drag.  The
+    /// `modifiers` are the crossterm `KeyModifiers` in effect during the
+    /// click — used by Phase 8 to distinguish plain clicks (cursor
+    /// placement) from `Ctrl`-clicks (follow link).
+    Click {
+        col: u16,
+        row: u16,
+        modifiers: KeyModifiers,
+    },
     /// Second click within `MULTI_CLICK_WINDOW` at the same cell — select the
     /// word under the cursor.
-    DoubleClick { col: u16, row: u16 },
+    DoubleClick {
+        col: u16,
+        row: u16,
+        modifiers: KeyModifiers,
+    },
     /// Third click within `MULTI_CLICK_WINDOW` at the same cell — select the
     /// whole line.
-    TripleClick { col: u16, row: u16 },
+    TripleClick {
+        col: u16,
+        row: u16,
+        modifiers: KeyModifiers,
+    },
     /// Left-button drag: extend the selection from the anchor to `(col, row)`.
     Drag { col: u16, row: u16 },
     /// Left-button release.  Currently informational; kept so future phases
@@ -108,14 +123,17 @@ impl MouseDispatcher {
                     1 => MouseAction::Click {
                         col: rel_col,
                         row: rel_row,
+                        modifiers: event.modifiers,
                     },
                     2 => MouseAction::DoubleClick {
                         col: rel_col,
                         row: rel_row,
+                        modifiers: event.modifiers,
                     },
                     _ => MouseAction::TripleClick {
                         col: rel_col,
                         row: rel_row,
+                        modifiers: event.modifiers,
                     },
                 })
             }
@@ -143,7 +161,6 @@ fn contains(area: Rect, col: u16, row: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::KeyModifiers;
 
     fn down(col: u16, row: u16) -> MouseEvent {
         MouseEvent {
@@ -195,7 +212,11 @@ mod tests {
         let mut d = MouseDispatcher::new();
         assert_eq!(
             d.dispatch(down(5, 2), area()),
-            Some(MouseAction::Click { col: 5, row: 2 })
+            Some(MouseAction::Click {
+                col: 5,
+                row: 2,
+                modifiers: KeyModifiers::NONE,
+            })
         );
     }
 
@@ -206,7 +227,11 @@ mod tests {
         d.dispatch(up(5, 2), area());
         assert_eq!(
             d.dispatch(down(5, 2), area()),
-            Some(MouseAction::DoubleClick { col: 5, row: 2 })
+            Some(MouseAction::DoubleClick {
+                col: 5,
+                row: 2,
+                modifiers: KeyModifiers::NONE,
+            })
         );
     }
 
@@ -219,7 +244,11 @@ mod tests {
         d.dispatch(up(5, 2), area());
         assert_eq!(
             d.dispatch(down(5, 2), area()),
-            Some(MouseAction::TripleClick { col: 5, row: 2 })
+            Some(MouseAction::TripleClick {
+                col: 5,
+                row: 2,
+                modifiers: KeyModifiers::NONE,
+            })
         );
     }
 
@@ -230,8 +259,29 @@ mod tests {
         d.dispatch(up(5, 2), area());
         assert_eq!(
             d.dispatch(down(10, 4), area()),
-            Some(MouseAction::Click { col: 10, row: 4 })
+            Some(MouseAction::Click {
+                col: 10,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            })
         );
+    }
+
+    #[test]
+    fn ctrl_modifier_is_threaded_into_click() {
+        let mut d = MouseDispatcher::new();
+        let ctrl_click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 4,
+            row: 1,
+            modifiers: KeyModifiers::CONTROL,
+        };
+        match d.dispatch(ctrl_click, area()) {
+            Some(MouseAction::Click { modifiers, .. }) => {
+                assert!(modifiers.contains(KeyModifiers::CONTROL));
+            }
+            other => panic!("expected Click, got {other:?}"),
+        }
     }
 
     #[test]
