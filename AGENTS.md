@@ -76,7 +76,7 @@ src/
   app.rs            # App: event loop, mpsc channel, action dispatch
   config.rs         # facade — re-exports Config, KeyMap, Theme, ThemeFile
   config/
-    config.rs       # Config, EditorConfig, ModalConfig, TableConfig, ImageConfig,
+    config.rs       # Config, EditorConfig, ModalConfig, TableConfig, ImagesConfig,
                     #   LoadedConfig (serde+toml); load()/save()/ensure_default_files()
     keymap.rs       # Action enum, KeyMap, KeyBindingOverrides, parse_key()
     theme.rs        # Theme: all Style values; no hardcoded colors elsewhere.
@@ -144,7 +144,7 @@ tests/
   ui.rs             # integration tests: TestBackend widget rendering
   snapshots/        # committed insta .snap files
 config/
-  default_config.toml      # annotated reference config (editor/modal/image +
+  default_config.toml      # annotated reference config (editor/modal/images +
                            #   the active theme name).  Written to
                            #   ~/.config/edamame/config.toml on first run.
   default_keybindings.toml # commented-out keybinding overrides reference.

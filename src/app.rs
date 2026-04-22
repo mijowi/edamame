@@ -16,7 +16,10 @@ use crate::editor::{edit_ops, mouse_ops, EditorState, Mode, PARSED_DEBOUNCE, RAW
 use crate::input::modal::default::DefaultHandler;
 use crate::input::{ModalHandler, MouseDispatcher};
 use crate::terminal::{set_pointer_shape, Capabilities, ColourDepth, PointerShape};
-use crate::ui::{EditorView, EditorViewState, ModalButton, ModalResponse, ModalState, ModalView};
+use crate::ui::{
+    build_cheat_sheet_body, hint_line_for, EditorView, EditorViewState, HintChord, HintContent,
+    ModalButton, ModalResponse, ModalState, ModalView,
+};
 
 /// Events that the main loop can receive.
 enum AppEvent {
@@ -73,7 +76,17 @@ struct StartupNotice {
     state: ModalState,
 }
 
-/// Phase 7 remote-image prompt: shown when `config.image.remote_policy`
+/// Prompt shown when `config.images.enabled` is `Ask` and the open
+/// document contains at least one image.  Four buttons: `Yes` (render
+/// inline for this session), `No` (keep placeholders for this session),
+/// `Always` (persist config), `Never` (persist config).
+struct ImagesEnabledPrompt {
+    body: Vec<String>,
+    buttons: Vec<ModalButton>,
+    state: ModalState,
+}
+
+/// Phase 7 remote-image prompt: shown when `config.images.remote_policy`
 /// is `Ask` and the open document references at least one `http(s)://`
 /// image.  Four buttons: `Yes` (in-memory allow for this session),
 /// `No` (dismiss without fetching), `Always` (persist config),
@@ -82,6 +95,59 @@ struct RemoteImagePrompt {
     body: Vec<String>,
     buttons: Vec<ModalButton>,
     state: ModalState,
+}
+
+/// Severity of a [`TransientMessage`].  Drives style selection and
+/// decides whether the message auto-expires.  `Error` is sticky:
+/// the user must dismiss with Escape or a subsequent `Error` replaces
+/// it.  Non-error kinds expire after `config.editor.transient_ms`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageKind {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+/// A single transient status message shown in the hint line.
+#[derive(Debug, Clone)]
+struct TransientMessage {
+    text: String,
+    kind: MessageKind,
+    /// Wall-clock deadline after which non-error messages auto-expire.
+    /// `None` for sticky errors.
+    until: Option<Instant>,
+}
+
+/// Phase 9 quit-confirm dialog shown when the user tries to exit with
+/// unsaved changes.  Three buttons: `Save`, `Discard`, `Cancel`.
+struct QuitConfirm {
+    body: Vec<String>,
+    buttons: Vec<ModalButton>,
+    state: ModalState,
+}
+
+/// Phase 9 `?` cheat-sheet popover.  Single-button modal that lists
+/// every known keybinding; dismissed by pressing any button or
+/// Escape.
+struct CheatSheetModal {
+    body: Vec<String>,
+    buttons: Vec<ModalButton>,
+    state: ModalState,
+}
+
+/// Phase 9 generic modal prompt hosted on the hint line.  Phase 11
+/// (file-change detection) is the first consumer; landing the
+/// scaffolding here means later phases only need to populate the
+/// struct and wire the response back.  The `handler` fn is the single
+/// callback invoked when one of the chord keys is pressed — it
+/// receives the triggering `KeyCode` so the same prompt type can host
+/// multi-button flows.
+#[allow(dead_code)] // first consumer lands in Phase 11
+pub struct HintPrompt {
+    pub prompt: String,
+    pub chords: Vec<HintChord>,
+    pub handler: fn(&mut App, crossterm::event::KeyCode),
 }
 
 /// The application: owns all state and drives the event loop.
@@ -101,6 +167,19 @@ pub struct App {
     /// When `Some`, a startup notice modal is displayed and absorbs key
     /// events.  Cleared to `None` once the user dismisses it.
     startup_notice: Option<StartupNotice>,
+    /// Prompt for the master images-enabled switch.  Shown when
+    /// `config.images.enabled` is `Ask` and the initial document
+    /// contains images.  Stacks after the startup notice and before
+    /// the remote-image prompt so the user decides whether to render
+    /// images at all before being asked about remote fetches.
+    images_enabled_prompt: Option<ImagesEnabledPrompt>,
+    /// Session-only override for the master images-enabled switch,
+    /// set by `Yes` / `No` on the images-enabled prompt.  `Some(true)`
+    /// renders images for the rest of this process; `Some(false)`
+    /// keeps them as placeholders; `None` defers to `config.images.enabled`.
+    /// `Always` / `Never` persist the choice to config instead of
+    /// setting this flag.
+    session_images_enabled: Option<bool>,
     /// Phase 7 remote-image prompt.  Shown only after the startup
     /// notice is dismissed (they're stacked one-at-a-time so the user
     /// doesn't see two modals at once).
@@ -121,7 +200,7 @@ pub struct App {
     /// Once the user picks `Yes` / `Always` on the remote-load prompt,
     /// this flag stays set for the rest of the process so further image
     /// loads can proceed without a second prompt.  Persists only in
-    /// memory; `Always` also writes back to `config.image.remote_policy`.
+    /// memory; `Always` also writes back to `config.images.remote_policy`.
     session_allow_remote: bool,
     /// Sender for the main loop's mpsc channel; retained so background
     /// decode threads can push `AppEvent::ImageReady`.  Initialised in
@@ -189,6 +268,19 @@ pub struct App {
     /// Phase 9 will render this (plus the link's `title`) on the hint
     /// line.  Until then the field is wired through but not displayed.
     hovered_link: Option<LinkTarget>,
+    /// Phase 9 — transient message overlayed on the hint line.  Non-
+    /// error kinds auto-expire after `config.editor.transient_ms`;
+    /// errors stick until dismissed.  Set by [`App::flash`] from any
+    /// code path that wants a one-shot notification.
+    transient: Option<TransientMessage>,
+    /// Phase 9 — quit confirmation modal.  `Some` while the dialog is
+    /// visible; absorbs input like the other modals.
+    quit_confirm: Option<QuitConfirm>,
+    /// Phase 9 — `?` cheat-sheet popover.
+    cheat_sheet: Option<CheatSheetModal>,
+    /// Phase 9 — active hint-line prompt (first consumer is Phase 11).
+    /// Renders in place of the default hint chords; Escape dismisses.
+    hint_prompt: Option<HintPrompt>,
 }
 
 /// After the scroll position stops changing for this long, images
@@ -304,15 +396,24 @@ impl App {
             .as_ref()
             .map(|p| p.font_size())
             .unwrap_or((10, 20));
-        let editor = EditorState::new_with_image_config(
+        let mut editor = EditorState::new_with_image_config(
             buffer,
             theme,
             config.editor.preserve_blank_lines,
             config.editor.visual_line_nav,
-            config.image.max_height,
-            config.image.max_width,
+            config.images.max_height,
+            config.images.max_width,
             image_font_size,
         );
+        // When the user has persisted `images.enabled = "never"`, image
+        // blocks must collapse to just the `[Image: alt]` placeholder —
+        // no reserved rows beneath.  The `Ask` / `Always` paths leave
+        // the layout reserved so the prompt / live decode populates the
+        // area; the declined-session flip happens in the prompt handler.
+        if matches!(config.images.enabled, crate::config::ImagesEnabled::Never) {
+            editor.images_enabled = false;
+            editor.refresh_parsed();
+        }
 
         // PreviewView borrows `editor.parsed.lines` at render time, so
         // no per-event clone is needed and the constructor is now
@@ -322,6 +423,7 @@ impl App {
 
         // Decide whether to show the capability-notice on startup.
         let startup_notice = build_startup_notice(&capabilities, &config);
+        let images_enabled_prompt = build_images_enabled_prompt(&editor, &config);
         let remote_image_prompt = build_remote_image_prompt(&editor, &config);
         let wheel_step = config.editor.mouse_scroll_lines;
 
@@ -335,6 +437,8 @@ impl App {
             view_state,
             should_quit: false,
             startup_notice,
+            images_enabled_prompt,
+            session_images_enabled: None,
             remote_image_prompt,
             mouse: MouseDispatcher::with_wheel_step(wheel_step),
             drag_target: None,
@@ -352,7 +456,76 @@ impl App {
             nav_forward: Vec::new(),
             dirty_guard: None,
             hovered_link: None,
+            transient: None,
+            quit_confirm: None,
+            cheat_sheet: None,
+            hint_prompt: None,
         })
+    }
+
+    /// Phase 9 — emit a transient message on the hint line.  Non-error
+    /// kinds auto-expire after `config.editor.transient_ms`; `Error`
+    /// kinds stick until Escape or until a subsequent `Error` replaces
+    /// them.  Called from every phase that wants a one-shot
+    /// notification — save/copy/cut outcomes, link-open failures,
+    /// `Config::save` successes, etc.
+    pub fn flash(&mut self, text: impl Into<String>, kind: MessageKind) {
+        let text = text.into();
+        let until = match kind {
+            MessageKind::Error => None,
+            _ => Some(Instant::now() + Duration::from_millis(self.config.editor.transient_ms)),
+        };
+        self.transient = Some(TransientMessage { text, kind, until });
+        self.needs_draw = true;
+    }
+
+    /// Clear the current transient message if it has auto-expired.
+    /// Called from the main loop before the draw gate so the hint line
+    /// reverts to chords without the user having to press a key.
+    /// Returns true when a redraw is needed.
+    fn expire_transient_if_due(&mut self) -> bool {
+        let Some(msg) = self.transient.as_ref() else {
+            return false;
+        };
+        let Some(deadline) = msg.until else {
+            return false;
+        };
+        if Instant::now() >= deadline {
+            self.transient = None;
+            return true;
+        }
+        false
+    }
+
+    /// The deadline when the current transient expires, if any.
+    /// Contributes to [`App::next_deadline`] so the main loop wakes in
+    /// time to revert the hint line even with no input arriving.
+    fn transient_deadline(&self) -> Option<Instant> {
+        self.transient.as_ref().and_then(|m| m.until)
+    }
+
+    /// Build the hint content for this frame.  Prompt > Transient >
+    /// Chords, matching the plan's priority.
+    fn hint_content(&self) -> HintContent {
+        if let Some(prompt) = self.hint_prompt.as_ref() {
+            return HintContent::Prompt {
+                prompt: prompt.prompt.clone(),
+                chords: prompt.chords.clone(),
+            };
+        }
+        if let Some(msg) = self.transient.as_ref() {
+            let style = match msg.kind {
+                MessageKind::Info => self.theme.transient_info,
+                MessageKind::Success => self.theme.transient_success,
+                MessageKind::Warning => self.theme.transient_warning,
+                MessageKind::Error => self.theme.transient_error,
+            };
+            return HintContent::Transient {
+                text: msg.text.clone(),
+                style,
+            };
+        }
+        HintContent::Chords(hint_line_for(&self.editor))
     }
 
     /// Record that the scroll position has just changed; used by the
@@ -398,11 +571,14 @@ impl App {
                     self.editor.images.drop_pending_front();
                 }
                 Ok(AppEvent::LinkOpenResult(result)) => {
-                    // Phase 8: `open::that` finished in a worker.  Only
-                    // log — Phase 9 will surface failures on the hint
-                    // line.
+                    // Phase 8: `open::that` finished in a worker.
+                    // Phase 9: surface failures on the hint line as a
+                    // sticky error so the user knows the click did not
+                    // result in a navigation.
                     if let Err(msg) = result {
                         tracing::warn!(target: "link", error = %msg, "link open failed");
+                        self.flash(format!("Link open failed: {msg}"), MessageKind::Error);
+                        self.needs_draw = true;
                     }
                 }
                 // A Term event pulled via `try_recv` cannot be put back
@@ -461,6 +637,10 @@ impl App {
         push(self.last_scroll_at.map(|t| t + SCROLL_QUIESCE));
         push(self.editor.parsed_dirty_at.map(|t| t + PARSED_DEBOUNCE));
         push(self.resize_quiesce_at);
+        // Phase 9: wake in time to expire a transient hint-line
+        // message so the hint reverts to chords even if the user
+        // isn't typing.
+        push(self.transient_deadline());
         earliest
     }
 
@@ -537,6 +717,13 @@ impl App {
                 self.needs_draw = true;
             }
 
+            // Phase 9: retire expired transient hint-line messages
+            // before the draw gate so the hint reverts to chords even
+            // when no input is flowing.
+            if self.expire_transient_if_due() {
+                self.needs_draw = true;
+            }
+
             // Coalesce any `ImageReady`-driven cache mutations into a
             // single parse-and-render pass for this frame.  Without
             // this, a burst of N simultaneous decode completions would
@@ -558,7 +745,10 @@ impl App {
             // kicks off more concurrent decodes than the window
             // contains — bounded, not proportional to doc size.
             let term_size = terminal.size()?;
-            let doc_height_lines = term_size.height.saturating_sub(1) as usize;
+            let bottom_rows_for_decode =
+                crate::ui::BottomRegion::height(self.config.editor.status_bar) as usize;
+            let doc_height_lines =
+                (term_size.height as usize).saturating_sub(bottom_rows_for_decode);
             self.last_area_width = term_size.width;
             self.dispatch_visible_image_decodes(self.editor.scroll, doc_height_lines);
 
@@ -578,15 +768,24 @@ impl App {
                 let filename = self.display_filename();
                 let is_scrolling = self.is_scrolling();
                 let show_handles = self.config.table.show_drag_handles;
+                let layout = self.config.editor.status_bar;
+                let hint = self.hint_content();
                 let editor_ref = &mut self.editor;
                 let theme_ref = self.theme;
                 let capabilities_ref = &self.capabilities;
                 let view_state_ref = &mut self.view_state;
                 let notice_ref = self.startup_notice.as_mut();
+                // Images-enabled prompt stacks after the capability
+                // notice so the user sees them one at a time.
+                let images_enabled_ref = if notice_ref.is_none() {
+                    self.images_enabled_prompt.as_mut()
+                } else {
+                    None
+                };
                 // Only show the remote prompt once the capability notice
-                // has been dismissed so the user never sees two modals
-                // stacked.
-                let remote_prompt_ref = if notice_ref.is_none() {
+                // and images-enabled prompt have been dismissed so the
+                // user never sees two modals stacked.
+                let remote_prompt_ref = if notice_ref.is_none() && images_enabled_ref.is_none() {
                     self.remote_image_prompt.as_mut()
                 } else {
                     None
@@ -594,8 +793,33 @@ impl App {
                 // Phase 8 dirty-guard takes priority over the remote
                 // prompt so the user's link-follow action isn't
                 // overshadowed by a startup-ish prompt.
-                let dirty_guard_ref = if notice_ref.is_none() && remote_prompt_ref.is_none() {
+                let dirty_guard_ref = if notice_ref.is_none()
+                    && images_enabled_ref.is_none()
+                    && remote_prompt_ref.is_none()
+                {
                     self.dirty_guard.as_mut()
+                } else {
+                    None
+                };
+                // Phase 9 modals (quit-confirm, cheat-sheet) layer on
+                // top of the editor.  `quit_confirm` takes priority so
+                // a user trying to exit sees it over any other popup.
+                let quit_confirm_ref = if notice_ref.is_none()
+                    && images_enabled_ref.is_none()
+                    && remote_prompt_ref.is_none()
+                    && dirty_guard_ref.is_none()
+                {
+                    self.quit_confirm.as_mut()
+                } else {
+                    None
+                };
+                let cheat_sheet_ref = if notice_ref.is_none()
+                    && images_enabled_ref.is_none()
+                    && remote_prompt_ref.is_none()
+                    && dirty_guard_ref.is_none()
+                    && quit_confirm_ref.is_none()
+                {
+                    self.cheat_sheet.as_mut()
                 } else {
                     None
                 };
@@ -607,6 +831,8 @@ impl App {
                         show_table_handles: show_handles,
                         capabilities: capabilities_ref,
                         is_scrolling,
+                        status_bar_layout: layout,
+                        hint,
                     };
                     frame.render_stateful_widget(view, frame.area(), view_state_ref);
                     if let Some(notice) = notice_ref {
@@ -617,6 +843,14 @@ impl App {
                             theme: theme_ref,
                         };
                         frame.render_stateful_widget(modal, frame.area(), &mut notice.state);
+                    } else if let Some(prompt) = images_enabled_ref {
+                        let modal = ModalView {
+                            title: "Images",
+                            body: &prompt.body,
+                            buttons: &prompt.buttons,
+                            theme: theme_ref,
+                        };
+                        frame.render_stateful_widget(modal, frame.area(), &mut prompt.state);
                     } else if let Some(prompt) = remote_prompt_ref {
                         let modal = ModalView {
                             title: "Remote Images",
@@ -633,6 +867,22 @@ impl App {
                             theme: theme_ref,
                         };
                         frame.render_stateful_widget(modal, frame.area(), &mut guard.state);
+                    } else if let Some(q) = quit_confirm_ref {
+                        let modal = ModalView {
+                            title: "Unsaved changes",
+                            body: &q.body,
+                            buttons: &q.buttons,
+                            theme: theme_ref,
+                        };
+                        frame.render_stateful_widget(modal, frame.area(), &mut q.state);
+                    } else if let Some(cs) = cheat_sheet_ref {
+                        let modal = ModalView {
+                            title: "Keybindings",
+                            body: &cs.body,
+                            buttons: &cs.buttons,
+                            theme: theme_ref,
+                        };
+                        frame.render_stateful_widget(modal, frame.area(), &mut cs.state);
                     }
                 })?;
                 self.last_draw_at = Some(Instant::now());
@@ -717,6 +967,7 @@ impl App {
                     Ok(AppEvent::LinkOpenResult(result)) => {
                         if let Err(msg) = result {
                             tracing::warn!(target: "link", error = %msg, "link open failed");
+                            self.flash(format!("Link open failed: {msg}"), MessageKind::Error);
                         }
                         continue;
                     }
@@ -772,9 +1023,26 @@ impl App {
                 continue;
             }
 
+            // Images-enabled prompt absorbs all input while it's
+            // visible (and only when the startup notice has already
+            // been dismissed).  Stacks before the remote-image prompt.
+            if self.startup_notice.is_none() && self.images_enabled_prompt.is_some() {
+                if let Event::Key(key) = &event {
+                    if key.kind == KeyEventKind::Press {
+                        self.handle_images_enabled_prompt_key(*key);
+                        self.needs_draw = true;
+                    }
+                }
+                continue;
+            }
+
             // Remote-image prompt absorbs all input while it's visible
-            // (and only when the startup notice has already been dismissed).
-            if self.startup_notice.is_none() && self.remote_image_prompt.is_some() {
+            // (after the startup notice and images-enabled prompt have
+            // been dismissed).
+            if self.startup_notice.is_none()
+                && self.images_enabled_prompt.is_none()
+                && self.remote_image_prompt.is_some()
+            {
                 if let Event::Key(key) = &event {
                     if key.kind == KeyEventKind::Press {
                         self.handle_remote_image_prompt_key(*key);
@@ -795,16 +1063,42 @@ impl App {
                 continue;
             }
 
+            // Phase 9 — quit-confirm modal absorbs all input while
+            // it's visible.  Ordered after the higher-priority modals
+            // because a quit request should never interrupt a startup
+            // notice / remote-image / dirty-guard flow.
+            if self.quit_confirm.is_some() {
+                if let Event::Key(key) = &event {
+                    if key.kind == KeyEventKind::Press {
+                        self.handle_quit_confirm_key(*key);
+                        self.needs_draw = true;
+                    }
+                }
+                continue;
+            }
+
+            // Phase 9 — cheat-sheet popover absorbs input.
+            if self.cheat_sheet.is_some() {
+                if let Event::Key(key) = &event {
+                    if key.kind == KeyEventKind::Press {
+                        self.handle_cheat_sheet_key(*key);
+                        self.needs_draw = true;
+                    }
+                }
+                continue;
+            }
+
             // `term_size` was already fetched at the top of the loop
             // (for `dispatch_visible_image_decodes`); reuse here.
             let viewport_height = term_size.height as usize;
-            let doc_height = viewport_height.saturating_sub(1); // minus status bar
+            let bottom_rows = crate::ui::BottomRegion::height(self.config.editor.status_bar);
+            let doc_height = viewport_height.saturating_sub(bottom_rows as usize);
             let doc_width = term_size.width as usize;
             let doc_area = Rect {
                 x: 0,
                 y: 0,
                 width: term_size.width,
-                height: term_size.height.saturating_sub(1),
+                height: term_size.height.saturating_sub(bottom_rows),
             };
 
             // ── Dispatch mouse events ─────────────────────────────
@@ -908,20 +1202,44 @@ impl App {
             // ── Dispatch event → Action ───────────────────────────
             let mut handler = DefaultHandler::new(&keymap);
             if let Some(action) = handler.handle_event(event, &self.editor) {
+                // Phase 9: if a sticky error is showing, Escape
+                // dismisses it and swallows the key press so it
+                // doesn't double as ExitToPreview.  Non-sticky
+                // transients let Escape fall through.
+                if matches!(action, Action::ExitToPreview) && self.dismiss_sticky_transient() {
+                    self.needs_draw = true;
+                    continue;
+                }
                 // Phase 8 — App-level actions intercepted BEFORE the
                 // generic `edit_ops::apply` dispatch.  Link navigation
                 // mutates App state (nav stack, file load) that
                 // `EditorState` doesn't own, so these paths stay here.
                 let handled = self.handle_app_action(&action, doc_height, doc_width);
                 if !handled {
+                    // Phase 9 — Quit on a dirty buffer opens the
+                    // three-button confirm modal instead of
+                    // terminating.  On a clean buffer we fall through
+                    // to `edit_ops::apply` which returns `true`.
+                    if matches!(action, Action::Quit) && self.editor.dirty {
+                        self.open_quit_confirm();
+                        self.needs_draw = true;
+                        continue;
+                    }
+                    // Phase 9 — observe the effects of certain
+                    // actions so we can flash a transient message.
+                    // Save: we need to detect failure and raise a
+                    // sticky error instead of leaving the user guessing.
+                    let save_before_dirty = self.editor.dirty;
                     let scroll_before = self.editor.scroll;
-                    let quit = edit_ops::apply(&mut self.editor, action, doc_height, doc_width);
+                    let quit =
+                        edit_ops::apply(&mut self.editor, action.clone(), doc_height, doc_width);
                     if quit {
                         self.should_quit = true;
                     }
                     if self.editor.scroll != scroll_before {
                         self.mark_scrolling();
                     }
+                    self.flash_for_action(&action, save_before_dirty);
                     // Edit actions may have set `pending_link_follow`
                     // (FollowLinkUnderCursor doesn't hit `handle_app_action`
                     // path only when the action ISN'T App-level).
@@ -982,6 +1300,145 @@ impl App {
                 true
             }
             _ => false,
+        }
+    }
+
+    // ── Phase 9 — transient messages & confirm modals ─────────────────────
+
+    /// Clear a sticky `Error` transient on Escape, returning true to
+    /// signal that the Escape was consumed and should not fall through
+    /// to `Action::ExitToPreview`.  Non-sticky transients don't absorb
+    /// Escape.
+    fn dismiss_sticky_transient(&mut self) -> bool {
+        let Some(msg) = self.transient.as_ref() else {
+            return false;
+        };
+        if matches!(msg.kind, MessageKind::Error) {
+            self.transient = None;
+            return true;
+        }
+        false
+    }
+
+    /// Inspect `action` after dispatch and emit the matching flash
+    /// notification.  Centralising this here means every code path
+    /// that calls `Action::Save` / `Copy` / `Cut` gets consistent
+    /// messaging without polluting `edit_ops::apply` with UI concerns.
+    fn flash_for_action(&mut self, action: &Action, dirty_before_save: bool) {
+        match action {
+            Action::Save => {
+                // Success is signalled by the dirty flag dropping.
+                // Failure leaves `dirty` true; surface a sticky error
+                // so the user knows the save did not happen.
+                if dirty_before_save && !self.editor.dirty {
+                    self.flash("Saved", MessageKind::Success);
+                } else if dirty_before_save && self.editor.dirty {
+                    self.flash("Save failed", MessageKind::Error);
+                }
+                // Saving a clean buffer is a no-op — no flash.
+            }
+            Action::Copy | Action::Cut => {
+                self.flash("Copied", MessageKind::Info);
+            }
+            _ => {}
+        }
+    }
+
+    /// Open the three-button `Save / Discard / Cancel` modal.  Called
+    /// when the user requests `Quit` on a dirty buffer.
+    fn open_quit_confirm(&mut self) {
+        let display = self
+            .file_path
+            .as_deref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Current buffer".to_owned());
+        let body = vec![
+            format!("{} has unsaved changes.", display),
+            String::new(),
+            "What would you like to do?".to_owned(),
+        ];
+        self.quit_confirm = Some(QuitConfirm {
+            body,
+            buttons: vec![
+                ModalButton::new("Save"),
+                ModalButton::new("Discard"),
+                ModalButton::new("Cancel"),
+            ],
+            state: ModalState::new(),
+        });
+    }
+
+    /// Handle a keypress while the quit-confirm modal is visible.
+    /// Save persists then exits; Save failure surfaces a sticky error
+    /// transient and aborts the quit.  Discard exits without saving.
+    /// Cancel / Escape dismisses the modal.
+    fn handle_quit_confirm_key(&mut self, key: crossterm::event::KeyEvent) {
+        let Some(q) = self.quit_confirm.as_mut() else {
+            return;
+        };
+        let num_buttons = q.buttons.len();
+        match q.state.handle_key(&key, num_buttons) {
+            ModalResponse::Continue => {}
+            ModalResponse::Cancelled => {
+                self.quit_confirm = None;
+            }
+            ModalResponse::ButtonPressed(idx) => {
+                self.quit_confirm = None;
+                match idx {
+                    0 => {
+                        // Save then exit.
+                        if self.editor.buffer.save_file().is_ok() {
+                            self.editor.dirty = false;
+                            self.should_quit = true;
+                        } else {
+                            self.flash("Save failed — quit aborted", MessageKind::Error);
+                        }
+                    }
+                    1 => {
+                        // Discard: exit without saving.
+                        self.should_quit = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// Build and display the `?` cheat-sheet popover.  The body is
+    /// produced by [`build_cheat_sheet_body`] from the current
+    /// [`KeyMap`] so overrides show their bound keys.
+    fn open_cheat_sheet(&mut self) {
+        // Rebuild the keymap on demand rather than threading the loop-
+        // scoped one up here — the cheat sheet is not hot-path, so the
+        // ~10 µs rebuild is fine.
+        let keymap = match KeyMap::build(&self.keybindings) {
+            Ok(k) => k,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to build KeyMap for cheat sheet");
+                return;
+            }
+        };
+        let body = build_cheat_sheet_body(&keymap);
+        self.cheat_sheet = Some(CheatSheetModal {
+            body,
+            buttons: vec![ModalButton::new("OK")],
+            state: ModalState::new(),
+        });
+    }
+
+    /// Dispatch a keypress to the cheat-sheet modal.  Any button press
+    /// or Escape dismisses it.
+    fn handle_cheat_sheet_key(&mut self, key: crossterm::event::KeyEvent) {
+        let Some(cs) = self.cheat_sheet.as_mut() else {
+            return;
+        };
+        let num_buttons = cs.buttons.len();
+        match cs.state.handle_key(&key, num_buttons) {
+            ModalResponse::Continue => {}
+            ModalResponse::Cancelled | ModalResponse::ButtonPressed(_) => {
+                self.cheat_sheet = None;
+            }
         }
     }
 
@@ -1092,19 +1549,27 @@ impl App {
     /// caller decides whether the transition should record history.
     fn load_file_into_editor(&mut self, path: PathBuf) -> Result<()> {
         let buffer = Buffer::load_file(&path)?;
-        let new_editor = EditorState::new_with_image_config(
+        let mut new_editor = EditorState::new_with_image_config(
             buffer,
             self.theme,
             self.config.editor.preserve_blank_lines,
             self.config.editor.visual_line_nav,
-            self.config.image.max_height,
-            self.config.image.max_width,
+            self.config.images.max_height,
+            self.config.images.max_width,
             self.capabilities
                 .image_picker
                 .as_ref()
                 .map(|p| p.font_size())
                 .unwrap_or((10, 20)),
         );
+        // Preserve the current declined state across file loads: a
+        // session-level `No`, a persisted `Never`, or anything else that
+        // zeroed `images_enabled` on the previous editor stays in
+        // effect for the new one.
+        if !self.images_layout_enabled() {
+            new_editor.images_enabled = false;
+            new_editor.refresh_parsed();
+        }
         self.editor = new_editor;
         // Image cache is owned by `EditorState`, so swapping to a new
         // editor resets it — image URLs on the new doc are resolved
@@ -1285,11 +1750,102 @@ impl App {
                 // modal without touching config.
                 if idx == 1 {
                     self.config.editor.suppress_capability_warnings = true;
-                    if let Err(e) = self.config.save() {
-                        tracing::warn!(error = %e, "failed to persist capability-warning preference");
-                    }
+                    self.save_config_with_flash("failed to persist capability-warning preference");
                 }
                 self.startup_notice = None;
+            }
+        }
+    }
+
+    /// Persist `config.toml` and flash a `Configuration updated`
+    /// notification on success.  Centralises the save-and-notify
+    /// pattern so every caller (capability suppression, remote-image
+    /// policy, future settings overlay) gets the same UX without
+    /// sprinkling `flash()` calls through the dispatch paths.
+    fn save_config_with_flash(&mut self, err_context: &'static str) {
+        match self.config.save() {
+            Ok(()) => {
+                self.flash("Configuration updated", MessageKind::Warning);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "{}", err_context);
+                self.flash(format!("Config save failed: {e}"), MessageKind::Error);
+            }
+        }
+    }
+
+    /// Apply a keypress to the images-enabled prompt.  Buttons:
+    ///   * index 0 "Yes"    — render images for this session; config unchanged.
+    ///   * index 1 "No"     — keep placeholders for this session; config unchanged.
+    ///   * index 2 "Always" — persist `ImagesEnabled::Always`.
+    ///   * index 3 "Never"  — persist `ImagesEnabled::Never`.
+    ///
+    /// Selecting any "show" option immediately dispatches decodes so
+    /// visible images start loading without waiting for a keypress.
+    fn handle_images_enabled_prompt_key(&mut self, key: crossterm::event::KeyEvent) {
+        let Some(prompt) = self.images_enabled_prompt.as_mut() else {
+            return;
+        };
+        let num_buttons = prompt.buttons.len();
+        let response = prompt.state.handle_key(&key, num_buttons);
+        match response {
+            ModalResponse::Continue => {}
+            ModalResponse::Cancelled => {
+                // Escape → treat as "No": placeholders this session, config untouched.
+                self.session_images_enabled = Some(false);
+                self.images_enabled_prompt = None;
+                // No images this session means the queued remote-image
+                // prompt is moot — drop it so it doesn't surface next.
+                self.remote_image_prompt = None;
+                // Collapse image blocks to the one-line placeholder so
+                // no whitespace is reserved for images the user
+                // declined to render.
+                self.editor.images_enabled = false;
+                self.editor.refresh_parsed();
+            }
+            ModalResponse::ButtonPressed(idx) => {
+                // Button order defined in `build_images_enabled_prompt`:
+                //   0 → Yes    (session-only show, no config change)
+                //   1 → No     (session-only hide, no config change)
+                //   2 → Always (persist `ImagesEnabled::Always`)
+                //   3 → Never  (persist `ImagesEnabled::Never`)
+                let allow_now = match idx {
+                    0 => {
+                        self.session_images_enabled = Some(true);
+                        true
+                    }
+                    1 => {
+                        self.session_images_enabled = Some(false);
+                        false
+                    }
+                    2 => {
+                        self.config.images.enabled = crate::config::ImagesEnabled::Always;
+                        self.save_config_with_flash("failed to persist images.enabled=always");
+                        true
+                    }
+                    _ => {
+                        self.config.images.enabled = crate::config::ImagesEnabled::Never;
+                        self.save_config_with_flash("failed to persist images.enabled=never");
+                        false
+                    }
+                };
+                self.images_enabled_prompt = None;
+                if allow_now {
+                    // Kick off decodes for visible images immediately so
+                    // the user sees them right after dismissing the prompt.
+                    self.dispatch_image_decodes();
+                } else {
+                    // If the user has opted out of images, the remote-
+                    // image prompt that was queued at startup is moot —
+                    // no images will load regardless.  Drop it so it
+                    // doesn't surface next.
+                    self.remote_image_prompt = None;
+                    // Collapse image blocks to their one-line
+                    // placeholder so no whitespace is reserved for
+                    // images that will never render.
+                    self.editor.images_enabled = false;
+                    self.editor.refresh_parsed();
+                }
             }
         }
     }
@@ -1332,17 +1888,13 @@ impl App {
                     }
                     1 => false,
                     2 => {
-                        self.config.image.remote_policy = crate::config::RemoteImagePolicy::Always;
-                        if let Err(e) = self.config.save() {
-                            tracing::warn!(error = %e, "failed to persist remote_policy=Always");
-                        }
+                        self.config.images.remote_policy = crate::config::RemoteImagePolicy::Always;
+                        self.save_config_with_flash("failed to persist remote_policy=Always");
                         true
                     }
                     _ => {
-                        self.config.image.remote_policy = crate::config::RemoteImagePolicy::Never;
-                        if let Err(e) = self.config.save() {
-                            tracing::warn!(error = %e, "failed to persist remote_policy=Never");
-                        }
+                        self.config.images.remote_policy = crate::config::RemoteImagePolicy::Never;
+                        self.save_config_with_flash("failed to persist remote_policy=Never");
                         false
                     }
                 };
@@ -1366,6 +1918,34 @@ impl App {
         }
         set_pointer_shape(shape);
         self.last_pointer_shape = shape;
+    }
+
+    /// Whether inline image rendering should happen right now.  The
+    /// persisted `config.images.enabled` decides when it's `Always` or
+    /// `Never`; `Ask` defers to `session_images_enabled`, which is
+    /// populated only after the user answers the images-enabled
+    /// prompt.  While the prompt is still pending this returns false
+    /// so no decodes are dispatched behind the user's back.
+    fn effective_images_enabled(&self) -> bool {
+        match self.config.images.enabled {
+            crate::config::ImagesEnabled::Always => true,
+            crate::config::ImagesEnabled::Never => false,
+            crate::config::ImagesEnabled::Ask => self.session_images_enabled.unwrap_or(false),
+        }
+    }
+
+    /// Whether image blocks should still reserve layout rows, even if
+    /// no decode will run.  Returns `false` only when the user has
+    /// explicitly declined — persisted `Never` or a session-level `No`
+    /// / Escape on the images-enabled prompt.  The `Ask` + pending
+    /// state still reports `true` so the layout doesn't reflow while
+    /// the modal is on screen.
+    fn images_layout_enabled(&self) -> bool {
+        match self.config.images.enabled {
+            crate::config::ImagesEnabled::Never => false,
+            crate::config::ImagesEnabled::Always => true,
+            crate::config::ImagesEnabled::Ask => self.session_images_enabled != Some(false),
+        }
     }
 
     /// Walk the current parse for `Block::ImageBlock`s, mark any new
@@ -1418,14 +1998,14 @@ impl App {
     /// Shared dispatch primitive: spawn a worker thread for each URL
     /// that `ImageCache::request` accepts as new.
     fn dispatch_image_decodes_for(&mut self, urls: &[String]) {
-        if !self.config.image.enabled {
+        if !self.effective_images_enabled() {
             return;
         }
         let Some(tx) = self.app_tx.clone() else {
             return;
         };
         let doc_path = self.file_path.clone();
-        let remote_policy = self.config.image.remote_policy;
+        let remote_policy = self.config.images.remote_policy;
         let session_allow_remote = self.session_allow_remote;
         // Give the worker the target ceiling AND the terminal's font-size
         // so the decoded image is pre-resized to fit within
@@ -1433,8 +2013,8 @@ impl App {
         // protocol never has to resize — every render call at the same
         // target area is a no-op beyond the first encode.
         let max_cells = Some((
-            self.config.image.max_width as u16,
-            self.config.image.max_height as u16,
+            self.config.images.max_width as u16,
+            self.config.images.max_height as u16,
         ));
         let font_size = self
             .capabilities
@@ -1519,13 +2099,14 @@ impl App {
 
 /// Build the remote-image prompt when the document references at least
 /// one `http(s)://` image and the policy is `Ask`.  Returns `None` when
-/// there are no remote URLs, image rendering is disabled, or the policy
-/// has been pinned to `Always` / `Never`.
+/// there are no remote URLs, image rendering is off entirely
+/// (`images.enabled = "never"`), or the policy has been pinned to
+/// `Always` / `Never`.
 fn build_remote_image_prompt(editor: &EditorState, config: &Config) -> Option<RemoteImagePrompt> {
-    if !config.image.enabled {
+    if matches!(config.images.enabled, crate::config::ImagesEnabled::Never) {
         return None;
     }
-    if config.image.remote_policy != crate::config::RemoteImagePolicy::Ask {
+    if config.images.remote_policy != crate::config::RemoteImagePolicy::Ask {
         return None;
     }
     let has_remote = editor
@@ -1548,6 +2129,39 @@ fn build_remote_image_prompt(editor: &EditorState, config: &Config) -> Option<Re
     // hammers Enter without reading.  "No" dismisses without fetching.
     // The persistent choices ("Always", "Never") come after.
     Some(RemoteImagePrompt {
+        body,
+        buttons: vec![
+            ModalButton::new("Yes"),
+            ModalButton::new("No"),
+            ModalButton::new("Always"),
+            ModalButton::new("Never"),
+        ],
+        state: ModalState::new(),
+    })
+}
+
+/// Build the images-enabled prompt when `config.images.enabled` is `Ask`
+/// and the open document contains at least one image.  Returns `None`
+/// when the policy has been pinned to `Always` / `Never`, or when the
+/// document has no image blocks to prompt about.
+fn build_images_enabled_prompt(
+    editor: &EditorState,
+    config: &Config,
+) -> Option<ImagesEnabledPrompt> {
+    if !matches!(config.images.enabled, crate::config::ImagesEnabled::Ask) {
+        return None;
+    }
+    if editor.parsed.image_blocks.is_empty() {
+        return None;
+    }
+    let body = vec![
+        "This document contains images.".to_owned(),
+        String::new(),
+        "Would you like edamame to display images?".to_owned(),
+    ];
+    // Button order mirrors the remote-image prompt: Yes/No decide for
+    // the session only; Always/Never persist the choice to config.
+    Some(ImagesEnabledPrompt {
         body,
         buttons: vec![
             ModalButton::new("Yes"),
@@ -1755,5 +2369,194 @@ mod viewport_window_tests {
         let urls = urls_in_viewport_window(&blocks, &map, 2, 3, 100);
         // Window = [0, 105), both images inside.
         assert_eq!(urls, vec!["a.png".to_owned(), "b.png".to_owned()]);
+    }
+}
+
+#[cfg(test)]
+mod phase9_flash_tests {
+    //! Phase 9 — exercise the transient-message mechanics directly
+    //! against an `App` instance, bypassing the event loop.  Builds
+    //! use `Capabilities::default()` and default config; no terminal
+    //! is ever acquired.
+
+    use super::*;
+
+    fn make_app() -> App {
+        let caps = Capabilities::default();
+        let theme_file = (&Theme::default()).into();
+        App::new(
+            Config::default(),
+            KeyBindingOverrides::default(),
+            theme_file,
+            None,
+            caps,
+        )
+        .expect("build app")
+    }
+
+    #[test]
+    fn flash_records_transient_info() {
+        let mut app = make_app();
+        assert!(app.transient.is_none());
+        app.flash("Copied", MessageKind::Info);
+        let msg = app.transient.as_ref().unwrap();
+        assert_eq!(msg.text, "Copied");
+        assert!(matches!(msg.kind, MessageKind::Info));
+        assert!(msg.until.is_some(), "non-error messages auto-expire");
+    }
+
+    #[test]
+    fn flash_error_is_sticky() {
+        let mut app = make_app();
+        app.flash("Save failed", MessageKind::Error);
+        let msg = app.transient.as_ref().unwrap();
+        assert!(msg.until.is_none(), "errors have no expiry deadline");
+    }
+
+    #[test]
+    fn expire_transient_clears_only_after_deadline() {
+        let mut app = make_app();
+        app.flash("Saved", MessageKind::Success);
+        // Force the deadline into the past.
+        if let Some(msg) = app.transient.as_mut() {
+            msg.until = Some(Instant::now() - Duration::from_millis(1));
+        }
+        assert!(app.expire_transient_if_due());
+        assert!(app.transient.is_none());
+    }
+
+    #[test]
+    fn expire_leaves_stick_errors() {
+        let mut app = make_app();
+        app.flash("Boom", MessageKind::Error);
+        assert!(!app.expire_transient_if_due());
+        assert!(app.transient.is_some());
+    }
+
+    #[test]
+    fn dismiss_sticky_transient_on_escape() {
+        let mut app = make_app();
+        app.flash("Boom", MessageKind::Error);
+        assert!(app.dismiss_sticky_transient());
+        assert!(app.transient.is_none());
+    }
+
+    #[test]
+    fn dismiss_sticky_ignores_non_error() {
+        let mut app = make_app();
+        app.flash("Saved", MessageKind::Success);
+        assert!(!app.dismiss_sticky_transient());
+        assert!(
+            app.transient.is_some(),
+            "non-errors must not clear on escape"
+        );
+    }
+
+    #[test]
+    fn flash_for_action_save_success_emits_saved_flash() {
+        let mut app = make_app();
+        // Simulate a successful save: dirty was true before and the
+        // editor-state dirty flag has just flipped to false.
+        app.editor.dirty = false;
+        app.flash_for_action(&Action::Save, /*dirty_before=*/ true);
+        let msg = app.transient.as_ref().expect("flash recorded");
+        assert_eq!(msg.text, "Saved");
+        assert!(matches!(msg.kind, MessageKind::Success));
+    }
+
+    #[test]
+    fn flash_for_action_save_failure_emits_error() {
+        let mut app = make_app();
+        // Failure: dirty was true and remains true after "save".
+        app.editor.dirty = true;
+        app.flash_for_action(&Action::Save, /*dirty_before=*/ true);
+        let msg = app.transient.as_ref().expect("flash recorded");
+        assert!(matches!(msg.kind, MessageKind::Error));
+    }
+
+    #[test]
+    fn flash_for_action_copy_emits_copied() {
+        let mut app = make_app();
+        app.flash_for_action(&Action::Copy, /*dirty_before=*/ false);
+        let msg = app.transient.as_ref().expect("flash recorded");
+        assert_eq!(msg.text, "Copied");
+    }
+
+    #[test]
+    fn flash_for_action_cut_emits_copied() {
+        let mut app = make_app();
+        app.flash_for_action(&Action::Cut, /*dirty_before=*/ false);
+        let msg = app.transient.as_ref().expect("flash recorded");
+        assert_eq!(msg.text, "Copied");
+    }
+
+    #[test]
+    fn flash_for_action_paste_is_silent() {
+        let mut app = make_app();
+        app.flash_for_action(&Action::Paste, /*dirty_before=*/ false);
+        assert!(app.transient.is_none());
+    }
+
+    #[test]
+    fn open_quit_confirm_seeds_three_button_modal() {
+        let mut app = make_app();
+        app.open_quit_confirm();
+        let q = app.quit_confirm.as_ref().expect("confirm modal exists");
+        assert_eq!(q.buttons.len(), 3);
+        assert_eq!(q.buttons[0].label, "Save");
+        assert_eq!(q.buttons[1].label, "Discard");
+        assert_eq!(q.buttons[2].label, "Cancel");
+    }
+
+    #[test]
+    fn quit_confirm_cancel_dismisses_without_quit() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = make_app();
+        app.open_quit_confirm();
+        app.handle_quit_confirm_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.quit_confirm.is_none());
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn quit_confirm_discard_sets_should_quit() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = make_app();
+        app.editor.dirty = true;
+        app.open_quit_confirm();
+        // Tab onto the Discard button (index 1) and press Enter.
+        app.handle_quit_confirm_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.handle_quit_confirm_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.quit_confirm.is_none());
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn open_cheat_sheet_lists_bound_keys() {
+        let mut app = make_app();
+        app.open_cheat_sheet();
+        let cs = app.cheat_sheet.as_ref().expect("cheat sheet populated");
+        let joined = cs.body.join("\n");
+        assert!(joined.contains("Quit"));
+        assert!(joined.contains("Save"));
+    }
+
+    #[test]
+    fn hint_content_defaults_to_chords() {
+        let app = make_app();
+        match app.hint_content() {
+            HintContent::Chords(_) => {}
+            other => panic!("expected Chords, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hint_content_prefers_transient_over_chords() {
+        let mut app = make_app();
+        app.flash("Copied", MessageKind::Info);
+        match app.hint_content() {
+            HintContent::Transient { text, .. } => assert_eq!(text, "Copied"),
+            other => panic!("expected Transient, got {other:?}"),
+        }
     }
 }

@@ -71,6 +71,14 @@ pub struct EditorState {
     /// encoding.  Populated by the App's image-decode worker thread via
     /// `AppEvent::ImageReady` / `AppEvent::ImageFailed`.
     pub images: ImageCache,
+    /// When `false`, every image block collapses to its one-line
+    /// `[Image: alt]` placeholder — the row override short-circuits to
+    /// `Some(1)` so no blank rows are reserved.  Set by the App when the
+    /// user declines image rendering (images-enabled prompt `No` /
+    /// `Never`, or `config.images.enabled = "never"`).  Default `true`
+    /// preserves the cache-driven layout for tests and for the `Ask` /
+    /// `Always` paths.
+    pub images_enabled: bool,
     /// Monotonically-increasing version counter, bumped every time
     /// `refresh_parsed` rebuilds the `ParsedDoc`.  Consumed by the view
     /// state to invalidate per-frame snapshot caches only when the parse
@@ -135,7 +143,7 @@ impl EditorState {
             preserve_blank_lines,
             visual_line_nav,
             image_max_height,
-            80,       // default image_max_width (matches ImageConfig::default)
+            80,       // default image_max_width (matches ImagesConfig::default)
             (10, 20), // default font_size (matches Picker::from_fontsize default)
         )
     }
@@ -177,6 +185,7 @@ impl EditorState {
             image_max_width,
             image_font_size,
             images: ImageCache::new(),
+            images_enabled: true,
             parsed_version: 0,
             live_table_widths: None,
             pending_link_follow: None,
@@ -196,6 +205,53 @@ impl EditorState {
         self.buffer.contents()
     }
 
+    /// Size of the current selection as `(char_count, line_count)`.
+    /// Returns `None` when there is no active selection.  In Preview
+    /// mode the visual selection is counted over rendered text; in
+    /// Rendered / Raw the raw buffer selection is counted.
+    pub fn selection_size(&self) -> Option<(usize, usize)> {
+        if self.mode == Mode::Preview {
+            let vs = self.visual_selection?;
+            if vs.is_empty() {
+                return None;
+            }
+            let ((sr, sc), (er, ec)) = vs.range();
+            let mut chars = 0usize;
+            let mut lines = 0usize;
+            for row in sr..=er {
+                let Some(line) = self.parsed.lines.get(row) else {
+                    break;
+                };
+                let full: String = line.spans.iter().flat_map(|s| s.content.chars()).collect();
+                let row_len = full.chars().count();
+                let col_start = if row == sr { sc } else { 0 };
+                let col_end = if row == er { ec.min(row_len) } else { row_len };
+                chars += col_end.saturating_sub(col_start);
+                lines += 1;
+            }
+            Some((chars, lines.max(1)))
+        } else {
+            let sel = self.selection?;
+            if sel.is_empty() {
+                return None;
+            }
+            let (start, end) = sel.range();
+            let end = end.min(self.buffer.len_chars());
+            if start >= end {
+                return None;
+            }
+            let chars = end - start;
+            let start_line = self.buffer.char_to_line(start);
+            // Selections that end on a line-start (just past a `\n`)
+            // conceptually cover one fewer line than the raw end index
+            // would suggest; clamp end to a char position that lies
+            // on content rather than on the next line's first byte.
+            let end_inclusive = end.saturating_sub(1);
+            let end_line = self.buffer.char_to_line(end_inclusive.max(start));
+            Some((chars, end_line - start_line + 1))
+        }
+    }
+
     /// Re-parse and re-render after an edit. Called automatically by `edit_ops`.
     pub(crate) fn refresh_parsed(&mut self) {
         let content = self.buffer.contents();
@@ -205,12 +261,20 @@ impl EditorState {
         // `Ready` → aspect rows, `Failed` → 1 (collapsed placeholder),
         // `Pending` / unknown → `None` so the renderer falls back to
         // `image_max_height` for stable layout while the decode is in
-        // flight.
+        // flight.  When `images_enabled` is false the override
+        // short-circuits to `Some(1)` so declined blocks collapse to
+        // the one-line placeholder (same row count as a `Failed` entry).
         let images = &self.images;
         let max_w = self.image_max_width as u16;
         let max_h = self.image_max_height as u16;
         let font_size = self.image_font_size;
-        let override_fn = |url: &str| images.reserved_rows(url, max_w, max_h, font_size);
+        let images_enabled = self.images_enabled;
+        let override_fn = |url: &str| {
+            if !images_enabled {
+                return Some(1);
+            }
+            images.reserved_rows(url, max_w, max_h, font_size)
+        };
         self.parsed = ParsedDoc::build_with_overrides(
             &content,
             self.theme,
@@ -683,6 +747,38 @@ mod tests {
 
     fn theme() -> &'static Theme {
         Box::leak(Box::new(Theme::default()))
+    }
+
+    /// When `images_enabled == false`, every image block collapses to
+    /// its one-line `[Image: alt]` placeholder: no blank rows are
+    /// reserved underneath.  This matches the `Failed` branch of
+    /// `ImageCache::reserved_rows` and is the declined-session layout.
+    #[test]
+    fn images_enabled_false_collapses_blocks_to_placeholder() {
+        // image_max_height = 10 → expanded blocks each reserve 10 rows.
+        let src = "![cat](cat.png)\n\n![dog](dog.png)\n";
+        let mut state = EditorState::new_with_config(
+            Buffer::from_str(src),
+            theme(),
+            true,
+            true,
+            10, // image_max_height
+        );
+
+        // Default path reserves 10 rows per image (plus the blank
+        // between them).  Sanity-check the expanded count.
+        let expanded = state.parsed.line_count();
+        assert!(
+            expanded >= 20,
+            "expected ≥ 20 rendered lines with images expanded, got {expanded}",
+        );
+
+        state.images_enabled = false;
+        state.refresh_parsed();
+
+        // Collapsed: each image block emits exactly its one-line
+        // placeholder — two images + the blank gap = 3 rendered lines.
+        assert_eq!(state.parsed.line_count(), 3);
     }
 
     /// Moving down through a word-wrapped line should land on the visually

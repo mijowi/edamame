@@ -222,7 +222,7 @@ impl ParsedDoc {
     /// Markdown's default behaviour of collapsing multiple blank lines to one.
     ///
     /// `image_max_height` is the ceiling (in rendered rows) used for each
-    /// `Block::ImageBlock`; propagated from `ImageConfig::max_height` via
+    /// `Block::ImageBlock`; propagated from `ImagesConfig::max_height` via
     /// `EditorState`.
     pub fn build(
         source: &str,

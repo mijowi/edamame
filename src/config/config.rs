@@ -21,7 +21,8 @@ pub struct Config {
     pub editor: EditorConfig,
     pub modal: ModalConfig,
     pub table: TableConfig,
-    pub image: ImageConfig,
+    pub images: ImagesConfig,
+    pub dev: DevConfig,
 }
 
 impl Default for Config {
@@ -31,7 +32,8 @@ impl Default for Config {
             editor: EditorConfig::default(),
             modal: ModalConfig::default(),
             table: TableConfig::default(),
-            image: ImageConfig::default(),
+            images: ImagesConfig::default(),
+            dev: DevConfig::default(),
         }
     }
 }
@@ -219,11 +221,11 @@ fn ensure_default_files_in(dir: &Path) {
 
     write_if_absent(
         &dir.join("config.toml"),
-        include_str!("../../config/default_config.toml"),
+        include_str!("../../config/config.toml"),
     );
     write_if_absent(
         &dir.join("keybindings.toml"),
-        include_str!("../../config/default_keybindings.toml"),
+        include_str!("../../config/keybindings.toml"),
     );
     write_if_absent(
         &themes_dir.join("default.toml"),
@@ -245,8 +247,6 @@ fn write_if_absent(path: &Path, contents: &str) {
 pub struct EditorConfig {
     /// Number of spaces per tab stop.
     pub tab_width: usize,
-    /// When true, write structured logs to the data directory.
-    pub dev_mode: bool,
     /// When true, code block lines that exceed the terminal width are wrapped.
     /// Default: false (long lines extend beyond the visible area without wrapping).
     pub code_block_wrap: bool,
@@ -272,19 +272,44 @@ pub struct EditorConfig {
     /// control.  The keyboard `ScrollUp` / `ScrollDown` actions always step
     /// by exactly one line and are not affected by this setting.
     pub mouse_scroll_lines: usize,
+    /// Bottom-region layout.  `"two_line"` (default) renders a hint line
+    /// above the persistent status line; `"compact"` collapses to just
+    /// the status line, reachable hint chords via the `?` popover.
+    pub status_bar: StatusBarLayout,
+    /// Duration (milliseconds) that a non-sticky transient message
+    /// overlays the hint line before auto-expiring.  Errors ignore this
+    /// and remain visible until the user dismisses them with Escape.
+    pub transient_ms: u64,
+}
+
+/// How the bottom status region is laid out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusBarLayout {
+    /// Two rows: hint line above, persistent status below.  Default.
+    TwoLine,
+    /// One row: persistent status only; hints via the `?` popover.
+    Compact,
+}
+
+impl Default for StatusBarLayout {
+    fn default() -> Self {
+        Self::TwoLine
+    }
 }
 
 impl Default for EditorConfig {
     fn default() -> Self {
         Self {
             tab_width: 4,
-            dev_mode: false,
             code_block_wrap: false,
             line_wrap: true,
             preserve_blank_lines: true,
             visual_line_nav: true,
             suppress_capability_warnings: false,
             mouse_scroll_lines: 1,
+            status_bar: StatusBarLayout::default(),
+            transient_ms: 1500,
         }
     }
 }
@@ -345,6 +370,26 @@ impl Default for RemoteImagePolicy {
     }
 }
 
+/// Master switch for inline image rendering.  `Ask` prompts the user the
+/// first time a document with images is opened; `Always` renders without
+/// prompting; `Never` keeps the `[Image: alt]` placeholder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImagesEnabled {
+    /// Prompt the user the first time a document with images is opened.
+    Ask,
+    /// Always render images inline.
+    Always,
+    /// Never render images — always fall back to the `[Image: alt]` placeholder.
+    Never,
+}
+
+impl Default for ImagesEnabled {
+    fn default() -> Self {
+        Self::Ask
+    }
+}
+
 /// Image-rendering configuration.
 ///
 /// `max_width` / `max_height` are ceilings in terminal cells; each image
@@ -353,9 +398,11 @@ impl Default for RemoteImagePolicy {
 /// are applied verbatim by `ratatui_image`'s `Resize::Fit` path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ImageConfig {
-    /// Master switch — set to `false` to disable all image rendering.
-    pub enabled: bool,
+pub struct ImagesConfig {
+    /// Master switch — `"ask"` (default) prompts on first document with
+    /// images, `"always"` renders without prompting, `"never"` always
+    /// falls back to the placeholder.
+    pub enabled: ImagesEnabled,
     /// Maximum width (in terminal cells) for a single image.
     pub max_width: usize,
     /// Maximum height (in terminal cells) for a single image.
@@ -364,15 +411,25 @@ pub struct ImageConfig {
     pub remote_policy: RemoteImagePolicy,
 }
 
-impl Default for ImageConfig {
+impl Default for ImagesConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: ImagesEnabled::Ask,
             max_width: 80,
             max_height: 24,
             remote_policy: RemoteImagePolicy::Ask,
         }
     }
+}
+
+/// Developer/diagnostic settings.  Kept separate from `[editor]` because these
+/// knobs govern logging and debug tooling, not editing behaviour.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DevConfig {
+    /// When true, `tracing` logs are written to the XDG data dir (e.g.
+    /// `~/.local/share/edamame/`).  Off by default so the TUI stays silent.
+    pub logging: bool,
 }
 
 #[cfg(test)]
@@ -383,7 +440,7 @@ mod tests {
     fn default_config_is_valid() {
         let config = Config::default();
         assert_eq!(config.editor.tab_width, 4);
-        assert!(!config.editor.dev_mode);
+        assert!(!config.dev.logging);
         assert_eq!(config.modal.handler, "default");
         assert_eq!(config.theme, "default");
     }
@@ -400,9 +457,9 @@ mod tests {
 
     #[test]
     fn partial_toml_falls_back_to_defaults() {
-        let toml = "[editor]\ndev_mode = true\n";
+        let toml = "[dev]\nlogging = true\n";
         let config: Config = toml::from_str(toml).expect("deserialize");
-        assert!(config.editor.dev_mode);
+        assert!(config.dev.logging);
         assert_eq!(config.editor.tab_width, 4); // default
         assert_eq!(config.modal.handler, "default"); // default
         assert_eq!(config.theme, "default"); // default
@@ -580,6 +637,7 @@ mod tests {
         assert!(serialized.contains("theme ="));
         assert!(serialized.contains("[editor]"));
         assert!(serialized.contains("[modal]"));
-        assert!(serialized.contains("[image]"));
+        assert!(serialized.contains("[images]"));
+        assert!(serialized.contains("[dev]"));
     }
 }

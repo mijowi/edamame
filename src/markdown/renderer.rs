@@ -46,7 +46,7 @@ pub struct Renderer<'t> {
     /// Whether code block lines should wrap at viewport_width.
     code_wrap: bool,
     /// Maximum reserved rows per `Block::ImageBlock`; fed through from
-    /// `ImageConfig::max_height` so the editor and renderer agree on the
+    /// `ImagesConfig::max_height` so the editor and renderer agree on the
     /// row count.  Ignored when a block isn't an image block.
     image_max_height: usize,
     /// Optional per-image row override keyed by URL.  Returns the aspect-
