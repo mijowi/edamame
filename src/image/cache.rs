@@ -19,22 +19,47 @@ use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
 use ratatui_image::{Resize, StatefulImage};
 
-/// Synchronously encode `image` as halfblocks at `rect` using `picker`
-/// and return a `Buffer` containing the rendered cells.  Pulling this
-/// out of `get_protocol_pair` keeps the cold-path code readable.
+/// Encode `image` as halfblocks at `rect` using `picker` and return a
+/// `Buffer` containing the rendered cells.
 ///
-/// Halfblocks encoding cost scales with the cell area (not the pixel
-/// area), so on images that have been pre-resized by the decode worker
-/// to the configured `max_cells × font_size` bounding box, this runs in
-/// low single-digit milliseconds — tolerable on the UI thread as a
-/// one-time cost per `(url, width, height)` tuple.
-fn render_halfblocks_scratch(picker: &Picker, image: DynamicImage, rect: Rect) -> Buffer {
+/// Cheap enough (low single-digit ms on pre-resized images) that it is
+/// usable on either the UI thread or a worker.  The decode worker calls
+/// this immediately after pre-resizing so that by the time
+/// `AppEvent::ImageReady` fires, the scratch is already built and the
+/// UI thread's first paint is a pure cache hit.  `get_protocol_pair`
+/// retains the fallback sync path for the terminal-resize case where
+/// the pre-rendered scratch's `(width, height)` no longer matches.
+pub fn render_halfblocks_scratch(picker: &Picker, image: DynamicImage, rect: Rect) -> Buffer {
     let mut protocol = picker.new_resize_protocol(image);
     let mut buf = Buffer::empty(rect);
     StatefulImage::default()
         .resize(Resize::Fit(None))
         .render(rect, &mut buf, &mut protocol);
     buf
+}
+
+/// Free-function twin of [`ImageCache::aspect_rows`] that operates on a
+/// borrowed `DynamicImage`.  The decode worker calls this to compute the
+/// scratch's target height before it has handed the image off to the
+/// cache.
+pub fn aspect_rows_of(
+    image: &DynamicImage,
+    max_width_cells: u16,
+    max_height_cells: u16,
+    font_size: (u16, u16),
+) -> usize {
+    let (fw, fh) = (u32::from(font_size.0.max(1)), u32::from(font_size.1.max(1)));
+    let box_w_px = u32::from(max_width_cells).saturating_mul(fw);
+    let box_h_px = u32::from(max_height_cells).saturating_mul(fh);
+    let iw = image.width().max(1);
+    let ih = image.height().max(1);
+    if box_w_px == 0 || box_h_px == 0 {
+        return 0;
+    }
+    let h_if_width_binds = (u64::from(ih) * u64::from(box_w_px)) / u64::from(iw);
+    let fitted_h_px = h_if_width_binds.min(u64::from(box_h_px));
+    let rows = fitted_h_px.div_ceil(u64::from(fh));
+    (rows.clamp(1, u64::from(max_height_cells)) as usize).max(1)
 }
 
 /// Status of a decode attempt for a URL.
@@ -112,6 +137,14 @@ pub struct ImageCache {
     /// Kept as a plain `HashMap` (no LRU eviction) because the
     /// working-set size is bounded by the number of visible images.
     protocols: HashMap<(String, u16, u16), ProtocolPair>,
+    /// Halfblocks scratches pre-built on the decode worker thread and
+    /// waiting for their first `get_protocol_pair` call to claim them.
+    /// On cold-path construction we `remove` the matching entry instead
+    /// of running `render_halfblocks_scratch` synchronously on the UI
+    /// thread.  Entries that never match (e.g. terminal resized between
+    /// decode and first paint) stay here until `set_decoded` or
+    /// `invalidate_protocols` clears them.
+    prebuilt_scratches: HashMap<(String, u16, u16), Buffer>,
     /// Outstanding encode requests, FIFO in dispatch order.  Popped by
     /// `apply_resize_response` to locate the target `ThreadProtocol`.
     pending: VecDeque<PendingResize>,
@@ -142,6 +175,7 @@ impl ImageCache {
         self.resize_tx = Some(tx);
         self.protocols.clear();
         self.pending.clear();
+        self.prebuilt_scratches.clear();
     }
 
     /// Mark `url` as `Pending` iff it has no prior entry.  Returns true
@@ -161,9 +195,29 @@ impl ImageCache {
     /// Drops any stale protocol entries for this URL so the next
     /// `get_protocol` call rebuilds from the new pixels.
     pub fn set_decoded(&mut self, url: &str, image: DynamicImage) {
+        self.set_decoded_with_prebuilt(url, image, None);
+    }
+
+    /// `set_decoded` plus stash a halfblocks scratch the decode worker
+    /// already rendered.  The next `get_protocol_pair` call for the same
+    /// `(url, width, height)` will claim the prebuilt buffer instead of
+    /// running the encode synchronously on the UI thread.
+    pub fn set_decoded_with_prebuilt(
+        &mut self,
+        url: &str,
+        image: DynamicImage,
+        prebuilt_scratch: Option<(Rect, Buffer)>,
+    ) {
         self.decoded
             .insert(url.to_owned(), DecodeStatus::Ready(Arc::new(image)));
         self.protocols.retain(|(u, _, _), _| u != url);
+        // Drop any stale prebuilt scratches for this URL before taking
+        // the new one.
+        self.prebuilt_scratches.retain(|(u, _, _), _| u != url);
+        if let Some((rect, buf)) = prebuilt_scratch {
+            self.prebuilt_scratches
+                .insert((url.to_owned(), rect.width, rect.height), buf);
+        }
     }
 
     /// Record a decode failure.  Displayed status (for debugging) is the
@@ -172,6 +226,7 @@ impl ImageCache {
         self.decoded
             .insert(url.to_owned(), DecodeStatus::Failed(message));
         self.protocols.retain(|(u, _, _), _| u != url);
+        self.prebuilt_scratches.retain(|(u, _, _), _| u != url);
     }
 
     /// Look up the decode status for `url`.
@@ -212,15 +267,17 @@ impl ImageCache {
             let full_rect = Rect::new(0, 0, width, height);
             let is_halfblocks_native = native_picker.protocol_type() == ProtocolType::Halfblocks;
 
-            // Pre-render the halfblocks scratch synchronously.  Fast
-            // enough on pre-resized images that it's tolerable on the
-            // UI thread (one-time cost per url+dims).  This is what
-            // lets us avoid the placeholder flash while the native
-            // protocol encodes off-thread on the worker.
-            //
-            // When the native picker IS already halfblocks, use it
-            // directly; otherwise use the dedicated halfblocks picker.
-            let halfblocks_scratch = if is_halfblocks_native {
+            // Prefer the scratch the decode worker already rendered
+            // for this `(url, width, height)`.  `remove` takes it so we
+            // don't hold the buffer twice.  When the worker didn't
+            // produce one (no picker/dims at dispatch time) or the
+            // dims don't match (terminal resized between decode and
+            // first paint), fall back to a sync encode on the UI
+            // thread — cost of ~5-20 ms, same as pre-Phase-7a
+            // behaviour, and rare enough not to regress scroll.
+            let halfblocks_scratch = if let Some(buf) = self.prebuilt_scratches.remove(&key) {
+                Some(buf)
+            } else if is_halfblocks_native {
                 Some(render_halfblocks_scratch(
                     native_picker,
                     (*image_arc).clone(),
@@ -316,6 +373,10 @@ impl ImageCache {
     /// silently discarded by `apply_resize_response`.
     pub fn invalidate_protocols(&mut self) {
         self.protocols.clear();
+        // Prebuilt scratches are keyed by the old `(width, height)` too,
+        // so their target rect is stale after a resize.  Drop them; the
+        // next decode cycle repopulates at the new dims.
+        self.prebuilt_scratches.clear();
     }
 
     /// Compute the number of rendered rows a decoded image will occupy
@@ -340,24 +401,12 @@ impl ImageCache {
         let Some(DecodeStatus::Ready(img)) = self.decoded.get(url) else {
             return None;
         };
-        let img: &DynamicImage = img;
-        let (fw, fh) = (u32::from(font_size.0.max(1)), u32::from(font_size.1.max(1)));
-        let box_w_px = u32::from(max_width_cells).saturating_mul(fw);
-        let box_h_px = u32::from(max_height_cells).saturating_mul(fh);
-        let iw = img.width().max(1);
-        let ih = img.height().max(1);
-        if box_w_px == 0 || box_h_px == 0 {
-            return Some(0);
-        }
-        // Scale to fit the bounding box while preserving aspect ratio.
-        // Use integer arithmetic: compare `ih*box_w_px` against
-        // `iw*box_h_px` to decide which dimension binds, then compute
-        // the fitted height in pixels, then round up to cells.
-        let h_if_width_binds = (u64::from(ih) * u64::from(box_w_px)) / u64::from(iw);
-        let fitted_h_px = h_if_width_binds.min(u64::from(box_h_px));
-        // Round up: div_ceil.
-        let rows = fitted_h_px.div_ceil(u64::from(fh));
-        Some(rows.clamp(1, u64::from(max_height_cells)) as usize)
+        Some(aspect_rows_of(
+            img,
+            max_width_cells,
+            max_height_cells,
+            font_size,
+        ))
     }
 
     /// Clear `Failed` entries so a subsequent `request` can retry.  Called
@@ -381,6 +430,11 @@ impl ImageCache {
     #[cfg(test)]
     pub fn pending_count(&self) -> usize {
         self.pending.len()
+    }
+
+    #[cfg(test)]
+    pub fn prebuilt_scratch_count(&self) -> usize {
+        self.prebuilt_scratches.len()
     }
 }
 
@@ -451,6 +505,77 @@ mod tests {
         // A new set_decoded clears any protocol pairs for that URL.
         cache.set_decoded("a.png", DynamicImage::new_rgba8(2, 2));
         assert_eq!(cache.protocol_count(), 0);
+    }
+
+    #[test]
+    fn set_decoded_with_prebuilt_stashes_scratch_for_matching_dims() {
+        // When the decode worker hands back a pre-rendered scratch, the
+        // cache stashes it so the first `get_protocol_pair` call at the
+        // same `(url, width, height)` consumes it without running
+        // `render_halfblocks_scratch` on the UI thread.
+        let mut cache = cache_with_sender();
+        cache.request("a.png");
+        let rect = Rect::new(0, 0, 8, 4);
+        let prebuilt = Buffer::empty(rect);
+        cache.set_decoded_with_prebuilt(
+            "a.png",
+            DynamicImage::new_rgba8(8, 4),
+            Some((rect, prebuilt)),
+        );
+        assert_eq!(cache.prebuilt_scratch_count(), 1);
+
+        // Consume it via get_protocol_pair with matching dims.
+        let picker = Picker::from_fontsize((1, 2));
+        let pair = cache
+            .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker))
+            .expect("pair for ready image");
+        assert!(pair.halfblocks_scratch.is_some());
+        // Prebuilt map was drained.
+        assert_eq!(cache.prebuilt_scratch_count(), 0);
+    }
+
+    #[test]
+    fn set_decoded_with_prebuilt_falls_back_to_sync_on_mismatched_dims() {
+        // If the UI thread later requests a different `(width, height)`
+        // (e.g. terminal resized between decode dispatch and first
+        // paint), the prebuilt entry isn't found and the cold-path sync
+        // render runs.  The prebuilt stays in the map until
+        // `invalidate_protocols` or a later `set_decoded` clears it.
+        let mut cache = cache_with_sender();
+        cache.request("a.png");
+        let prebuilt_rect = Rect::new(0, 0, 8, 4);
+        let prebuilt = Buffer::empty(prebuilt_rect);
+        cache.set_decoded_with_prebuilt(
+            "a.png",
+            DynamicImage::new_rgba8(8, 4),
+            Some((prebuilt_rect, prebuilt)),
+        );
+
+        // Request at a different width; scratch still produced, but via
+        // sync render (not from the prebuilt map).
+        let picker = Picker::from_fontsize((1, 2));
+        let pair = cache
+            .get_protocol_pair("a.png", 16, 4, Some(&picker), Some(&picker))
+            .expect("pair for ready image");
+        assert!(pair.halfblocks_scratch.is_some());
+        // The un-claimed prebuilt remains — future paint at matching
+        // dims could still claim it.
+        assert_eq!(cache.prebuilt_scratch_count(), 1);
+    }
+
+    #[test]
+    fn invalidate_protocols_also_clears_prebuilt_scratches() {
+        let mut cache = cache_with_sender();
+        cache.request("a.png");
+        let rect = Rect::new(0, 0, 8, 4);
+        cache.set_decoded_with_prebuilt(
+            "a.png",
+            DynamicImage::new_rgba8(8, 4),
+            Some((rect, Buffer::empty(rect))),
+        );
+        assert_eq!(cache.prebuilt_scratch_count(), 1);
+        cache.invalidate_protocols();
+        assert_eq!(cache.prebuilt_scratch_count(), 0);
     }
 
     #[test]

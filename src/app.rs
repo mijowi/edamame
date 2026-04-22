@@ -143,6 +143,13 @@ pub struct App {
     /// skipping the draw when less than `MIN_FRAME_INTERVAL` has elapsed
     /// since the previous draw.  `None` before the first draw.
     last_draw_at: Option<Instant>,
+    /// Most-recently observed width of the document area, refreshed at
+    /// the top of each main-loop iteration.  The image decode worker
+    /// uses it to pre-render the halfblocks scratch at the same
+    /// dimensions the UI thread will request on first paint — eliminates
+    /// the ~5-20 ms sync encode that `get_protocol_pair`'s cold path
+    /// previously did on the UI thread.  `0` until the first iteration.
+    last_area_width: u16,
     /// A `Term` event pulled off the channel by `drain_pending_image_ready`
     /// (which uses `try_recv` and can't put the event back).  Processed
     /// on the next loop iteration before calling `recv_timeout` again.
@@ -309,6 +316,7 @@ impl App {
             app_tx: None,
             last_scroll_at: None,
             last_draw_at: None,
+            last_area_width: 0,
             images_dirty: false,
             pending_term_event: None,
             nav_back: Vec::new(),
@@ -336,7 +344,11 @@ impl App {
         loop {
             match rx.try_recv() {
                 Ok(AppEvent::ImageReady(Ok(loaded))) => {
-                    self.editor.images.set_decoded(&loaded.url, loaded.image);
+                    self.editor.images.set_decoded_with_prebuilt(
+                        &loaded.url,
+                        loaded.image,
+                        loaded.scratch,
+                    );
                     self.images_dirty = true;
                 }
                 Ok(AppEvent::ImageReady(Err((url, message)))) => {
@@ -450,6 +462,7 @@ impl App {
             // contains — bounded, not proportional to doc size.
             let term_size = terminal.size()?;
             let doc_height_lines = term_size.height.saturating_sub(1) as usize;
+            self.last_area_width = term_size.width;
             self.dispatch_visible_image_decodes(self.editor.scroll, doc_height_lines);
 
             // ── Draw ──────────────────────────────────────────────
@@ -546,7 +559,11 @@ impl App {
                 match rx.recv_timeout(wait) {
                     Ok(AppEvent::Term(e)) => e,
                     Ok(AppEvent::ImageReady(Ok(loaded))) => {
-                        self.editor.images.set_decoded(&loaded.url, loaded.image);
+                        self.editor.images.set_decoded_with_prebuilt(
+                            &loaded.url,
+                            loaded.image,
+                            loaded.scratch,
+                        );
                         self.images_dirty = true;
                         self.drain_pending_image_ready(&rx);
                         continue;
@@ -1275,6 +1292,19 @@ impl App {
             .image_picker
             .as_ref()
             .map(|p| p.font_size());
+        // Halfblocks picker + current area width let the worker render the
+        // scratch buffer off the UI thread.  When either is missing
+        // (terminal without image support, or first iteration before the
+        // loop has observed a term size), the worker skips the scratch
+        // and `get_protocol_pair` falls back to a sync encode on the UI
+        // thread — same cost as pre-Phase-7a, but only on that one cold
+        // path.
+        let scratch_picker = self.capabilities.halfblocks_picker.clone();
+        let scratch_width = if self.last_area_width > 0 {
+            Some(self.last_area_width)
+        } else {
+            None
+        };
 
         for url in urls {
             if !self.editor.images.request(url) {
@@ -1283,6 +1313,7 @@ impl App {
             let tx = tx.clone();
             let doc_path = doc_path.clone();
             let url = url.clone();
+            let scratch_picker = scratch_picker.clone();
             std::thread::spawn(move || {
                 let result = crate::image::resolve(
                     &url,
@@ -1293,7 +1324,30 @@ impl App {
                     font_size,
                 );
                 let event = match result {
-                    Ok(loaded) => AppEvent::ImageReady(Ok(loaded)),
+                    Ok(mut loaded) => {
+                        // Render the halfblocks scratch here on the
+                        // worker thread so the UI thread's first paint
+                        // is a cache hit.  Guarded on having both a
+                        // picker and an observed area width; missing
+                        // either means the sync fallback in
+                        // `get_protocol_pair` handles the cold path.
+                        if let (Some(picker), Some(width), Some((mw, mh)), Some(fs)) =
+                            (&scratch_picker, scratch_width, max_cells, font_size)
+                        {
+                            let rows =
+                                crate::image::aspect_rows_of(&loaded.image, mw, mh, fs) as u16;
+                            if width > 0 && rows > 0 {
+                                let rect = Rect::new(0, 0, width, rows);
+                                let buf = crate::image::render_halfblocks_scratch(
+                                    picker,
+                                    loaded.image.clone(),
+                                    rect,
+                                );
+                                loaded.scratch = Some((rect, buf));
+                            }
+                        }
+                        AppEvent::ImageReady(Ok(loaded))
+                    }
                     Err(err) => AppEvent::ImageReady(Err((url.clone(), err.to_string()))),
                 };
                 let _ = tx.send(event);

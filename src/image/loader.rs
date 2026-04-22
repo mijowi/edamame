@@ -15,15 +15,24 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use image::DynamicImage;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 
 use crate::config::RemoteImagePolicy;
 
 /// Decoded image paired with its origin info — sufficient for
 /// `ImageCache::decoded` to key the entry and for debugging.
+///
+/// `scratch` is an optional pre-rendered halfblocks `Buffer` for a known
+/// target rect, built on the decode worker thread so the UI thread's
+/// first paint doesn't pay a cold-path sync encode.  `None` when image
+/// support is absent or when the dispatcher didn't supply the picker +
+/// target width at decode time.
 #[derive(Debug)]
 pub struct LoadedImage {
     pub url: String,
     pub image: DynamicImage,
+    pub scratch: Option<(Rect, Buffer)>,
 }
 
 /// Errors reported by [`resolve`].  The UI falls back to the
@@ -115,6 +124,7 @@ pub fn resolve(
     Ok(LoadedImage {
         url: url.to_owned(),
         image,
+        scratch: None,
     })
 }
 

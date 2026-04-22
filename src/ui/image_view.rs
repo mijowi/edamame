@@ -249,7 +249,6 @@ pub fn paint_images(snapshots: &[ImageLayoutSnapshot], ctx: PaintContext) {
     }
     let viewport_top = ctx.area.y as isize;
     let viewport_bottom = (ctx.area.y as isize) + ctx.area.height as isize;
-    let native_is_kitty = ctx.native_protocol == Some(ImageProtocol::KittyGraphics);
 
     for snap in snapshots {
         if Some(snap.block_idx) == ctx.suppress_block_idx {
@@ -280,7 +279,17 @@ pub fn paint_images(snapshots: &[ImageLayoutSnapshot], ctx: PaintContext) {
             continue;
         }
 
-        let use_native = fully_visible && (!ctx.is_scrolling || native_is_kitty);
+        // During active scroll, ALL protocols fall back to halfblocks.
+        // Earlier revisions exempted Kitty here on the theory that its
+        // virtual-placement protocol handles scroll without re-encoding,
+        // but Ghostty (and apparently other Kitty-compatible terminals)
+        // still re-composites the image at each new cell position — the
+        // dominant source of scroll lag on image-heavy documents.
+        // Halfblocks are position-independent cell content; ratatui's
+        // diff emits only the changed cells, and the terminal treats them
+        // like any other text.  The native protocol re-engages once
+        // `SCROLL_QUIESCE` elapses (150 ms of no scroll input).
+        let use_native = fully_visible && !ctx.is_scrolling;
 
         if use_native {
             paint_native(ctx.images, snap, ctx.buf);

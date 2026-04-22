@@ -10,6 +10,8 @@ pub mod cache;
 pub mod loader;
 pub mod render;
 
-pub use cache::{DecodeStatus, ImageCache, ProtocolPair};
+pub use cache::{
+    aspect_rows_of, render_halfblocks_scratch, DecodeStatus, ImageCache, ProtocolPair,
+};
 pub use loader::{resolve, ImageLoadError, LoadedImage};
 pub use render::paint_halfblocks_partial;
