@@ -160,6 +160,20 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// Build a `Theme` from a user-authored [`ThemeFile`].
+    ///
+    /// When `monochrome` is true the file is ignored and the compiled-in
+    /// monochrome fallback is returned — preserves the contract that
+    /// `ColourDepth::NoColour` terminals never emit colour escapes, even if
+    /// a colourful theme file is installed.
+    pub fn from_file(file: &super::theme_file::ThemeFile, monochrome: bool) -> Self {
+        if monochrome {
+            Self::monochrome()
+        } else {
+            file.into()
+        }
+    }
+
     /// Return the appropriate heading style for a heading level (1–6).
     pub fn heading_style(&self, level: pulldown_cmark::HeadingLevel) -> Style {
         use pulldown_cmark::HeadingLevel::*;

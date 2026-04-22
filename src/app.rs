@@ -9,7 +9,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
-use crate::config::{Action, Config, KeyMap, Theme};
+use crate::config::{Action, Config, KeyBindingOverrides, KeyMap, Theme, ThemeFile};
 use crate::document::Buffer;
 use crate::editor::link::LinkTarget;
 use crate::editor::{edit_ops, mouse_ops, EditorState, Mode, PARSED_DEBOUNCE, RAW_REVEAL_DELAY};
@@ -86,6 +86,11 @@ struct RemoteImagePrompt {
 /// The application: owns all state and drives the event loop.
 pub struct App {
     config: Config,
+    /// Keybinding overrides loaded from `keybindings.toml`.  Held so
+    /// `KeyMap::build` can be called in `run()` alongside capability
+    /// detection and kitty-enhancement key registration, same as before
+    /// the config split.
+    keybindings: KeyBindingOverrides,
     theme: &'static Theme,
     capabilities: Capabilities,
     file_path: Option<PathBuf>,
@@ -263,19 +268,18 @@ impl App {
     /// Create the app, loading the file if one is given.
     pub fn new(
         mut config: Config,
+        keybindings: KeyBindingOverrides,
+        theme_file: ThemeFile,
         file_path: Option<PathBuf>,
         capabilities: Capabilities,
     ) -> Result<Self> {
         // Leak the theme so it can be stored as `&'static Theme`.  This is
         // intentional: the theme lives for the duration of the process.
-        // When the terminal reports no colour support, fall back to the
-        // monochrome palette so style escapes don't produce garbled output.
-        let theme_value = if capabilities.colour_depth == ColourDepth::NoColour {
-            Theme::monochrome()
-        } else {
-            Theme::default()
-        };
-        let theme: &'static Theme = Box::leak(Box::new(theme_value));
+        // `Theme::from_file` handles the monochrome fallback internally so
+        // `NoColour` terminals never emit colour escapes regardless of the
+        // theme file's contents.
+        let monochrome = capabilities.colour_depth == ColourDepth::NoColour;
+        let theme: &'static Theme = Box::leak(Box::new(Theme::from_file(&theme_file, monochrome)));
 
         // Table drag handles depend on mouse reporting; disable them on
         // terminals that don't deliver mouse events so we never render inert
@@ -322,6 +326,7 @@ impl App {
 
         Ok(Self {
             config,
+            keybindings,
             theme,
             capabilities,
             file_path,
@@ -501,7 +506,7 @@ impl App {
         });
 
         // Build the keymap once and keep it alive for the event loop.
-        let keymap = KeyMap::build(&self.config.keybindings)?;
+        let keymap = KeyMap::build(&self.keybindings)?;
 
         loop {
             // Flush any deferred re-parse whose debounce window has

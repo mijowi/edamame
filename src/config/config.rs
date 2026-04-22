@@ -1,50 +1,119 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::keymap::KeyBindingOverrides;
+use super::theme::Theme;
+use super::theme_file::ThemeFile;
 
-/// Top-level configuration loaded from `~/.config/edamame/config.toml`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Top-level `config.toml` — editor/rendering settings and the name of the
+/// active theme.  Keybinding overrides live in `keybindings.toml`; theme
+/// style tables live in `themes/<name>.toml`.  See `LoadedConfig` for the
+/// orchestrator that reads all three.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// Name of the active theme, resolved to `themes/<theme>.toml` at load.
+    /// Defaults to `"default"`.  A missing file falls back to the compiled-in
+    /// `Theme::default()` so the editor always has a working colour table.
+    pub theme: String,
     pub editor: EditorConfig,
-    pub theme: ThemeConfig,
-    pub keybindings: KeyBindingOverrides,
     pub modal: ModalConfig,
     pub table: TableConfig,
     pub image: ImageConfig,
 }
 
-impl Config {
-    /// Load config from the XDG config path, falling back to built-in defaults for
-    /// any missing keys.
-    pub fn load() -> Result<Self> {
-        let path = Self::config_path();
-        if let Some(ref p) = path {
-            if p.exists() {
-                let raw = std::fs::read_to_string(p)
-                    .with_context(|| format!("Failed to read config file: {}", p.display()))?;
-                let config: Config = toml::from_str(&raw)
-                    .with_context(|| format!("Failed to parse config file: {}", p.display()))?;
-                return Ok(config);
-            }
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            theme: "default".into(),
+            editor: EditorConfig::default(),
+            modal: ModalConfig::default(),
+            table: TableConfig::default(),
+            image: ImageConfig::default(),
         }
-        // No config file found — use defaults.
-        Ok(Config::default())
     }
+}
 
-    /// Returns the path to the user config file (may not exist yet).
-    pub fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("edamame").join("config.toml"))
+/// Result of reading the three on-disk config files.  Returned by
+/// [`Config::load`] so `main` can pass each piece to its respective owner
+/// (the `Config` to `App`, the keybinding overrides to `KeyMap::build`, the
+/// `ThemeFile` to `Theme::from_file`).
+#[derive(Debug, Clone)]
+pub struct LoadedConfig {
+    pub config: Config,
+    pub keybindings: KeyBindingOverrides,
+    pub theme: ThemeFile,
+}
+
+impl Default for LoadedConfig {
+    /// The "no config loaded" fallback — used by `main` when `Config::load`
+    /// itself returns `Err` (e.g. malformed `config.toml`).  The theme is
+    /// the ThemeFile equivalent of `Theme::default()`, NOT
+    /// `ThemeFile::default()`, so the editor stays themed even when the
+    /// user's config is unreadable.
+    fn default() -> Self {
+        Self {
+            config: Config::default(),
+            keybindings: KeyBindingOverrides::default(),
+            theme: (&Theme::default()).into(),
+        }
     }
+}
 
-    /// Persist the current config to disk at `config_path()`.
+impl Config {
+    /// Load config from the XDG config directory, falling back to built-in
+    /// defaults for any missing keys and any missing files.
     ///
-    /// Creates the parent directory if needed.  Returns an error when the
-    /// path can't be determined or the write fails; callers typically log
-    /// the error and continue rather than making it fatal.
+    /// Reads three files in sequence:
+    ///   1. `config.toml`        — editor/modal/table/image + active theme name
+    ///   2. `keybindings.toml`   — keybinding overrides
+    ///   3. `themes/<name>.toml` — the active theme's style table
+    ///
+    /// Missing files are silently treated as empty (all-default).  Parse
+    /// errors propagate so the user sees the line number of the typo.
+    pub fn load() -> Result<LoadedConfig> {
+        let dir = Self::config_dir();
+        let config = match &dir {
+            Some(d) => read_main_config(&d.join("config.toml"))?,
+            None => Config::default(),
+        };
+        let keybindings = match &dir {
+            Some(d) => read_keybindings(&d.join("keybindings.toml"))?,
+            None => KeyBindingOverrides::default(),
+        };
+        let theme = match &dir {
+            Some(d) => read_theme_named(d, &config.theme)?,
+            None => ThemeFile::default(),
+        };
+        Ok(LoadedConfig {
+            config,
+            keybindings,
+            theme,
+        })
+    }
+
+    /// Return the directory containing all config files (e.g.
+    /// `~/.config/edamame`).  `None` when no XDG / HOME can be resolved.
+    pub fn config_dir() -> Option<PathBuf> {
+        dirs::config_dir().map(|d| d.join("edamame"))
+    }
+
+    /// Returns the path to the main config file (may not exist yet).
+    pub fn config_path() -> Option<PathBuf> {
+        Self::config_dir().map(|d| d.join("config.toml"))
+    }
+
+    /// Persist the current `Config` to `config.toml` only.
+    ///
+    /// Intentionally does NOT touch `keybindings.toml` or any theme file —
+    /// those are user-authored and we must never overwrite them during an
+    /// ordinary config save.  The `Config` struct only owns fields that
+    /// belong in `config.toml`, so this invariant is type-enforced.
+    ///
+    /// Callers typically log the error and continue rather than making it
+    /// fatal.
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path()
             .context("Could not determine config directory (missing XDG_CONFIG_HOME/HOME)")?;
@@ -60,9 +129,114 @@ impl Config {
         Ok(())
     }
 
+    /// Write each of the three default config files into the user's config
+    /// directory **only if the file does not already exist**.  Safe to call
+    /// on every startup: existing user-edited files are never touched.
+    ///
+    /// Errors during any one file are logged and skipped; they never fail
+    /// startup.  Same posture as [`Config::save`].
+    pub fn ensure_default_files() {
+        let Some(dir) = Self::config_dir() else {
+            tracing::warn!("no XDG config dir available; skipping default-file scaffolding");
+            return;
+        };
+        ensure_default_files_in(&dir);
+    }
+
     /// Returns the path to the log directory.
     pub fn log_dir() -> Option<PathBuf> {
         dirs::data_dir().map(|d| d.join("edamame"))
+    }
+}
+
+// ── Readers ───────────────────────────────────────────────────────────────────
+
+fn read_main_config(path: &Path) -> Result<Config> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => toml::from_str(&raw)
+            .with_context(|| format!("Failed to parse config file: {}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+        Err(e) => Err(e).with_context(|| format!("Failed to read config file: {}", path.display())),
+    }
+}
+
+fn read_keybindings(path: &Path) -> Result<KeyBindingOverrides> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => toml::from_str(&raw)
+            .with_context(|| format!("Failed to parse keybindings file: {}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(KeyBindingOverrides::default()),
+        Err(e) => {
+            Err(e).with_context(|| format!("Failed to read keybindings file: {}", path.display()))
+        }
+    }
+}
+
+fn read_theme_named(config_dir: &Path, name: &str) -> Result<ThemeFile> {
+    let path = config_dir.join("themes").join(format!("{name}.toml"));
+    match std::fs::read_to_string(&path) {
+        Ok(raw) => toml::from_str(&raw)
+            .with_context(|| format!("Failed to parse theme file: {}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // A missing `default` is normal on first run (before
+            // `ensure_default_files` has had a chance to write the shipped
+            // theme).  A missing *named* theme (user asked for
+            // `theme = "custom"` but didn't ship the file) is worth noting,
+            // though still non-fatal.
+            //
+            // In both cases we return the ThemeFile equivalent of
+            // `Theme::default()` — NOT `ThemeFile::default()`, which is an
+            // all-empty style table that would render unthemed output.
+            // Distinguishing "file absent" from "file present but empty" is
+            // what lets a blank theme file opt in to no styling while a
+            // missing file falls back to the compiled palette.
+            if name != "default" {
+                tracing::warn!(
+                    theme = name,
+                    path = %path.display(),
+                    "theme file not found; falling back to compiled defaults"
+                );
+            }
+            Ok((&Theme::default()).into())
+        }
+        Err(e) => Err(e).with_context(|| format!("Failed to read theme file: {}", path.display())),
+    }
+}
+
+/// Testable core of [`Config::ensure_default_files`]: given the config
+/// directory (which may be a tempdir in tests), create it plus the
+/// `themes/` subdirectory and write the three shipped default files if
+/// absent.  Never overwrites existing files.
+fn ensure_default_files_in(dir: &Path) {
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        tracing::warn!(error = %e, dir = %dir.display(), "failed to create config dir");
+        return;
+    }
+    let themes_dir = dir.join("themes");
+    if let Err(e) = std::fs::create_dir_all(&themes_dir) {
+        tracing::warn!(error = %e, dir = %themes_dir.display(), "failed to create themes dir");
+        return;
+    }
+
+    write_if_absent(
+        &dir.join("config.toml"),
+        include_str!("../../config/default_config.toml"),
+    );
+    write_if_absent(
+        &dir.join("keybindings.toml"),
+        include_str!("../../config/default_keybindings.toml"),
+    );
+    write_if_absent(
+        &themes_dir.join("default.toml"),
+        include_str!("../../config/themes/default.toml"),
+    );
+}
+
+fn write_if_absent(path: &Path, contents: &str) {
+    if path.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::write(path, contents) {
+        tracing::warn!(error = %e, path = %path.display(), "failed to write default file");
     }
 }
 
@@ -113,13 +287,6 @@ impl Default for EditorConfig {
             mouse_scroll_lines: 1,
         }
     }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ThemeConfig {
-    // Theme colour overrides — full theming is a deferred feature.
-    // The Theme struct in theme.rs provides all defaults.
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,6 +385,7 @@ mod tests {
         assert_eq!(config.editor.tab_width, 4);
         assert!(!config.editor.dev_mode);
         assert_eq!(config.modal.handler, "default");
+        assert_eq!(config.theme, "default");
     }
 
     #[test]
@@ -227,6 +395,7 @@ mod tests {
         let deserialized: Config = toml::from_str(&serialized).expect("deserialize");
         assert_eq!(deserialized.editor.tab_width, config.editor.tab_width);
         assert_eq!(deserialized.modal.handler, config.modal.handler);
+        assert_eq!(deserialized.theme, config.theme);
     }
 
     #[test]
@@ -236,6 +405,7 @@ mod tests {
         assert!(config.editor.dev_mode);
         assert_eq!(config.editor.tab_width, 4); // default
         assert_eq!(config.modal.handler, "default"); // default
+        assert_eq!(config.theme, "default"); // default
     }
 
     #[test]
@@ -256,5 +426,160 @@ mod tests {
         let serialized = toml::to_string(&config).expect("serialize");
         let deserialized: Config = toml::from_str(&serialized).expect("deserialize");
         assert!(deserialized.editor.suppress_capability_warnings);
+    }
+
+    #[test]
+    fn theme_name_round_trips() {
+        let toml = r#"theme = "catppuccin"
+
+[editor]
+"#;
+        let config: Config = toml::from_str(toml).expect("deserialize");
+        assert_eq!(config.theme, "catppuccin");
+    }
+
+    // ── Readers ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn read_main_config_missing_file_returns_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let config = read_main_config(&path).unwrap();
+        assert_eq!(config.theme, "default");
+        assert_eq!(config.editor.tab_width, 4);
+    }
+
+    #[test]
+    fn read_keybindings_missing_file_returns_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keybindings.toml");
+        let binds = read_keybindings(&path).unwrap();
+        assert!(binds.0.is_empty());
+    }
+
+    #[test]
+    fn read_theme_missing_default_falls_back_to_compiled_theme() {
+        // The `default` theme is allowed to be missing (first run, before
+        // ensure_default_files has written it).  The fallback must be the
+        // compiled `Theme::default()` — NOT an empty ThemeFile — otherwise
+        // the app would render unstyled output on the very first launch.
+        let dir = tempfile::tempdir().unwrap();
+        let theme = read_theme_named(dir.path(), "default").unwrap();
+        let expected: super::super::theme_file::ThemeFile = (&Theme::default()).into();
+        assert_eq!(theme.h1, expected.h1);
+        assert_eq!(theme.task_strikethrough, expected.task_strikethrough);
+        // Convert through to Theme and verify it equals the compiled default.
+        let theme_out: Theme = (&theme).into();
+        assert_eq!(theme_out.h1, Theme::default().h1);
+    }
+
+    #[test]
+    fn read_theme_missing_named_falls_back_to_compiled_theme() {
+        // Same contract for a missing named theme: the warning path is
+        // exercised internally; here we just assert the fallback is the
+        // compiled `Theme::default()`, not an empty ThemeFile.
+        let dir = tempfile::tempdir().unwrap();
+        let theme = read_theme_named(dir.path(), "nonexistent").unwrap();
+        let theme_out: Theme = (&theme).into();
+        assert_eq!(theme_out.h1, Theme::default().h1);
+    }
+
+    #[test]
+    fn read_theme_empty_file_stays_empty() {
+        // Distinct from the missing-file case: if the user deliberately
+        // empties `default.toml`, they get an empty theme — their choice.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("themes")).unwrap();
+        std::fs::write(dir.path().join("themes").join("default.toml"), "").unwrap();
+        let theme = read_theme_named(dir.path(), "default").unwrap();
+        assert_eq!(theme.h1, super::super::theme_file::StyleSpec::default());
+    }
+
+    #[test]
+    fn loaded_config_default_has_themed_default_not_empty() {
+        // `LoadedConfig::default()` is the fallback when `Config::load`
+        // itself fails (e.g. malformed `config.toml`).  The editor must
+        // stay themed even in that degraded state.
+        let fallback = LoadedConfig::default();
+        let theme: Theme = (&fallback.theme).into();
+        assert_eq!(theme.h1, Theme::default().h1);
+    }
+
+    #[test]
+    fn read_main_config_parses_valid_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = \"solarized\"\n\n[editor]\ntab_width = 2\n").unwrap();
+        let config = read_main_config(&path).unwrap();
+        assert_eq!(config.theme, "solarized");
+        assert_eq!(config.editor.tab_width, 2);
+    }
+
+    #[test]
+    fn read_keybindings_parses_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keybindings.toml");
+        std::fs::write(&path, "Quit = \"ctrl+x\"\n").unwrap();
+        let binds = read_keybindings(&path).unwrap();
+        assert_eq!(binds.0.get("Quit"), Some(&"ctrl+x".to_string()));
+    }
+
+    #[test]
+    fn read_theme_parses_from_named_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("themes")).unwrap();
+        let theme_path = dir.path().join("themes").join("custom.toml");
+        std::fs::write(&theme_path, "[h1]\nfg = \"red\"\nbold = true\n").unwrap();
+        let theme = read_theme_named(dir.path(), "custom").unwrap();
+        assert!(theme.h1.bold);
+    }
+
+    // ── ensure_default_files ───────────────────────────────────────────────
+
+    #[test]
+    fn ensure_default_files_writes_three_files_on_first_run() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_default_files_in(dir.path());
+        assert!(dir.path().join("config.toml").exists());
+        assert!(dir.path().join("keybindings.toml").exists());
+        assert!(dir.path().join("themes").join("default.toml").exists());
+    }
+
+    #[test]
+    fn ensure_default_files_is_idempotent_and_preserves_user_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_default_files_in(dir.path());
+
+        // Simulate a user edit to the theme file.
+        let theme_path = dir.path().join("themes").join("default.toml");
+        let custom = "# user-edited\ntask_strikethrough = false\n";
+        std::fs::write(&theme_path, custom).unwrap();
+
+        // Second call must not touch the user's edit.
+        ensure_default_files_in(dir.path());
+        let after = std::fs::read_to_string(&theme_path).unwrap();
+        assert_eq!(after, custom, "user-edited theme was overwritten");
+    }
+
+    // ── save invariant ─────────────────────────────────────────────────────
+
+    /// `Config::save()` (via `toml::to_string_pretty`) must not emit any
+    /// `[keybindings]` / `[theme_file]` / style sections.  The fields that
+    /// would have produced those sections no longer live on the struct, so
+    /// round-trip serialization is the clearest way to assert the invariant.
+    #[test]
+    fn save_serialization_only_contains_config_fields() {
+        let config = Config::default();
+        let serialized = toml::to_string_pretty(&config).expect("serialize");
+        assert!(!serialized.contains("[keybindings]"));
+        // Check for any heading-style section that would indicate a theme
+        // table leaked in:
+        assert!(!serialized.contains("[h1]"));
+        assert!(!serialized.contains("[h2]"));
+        // Positive assertions — things that *should* be in the saved config:
+        assert!(serialized.contains("theme ="));
+        assert!(serialized.contains("[editor]"));
+        assert!(serialized.contains("[modal]"));
+        assert!(serialized.contains("[image]"));
     }
 }

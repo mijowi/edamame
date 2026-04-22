@@ -1,0 +1,131 @@
+# edamame default theme — regenerate with
+#   cargo test -- --ignored regenerate_default_theme_toml
+# after changing `Theme::default()` in src/config/theme.rs.
+
+task_strikethrough = true
+
+[h1]
+fg = "Magenta"
+bold = true
+
+[h1_rule]
+fg = "Magenta"
+
+[h2]
+fg = "Cyan"
+bold = true
+
+[h3]
+fg = "Yellow"
+bold = true
+
+[h4]
+fg = "Green"
+bold = true
+
+[h5]
+fg = "Blue"
+bold = true
+
+[h6]
+fg = "Gray"
+bold = true
+
+[bold]
+bold = true
+
+[italic]
+italic = true
+
+[strikethrough]
+fg = "DarkGray"
+crossed_out = true
+
+[highlight]
+fg = "Black"
+bg = "Yellow"
+
+[code_span]
+fg = "Yellow"
+bg = 236
+
+[link_text]
+fg = "Cyan"
+underlined = true
+
+[image_placeholder]
+fg = "Blue"
+italic = true
+
+[code_block_border]
+fg = 240
+
+[code_block_lang]
+fg = "Yellow"
+italic = true
+
+[code_block_text]
+fg = "White"
+bg = 236
+
+[blockquote_bar]
+fg = "Blue"
+
+[blockquote_text]
+fg = "Gray"
+
+[rule]
+fg = 240
+
+[list_bullet]
+fg = "Cyan"
+
+[list_number]
+fg = "Cyan"
+
+[task_unchecked]
+fg = "DarkGray"
+
+[task_checked]
+fg = "Green"
+
+[table_border]
+fg = 240
+
+[table_header]
+bold = true
+
+[table_cell]
+
+[status_bar]
+fg = "White"
+bg = 236
+
+[status_mode]
+fg = "Green"
+bg = "DarkGray"
+bold = true
+
+[status_filename]
+fg = "White"
+
+[status_info]
+fg = "Gray"
+
+[status_modified]
+fg = "Yellow"
+bold = true
+
+[modal_title]
+fg = "Yellow"
+bold = true
+
+[modal_button_focused]
+fg = "Yellow"
+bold = true
+reversed = true
+
+[normal]
+
+[selection]
+bg = 24

@@ -332,18 +332,32 @@ All colour and style values are routed through the `Theme` struct. There are no 
 
 ### 6. Config File Architecture
 
-A single TOML file at `$XDG_CONFIG_HOME/edamame/config.toml` (fallback `~/.config/edamame/config.toml`). Config sections:
-- `[editor]` — tab width, word wrap, auto-save, etc.
-- `[theme]` — colour overrides
-- `[keybindings]` — key → action overrides (see below)
-- `[modal]` — which modal handler to use (default: `"default"`)
+Three files under `$XDG_CONFIG_HOME/edamame/` (fallback `~/.config/edamame/`):
 
-At startup, the default config is loaded, then user config is merged on top (not replaced). Missing keys always fall back to defaults. The config struct is validated at load time with informative errors.
+```
+~/.config/edamame/
+├── config.toml          # [editor], [modal], [table], [image] + `theme = "<name>"`
+├── keybindings.toml     # keybinding overrides
+└── themes/
+    ├── default.toml     # shipped default; written on first run if missing
+    └── <custom>.toml    # add your own; select via `theme = "custom"` in config.toml
+```
 
-**Keybinding overrides**: `[keybindings]` is a TOML table mapping action names to key strings, e.g.:
+`Config::load()` reads all three files via `LoadedConfig` (`src/config/config.rs`).
+Missing files are silently treated as empty — every key falls back to a compiled-in
+default.  Parse errors propagate with the file path and line number so typos surface
+immediately.  First run scaffolds all three default files via
+`Config::ensure_default_files()` (never overwrites existing files).
+
+`Config::save()` writes ONLY `config.toml`.  `keybindings.toml` and theme files are
+user-authored and never touched by an ordinary save; the `Config` struct doesn't hold
+those fields, so the invariant is type-enforced.
+
+**Keybinding overrides** live in `keybindings.toml` as a flat TOML table mapping
+action names to key strings, e.g.:
 
 ```toml
-[keybindings]
+# ~/.config/edamame/keybindings.toml
 Save = "ctrl+s"
 ToggleRawMode = "ctrl+`"
 Quit = "ctrl+q"
@@ -354,7 +368,37 @@ Copy = "ctrl+c"
 Paste = "ctrl+v"
 ```
 
-`KeyMap` is initialised with the full set of compiled-in defaults, then any keys present in `[keybindings]` are applied on top, replacing only those bindings. Action names are the string representation of the `Action` enum variants. An unrecognised action name or an unparseable key string is a hard error at startup (not silently ignored), so the user knows immediately if they've made a typo.
+`KeyMap` is initialised with the full set of compiled-in defaults, then any keys
+present in `keybindings.toml` are applied on top, replacing only those bindings.
+Action names are the string representation of the `Action` enum variants.  An
+unrecognised action name or an unparseable key string is a hard error at startup
+(not silently ignored), so the user knows immediately if they've made a typo.
+
+**Themes** live in `themes/<name>.toml`.  The file format is one section per style
+field on `Theme`, with `fg` / `bg` colour strings and per-modifier booleans:
+
+```toml
+# ~/.config/edamame/themes/default.toml
+[h1]
+fg = "magenta"
+bold = true
+
+[code_span]
+fg = "yellow"
+bg = 236          # indexed palette entry
+
+[link_text]
+fg = "#00afff"    # hex
+underlined = true
+```
+
+Colours accept named values (`"magenta"`, `"darkgray"`, …), hex (`"#ff00aa"`),
+indexed palette entries as either strings (`"236"`) or bare integers (`236`), and
+`{ r = 0, g = 95, b = 175 }` RGB tables.  The shipped `themes/default.toml` is
+regenerated from `Theme::default()` via the `#[ignore]`'d
+`regenerate_default_theme_toml` test in `src/config/theme_file.rs`.  On monochrome
+terminals (`ColourDepth::NoColour`) the theme file is ignored and the compiled-in
+`Theme::monochrome()` palette is used.
 
 **Quit confirmation**: The `Quit` action (`Ctrl-Q`) always shows a confirmation dialog (e.g. "Save changes? [Y]es / [N]o / [C]ancel") when there are unsaved changes. When the buffer is clean the app quits immediately. `Ctrl-C` is bound to `Copy` and does not quit. `Escape` is the cancel/dismiss key for modals and dialogs; it does not trigger quit. Note: in crossterm raw mode `ISIG` is disabled, so `Ctrl-C` arrives as a key event rather than SIGINT — we must always intercept it explicitly to prevent SIGINT killing the process and leaving the terminal in raw mode; mapping it to `Copy` satisfies this.
 
@@ -1268,21 +1312,26 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 5. **Kakoune / Helix modal mode**: The `ModalHandler` trait is designed to be swappable. A `KakouneHandler` or `HelixHandler` could be implemented as a community contribution without touching core editor logic. Document the trait contract clearly.
 
-7. **Split `config.toml` into multiple files?**
+7. ~~**Split `config.toml` into multiple files?**~~ **Done — 2026-04-22.**
 
-   The compelling argument for splitting is specifically themes: a `themes/` directory enables in-app theme switching and community theme sharing, mirroring the approach taken by Helix and Zellij. Moving keybinding configuration will more easily enable the keybinding overlay feature in Phase 10.
+   Implemented ahead of schedule to lock in the architecture before more
+   UI/UX work accrues coupling to the single-file assumption.  See
+   Section 6 (Config File Architecture) for the current layout.  Summary:
 
-   Adopted layout:
    ```
    ~/.config/edamame/
-   ├── config.toml          # [editor] and [modal] only
-   ├── keybindings.toml     # [keybindings]
+   ├── config.toml          # [editor], [modal], [table], [image] + `theme = "<name>"`
+   ├── keybindings.toml     # keybinding overrides
    └── themes/
-       ├── default.toml     # written out on first run if missing
-       ├── catppuccin.toml
-       └── gruvbox.toml
+       └── default.toml     # written on first run; add community themes as siblings
    ```
 
-   `Config::load()` reads `config.toml` for general settings, then `keybindings.toml` for keybinds, then loads `themes/<active_theme>.toml` (defaulting to `themes/default.toml`). The `ThemeConfig` struct should be populated now, before any user config files exist in the wild.
-
-   **Decision**: yes, extract themes into a `themes/` directory. Implement during the theming/config phase. Keybindings get moved to `keybindings.toml`.
+   `Config::load()` → `LoadedConfig { config, keybindings, theme: ThemeFile }`.
+   First-run scaffolding writes all three defaults from `include_str!`'d
+   repo assets and never overwrites.  A user-authored `ThemeFile` format
+   lives in `src/config/theme_file.rs`; `Theme::from_file` converts it
+   (with monochrome-fallback short-circuit).  `Config::save()` only writes
+   `config.toml`, so an ordinary save-on-prompt path cannot clobber a
+   user-edited theme or keybindings file.  Migration was a hard cut —
+   stale `[keybindings]` / `[theme]` sections in a pre-split `config.toml`
+   are silently ignored.

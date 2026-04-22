@@ -74,11 +74,15 @@ src/
   main.rs           # CLI args, config load, terminal init, App::run
   lib.rs            # re-exports all modules (enables integration tests)
   app.rs            # App: event loop, mpsc channel, action dispatch
-  config.rs         # facade — re-exports Config, KeyMap, Theme
+  config.rs         # facade — re-exports Config, KeyMap, Theme, ThemeFile
   config/
-    config.rs       # Config, EditorConfig, ThemeConfig, ModalConfig (serde+toml)
-    keymap.rs       # Action enum, KeyMap, parse_key()
-    theme.rs        # Theme: all Style values; no hardcoded colors elsewhere
+    config.rs       # Config, EditorConfig, ModalConfig, TableConfig, ImageConfig,
+                    #   LoadedConfig (serde+toml); load()/save()/ensure_default_files()
+    keymap.rs       # Action enum, KeyMap, KeyBindingOverrides, parse_key()
+    theme.rs        # Theme: all Style values; no hardcoded colors elsewhere.
+                    #   Theme::from_file(ThemeFile, monochrome) builds from TOML
+    theme_file.rs   # ThemeFile, StyleSpec, ColorField: user-authorable TOML
+                    #   theme format — converts to/from Theme via From impls
   document.rs       # facade — re-exports Buffer, Cursor, EditDelta, History,
                     #           ParsedDoc, Selection, SourceMap
   document/
@@ -140,7 +144,15 @@ tests/
   ui.rs             # integration tests: TestBackend widget rendering
   snapshots/        # committed insta .snap files
 config/
-  default_config.toml  # annotated reference config
+  default_config.toml      # annotated reference config (editor/modal/image +
+                           #   the active theme name).  Written to
+                           #   ~/.config/edamame/config.toml on first run.
+  default_keybindings.toml # commented-out keybinding overrides reference.
+                           #   Written to ~/.config/edamame/keybindings.toml.
+  themes/
+    default.toml           # canonical default theme, round-tripped from
+                           #   Theme::default() via the #[ignore]'d
+                           #   regenerate_default_theme_toml test.
 ```
 
 **Architectural layers** (higher depends only on lower):

@@ -1,0 +1,27 @@
+# edamame default keybindings
+# Copy any line below and uncomment to override the default key for an action.
+# Uncommented lines in ~/.config/edamame/keybindings.toml override the
+# compiled-in defaults; every other action keeps its default key.
+#
+# Syntax: <ActionName> = "<modifiers>+<key>"
+#   modifiers: "ctrl", "alt", "shift" (combine with `+`)
+#   key:       single character, "up", "down", "left", "right",
+#              "space", "enter", "tab", "backspace", "delete",
+#              "home", "end", "pageup", "pagedown", "esc", or "f1".."f12"
+#
+# Examples:
+# Quit = "ctrl+q"
+# ScrollDown = "down"
+# ScrollUp = "up"
+#
+# Table editing (Phase 2) — org-mode-style Alt+Arrow scheme. Defaults:
+# TableMoveRowUp        = "alt+up"
+# TableMoveRowDown      = "alt+down"
+# TableMoveColumnLeft   = "alt+left"
+# TableMoveColumnRight  = "alt+right"
+# TableInsertRowAbove   = "alt+shift+up"
+# TableInsertRowBelow   = "alt+shift+down"
+# TableInsertColumnLeft  = "alt+shift+left"
+# TableInsertColumnRight = "alt+shift+right"
+# TableDeleteRow        = "alt+backspace"
+# TableDeleteColumn     = "alt+shift+backspace"

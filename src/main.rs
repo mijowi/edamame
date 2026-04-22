@@ -10,7 +10,7 @@ mod ui;
 
 use anyhow::Result;
 use app::App;
-use config::Config;
+use config::{Config, LoadedConfig};
 use terminal::{Capabilities, TerminalSetup};
 
 fn main() -> Result<()> {
@@ -18,12 +18,29 @@ fn main() -> Result<()> {
     let file_path: Option<std::path::PathBuf> = std::env::args().nth(1).map(Into::into);
 
     // ── Load configuration ─────────────────────────────────────────
-    let config = Config::load().unwrap_or_else(|e| {
+    // Three files: config.toml (editor/modal/table/image + active theme
+    // name), keybindings.toml (overrides), themes/<active>.toml (style
+    // table).
+    //
+    // Order matters: scaffold the default files FIRST so a first-run user
+    // gets a themed editor on their first launch (otherwise `load` reads
+    // the theme file before it has been written).  `ensure_default_files`
+    // never overwrites existing user files, so this is safe on every
+    // subsequent run.  The `load` fallback also covers the missing-file
+    // case — if scaffolding fails (e.g. unwritable XDG dir) the compiled
+    // `Theme::default()` is used.
+    Config::ensure_default_files();
+    let loaded = Config::load().unwrap_or_else(|e| {
         // Config errors are non-fatal; use defaults and note the problem.
         // Can't use tracing here since subscriber isn't set up yet.
         eprintln!("Warning: failed to load config: {e}. Using defaults.");
-        Config::default()
+        LoadedConfig::default()
     });
+    let LoadedConfig {
+        config,
+        keybindings,
+        theme,
+    } = loaded;
 
     // ── Set up logging (disabled by default) ──────────────────────
     let _log_guard = if config.editor.dev_mode {
@@ -64,7 +81,7 @@ fn main() -> Result<()> {
     }
 
     // ── Run the app ───────────────────────────────────────────────
-    let mut app = App::new(config, file_path, capabilities)?;
+    let mut app = App::new(config, keybindings, theme, file_path, capabilities)?;
     let run_result = app.run(terminal);
 
     // ── Restore terminal ──────────────────────────────────────────

@@ -13,8 +13,10 @@ name = "edamame"
 path = "src/lib.rs"
 
 [dependencies]
-# TUI framework and terminal backend
-ratatui = "0.29"
+# TUI framework and terminal backend.  The `serde` feature is enabled so
+# `ratatui::style::Color` deserializes from strings ("red", "#ff00aa", "42")
+# directly inside our `ThemeFile` TOML layer.
+ratatui = { version = "0.29", features = ["serde"] }
 crossterm = "0.28"
 
 # Markdown parsing
