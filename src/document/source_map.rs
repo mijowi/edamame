@@ -34,6 +34,15 @@ pub struct SourceMap {
     /// extract raw source text for editing).
     original_ranges: Vec<Range<usize>>,
 
+    /// Precomputed `block_idx → rendered-line Range` lookup.  Mirrors the
+    /// answer `rendered_lines_for_block` used to compute via two
+    /// O(n) scans of `rendered_to_block`; storing the ranges once at
+    /// construction turns the query into O(1).  Blocks that produced
+    /// no rendered lines (empty list items, collapsed blanks) inherit
+    /// the nearest neighbour's range — same fallback semantics the
+    /// uncached version used.
+    block_to_rendered_range: Vec<Range<usize>>,
+
     /// Total source bytes (for proptest assertions).
     pub total_bytes: usize,
 }
@@ -51,10 +60,13 @@ impl SourceMap {
         original_ranges: Vec<Range<usize>>,
         total_bytes: usize,
     ) -> Self {
+        let block_to_rendered_range =
+            build_block_to_rendered_range(&rendered_to_block, extended_ranges.len());
         Self {
             rendered_to_block,
             extended_ranges,
             original_ranges,
+            block_to_rendered_range,
             total_bytes,
         }
     }
@@ -79,37 +91,14 @@ impl SourceMap {
     /// Return the range of rendered line indices produced by `block_idx`.
     ///
     /// The range is `start..end` (exclusive end). If the block produced no
-    /// rendered lines (e.g. an empty list item before the renderer fix), falls
-    /// back to the nearest adjacent block's lines to guarantee a non-empty range.
+    /// rendered lines (e.g. an empty list item before the renderer fix), the
+    /// precomputed table returns the nearest adjacent block's lines to
+    /// guarantee a non-empty range. O(1) — the work happens once in `new`.
     pub fn rendered_lines_for_block(&self, block_idx: usize) -> Range<usize> {
-        let start_opt = self.rendered_to_block.iter().position(|&b| b == block_idx);
-        let end_opt = self
-            .rendered_to_block
-            .iter()
-            .rposition(|&b| b == block_idx)
-            .map(|i| i + 1);
-
-        if let (Some(start), Some(end)) = (start_opt, end_opt) {
-            return start..end;
-        }
-
-        // Block produced no rendered lines — find the nearest subsequent block
-        // that does, then try the nearest preceding block.
-        let n = self.rendered_to_block.len();
-        if n == 0 {
-            return 0..0;
-        }
-        for next in (block_idx + 1)..self.extended_ranges.len() {
-            if let Some(pos) = self.rendered_to_block.iter().position(|&b| b == next) {
-                return pos..(pos + 1).min(n);
-            }
-        }
-        for prev in (0..block_idx).rev() {
-            if let Some(pos) = self.rendered_to_block.iter().rposition(|&b| b == prev) {
-                return pos..(pos + 1).min(n);
-            }
-        }
-        0..1 // last-resort fallback
+        self.block_to_rendered_range
+            .get(block_idx)
+            .cloned()
+            .unwrap_or(0..0)
     }
 
     /// Return all rendered line indices produced by the block that contains
@@ -151,6 +140,62 @@ impl SourceMap {
     pub fn original_range_for_block(&self, block_idx: usize) -> Option<Range<usize>> {
         self.original_ranges.get(block_idx).cloned()
     }
+}
+
+/// Precompute the per-block rendered-line range table.  Single pass
+/// over `rendered_to_block` records start / end per block; a second
+/// pass fills empty-range slots from the nearest neighbour so the
+/// fallback semantics of the old O(n) scan (always return a
+/// non-empty range when at least one line exists) are preserved.
+fn build_block_to_rendered_range(
+    rendered_to_block: &[usize],
+    block_count: usize,
+) -> Vec<Range<usize>> {
+    let mut ranges: Vec<Range<usize>> = vec![0..0; block_count];
+    let mut seen = vec![false; block_count];
+    for (line_idx, &block_idx) in rendered_to_block.iter().enumerate() {
+        if block_idx >= block_count {
+            continue;
+        }
+        if !seen[block_idx] {
+            ranges[block_idx] = line_idx..line_idx + 1;
+            seen[block_idx] = true;
+        } else {
+            ranges[block_idx].end = line_idx + 1;
+        }
+    }
+    let n = rendered_to_block.len();
+    if n == 0 {
+        return ranges;
+    }
+    // Fallback: blocks that produced no rendered lines inherit the
+    // nearest subsequent-then-preceding neighbour's range.  Matches
+    // the old uncached fallback so callers observe no behavioural
+    // change.
+    for i in 0..block_count {
+        if !seen[i] {
+            let mut fallback: Option<Range<usize>> = None;
+            for next in (i + 1)..block_count {
+                if seen[next] {
+                    let start = ranges[next].start;
+                    fallback = Some(start..(start + 1).min(n));
+                    break;
+                }
+            }
+            if fallback.is_none() {
+                for prev in (0..i).rev() {
+                    if seen[prev] {
+                        let end = ranges[prev].end;
+                        let start = end.saturating_sub(1);
+                        fallback = Some(start..end);
+                        break;
+                    }
+                }
+            }
+            ranges[i] = fallback.unwrap_or(0..1.min(n));
+        }
+    }
+    ranges
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

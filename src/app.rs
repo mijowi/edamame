@@ -12,13 +12,11 @@ use ratatui::Terminal;
 use crate::config::{Action, Config, KeyMap, Theme};
 use crate::document::Buffer;
 use crate::editor::link::LinkTarget;
-use crate::editor::{edit_ops, mouse_ops, EditorState, Mode};
+use crate::editor::{edit_ops, mouse_ops, EditorState, Mode, PARSED_DEBOUNCE, RAW_REVEAL_DELAY};
 use crate::input::modal::default::DefaultHandler;
 use crate::input::{ModalHandler, MouseDispatcher};
 use crate::terminal::{set_pointer_shape, Capabilities, ColourDepth, PointerShape};
-use crate::ui::{
-    EditorView, EditorViewState, ModalButton, ModalResponse, ModalState, ModalView, PreviewState,
-};
+use crate::ui::{EditorView, EditorViewState, ModalButton, ModalResponse, ModalState, ModalView};
 
 /// Events that the main loop can receive.
 enum AppEvent {
@@ -137,6 +135,20 @@ pub struct App {
     /// `refresh_parsed` call instead of N.  Avoids stalling scroll
     /// input when several image workers complete in quick succession.
     images_dirty: bool,
+    /// Drives the event-driven redraw gate: the main loop only calls
+    /// `terminal.draw()` when this is true.  Set by event handlers
+    /// that mutate visible state; cleared after a successful draw.
+    /// Initialised to `true` so the first iteration paints the opening
+    /// frame.  Without this gate, the 60 ms `recv_timeout` would fire a
+    /// full redraw ~17 times per second even with no input — the
+    /// dominant cause of idle CPU prior to Phase 15.
+    needs_draw: bool,
+    /// When `Some`, a `Resize` burst is in progress and draws are
+    /// suppressed until this instant passes.  Each subsequent Resize
+    /// extends the deadline, so a slow drag never paints mid-drag.
+    /// Cleared by the deadline-elapse branch in the main loop, which
+    /// then triggers a single settled-size redraw.
+    resize_quiesce_at: Option<Instant>,
     /// Wall-clock timestamp of the last `terminal.draw()` call.  Used by
     /// the main-loop frame throttle: events can arrive faster than we
     /// want to draw (every wheel tick is an event), so we coalesce by
@@ -187,6 +199,13 @@ const SCROLL_QUIESCE: Duration = Duration::from_millis(150);
 /// up on the next draw that actually fires.  Tuned so a wheel-tick
 /// burst produces a handful of draws instead of one per tick.
 const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+
+/// Grace window after a `Resize` event during which draws are
+/// suppressed.  Dragging a terminal window's edge fires a burst of
+/// Resize events — one per pixel.  Drawing on each one produces
+/// flickery partial-width output and pins CPU; instead we wait for
+/// the burst to settle and draw exactly once at the final size.
+const RESIZE_QUIESCE: Duration = Duration::from_millis(80);
 
 /// Pure helper: true when `last_scroll_at` is `Some` and its elapsed
 /// time is shorter than `quiesce`.  Extracted so tests can exercise it
@@ -290,10 +309,11 @@ impl App {
             image_font_size,
         );
 
-        // Seed the preview state with the editor's already-parsed lines so the
-        // first frame honours `preserve_blank_lines` (re-rendering from the raw
-        // source bypasses the blank-line preservation pass in `ParsedDoc`).
-        let view_state = EditorViewState::new(editor.parsed.lines.clone());
+        // PreviewView borrows `editor.parsed.lines` at render time, so
+        // no per-event clone is needed and the constructor is now
+        // parameterless.  This removed the dominant per-event allocation
+        // hotspot on large preview-mode documents.
+        let view_state = EditorViewState::new();
 
         // Decide whether to show the capability-notice on startup.
         let startup_notice = build_startup_notice(&capabilities, &config);
@@ -319,6 +339,8 @@ impl App {
             last_draw_at: None,
             last_area_width: 0,
             images_dirty: false,
+            needs_draw: true,
+            resize_quiesce_at: None,
             pending_term_event: None,
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
@@ -391,6 +413,46 @@ impl App {
         is_scrolling_within(self.last_scroll_at, SCROLL_QUIESCE)
     }
 
+    /// Earliest wall-clock instant at which the event loop must wake
+    /// up to apply a time-driven state change, even if no external
+    /// event arrives.  Returns `None` when the loop can block
+    /// indefinitely on `rx.recv()` — the common idle case.
+    ///
+    /// Only deadlines still in the future contribute.  Once a deadline
+    /// has elapsed (and the post-elapse redraw has fired), it drops
+    /// out of the computation so we can go back to blocking on input.
+    ///
+    /// Deadlines tracked:
+    /// - `cursor_block_entered_at + RAW_REVEAL_DELAY` — wake to reveal
+    ///   the raw cursor-block view when the jitter-suppression window
+    ///   expires.
+    /// - `last_scroll_at + SCROLL_QUIESCE` — wake to upgrade images
+    ///   from halfblocks to the native graphics protocol once the
+    ///   user stops scrolling.
+    /// - `editor.parsed_dirty_at + PARSED_DEBOUNCE` — wake to flush a
+    ///   deferred re-parse after a typing burst pauses.
+    /// - `resize_quiesce_at` — wake to redraw once a terminal-resize
+    ///   drag has settled (carries its own absolute deadline rather
+    ///   than an offset, since it's set to `now + RESIZE_QUIESCE` on
+    ///   each event).
+    fn next_deadline(&self, now: Instant) -> Option<Instant> {
+        let mut earliest: Option<Instant> = None;
+        let mut push = |candidate: Option<Instant>| {
+            if let Some(c) = candidate.filter(|&c| c > now) {
+                earliest = Some(earliest.map_or(c, |e: Instant| e.min(c)));
+            }
+        };
+        push(
+            self.editor
+                .cursor_block_entered_at
+                .map(|t| t + RAW_REVEAL_DELAY),
+        );
+        push(self.last_scroll_at.map(|t| t + SCROLL_QUIESCE));
+        push(self.editor.parsed_dirty_at.map(|t| t + PARSED_DEBOUNCE));
+        push(self.resize_quiesce_at);
+        earliest
+    }
+
     /// Expose detected capabilities to later phases (mouse, images, etc.).
     #[allow(dead_code)]
     pub fn capabilities(&self) -> &Capabilities {
@@ -442,6 +504,28 @@ impl App {
         let keymap = KeyMap::build(&self.config.keybindings)?;
 
         loop {
+            // Flush any deferred re-parse whose debounce window has
+            // elapsed.  Typing bursts defer the re-parse so the UI
+            // thread doesn't rebuild the whole ParsedDoc on every
+            // keystroke; this is the point where we pay that cost
+            // once the user pauses.
+            if self
+                .editor
+                .parsed_dirty_at
+                .is_some_and(|t| t.elapsed() >= PARSED_DEBOUNCE)
+            {
+                self.editor.flush_parsed_if_dirty();
+                self.needs_draw = true;
+            }
+
+            // Resize-quiesce: once the burst of Resize events from a
+            // terminal-drag has settled, clear the suppression flag
+            // and request a single redraw at the final dimensions.
+            if self.resize_quiesce_at.is_some_and(|t| t <= Instant::now()) {
+                self.resize_quiesce_at = None;
+                self.needs_draw = true;
+            }
+
             // Coalesce any `ImageReady`-driven cache mutations into a
             // single parse-and-render pass for this frame.  Without
             // this, a burst of N simultaneous decode completions would
@@ -450,6 +534,7 @@ impl App {
             if self.images_dirty {
                 self.editor.refresh_parsed();
                 self.images_dirty = false;
+                self.needs_draw = true;
             }
 
             // Kick off decodes for images within the near-viewport
@@ -467,14 +552,17 @@ impl App {
             self.dispatch_visible_image_decodes(self.editor.scroll, doc_height_lines);
 
             // ── Draw ──────────────────────────────────────────────
-            // Coalesce consecutive frames: if we drew less than
-            // MIN_FRAME_INTERVAL ago, skip the draw this iteration.  The
-            // accumulated state changes show up on whichever draw fires
-            // next.  Scroll bursts and other rapid-event sequences
-            // therefore produce at most ~60 draws/second instead of one
-            // per event.
+            // Event-driven draws: only paint when `needs_draw` is set
+            // AND the 16 ms frame-rate throttle is satisfied AND no
+            // resize burst is in flight.  The throttle coalesces rapid
+            // event bursts (wheel-tick spam, held keys) to ~60 fps;
+            // `needs_draw` prevents idle redraws so the process can go
+            // fully quiescent between user actions; `resize_quiesce_at`
+            // suppresses mid-drag paints that would otherwise flicker.
             let since_draw = self.last_draw_at.map(|t| t.elapsed());
-            let should_draw = since_draw.is_none_or(|d| d >= MIN_FRAME_INTERVAL);
+            let throttle_ok = since_draw.is_none_or(|d| d >= MIN_FRAME_INTERVAL);
+            let resize_pending = self.resize_quiesce_at.is_some();
+            let should_draw = self.needs_draw && throttle_ok && !resize_pending;
             if should_draw {
                 let filename = self.display_filename();
                 let is_scrolling = self.is_scrolling();
@@ -537,27 +625,46 @@ impl App {
                     }
                 })?;
                 self.last_draw_at = Some(Instant::now());
+                self.needs_draw = false;
             }
 
-            // ── Wait for event (with timeout for jitter redraws) ──
-            // Use a short timeout so that when the cursor has recently moved
-            // to a new block, the view redraws after the reveal delay has
-            // elapsed and shows the raw cursor-block view.
-            //
-            // When we skipped a draw because of frame-rate coalescing,
-            // shrink the timeout to the remaining frame budget so we
-            // don't block past the next scheduled draw.
-            let wait = match since_draw {
-                Some(elapsed) if elapsed < MIN_FRAME_INTERVAL => MIN_FRAME_INTERVAL - elapsed,
-                _ => Duration::from_millis(60),
+            // ── Wait for event (blocking unless a timer is pending) ──
+            // Compute the shortest pending deadline:
+            // - RAW_REVEAL_DELAY and SCROLL_QUIESCE (via `next_deadline`)
+            //   drive time-based visual updates.
+            // - When `needs_draw` was set but the 16 ms frame throttle
+            //   blocked the draw, also wake at the remaining throttle
+            //   budget so the deferred draw fires promptly.
+            // With no pending deadline and nothing to draw, fall back
+            // to `rx.recv()` which blocks until an event arrives —
+            // the app idles with 0 % CPU.
+            let now = Instant::now();
+            let mut wait: Option<Duration> = None;
+            let mut push_wait = |w: Duration| {
+                wait = Some(wait.map_or(w, |existing| existing.min(w)));
             };
+            if let Some(deadline) = self.next_deadline(now) {
+                push_wait(deadline.saturating_duration_since(now));
+            }
+            if self.needs_draw {
+                match since_draw {
+                    Some(elapsed) if elapsed < MIN_FRAME_INTERVAL => {
+                        push_wait(MIN_FRAME_INTERVAL - elapsed);
+                    }
+                    _ => push_wait(Duration::ZERO),
+                }
+            }
             // If a Term event was stashed by `drain_pending_image_ready`
             // on the previous iteration, process it first so channel
             // order is preserved.
             let event = if let Some(e) = self.pending_term_event.take() {
                 e
             } else {
-                match rx.recv_timeout(wait) {
+                let recv_result = match wait {
+                    Some(d) => rx.recv_timeout(d),
+                    None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+                };
+                match recv_result {
                     Ok(AppEvent::Term(e)) => e,
                     Ok(AppEvent::ImageReady(Ok(loaded))) => {
                         self.editor.images.set_decoded_with_prebuilt(
@@ -566,12 +673,14 @@ impl App {
                             loaded.scratch,
                         );
                         self.images_dirty = true;
+                        self.needs_draw = true;
                         self.drain_pending_image_ready(&rx);
                         continue;
                     }
                     Ok(AppEvent::ImageReady(Err((url, message)))) => {
                         tracing::debug!(target: "image", %url, %message, "image decode failed");
                         self.editor.images.set_failed(&url, message);
+                        self.needs_draw = true;
                         // Failed decodes don't change the parsed doc
                         // (they leave the placeholder visible) but may
                         // still come in bursts — drain so we don't
@@ -581,6 +690,7 @@ impl App {
                     }
                     Ok(AppEvent::ProtocolReady(Ok(resp))) => {
                         self.editor.images.apply_resize_response(resp);
+                        self.needs_draw = true;
                         self.drain_pending_image_ready(&rx);
                         continue;
                     }
@@ -597,12 +707,40 @@ impl App {
                         continue;
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                        // No event — just redraw to apply any jitter-delay reveals.
+                        // A pending deadline (reveal / scroll quiesce
+                        // / throttle) elapsed without an external
+                        // event.  Redraw once to apply it; the loop
+                        // will then go back to blocking on `recv()`
+                        // because the deadline is no longer in the
+                        // future.
+                        self.needs_draw = true;
                         continue;
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             };
+
+            // ── Terminal resize ──────────────────────────────────────
+            // Dragging the window edge fires a burst of `Resize`
+            // events (one per pixel).  Instead of trying to redraw
+            // every one — which both pins CPU and paints partial
+            // frames — arm a quiesce deadline that the draw gate
+            // above respects.  Width-dependent snapshot caches
+            // (image, link, table) are invalidated so the settled-size
+            // redraw rebuilds them at the new dimensions, and
+            // `last_scroll_at` is cleared so images resume at the
+            // native protocol immediately rather than passing
+            // through the halfblocks transition.
+            if matches!(event, Event::Resize(_, _)) {
+                self.resize_quiesce_at = Some(Instant::now() + RESIZE_QUIESCE);
+                self.view_state.rendered.image_snapshots_key = None;
+                self.view_state.rendered.link_snapshots_key = None;
+                self.view_state.rendered.table_snapshots_key = None;
+                self.view_state.preview.image_snapshots_key = None;
+                self.view_state.preview.link_snapshots_key = None;
+                self.last_scroll_at = None;
+                continue;
+            }
 
             // Dirty-guard modal absorbs all input while it's visible.
             // Evaluated before the other modal checks so the guard (which
@@ -614,6 +752,7 @@ impl App {
                         let doc_w = term_size.width as usize;
                         let doc_h = term_size.height.saturating_sub(1) as usize;
                         self.handle_dirty_guard_key(*key, doc_h, doc_w);
+                        self.needs_draw = true;
                     }
                 }
                 continue;
@@ -625,6 +764,7 @@ impl App {
                 if let Event::Key(key) = &event {
                     if key.kind == KeyEventKind::Press {
                         self.handle_remote_image_prompt_key(*key);
+                        self.needs_draw = true;
                     }
                 }
                 continue;
@@ -635,6 +775,7 @@ impl App {
                 if let Event::Key(key) = &event {
                     if key.kind == KeyEventKind::Press {
                         self.handle_startup_notice_key(*key);
+                        self.needs_draw = true;
                     }
                 }
                 continue;
@@ -656,6 +797,14 @@ impl App {
             // Mouse events come through before key events get a chance so a
             // mid-click key press doesn't erase an in-progress drag.
             if let Event::Mouse(mouse_event) = event {
+                // Mouse clicks hit-test against `parsed.source_map`
+                // byte ranges — a stale map from a deferred re-parse
+                // would map the click to the wrong block or line.
+                // Flush synchronously here; a click ends the typing
+                // burst naturally, so the latency cost is invisible.
+                if self.editor.flush_parsed_if_dirty() {
+                    self.needs_draw = true;
+                }
                 if self.capabilities.mouse {
                     // Pointer-shape feedback: over a clickable element, ask the
                     // terminal for a pointing-hand cursor; otherwise I-beam.
@@ -719,19 +868,13 @@ impl App {
                         if let Some(target) = self.editor.pending_link_follow.take() {
                             self.follow_link(target, doc_height, doc_width);
                         }
+                        self.needs_draw = true;
                     }
                 }
-                // Preview mode reads scroll and selection from
-                // `view_state.preview`, but mouse events mutate editor state.
-                // Mirror the preview-scoped fields so the widget sees the
-                // latest scroll offset and visual selection.
-                if self.editor.mode == Mode::Preview {
-                    let new_lines = self.editor.parsed.lines.clone();
-                    self.view_state.preview = PreviewState::new(new_lines);
-                    self.view_state.preview.scroll = self.editor.scroll;
-                    self.view_state.preview.selection = self.editor.visual_selection;
-                    self.view_state.preview.selection_style = self.theme.selection;
-                }
+                // Preview-mode mirror writes (scroll, selection) now
+                // happen once per frame inside `EditorView::render`,
+                // since the widget reads `editor.parsed.lines` by
+                // borrow.  Nothing to do here.
                 continue;
             }
 
@@ -744,13 +887,7 @@ impl App {
             // clipboard from inside this process.
             if let Event::Paste(text) = event {
                 edit_ops::paste_text(&mut self.editor, &text, doc_height, doc_width);
-                if self.editor.mode == Mode::Preview {
-                    let new_lines = self.editor.parsed.lines.clone();
-                    self.view_state.preview = PreviewState::new(new_lines);
-                    self.view_state.preview.scroll = self.editor.scroll;
-                    self.view_state.preview.selection = self.editor.visual_selection;
-                    self.view_state.preview.selection_style = self.theme.selection;
-                }
+                self.needs_draw = true;
                 continue;
             }
 
@@ -778,21 +915,12 @@ impl App {
                         self.follow_link(target, doc_height, doc_width);
                     }
                 }
+                self.needs_draw = true;
                 // New decodes (e.g. from an edit that added an image
                 // inside the viewport, or a scroll that brought one
                 // into the prefetch window) are picked up by
                 // `dispatch_visible_image_decodes` at the top of the
                 // next loop iteration — no eager call needed here.
-            }
-
-            // Keep preview state lines in sync with editor's parsed doc.
-            // (Only needed for Preview mode; Rendered and Raw read from EditorState directly.)
-            if self.editor.mode == Mode::Preview {
-                let new_lines = self.editor.parsed.lines.clone();
-                self.view_state.preview = PreviewState::new(new_lines);
-                self.view_state.preview.scroll = self.editor.scroll;
-                self.view_state.preview.selection = self.editor.visual_selection;
-                self.view_state.preview.selection_style = self.theme.selection;
             }
 
             if self.should_quit {
@@ -968,7 +1096,7 @@ impl App {
         // editor resets it — image URLs on the new doc are resolved
         // against the new base directory on the next draw.
         self.file_path = Some(path);
-        self.view_state = EditorViewState::new(self.editor.parsed.lines.clone());
+        self.view_state = EditorViewState::new();
         self.images_dirty = true;
         Ok(())
     }

@@ -24,7 +24,6 @@ use ratatui_image::{Resize, ResizeEncodeRender};
 use crate::editor::EditorState;
 use crate::image::{paint_halfblocks_partial, ImageCache};
 use crate::terminal::ImageProtocol;
-use crate::ui::line_render;
 
 /// Per-frame geometry for one visible image block.  Screen coordinates
 /// are in terminal cells, relative to the document area's origin.  Only
@@ -146,21 +145,23 @@ pub fn build_snapshots(state: &EditorState, area: Rect, scroll: usize) -> Vec<Im
         // Sum visual rows for lines `[scroll, rendered_range.start)` —
         // that's where the block's top row lands on screen.  Lines may
         // wrap; short placeholder-only lines do not, but preceding
-        // content might.
-        let mut y_offset: isize = 0;
+        // content might.  Resolved via `ParsedDoc::visual_rows_before`
+        // which is O(1) after the per-frame cache is populated; the
+        // historical loop here re-invoked `visual_rows_for_line` for
+        // every preceding line on every scroll tick.
         let end = rendered_range.start.min(total);
-        if scroll < end {
-            for idx in scroll..end {
-                if let Some(line) = state.parsed.lines.get(idx) {
-                    y_offset += line_render::visual_rows_for_line(line, width).max(1) as isize;
-                }
-            }
+        let y_offset: isize = if scroll < end {
+            let scroll_rows = state.parsed.visual_rows_before(scroll, width);
+            let end_rows = state.parsed.visual_rows_before(end, width);
+            (end_rows as isize) - (scroll_rows as isize)
         } else if scroll > rendered_range.start {
             // Block starts above the viewport — negative y_offset.
             // Approximate one rendered line per unit (image-block
             // placeholder rows never wrap, so this is exact for them).
-            y_offset = -(scroll as isize - rendered_range.start as isize);
-        }
+            -(scroll as isize - rendered_range.start as isize)
+        } else {
+            0
+        };
 
         let reserved = rendered_range.end.saturating_sub(rendered_range.start) as isize;
         let image_top = area.y as isize + y_offset;

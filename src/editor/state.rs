@@ -92,10 +92,23 @@ pub struct EditorState {
     /// `mouse_ops::apply` pure w.r.t. its `&mut EditorState` contract —
     /// it doesn't need an extra out-parameter or a reference to the App.
     pub pending_link_follow: Option<crate::editor::link::LinkTarget>,
+    /// Phase 15 debounce: timestamp of the most recent edit that left
+    /// `parsed` stale.  The event loop flushes (re-parses) when this
+    /// is `Some` and `PARSED_DEBOUNCE` has elapsed; until then the
+    /// cursor block is shown as raw text (via the RAW_REVEAL trick)
+    /// so the staleness is invisible to the user.  `None` means
+    /// `parsed` is in sync with the buffer.
+    pub parsed_dirty_at: Option<Instant>,
 }
 
 /// How long the cursor must rest on a block before it is shown in raw mode.
 pub const RAW_REVEAL_DELAY: std::time::Duration = std::time::Duration::from_millis(120);
+
+/// Window after the last edit during which re-parsing is deferred.  The
+/// cursor block is shown as raw (see `RAW_REVEAL_DELAY`) during this
+/// window so the stale rendered view is never observed.  A typing
+/// burst faster than this batches to a single re-parse.
+pub const PARSED_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(30);
 
 impl EditorState {
     /// Create an `EditorState` from a `Buffer` and a theme.
@@ -167,6 +180,7 @@ impl EditorState {
             parsed_version: 0,
             live_table_widths: None,
             pending_link_follow: None,
+            parsed_dirty_at: None,
         }
     }
 
@@ -204,6 +218,41 @@ impl EditorState {
             Some(&override_fn),
         );
         self.parsed_version = self.parsed_version.wrapping_add(1);
+        self.parsed_dirty_at = None;
+    }
+
+    /// Defer the re-parse after an edit: `parsed` becomes stale but
+    /// `parsed_dirty_at` lets the event loop flush once the typing
+    /// burst pauses.  Bumps `parsed_version` immediately so per-frame
+    /// snapshot caches (image, link) invalidate on the next draw —
+    /// otherwise they would paint with stale geometry against the
+    /// (about-to-be-refreshed) block list.
+    ///
+    /// Resets `cursor_block_entered_at` so `cursor_block_revealed()`
+    /// returns false for `RAW_REVEAL_DELAY` (120 ms) after the edit.
+    /// During that window the cursor block is shown as raw text
+    /// directly from the buffer, so the user never observes the
+    /// stale rendered content — a crucial invariant that makes
+    /// deferring safe.
+    pub(crate) fn mark_parsed_dirty(&mut self) {
+        let now = Instant::now();
+        self.parsed_dirty_at = Some(now);
+        self.parsed_version = self.parsed_version.wrapping_add(1);
+        self.cursor_block_entered_at = Some(now);
+    }
+
+    /// If a deferred re-parse is pending, run it now and clear the
+    /// dirty flag.  Returns `true` when a re-parse actually fired.
+    /// Callers should invoke this before any code path that consults
+    /// `parsed.source_map` byte ranges across a fresh cursor (e.g.
+    /// mouse clicks) to avoid observing a stale map.
+    pub fn flush_parsed_if_dirty(&mut self) -> bool {
+        if self.parsed_dirty_at.is_some() {
+            self.refresh_parsed();
+            true
+        } else {
+            false
+        }
     }
 
     /// Set the cursor offset and clamp it to buffer bounds.
@@ -228,7 +277,11 @@ impl EditorState {
         self.history.record(delta);
         self.cursor.offset = new_cursor.min(self.buffer.len_chars());
         self.dirty = true;
-        self.refresh_parsed();
+        // Defer re-parse: the cursor block is shown raw for the next
+        // 120 ms so the stale rendered view is never observed.  The
+        // event loop flushes after `PARSED_DEBOUNCE` of typing
+        // inactivity, batching rapid keystrokes into a single re-parse.
+        self.mark_parsed_dirty();
     }
 
     // ── Jitter suppression ────────────────────────────────────────
@@ -338,8 +391,11 @@ impl EditorState {
         let mut rows_used = 0usize;
         let mut line_idx = target_last;
         loop {
-            let rows =
-                crate::ui::line_render::visual_rows_for_line(&lines[line_idx], viewport_width);
+            // O(1) cache lookup — the historical inline `visual_rows_for_line`
+            // call here was a per-keystroke cost on long documents.
+            let rows = self
+                .parsed
+                .visual_rows_for_line_at(line_idx, viewport_width);
             if rows_used + rows > viewport_height {
                 // Including this line would overflow — start from the next one.
                 return line_idx + 1;
@@ -465,21 +521,12 @@ impl EditorState {
         }
     }
 
-    /// Sum of visual rows for rendered lines `first..=last`, wrapped at `width`.
+    /// Sum of visual rows for rendered lines `first..=last`, wrapped at
+    /// `width`.  O(1) after `ParsedDoc`'s per-frame visual-row cache is
+    /// populated; the historical loop here ran the wrap algorithm
+    /// inline on every call.
     fn visual_rows_between(&self, first: usize, last: usize, width: usize) -> usize {
-        let lines = &self.parsed.lines;
-        if lines.is_empty() || first > last {
-            return 0;
-        }
-        let last = last.min(lines.len() - 1);
-        let mut total = 0usize;
-        for idx in first..=last {
-            total = total.saturating_add(crate::ui::line_render::visual_rows_for_line(
-                &lines[idx],
-                width,
-            ));
-        }
-        total
+        self.parsed.visual_rows_between(first, last, width)
     }
 
     /// Number of raw source lines for the block that currently contains the

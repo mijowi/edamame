@@ -30,7 +30,6 @@ use ratatui::text::Line;
 use crate::editor::link::LinkTarget;
 use crate::editor::EditorState;
 use crate::markdown::{Block, Inline};
-use crate::ui::line_render;
 
 /// Per-frame geometry for one visible link.
 ///
@@ -72,6 +71,28 @@ impl LinkLayoutSnapshot {
     }
 }
 
+/// Refresh `snapshots` in place when the cache key (`scroll`, `area`,
+/// `parsed_version`) differs from the previous frame's, otherwise
+/// leave the vector untouched.  Mirrors `image_view::build_snapshots_cached`.
+/// The underlying `build_snapshots` walks `parsed.blocks` and calls
+/// `visual_rows_for_line` for every visible line, so skipping it when
+/// layout hasn't changed is a major per-frame win on large
+/// link-heavy documents.
+pub fn build_snapshots_cached(
+    state: &EditorState,
+    area: Rect,
+    scroll: usize,
+    snapshots: &mut Vec<LinkLayoutSnapshot>,
+    cache_key: &mut Option<(usize, Rect, u64)>,
+) {
+    let key = (scroll, area, state.parsed_version);
+    if *cache_key == Some(key) {
+        return;
+    }
+    *snapshots = build_snapshots(state, area, scroll);
+    *cache_key = Some(key);
+}
+
 /// Build snapshots for every visible link in the rendered document.
 ///
 /// `scroll` is the first rendered line index on screen.  `area` is the
@@ -88,21 +109,20 @@ pub fn build_snapshots(state: &EditorState, area: Rect, scroll: usize) -> Vec<Li
         .and_then(|p| p.parent())
         .map(Path::to_owned);
 
-    // Map each block to (rendered_line_range, block) so we can pair AST
-    // link occurrences with screen geometry.  Walking `parsed.lines` +
-    // `parsed.source_map` gives us one block at a time; we re-parse the
-    // source to get the AST since ParsedDoc doesn't retain it.
-    let source = state.buffer.contents();
-    let blocks = crate::markdown::parse(&source);
-
+    // `ParsedDoc` retains the post-processed AST (`blocks`) and the
+    // matching byte ranges (`real_ranges`) from the last re-parse, so
+    // we pair AST link occurrences with rendered-line geometry without
+    // a per-frame parse of the full buffer.  Prior to Phase 15 this
+    // function called `buffer.contents()` + `markdown::parse()` +
+    // `top_level_block_ranges()` on every draw — a dominant hotspot on
+    // large documents.
     let mut out = Vec::new();
-    // pulldown-cmark's `parse` and `parse_offsets::top_level_block_ranges`
-    // emit blocks in the same order, but our `ParsedDoc` post-pass also
-    // synthesises blank-line virtual blocks that don't appear in
-    // `blocks`.  Rather than re-derive the pairing here, we consult the
-    // source map by scanning each real block's first non-whitespace byte.
-    let real_ranges = crate::markdown::parse_offsets::top_level_block_ranges(&source);
-    for (block, range) in blocks.iter().zip(real_ranges.iter()) {
+    for (block, range) in state
+        .parsed
+        .blocks
+        .iter()
+        .zip(state.parsed.real_ranges.iter())
+    {
         let rendered_range = state.parsed.source_map.rendered_lines_for_byte(range.start);
         if rendered_range.is_empty() {
             continue;
@@ -141,44 +161,42 @@ fn extract_block_links(
     base_dir: Option<&Path>,
     out: &mut Vec<LinkLayoutSnapshot>,
 ) {
-    // Gather every rendered line's screen-y position before walking links.
-    // A block's rendered lines lay out sequentially; for each visible line
-    // we scan its spans for UNDERLINED runs (the renderer's canonical
-    // link styling) and pair each run with the next `Inline::Link` we
-    // encounter in document order.
-    let total = state.parsed.lines.len();
-    let mut line_positions: Vec<(usize, u16, u16)> = Vec::new(); // (line_idx, y_start, rows_used)
-    let mut y_cursor: isize = -(scroll as isize);
-    for idx in 0..rendered_range.start.min(total) {
-        if let Some(line) = state.parsed.lines.get(idx) {
-            y_cursor +=
-                line_render::visual_rows_for_line(line, area.width as usize).max(1) as isize;
-        }
-    }
-    for idx in rendered_range.start..rendered_range.end.min(total) {
-        if let Some(line) = state.parsed.lines.get(idx) {
-            let rows_used = line_render::visual_rows_for_line(line, area.width as usize).max(1);
-            let y_start = y_cursor;
-            y_cursor += rows_used as isize;
-            // Skip lines that are entirely above or below the visible
-            // viewport — no snapshots to emit for them.
-            if y_cursor <= 0 {
-                continue;
-            }
-            if y_start >= area.height as isize {
-                break;
-            }
-            line_positions.push((idx, y_start.max(0) as u16, rows_used as u16));
-        }
-    }
-
-    // Iterate AST links in document order.  Each block type with inline
-    // content calls into `collect_inline_links` which flattens nested
-    // styling (bold / italic / etc) and pushes `(url, title)` pairs.
+    // Early-exit: most blocks (tables, code, plain paragraphs) carry no
+    // links.  Collecting URLs first lets us skip the per-line geometry
+    // walk for those blocks entirely — the dominant win on link-sparse
+    // documents like plan.md.
     let mut link_urls: Vec<(String, Option<String>)> = Vec::new();
     collect_links_from_block(block, &mut link_urls);
     if link_urls.is_empty() {
         return;
+    }
+
+    // Compute the block's first line's screen-y in O(1) via the
+    // ParsedDoc's prefix-sum cache.  Replaces the historical
+    // `for idx in 0..rendered_range.start` walk that called
+    // `visual_rows_for_line` per line — quadratic on large documents.
+    let width = area.width as usize;
+    let total = state.parsed.lines.len();
+    let scroll_rows = state.parsed.visual_rows_before(scroll, width);
+    let block_start_rows = state
+        .parsed
+        .visual_rows_before(rendered_range.start.min(total), width);
+    let mut y_cursor: isize = block_start_rows as isize - scroll_rows as isize;
+
+    let mut line_positions: Vec<(usize, u16, u16)> = Vec::new(); // (line_idx, y_start, rows_used)
+    for idx in rendered_range.start..rendered_range.end.min(total) {
+        let rows_used = state.parsed.visual_rows_for_line_at(idx, width).max(1);
+        let y_start = y_cursor;
+        y_cursor += rows_used as isize;
+        // Skip lines that are entirely above or below the visible
+        // viewport — no snapshots to emit for them.
+        if y_cursor <= 0 {
+            continue;
+        }
+        if y_start >= area.height as isize {
+            break;
+        }
+        line_positions.push((idx, y_start.max(0) as u16, rows_used as u16));
     }
 
     // Walk each visible line of the block, extracting UNDERLINED spans
@@ -358,6 +376,31 @@ mod tests {
         let st = state(src);
         let area = Rect::new(0, 0, 80, 10);
         assert!(build_snapshots(&st, area, 0).is_empty());
+    }
+
+    /// A link below the initial scroll offset must produce a snapshot
+    /// whose `rect.y` equals the exact screen row of the link's
+    /// rendered line.  Validates that the `ParsedDoc` prefix-sum
+    /// math (which replaced the historical per-block 0..start walk)
+    /// produces the same y-coordinates as the explicit walk did.
+    #[test]
+    fn link_below_scroll_lands_on_correct_row() {
+        // 12 short paragraphs followed by a link — the link sits at
+        // rendered line 24 (each paragraph emits one line plus one
+        // blank-line gap line, so paragraph k starts at row 2k).
+        let mut src = String::new();
+        for i in 0..12 {
+            src.push_str(&format!("Paragraph {i}.\n\n"));
+        }
+        src.push_str("Read [this](https://example.com)\n");
+        let st = state(&src);
+        let area = Rect::new(0, 0, 80, 6);
+        // Scroll past the first 10 paragraphs.  visual_rows_before(20)
+        // is 20 (each line is single-row at width 80), so the link
+        // line — at rendered index 24 — should land on screen row 4.
+        let snaps = build_snapshots(&st, area, 20);
+        assert_eq!(snaps.len(), 1, "exactly one link snapshot expected");
+        assert_eq!(snaps[0].rect.y, 4, "link y must equal line_index - scroll");
     }
 
     #[test]

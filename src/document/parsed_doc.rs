@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -72,6 +73,19 @@ pub struct ParsedDoc {
     pub lines: Vec<Line<'static>>,
     /// Source map linking rendered lines to source byte ranges.
     pub source_map: SourceMap,
+    /// Post-processed block AST, parallel with `real_ranges`.  Stashed
+    /// here so per-frame consumers (`ui::link_view`, inline-link
+    /// resolution) don't have to re-run the full pulldown-cmark parse
+    /// on every draw.  Reflects all post-parse passes
+    /// (`merge_trailing_tui_columns_comments`,
+    /// `promote_image_paragraphs`, and any live table-width overrides)
+    /// so callers see exactly what the renderer rendered.
+    pub blocks: Vec<crate::markdown::Block>,
+    /// Byte ranges of the real (non-blank) source blocks, 1:1 with
+    /// `blocks`.  Blank-line virtual blocks synthesised by
+    /// `build_with_overrides` are NOT present here — look them up via
+    /// `source_map` instead.
+    pub real_ranges: Vec<Range<usize>>,
     /// Per-block own rendered line count (from the renderer, BEFORE
     /// `preserve_blank_lines` inserts inter-block gap lines).
     ///
@@ -94,6 +108,108 @@ pub struct ParsedDoc {
     /// strip characters not in `[a-z0-9 -]`, replace runs of whitespace
     /// with `-`, uniquify with a `-N` suffix on collisions.
     pub heading_anchors: HashMap<String, usize>,
+    /// Lazy per-(ParsedDoc, viewport-width) cache of `visual_rows_for_line`
+    /// results.  Populated on first query per frame and reused across
+    /// scroll-only frames so the snapshot builders (`link_view`,
+    /// `image_view`, `table_view`) and scroll arithmetic
+    /// (`EditorState::scroll_for_last_visible`, `visual_rows_between`)
+    /// don't re-walk and re-allocate per call.  Width-keyed: a terminal
+    /// resize triggers a single rebuild (resize is debounced in `App`,
+    /// so this is rare).  `RefCell` because `&EditorState` callers
+    /// need shared access; `ParsedDoc` is single-threaded.
+    visual_rows: RefCell<Option<VisualRowCache>>,
+}
+
+/// Per-(ParsedDoc, width) prefix-sum table over `lines` so the snapshot
+/// builders can answer "how many visual rows do lines [0..i) consume?"
+/// in O(1).  Replaces the per-block walks that dominated scroll-path
+/// CPU on large documents prior to Phase 15.
+#[derive(Debug, Clone)]
+struct VisualRowCache {
+    /// Viewport width this cache was built for.  A mismatch with the
+    /// caller's width forces a refill.
+    width: usize,
+    /// `visual_rows_per_line[i]` = `visual_rows_for_line(&lines[i], width).max(1)`.
+    visual_rows_per_line: Vec<usize>,
+    /// `visual_row_prefix_sum[i]` = sum of `visual_rows_per_line[0..i]`.
+    /// Length is `lines.len() + 1`; `[0] == 0`, `[lines.len()]` is the
+    /// total visual row count.
+    visual_row_prefix_sum: Vec<usize>,
+}
+
+impl ParsedDoc {
+    /// Number of visual rows rendered line `idx` occupies at `width`.
+    /// Returns 1 for out-of-range indices (matches the `.max(1)` clamp
+    /// the snapshot builders applied historically).  O(1) after the
+    /// cache is populated; first call at a given width is O(lines).
+    pub fn visual_rows_for_line_at(&self, idx: usize, width: usize) -> usize {
+        self.ensure_visual_rows(width);
+        self.visual_rows
+            .borrow()
+            .as_ref()
+            .and_then(|c| c.visual_rows_per_line.get(idx).copied())
+            .unwrap_or(1)
+    }
+
+    /// Sum of visual rows occupied by rendered lines `[0..idx)` at
+    /// `width`.  O(1) after the cache is populated.  Replaces the
+    /// per-block `for idx in 0..start` loop in
+    /// `link_view::extract_block_links` and the
+    /// `for idx in scroll..end` loop in `image_view::build_snapshots`.
+    pub fn visual_rows_before(&self, idx: usize, width: usize) -> usize {
+        self.ensure_visual_rows(width);
+        let clamped = idx.min(self.lines.len());
+        self.visual_rows
+            .borrow()
+            .as_ref()
+            .and_then(|c| c.visual_row_prefix_sum.get(clamped).copied())
+            .unwrap_or(0)
+    }
+
+    /// Sum of visual rows occupied by rendered lines `[first..=last]`
+    /// at `width`.  O(1) after the cache is populated.  Used by
+    /// `EditorState::visual_rows_between`.
+    pub fn visual_rows_between(&self, first: usize, last: usize, width: usize) -> usize {
+        if first > last || self.lines.is_empty() {
+            return 0;
+        }
+        let last = last.min(self.lines.len() - 1);
+        self.visual_rows_before(last + 1, width)
+            .saturating_sub(self.visual_rows_before(first, width))
+    }
+
+    /// Populate or refresh the visual-row cache for `width`.  Cheap
+    /// when the cached width already matches; otherwise walks every
+    /// line once and stores per-line counts plus a prefix sum.
+    /// Two-phase borrow: the immutable check releases before the
+    /// `borrow_mut` so we don't alias the `RefCell`.
+    fn ensure_visual_rows(&self, width: usize) {
+        {
+            let borrow = self.visual_rows.borrow();
+            if let Some(c) = borrow.as_ref() {
+                if c.width == width {
+                    return;
+                }
+            }
+        }
+        let len = self.lines.len();
+        let mut per_line = Vec::with_capacity(len);
+        let mut prefix = Vec::with_capacity(len + 1);
+        prefix.push(0usize);
+        let mut acc = 0usize;
+        for line in &self.lines {
+            // Reuse the canonical wrap algorithm — never duplicate it.
+            let rows = crate::ui::line_render::visual_rows_for_line(line, width).max(1);
+            per_line.push(rows);
+            acc = acc.saturating_add(rows);
+            prefix.push(acc);
+        }
+        *self.visual_rows.borrow_mut() = Some(VisualRowCache {
+            width,
+            visual_rows_per_line: per_line,
+            visual_row_prefix_sum: prefix,
+        });
+    }
 }
 
 impl ParsedDoc {
@@ -223,7 +339,12 @@ impl ParsedDoc {
         }
 
         // Real blocks, each followed by any blank lines in the gap after it.
-        let mut rendered_src = 0usize;
+        // Consume `rendered_lines` by move via an iterator: prior to
+        // Phase 15 this loop indexed into the Vec and `.clone()`'d each
+        // `Line<'static>`, which deep-copies every span's Cow and is
+        // measurable on large documents.  Sequential consumption means
+        // we can drain the source vector directly.
+        let mut rendered_iter = rendered_lines.into_iter();
         let mut image_blocks = Vec::new();
         let mut heading_anchors: HashMap<String, usize> = HashMap::new();
         let mut anchor_counts: HashMap<String, usize> = HashMap::new();
@@ -253,13 +374,12 @@ impl ParsedDoc {
                 // block's own lines below).
                 heading_anchors.insert(slug, lines.len());
             }
-            for j in 0..count {
-                if let Some(line) = rendered_lines.get(rendered_src + j) {
-                    lines.push(line.clone());
+            for _ in 0..count {
+                if let Some(line) = rendered_iter.next() {
+                    lines.push(line);
                     rendered_to_block.push(idx);
                 }
             }
-            rendered_src += count;
 
             // Setext H2 headings have two raw lines (the title and the `---`
             // underline) but the renderer produces only one styled line.  To
@@ -312,13 +432,10 @@ impl ParsedDoc {
 
         // Attribute any stray rendered lines not accounted for above to the
         // most recently pushed block (defensive — shouldn't happen in practice).
-        while rendered_src < rendered_lines.len() {
-            if let Some(line) = rendered_lines.get(rendered_src) {
-                lines.push(line.clone());
-                let last = all_original.len().saturating_sub(1);
-                rendered_to_block.push(last);
-            }
-            rendered_src += 1;
+        for line in rendered_iter {
+            lines.push(line);
+            let last = all_original.len().saturating_sub(1);
+            rendered_to_block.push(last);
         }
 
         let extended_ranges = build_extended_ranges(&all_original, total_bytes);
@@ -333,9 +450,12 @@ impl ParsedDoc {
         Self {
             lines,
             source_map,
+            blocks,
+            real_ranges,
             per_block_own: all_per_block_own,
             image_blocks,
             heading_anchors,
+            visual_rows: RefCell::new(None),
         }
     }
 
@@ -725,6 +845,95 @@ mod tests {
             idx,
             heading_lines
         );
+    }
+
+    // ── Visual-row cache ────────────────────────────────────────────────
+
+    /// The cached per-line count must match the canonical
+    /// `line_render::visual_rows_for_line` answer for every line.
+    #[test]
+    fn visual_rows_cache_matches_line_render() {
+        // Mix of short paragraphs, a wrapped long line, and a heading.
+        let long = "x".repeat(120);
+        let src = format!("# Title\n\nshort\n\n{long}\n\nfinal\n");
+        let doc = ParsedDoc::build(&src, theme(), true, 24);
+        let width = 40;
+        for (i, line) in doc.lines.iter().enumerate() {
+            let canonical = crate::ui::line_render::visual_rows_for_line(line, width).max(1);
+            assert_eq!(
+                doc.visual_rows_for_line_at(i, width),
+                canonical,
+                "cache mismatch at line {i}",
+            );
+        }
+    }
+
+    /// `visual_rows_before(i + 1) == visual_rows_before(i) + visual_rows_for_line_at(i)`
+    /// for every line — the prefix-sum invariant the snapshot builders rely
+    /// on.
+    #[test]
+    fn visual_rows_before_is_prefix_sum() {
+        let src = "Para one.\n\n```\ncode\nblock\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n";
+        let doc = ParsedDoc::build(src, theme(), true, 24);
+        let width = 30;
+        for i in 0..doc.lines.len() {
+            assert_eq!(
+                doc.visual_rows_before(i + 1, width),
+                doc.visual_rows_before(i, width) + doc.visual_rows_for_line_at(i, width),
+                "prefix-sum invariant broken at line {i}",
+            );
+        }
+    }
+
+    /// Querying the cache at width=A, then width=B, then width=A again must
+    /// return correct answers each time.  Validates the width-mismatch
+    /// rebuild path (terminal-resize case).
+    #[test]
+    fn visual_rows_cache_invalidates_on_width_change() {
+        let long = "y".repeat(80);
+        let src = format!("Hello\n\n{long}\n");
+        let doc = ParsedDoc::build(&src, theme(), true, 24);
+        // Sanity-check both widths against `line_render` directly.
+        let expect = |w: usize| -> Vec<usize> {
+            doc.lines
+                .iter()
+                .map(|l| crate::ui::line_render::visual_rows_for_line(l, w).max(1))
+                .collect()
+        };
+        let at_40 = expect(40);
+        let at_60 = expect(60);
+        for (i, want) in at_40.iter().enumerate() {
+            assert_eq!(doc.visual_rows_for_line_at(i, 40), *want);
+        }
+        for (i, want) in at_60.iter().enumerate() {
+            assert_eq!(doc.visual_rows_for_line_at(i, 60), *want);
+        }
+        // Switching back to 40 rebuilds again.
+        for (i, want) in at_40.iter().enumerate() {
+            assert_eq!(doc.visual_rows_for_line_at(i, 40), *want);
+        }
+    }
+
+    /// `visual_rows_between(first, last)` must equal the manual sum over
+    /// the per-line counts in that inclusive range.
+    #[test]
+    fn visual_rows_between_matches_manual_sum() {
+        let src = "alpha\n\nbeta\n\ngamma\n\ndelta\n";
+        let doc = ParsedDoc::build(src, theme(), true, 24);
+        let width = 50;
+        let n = doc.lines.len();
+        for first in 0..n {
+            for last in first..n {
+                let expected: usize = (first..=last)
+                    .map(|i| doc.visual_rows_for_line_at(i, width))
+                    .sum();
+                assert_eq!(
+                    doc.visual_rows_between(first, last, width),
+                    expected,
+                    "between({first}, {last}) mismatch",
+                );
+            }
+        }
     }
 
     /// Each blank line's rendered-line range must map back to that same line

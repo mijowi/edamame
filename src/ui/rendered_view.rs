@@ -45,6 +45,18 @@ pub struct RenderedViewState {
     /// against link spans — plain click in Preview or Ctrl-click in
     /// Rendered/Raw fires `FollowLink`.
     pub link_snapshots: Vec<LinkLayoutSnapshot>,
+    /// Cache key for `link_snapshots`: `(scroll, area, parsed_version)`.
+    /// Mirrors `image_snapshots_key`.  The link snapshot build walks
+    /// `parsed.blocks` and calls `visual_rows_for_line` for every
+    /// visible line — expensive on large documents — so skipping it
+    /// when layout inputs haven't changed is a major per-frame win.
+    pub link_snapshots_key: Option<(usize, Rect, u64)>,
+    /// Cache key for `table_snapshots`:
+    /// `(scroll, area, parsed_version, show_handles)`.  Skips the
+    /// per-frame visible-line walk when nothing that affects table
+    /// layout has changed — the same coalescing strategy used for
+    /// images and links.
+    pub table_snapshots_key: Option<(usize, Rect, u64, bool)>,
 }
 
 /// Hybrid rendered/raw editing view.
@@ -331,9 +343,16 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // Phase 6: build per-frame snapshots of every visible table, then
         // paint the drag-handle glyphs over the rendered content.  The
         // snapshots are retained on `RenderedViewState` so the next mouse
-        // event can hit-test against them.
-        let snapshots = table_view::build_snapshots(self.state, area, self.show_table_handles);
-        view_state.table_snapshots = snapshots;
+        // event can hit-test against them.  The cached variant skips the
+        // visible-line walk when scroll, area, parsed-doc version, AND
+        // the show-handles flag all match the previous frame.
+        table_view::build_snapshots_cached(
+            self.state,
+            area,
+            self.show_table_handles,
+            &mut view_state.table_snapshots,
+            &mut view_state.table_snapshots_key,
+        );
         table_view::paint_handles(&view_state.table_snapshots, area, buf, self.theme);
 
         // Phase 7: build per-frame snapshots of every visible image block.
@@ -350,11 +369,19 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             &mut view_state.image_snapshots_key,
         );
 
-        // Phase 8: build link snapshots for mouse hit-testing.  Scoped
-        // per frame like the table / image snapshots; rebuilt every
-        // render for simplicity (links are rare compared to chars, so
-        // the O(blocks) walk is cheap).
-        view_state.link_snapshots = link_view::build_snapshots(self.state, area, self.state.scroll);
+        // Phase 8: build link snapshots for mouse hit-testing.  Cached
+        // by `(scroll, area, parsed_version)` — rebuilt only when
+        // something that affects link layout actually changed.  The
+        // uncached walk calls `visual_rows_for_line` for every visible
+        // line, which is O(chars) per line and dominated idle CPU on
+        // large documents prior to Phase 15.
+        link_view::build_snapshots_cached(
+            self.state,
+            area,
+            self.state.scroll,
+            &mut view_state.link_snapshots,
+            &mut view_state.link_snapshots_key,
+        );
     }
 }
 

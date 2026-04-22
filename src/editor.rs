@@ -8,4 +8,4 @@ pub mod table_edit;
 
 pub use link::LinkTarget;
 pub use mode::Mode;
-pub use state::EditorState;
+pub use state::{EditorState, PARSED_DEBOUNCE, RAW_REVEAL_DELAY};

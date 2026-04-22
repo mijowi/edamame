@@ -988,8 +988,14 @@ fn rendered_click_to_offset(
         return 0;
     }
     let mut y = 0usize;
-    for (idx, line) in lines.iter().enumerate().skip(state.scroll) {
-        let rows_used = line_render::visual_rows_for_line(line, viewport_width).max(1);
+    for (idx, _line) in lines.iter().enumerate().skip(state.scroll) {
+        // Per-line lookup against `ParsedDoc`'s O(1) visual-row cache —
+        // historically this called `visual_rows_for_line` directly, which
+        // adds up on rapid mouse-move events over a long document.
+        let rows_used = state
+            .parsed
+            .visual_rows_for_line_at(idx, viewport_width)
+            .max(1);
         if row < y + rows_used {
             let sub_row = row - y;
             return rendered_sub_line_to_offset(state, idx, sub_row, col);

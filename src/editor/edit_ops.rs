@@ -7,6 +7,25 @@ use crate::editor::table_edit::{
 };
 use crate::editor::{EditorState, Mode};
 
+/// True when `action` is a hot-path typing action that applies a
+/// single edit and doesn't read `state.parsed`.  Used by `apply` to
+/// preserve the Phase 15 parsed-doc debounce across a typing burst:
+/// these actions keep calling `mark_parsed_dirty` without flushing,
+/// so a sustained keystroke rate produces one re-parse per
+/// `PARSED_DEBOUNCE` window instead of one per keystroke.
+fn is_hot_typing_action(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::InsertChar(_)
+            | Action::InsertTab
+            | Action::Newline
+            | Action::DeleteCharBack
+            | Action::DeleteCharForward
+            | Action::DeleteWordBack
+            | Action::DeleteWordForward
+    )
+}
+
 /// Apply `action` to `state`, mutating the buffer, cursor, history and/or mode
 /// as appropriate.
 ///
@@ -20,6 +39,17 @@ pub fn apply(
     viewport_height: usize,
     viewport_width: usize,
 ) -> bool {
+    // Flush any deferred re-parse before handling non-typing actions,
+    // which typically read `state.parsed.source_map` /
+    // `state.parsed.lines` (scroll, selection, mode transitions, list
+    // / table structure, undo/redo).  Hot typing actions
+    // (InsertChar, Newline, etc.) skip this — they go straight into
+    // `apply_delta` which re-marks dirty, so the debounce persists
+    // across a typing burst.
+    if !is_hot_typing_action(&action) {
+        state.flush_parsed_if_dirty();
+    }
+
     // Snapshot pre-action state so we can decide after the match whether an
     // auto-renumber pass is warranted.  Undo/Redo must NOT trigger renumber —
     // their whole job is to restore the previous buffer exactly, so any

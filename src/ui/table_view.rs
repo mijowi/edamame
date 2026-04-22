@@ -28,7 +28,6 @@ use ratatui::style::Style;
 use crate::config::Theme;
 use crate::editor::{table_edit, EditorState};
 use crate::markdown::table_layout;
-use crate::ui::line_render;
 
 /// Reorder-handle glyph — `⠿` (U+283F, braille dots 1-2-3-4-5-6).  Used for
 /// BOTH row-reorder (painted in the external left-side gutter at the `│` of
@@ -191,6 +190,27 @@ impl TableLayoutSnapshot {
 
 // ── Snapshot construction ───────────────────────────────────────────────────
 
+/// Refresh `snapshots` in place when the cache key
+/// (`scroll`, `area`, `parsed_version`, `show_handles`) differs from the
+/// previous frame's; otherwise leave the vector untouched.  Mirrors
+/// `image_view::build_snapshots_cached` and `link_view::build_snapshots_cached`.
+/// `show_handles` is part of the key because it changes the snapshot
+/// contents (handle columns / rows are conditionally populated).
+pub fn build_snapshots_cached(
+    state: &EditorState,
+    area: Rect,
+    show_handles: bool,
+    snapshots: &mut Vec<TableLayoutSnapshot>,
+    cache_key: &mut Option<(usize, Rect, u64, bool)>,
+) {
+    let key = (state.scroll, area, state.parsed_version, show_handles);
+    if *cache_key == Some(key) {
+        return;
+    }
+    *snapshots = build_snapshots(state, area, show_handles);
+    *cache_key = Some(key);
+}
+
 /// Walk every visible rendered line and build a snapshot for every table
 /// fully or partially on screen.
 ///
@@ -210,6 +230,7 @@ pub fn build_snapshots(
     let source = state.buffer.contents();
     let lines = &state.parsed.lines;
     let total = lines.len();
+    let width = area.width as usize;
 
     let mut virtual_idx = state.scroll;
     let mut vis_y: usize = 0;
@@ -230,7 +251,10 @@ pub fn build_snapshots(
         let Some(line) = lines.get(virtual_idx) else {
             break;
         };
-        let rows_used = line_render::visual_rows_for_line(line, area.width as usize).max(1);
+        let rows_used = state
+            .parsed
+            .visual_rows_for_line_at(virtual_idx, width)
+            .max(1);
 
         // Does this rendered line belong to a table block?
         let block_byte = state
@@ -527,6 +551,43 @@ mod tests {
     fn hit_test_returns_none_outside_any_region() {
         let s = snap(vec![1..4, 5..8], vec![3..4]);
         assert!(s.hit_test(100, 100).is_none());
+    }
+
+    /// `build_snapshots_cached` must leave `snapshots` untouched when the
+    /// cache key matches the previous frame.  The `parsed_version` stays
+    /// constant, scroll/area/show_handles don't change — so the second
+    /// call is a no-op.
+    #[test]
+    fn build_snapshots_cached_reuses_output_when_key_matches() {
+        use crate::config::Theme;
+        use crate::document::Buffer;
+        use crate::editor::EditorState;
+
+        let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
+        let src = "| a | b |\n|---|---|\n| 1 | 2 |\n";
+        let state = EditorState::new(Buffer::from_str(src), theme);
+        let area = Rect::new(0, 0, 40, 10);
+
+        let mut snapshots: Vec<TableLayoutSnapshot> = Vec::new();
+        let mut key: Option<(usize, Rect, u64, bool)> = None;
+        build_snapshots_cached(&state, area, false, &mut snapshots, &mut key);
+        let first_len = snapshots.len();
+        assert!(first_len > 0, "expected at least one snapshot");
+
+        // Tag the snapshots so we can detect whether they get rebuilt.
+        snapshots[0].col_count = 999;
+        build_snapshots_cached(&state, area, false, &mut snapshots, &mut key);
+        assert_eq!(
+            snapshots[0].col_count, 999,
+            "snapshots must not be rebuilt when cache key matches",
+        );
+
+        // Changing show_handles busts the cache.
+        build_snapshots_cached(&state, area, true, &mut snapshots, &mut key);
+        assert_ne!(
+            snapshots[0].col_count, 999,
+            "snapshots must be rebuilt when show_handles changes",
+        );
     }
 
     #[test]

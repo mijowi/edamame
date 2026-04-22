@@ -1,7 +1,6 @@
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
-    text::Line,
     widgets::{StatefulWidget, Widget},
 };
 
@@ -41,6 +40,7 @@ pub struct EditorView<'a> {
 }
 
 /// State for the `EditorView`.
+#[derive(Default)]
 pub struct EditorViewState {
     /// Used only in PreviewMode.
     pub preview: PreviewState,
@@ -49,39 +49,12 @@ pub struct EditorViewState {
 }
 
 impl EditorViewState {
-    /// Create with the given initial rendered lines (for preview mode seeding).
-    pub fn new(lines: Vec<Line<'static>>) -> Self {
-        Self {
-            preview: PreviewState::new(lines),
-            rendered: RenderedViewState::default(),
-            raw: RawViewState::default(),
-        }
-    }
-
-    // ── Forwarded scroll helpers for Preview mode ─────────────────
-
-    pub fn scroll_down(&mut self, n: usize, viewport_height: usize) {
-        self.preview.scroll_down(n, viewport_height);
-    }
-
-    pub fn scroll_up(&mut self, n: usize) {
-        self.preview.scroll_up(n);
-    }
-
-    pub fn scroll_to_top(&mut self) {
-        self.preview.scroll_to_top();
-    }
-
-    pub fn scroll_to_bottom(&mut self, viewport_height: usize) {
-        self.preview.scroll_to_bottom(viewport_height);
-    }
-
-    pub fn total_lines(&self) -> usize {
-        self.preview.total_lines()
-    }
-
-    pub fn scroll(&self) -> usize {
-        self.preview.scroll
+    /// Default-construct each per-mode state.  Preview no longer holds
+    /// a copy of the rendered line list (it borrows from
+    /// `EditorState::parsed.lines` at render time), so this constructor
+    /// is parameterless.
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
@@ -104,11 +77,16 @@ impl<'a> StatefulWidget for EditorView<'a> {
         let mode = self.state.mode;
         match mode {
             Mode::Preview => {
-                // PreviewView renders from its own `state.preview.lines`
-                // vector (a snapshot of the parsed doc captured at App
-                // startup / mode switch), so we have to populate its
-                // image snapshots from here using the canonical
-                // `EditorState::parsed` block list.
+                // Mirror the canonical scroll / selection from
+                // `EditorState` onto the preview view-state once per
+                // frame.  Was previously done in `App::run` after
+                // every event, but now lives here so the App doesn't
+                // need to know which view-state fields each mode
+                // touches.
+                state.preview.scroll = self.state.scroll;
+                state.preview.selection = self.state.visual_selection;
+                state.preview.selection_style = self.theme.selection;
+
                 image_view::build_snapshots_cached(
                     self.state,
                     doc_area,
@@ -116,12 +94,26 @@ impl<'a> StatefulWidget for EditorView<'a> {
                     &mut state.preview.image_snapshots,
                     &mut state.preview.image_snapshots_key,
                 );
-                // Phase 8 — link snapshots for preview-mode click dispatch.
-                state.preview.link_snapshots =
-                    link_view::build_snapshots(self.state, doc_area, state.preview.scroll);
-                // Keep preview state lines in sync with editor state.
-                // In preview mode the editor state scroll is the canonical scroll.
-                StatefulWidget::render(PreviewView, doc_area, buf, &mut state.preview);
+                // Phase 8 — link snapshots for preview-mode click
+                // dispatch.  Cached alongside the image snapshots so
+                // idle redraws skip the full block walk.
+                link_view::build_snapshots_cached(
+                    self.state,
+                    doc_area,
+                    state.preview.scroll,
+                    &mut state.preview.link_snapshots,
+                    &mut state.preview.link_snapshots_key,
+                );
+                // PreviewView borrows the rendered lines from
+                // `EditorState::parsed.lines` — no per-event clone.
+                StatefulWidget::render(
+                    PreviewView {
+                        lines: &self.state.parsed.lines,
+                    },
+                    doc_area,
+                    buf,
+                    &mut state.preview,
+                );
             }
             Mode::Rendered => {
                 StatefulWidget::render(
@@ -180,14 +172,12 @@ impl<'a> StatefulWidget for EditorView<'a> {
         // ── Status bar ────────────────────────────────────────────
         let (cursor_line, cursor_col) = self.state.cursor.line_col(&self.state.buffer);
         let line_count = match mode {
-            Mode::Preview => state.preview.total_lines(),
+            Mode::Preview | Mode::Rendered => self.state.parsed.line_count(),
             Mode::Raw => self.state.buffer.line_count(),
-            Mode::Rendered => self.state.parsed.line_count(),
         };
-        let scroll = match mode {
-            Mode::Preview => state.preview.scroll,
-            _ => self.state.scroll,
-        };
+        // The canonical scroll is `EditorState::scroll` for every mode
+        // (Preview's view-state mirror is updated above before render).
+        let scroll = self.state.scroll;
 
         let bar = StatusBar {
             state: StatusBarState {

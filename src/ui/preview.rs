@@ -3,12 +3,14 @@ use ratatui::{buffer::Buffer, layout::Rect, style::Style, text::Line, widgets::S
 use super::line_render::{render_line, visual_rows_of_chars};
 use crate::document::VisualSelection;
 
-/// State for the `PreviewView` widget, holding the rendered lines and the
-/// current scroll offset (in rendered lines).
+/// State for the `PreviewView` widget — scroll offset, selection, and
+/// hit-test snapshots.  The rendered line list is NOT held here; it
+/// flows through the widget by borrow (`PreviewView::lines`) so a
+/// scroll or mouse event no longer pays for a full `parsed.lines.clone()`
+/// on every dispatch.  Mirrors the borrow style `RenderedView` already
+/// uses against `&EditorState`.
 #[derive(Debug, Default)]
 pub struct PreviewState {
-    /// The fully-rendered document lines (produced by the Markdown renderer).
-    pub lines: Vec<Line<'static>>,
     /// Current scroll offset (top visible line index).
     pub scroll: usize,
     /// Optional selection in rendered coordinates, used to paint the
@@ -17,68 +19,41 @@ pub struct PreviewState {
     /// Background style to apply over selected cells.
     pub selection_style: Style,
     /// Snapshots of every visible `Block::ImageBlock`, populated in
-    /// `App::run` before the draw call so `EditorView` can overlay the
-    /// image pixels after the line-render pass.  PreviewView itself
-    /// doesn't populate this because it renders from its own `lines`
-    /// vector rather than `EditorState::parsed.lines`; the App does the
-    /// scan against `editor.parsed.image_blocks` directly.
+    /// `EditorView::render` before the line-render pass so the image
+    /// overlay step can paint pixels into the cells reserved by each
+    /// placeholder.  Built against `EditorState::parsed.image_blocks`
+    /// directly — no preview-local copy needed.
     pub image_snapshots: Vec<super::ImageLayoutSnapshot>,
     /// Cache key for `image_snapshots`: `(scroll, area, parsed_version)`.
     /// When the tuple matches the current frame, the snapshot vector is
     /// reused instead of rebuilt.
     pub image_snapshots_key: Option<(usize, ratatui::layout::Rect, u64)>,
-    /// Phase 8 — link layout snapshots populated by `App::run` so
-    /// preview-mode mouse clicks can hit-test against link spans.
+    /// Phase 8 — link layout snapshots populated in `EditorView::render`
+    /// so preview-mode mouse clicks can hit-test against link spans.
     pub link_snapshots: Vec<super::LinkLayoutSnapshot>,
-}
-
-impl PreviewState {
-    pub fn new(lines: Vec<Line<'static>>) -> Self {
-        Self {
-            lines,
-            scroll: 0,
-            selection: None,
-            selection_style: Style::default(),
-            image_snapshots: Vec::new(),
-            image_snapshots_key: None,
-            link_snapshots: Vec::new(),
-        }
-    }
-
-    /// Total number of rendered lines.
-    pub fn total_lines(&self) -> usize {
-        self.lines.len()
-    }
-
-    /// Scroll down by `n` lines, clamped to the document end.
-    pub fn scroll_down(&mut self, n: usize, viewport_height: usize) {
-        let max_scroll = self.lines.len().saturating_sub(viewport_height);
-        self.scroll = (self.scroll + n).min(max_scroll);
-    }
-
-    /// Scroll up by `n` lines, clamped to 0.
-    pub fn scroll_up(&mut self, n: usize) {
-        self.scroll = self.scroll.saturating_sub(n);
-    }
-
-    /// Scroll to the very top.
-    pub fn scroll_to_top(&mut self) {
-        self.scroll = 0;
-    }
-
-    /// Scroll to the very bottom.
-    pub fn scroll_to_bottom(&mut self, viewport_height: usize) {
-        self.scroll = self.lines.len().saturating_sub(viewport_height);
-    }
+    /// Cache key for `link_snapshots`: `(scroll, area, parsed_version)`.
+    /// Mirrors `image_snapshots_key` — skips the link geometry walk
+    /// when nothing that affects link layout has changed.
+    pub link_snapshots_key: Option<(usize, ratatui::layout::Rect, u64)>,
 }
 
 /// A read-only, scrollable preview of rendered Markdown lines.
 ///
+/// `lines` is borrowed from `EditorState::parsed.lines` so the widget
+/// renders without owning a copy.  Scroll, selection, and snapshot
+/// caches live on `PreviewState`.
+///
 /// Usage:
 /// ```ignore
-/// frame.render_stateful_widget(PreviewView, area, &mut state);
+/// frame.render_stateful_widget(
+///     PreviewView { lines: &editor.parsed.lines },
+///     area,
+///     &mut state,
+/// );
 /// ```
-pub struct PreviewView;
+pub struct PreviewView<'a> {
+    pub lines: &'a [Line<'static>],
+}
 
 #[cfg(test)]
 mod tests {
@@ -102,13 +77,17 @@ mod tests {
         let lines = Renderer::new(theme)
             .with_code_wrap(true)
             .render(&parse(&md));
-        let mut state = PreviewState::new(lines);
+        let mut state = PreviewState::default();
 
         let backend = TestBackend::new(80, 6);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                frame.render_stateful_widget(PreviewView, frame.area(), &mut state);
+                frame.render_stateful_widget(
+                    PreviewView { lines: &lines },
+                    frame.area(),
+                    &mut state,
+                );
             })
             .unwrap();
 
@@ -148,7 +127,7 @@ mod tests {
     fn code_block_bg_extends_to_viewport_edge() {
         let theme = theme();
         let lines = Renderer::new(theme).render(&parse("```\nfoo\n```\n"));
-        let mut state = PreviewState::new(lines);
+        let mut state = PreviewState::default();
 
         // Use a 100-wide terminal; the renderer's default block_width is 80,
         // so the extra 20 cells must be filled by the preview widget.
@@ -156,7 +135,11 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                frame.render_stateful_widget(PreviewView, frame.area(), &mut state);
+                frame.render_stateful_widget(
+                    PreviewView { lines: &lines },
+                    frame.area(),
+                    &mut state,
+                );
             })
             .unwrap();
 
@@ -190,7 +173,7 @@ mod tests {
     }
 }
 
-impl StatefulWidget for PreviewView {
+impl<'a> StatefulWidget for PreviewView<'a> {
     type State = PreviewState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
@@ -208,7 +191,7 @@ impl StatefulWidget for PreviewView {
         let mut vis_y: u16 = 0;
         let mut line_idx = state.scroll;
         while vis_y < area.height {
-            let Some(line) = state.lines.get(line_idx) else {
+            let Some(line) = self.lines.get(line_idx) else {
                 break;
             };
             let rows_used = render_line(line, area, buf, area.y + vis_y, true);
