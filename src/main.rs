@@ -43,7 +43,7 @@ fn main() -> Result<()> {
     } = loaded;
 
     // ── Set up logging (disabled by default) ──────────────────────
-    let _log_guard = if config.editor.dev_mode {
+    let _log_guard = if config.dev.logging {
         setup_logging()
     } else {
         None

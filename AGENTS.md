@@ -369,7 +369,7 @@ pub enum KeyMapError {
 
 Use `tracing` macros (`tracing::info!`, `tracing::debug!`, etc.) — **never**
 `println!` or `eprintln!` (would corrupt the TUI). Logging is only initialised
-when `dev_mode = true` in config, so tracing calls in production are no-ops.
+when `[dev] logging = true` in config, so tracing calls in production are no-ops.
 
 ### Tests
 
