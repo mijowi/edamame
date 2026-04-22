@@ -122,7 +122,7 @@ fn wheel_scroll_does_not_move_cursor() {
     st.mode = Mode::Rendered;
     let original_cursor = st.cursor.offset;
 
-    // 5 wheel-down ticks (each scrolls WHEEL_STEP lines).
+    // 5 wheel-down ticks, each dispatching an explicit 3-line scroll delta.
     for _ in 0..5 {
         mouse_ops::apply(&mut st, MouseAction::Scroll(3), &mut None, &[], VP, VW);
     }

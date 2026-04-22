@@ -93,6 +93,11 @@ pub struct EditorConfig {
     /// is skipped.  Set by the `[Don't show this again]` button on the notice
     /// modal.
     pub suppress_capability_warnings: bool,
+    /// Lines advanced per mouse-wheel tick.  Default 1 — users can bump this
+    /// to 2 or 3 for a coarser, faster feel at the cost of fine-grained
+    /// control.  The keyboard `ScrollUp` / `ScrollDown` actions always step
+    /// by exactly one line and are not affected by this setting.
+    pub mouse_scroll_lines: usize,
 }
 
 impl Default for EditorConfig {
@@ -105,6 +110,7 @@ impl Default for EditorConfig {
             preserve_blank_lines: true,
             visual_line_nav: true,
             suppress_capability_warnings: false,
+            mouse_scroll_lines: 1,
         }
     }
 }
@@ -230,6 +236,16 @@ mod tests {
         assert!(config.editor.dev_mode);
         assert_eq!(config.editor.tab_width, 4); // default
         assert_eq!(config.modal.handler, "default"); // default
+    }
+
+    #[test]
+    fn mouse_scroll_lines_default_is_one_and_round_trips() {
+        let mut config = Config::default();
+        assert_eq!(config.editor.mouse_scroll_lines, 1);
+        config.editor.mouse_scroll_lines = 3;
+        let serialized = toml::to_string(&config).expect("serialize");
+        let deserialized: Config = toml::from_str(&serialized).expect("deserialize");
+        assert_eq!(deserialized.editor.mouse_scroll_lines, 3);
     }
 
     #[test]

@@ -1127,7 +1127,7 @@ Extracted from old Phase 11.  Pulls in the "Heading visual hierarchy — framing
 - [ ] `per_block_own` accounts for the added rule rows so cursor navigation doesn't skip them.
 
 **Tasks — scroll granularity experiment:**
-- [ ] Make `WHEEL_STEP` configurable: `config.editor.mouse_scroll_lines` (default 3, as today).  Users can experiment with 1 or 2 and report back; the default stays at 3 until evidence suggests otherwise.  Also honoured by keyboard scroll actions (`ScrollUp` / `ScrollDown`) so experiments cover both paths.
+- [x] Make the wheel-step configurable: `config.editor.mouse_scroll_lines` (default **1** — finer control out of the box; users can bump to 2 or 3).  Seeds `MouseDispatcher::with_wheel_step` at startup.  Keyboard `ScrollUp` / `ScrollDown` intentionally always step by one line — per-keypress has to be fine-grained, so it stays hardcoded.
 
 **Tasks — emoji support:**
 - [ ] `config.editor.unicode.emoji_support: bool` (default `false`).  No probing of terminal capabilities — no reliable query exists, and terminals that claim emoji support routinely miscompute cell widths and corrupt layout.

@@ -298,6 +298,7 @@ impl App {
         // Decide whether to show the capability-notice on startup.
         let startup_notice = build_startup_notice(&capabilities, &config);
         let remote_image_prompt = build_remote_image_prompt(&editor, &config);
+        let wheel_step = config.editor.mouse_scroll_lines;
 
         Ok(Self {
             config,
@@ -309,7 +310,7 @@ impl App {
             should_quit: false,
             startup_notice,
             remote_image_prompt,
-            mouse: MouseDispatcher::new(),
+            mouse: MouseDispatcher::with_wheel_step(wheel_step),
             drag_target: None,
             last_pointer_shape: PointerShape::Default,
             session_allow_remote: false,

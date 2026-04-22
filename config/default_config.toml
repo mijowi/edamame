@@ -7,6 +7,10 @@ dev_mode = false
 # Set to true to skip the startup notice that lists unsupported terminal
 # features. The "[Don't show this again]" button on the notice also sets this.
 # suppress_capability_warnings = false
+# Lines advanced per mouse-wheel tick. Default 1 (fine control); try 2 or 3
+# for a faster, coarser scroll. Keyboard ScrollUp / ScrollDown always step by
+# one line and are unaffected by this setting.
+# mouse_scroll_lines = 1
 
 [theme]
 # Colour overrides (full theming deferred to a later phase)

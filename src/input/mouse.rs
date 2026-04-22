@@ -19,10 +19,11 @@ use ratatui::layout::Rect;
 /// (double-click, triple-click).  400 ms matches the common X11 default.
 pub const MULTI_CLICK_WINDOW: Duration = Duration::from_millis(400);
 
-/// Lines scrolled per wheel tick.  Three is the traditional GUI default and,
-/// together with the Phase 5 rule that scrolling does not move the cursor,
-/// gives the "smooth scroll" feel the plan asks for.
-pub const WHEEL_STEP: usize = 3;
+/// Default lines scrolled per wheel tick when no `config.editor.mouse_scroll_lines`
+/// override is supplied.  One-line steps are the finest granularity the terminal
+/// can report and preserve the Phase 5 rule that scrolling does not move the
+/// cursor.  Users can configure a coarser step (2 or 3) for a snappier feel.
+pub const DEFAULT_WHEEL_STEP: usize = 1;
 
 /// High-level mouse action produced by the dispatcher.
 ///
@@ -60,7 +61,7 @@ pub enum MouseAction {
     /// can distinguish "dragging" from "settled" selections.
     Release,
     /// Wheel scroll.  Positive values scroll *down* (content moves up); the
-    /// magnitude is already pre-multiplied by `WHEEL_STEP`.
+    /// magnitude is already pre-multiplied by the dispatcher's `wheel_step`.
     Scroll(i32),
 }
 
@@ -70,6 +71,9 @@ pub struct MouseDispatcher {
     last_click_cell: Option<(u16, u16)>,
     click_count: u32,
     left_down: bool,
+    /// Lines emitted per wheel tick (see `DEFAULT_WHEEL_STEP`).  Seeded from
+    /// `config.editor.mouse_scroll_lines` via `with_wheel_step`.
+    wheel_step: usize,
 }
 
 impl Default for MouseDispatcher {
@@ -80,11 +84,19 @@ impl Default for MouseDispatcher {
 
 impl MouseDispatcher {
     pub fn new() -> Self {
+        Self::with_wheel_step(DEFAULT_WHEEL_STEP)
+    }
+
+    /// Construct a dispatcher with a caller-supplied wheel-step.  `App::new`
+    /// uses this to seed the dispatcher from
+    /// `config.editor.mouse_scroll_lines`.
+    pub fn with_wheel_step(wheel_step: usize) -> Self {
         Self {
             last_click_time: None,
             last_click_cell: None,
             click_count: 0,
             left_down: false,
+            wheel_step: wheel_step.max(1),
         }
     }
 
@@ -147,8 +159,8 @@ impl MouseDispatcher {
                 self.left_down = false;
                 Some(MouseAction::Release)
             }
-            MouseEventKind::ScrollDown => Some(MouseAction::Scroll(WHEEL_STEP as i32)),
-            MouseEventKind::ScrollUp => Some(MouseAction::Scroll(-(WHEEL_STEP as i32))),
+            MouseEventKind::ScrollDown => Some(MouseAction::Scroll(self.wheel_step as i32)),
+            MouseEventKind::ScrollUp => Some(MouseAction::Scroll(-(self.wheel_step as i32))),
             _ => None,
         }
     }
@@ -317,7 +329,25 @@ mod tests {
         let mut d = MouseDispatcher::new();
         assert_eq!(
             d.dispatch(wheel_down(), area()),
-            Some(MouseAction::Scroll(WHEEL_STEP as i32))
+            Some(MouseAction::Scroll(DEFAULT_WHEEL_STEP as i32))
+        );
+    }
+
+    #[test]
+    fn scroll_down_honours_configured_wheel_step() {
+        let mut d = MouseDispatcher::with_wheel_step(3);
+        assert_eq!(
+            d.dispatch(wheel_down(), area()),
+            Some(MouseAction::Scroll(3))
+        );
+    }
+
+    #[test]
+    fn wheel_step_is_clamped_to_at_least_one() {
+        let mut d = MouseDispatcher::with_wheel_step(0);
+        assert_eq!(
+            d.dispatch(wheel_down(), area()),
+            Some(MouseAction::Scroll(1))
         );
     }
 }
