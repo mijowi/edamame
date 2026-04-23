@@ -144,10 +144,10 @@ tests/
   ui.rs             # integration tests: TestBackend widget rendering
   snapshots/        # committed insta .snap files
 config/
-  default_config.toml      # annotated reference config (editor/modal/images +
+  config.toml              # annotated reference config (editor/modal/images +
                            #   the active theme name).  Written to
                            #   ~/.config/edamame/config.toml on first run.
-  default_keybindings.toml # commented-out keybinding overrides reference.
+  keybindings.toml         # commented-out keybinding overrides reference.
                            #   Written to ~/.config/edamame/keybindings.toml.
   themes/
     default.toml           # canonical default theme, round-tripped from
