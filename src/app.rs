@@ -12,7 +12,7 @@ use ratatui::Terminal;
 use crate::config::{Action, Config, KeyBindingOverrides, KeyMap, Theme, ThemeFile};
 use crate::document::Buffer;
 use crate::editor::link::LinkTarget;
-use crate::editor::{edit_ops, mouse_ops, EditorState, Mode, PARSED_DEBOUNCE, RAW_REVEAL_DELAY};
+use crate::editor::{edit_ops, mouse_ops, EditorState, Mode, RAW_REVEAL_DELAY};
 use crate::input::modal::default::DefaultHandler;
 use crate::input::{ModalHandler, MouseDispatcher};
 use crate::terminal::{set_pointer_shape, Capabilities, ColourDepth, PointerShape};
@@ -616,8 +616,6 @@ impl App {
     /// - `last_scroll_at + SCROLL_QUIESCE` — wake to upgrade images
     ///   from halfblocks to the native graphics protocol once the
     ///   user stops scrolling.
-    /// - `editor.parsed_dirty_at + PARSED_DEBOUNCE` — wake to flush a
-    ///   deferred re-parse after a typing burst pauses.
     /// - `resize_quiesce_at` — wake to redraw once a terminal-resize
     ///   drag has settled (carries its own absolute deadline rather
     ///   than an offset, since it's set to `now + RESIZE_QUIESCE` on
@@ -635,7 +633,6 @@ impl App {
                 .map(|t| t + RAW_REVEAL_DELAY),
         );
         push(self.last_scroll_at.map(|t| t + SCROLL_QUIESCE));
-        push(self.editor.parsed_dirty_at.map(|t| t + PARSED_DEBOUNCE));
         push(self.resize_quiesce_at);
         // Phase 9: wake in time to expire a transient hint-line
         // message so the hint reverts to chords even if the user
@@ -695,20 +692,6 @@ impl App {
         let keymap = KeyMap::build(&self.keybindings)?;
 
         loop {
-            // Flush any deferred re-parse whose debounce window has
-            // elapsed.  Typing bursts defer the re-parse so the UI
-            // thread doesn't rebuild the whole ParsedDoc on every
-            // keystroke; this is the point where we pay that cost
-            // once the user pauses.
-            if self
-                .editor
-                .parsed_dirty_at
-                .is_some_and(|t| t.elapsed() >= PARSED_DEBOUNCE)
-            {
-                self.editor.flush_parsed_if_dirty();
-                self.needs_draw = true;
-            }
-
             // Resize-quiesce: once the burst of Resize events from a
             // terminal-drag has settled, clear the suppression flag
             // and request a single redraw at the final dimensions.

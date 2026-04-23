@@ -100,23 +100,27 @@ pub struct EditorState {
     /// `mouse_ops::apply` pure w.r.t. its `&mut EditorState` contract —
     /// it doesn't need an extra out-parameter or a reference to the App.
     pub pending_link_follow: Option<crate::editor::link::LinkTarget>,
-    /// Phase 15 debounce: timestamp of the most recent edit that left
-    /// `parsed` stale.  The event loop flushes (re-parses) when this
-    /// is `Some` and `PARSED_DEBOUNCE` has elapsed; until then the
-    /// cursor block is shown as raw text (via the RAW_REVEAL trick)
-    /// so the staleness is invisible to the user.  `None` means
-    /// `parsed` is in sync with the buffer.
-    pub parsed_dirty_at: Option<Instant>,
+    /// `true` when one or more in-line edits (no newline added or
+    /// removed) have been applied since the last `refresh_parsed`,
+    /// leaving `parsed` stale.  The rendered view keeps the cursor
+    /// block displayed raw from the buffer — independent of
+    /// `source_map` byte ranges — so the staleness is invisible
+    /// until the user moves off the line (or a mouse click / other
+    /// parse-dependent path consults `flush_parsed_if_dirty`).
+    /// Cross-line edits (newline insert, backspace-at-line-start)
+    /// call `refresh_parsed` immediately instead of setting this.
+    pub parsed_dirty: bool,
+    /// Buffer line range of the block that currently contains the
+    /// cursor, as of the last `update_cursor_block`.  Stable across
+    /// in-line typing (no newlines → line indices don't shift), so
+    /// the rendered view can extract the cursor block's raw text
+    /// from the live buffer without consulting the stale
+    /// `source_map`.  `None` for empty documents / uninitialised state.
+    pub cursor_block_line_range: Option<std::ops::Range<usize>>,
 }
 
 /// How long the cursor must rest on a block before it is shown in raw mode.
 pub const RAW_REVEAL_DELAY: std::time::Duration = std::time::Duration::from_millis(120);
-
-/// Window after the last edit during which re-parsing is deferred.  The
-/// cursor block is shown as raw (see `RAW_REVEAL_DELAY`) during this
-/// window so the stale rendered view is never observed.  A typing
-/// burst faster than this batches to a single re-parse.
-pub const PARSED_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(30);
 
 impl EditorState {
     /// Create an `EditorState` from a `Buffer` and a theme.
@@ -163,7 +167,7 @@ impl EditorState {
     ) -> Self {
         let content = buffer.contents();
         let parsed = ParsedDoc::build(&content, theme, preserve_blank_lines, image_max_height);
-        Self {
+        let mut state = Self {
             buffer,
             cursor: Cursor::new(),
             selection: None,
@@ -189,8 +193,21 @@ impl EditorState {
             parsed_version: 0,
             live_table_widths: None,
             pending_link_follow: None,
-            parsed_dirty_at: None,
-        }
+            parsed_dirty: false,
+            cursor_block_line_range: None,
+        };
+        // Populate the cursor-block cache so the rendered view's
+        // stale-map-tolerant path has correct line-range info on the
+        // very first frame — before any cursor-move action has run
+        // `update_cursor_block` naturally.  Don't start the reveal
+        // timer: the document just loaded, there's no prior position
+        // to animate from, and tests expect a `None` timer on a
+        // freshly-constructed state so the cursor block reveals raw
+        // immediately without a 120 ms sleep.
+        state.update_cursor_block();
+        state.cursor_block_entered_at = None;
+        state.cursor_line_idx = None;
+        state
     }
 
     /// Convenience constructor for tests: creates an in-memory buffer from `text`.
@@ -284,36 +301,17 @@ impl EditorState {
             Some(&override_fn),
         );
         self.parsed_version = self.parsed_version.wrapping_add(1);
-        self.parsed_dirty_at = None;
+        self.parsed_dirty = false;
     }
 
-    /// Defer the re-parse after an edit: `parsed` becomes stale but
-    /// `parsed_dirty_at` lets the event loop flush once the typing
-    /// burst pauses.  Bumps `parsed_version` immediately so per-frame
-    /// snapshot caches (image, link) invalidate on the next draw —
-    /// otherwise they would paint with stale geometry against the
-    /// (about-to-be-refreshed) block list.
-    ///
-    /// Resets `cursor_block_entered_at` so `cursor_block_revealed()`
-    /// returns false for `RAW_REVEAL_DELAY` (120 ms) after the edit.
-    /// During that window the cursor block is shown as raw text
-    /// directly from the buffer, so the user never observes the
-    /// stale rendered content — a crucial invariant that makes
-    /// deferring safe.
-    pub(crate) fn mark_parsed_dirty(&mut self) {
-        let now = Instant::now();
-        self.parsed_dirty_at = Some(now);
-        self.parsed_version = self.parsed_version.wrapping_add(1);
-        self.cursor_block_entered_at = Some(now);
-    }
-
-    /// If a deferred re-parse is pending, run it now and clear the
-    /// dirty flag.  Returns `true` when a re-parse actually fired.
-    /// Callers should invoke this before any code path that consults
-    /// `parsed.source_map` byte ranges across a fresh cursor (e.g.
-    /// mouse clicks) to avoid observing a stale map.
+    /// If an in-line edit has left `parsed` stale, re-parse now and
+    /// clear the dirty flag.  Returns `true` when a re-parse actually
+    /// fired.  Callers must invoke this before any code path that
+    /// consults `parsed.source_map` byte ranges (mouse hit-tests,
+    /// cursor-move navigation) — otherwise the stale map maps the
+    /// live cursor's byte onto the wrong block.
     pub fn flush_parsed_if_dirty(&mut self) -> bool {
-        if self.parsed_dirty_at.is_some() {
+        if self.parsed_dirty {
             self.refresh_parsed();
             true
         } else {
@@ -328,8 +326,20 @@ impl EditorState {
     }
 
     /// Apply an edit delta to the buffer, record it in history, mark dirty,
-    /// and refresh the parsed document.
+    /// and — for edits that cross a line boundary — refresh the parsed
+    /// document.
+    ///
+    /// In-line edits (neither `removed` nor `inserted` contain `\n`) do NOT
+    /// re-parse: the cursor stays in the same block, block line indices
+    /// don't shift, and the rendered view extracts the cursor block's raw
+    /// text from the live buffer via the cached `cursor_block_line_range`.
+    /// The parse is refreshed later — on cursor movement, on mouse events,
+    /// or on any action that reads `source_map` byte ranges — via
+    /// `flush_parsed_if_dirty`.  This batches a whole typing burst into a
+    /// single re-parse at the moment the user moves off the line, and
+    /// eliminates the mid-typing rendered → raw → rendered flash.
     pub(crate) fn apply_delta(&mut self, delta: EditDelta) {
+        let crosses_line = delta.inserted.contains('\n') || delta.removed.contains('\n');
         let new_cursor = delta.redo_cursor();
         // Apply the edit.
         let end = delta.offset + delta.removed.chars().count();
@@ -343,11 +353,21 @@ impl EditorState {
         self.history.record(delta);
         self.cursor.offset = new_cursor.min(self.buffer.len_chars());
         self.dirty = true;
-        // Defer re-parse: the cursor block is shown raw for the next
-        // 120 ms so the stale rendered view is never observed.  The
-        // event loop flushes after `PARSED_DEBOUNCE` of typing
-        // inactivity, batching rapid keystrokes into a single re-parse.
-        self.mark_parsed_dirty();
+
+        if crosses_line {
+            // A newline added or removed reflows block boundaries — re-parse
+            // immediately so the rendered view, source_map, and
+            // cursor_block_line_range all reflect the new block layout.
+            self.refresh_parsed();
+            self.update_cursor_block();
+        } else {
+            // In-line edit: defer the re-parse.  Bump `parsed_version` so
+            // per-frame snapshot caches (image, link, table) invalidate on
+            // the next draw — otherwise they'd paint with stale geometry
+            // against a document whose cursor block has grown / shrunk.
+            self.parsed_dirty = true;
+            self.parsed_version = self.parsed_version.wrapping_add(1);
+        }
     }
 
     // ── Jitter suppression ────────────────────────────────────────
@@ -363,6 +383,27 @@ impl EditorState {
         // Always keep cursor_block_idx up-to-date (used by rendered_view for
         // extracting the raw source of the current block).
         self.cursor_block_idx = self.parsed.source_map.block_for_byte(cursor_byte);
+
+        // Cache the cursor block's buffer line range.  Used by rendered_view
+        // to extract the raw block source during a typing burst without
+        // consulting the (then-stale) source_map.  In-line edits keep line
+        // indices stable — no newlines added or removed — so this range
+        // stays correct until the cursor moves or a cross-line edit fires
+        // refresh_parsed.
+        self.cursor_block_line_range = self.cursor_block_idx.and_then(|idx| {
+            let byte_range = self.parsed.source_map.original_range_for_block(idx)?;
+            let rope = self.buffer.rope();
+            let total_bytes = rope.len_bytes();
+            let start_byte = byte_range.start.min(total_bytes);
+            let end_byte = byte_range.end.min(total_bytes);
+            let start_char = rope.byte_to_char(start_byte);
+            // Use `end_byte.saturating_sub(1)` so a range that ends on a `\n`
+            // doesn't claim the next line.
+            let end_char = rope.byte_to_char(end_byte.saturating_sub(1).max(start_byte));
+            let start_line = rope.char_to_line(start_char);
+            let end_line = rope.char_to_line(end_char).max(start_line);
+            Some(start_line..end_line + 1)
+        });
 
         // Reset the reveal timer only when the cursor moves to a different
         // logical buffer line — this makes scrolling through a large table feel

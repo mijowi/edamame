@@ -9,10 +9,13 @@ use crate::editor::{EditorState, Mode};
 
 /// True when `action` is a hot-path typing action that applies a
 /// single edit and doesn't read `state.parsed`.  Used by `apply` to
-/// preserve the Phase 15 parsed-doc debounce across a typing burst:
-/// these actions keep calling `mark_parsed_dirty` without flushing,
-/// so a sustained keystroke rate produces one re-parse per
-/// `PARSED_DEBOUNCE` window instead of one per keystroke.
+/// skip the pre-action parse flush for in-line edits: `apply_delta`
+/// only defers the re-parse when the edit doesn't cross a line,
+/// and the rendered view reads the cursor block's raw text directly
+/// from the buffer via `cursor_block_line_range` — so no stale
+/// `source_map` is observed.  Cross-line edits (Newline, etc.) are
+/// listed too: their `apply_delta` path re-parses inline, so
+/// there's nothing to flush at entry.
 fn is_hot_typing_action(action: &Action) -> bool {
     matches!(
         action,
@@ -42,10 +45,12 @@ pub fn apply(
     // Flush any deferred re-parse before handling non-typing actions,
     // which typically read `state.parsed.source_map` /
     // `state.parsed.lines` (scroll, selection, mode transitions, list
-    // / table structure, undo/redo).  Hot typing actions
-    // (InsertChar, Newline, etc.) skip this — they go straight into
-    // `apply_delta` which re-marks dirty, so the debounce persists
-    // across a typing burst.
+    // / table structure, undo/redo, cursor movement).  This is the
+    // sync point for the "re-parse on cursor move" invariant: the
+    // cursor has already been moved off the typed-on line, or the
+    // user triggered a selection / mode change that depends on a
+    // fresh parse.  Hot typing actions skip this — `apply_delta`
+    // decides inline whether the edit requires an immediate parse.
     if !is_hot_typing_action(&action) {
         state.flush_parsed_if_dirty();
     }

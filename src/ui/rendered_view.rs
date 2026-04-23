@@ -88,38 +88,83 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         let cursor_offset = editor.cursor.offset;
         let cursor_byte = editor.buffer.rope().char_to_byte(cursor_offset);
 
-        // Find which rendered lines belong to the cursor's source block.
+        // When `parsed_dirty` is set, an in-line edit has left `source_map`
+        // byte ranges stale — the cursor's live byte offset may no longer
+        // fall inside its block's recorded range.  Use the cached
+        // `cursor_block_idx` / `cursor_block_line_range` (captured at the
+        // last cursor-move's `update_cursor_block`) which remain valid
+        // because in-line edits don't cross a block boundary or shift
+        // buffer line indices.  When the parse is fresh, consult
+        // `source_map` directly so tests that set `cursor.offset`
+        // without calling `update_cursor_block` still observe the
+        // cursor's real block.
+        let use_cache = editor.parsed_dirty;
+        let cursor_block_idx = if use_cache {
+            editor.cursor_block_idx.unwrap_or_else(|| {
+                editor
+                    .parsed
+                    .source_map
+                    .block_for_byte(cursor_byte)
+                    .unwrap_or(0)
+            })
+        } else {
+            editor
+                .parsed
+                .source_map
+                .block_for_byte(cursor_byte)
+                .unwrap_or(0)
+        };
         let cursor_block_lines = editor
             .parsed
             .source_map
-            .rendered_lines_for_byte(cursor_byte);
-
-        // The cursor block's OWN rendered lines (before gap blanks).
-        let cursor_block_idx = editor
-            .parsed
-            .source_map
-            .block_for_byte(cursor_byte)
-            .unwrap_or(0);
+            .rendered_lines_for_block(cursor_block_idx);
         let cursor_block_own = editor.parsed.block_own_line_count(cursor_block_idx);
 
-        // Get the raw source text for the cursor's block.
-        let raw_block_source: String = editor
-            .parsed
-            .source_map
-            .original_range_for_byte(cursor_byte)
-            .map(|r| {
-                let source = editor.buffer.contents();
-                let end = r.end.min(source.len());
-                source[r.start..end].to_owned()
-            })
-            .unwrap_or_default();
+        // Raw source text for the cursor's block.  When the parse is
+        // stale, extract it via the cached buffer-line range so we see
+        // the typed characters that haven't been re-parsed yet.
+        let raw_block_source: String = if use_cache {
+            match editor.cursor_block_line_range.clone() {
+                Some(range) => {
+                    let mut out = String::new();
+                    for line in range {
+                        if let Some(text) = editor.buffer.line(line) {
+                            out.push_str(&text);
+                        }
+                    }
+                    while out.ends_with('\n') {
+                        out.pop();
+                    }
+                    out
+                }
+                None => String::new(),
+            }
+        } else {
+            editor
+                .parsed
+                .source_map
+                .original_range_for_byte(cursor_byte)
+                .map(|r| {
+                    let source = editor.buffer.contents();
+                    let end = r.end.min(source.len());
+                    source[r.start..end].to_owned()
+                })
+                .unwrap_or_default()
+        };
 
         // Split raw source into lines.
         let raw_lines: Vec<&str> = raw_source_lines(&raw_block_source);
 
         // Find where the cursor is within the raw block.
-        let (cursor_raw_line, cursor_col) =
-            cursor_position_in_block(editor, cursor_byte, &raw_block_source);
+        let (cursor_raw_line, cursor_col) = match (use_cache, editor.cursor_block_line_range.as_ref())
+        {
+            (true, Some(range)) => {
+                let (buffer_line, col) = editor.cursor.line_col(&editor.buffer);
+                let raw_line = buffer_line.saturating_sub(range.start);
+                (raw_line, col)
+            }
+            _ => cursor_position_in_block(editor, cursor_byte, &raw_block_source),
+        };
 
         // Map the cursor's raw source line to a rendered line within the block.
         // For tables the rendered layout is: top border, header, thick
