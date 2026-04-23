@@ -957,7 +957,7 @@ This phase deliberately owns the **entire** bottom region so later phases (file-
 
 **Tasks — compact mode:**
 - [x] Added `EditorConfig::status_bar: StatusBarLayout` (`two_line` | `compact`; default `two_line`) plus `transient_ms: u64` (default 1500).  Compact mode renders only the persistent status line via `BottomRegion::height`.
-- [x] `?` cheat-sheet popover (`src/ui/cheat_sheet.rs::build_cheat_sheet_body`) produced from the current `KeyMap::first_key_for` so overrides show their bound keys.  Displayed via `ModalView`.  Bound to `?` (Action::ShowCheatSheet) and dispatched by `App::open_cheat_sheet`.
+- [x] Cheat-sheet popover (`src/ui/cheat_sheet.rs::build_cheat_sheet_body`) produced from the current `KeyMap::first_key_for` so overrides show their bound keys.  Displayed via `ModalView` and dispatched by `App::open_cheat_sheet`.  `Action::ShowCheatSheet` is intentionally unbound — the sheet is reached only via the command palette (Phase 10), avoiding a dedicated key that would conflict with typed text.
 
 **Tasks — testing:**
 - [x] Unit tests for `hint_line_for` cover Preview / Rendered / list-item / table contexts (`src/ui/bottom_region.rs::tests`).
@@ -972,23 +972,13 @@ This phase deliberately owns the **entire** bottom region so later phases (file-
 - `HintPrompt` consumer wiring (file-change `R Reload / I Ignore` etc.) — infrastructure is landed, specific prompts belong with Phase 11.
 
 #### Issues
-- [ ] When the user tries to quit the app with unsaved changes, the unsaved changes modal pops up. If "Save" or "Discard" is selected, the app should quit immediately (after saving if the former), but it just closes the modal, and the user must press another key to get the app to close.
-- [ ] The hint line should have a background color to distinguish it from the document.
-- [ ] It looks like there are 2 spaces between a hint chord and its label. Let's decrease that to 1. Leave 2 spaces between each hint.
-- [ ] The hint chords should have a different backgroud color, like in nano, to readily distinguish them from the label.
-- [ ] `any key->edit` should just be a string displayed before the chord hints instead of a `HintChord`. Change it to "Press any key to edit" 
-- [ ] The `^P Menu` hint should be the first hint, both in preview and edit mode. 
-- [ ] Table hints should not be displayed in raw mode, since they don't work there.
-- [ ] Ordered and unordered lists should not show the checkbox toggle hint.
-- [ ] Add a Ctrl-Enter hint for links (file, heading, and web).
-**Questions:**
-- What does the `? More` hint in a table mean/do?
+
+- Tell me what UI components currently inherit colors from the system terminal theme due to having no color set explicitly by edamame.
 
 - [ ] Is it true that typing currently re-renders the document after each character? I don't think that is necessary or desirable. We don't need to re-render the current line since it is displayed as raw Markdown, and it's actually bad UX because there is a distracting flash when the line quickly goes from raw->rendered->raw. We shouldn't need to re-render the rest of the document either, until the cursor moves to another line, via keyboard/mouse navigation or if the user enters a newline. Is that right?
 
 - [ ] Pressing `Tab` or `Shift-Tab` in any list (ordered, unordered, checkbox) should create a new indented nested list. The indentation should be whatever `tab_width` is set to (default 4) both when rendered and in the raw Markdown. New ordered lists should start over from 1 and maintain the indent for each item. 
-
-- Tell me what colors are currently inherited from the system terminal theme
+- [ ] When the user tries to quit the app with unsaved changes, the unsaved changes modal pops up. If "Save" or "Discard" is selected, the app should quit immediately (after saving if the former), but it just closes the modal, and the user must press another key to get the app to close.
 
 ---
 

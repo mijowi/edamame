@@ -4,20 +4,23 @@ use ratatui::{
     widgets::{StatefulWidget, Widget},
 };
 
-use crate::config::Theme;
+use crate::config::{StatusBarLayout, Theme};
 use crate::editor::{EditorState, Mode};
 use crate::terminal::Capabilities;
 
 use super::{
+    bottom_region::{BottomRegion, HintContent},
     image_view, link_view,
     preview::{PreviewState, PreviewView},
     raw_view::{RawView, RawViewState},
     rendered_view::{RenderedView, RenderedViewState},
-    status_bar::{StatusBar, StatusBarState},
+    status_bar::StatusBarState,
 };
 
-/// Top-level editor widget. Lays out the document area and the status bar,
-/// then delegates rendering to the appropriate sub-view based on mode.
+/// Top-level editor widget. Lays out the document area and the
+/// Phase 9 bottom region (persistent status line plus optional
+/// contextual hint line), then delegates rendering to the appropriate
+/// sub-view based on mode.
 pub struct EditorView<'a> {
     pub state: &'a mut EditorState,
     pub theme: &'a Theme,
@@ -37,6 +40,11 @@ pub struct EditorView<'a> {
     /// back to halfblocks rendering to avoid flickering re-encode on
     /// every frame.  Always `false` in tests that don't exercise scroll.
     pub is_scrolling: bool,
+    /// Phase 9 — bottom-region layout (two-line or compact).
+    pub status_bar_layout: StatusBarLayout,
+    /// Phase 9 — what the hint line should display for this frame.
+    /// Ignored in compact mode.
+    pub hint: HintContent,
 }
 
 /// State for the `EditorView`.
@@ -62,10 +70,12 @@ impl<'a> StatefulWidget for EditorView<'a> {
     type State = EditorViewState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        // Split into document area + 1-row status bar.
+        // Split into document area + bottom region.  Phase 9: two rows
+        // by default (hint line + status line), one in compact mode.
+        let bottom_h = BottomRegion::height(self.status_bar_layout);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .constraints([Constraint::Min(0), Constraint::Length(bottom_h)])
             .split(area);
 
         let doc_area = chunks[0];
@@ -169,7 +179,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
             image_view::paint_images(snapshots, ctx);
         }
 
-        // ── Status bar ────────────────────────────────────────────
+        // ── Bottom region (hint line + status line) ───────────────
         let (cursor_line, cursor_col) = self.state.cursor.line_col(&self.state.buffer);
         let line_count = match mode {
             Mode::Preview | Mode::Rendered => self.state.parsed.line_count(),
@@ -178,9 +188,10 @@ impl<'a> StatefulWidget for EditorView<'a> {
         // The canonical scroll is `EditorState::scroll` for every mode
         // (Preview's view-state mirror is updated above before render).
         let scroll = self.state.scroll;
+        let selection_size = self.state.selection_size();
 
-        let bar = StatusBar {
-            state: StatusBarState {
+        let region = BottomRegion {
+            status: StatusBarState {
                 mode,
                 filename: self.filename,
                 line_count,
@@ -188,9 +199,12 @@ impl<'a> StatefulWidget for EditorView<'a> {
                 scroll,
                 cursor_line: Some(cursor_line + 1), // 1-indexed display
                 cursor_col: Some(cursor_col + 1),
+                selection_size,
             },
+            hint: self.hint,
+            layout: self.status_bar_layout,
             theme: self.theme,
         };
-        Widget::render(bar, bar_area, buf);
+        Widget::render(region, bar_area, buf);
     }
 }

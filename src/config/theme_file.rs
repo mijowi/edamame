@@ -204,6 +204,18 @@ pub struct ThemeFile {
     pub status_filename: StyleSpec,
     pub status_info: StyleSpec,
     pub status_modified: StyleSpec,
+    pub status_selection: StyleSpec,
+
+    // Hint line (Phase 9)
+    pub hint_bar: StyleSpec,
+    pub hint_chord: StyleSpec,
+    pub hint_label: StyleSpec,
+
+    // Transient messages (Phase 9)
+    pub transient_info: StyleSpec,
+    pub transient_success: StyleSpec,
+    pub transient_warning: StyleSpec,
+    pub transient_error: StyleSpec,
 
     // Modal popups
     pub modal_title: StyleSpec,
@@ -261,6 +273,16 @@ impl From<&ThemeFile> for Theme {
             status_filename: (&f.status_filename).into(),
             status_info: (&f.status_info).into(),
             status_modified: (&f.status_modified).into(),
+            status_selection: (&f.status_selection).into(),
+
+            hint_bar: (&f.hint_bar).into(),
+            hint_chord: (&f.hint_chord).into(),
+            hint_label: (&f.hint_label).into(),
+
+            transient_info: (&f.transient_info).into(),
+            transient_success: (&f.transient_success).into(),
+            transient_warning: (&f.transient_warning).into(),
+            transient_error: (&f.transient_error).into(),
 
             modal_title: (&f.modal_title).into(),
             modal_button_focused: (&f.modal_button_focused).into(),
@@ -313,6 +335,16 @@ impl From<&Theme> for ThemeFile {
             status_filename: (&t.status_filename).into(),
             status_info: (&t.status_info).into(),
             status_modified: (&t.status_modified).into(),
+            status_selection: (&t.status_selection).into(),
+
+            hint_bar: (&t.hint_bar).into(),
+            hint_chord: (&t.hint_chord).into(),
+            hint_label: (&t.hint_label).into(),
+
+            transient_info: (&t.transient_info).into(),
+            transient_success: (&t.transient_success).into(),
+            transient_warning: (&t.transient_warning).into(),
+            transient_error: (&t.transient_error).into(),
 
             modal_title: (&t.modal_title).into(),
             modal_button_focused: (&t.modal_button_focused).into(),
@@ -379,6 +411,14 @@ mod tests {
         check!(status_filename);
         check!(status_info);
         check!(status_modified);
+        check!(status_selection);
+        check!(hint_bar);
+        check!(hint_chord);
+        check!(hint_label);
+        check!(transient_info);
+        check!(transient_success);
+        check!(transient_warning);
+        check!(transient_error);
         check!(modal_title);
         check!(modal_button_focused);
         check!(normal);

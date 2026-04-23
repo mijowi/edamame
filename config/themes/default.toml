@@ -116,6 +116,42 @@ fg = "Gray"
 fg = "Yellow"
 bold = true
 
+[status_selection]
+fg = "Cyan"
+bold = true
+
+[hint_bar]
+fg = "Gray"
+bg = 237
+
+[hint_chord]
+fg = "Black"
+bg = 250
+bold = true
+
+[hint_label]
+fg = "White"
+bg = 237
+
+[transient_info]
+fg = "White"
+bg = 237
+
+[transient_success]
+fg = "Green"
+bg = 237
+bold = true
+
+[transient_warning]
+fg = "Yellow"
+bg = 237
+bold = true
+
+[transient_error]
+fg = "White"
+bg = "Red"
+bold = true
+
 [modal_title]
 fg = "Yellow"
 bold = true

@@ -27,6 +27,7 @@ fn render_status_bar(
                     scroll: 0,
                     cursor_line: None,
                     cursor_col: None,
+                    selection_size: None,
                 },
                 theme,
             };
@@ -619,6 +620,7 @@ fn status_bar_shows_cursor_position() {
                     scroll: 0,
                     cursor_line: Some(5),
                     cursor_col: Some(12),
+                    selection_size: None,
                 },
                 theme,
             };

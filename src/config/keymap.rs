@@ -103,6 +103,13 @@ pub enum Action {
     /// Mirror of [`Action::NavigateBack`] operating on the forward
     /// stack.
     NavigateForward,
+    // ── Phase 9 — cheat sheet ──────────────────────────────────────
+    /// Open the cheat-sheet popover listing every keybinding grouped
+    /// by category.  Intentionally unbound by default — the overlay
+    /// is reached only via the command palette (Phase 10) so it
+    /// doesn't consume a dedicated key that would collide with
+    /// typing inside a cell / paragraph / list.
+    ShowCheatSheet, // Configurable!
 }
 
 impl fmt::Display for Action {
@@ -167,6 +174,7 @@ impl fmt::Display for Action {
             Action::FollowLinkUnderCursor => "FollowLinkUnderCursor",
             Action::NavigateBack => "NavigateBack",
             Action::NavigateForward => "NavigateForward",
+            Action::ShowCheatSheet => "ShowCheatSheet",
         };
         f.write_str(s)
     }
@@ -235,6 +243,7 @@ impl FromStr for Action {
             "FollowLinkUnderCursor" => Ok(Action::FollowLinkUnderCursor),
             "NavigateBack" => Ok(Action::NavigateBack),
             "NavigateForward" => Ok(Action::NavigateForward),
+            "ShowCheatSheet" => Ok(Action::ShowCheatSheet),
             other => Err(KeyMapError::UnknownAction(other.to_owned())),
         }
     }
@@ -550,6 +559,13 @@ impl KeyMap {
         // Users can still rebind NavigateBack/Forward to any key via the
         // keybindings config.
         bind!("ctrl+enter", Action::FollowLinkUnderCursor);
+
+        // Phase 9 note — `Action::ShowCheatSheet` is intentionally
+        // left unbound.  The cheat-sheet overlay is accessible only
+        // via the command palette (Phase 10), not a dedicated key.
+        // `?` would collide with typing text in cells / paragraphs,
+        // and surfacing a separate help key (F1 etc.) would duplicate
+        // the command-palette surface for no real gain.
 
         Self { bindings: b }
     }

@@ -23,6 +23,10 @@ pub struct StatusBarState<'a> {
     pub cursor_line: Option<usize>,
     /// Cursor column (1-indexed, `None` in Preview mode).
     pub cursor_col: Option<usize>,
+    /// Active selection size as `(char_count, line_count)`.  Rendered
+    /// as ` Sel 42 ch · 3 ln ` between the filename and cursor info
+    /// when present.
+    pub selection_size: Option<(usize, usize)>,
 }
 
 /// A single-row status bar widget.
@@ -47,6 +51,14 @@ impl<'a> Widget for StatusBar<'a> {
         let filename_text = format!(" {}{} ", s.filename, modified_marker);
         let filename_span = Span::styled(filename_text, theme.status_filename);
 
+        // Selection size (` Sel 42 ch · 3 ln `) — only visible when
+        // there's an active selection, sits between filename and cursor.
+        let sel_text = match s.selection_size {
+            Some((chars, lines)) => format!(" Sel {} ch · {} ln ", chars, lines),
+            None => String::new(),
+        };
+        let sel_span = Span::styled(sel_text.clone(), theme.status_selection);
+
         // Cursor position (1-indexed line:col, only in edit modes)
         let cursor_text = match (s.cursor_line, s.cursor_col) {
             (Some(l), Some(c)) => format!(" {}:{} ", l, c),
@@ -66,7 +78,7 @@ impl<'a> Widget for StatusBar<'a> {
 
         // Fill gap between left and right sides.
         let left_width = mode_text.len() + filename_span.content.len();
-        let right_width = cursor_text.len() + info_span.content.len();
+        let right_width = sel_text.len() + cursor_text.len() + info_span.content.len();
         let gap = (area.width as usize)
             .saturating_sub(left_width)
             .saturating_sub(right_width);
@@ -76,6 +88,7 @@ impl<'a> Widget for StatusBar<'a> {
             mode_span,
             filename_span,
             gap_span,
+            sel_span,
             cursor_span,
             info_span,
         ]);
@@ -105,6 +118,7 @@ mod tests {
                         scroll: 0,
                         cursor_line: None,
                         cursor_col: None,
+                        selection_size: None,
                     },
                     theme,
                 };
@@ -167,6 +181,7 @@ mod tests {
                         scroll: 0,
                         cursor_line: Some(3),
                         cursor_col: Some(7),
+                        selection_size: None,
                     },
                     theme,
                 };
@@ -184,5 +199,41 @@ mod tests {
             })
             .collect();
         assert!(output.contains("3:7"), "output was: {:?}", output);
+    }
+
+    #[test]
+    fn shows_selection_size_when_present() {
+        let theme = Box::leak(Box::new(Theme::default()));
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let bar = StatusBar {
+                    state: StatusBarState {
+                        mode: Mode::Rendered,
+                        filename: "f.md",
+                        line_count: 10,
+                        modified: false,
+                        scroll: 0,
+                        cursor_line: Some(1),
+                        cursor_col: Some(1),
+                        selection_size: Some((42, 3)),
+                    },
+                    theme,
+                };
+                frame.render_widget(bar, frame.area());
+            })
+            .unwrap();
+        let output: String = (0..80u16)
+            .map(|x| {
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell((x, 0))
+                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+            })
+            .collect();
+        assert!(output.contains("Sel 42 ch"), "output was: {:?}", output);
+        assert!(output.contains("3 ln"), "output was: {:?}", output);
     }
 }

@@ -654,6 +654,13 @@ pub fn apply(
         // the App isn't wired up (e.g. a unit test driving edit_ops
         // directly).  No-op so tests don't panic.
         Action::FollowLinkUnderCursor | Action::NavigateBack | Action::NavigateForward => {}
+
+        // ── Phase 9 — cheat-sheet popover ──────────────────────────
+        // App-level: opens the cheat-sheet overlay.  edit_ops knows
+        // nothing about UI widgets; reaching this arm means the App
+        // wasn't wired up, which is the normal situation in unit
+        // tests that drive edit_ops directly.
+        Action::ShowCheatSheet => {}
     }
 
     // After any action that mutated the buffer (detected by a change in length

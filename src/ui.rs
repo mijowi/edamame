@@ -1,3 +1,5 @@
+pub mod bottom_region;
+pub mod cheat_sheet;
 pub mod editor_view;
 pub mod image_view;
 pub mod line_render;
@@ -9,6 +11,8 @@ pub mod rendered_view;
 pub mod status_bar;
 pub mod table_view;
 
+pub use bottom_region::{hint_line_for, BottomRegion, HintChord, HintContent, HintSet};
+pub use cheat_sheet::build_cheat_sheet_body;
 pub use editor_view::{EditorView, EditorViewState};
 pub use image_view::{ImageHit, ImageLayoutSnapshot};
 pub use link_view::LinkLayoutSnapshot;

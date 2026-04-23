@@ -55,6 +55,28 @@ pub struct Theme {
     pub status_filename: Style,
     pub status_info: Style,
     pub status_modified: Style,
+    /// Style for the selection-size indicator (e.g. ` Sel 42 ch · 3 ln `).
+    pub status_selection: Style,
+
+    // ── Hint line (Phase 9) ───────────────────────────────────────
+    /// Base background/foreground for the contextual hint line.
+    pub hint_bar: Style,
+    /// Chord glyph style (e.g. the `^C` in `^C Copy`).  Contrasting
+    /// background distinguishes the keybind from its label.
+    pub hint_chord: Style,
+    /// Label style (e.g. the `Copy` in `^C Copy`).  Blends into the
+    /// surrounding hint_bar fill.
+    pub hint_label: Style,
+
+    // ── Transient messages (Phase 9) ──────────────────────────────
+    /// Neutral notification style — e.g. `Copied`, `Saved`.
+    pub transient_info: Style,
+    /// Success notification style — e.g. `Autosaved`.
+    pub transient_success: Style,
+    /// Warning notification style — e.g. `Configuration updated`.
+    pub transient_warning: Style,
+    /// Error notification style — sticky, dismissed with Escape.
+    pub transient_error: Style,
 
     // ── Modal popups ──────────────────────────────────────────────
     pub modal_title: Style,
@@ -139,6 +161,39 @@ impl Default for Theme {
             status_info: Style::default().fg(Color::Gray),
             status_modified: Style::default()
                 .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            status_selection: Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+
+            // Hint line — the bar itself uses the same bg family as
+            // the status bar so both rows read as a single chrome
+            // block, but one step lighter (237) so they remain
+            // visually distinguishable.  Chord badges contrast
+            // strongly against it, nano-style: light-grey bg with
+            // dark text so the chord "badge" jumps off the bar.
+            hint_bar: Style::default().bg(Color::Indexed(237)).fg(Color::Gray),
+            hint_chord: Style::default()
+                .bg(Color::Indexed(250))
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+            hint_label: Style::default().bg(Color::Indexed(237)).fg(Color::White),
+
+            // Transient messages — kinds escalate in salience.  All
+            // share the hint-bar background so they layer cleanly over
+            // the chord row.
+            transient_info: Style::default().bg(Color::Indexed(237)).fg(Color::White),
+            transient_success: Style::default()
+                .bg(Color::Indexed(237))
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+            transient_warning: Style::default()
+                .bg(Color::Indexed(237))
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            transient_error: Style::default()
+                .bg(Color::Red)
+                .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
 
             // Modal popups
@@ -238,6 +293,16 @@ impl Theme {
             status_filename: Style::default().add_modifier(Modifier::REVERSED),
             status_info: Style::default().add_modifier(Modifier::REVERSED),
             status_modified: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            status_selection: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+
+            hint_bar: Style::default(),
+            hint_chord: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            hint_label: Style::default(),
+
+            transient_info: Style::default().add_modifier(Modifier::REVERSED),
+            transient_success: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            transient_warning: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            transient_error: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
 
             modal_title: Style::default().add_modifier(Modifier::BOLD),
             modal_button_focused: Style::default()
