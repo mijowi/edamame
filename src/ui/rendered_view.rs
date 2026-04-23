@@ -1,7 +1,7 @@
 use ratatui::{
     buffer::Buffer as TuiBuf,
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::StatefulWidget,
 };
@@ -156,15 +156,15 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         let raw_lines: Vec<&str> = raw_source_lines(&raw_block_source);
 
         // Find where the cursor is within the raw block.
-        let (cursor_raw_line, cursor_col) = match (use_cache, editor.cursor_block_line_range.as_ref())
-        {
-            (true, Some(range)) => {
-                let (buffer_line, col) = editor.cursor.line_col(&editor.buffer);
-                let raw_line = buffer_line.saturating_sub(range.start);
-                (raw_line, col)
-            }
-            _ => cursor_position_in_block(editor, cursor_byte, &raw_block_source),
-        };
+        let (cursor_raw_line, cursor_col) =
+            match (use_cache, editor.cursor_block_line_range.as_ref()) {
+                (true, Some(range)) => {
+                    let (buffer_line, col) = editor.cursor.line_col(&editor.buffer);
+                    let raw_line = buffer_line.saturating_sub(range.start);
+                    (raw_line, col)
+                }
+                _ => cursor_position_in_block(editor, cursor_byte, &raw_block_source),
+            };
 
         // Map the cursor's raw source line to a rendered line within the block.
         // For tables the rendered layout is: top border, header, thick
@@ -196,7 +196,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // keep showing the block as rendered until the reveal delay has elapsed.
         let reveal_raw = editor.cursor_block_revealed();
 
-        let cursor_indicator_style = Style::default().add_modifier(Modifier::REVERSED);
+        let cursor_indicator_style = self.theme.cursor;
 
         let total_rendered = editor.parsed.lines.len();
         // Long-line wrapping is enabled in rendered-edit mode.
@@ -449,7 +449,7 @@ fn make_raw_line_with_selection(
     selection_cols: Option<(usize, usize)>,
     theme: &Theme,
 ) -> Line<'static> {
-    let cursor_style = Style::default().add_modifier(Modifier::REVERSED);
+    let cursor_style = theme.cursor;
     let sel_style = theme.selection;
     let chars: Vec<char> = raw_text.chars().collect();
     let total = chars.len();
@@ -745,7 +745,7 @@ fn overlay_raw_cell(
     let abs_y = area.y + visual_y;
     let cell_width = overlay.rendered_end.saturating_sub(overlay.rendered_start);
     let raw_chars: Vec<char> = overlay.raw_text.chars().collect();
-    let cursor_style = Style::default().add_modifier(Modifier::REVERSED);
+    let cursor_style = theme.cursor;
     let base_style = theme.normal;
 
     for i in 0..cell_width {

@@ -1,7 +1,6 @@
 use ratatui::{
     buffer::Buffer as TuiBuf,
     layout::Rect,
-    style::{Modifier, Style},
     text::{Line, Span},
     widgets::StatefulWidget,
 };
@@ -36,7 +35,7 @@ impl<'a> StatefulWidget for RawView<'a> {
 
         let (cursor_line, cursor_col) = self.state.cursor.line_col(&self.state.buffer);
         let line_count = self.state.buffer.line_count();
-        let cursor_style = Style::default().add_modifier(Modifier::REVERSED);
+        let cursor_style = self.theme.cursor;
         let sel_style = self.theme.selection;
         let selection_range = self.state.selection.map(|s| s.range());
 

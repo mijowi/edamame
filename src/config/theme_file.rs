@@ -224,6 +224,7 @@ pub struct ThemeFile {
     // General
     pub normal: StyleSpec,
     pub selection: StyleSpec,
+    pub cursor: StyleSpec,
 }
 
 /// Convert a `ThemeFile` into the live `Theme` used by the renderer.
@@ -289,6 +290,7 @@ impl From<&ThemeFile> for Theme {
 
             normal: (&f.normal).into(),
             selection: (&f.selection).into(),
+            cursor: (&f.cursor).into(),
         }
     }
 }
@@ -351,6 +353,7 @@ impl From<&Theme> for ThemeFile {
 
             normal: (&t.normal).into(),
             selection: (&t.selection).into(),
+            cursor: (&t.cursor).into(),
         }
     }
 }
@@ -423,6 +426,7 @@ mod tests {
         check!(modal_button_focused);
         check!(normal);
         check!(selection);
+        check!(cursor);
         assert_eq!(
             original.task_strikethrough, round_tripped.task_strikethrough,
             "task_strikethrough did not round-trip"

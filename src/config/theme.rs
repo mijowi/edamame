@@ -89,6 +89,11 @@ pub struct Theme {
     /// Renders on top of the character's own style so colour-coded content
     /// stays legible.
     pub selection: Style,
+
+    /// Style for the block cursor.  Default is `REVERSED` only, which
+    /// swaps fg/bg of whatever's underneath — themable so users can
+    /// pick a concrete colour (e.g. a bright fill) if they prefer.
+    pub cursor: Style,
 }
 
 impl Default for Theme {
@@ -121,10 +126,15 @@ impl Default for Theme {
                 .fg(Color::Blue)
                 .add_modifier(Modifier::ITALIC),
 
-            // Code block — background matches inline code spans (Indexed(236)).
-            code_block_border: Style::default().fg(Color::Indexed(240)),
+            // Code block — background matches inline code spans (Indexed(236))
+            // across the border, language label, and body so the whole block
+            // reads as one unit.
+            code_block_border: Style::default()
+                .fg(Color::Indexed(240))
+                .bg(Color::Indexed(236)),
             code_block_lang: Style::default()
                 .fg(Color::Yellow)
+                .bg(Color::Indexed(236))
                 .add_modifier(Modifier::ITALIC),
             code_block_text: Style::default().fg(Color::White).bg(Color::Indexed(236)),
 
@@ -157,13 +167,18 @@ impl Default for Theme {
                 .bg(Color::DarkGray)
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
-            status_filename: Style::default().fg(Color::White),
-            status_info: Style::default().fg(Color::Gray),
+            // Inner status spans share the status_bar background (Indexed(236))
+            // so the whole row reads as a single chrome block — set
+            // explicitly rather than relying on Paragraph-level inheritance.
+            status_filename: Style::default().fg(Color::White).bg(Color::Indexed(236)),
+            status_info: Style::default().fg(Color::Gray).bg(Color::Indexed(236)),
             status_modified: Style::default()
                 .fg(Color::Yellow)
+                .bg(Color::Indexed(236))
                 .add_modifier(Modifier::BOLD),
             status_selection: Style::default()
                 .fg(Color::Cyan)
+                .bg(Color::Indexed(236))
                 .add_modifier(Modifier::BOLD),
 
             // Hint line — the bar itself uses the same bg family as
@@ -204,12 +219,19 @@ impl Default for Theme {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::REVERSED | Modifier::BOLD),
 
-            // General
-            normal: Style::default(),
+            // General — Color::Reset explicitly emits an SGR reset for fg
+            // and bg, producing the same visual result as leaving both unset
+            // while still exposing the field as a user-configurable knob.
+            normal: Style::default().fg(Color::Reset).bg(Color::Reset),
 
             // Selection: muted blue background, distinguishable from cursor
             // which uses REVERSED.  Falls back to REVERSED in monochrome mode.
             selection: Style::default().bg(Color::Indexed(24)),
+
+            // Cursor: REVERSED only, so it inverts whatever colour the
+            // underlying character already has.  Users can override to pin
+            // the cursor to a specific fill colour.
+            cursor: Style::default().add_modifier(Modifier::REVERSED),
         }
     }
 }
@@ -310,6 +332,7 @@ impl Theme {
 
             normal: Style::default(),
             selection: Style::default().add_modifier(Modifier::REVERSED),
+            cursor: Style::default().add_modifier(Modifier::REVERSED),
         }
     }
 }

@@ -59,9 +59,11 @@ italic = true
 
 [code_block_border]
 fg = 240
+bg = 236
 
 [code_block_lang]
 fg = "Yellow"
+bg = 236
 italic = true
 
 [code_block_text]
@@ -108,16 +110,20 @@ bold = true
 
 [status_filename]
 fg = "White"
+bg = 236
 
 [status_info]
 fg = "Gray"
+bg = 236
 
 [status_modified]
 fg = "Yellow"
+bg = 236
 bold = true
 
 [status_selection]
 fg = "Cyan"
+bg = 236
 bold = true
 
 [hint_bar]
@@ -162,6 +168,11 @@ bold = true
 reversed = true
 
 [normal]
+fg = "Reset"
+bg = "Reset"
 
 [selection]
 bg = 24
+
+[cursor]
+reversed = true
