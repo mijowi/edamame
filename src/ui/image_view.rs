@@ -17,7 +17,7 @@
 
 use std::ops::Range;
 
-use ratatui::buffer::Buffer as TuiBuf;
+use ratatui::buffer::{Buffer as TuiBuf, Cell};
 use ratatui::layout::Rect;
 use ratatui_image::{Resize, ResizeEncodeRender};
 
@@ -280,6 +280,18 @@ pub fn paint_images(snapshots: &[ImageLayoutSnapshot], ctx: PaintContext) {
             continue;
         }
 
+        // Clear the visible portion of the reserved rect before the
+        // protocol paints over it.  The text renderer emits an
+        // `[Image: alt]` placeholder on row 0 plus NBSP padding; without
+        // this clear, any cell of the reserved rect that the image
+        // doesn't write to (letter-boxed area for non-square aspect,
+        // halfblocks' position-dependent cell data, the trailing
+        // padding right of a narrow image on row 0) keeps the
+        // placeholder text visible behind the image — a "label
+        // peeking out from behind the image" bug.  The clear is a
+        // no-op for rows already blank.
+        clear_visible_reserved_rect(snap, &ctx.area, ctx.buf);
+
         // During active scroll, ALL protocols fall back to halfblocks.
         // Earlier revisions exempted Kitty here on the theory that its
         // virtual-placement protocol handles scroll without re-encoding,
@@ -296,6 +308,41 @@ pub fn paint_images(snapshots: &[ImageLayoutSnapshot], ctx: PaintContext) {
             paint_native(ctx.images, snap, ctx.buf);
         } else {
             paint_scratch_partial(ctx.images, snap, &ctx.area, ctx.buf);
+        }
+    }
+}
+
+/// Overwrite every cell of the on-screen slice of `snap.rect` with a
+/// default (blank) cell, so any `[Image: alt]` placeholder text emitted
+/// by the line renderer does not bleed through letter-box or trailing
+/// cells left untouched by the image protocol.
+///
+/// Correctness constraints:
+/// * Must be called AFTER the protocol-pair existence check — we only
+///   want to clear when we're actually about to paint an image.  A
+///   cleared rect with no overlay would leave a blank square instead of
+///   the loading-state `[Image: alt]` placeholder.
+/// * Clears only cells that overlap the document `area` — cells outside
+///   belong to other widgets (status bar, hint line) and must be left
+///   alone.  The vertical intersection matters because a snap whose top
+///   is scrolled off-screen has `natural_top < area.y`.
+fn clear_visible_reserved_rect(snap: &ImageLayoutSnapshot, area: &Rect, buf: &mut TuiBuf) {
+    let viewport_top = area.y as isize;
+    let viewport_bottom = viewport_top + area.height as isize;
+    let top = snap.natural_top.max(viewport_top);
+    let bottom = (snap.natural_top + snap.rect.height as isize).min(viewport_bottom);
+    if bottom <= top {
+        return;
+    }
+    let y_start = top as u16;
+    let y_end = bottom as u16;
+    let x_start = snap.rect.x;
+    let x_end = snap.rect.x.saturating_add(snap.rect.width);
+    for y in y_start..y_end {
+        for x in x_start..x_end {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                *cell = Cell::default();
+            }
         }
     }
 }
@@ -484,5 +531,100 @@ mod tests {
         let state = state_from(src, 3);
         let area = Rect::new(0, 0, 20, 0);
         assert!(build_snapshots(&state, area, 0).is_empty());
+    }
+
+    // ── clear_visible_reserved_rect ──────────────────────────────────
+
+    fn snap_with_top(natural_top: isize, width: u16, height: u16) -> ImageLayoutSnapshot {
+        ImageLayoutSnapshot {
+            block_idx: 0,
+            alt: "mermaid diagram".into(),
+            url: "diagram-mermaid-deadbeef".into(),
+            rect: Rect {
+                x: 0,
+                y: natural_top.max(0).min(u16::MAX as isize) as u16,
+                width,
+                height,
+            },
+            natural_top,
+        }
+    }
+
+    /// Stand-in for the `[Image: alt]` placeholder text the line renderer
+    /// emits on row 0 of an image block.  Pre-populates every cell in
+    /// `area` with `placeholder_ch` so the clear's effect is observable.
+    fn pre_populate_buf(area: Rect, placeholder_ch: char) -> TuiBuf {
+        let mut buf = TuiBuf::empty(area);
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(placeholder_ch);
+                }
+            }
+        }
+        buf
+    }
+
+    #[test]
+    fn clear_rect_blanks_every_cell_of_visible_reserved_area() {
+        // Reserved rect fully inside the area — every cell should become
+        // default (space).  This is the regression test for the "label
+        // peeking out from behind the image" bug: without the clear, a
+        // narrow image protocol leaves the placeholder text visible
+        // where the image doesn't paint.
+        let area = Rect::new(0, 0, 30, 20);
+        let mut buf = pre_populate_buf(area, 'X');
+        let snap = snap_with_top(2, 30, 4);
+        clear_visible_reserved_rect(&snap, &area, &mut buf);
+        for y in 0..20u16 {
+            for x in 0..30u16 {
+                let expected = if (2..6).contains(&y) { ' ' } else { 'X' };
+                assert_eq!(
+                    buf.cell((x, y)).unwrap().symbol(),
+                    expected.to_string(),
+                    "cell ({x},{y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clear_rect_clips_to_area_when_scrolled_off_top() {
+        // natural_top = -2: the top two rows of the reserved rect are
+        // above the viewport.  The clear must only touch in-viewport
+        // cells, leaving buf cells outside the area untouched (in this
+        // test they're simulated by a smaller area).
+        let area = Rect::new(0, 5, 30, 10);
+        // Pre-populate the buf with Xs at every cell the buf knows about.
+        let mut buf = pre_populate_buf(area, 'X');
+        // snap top at row 3 (two above area.y=5); reserved height 6 →
+        // visible rows 5..9.
+        let snap = snap_with_top(3, 30, 6);
+        clear_visible_reserved_rect(&snap, &area, &mut buf);
+        for y in 5..15u16 {
+            for x in 0..30u16 {
+                let expected = if (5..9).contains(&y) { ' ' } else { 'X' };
+                assert_eq!(
+                    buf.cell((x, y)).unwrap().symbol(),
+                    expected.to_string(),
+                    "cell ({x},{y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clear_rect_noop_when_snap_fully_above_area() {
+        // natural_top = -10, height = 4 → reserved rows [-10, -6), no
+        // overlap with area at y=0.  Nothing should be cleared.
+        let area = Rect::new(0, 0, 10, 5);
+        let mut buf = pre_populate_buf(area, 'X');
+        let snap = snap_with_top(-10, 10, 4);
+        clear_visible_reserved_rect(&snap, &area, &mut buf);
+        for y in 0..5u16 {
+            for x in 0..10u16 {
+                assert_eq!(buf.cell((x, y)).unwrap().symbol(), "X", "cell ({x},{y})");
+            }
+        }
     }
 }

@@ -1247,10 +1247,47 @@ etc. are one external-tool invocation away — edamame stays dependency-free.
 
 ---
 
-### Phase 17 — Diagrams
-*Goal: See if we can add support for mermaid diagrams.*
+### Phase 17 — Diagrams ✅
+*Goal: add support for mermaid diagrams.*
+*Status: **Complete** — 2026-04-23.  1073 tests passing (8 ignored, of which 4 exercise the live mermaid renderer and 4 exercise known-panic inputs).  New modules: `src/diagram.rs` + `src/diagram/mermaid.rs` (SVG → PNG → `DynamicImage` pipeline with `catch_unwind` wrapping the pre-1.0 renderer; process-global `Arc<fontdb::Database>` shared across renders), `tests/diagrams.rs` (parser-promotion, source-addressing, ParsedDoc wiring, HTML-export SVG + fallback), plus a 20-diagram smoke-test fixture `diagrams.md`.*
 
-Terminals that support showing native images should be able to show diagrams. We can hand off diagram code to a mermaid subroutine, have it generate an image, and display that.
+**Dependencies:** `mermaid-rs-renderer = "=0.2.1"` (pinned; pre-1.0 with known panic bugs), `resvg = "0.46"`, `usvg = "0.46"`, `sha2 = "0.10"`.  All pure-Rust; no Node.js, no subprocess, no system-library deps.
+
+**Architecture:** `promote_diagram_code_blocks` (post-parse pass in `src/markdown/parser.rs`, called only from `ParsedDoc::build_with_overrides`) replaces each ` ```mermaid ` fenced block with a synthetic `Block::ImageBlock { alt: "mermaid diagram", url: "diagram-mermaid-<sha256>" }` and records the source in a side-table that `ParsedDoc` attaches to `ImageBlockInfo.source: Option<DiagramSource>`.  The App decode worker (`src/app.rs::dispatch_image_decodes_for`) branches on that field: `None` → `image::resolve` (file/http), `Some(Mermaid(_))` → `diagram::resolve_mermaid`.  Both funnel to the same `AppEvent::ImageReady` → `ImageCache` → `paint_images` path, so Phase 7's cache retention, halfblocks-scratch prebuild, native/scratch fallback, and raw-reveal suppression all apply to diagrams without extra wiring.
+
+**HTML export:** `replace_mermaid_with_svg` in `src/export/html.rs` intercepts the pulldown-cmark event stream; mermaid blocks become `<figure class="mermaid-diagram">{inline SVG}</figure>`, with a transparent fallback to `<pre><code class="language-mermaid">` on render failure or when `[export.html].diagrams = false` (default `true`).  `config/export/default.css` carries minimal figure-wrapper rules.
+
+**Images config piggy-back:** diagrams reuse `[images]` — `enabled`, `max_width`, `max_height`, the Yes/No/Always/Never prompt, and the "declined" collapse.  No new user-visible knobs; mental model is "diagrams are images in presentation, so they share the opt-in".
+
+**Sizing:** unlike `image::loader::pre_resize` which only downscales, `rasterise_svg` scales to fit the envelope in both dimensions — including **upscaling** small SVGs.  Mermaid's natural SVG dimensions are a layout artefact, so "simple flowchart" shouldn't mean "tiny on-screen".  Rasterising an SVG at higher resolution is ~free (usvg draws text from font glyphs at the target resolution), so crispness is preserved.  Tests: `small_svg_upscales_to_fill_envelope`, `large_svg_downscales_to_fit_envelope`, `no_envelope_keeps_natural_size`.
+
+**Placeholder bleed-through fix:** `ui::image_view::clear_visible_reserved_rect` blanks the visible intersection of `snap.rect ∩ area` before `paint_images` dispatches to native or halfblocks.  Native protocols only paint cells where the image lands (letter-boxed cells are untouched); halfblocks' `render` (from ratatui-image 9) iterates only its own data cells.  Without this clear, both paths left the `[Image: alt]` text visible where the image didn't paint.  Fix applies to regular images too — a latent bug that was just less visible.
+
+**Performance:** `fontdb::Database` is a process-global `Arc` loaded once via `OnceLock<Arc<_>>` (`SHARED_FONTDB` in `src/diagram/mermaid.rs`).  Each diagram decode is now an Arc clone instead of a fresh OS-font-dir scan.  Measured **3.2× speedup** per render (192 ms → 59 ms) and eliminates disk thrashing when many diagrams decode in parallel.  The App startup warmup thread (`diagram::warm_fontdb`) primes both this and mermaid-rs-renderer's own font cache off the critical path; skipped when `[images].enabled = Never`.  `ImageCache::gc` is called from `EditorState::refresh_parsed` to drop orphaned entries after every reparse — diagram-source edits mint new synthetic URLs, so without GC the cache would grow without bound.
+
+**Panic-safety retrofit:** both the image and diagram worker bodies are wrapped in `std::panic::catch_unwind` and guaranteed to emit exactly one `AppEvent::ImageReady` (Ok or Err).  Previously, a panic in the image decoder (corrupt PNG) or the mermaid renderer (v0.2.1 has several known panic bugs) would strand the cache entry as `Pending` forever.
+
+**Tasks:**
+- [x] Add `mermaid-rs-renderer`, `resvg`, `usvg`, `sha2` to `Cargo.toml`.  `mermaid-rs-renderer` pinned to `=0.2.1` (pre-1.0 churn); default features disabled to drop the CLI dep on `clap`.  `tiny-skia` NOT listed explicitly — we use `resvg::tiny_skia::*` re-exports to guarantee version lock-step.
+- [x] New module `src/diagram.rs` + `src/diagram/mermaid.rs`: `DiagramSource` enum, `DiagramError` (`thiserror`), `synthetic_url`, `render_mermaid_svg`, `resolve_mermaid`, `shared_fontdb`, `warm_fontdb`.  The raster path calls `mermaid_rs_renderer::render` inside `catch_unwind`, then `usvg::Tree::from_str` → `resvg::render` → `pixmap.encode_png` → `image::load_from_memory`.
+- [x] `promote_diagram_code_blocks` in `src/markdown/parser.rs`, peer to `promote_image_paragraphs`.  Matches `lang.eq_ignore_ascii_case("mermaid")` only — rejects `mermaidjs` / `diagram` / `mermaid-diagram` to avoid rendering a diagram in edamame that silently falls back to a code block on GitHub / mermaid.js.
+- [x] Extend `ImageBlockInfo` with `source: Option<DiagramSource>`.  Populated in `ParsedDoc::build_with_overrides` by looking up each block's synthetic URL in the map returned by `promote_diagram_code_blocks`.
+- [x] Extend `App::dispatch_image_decodes_for` (and its viewport-limited twin) to branch on `ImageBlockInfo.source` and wrap both worker bodies in `catch_unwind`.  Rename the helper from `urls_in_viewport_window` to `infos_in_viewport_window` so the dispatcher gets the full struct without a second lookup.
+- [x] `ImageCache::gc(&HashSet<String>)` called from `EditorState::refresh_parsed` after each reparse.
+- [x] `ui::image_view::clear_visible_reserved_rect` invoked at the top of each paint in `paint_images`, after the protocol-pair existence check.  Covers native-protocol letter-boxing and halfblocks' position-dependent cell data in one place.
+- [x] HTML export: `ExportHtmlConfig.diagrams: bool` (default `true`), event-stream adapter `replace_mermaid_with_svg` in `src/export/html.rs`, figure-wrapper CSS in `config/export/default.css`, documentation in `config/config.toml`.
+- [x] Process-global `SHARED_FONTDB: OnceLock<Arc<fontdb::Database>>` + `shared_fontdb()` / `warm_fontdb()` helpers; App startup spawns `diagram::warm_fontdb` on a best-effort thread.
+- [x] Integration tests in `tests/diagrams.rs` (parser promotion, sha stability, ParsedDoc wiring, images-disabled collapse, HTML export inline-SVG + fallback, live round-trip).  Module-level unit tests in `src/diagram/mermaid.rs::tests` including a `mermaid_live_throughput` benchmark that confirms the 3.2× speedup.
+- [x] Manual smoke test via a new `diagrams.md` fixture containing one of each diagram type `mermaid-rs-renderer` supports (23 types).
+
+**Acceptance criteria:** A `.md` file containing a ` ```mermaid ` fenced block displays the diagram inline on a terminal supporting Sixel/Kitty/iTerm2.  Scrolling doesn't re-encode.  Editing the diagram source re-renders (new sha → new cache key); editing outside the block leaves the cache entry intact.  Broken mermaid source falls back to the placeholder without crashing.  Terminals without image support render `[Image: mermaid diagram]`.  Declining the images prompt collapses diagrams to a 1-row placeholder.  HTML export produces inline SVG, with a code-block fallback on render failure.
+
+**Deferred to later phases:**
+- [ ] Command-palette dispatch for `Export HTML` now that the SVG render is wired (Phase 10).
+- [ ] Per-diagram error surfacing on the hint line (Phase 9 follow-up — `DiagramError` messages are already captured in the cache).
+- [ ] Bounded worker pool for concurrent diagram decodes.  Each diagram currently spawns its own thread; 20-diagram documents are fine on modern CPUs after the fontdb fix, but a documents-heavy user could still saturate.  Would replace the current `std::thread::spawn` per URL with a small mpsc queue.
+- [ ] Halfblocks-only pre-resize.  On terminals without a native protocol, we still rasterise at native-target resolution (~640×384) and let the halfblocks encoder downscale to ~80×48 per frame.  A specialized halfblocks-target raster would save ~50ms per decode but requires plumbing the picker protocol type into `resolve_mermaid`.
+- [ ] Non-mermaid backends (PlantUML, Graphviz/DOT, D2).  `DiagramSource` is an enum with one variant today; adding a new variant plus a resolver is the expected shape.
 
 ### Phase 18 — Handle Terminal Change
 *Goal: Ask user about changing their configuration if they start using a different terminal application*

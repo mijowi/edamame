@@ -5,10 +5,11 @@ use std::ops::Range;
 use ratatui::text::Line;
 
 use crate::config::Theme;
+use crate::diagram::DiagramSource;
 use crate::document::SourceMap;
 use crate::markdown::{
-    inlines_to_plain, parse_offsets, parse_raw, promote_image_paragraphs, Block, ImageRowOverride,
-    Renderer,
+    inlines_to_plain, parse_offsets, parse_raw, promote_diagram_code_blocks,
+    promote_image_paragraphs, Block, ImageRowOverride, Renderer,
 };
 
 /// Setext heading style detected from raw block source.  `None` for ATX
@@ -57,6 +58,14 @@ pub struct ImageBlockInfo {
     pub block_idx: usize,
     pub alt: String,
     pub url: String,
+    /// `Some` when this block was promoted from a ```mermaid (or other
+    /// diagram backend) code block by `promote_diagram_code_blocks`.
+    /// The App decode worker branches on this field to pick between
+    /// `crate::image::resolve` (for `None`) and
+    /// `crate::diagram::resolve_mermaid` (for `Some(Mermaid(_))`) —
+    /// both funnel to the same `AppEvent::ImageReady` / `ImageCache`
+    /// path.
+    pub source: Option<DiagramSource>,
 }
 
 /// The parsed and rendered state of the document.
@@ -274,6 +283,12 @@ impl ParsedDoc {
         // for terminal-graphics overlay.  Promotion happens in-place and
         // keeps blocks:real_ranges alignment 1:1 (no blocks are removed).
         promote_image_paragraphs(&mut blocks, Some(&mut real_ranges));
+        // Promote fenced ```mermaid blocks to synthetic `Block::ImageBlock`
+        // so the same renderer path reserves overlay rows for them.  Returns
+        // a `url → DiagramSource` map — attached to `ImageBlockInfo.source`
+        // below so the App decode worker can find the mermaid text without
+        // re-walking `blocks`.
+        let diagram_sources = promote_diagram_code_blocks(&mut blocks);
         if let Some((override_start, widths)) = live_table_widths {
             apply_live_table_widths(&mut blocks, &real_ranges, *override_start, widths);
         }
@@ -356,10 +371,12 @@ impl ParsedDoc {
             // we just allocated, so the decode-dispatch scan and the paint
             // pass don't need to walk `blocks` again.
             if let Block::ImageBlock { alt, url } = &blocks[i] {
+                let source = diagram_sources.get(url).cloned();
                 image_blocks.push(ImageBlockInfo {
                     block_idx: idx,
                     alt: alt.clone(),
                     url: url.clone(),
+                    source,
                 });
             }
             // Record heading anchors (GFM slug → first rendered line of

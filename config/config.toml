@@ -60,6 +60,8 @@ remote_policy = "ask"
 # [export.html]
 # stylesheet     = "builtin"    # or an absolute path to a .css file
 # inline_images  = false        # when true, local images are base64-embedded
+# diagrams       = true         # render ```mermaid blocks as inline SVG
+#                               # (false → leave as <pre><code class="language-mermaid">)
 
 # Add one or more [[export.custom]] blocks to pipe the generated HTML through
 # an external tool. Each entry becomes an "Export <name>" item in the command

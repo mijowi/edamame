@@ -1,6 +1,9 @@
+use std::collections::HashMap;
+
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
 use super::ast::{inlines_to_plain, Block, Inline, ListItem};
+use crate::diagram::DiagramSource;
 
 /// Parse a Markdown string into a list of `Block` AST nodes.
 pub fn parse(text: &str) -> Vec<Block> {
@@ -46,6 +49,49 @@ pub fn promote_image_paragraphs(
             }
         }
     }
+}
+
+/// Post-pass: replace every fenced code block whose language tag is
+/// `mermaid` (case-insensitive) with a synthetic `Block::ImageBlock`
+/// whose URL is `diagram-mermaid-<sha256(source)>`.  Returns the
+/// `url → DiagramSource` map so `ParsedDoc` can attach the source to
+/// `ImageBlockInfo` (needed by the decode worker to render the PNG).
+///
+/// Only `mermaid` is matched — not `mermaidjs`, `mermaid-diagram`, or
+/// `diagram`.  GitHub and mermaid.js itself accept only the bare
+/// `mermaid` tag, so accepting more would render a diagram in edamame
+/// that silently falls back to a code block everywhere else.
+///
+/// Called from [`crate::document::ParsedDoc::build_with_overrides`]
+/// only — not from [`parse`] — so the other consumers of `parse` (help
+/// overlay preview, link-scan helpers, renderer tests) continue to see
+/// the raw code block.
+pub fn promote_diagram_code_blocks(blocks: &mut [Block]) -> HashMap<String, DiagramSource> {
+    let mut sources = HashMap::new();
+    for block in blocks.iter_mut() {
+        let is_mermaid = matches!(
+            block,
+            Block::CodeBlock { language: Some(lang), .. } if lang.eq_ignore_ascii_case("mermaid")
+        );
+        if !is_mermaid {
+            continue;
+        }
+        let Block::CodeBlock { content, .. } = std::mem::replace(block, Block::HorizontalRule)
+        else {
+            // unreachable per the matcher above, but std::mem::replace
+            // forces us to consume the old value — guard with a safe
+            // fallback rather than an `unwrap_or_unreachable!`.
+            continue;
+        };
+        let source = DiagramSource::Mermaid(content);
+        let url = crate::diagram::synthetic_url(&source);
+        sources.insert(url.clone(), source);
+        *block = Block::ImageBlock {
+            alt: "mermaid diagram".to_string(),
+            url,
+        };
+    }
+    sources
 }
 
 /// Return `Some((alt, url))` iff `inlines` contains exactly one

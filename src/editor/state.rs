@@ -307,6 +307,18 @@ impl EditorState {
         );
         self.parsed_version = self.parsed_version.wrapping_add(1);
         self.parsed_dirty = false;
+        // Drop cache entries whose URL is no longer referenced by any
+        // image block — keeps `images.decoded`/`protocols`/scratches
+        // from growing without bound as the user edits diagrams
+        // (every content change inside a ```mermaid block mints a new
+        // synthetic URL, so the old entry becomes orphaned).
+        let live: std::collections::HashSet<String> = self
+            .parsed
+            .image_blocks
+            .iter()
+            .map(|i| i.url.clone())
+            .collect();
+        self.images.gc(&live);
     }
 
     /// If an in-line edit has left `parsed` stale, re-parse now and

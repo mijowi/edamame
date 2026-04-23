@@ -79,6 +79,27 @@ open = "5"
 base64 = "0.22"
 tempfile = "3"
 
+# Phase 17 — Mermaid diagrams:
+# `mermaid-rs-renderer` is pinned tightly because it's pre-1.0 with known
+# panic bugs and rapid churn.  `default-features = false` drops the `cli`
+# feature (which would pull `clap`) and keeps only `png` (which pulls
+# `resvg` + `usvg`).  `resvg` and `usvg` are declared explicitly because
+# `src/diagram/mermaid.rs` calls their APIs directly for the in-memory
+# SVG→PNG path (the crate's public `write_output_png` writes to a
+# `&Path` — we need `Vec<u8>` so the decode worker can feed
+# `image::load_from_memory` without a tempfile).  Versions MUST match
+# what mermaid-rs-renderer 0.2.1 pulls in transitively (resvg 0.46,
+# usvg 0.46) so cargo doesn't compile two copies.  `tiny_skia` is NOT
+# listed — we use `resvg::tiny_skia::*` re-exports to guarantee the
+# version stays locked to resvg's choice.
+mermaid-rs-renderer = { version = "=0.2.1", default-features = false, features = ["png"] }
+resvg = "0.46"
+usvg = "0.46"
+# `sha2` produces the synthetic cache-key URLs `diagram-mermaid-<sha>` —
+# stable across reparses so the image cache can reuse already-rendered
+# diagrams when a keystroke elsewhere in the document triggers a reparse.
+sha2 = "0.10"
+
 [features]
 default = ["clipboard"]
 clipboard = ["arboard"]

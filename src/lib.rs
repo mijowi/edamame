@@ -2,6 +2,7 @@
 // embedding. The binary in main.rs is the primary deliverable.
 
 pub mod config;
+pub mod diagram;
 pub mod document;
 pub mod editor;
 pub mod export;

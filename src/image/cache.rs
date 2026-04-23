@@ -447,6 +447,19 @@ impl ImageCache {
             .retain(|_, status| !matches!(status, DecodeStatus::Failed(_)));
     }
 
+    /// Drop every entry whose URL is not in `live`.  Called by the App
+    /// after each reparse to prune diagrams whose synthetic URL changed
+    /// (content-edit inside a ```mermaid block → new sha → fresh cache
+    /// key) along with any other no-longer-referenced URLs.  Without
+    /// this, editing a single diagram repeatedly would grow `decoded`
+    /// and `protocols` without bound.
+    pub fn gc(&mut self, live: &std::collections::HashSet<String>) {
+        self.decoded.retain(|url, _| live.contains(url));
+        self.protocols.retain(|(url, _, _), _| live.contains(url));
+        self.prebuilt_scratches
+            .retain(|(url, _, _), _| live.contains(url));
+    }
+
     #[cfg(test)]
     pub fn decoded_count(&self) -> usize {
         self.decoded.len()

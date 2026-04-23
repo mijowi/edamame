@@ -323,20 +323,25 @@ const VIEWPORT_DISPATCH_MARGIN: usize = 80;
 
 /// Pure helper used by `App::dispatch_visible_image_decodes` — given
 /// the image-block list, a source map, the scroll offset, the
-/// viewport height, and a prefetch margin, return the URLs whose
-/// rendered rows intersect the near-viewport window.  Lifted out of
-/// the App so it can be unit-tested without constructing a terminal.
+/// viewport height, and a prefetch margin, return the image-block
+/// infos whose rendered rows intersect the near-viewport window.
+/// Lifted out of the App so it can be unit-tested without constructing
+/// a terminal.
 ///
 /// Order is preserved (document order) so that during a scroll, the
 /// image that enters the window first is the one that gets dispatched
 /// first — small but measurable fairness win on slow connections.
-fn urls_in_viewport_window(
+///
+/// Returns `ImageBlockInfo` clones rather than just URLs because the
+/// dispatcher needs to branch on `info.source` to tell diagram blocks
+/// apart from regular images (Phase 17).
+fn infos_in_viewport_window(
     image_blocks: &[crate::document::ImageBlockInfo],
     source_map: &crate::document::SourceMap,
     scroll: usize,
     doc_height: usize,
     margin: usize,
-) -> Vec<String> {
+) -> Vec<crate::document::ImageBlockInfo> {
     let window_start = scroll.saturating_sub(margin);
     let window_end = scroll.saturating_add(doc_height).saturating_add(margin);
     image_blocks
@@ -349,7 +354,7 @@ fn urls_in_viewport_window(
             // Half-open intersection: [range.start, range.end) vs
             // [window_start, window_end).
             if range.start < window_end && range.end > window_start {
-                Some(info.url.clone())
+                Some(info.clone())
             } else {
                 None
             }
@@ -427,6 +432,24 @@ impl App {
         let images_enabled_prompt = build_images_enabled_prompt(&editor, &config);
         let remote_image_prompt = build_remote_image_prompt(&editor, &config);
         let wheel_step = config.editor.mouse_scroll_lines;
+
+        // Phase 17 — warm the diagram pipeline's font caches off the
+        // critical path.  Two caches load fonts on first call:
+        //   * `mermaid_rs_renderer`'s internal fontdb (for text layout
+        //     metrics during SVG generation),
+        //   * our own shared `fontdb::Database` used by `usvg` when
+        //     rasterising the SVG to PNG.
+        // Both scan OS font dirs (~100–300 ms each, worse cold).
+        // `diagram::warm_fontdb` primes both so the first real diagram
+        // render doesn't pay them.  Without this warmup (or with
+        // per-render loads as the previous implementation did), a
+        // document with N diagrams spawns N concurrent font scans —
+        // the dominant source of initial-load lag.
+        // Skipped when images are configured as `Never` — no diagram
+        // will ever decode, so the warmup would be wasted IO.
+        if !matches!(config.images.enabled, crate::config::ImagesEnabled::Never) {
+            std::thread::spawn(crate::diagram::warm_fontdb);
+        }
 
         Ok(Self {
             config,
@@ -1950,14 +1973,8 @@ impl App {
     /// unlocked a batch of previously-blocked decodes — the user has
     /// opted in to fetching, so eagerness matches intent.
     fn dispatch_image_decodes(&mut self) {
-        let urls: Vec<String> = self
-            .editor
-            .parsed
-            .image_blocks
-            .iter()
-            .map(|i| i.url.clone())
-            .collect();
-        self.dispatch_image_decodes_for(&urls);
+        let infos: Vec<crate::document::ImageBlockInfo> = self.editor.parsed.image_blocks.clone();
+        self.dispatch_image_decodes_for(&infos);
     }
 
     /// Viewport-limited decode dispatch: only requests images whose
@@ -1976,19 +1993,31 @@ impl App {
         // App.  We allow `urls_in_viewport_window` to read only the
         // fields it needs (the image-blocks list and source-map), so
         // the borrow here is narrow.
-        let urls = urls_in_viewport_window(
+        let infos = infos_in_viewport_window(
             &self.editor.parsed.image_blocks,
             &self.editor.parsed.source_map,
             scroll,
             doc_height,
             VIEWPORT_DISPATCH_MARGIN,
         );
-        self.dispatch_image_decodes_for(&urls);
+        self.dispatch_image_decodes_for(&infos);
     }
 
-    /// Shared dispatch primitive: spawn a worker thread for each URL
-    /// that `ImageCache::request` accepts as new.
-    fn dispatch_image_decodes_for(&mut self, urls: &[String]) {
+    /// Shared dispatch primitive: spawn a worker thread for each
+    /// image-block whose URL `ImageCache::request` accepts as new.
+    ///
+    /// Branches on `info.source`: `Some(DiagramSource::Mermaid(_))`
+    /// routes through `crate::diagram::resolve_mermaid`; `None` goes
+    /// through `crate::image::resolve` (file / http / https).  Both
+    /// paths land in the same `AppEvent::ImageReady` → `ImageCache`
+    /// pipeline so downstream rendering is uniform.
+    ///
+    /// Each worker body is wrapped in `std::panic::catch_unwind` so a
+    /// panic inside the decoder or the mermaid renderer (v0.2.1 has
+    /// several known panic bugs) always produces exactly one
+    /// `ImageReady(Err(...))` instead of stranding the cache entry as
+    /// `Pending` forever.
+    fn dispatch_image_decodes_for(&mut self, infos: &[crate::document::ImageBlockInfo]) {
         if !self.effective_images_enabled() {
             return;
         }
@@ -2026,23 +2055,50 @@ impl App {
             None
         };
 
-        for url in urls {
-            if !self.editor.images.request(url) {
+        for info in infos {
+            if !self.editor.images.request(&info.url) {
                 continue;
             }
             let tx = tx.clone();
             let doc_path = doc_path.clone();
-            let url = url.clone();
+            let url = info.url.clone();
+            let source = info.source.clone();
             let scratch_picker = scratch_picker.clone();
             std::thread::spawn(move || {
-                let result = crate::image::resolve(
-                    &url,
-                    doc_path.as_deref(),
-                    remote_policy,
-                    session_allow_remote,
-                    max_cells,
-                    font_size,
-                );
+                // Wrap the entire worker body in `catch_unwind` so a
+                // panic (especially inside `mermaid_rs_renderer`, which
+                // has known panic bugs in v0.2.1) still produces an
+                // `ImageReady(Err)` — otherwise the cache entry would
+                // stay `Pending` forever and the placeholder would
+                // never transition to the failure state.
+                let url_for_panic = url.clone();
+                let result: Result<crate::image::LoadedImage, (String, String)> =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &source {
+                        Some(crate::diagram::DiagramSource::Mermaid(src)) => {
+                            crate::diagram::resolve_mermaid(url.clone(), src, max_cells, font_size)
+                                .map_err(|e| (url.clone(), e.to_string()))
+                        }
+                        None => crate::image::resolve(
+                            &url,
+                            doc_path.as_deref(),
+                            remote_policy,
+                            session_allow_remote,
+                            max_cells,
+                            font_size,
+                        )
+                        .map_err(|e| (url.clone(), e.to_string())),
+                    }))
+                    .unwrap_or_else(|payload| {
+                        let msg = if let Some(s) = payload.downcast_ref::<String>() {
+                            format!("panic: {s}")
+                        } else if let Some(s) = payload.downcast_ref::<&'static str>() {
+                            format!("panic: {s}")
+                        } else {
+                            "panic".to_string()
+                        };
+                        Err((url_for_panic, msg))
+                    });
+
                 let event = match result {
                     Ok(mut loaded) => {
                         // Render the halfblocks scratch here on the
@@ -2068,7 +2124,7 @@ impl App {
                         }
                         AppEvent::ImageReady(Ok(loaded))
                     }
-                    Err(err) => AppEvent::ImageReady(Err((url.clone(), err.to_string()))),
+                    Err(err) => AppEvent::ImageReady(Err(err)),
                 };
                 let _ = tx.send(event);
             });
@@ -2282,6 +2338,7 @@ mod viewport_window_tests {
                 block_idx: i,
                 alt: String::new(),
                 url: (*url).to_owned(),
+                source: None,
             });
         }
         // Fill sentinel slots with their own index so unrelated rows
@@ -2305,7 +2362,10 @@ mod viewport_window_tests {
     fn viewport_window_keeps_images_inside_visible_rows() {
         let (blocks, map) = fixture(&[("a.png", 5), ("b.png", 50), ("c.png", 200)]);
         // doc_height=20, scroll=0, margin=0 → window = [0, 20).
-        let urls = urls_in_viewport_window(&blocks, &map, 0, 20, 0);
+        let urls: Vec<String> = infos_in_viewport_window(&blocks, &map, 0, 20, 0)
+            .into_iter()
+            .map(|i| i.url)
+            .collect();
         assert_eq!(urls, vec!["a.png".to_owned()]);
     }
 
@@ -2314,7 +2374,10 @@ mod viewport_window_tests {
         let (blocks, map) = fixture(&[("a.png", 5), ("b.png", 50), ("c.png", 200)]);
         // scroll=0, doc_height=20, margin=40 → window = [0, 60),
         // picks up a.png (row 5) and b.png (row 50).
-        let urls = urls_in_viewport_window(&blocks, &map, 0, 20, 40);
+        let urls: Vec<String> = infos_in_viewport_window(&blocks, &map, 0, 20, 40)
+            .into_iter()
+            .map(|i| i.url)
+            .collect();
         assert_eq!(urls, vec!["a.png".to_owned(), "b.png".to_owned()]);
     }
 
@@ -2323,7 +2386,10 @@ mod viewport_window_tests {
         let (blocks, map) = fixture(&[("a.png", 5), ("b.png", 50), ("c.png", 200)]);
         // scroll=180, doc_height=20, margin=10 → window = [170, 210),
         // picks up c.png only.
-        let urls = urls_in_viewport_window(&blocks, &map, 180, 20, 10);
+        let urls: Vec<String> = infos_in_viewport_window(&blocks, &map, 180, 20, 10)
+            .into_iter()
+            .map(|i| i.url)
+            .collect();
         assert_eq!(urls, vec!["c.png".to_owned()]);
     }
 
@@ -2333,7 +2399,10 @@ mod viewport_window_tests {
         // returned Vec must keep that order so the first-into-window
         // image is dispatched first on slow connections.
         let (blocks, map) = fixture(&[("c.png", 2), ("a.png", 0), ("b.png", 1)]);
-        let urls = urls_in_viewport_window(&blocks, &map, 0, 10, 0);
+        let urls: Vec<String> = infos_in_viewport_window(&blocks, &map, 0, 10, 0)
+            .into_iter()
+            .map(|i| i.url)
+            .collect();
         // `blocks` is in the order we passed: c, a, b.  Verify the
         // dispatch helper follows `image_blocks` order, not sorted by
         // row.
@@ -2348,7 +2417,7 @@ mod viewport_window_tests {
         let (blocks, map) = fixture(&[("a.png", 0), ("b.png", 5)]);
         // scroll=100, doc_height=20, margin=10 → window = [90, 130).
         // Both images are well below the window.
-        let urls = urls_in_viewport_window(&blocks, &map, 100, 20, 10);
+        let urls = infos_in_viewport_window(&blocks, &map, 100, 20, 10);
         assert!(urls.is_empty());
     }
 
@@ -2357,7 +2426,10 @@ mod viewport_window_tests {
         // scroll < margin would underflow a signed subtract; we use
         // saturating_sub so the window just clamps at 0.
         let (blocks, map) = fixture(&[("a.png", 0), ("b.png", 5)]);
-        let urls = urls_in_viewport_window(&blocks, &map, 2, 3, 100);
+        let urls: Vec<String> = infos_in_viewport_window(&blocks, &map, 2, 3, 100)
+            .into_iter()
+            .map(|i| i.url)
+            .collect();
         // Window = [0, 105), both images inside.
         assert_eq!(urls, vec!["a.png".to_owned(), "b.png".to_owned()]);
     }

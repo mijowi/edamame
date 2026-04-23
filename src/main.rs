@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod diagram;
 mod document;
 mod editor;
 mod image;

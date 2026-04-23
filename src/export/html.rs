@@ -3,9 +3,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use pulldown_cmark::{html as cmark_html, CowStr, Event, Options, Parser, Tag};
+use pulldown_cmark::{
+    html as cmark_html, CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd,
+};
 
 use super::runner::{write_atomically, ExportOutcome};
+use crate::diagram;
 
 /// The compiled-in stylesheet bundled with edamame.  Used when
 /// [`HtmlExportOptions::stylesheet`] is [`Stylesheet::Builtin`].
@@ -64,6 +67,12 @@ pub struct HtmlExportOptions {
     /// Value inserted into the `<title>` element.  When `None`, a
     /// sensible fallback (`"Document"`) is used.
     pub title: Option<String>,
+    /// Phase 17 — when true (the default), fenced ```mermaid code blocks
+    /// are rendered to inline SVG and wrapped in
+    /// `<figure class="mermaid-diagram">`.  Falls back to the usual
+    /// `<pre><code class="language-mermaid">` on render failure so the
+    /// source is never lost.
+    pub render_diagrams: bool,
 }
 
 impl Default for HtmlExportOptions {
@@ -73,6 +82,7 @@ impl Default for HtmlExportOptions {
             inline_images: false,
             source_dir: None,
             title: None,
+            render_diagrams: true,
         }
     }
 }
@@ -107,6 +117,10 @@ pub fn render_html(markdown: &str, opts: &HtmlExportOptions) -> Result<String> {
         if let Some(dir) = opts.source_dir.as_deref() {
             rewrite_images_to_data_uris(&mut events, dir);
         }
+    }
+
+    if opts.render_diagrams {
+        events = replace_mermaid_with_svg(events);
     }
 
     let mut body = String::new();
@@ -158,6 +172,79 @@ fn render_and_write(markdown: &str, target: &Path, opts: &HtmlExportOptions) -> 
     write_atomically(target, html.as_bytes())
         .with_context(|| format!("Failed to write export: {}", target.display()))?;
     Ok(())
+}
+
+// ── Mermaid diagrams ──────────────────────────────────────────────────────
+
+/// Walk the event stream; for every `Start(CodeBlock(Fenced("mermaid")))`
+/// ... `End(CodeBlock)` triple, try to render the enclosed text as a
+/// mermaid SVG and substitute a single `Event::Html` carrying
+/// `<figure class="mermaid-diagram">…SVG…</figure>`.  On render failure
+/// (or on non-mermaid code blocks) the original events are preserved so
+/// pulldown-cmark emits the usual `<pre><code class="language-mermaid">`
+/// — the diagram source is never lost.
+///
+/// Matching is case-insensitive on the language tag, same as the in-app
+/// `promote_diagram_code_blocks` pass, so round-tripping between the
+/// editor and the exported HTML is consistent.
+fn replace_mermaid_with_svg(events: Vec<Event<'_>>) -> Vec<Event<'_>> {
+    let mut out: Vec<Event<'_>> = Vec::with_capacity(events.len());
+    let mut iter = events.into_iter();
+    while let Some(event) = iter.next() {
+        let lang = match &event {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang)))
+                if lang.as_ref().eq_ignore_ascii_case("mermaid") =>
+            {
+                Some(lang.clone())
+            }
+            _ => None,
+        };
+        if lang.is_none() {
+            out.push(event);
+            continue;
+        }
+        // Collect the Text events until the matching CodeBlock end, then
+        // decide — render succeeded → emit a single Event::Html, render
+        // failed → replay the original Start + Texts + End so the
+        // fallback `<pre><code>` is emitted by the default serialiser.
+        let mut buffered: Vec<Event<'_>> = vec![event];
+        let mut source = String::new();
+        for inner in iter.by_ref() {
+            match inner {
+                Event::End(TagEnd::CodeBlock) => {
+                    buffered.push(Event::End(TagEnd::CodeBlock));
+                    break;
+                }
+                Event::Text(ref t) => {
+                    source.push_str(t);
+                    buffered.push(inner);
+                }
+                other => {
+                    // pulldown-cmark should never emit other events
+                    // inside a fenced code block, but if it does we
+                    // treat it like text for the renderer and preserve
+                    // it for the fallback.
+                    buffered.push(other);
+                }
+            }
+        }
+        match diagram::render_mermaid_svg(&source) {
+            Ok(svg) => {
+                let html = format!("<figure class=\"mermaid-diagram\">{svg}</figure>");
+                out.push(Event::Html(CowStr::Boxed(html.into_boxed_str())));
+            }
+            Err(_) => {
+                // Falls back to the default code-block serialisation.
+                // The mermaid source is preserved verbatim so the user
+                // (or a downstream mermaid.js) can still see / render
+                // it.  We deliberately swallow the error here — the
+                // per-diagram failure is not fatal to the document
+                // export.
+                out.extend(buffered);
+            }
+        }
+    }
+    out
 }
 
 // ── Image inlining ────────────────────────────────────────────────────────
@@ -364,6 +451,7 @@ mod tests {
             inline_images: true,
             source_dir: Some(dir.path().to_path_buf()),
             title: None,
+            render_diagrams: false,
         };
         let html = render_html(md, &opts).unwrap();
         assert!(
@@ -382,6 +470,7 @@ mod tests {
             inline_images: true,
             source_dir: Some(PathBuf::from("/tmp")),
             title: None,
+            render_diagrams: false,
         };
         let html = render_html(md, &opts).unwrap();
         assert!(html.contains("src=\"https://example.com/cat.png\""));

@@ -454,6 +454,13 @@ pub struct HtmlExportConfig {
     /// is fully self-contained.  Default: false (keeps output compact and
     /// portable alongside the asset directory).
     pub inline_images: bool,
+    /// Phase 17 — when true (the default), fenced ```mermaid code blocks
+    /// are rendered to inline SVG via `mermaid-rs-renderer` and wrapped
+    /// in a `<figure class="mermaid-diagram">`.  On render failure the
+    /// block falls back to `<pre><code class="language-mermaid">` so the
+    /// source is never lost.  Set false to force the code-block form
+    /// (e.g. for pipelines that ship their own client-side mermaid.js).
+    pub diagrams: bool,
 }
 
 impl Default for HtmlExportConfig {
@@ -461,6 +468,7 @@ impl Default for HtmlExportConfig {
         Self {
             stylesheet: "builtin".into(),
             inline_images: false,
+            diagrams: true,
         }
     }
 }
@@ -709,6 +717,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.export.html.stylesheet, "builtin");
         assert!(!config.export.html.inline_images);
+        assert!(config.export.html.diagrams);
         assert!(config.export.custom.is_empty());
 
         let toml_str = r#"
