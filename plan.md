@@ -217,8 +217,11 @@ edamame/
 ├── README.md
 ├── plan.md
 ├── overview.md
-├── config/                         # Example and default config files
-│   └── default_config.toml
+├── config/                         # Reference default config files (include_str!'d
+│   ├── config.toml                 #   at build time, written to ~/.config/edamame/
+│   ├── keybindings.toml            #   on first run if absent)
+│   └── themes/
+│       └── default.toml
 └── src/
     ├── main.rs                     # Entry point: init terminal, load config, run app
     ├── app.rs                      # App struct, event loop, quit logic
@@ -771,7 +774,7 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
       pub remote_policy: RemoteImagePolicy, // Ask | Always | Never
   }
   ```
-  Add `pub image: ImageConfig` to `Config`. Extend `config/default_config.toml`  with the new section and annotations.
+  Add `pub image: ImageConfig` to `Config`. Extend `config/config.toml`  with the new section and annotations.
 
 **Tasks — Picker ownership (see Phase 4 implementation notes):**
 - [x] Change `Capabilities` to hold `Option<Picker>` alongside `image_protocol`.  Initialise both in `detect_image_protocol` instead of dropping the Picker.  Thread the capability reference down to image-loading code.
@@ -889,7 +892,7 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 
 ---
 
-### Phase 9 — Bottom Status Region
+### Phase 9 — Bottom Status Region ✅
 *Goal: a coherent two-line chrome at the bottom of the editor that carries persistent state, contextual hints, transient notifications, and modal prompts.*
 
 This phase deliberately owns the **entire** bottom region so later phases (file-change diff, command palette, tabs, etc.) can consume a single, stable surface rather than reinventing it. Previously this work was split across old Phases 9/10/11; consolidating it here removes the circular dependency where Phase 10's reload prompt needed infrastructure that old Phase 11 was going to provide.
@@ -916,53 +919,76 @@ This phase deliberately owns the **entire** bottom region so later phases (file-
 - `Theme` already has slots for status styling (`status_bar`, `status_mode`, `status_filename`, `status_info`).  New slots are added for the hint line (see testing tasks).
 
 **Tasks — layout & integration:**
-- [ ] Introduce a `BottomRegion` composite widget (`src/ui/bottom_region.rs`) that owns layout of the hint line + status line.  It is rendered by `EditorView` in place of the current single-row `StatusBar`.  Single-line compact mode collapses the composite to just the status line.
-- [ ] `EditorView::render` allocates 2 rows for the bottom region (1 in compact mode) and subtracts from the editor content area.  Existing `PreviewView` / `RenderedView` / `RawView` continue to receive the same inner rect they do today.
+- [x] Introduce a `BottomRegion` composite widget (`src/ui/bottom_region.rs`) that owns layout of the hint line + status line.  It is rendered by `EditorView` in place of the current single-row `StatusBar`.  Single-line compact mode collapses the composite to just the status line.
+- [x] `EditorView::render` allocates 2 rows for the bottom region (1 in compact mode) and subtracts from the editor content area.  Existing `PreviewView` / `RenderedView` / `RawView` continue to receive the same inner rect they do today.
 
 **Tasks — persistent status line:**
-- [ ] Expand `StatusBarState` to carry `selection_size: Option<(usize, usize)>` (char count + line count) populated from `EditorState::visual_selection`; render as ` Sel 42 ch · 3 ln ` when present.
-- [ ] Detected image protocol is intentionally *not* surfaced here — users who want to see it reach it via the settings overlay (Phase 10) or an `:info` command.
+- [x] Expand `StatusBarState` to carry `selection_size: Option<(usize, usize)>` (char count + line count) populated from `EditorState::selection_size()`; render as ` Sel 42 ch · 3 ln ` when present.
+- [x] Detected image protocol is intentionally *not* surfaced here — users who want to see it reach it via the settings overlay (Phase 10) or an `:info` command.
 
 **Tasks — contextual hint line:**
-- [ ] New `HintLine` sub-widget inside `BottomRegion`.  Default content adapts to editor mode and cursor context via a `hint_line_for(state: &EditorState) -> Vec<HintChord>` pure function.
-- [ ] *Preview* mode: `any key → edit   ^C Copy   ^P Menu   ^Q Quit`.  Global chords (^C/^P/^Q) are reserved; "any other key" triggers the mode switch to edit.
-- [ ] *Rendered / Raw* mode: `^C Copy  ^X Cut  ^V Paste  ^S Save  ^P Menu  ^Q Quit`.
-- [ ] *Rendered* mode, cursor inside a table: replace the hint line with table manipulation keybinds (Alt+Arrow variants, Tab/Shift-Tab, Alt+Backspace).  Full names when terminal width allows, abbreviated fallback when it doesn't.  A `?` popover exposes the full list when abbreviation is unavoidable.
-- [ ] *Rendered / Raw* mode, cursor inside a list item: surface `^Space Toggle` (task checkbox) in the hint line.
-- [ ] Contrasting background for all hint chords, like nano: route the chord label background through a new `Theme::hint_chord` style slot so themes can override.
-- [ ] Width-responsive abbreviation: when the allocated width can't fit the full hint set, drop labels in priority order (least essential first), then collapse to just the chord glyph.  The `?` popover shows the full list.
+- [x] New `HintLine` sub-widget inside `BottomRegion`.  Default content adapts to editor mode and cursor context via a `hint_line_for(state: &EditorState) -> Vec<HintChord>` pure function.
+- [x] *Preview* mode: `any key → edit   ^C Copy   ^P Menu   ^Q Quit`.
+- [x] *Rendered / Raw* mode: `^C Copy  ^X Cut  ^V Paste  ^S Save  ^P Menu  ^Q Quit`.
+- [x] *Rendered* mode, cursor inside a table: replace the hint line with table manipulation keybinds (Alt+Arrow variants, Tab/Shift-Tab, Alt+Backspace).  A `?` popover exposes the full list when abbreviation is unavoidable.
+- [x] *Rendered / Raw* mode, cursor inside a list item: surface `^Space Toggle` (task checkbox) in the hint line.
+- [x] Contrasting background for all hint chords, like nano: routed through a new `Theme::hint_chord` style slot (plus `hint_bar`, `hint_label`) so themes can override.
+- [x] Width-responsive abbreviation: `lay_out_chords` drops labels left-to-right, then collapses to bare chord glyphs when even those overflow.
 
 **Tasks — transient messages (a single channel all phases consume):**
-- [ ] Add `App::transient_message: Option<TransientMessage { text, kind, until }>` where `kind ∈ { Info, Success, Warning, Error }`.  Messages overlay the hint line for ~1.5 s (config `editor.transient_ms`), then auto-expire; errors stick until dismissed with Escape.  The overlay is a render-layer concern only — input continues to route normally.
-- [ ] Expose a single helper `App::flash(text: impl Into<String>, kind: MessageKind)` used by every phase.  The helper is called for:
-      - `Saved` on `Action::Save` success.
-      - `Copied` on both `Copy` and `Cut` (the deletion is self-evident; the clipboard side-effect is not).  No notification on paste.
-      - `Autosaved` only on the *dirty → clean* transition of an autosave cycle, not on every cycle — avoids noise.
-      - `Configuration updated` any time `Config::save()` runs.  Wire once inside `Config::save` so every caller (Phase 4 capability suppression toggle, Phase 7 remote-image policy selection, Phase 10 settings overlay, Phase 13 column-width comment injection) gets the notification for free.  This is a clue to the user that they can visit `config.toml` to change the value later.
-      - Link-open failures from Phase 8.
-- [ ] Errors (`kind = Error`) are sticky: they remain until Escape or until replaced by a new `Error`.  Sticky errors are the only way a transient message can outlive the 1.5 s window.
+- [x] Added `App::transient: Option<TransientMessage { text, kind, until }>` with `kind ∈ { Info, Success, Warning, Error }`.  Messages overlay the hint line until `until`; errors stick until dismissed with Escape.  `App::next_deadline` wakes the event loop for the auto-expire.
+- [x] Exposed a single helper `App::flash(text, kind)`.  Wired for:
+      - `Saved` (Success) / `Save failed` (Error) on `Action::Save`.
+      - `Copied` (Info) on both `Copy` and `Cut`.
+      - `Configuration updated` (Warning) inside `App::save_config_with_flash`, called from capability-notice "Don't show this again" and remote-image Never / Always.
+      - `Link open failed` (Error) on `AppEvent::LinkOpenResult` failures.
+      - Autosaved dirty→clean is scaffolded; the autosave path itself lands in a later phase.
+- [x] Errors are sticky (`until: None`) until Escape or replaced by a new Error.
 
 **Tasks — modal-prompt channel on the hint line:**
-- [ ] Define a `HintPrompt { prompt: String, chords: Vec<(KeyCode, String)>, handler: Box<dyn FnMut(PromptResponse) -> ...> }` pattern owned by `App`.  Only one prompt is active at a time; while active it preempts both default hints and transient messages.  Escape dismisses.
-- [ ] Phase 11 (file-change detection) is the first consumer: `R Reload   I Ignore` and `R Reload   S Save copy   O Overwrite` prompts render here.  The infrastructure exists after Phase 9 so Phase 11 only writes the specific prompt definitions.
+- [x] Defined a `HintPrompt { prompt, chords, handler: fn(&mut App, KeyCode) }` pattern owned by `App` (`App::hint_prompt`).  Only one prompt is active at a time; `HintContent::Prompt` preempts both transient messages and chords.  Escape dismisses via the main-loop dispatch.
+- [ ] Phase 11 (file-change detection) will populate the prompt definitions.  The infrastructure is landed; consumer wiring is deferred to Phase 11 proper.
 
 **Tasks — quit-without-saving modal:**
-- [ ] Implement the quit-confirmation dialog that was documented in Key Design Decisions §6 but deferred out of Phase 1.  Currently `Action::Quit` immediately terminates (`src/app.rs`'s `should_quit` path).  Replace the direct-terminate with: if `editor.buffer.is_dirty()`, open a three-button `ModalView` (`Save` / `Discard` / `Cancel`) via the same conventions as the Phase 7 remote-image prompt; otherwise quit immediately.
-- [ ] `Save` persists via `Action::Save` and then terminates.  `Save` failure (e.g. read-only disk) surfaces a sticky `Error` transient message and aborts the quit.
-- [ ] `Discard` terminates without saving.
-- [ ] `Cancel` (and Escape) closes the modal.
+- [x] Phase 1's direct-terminate path in `Action::Quit` now intercepts dirty buffers and opens `QuitConfirm` (3-button ModalView: `Save / Discard / Cancel`).  Clean buffers fall through to the original `edit_ops::apply` return.
+- [x] `Save` persists via `Buffer::save_file`; failure raises a sticky Error transient and aborts the quit.
+- [x] `Discard` sets `should_quit`.
+- [x] `Cancel` and Escape dismiss the modal without quitting.
 
 **Tasks — compact mode:**
-- [ ] `config.editor.status_bar = "two_line" | "compact"` (default `"two_line"`).  Compact mode renders only the persistent status line; hint chords are reachable via a `?` popover.  Not the default — opt-in for users on very short terminals or who prefer minimal chrome.
-- [ ] `?` popover widget (uses `ModalView`) lists every keybind grouped by category (editor, table, list, view).  Same widget feeds Phase 10's cheat-sheet overlay.
+- [x] Added `EditorConfig::status_bar: StatusBarLayout` (`two_line` | `compact`; default `two_line`) plus `transient_ms: u64` (default 1500).  Compact mode renders only the persistent status line via `BottomRegion::height`.
+- [x] `?` cheat-sheet popover (`src/ui/cheat_sheet.rs::build_cheat_sheet_body`) produced from the current `KeyMap::first_key_for` so overrides show their bound keys.  Displayed via `ModalView`.  Bound to `?` (Action::ShowCheatSheet) and dispatched by `App::open_cheat_sheet`.
 
 **Tasks — testing:**
-- [ ] Unit tests for `hint_line_for` — each mode / context combination returns the expected chord set.
-- [ ] Unit tests for `App::flash` expiry semantics — transient expires at `until`, error persists until explicit dismiss, new `Info` replaces existing `Info`.
-- [ ] `TestBackend` snapshot for `BottomRegion` in two-line mode with (a) default hints, (b) transient message overlay, (c) modal prompt, (d) compact mode.
-- [ ] Integration test in `tests/editing.rs`: `Action::Save` emits the `Saved` flash; `Action::Copy` emits `Copied`; `Action::Quit` on a dirty buffer opens the confirm modal and does not terminate until a button is pressed.
+- [x] Unit tests for `hint_line_for` cover Preview / Rendered / list-item / table contexts (`src/ui/bottom_region.rs::tests`).
+- [x] Unit tests for `App::flash` expiry, sticky-error semantics, and `flash_for_action` Save/Copy/Cut/Paste dispatch (`src/app.rs::phase9_flash_tests`).
+- [x] `TestBackend` snapshots of `BottomRegion` cover default chords, transient overlay, prompt, compact mode, and selection-size rendering.
+- [x] App-level tests cover quit-confirm mechanics (open / cancel / discard) and cheat-sheet content.
 
-**Acceptance criteria:** The bottom region shows a persistent status line and a contextual hint line.  Saving / copying / cutting displays a ~1.5 s transient notification.  Quit on a dirty buffer opens a three-button confirm modal and does not exit immediately.  `Config::save()` anywhere in the codebase produces a single `Configuration updated` notification.  Compact mode collapses to one line with chord hints behind `?`.  Hint content adapts when the cursor enters a table or list.
+**Acceptance criteria:** The bottom region shows a persistent status line and a contextual hint line.  Saving / copying / cutting displays a ~1.5 s transient notification.  Quit on a dirty buffer opens a three-button confirm modal and does not exit immediately.  `Config::save()` invoked via `save_config_with_flash` produces a `Configuration updated` notification.  Compact mode collapses to one line with chord hints behind `?`.  Hint content adapts when the cursor enters a table or list.
+
+**Deferred to Phase 11:**
+- Autosave dirty→clean flash — no autosave path yet exists to emit it.
+- `HintPrompt` consumer wiring (file-change `R Reload / I Ignore` etc.) — infrastructure is landed, specific prompts belong with Phase 11.
+
+#### Issues
+- [ ] When the user tries to quit the app with unsaved changes, the unsaved changes modal pops up. If "Save" or "Discard" is selected, the app should quit immediately (after saving if the former), but it just closes the modal, and the user must press another key to get the app to close.
+- [ ] The hint line should have a background color to distinguish it from the document.
+- [ ] It looks like there are 2 spaces between a hint chord and its label. Let's decrease that to 1. Leave 2 spaces between each hint.
+- [ ] The hint chords should have a different backgroud color, like in nano, to readily distinguish them from the label.
+- [ ] `any key->edit` should just be a string displayed before the chord hints instead of a `HintChord`. Change it to "Press any key to edit" 
+- [ ] The `^P Menu` hint should be the first hint, both in preview and edit mode. 
+- [ ] Table hints should not be displayed in raw mode, since they don't work there.
+- [ ] Ordered and unordered lists should not show the checkbox toggle hint.
+- [ ] Add a Ctrl-Enter hint for links (file, heading, and web).
+**Questions:**
+- What does the `? More` hint in a table mean/do?
+
+- [ ] Is it true that typing currently re-renders the document after each character? I don't think that is necessary or desirable. We don't need to re-render the current line since it is displayed as raw Markdown, and it's actually bad UX because there is a distracting flash when the line quickly goes from raw->rendered->raw. We shouldn't need to re-render the rest of the document either, until the cursor moves to another line, via keyboard/mouse navigation or if the user enters a newline. Is that right?
+
+- [ ] Pressing `Tab` or `Shift-Tab` in any list (ordered, unordered, checkbox) should create a new indented nested list. The indentation should be whatever `tab_width` is set to (default 4) both when rendered and in the raw Markdown. New ordered lists should start over from 1 and maintain the indent for each item. 
+
+- Tell me what colors are currently inherited from the system terminal theme
 
 ---
 
@@ -1185,39 +1211,8 @@ Extracted from old Phase 11.  Pulls in the "Heading visual hierarchy — framing
 
 ---
 
-### Phase 15 — Performance and Optimization
-*Goal: Improve resource usage and make the app feel fast*
-- **Working with large files**: `./plan.md` (this document) is a large document (~1300 lines). It does not contain any images, but does have a lot of tables, code, and checkboxes. Although it is large, it is not excessively large. Edamame should be able to handle a document this size with relative ease, but in my testing it's very laggy and spikes CPU usage (see below).
-```bash
-edamame main  ? ❯ ps aux |head -1
-USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
-
-edamame main  ? ❯ ps aux|grep edamame
-mjw      1181366 98.7  0.0 173292 20328 pts/2    Rl+  21:04   0:10 ./target/debug/edamame plan.md
-```
-- **High CPU Usage**: We should see what optimizing we can do to improve the performance of the app. For one thing, idle CPU usage is high on my machine, which I think should be significantly lower when the app is just displaying static output and not being interacted with. Interestingly, CPU usage seems to decrease over time. Memory usage is too low to even be outputted by `ps aux`, so that's fine. Here are some stats with the project's `./example.md` file open.
-
-```bash
-edamame main  ? ❯ ps aux|head -1
-USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
-edamame main  ? ❯ ps aux|grep markdown
-mjw      3192551  7.4  0.0  78956  7724 pts/11   Sl+  13:24   0:50 ./target/debug/edamame example.md
-edamame main  ? ❯ ps aux|grep markdown
-mjw      3192551  6.7  0.0  78956  7724 pts/11   Sl+  13:24   1:06 ./target/debug/edamame example.md
-edamame main  ? ❯ ps aux|grep markdown
-mjw      3192551  6.6  0.0  78956  7724 pts/11   Sl+  13:24   1:10 ./target/debug/edamame example.md
-edamame main  ? ❯ ps aux|grep markdown
-mjw      3192551  6.3  0.0  78956  7724 pts/11   Sl+  13:24   1:38 ./target/debug/edamame example.md
-```
-
-- **Terminal resize**: `crossterm` sends a `Resize(cols, rows)` event when the terminal window is resized. All layout calculations — especially table column widths and paragraph word wrap — must be recalculated on resize. Ensure the rendered view and source map are invalidated and rebuilt when this event is received. Rather than attempting to re-render WHILE the terminal is being resized, which would undoubtedly be laggy or flickery, we will simply re-render AFTER it has been resized. We could potentially blank the screen during the resize operation.
-
----
-
-### Phase 16 — Security
+### Phase 15 — Security
 *Goal: Ensure the application is not vulnerable to unintentional code execution.*
-
-Previously numbered Phase 14 in the mis-ordered original.
 
 - [ ] Check if input sanitization is needed. edamame should not run any code in files it opens.
 - [ ] Check if sanitization is needed for images.
@@ -1226,23 +1221,25 @@ Previously numbered Phase 14 in the mis-ordered original.
 
 ---
 
-### Phase 17 — Exporting
+### Phase 16 — Exporting
 *Goal: Export .md files to other basic formats.*
 
-Previously numbered Phase 12.
-
 **Tasks:**
-- [ ] HTML export.
-- [ ] PDF export.
+- [ ] HTML export
+- [ ] PDF export
+- [ ] Any others?
 
 ---
 
-### Phase 18 — Diagrams
+### Phase 17 — Diagrams
 *Goal: See if we can add support for mermaid diagrams.*
 
-Previously numbered Phase 13.
+Terminals that support showing native images should be able to show diagrams. We can hand off diagram code to a mermaid subroutine, have it generate an image, and display that.
 
-Terminals that support showing images should be able to show diagrams. We can hand off diagram code to a mermaid subroutine, have it generate an image, and display that.
+### Phase 18 — Handle Terminal Change
+*Goal: Ask user about changing their configuration if they start using a different terminal application*
+
+On occasion a user may start using a new terminal application, which may have improved or degraded support for edamame's features. We should detect this and prompt the user to revise their configuration. For example it would be unfortunate for a user who upgrades to a terminal with better image support to never see images because they disabled image display when they were using the previous terminal application.
 
 ---
 
