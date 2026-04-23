@@ -53,6 +53,29 @@ enabled = "ask"
 # Policy for `http(s)://` image URLs: "ask" | "always" | "never".
 remote_policy = "ask"
 
+# ── Export ────────────────────────────────────────────────────────────────────
+# HTML is edamame's single built-in export target. It also serves as the
+# intermediate format for custom commands (see [[export.custom]] below), so
+# PDF / DOCX / etc. are one external-tool invocation away.
+# [export.html]
+# stylesheet     = "builtin"    # or an absolute path to a .css file
+# inline_images  = false        # when true, local images are base64-embedded
+
+# Add one or more [[export.custom]] blocks to pipe the generated HTML through
+# an external tool. Each entry becomes an "Export <name>" item in the command
+# palette (Phase 10). {html} is substituted with the temp HTML file path and
+# {out} with the final output path (source stem + configured extension).
+#
+# [[export.custom]]
+# name      = "PDF (weasyprint)"
+# command   = ["weasyprint", "{html}", "{out}"]
+# extension = "pdf"
+#
+# [[export.custom]]
+# name      = "DOCX (pandoc)"
+# command   = ["pandoc", "{html}", "-o", "{out}"]
+# extension = "docx"
+
 # ── Dev ───────────────────────────────────────────────────────────────────────
 # Developer tooling. When `logging` is true, structured `tracing` logs are
 # written to the XDG data directory (e.g. ~/.local/share/edamame/); otherwise

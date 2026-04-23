@@ -1224,10 +1224,45 @@ Extracted from old Phase 11.  Pulls in the "Heading visual hierarchy — framing
 ### Phase 16 — Exporting
 *Goal: Export .md files to other basic formats.*
 
-**Tasks:**
-- [ ] HTML export
-- [ ] PDF export
-- [ ] Any others?
+HTML is the single built-in target; it doubles as the intermediate format for
+user-configured custom commands (pandoc, weasyprint, …) so PDF, DOCX, EPUB,
+etc. are one external-tool invocation away — edamame stays dependency-free.
+
+**Tasks (Phase 16 core):**
+- [x] `src/export/` module — pure-Rust HTML renderer via `pulldown-cmark`
+      with GFM options matching the in-app parser (tables, task lists,
+      strikethrough, footnotes, smart punctuation) and raw-HTML events
+      stripped (Phase 15 overlap).
+- [x] Bundled GitHub-ish stylesheet at `config/export/default.css`.  Overridable
+      via `[export.html].stylesheet = "/path/to/custom.css"`.
+- [x] Optional inline-image embedding (`[export.html].inline_images = true`)
+      that rewrites local `![alt](rel/path.png)` references to base64 `data:`
+      URIs.  Default off — keeps output compact and portable alongside the
+      asset directory.  Remote / `data:` / `file://` URLs are left untouched.
+- [x] Custom-command runner (`[[export.custom]]`): the user declares
+      entries with `name`, `command`, and `extension`; each pipes the
+      rendered HTML through an external tool via `{html}` / `{out}` path
+      substitution.  Captures stdout as a fallback when the command does
+      not write `{out}` directly.
+- [x] Background-thread execution with a caller-supplied `FnOnce` callback
+      reporting `Result<PathBuf, String>`; neither HTML render nor the
+      custom-command shell-out blocks the UI.
+- [x] Atomic temp-file-and-rename write so a partial or interrupted export
+      never leaves a truncated file at the target path.
+- [x] `preflight(target, overwrite)` returns `PreflightError::TargetExists`
+      when the output exists and overwrite is false — exposes the primitive
+      the future command-palette overwrite-confirmation modal needs.
+
+**Deferred to Phase 10 (command palette):**
+- [ ] Dispatch — palette entries `Export HTML` + one `Export <name>` per
+      custom entry.
+- [ ] Overwrite confirmation modal when `preflight` returns `TargetExists`;
+      on approve, re-invoke the spawner with the overwrite precondition met.
+- [ ] Transient-message wiring on the App's mpsc channel (success: "Exported
+      to <path>"; failure: sticky error with the tool's stderr).
+- [ ] Action enum variants (`ExportHtml`, `ExportCustom(String)`) so the
+      palette dispatch stays in the same `Action` pipeline as every other
+      command.
 
 ---
 

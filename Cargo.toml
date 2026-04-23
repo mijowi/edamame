@@ -72,6 +72,13 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 # system-library dependency.
 open = "5"
 
+# Phase 16 — HTML export:
+# `base64` encodes local image bytes into `data:` URIs when the user opts in
+# to self-contained HTML. `tempfile` hosts the intermediate HTML file for
+# custom-command exports (pandoc, weasyprint, …), cleaned up on drop.
+base64 = "0.22"
+tempfile = "3"
+
 [features]
 default = ["clipboard"]
 clipboard = ["arboard"]
@@ -81,5 +88,5 @@ clipboard = ["arboard"]
 insta = { version = "1", features = ["ron"] }
 # Property-based testing
 proptest = "1"
-# Temporary file helpers for I/O tests
-tempfile = "3"
+# Note: `tempfile` is a runtime dep (used by export/custom.rs); no separate
+# dev-dependency entry is needed — dev code can import it the same way.

@@ -22,6 +22,7 @@ pub struct Config {
     pub modal: ModalConfig,
     pub table: TableConfig,
     pub images: ImagesConfig,
+    pub export: ExportConfig,
     pub dev: DevConfig,
 }
 
@@ -33,6 +34,7 @@ impl Default for Config {
             modal: ModalConfig::default(),
             table: TableConfig::default(),
             images: ImagesConfig::default(),
+            export: ExportConfig::default(),
             dev: DevConfig::default(),
         }
     }
@@ -422,6 +424,66 @@ impl Default for ImagesConfig {
     }
 }
 
+/// Export configuration (Phase 16).
+///
+/// HTML is the single built-in export target; it doubles as the intermediate
+/// format for user-defined custom commands that produce PDF, DOCX, etc. by
+/// piping the generated HTML through an external tool.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExportConfig {
+    pub html: HtmlExportConfig,
+    /// User-defined extra export entries that appear alongside
+    /// `Export HTML` in the command palette.  Each runs an external
+    /// command with `{html}` / `{out}` path substitution.
+    pub custom: Vec<CustomExportEntry>,
+}
+
+/// HTML export settings.  `stylesheet = "builtin"` (the default) uses the
+/// compiled-in CSS bundled with edamame.  Any other value is treated as a
+/// filesystem path to a user stylesheet.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HtmlExportConfig {
+    /// Either the sentinel `"builtin"` or an absolute / home-relative path
+    /// to a user CSS file.  Read at export time; parse errors are surfaced
+    /// to the user via the export error message.
+    pub stylesheet: String,
+    /// When true, local `![alt](relative/path.png)` references are read
+    /// from disk at export time and embedded as `data:` URIs so the HTML
+    /// is fully self-contained.  Default: false (keeps output compact and
+    /// portable alongside the asset directory).
+    pub inline_images: bool,
+}
+
+impl Default for HtmlExportConfig {
+    fn default() -> Self {
+        Self {
+            stylesheet: "builtin".into(),
+            inline_images: false,
+        }
+    }
+}
+
+/// A single user-configured custom-export entry.  Shows up in the
+/// command palette as "Export <name>".  `command` is run verbatim with
+/// two placeholders substituted:
+///
+///   * `{html}` — path to the just-generated HTML file (temp file owned
+///                by the exporter; deleted after the command exits).
+///   * `{out}`  — path to the final output file (source-stem with the
+///                configured `extension` appended).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomExportEntry {
+    /// Human-readable label — appears as "Export <name>" in the palette.
+    pub name: String,
+    /// argv-style command.  Element 0 is the executable; remaining
+    /// elements are arguments with `{html}` / `{out}` substitution.
+    pub command: Vec<String>,
+    /// Extension (no leading dot) for the output file.
+    pub extension: String,
+}
+
 /// Developer/diagnostic settings.  Kept separate from `[editor]` because these
 /// knobs govern logging and debug tooling, not editing behaviour.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -638,6 +700,27 @@ mod tests {
         assert!(serialized.contains("[editor]"));
         assert!(serialized.contains("[modal]"));
         assert!(serialized.contains("[images]"));
+        assert!(serialized.contains("[export"));
         assert!(serialized.contains("[dev]"));
+    }
+
+    #[test]
+    fn export_config_defaults_and_round_trip() {
+        let config = Config::default();
+        assert_eq!(config.export.html.stylesheet, "builtin");
+        assert!(!config.export.html.inline_images);
+        assert!(config.export.custom.is_empty());
+
+        let toml_str = r#"
+[[export.custom]]
+name = "PDF (weasyprint)"
+command = ["weasyprint", "{html}", "{out}"]
+extension = "pdf"
+"#;
+        let config: Config = toml::from_str(toml_str).expect("deserialize");
+        assert_eq!(config.export.custom.len(), 1);
+        assert_eq!(config.export.custom[0].name, "PDF (weasyprint)");
+        assert_eq!(config.export.custom[0].extension, "pdf");
+        assert_eq!(config.export.custom[0].command.len(), 3);
     }
 }
