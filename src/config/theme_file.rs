@@ -290,7 +290,22 @@ impl From<&ThemeFile> for Theme {
 
             normal: (&f.normal).into(),
             selection: (&f.selection).into(),
-            cursor: (&f.cursor).into(),
+            // `cursor` is a post-v1 theme field.  Theme files written by
+            // earlier binaries have no `[cursor]` section, which serde fills
+            // with `StyleSpec::default()` — a fully empty style that would
+            // render the cursor invisible.  Fall back to the compiled
+            // `REVERSED`-only default in that case so upgrading never hides
+            // the cursor.  Users who want a non-default cursor must set at
+            // least one field under `[cursor]`, which is the same contract
+            // as every other style.
+            cursor: {
+                let s: Style = (&f.cursor).into();
+                if s == Style::default() {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    s
+                }
+            },
         }
     }
 }
