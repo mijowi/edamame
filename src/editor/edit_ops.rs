@@ -342,13 +342,17 @@ pub fn apply(
                 state.mode = Mode::Rendered;
                 return false;
             }
-            // Tab inside a table advances to the next cell (auto-creating a
-            // row if the cursor is in the last cell of the last row); outside
-            // a table it inserts 4 spaces.
+            // Tab dispatches by context:
+            //   - inside a table → advance to the next cell (auto-creating a
+            //     row when pressed in the last cell of the last row)
+            //   - inside a list  → indent the current item one level,
+            //     producing a new nested list (ordered lists reset to 1)
+            //   - otherwise       → insert `tab_width` spaces
             if cursor_in_table(state) {
                 table_next_cell(state, viewport_height, viewport_width);
-            } else {
-                insert_text(state, "    "); // 4 spaces; TODO: use config tab_width
+            } else if !list_indent(state) {
+                let indent: String = " ".repeat(state.tab_width);
+                insert_text(state, &indent);
             }
         }
         Action::Newline => {
@@ -581,6 +585,11 @@ pub fn apply(
             enter_edit_if_preview(state, viewport_height);
             if cursor_in_table(state) {
                 table_prev_cell(state, viewport_height, viewport_width);
+            } else {
+                // Shift+Tab in a list outdents the current item by one level
+                // (removes up to `tab_width` leading spaces).  Outside a list
+                // it's a no-op.
+                list_outdent(state);
             }
         }
         Action::TableNextRow => {
@@ -1491,6 +1500,39 @@ fn list_handle_newline(state: &mut EditorState) -> bool {
     } else {
         false
     }
+}
+
+/// Indent the cursor's list item one level (adds `tab_width` spaces of
+/// indent, resets ordered numbering to 1, renumbers the surrounding outer
+/// list).  Returns `true` when handled so the caller can skip the fallback
+/// plain-tab insertion.
+fn list_indent(state: &mut EditorState) -> bool {
+    let Some((source, info)) = current_list(state) else {
+        return false;
+    };
+    let byte = cursor_byte(state);
+    let tab_width = state.tab_width;
+    let Some(res) = list_edit::indent_item(&info, &source, byte, tab_width) else {
+        return false;
+    };
+    apply_byte_delta(state, res.delta, res.cursor_byte);
+    true
+}
+
+/// Outdent the cursor's list item one level (removes up to `tab_width`
+/// leading spaces).  No-op (returns `false`) when the cursor isn't in a
+/// list or when the item is already at the outermost indent.
+fn list_outdent(state: &mut EditorState) -> bool {
+    let Some((source, info)) = current_list(state) else {
+        return false;
+    };
+    let byte = cursor_byte(state);
+    let tab_width = state.tab_width;
+    let Some(res) = list_edit::outdent_item(&info, &source, byte, tab_width) else {
+        return false;
+    };
+    apply_byte_delta(state, res.delta, res.cursor_byte);
+    true
 }
 
 /// Toggle the checkbox on the cursor's task-list item, if any.

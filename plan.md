@@ -971,15 +971,6 @@ This phase deliberately owns the **entire** bottom region so later phases (file-
 - Autosave dirty→clean flash — no autosave path yet exists to emit it.
 - `HintPrompt` consumer wiring (file-change `R Reload / I Ignore` etc.) — infrastructure is landed, specific prompts belong with Phase 11.
 
-#### Issues
-
-- Tell me what UI components currently inherit colors from the system terminal theme due to having no color set explicitly by edamame.
-
-- [ ] Is it true that typing currently re-renders the document after each character? I don't think that is necessary or desirable. We don't need to re-render the current line since it is displayed as raw Markdown, and it's actually bad UX because there is a distracting flash when the line quickly goes from raw->rendered->raw. We shouldn't need to re-render the rest of the document either, until the cursor moves to another line, via keyboard/mouse navigation or if the user enters a newline. Is that right?
-
-- [ ] Pressing `Tab` or `Shift-Tab` in any list (ordered, unordered, checkbox) should create a new indented nested list. The indentation should be whatever `tab_width` is set to (default 4) both when rendered and in the raw Markdown. New ordered lists should start over from 1 and maintain the indent for each item. 
-- [ ] When the user tries to quit the app with unsaved changes, the unsaved changes modal pops up. If "Save" or "Discard" is selected, the app should quit immediately (after saving if the former), but it just closes the modal, and the user must press another key to get the app to close.
-
 ---
 
 ### Phase 10 — Command Palette, File Picker, Overlays, and Tabs
@@ -1357,3 +1348,11 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
    user-edited theme or keybindings file.  Migration was a hard cut —
    stale `[keybindings]` / `[theme]` sections in a pre-split `config.toml`
    are silently ignored.
+
+---
+
+## Miscellaneous Issues
+
+- [ ] When switching between hybrid edit mode and raw edit mode, it seems that the position in the document is not correctly preserved. The rendered and raw documents are different lengths, so when switching between modes we don't end up looking at the same line. Sometimes the cursor is not even visible. Instead we should preserve the *cursor* position on the screen. So, if the cursor is on row 20 of the terminal in rendered mode, when the user switches to raw mode, we should reposition the document so that the cursor (and the line it was on) is still on row 20 of the terminal.
+- [ ] If the cursor is at the last line of the visible area and the user adds content that causes the cursor to move to the next row of the editor, the cursor goes off the screen. Instead, the editor should scroll the document down 1 line to keep the cursor visible.
+- [ ] List item alignment: In all cases (ordered, unordered, task lists) the text of a list item should be left-padded with spaces so that the text is all aligned on the left side, and the list marker hangs off on the left at the top.

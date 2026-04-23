@@ -506,6 +506,104 @@ fn right_arrow_at_last_item_line_end_exits_list() {
     );
 }
 
+// ─── Tab / Shift+Tab indent / outdent ────────────────────────────────────────
+
+#[test]
+fn tab_on_bullet_item_indents_by_tab_width() {
+    let src = "- foo\n";
+    let mut st = editor_at_end_of_line(src, "- foo");
+    apply(&mut st, Action::InsertTab);
+    assert_eq!(st.contents(), "    - foo\n");
+    // Cursor should follow the content end.
+    let byte = cursor_byte(&st);
+    assert_eq!(&st.contents()[..byte], "    - foo");
+}
+
+#[test]
+fn tab_on_ordered_item_resets_number_and_renumbers_outer_list() {
+    // Indenting item 2 pulls it out into a nested list starting at 1; the
+    // remaining outer items "1. a" and "3. c" stay sequential as "1. a"
+    // and "2. c".
+    let src = "1. a\n2. b\n3. c\n";
+    let mut st = editor_at_end_of_line(src, "2. b");
+    apply(&mut st, Action::InsertTab);
+    assert_eq!(st.contents(), "1. a\n    1. b\n2. c\n");
+}
+
+#[test]
+fn tab_on_task_item_preserves_checkbox() {
+    let src = "- [ ] foo\n";
+    let mut st = editor_at_end_of_line(src, "- [ ] foo");
+    apply(&mut st, Action::InsertTab);
+    assert_eq!(st.contents(), "    - [ ] foo\n");
+}
+
+#[test]
+fn shift_tab_outdents_nested_bullet_item() {
+    let src = "- outer\n    - inner\n";
+    let mut st = editor_at_end_of_line(src, "    - inner");
+    apply(&mut st, Action::TablePrevCell);
+    assert_eq!(st.contents(), "- outer\n- inner\n");
+}
+
+#[test]
+fn shift_tab_partial_outdent_when_indent_shorter_than_tab_width() {
+    // `  - inner` has two spaces of indent; Shift+Tab strips those two
+    // spaces (min(tab_width, indent_len)), landing the item at column 0.
+    let src = "- outer\n  - inner\n";
+    let mut st = editor_at_end_of_line(src, "  - inner");
+    apply(&mut st, Action::TablePrevCell);
+    assert_eq!(st.contents(), "- outer\n- inner\n");
+}
+
+#[test]
+fn shift_tab_at_top_level_is_noop() {
+    let src = "- foo\n";
+    let mut st = editor_at_end_of_line(src, "- foo");
+    apply(&mut st, Action::TablePrevCell);
+    assert_eq!(st.contents(), src);
+}
+
+#[test]
+fn tab_outside_list_inserts_tab_width_spaces() {
+    let src = "plain\n";
+    let mut st = editor_at_end_of_line(src, "plain");
+    apply(&mut st, Action::InsertTab);
+    assert_eq!(st.contents(), "plain    \n");
+}
+
+#[test]
+fn tab_shift_tab_roundtrip_on_bullet_list() {
+    let src = "- a\n- b\n- c\n";
+    let mut st = editor_at_end_of_line(src, "- b");
+    apply(&mut st, Action::InsertTab);
+    assert_eq!(st.contents(), "- a\n    - b\n- c\n");
+    apply(&mut st, Action::TablePrevCell);
+    assert_eq!(st.contents(), "- a\n- b\n- c\n");
+}
+
+#[test]
+fn tab_on_empty_bullet_item_inserts_blank_line_separator() {
+    // Indenting a content-empty bullet item inserts a blank line before the
+    // indented marker so pulldown-cmark parses `    - ` as a nested list
+    // rather than as a setext H2 underline of the previous paragraph.
+    let src = "- a\n- b\n- c\n";
+    let mut st = editor_at_end_of_line(src, "- b");
+    apply(&mut st, Action::Newline); // creates empty "- " after "- b"
+    assert_eq!(st.contents(), "- a\n- b\n- \n- c\n");
+    apply(&mut st, Action::InsertTab);
+    assert_eq!(st.contents(), "- a\n- b\n\n    - \n- c\n");
+}
+
+#[test]
+fn tab_on_empty_ordered_item_inserts_blank_line_separator() {
+    let src = "1. a\n2. b\n3. c\n";
+    let mut st = editor_at_end_of_line(src, "2. b");
+    apply(&mut st, Action::Newline); // produces "1. a\n2. b\n3. \n3. c\n" then auto-renumbers
+    apply(&mut st, Action::InsertTab);
+    assert_eq!(st.contents(), "1. a\n2. b\n\n    1. \n3. c\n");
+}
+
 // ─── Undo restores a continue-item edit ──────────────────────────────────────
 
 #[test]

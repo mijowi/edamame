@@ -96,7 +96,7 @@ impl<'t> Renderer<'t> {
     pub fn render(&self, blocks: &[Block]) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         for block in blocks {
-            self.render_block(block, &mut lines, 0);
+            self.render_block(block, &mut lines, "");
         }
         lines
     }
@@ -111,7 +111,7 @@ impl<'t> Renderer<'t> {
 
         for block in blocks {
             let before = lines.len();
-            self.render_block(block, &mut lines, 0);
+            self.render_block(block, &mut lines, "");
             counts.push(lines.len() - before);
         }
 
@@ -120,13 +120,13 @@ impl<'t> Renderer<'t> {
 
     // ── Block rendering ───────────────────────────────────────────
 
-    fn render_block(&self, block: &Block, out: &mut Vec<Line<'static>>, indent: usize) {
+    fn render_block(&self, block: &Block, out: &mut Vec<Line<'static>>, indent_prefix: &str) {
         match block {
             Block::Heading { level, inlines } => {
                 self.render_heading(*level, inlines, out);
             }
             Block::Paragraph { inlines } => {
-                self.render_paragraph(inlines, out, indent);
+                self.render_paragraph(inlines, out, indent_prefix);
             }
             Block::CodeBlock { language, content } => {
                 self.render_code_block(language.as_deref(), content, out);
@@ -139,7 +139,7 @@ impl<'t> Renderer<'t> {
                 start,
                 items,
             } => {
-                self.render_list(*ordered, *start, items, out, indent);
+                self.render_list(*ordered, *start, items, out, indent_prefix);
             }
             Block::HorizontalRule => {
                 out.push(Line::styled("─".repeat(80), self.theme.rule));
@@ -156,7 +156,7 @@ impl<'t> Renderer<'t> {
                 // Render raw HTML as a muted code-like block.
                 for line in html.lines() {
                     out.push(Line::styled(
-                        format!("{}{}", "  ".repeat(indent), line),
+                        format!("{indent_prefix}{line}"),
                         self.theme.code_block_text,
                     ));
                 }
@@ -243,8 +243,13 @@ impl<'t> Renderer<'t> {
 
     // ── Paragraph ─────────────────────────────────────────────────
 
-    fn render_paragraph(&self, inlines: &[Inline], out: &mut Vec<Line<'static>>, indent: usize) {
-        let prefix = "  ".repeat(indent);
+    fn render_paragraph(
+        &self,
+        inlines: &[Inline],
+        out: &mut Vec<Line<'static>>,
+        indent_prefix: &str,
+    ) {
+        let prefix = indent_prefix.to_string();
         // Split at both HardBreaks and SoftBreaks so every source-level line
         // break produces its own visual line.  CommonMark collapses soft breaks
         // into spaces, but in a TUI editor we preserve the author's line layout
@@ -358,7 +363,7 @@ impl<'t> Renderer<'t> {
             if i > 0 {
                 inner_lines.push(Line::from(""));
             }
-            self.render_block(block, &mut inner_lines, 0);
+            self.render_block(block, &mut inner_lines, "");
         }
 
         for line in inner_lines {
@@ -424,23 +429,54 @@ impl<'t> Renderer<'t> {
         start: Option<u64>,
         items: &[ListItem],
         out: &mut Vec<Line<'static>>,
-        indent: usize,
+        indent_prefix: &str,
     ) {
-        let indent_str = "  ".repeat(indent);
-        let mut counter = start.unwrap_or(1);
+        // Per-list-type "gutter" width — the number of cells that the
+        // marker (plus its trailing space) occupies, which is also how far
+        // nested content / subsequent blocks in each item must be indented
+        // so the text column aligns.
+        //
+        //   unordered:  `• `             → 2 cells
+        //   ordered:    ` 1. `           → max(3, max_digits + 2) cells
+        //                                   (wider when the list reaches
+        //                                    10+ items so two-digit numbers
+        //                                    right-align under single-digit
+        //                                    ones and every item's text
+        //                                    lines up)
+        //   task list:  `[ ] `           → 4 cells (no bullet/number; the
+        //                                   checkbox is the visual anchor)
+        let first_num = start.unwrap_or(1);
+        let last_num = first_num + items.len().saturating_sub(1) as u64;
+        let digit_width = last_num.to_string().len().max(1);
+        let all_task = !items.is_empty() && items.iter().all(|i| i.task.is_some());
+        let gutter_width = if all_task {
+            4
+        } else if ordered {
+            digit_width + 2
+        } else {
+            2
+        };
+        let child_indent_prefix = format!("{indent_prefix}{}", " ".repeat(gutter_width));
 
+        let mut counter = first_num;
         for item in items {
             let is_task = item.task.is_some();
 
             // Task items have no bullet/number — the checkbox is the visual anchor.
             let (marker, marker_style) = if is_task {
-                (indent_str.clone(), Style::default())
+                (indent_prefix.to_string(), Style::default())
             } else if ordered {
-                let s = format!("{}{}. ", indent_str, counter);
+                // Right-align the number inside a `digit_width`-wide slot so
+                // multi-digit numbers (10+) don't push their item's text out
+                // of alignment with the single-digit items above.
+                let s = format!(
+                    "{indent_prefix}{counter:>digit_width$}. ",
+                    digit_width = digit_width
+                );
                 counter += 1;
                 (s, self.theme.list_number)
             } else {
-                (format!("{}• ", indent_str), self.theme.list_bullet)
+                (format!("{indent_prefix}• "), self.theme.list_bullet)
             };
 
             // Task list prefix (checkbox).
@@ -495,12 +531,14 @@ impl<'t> Renderer<'t> {
                         other => {
                             // Non-paragraph first block: render marker alone, then block.
                             out.push(Line::from(vec![Span::styled(marker.clone(), marker_style)]));
-                            self.render_block(other, out, indent + 1);
+                            self.render_block(other, out, &child_indent_prefix);
                         }
                     }
                 } else {
-                    // Subsequent blocks in the same item: render with extra indent.
-                    self.render_block(block, out, indent + 1);
+                    // Subsequent blocks in the same item: render with the
+                    // child indent prefix so their text aligns with this
+                    // item's text column (hanging-indent layout).
+                    self.render_block(block, out, &child_indent_prefix);
                 }
             }
         }
@@ -875,6 +913,87 @@ mod tests {
             texts[4]
         );
         assert!(texts[6].starts_with('└'), "bottom: {:?}", texts[6]);
+    }
+
+    #[test]
+    fn ordered_list_right_aligns_numbers_when_double_digit() {
+        let mut src = String::new();
+        for i in 1..=12u32 {
+            src.push_str(&format!("{i}. item {i}\n"));
+        }
+        let lines = render(&src);
+        // Single-digit items get a leading space so they align under the
+        // two-digit items ("10. "/"11. "/"12. ").  First line should start
+        // with " 1. ", not "1. ".
+        assert!(
+            line_text(&lines[0]).starts_with(" 1. "),
+            "got {:?}",
+            line_text(&lines[0])
+        );
+        // Line 9 is " 9. "; line 10 is "10. " (no leading space).
+        assert!(
+            line_text(&lines[8]).starts_with(" 9. "),
+            "got {:?}",
+            line_text(&lines[8])
+        );
+        assert!(
+            line_text(&lines[9]).starts_with("10. "),
+            "got {:?}",
+            line_text(&lines[9])
+        );
+    }
+
+    #[test]
+    fn nested_ordered_list_uses_marker_width_indent() {
+        // Outer list is single-digit (gutter = 3), so the nested item's text
+        // should start at column 3 (three-space indent).
+        let lines = render("1. outer\n    1. inner\n2. next\n");
+        assert_eq!(lines.len(), 3);
+        assert_eq!(line_text(&lines[0]), "1. outer");
+        assert_eq!(line_text(&lines[1]), "   1. inner");
+        assert_eq!(line_text(&lines[2]), "2. next");
+    }
+
+    #[test]
+    fn nested_bullet_list_uses_two_space_indent() {
+        let lines = render("- outer\n    - inner\n- next\n");
+        assert_eq!(lines.len(), 3);
+        assert_eq!(line_text(&lines[0]), "• outer");
+        assert_eq!(line_text(&lines[1]), "  • inner");
+        assert_eq!(line_text(&lines[2]), "• next");
+    }
+
+    #[test]
+    fn nested_task_list_uses_four_space_indent() {
+        let lines = render("- [ ] outer\n    - [ ] inner\n- [ ] next\n");
+        assert_eq!(lines.len(), 3);
+        // Task items render without a bullet marker — the checkbox anchors
+        // the item, and nested tasks indent by 4 (the checkbox width).
+        assert_eq!(line_text(&lines[0]), "[ ] outer");
+        assert_eq!(line_text(&lines[1]), "    [ ] inner");
+        assert_eq!(line_text(&lines[2]), "[ ] next");
+    }
+
+    /// Nested-checklist regression: an empty item Tab-indent produces a
+    /// blank-line-separated list.  That forces pulldown-cmark into
+    /// "loose-list" mode, which wraps each item's content in a
+    /// `Paragraph` — the `TaskListMarker` then sits *inside* the
+    /// paragraph instead of directly under `Item`.  The parser must pick
+    /// up the marker in both positions so the parent items keep their
+    /// checkbox rendering instead of regressing to bullets.
+    #[test]
+    fn loose_task_list_still_renders_checkboxes() {
+        let lines = render("- [ ] parent\n\n    - [ ] nested\n- [ ] sibling\n");
+        assert!(
+            line_text(&lines[0]).starts_with("[ ] parent"),
+            "parent should render as a task item, got {:?}",
+            line_text(&lines[0])
+        );
+        assert!(
+            line_text(&lines[lines.len() - 1]).starts_with("[ ] sibling"),
+            "sibling should render as a task item, got {:?}",
+            line_text(&lines[lines.len() - 1])
+        );
     }
 
     #[test]

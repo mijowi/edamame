@@ -276,19 +276,48 @@ where
             Some(Event::Start(Tag::Item)) => {
                 events.next(); // consume Start(Item)
 
-                // Check for a task-list marker immediately inside the item.
-                let task = match events.peek() {
-                    Some(Event::TaskListMarker(_)) => {
+                // Task-list marker location depends on whether the
+                // surrounding list is *tight* or *loose*:
+                //
+                //   tight:  Start(Item) → TaskListMarker → Text(…) → End(Item)
+                //   loose:  Start(Item) → Start(Paragraph) → TaskListMarker
+                //             → Text(…) → End(Paragraph) → End(Item)
+                //
+                // Handle both.  In the loose case we speculatively consume
+                // the `Start(Paragraph)` so the remaining events inside it
+                // can be parsed with `parse_inlines` (which doesn't handle
+                // a dangling `End(Paragraph)` on its own).
+                let mut task: Option<bool> = None;
+                if let Some(Event::TaskListMarker(_)) = events.peek() {
+                    if let Some(Event::TaskListMarker(checked)) = events.next() {
+                        task = Some(checked);
+                    }
+                }
+                let mut paragraph_consumed = false;
+                if task.is_none() && matches!(events.peek(), Some(Event::Start(Tag::Paragraph))) {
+                    events.next(); // consume Start(Paragraph)
+                    paragraph_consumed = true;
+                    if let Some(Event::TaskListMarker(_)) = events.peek() {
                         if let Some(Event::TaskListMarker(checked)) = events.next() {
-                            Some(checked)
-                        } else {
-                            None
+                            task = Some(checked);
                         }
                     }
-                    _ => None,
-                };
+                }
 
-                let blocks = parse_blocks(events);
+                let mut blocks: Vec<Block> = Vec::new();
+                if paragraph_consumed {
+                    // Finish the opened paragraph ourselves, then delegate
+                    // to `parse_blocks` for anything else inside the item
+                    // (nested lists, additional paragraphs, etc.).
+                    let inlines = parse_inlines(events);
+                    consume_end(events); // End(Paragraph)
+                    if !inlines.is_empty() {
+                        blocks.push(Block::Paragraph { inlines });
+                    }
+                    blocks.extend(parse_blocks(events));
+                } else {
+                    blocks = parse_blocks(events);
+                }
                 consume_end(events); // End(Item)
                 items.push(ListItem { blocks, task });
             }

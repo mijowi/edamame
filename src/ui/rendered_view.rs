@@ -184,7 +184,19 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             };
             sub.min(last_replaceable)
         } else {
-            cursor_raw_line.min(cursor_block_own.saturating_sub(1))
+            // Raw-to-rendered line mapping is 1:1 for simple blocks, but a
+            // list that contains a blank-line separator (e.g. the form
+            // required for an empty nested item to parse correctly) has
+            // fewer rendered lines than raw lines.  Compress by counting
+            // non-blank raw lines preceding the cursor's raw line so the
+            // replaced rendered row corresponds to the actual item the
+            // cursor sits on.
+            let preceding_non_blank = raw_lines
+                .iter()
+                .take(cursor_raw_line)
+                .filter(|l| !l.trim().is_empty())
+                .count();
+            preceding_non_blank.min(cursor_block_own.saturating_sub(1))
         };
         let cursor_rendered_line = cursor_block_lines.start + cursor_in_block;
 
@@ -337,6 +349,10 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     let visual_col = if is_table {
                         table_raw_col_to_rendered_col(raw_text, line, cursor_col)
                             .unwrap_or(cursor_col)
+                    } else if let Some(col) =
+                        list_raw_col_to_rendered_col(raw_text, line, cursor_col)
+                    {
+                        col
                     } else {
                         cursor_col
                     };
@@ -831,9 +847,184 @@ fn cursor_position_in_block(
     (last_line_idx, last_line.chars().count())
 }
 
+/// Map a raw-column on a list-item line to its rendered column.  Returns
+/// `None` when `raw_text` isn't recognized as a list-item line — callers
+/// fall back to treating raw-col as visual-col.
+///
+/// Needed because the rendered marker width can differ from the raw
+/// marker width:
+///
+///   - task items: raw `- [ ] foo` → rendered `[ ] foo` (the `- ` prefix
+///     is dropped; the checkbox is the visual anchor instead).
+///   - ordered items with 10+ items: raw `1. foo` → rendered ` 1. foo`
+///     (numbers are right-aligned in a max-digit-wide slot).
+///
+/// Both cases shift the content column, so the jitter-delay cursor
+/// indicator in Rendered mode must be drawn at the correct rendered
+/// column — not the raw column.
+fn list_raw_col_to_rendered_col(
+    raw_text: &str,
+    line: &ratatui::text::Line<'_>,
+    raw_col: usize,
+) -> Option<usize> {
+    let raw_total = raw_list_marker_char_width(raw_text)?;
+    let rendered_total = rendered_list_marker_char_width(line)?;
+    if raw_col <= raw_total {
+        Some(rendered_total)
+    } else {
+        Some(raw_col - raw_total + rendered_total)
+    }
+}
+
+/// Width (in chars) of the raw list-item prefix — leading whitespace +
+/// marker (`- ` / `N. ` / `N) `) + optional task-prefix (`[ ] ` etc.).
+/// Returns `None` when `raw_text` doesn't start with a list marker.
+fn raw_list_marker_char_width(raw_text: &str) -> Option<usize> {
+    let indent_chars = raw_text
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .count();
+    let after_indent: String = raw_text.chars().skip(indent_chars).collect();
+    let rb = after_indent.as_bytes();
+    let marker_len = match rb.first() {
+        Some(b'-') | Some(b'*') | Some(b'+') if rb.get(1) == Some(&b' ') => 2,
+        _ => {
+            let digits = rb.iter().take_while(|b| b.is_ascii_digit()).count();
+            if digits > 0
+                && matches!(rb.get(digits), Some(b'.') | Some(b')'))
+                && rb.get(digits + 1) == Some(&b' ')
+            {
+                digits + 2
+            } else {
+                return None;
+            }
+        }
+    };
+    let after_marker = &after_indent[marker_len..];
+    let task_len = if after_marker.starts_with("[ ] ")
+        || after_marker.starts_with("[x] ")
+        || after_marker.starts_with("[X] ")
+    {
+        4
+    } else {
+        0
+    };
+    Some(indent_chars + marker_len + task_len)
+}
+
+/// Width (in chars) of the rendered list-item marker — leading whitespace
+/// + `• ` / padded digits + `. ` / `[ ] `.  Returns `None` when the
+/// rendered line doesn't start with a recognizable list marker.
+fn rendered_list_marker_char_width(line: &ratatui::text::Line<'_>) -> Option<usize> {
+    let text: String = line.spans.iter().flat_map(|s| s.content.chars()).collect();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() && chars[i] == ' ' {
+        i += 1;
+    }
+    if chars.get(i) == Some(&'•') && chars.get(i + 1) == Some(&' ') {
+        return Some(i + 2);
+    }
+    if chars.get(i) == Some(&'[')
+        && matches!(chars.get(i + 1), Some(' ') | Some('x') | Some('X'))
+        && chars.get(i + 2) == Some(&']')
+        && chars.get(i + 3) == Some(&' ')
+    {
+        return Some(i + 4);
+    }
+    let digits = chars[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+    if digits > 0
+        && matches!(chars.get(i + digits), Some('.') | Some(')'))
+        && chars.get(i + digits + 1) == Some(&' ')
+    {
+        return Some(i + digits + 2);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use ratatui::style::Style;
+    use ratatui::text::{Line, Span};
+
+    #[test]
+    fn raw_list_marker_width_bullet() {
+        assert_eq!(raw_list_marker_char_width("- foo"), Some(2));
+        assert_eq!(raw_list_marker_char_width("  - foo"), Some(4));
+    }
+
+    #[test]
+    fn raw_list_marker_width_ordered() {
+        assert_eq!(raw_list_marker_char_width("1. foo"), Some(3));
+        assert_eq!(raw_list_marker_char_width("10. foo"), Some(4));
+    }
+
+    #[test]
+    fn raw_list_marker_width_task() {
+        assert_eq!(raw_list_marker_char_width("- [ ] foo"), Some(6));
+        assert_eq!(raw_list_marker_char_width("- [x] foo"), Some(6));
+    }
+
+    #[test]
+    fn rendered_marker_width_bullet() {
+        let line = Line::from(vec![Span::styled("• ", Style::default()), Span::raw("foo")]);
+        assert_eq!(rendered_list_marker_char_width(&line), Some(2));
+    }
+
+    #[test]
+    fn rendered_marker_width_ordered_padded() {
+        let line = Line::from(vec![
+            Span::styled(" 1. ", Style::default()),
+            Span::raw("foo"),
+        ]);
+        assert_eq!(rendered_list_marker_char_width(&line), Some(4));
+    }
+
+    #[test]
+    fn rendered_marker_width_task() {
+        let line = Line::from(vec![
+            Span::raw(""),
+            Span::styled("[ ] ", Style::default()),
+            Span::raw("foo"),
+        ]);
+        assert_eq!(rendered_list_marker_char_width(&line), Some(4));
+    }
+
+    #[test]
+    fn list_col_map_bullet_unchanged() {
+        // Raw `- foo`, rendered `• foo`.  Both have 2-char markers, so
+        // raw col 2 (start of 'foo') maps to rendered col 2.
+        let line = Line::from(vec![Span::styled("• ", Style::default()), Span::raw("foo")]);
+        assert_eq!(list_raw_col_to_rendered_col("- foo", &line, 2), Some(2));
+        assert_eq!(list_raw_col_to_rendered_col("- foo", &line, 4), Some(4));
+    }
+
+    #[test]
+    fn list_col_map_task_drops_bullet() {
+        // Raw `- [ ] foo` (6-char marker), rendered `[ ] foo` (4-char marker).
+        // Raw col 6 ('f') maps to rendered col 4.
+        let line = Line::from(vec![
+            Span::raw(""),
+            Span::styled("[ ] ", Style::default()),
+            Span::raw("foo"),
+        ]);
+        assert_eq!(list_raw_col_to_rendered_col("- [ ] foo", &line, 6), Some(4));
+        assert_eq!(list_raw_col_to_rendered_col("- [ ] foo", &line, 7), Some(5));
+    }
+
+    #[test]
+    fn list_col_map_ordered_padded_shifts_right() {
+        // Raw `1. foo` (3-char marker), rendered ` 1. foo` (4-char marker).
+        // Raw col 3 ('f') maps to rendered col 4.
+        let line = Line::from(vec![
+            Span::styled(" 1. ", Style::default()),
+            Span::raw("foo"),
+        ]);
+        assert_eq!(list_raw_col_to_rendered_col("1. foo", &line, 3), Some(4));
+        assert_eq!(list_raw_col_to_rendered_col("1. foo", &line, 5), Some(6));
+    }
 
     #[test]
     fn raw_source_lines_no_trailing_newline() {

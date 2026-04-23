@@ -50,6 +50,10 @@ pub struct EditorState {
     preserve_blank_lines: bool,
     /// Whether Up/Down navigate by visual lines (true) or logical lines (false).
     pub visual_line_nav: bool,
+    /// Number of spaces per indent step — used by `Tab` / `Shift+Tab` to
+    /// indent or outdent list items and by `InsertTab` outside a list.
+    /// Seeded from `config.editor.tab_width`; defaults to 4.
+    pub tab_width: usize,
     /// Ceiling (in rendered rows) for each `Block::ImageBlock` — propagated
     /// from `Config::image::max_height` so the renderer, navigation, and
     /// `image_view::paint_images` all agree on the reserved row count.
@@ -185,6 +189,7 @@ impl EditorState {
             theme,
             preserve_blank_lines,
             visual_line_nav,
+            tab_width: 4,
             image_max_height,
             image_max_width,
             image_font_size,

@@ -443,6 +443,143 @@ pub fn toggle_checkbox(
     })
 }
 
+/// Build an `EditDelta` that indents the item at `cursor_byte` by `tab_width`
+/// spaces, producing a new nested list one level deeper.  For ordered lists,
+/// the indented item's number is reset to `1` (it starts a fresh nested
+/// sequence) and the remaining outer items are renumbered to fill the gap.
+/// For bullet lists the edit is just `tab_width` spaces prepended to the
+/// item's line.  Returns `None` when `cursor_byte` is not inside any item.
+pub fn indent_item(
+    info: &ListInfo,
+    source: &str,
+    cursor_byte: usize,
+    tab_width: usize,
+) -> Option<ContinueResult> {
+    if tab_width == 0 {
+        return None;
+    }
+    let item_idx = cursor_item_idx(info, cursor_byte)?;
+    let tab_str: String = " ".repeat(tab_width);
+
+    // Bullet lists: the nested item can be emitted as an independent edit
+    // (just prepend the extra indent) because there is no renumbering to do.
+    if let MarkerKind::Bullet(_) = info.kind {
+        let item = &info.items[item_idx];
+        // When the item has no content, pulldown-cmark interprets the
+        // indented `    - ` as a setext H2 underline of the previous item's
+        // paragraph rather than a nested list marker (see CommonMark 4.3).
+        // Inserting a blank line separator between the parent and the
+        // indented marker forces the nested-list interpretation.  Non-empty
+        // items aren't affected because the trailing content breaks the
+        // setext pattern.
+        let inserted = if item.content_is_empty(source) && item_idx > 0 {
+            format!("\n{tab_str}")
+        } else {
+            tab_str.clone()
+        };
+        let cursor_target = cursor_byte + inserted.len();
+        let delta = EditDelta {
+            offset: item.start,
+            removed: String::new(),
+            inserted,
+        };
+        return Some(ContinueResult {
+            delta,
+            cursor_byte: cursor_target,
+        });
+    }
+
+    // Ordered lists: rewrite the entire run so the outer items renumber
+    // contiguously with the indented item removed from the sequence.  The
+    // indented item becomes the sole starting member of a fresh nested list
+    // at number 1.
+    let MarkerKind::Ordered(delim) = info.kind else {
+        unreachable!();
+    };
+    let base = info.items[0].number.unwrap_or(1);
+    let mut out = String::new();
+    let mut cursor_out: usize = 0;
+    let mut outer_counter = base;
+    let nested_indent = format!("{}{}", info.indent, tab_str);
+
+    for (i, item) in info.items.iter().enumerate() {
+        let rest = &source[item.marker_end..item.end];
+        // Insert a blank-line separator before an empty indented item so
+        // pulldown-cmark recognises it as a nested list rather than lazy
+        // paragraph continuation of the preceding item.
+        if i == item_idx && i > 0 && item.content_is_empty(source) {
+            out.push('\n');
+        }
+        let new_marker = if i == item_idx {
+            format!("{nested_indent}1{delim} ")
+        } else {
+            let m = format!("{}{outer_counter}{delim} ", info.indent);
+            outer_counter += 1;
+            m
+        };
+        let marker_out_start = out.len();
+        out.push_str(&new_marker);
+        if i == item_idx {
+            // Cursor's byte offset inside the original item, measured from
+            // the old marker_end.  For positions before marker_end (indent
+            // or digits), the saturating_sub yields 0 so the cursor lands
+            // immediately after the new marker.
+            let in_item = cursor_byte.saturating_sub(item.marker_end);
+            cursor_out = marker_out_start + new_marker.len() + in_item.min(rest.len());
+        }
+        out.push_str(rest);
+    }
+
+    let removed = source[info.start..info.end].to_owned();
+    Some(ContinueResult {
+        delta: EditDelta {
+            offset: info.start,
+            removed,
+            inserted: out,
+        },
+        cursor_byte: info.start + cursor_out,
+    })
+}
+
+/// Build an `EditDelta` that outdents the item at `cursor_byte` by removing
+/// up to `tab_width` leading spaces from the front of that item's first
+/// line.  Returns `None` when the item is already at the outermost level
+/// (no indent to strip) or when `cursor_byte` is outside every item.
+pub fn outdent_item(
+    info: &ListInfo,
+    source: &str,
+    cursor_byte: usize,
+    tab_width: usize,
+) -> Option<ContinueResult> {
+    if tab_width == 0 {
+        return None;
+    }
+    let item_idx = cursor_item_idx(info, cursor_byte)?;
+    let item = &info.items[item_idx];
+    let indent_len = info.indent.len();
+    if indent_len == 0 {
+        return None;
+    }
+    let strip = tab_width.min(indent_len);
+    let removed = source[item.start..item.start + strip].to_owned();
+    let delta = EditDelta {
+        offset: item.start,
+        removed,
+        inserted: String::new(),
+    };
+    // The cursor shifts left by `strip` bytes if it sat past the stripped
+    // region; otherwise it tracks the line's new start.
+    let cursor_target = if cursor_byte >= item.start + strip {
+        cursor_byte - strip
+    } else {
+        item.start
+    };
+    Some(ContinueResult {
+        delta,
+        cursor_byte: cursor_target,
+    })
+}
+
 /// Rewrite every ordered item's number so they form a monotonic sequence
 /// starting from the first item's parsed number (falling back to 1).  No-op
 /// for bullet lists.  Returns `None` when the list is already consistent.

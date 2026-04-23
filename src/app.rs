@@ -405,6 +405,7 @@ impl App {
             config.images.max_width,
             image_font_size,
         );
+        editor.tab_width = config.editor.tab_width;
         // When the user has persisted `images.enabled = "never"`, image
         // blocks must collapse to just the `[Image: alt]` placeholder —
         // no reserved rows beneath.  The `Ask` / `Always` paths leave
@@ -1057,6 +1058,12 @@ impl App {
                         self.needs_draw = true;
                     }
                 }
+                // Save / Discard terminate the session — exit immediately
+                // instead of requiring another keypress to reach the
+                // end-of-loop quit check.
+                if self.should_quit {
+                    break;
+                }
                 continue;
             }
 
@@ -1545,6 +1552,7 @@ impl App {
                 .map(|p| p.font_size())
                 .unwrap_or((10, 20)),
         );
+        new_editor.tab_width = self.config.editor.tab_width;
         // Preserve the current declined state across file loads: a
         // session-level `No`, a persisted `Never`, or anything else that
         // zeroed `images_enabled` on the previous editor stays in

@@ -404,7 +404,10 @@ mod tests {
         assert!(labels.contains(&"Copy"));
         assert!(labels.contains(&"Paste"));
         assert!(labels.contains(&"Save"));
-        assert!(labels.contains(&"Raw"), "Rendered-mode chord toggles TO Raw");
+        assert!(
+            labels.contains(&"Raw"),
+            "Rendered-mode chord toggles TO Raw"
+        );
         assert!(labels.contains(&"Quit"));
         // Plain paragraph has no link, so "Open link" must not appear.
         assert!(
