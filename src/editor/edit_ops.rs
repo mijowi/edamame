@@ -85,11 +85,20 @@ pub fn apply(
                 sync_cursor_to_scroll(state, viewport_height);
             }
             state.visual_selection = None;
+            let was_raw = state.mode == Mode::Raw;
             state.mode = match state.mode {
                 Mode::Preview => Mode::Rendered,
                 Mode::Rendered => Mode::Raw,
                 Mode::Raw => Mode::Rendered,
             };
+            // Raw → Rendered: if the cursor was sitting inside an HTML
+            // comment (visible in Raw, invisible in Rendered), snap it to
+            // the start of the next visible block so hybrid rendering has
+            // a well-defined cursor position.
+            if was_raw && state.mode == Mode::Rendered {
+                snap_cursor_out_of_hidden_block(state, viewport_width);
+                state.update_cursor_block();
+            }
         }
 
         // ── Cursor movement ───────────────────────────────────────
@@ -1084,9 +1093,10 @@ fn cursor_on_alignment_row(state: &EditorState) -> bool {
 }
 
 /// Move the cursor up/down by one line, then — if that move landed on a
-/// table's alignment row — advance once more in the same direction so the
-/// cursor skips the alignment row entirely.  Honours `visual_line_nav` for
-/// both moves so wrapped lines and tables cooperate.
+/// table's alignment row or inside a hidden (zero-rendered-line) block —
+/// advance once more in the same direction so the cursor skips the
+/// structural artefact entirely.  Honours `visual_line_nav` for all moves
+/// so wrapped lines, tables, and hidden HTML comments cooperate.
 fn move_line_skipping_alignment(state: &mut EditorState, down: bool, viewport_width: usize) {
     let step = |state: &mut EditorState| {
         if down {
@@ -1104,6 +1114,69 @@ fn move_line_skipping_alignment(state: &mut EditorState, down: bool, viewport_wi
     step(state);
     if cursor_on_alignment_row(state) {
         step(state);
+    }
+    // Walk past any consecutive hidden (zero-rendered-line) blocks — HTML
+    // comments don't produce rendered rows, so stopping on one would leave
+    // the cursor "stuck" at a position the user can't see in hybrid view.
+    // The loop is bounded by repeated `prev_offset` equality: when the step
+    // function can't advance further (top/bottom of buffer), we stop rather
+    // than spin.
+    let mut safety = 32usize;
+    while cursor_on_hidden_block(state) && safety > 0 {
+        let prev_offset = state.cursor.offset;
+        step(state);
+        if state.cursor.offset == prev_offset {
+            break;
+        }
+        safety -= 1;
+    }
+}
+
+/// True iff the cursor currently falls inside a block with zero rendered
+/// lines whose source text is an HTML comment.  Used by vertical-navigation
+/// and mode-transition code to skip over invisible source bytes so the
+/// cursor never stalls on a line the user can't see in hybrid view.
+///
+/// Intentionally specific to comments rather than "any zero-own block":
+/// suppressed blank lines (when `preserve_blank_lines` is false) also have
+/// zero own but are bytes the cursor may legitimately want to land on.
+fn cursor_on_hidden_block(state: &EditorState) -> bool {
+    let rope = state.buffer.rope();
+    let cursor_byte = rope.char_to_byte(state.cursor.offset);
+    let Some(block_idx) = state.parsed.source_map.block_for_byte(cursor_byte) else {
+        return false;
+    };
+    if state.parsed.block_own_line_count(block_idx) > 0 {
+        return false;
+    }
+    let Some(range) = state.parsed.source_map.original_range_for_byte(cursor_byte) else {
+        return false;
+    };
+    let source = state.buffer.contents();
+    let end = range.end.min(source.len());
+    source[range.start..end].trim_start().starts_with("<!--")
+}
+
+/// Walk the cursor forward past any hidden (HTML-comment) blocks so
+/// subsequent rendering logic can assume the cursor's block has at least
+/// one rendered line.  Called on the Raw → Rendered / Preview mode
+/// transition, where the cursor may have been sitting inside a comment
+/// that's invisible in the destination mode.
+fn snap_cursor_out_of_hidden_block(state: &mut EditorState, viewport_width: usize) {
+    let mut safety = 32usize;
+    while cursor_on_hidden_block(state) && safety > 0 {
+        let prev_offset = state.cursor.offset;
+        if state.visual_line_nav && viewport_width > 0 {
+            state.move_down_visual(viewport_width);
+        } else {
+            state.cursor.move_down(&state.buffer);
+        }
+        if state.cursor.offset == prev_offset {
+            // Already at the buffer's end — nowhere to skip to.  Leave the
+            // cursor where it is; the rendered view falls back gracefully.
+            break;
+        }
+        safety -= 1;
     }
 }
 

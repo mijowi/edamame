@@ -306,6 +306,7 @@ fn collect_links_from_block(block: &Block, out: &mut Vec<(String, Option<String>
         Block::CodeBlock { .. }
         | Block::HorizontalRule
         | Block::Html(_)
+        | Block::HtmlComment(_)
         | Block::ImageBlock { .. } => {}
     }
 }
@@ -325,6 +326,7 @@ fn collect_links_from_inlines(inlines: &[Inline], out: &mut Vec<(String, Option<
             Inline::Text(_)
             | Inline::Code(_)
             | Inline::Image { .. }
+            | Inline::HtmlComment(_)
             | Inline::SoftBreak
             | Inline::HardBreak => {}
         }

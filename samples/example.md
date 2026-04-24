@@ -5,6 +5,8 @@
 ##### Heading 5
 ###### Heading 6
 
+<!-- html comment -->
+
 Also Heading 1
 ==============
 

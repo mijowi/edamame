@@ -161,6 +161,13 @@ impl<'t> Renderer<'t> {
                     ));
                 }
             }
+            Block::HtmlComment(_) => {
+                // Comments are annotation, not content — emit zero lines in
+                // Preview and Rendered modes.  Raw mode reads the rope
+                // directly, so the source text stays visible there.
+                // `per_block_own` records 0 for this block so navigation
+                // and source-map coverage stay consistent.
+            }
             Block::ImageBlock { alt, url } => {
                 self.render_image_block(alt, url, out);
             }
@@ -410,6 +417,7 @@ impl<'t> Renderer<'t> {
                 };
                 IMAGE_PREFIX.chars().count() + name_width + 2
             }
+            Inline::HtmlComment(_) => 0,
             Inline::SoftBreak | Inline::HardBreak => 1,
         }
     }
@@ -742,6 +750,13 @@ impl<'t> Renderer<'t> {
                 ]
             }
 
+            Inline::HtmlComment(_) => {
+                // Zero spans — inline HTML comments are annotation, not
+                // visible content.  The surrounding paragraph's other
+                // inlines render normally.
+                Vec::new()
+            }
+
             Inline::SoftBreak => vec![Span::raw(" ")],
 
             Inline::HardBreak => {
@@ -1011,5 +1026,51 @@ mod tests {
             .expect("name span");
         assert!(!prefix.style.add_modifier.contains(Modifier::UNDERLINED));
         assert!(name.style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    // ── HTML comment hiding (Phase 12) ────────────────────────────────────
+
+    #[test]
+    fn block_level_html_comment_renders_zero_lines() {
+        let lines = render("<!-- hidden -->\n");
+        assert_eq!(lines.len(), 0, "got {} lines: {lines:?}", lines.len());
+    }
+
+    #[test]
+    fn block_level_html_comment_between_paragraphs_is_invisible() {
+        // The surrounding paragraphs render normally; the comment contributes
+        // zero rendered lines.  Blank-line gap bytes on either side are still
+        // tracked by `ParsedDoc` (not tested here — parser/renderer level
+        // only).
+        let lines = render("alpha\n\n<!-- hidden -->\n\nbeta\n");
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        // No rendered line contains the comment marker.
+        assert!(
+            !texts.iter().any(|t| t.contains("<!--")),
+            "comment leaked: {texts:?}"
+        );
+        assert!(texts.iter().any(|t| t.contains("alpha")));
+        assert!(texts.iter().any(|t| t.contains("beta")));
+    }
+
+    #[test]
+    fn inline_html_comment_is_hidden_from_paragraph() {
+        let lines = render("before <!-- inline --> after\n");
+        assert_eq!(lines.len(), 1);
+        let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        // The comment markers themselves must not render.
+        assert!(!text.contains("<!--"), "got {text:?}");
+        // The surrounding words still render.
+        assert!(text.contains("before"));
+        assert!(text.contains("after"));
+    }
+
+    #[test]
+    fn paragraph_containing_only_inline_comments_renders_zero_lines() {
+        let lines = render("<!-- only --><!-- comments -->\n");
+        assert_eq!(lines.len(), 0, "got {lines:?}");
     }
 }

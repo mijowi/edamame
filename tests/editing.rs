@@ -721,3 +721,85 @@ fn image_cache_survives_reparse_on_unrelated_edit() {
     assert_eq!(st.parsed.image_blocks.len(), 1);
     assert_eq!(st.parsed.image_blocks[0].url, "cat.png");
 }
+
+// ── HTML comment hiding (Phase 12) ──────────────────────────────────────────
+
+/// Pressing Down from the line immediately preceding a hidden HTML comment
+/// must skip over the comment's source bytes: the comment block has zero
+/// rendered lines, so stopping there would leave the cursor on a line the
+/// user can't see in hybrid view.  The cursor should emerge on or past
+/// the next visible block.
+#[test]
+fn down_arrow_past_block_comment_skips_hidden_bytes() {
+    let src = "Alpha.\n\n<!-- hidden -->\n\nBeta.\n";
+    let mut st = state(src);
+    apply(&mut st, Action::EnterEditMode);
+
+    // Park the cursor on the blank line just before the comment (byte just
+    // before `<!--`).  That position is "visible" — a blank-line virtual
+    // block owning one rendered row — so the down step fires against a
+    // normal starting point.
+    let comment_byte = src.find("<!--").unwrap();
+    let blank_before_byte = comment_byte.saturating_sub(1);
+    st.cursor.offset = st.buffer.rope().byte_to_char(blank_before_byte);
+    st.update_cursor_block();
+
+    apply(&mut st, Action::MoveDown);
+
+    // After one Down, the cursor must NOT be sitting inside the comment's
+    // source bytes — either because we jumped straight past it or landed
+    // on the trailing blank line.  Either way the block under the cursor
+    // has non-zero rendered-line count.
+    let rope = st.buffer.rope();
+    let cursor_byte = rope.char_to_byte(st.cursor.offset);
+    let block_idx = st
+        .parsed
+        .source_map
+        .block_for_byte(cursor_byte)
+        .expect("cursor byte must map to a block");
+    assert!(
+        st.parsed.block_own_line_count(block_idx) > 0,
+        "cursor landed in a hidden block at byte {cursor_byte}"
+    );
+    // The cursor must have advanced past the comment's start byte too —
+    // otherwise "skipping" degenerated into "staying put".
+    assert!(
+        cursor_byte > comment_byte,
+        "cursor did not move past the comment: at byte {cursor_byte}, comment starts at {comment_byte}"
+    );
+}
+
+/// Toggling Raw → Rendered with the cursor sitting inside a hidden comment
+/// block should snap the cursor to the start of the next visible block so
+/// `RenderedView` has a well-defined cursor position to draw against.
+#[test]
+fn toggle_raw_to_rendered_snaps_cursor_out_of_comment() {
+    let src = "Alpha.\n\n<!-- hidden -->\n\nBeta.\n";
+    let mut st = state(src);
+    // Enter Rendered, then Raw.
+    apply(&mut st, Action::EnterEditMode);
+    apply(&mut st, Action::ToggleRawMode);
+    assert_eq!(st.mode, Mode::Raw);
+
+    // Park the cursor on the first char of the comment — visible in Raw.
+    let comment_byte = src.find("<!--").unwrap();
+    st.cursor.offset = st.buffer.rope().byte_to_char(comment_byte);
+    st.update_cursor_block();
+
+    // Toggle back to Rendered: the mode-switch handler must detect that the
+    // cursor is inside a hidden block and move it forward to a visible one.
+    apply(&mut st, Action::ToggleRawMode);
+    assert_eq!(st.mode, Mode::Rendered);
+
+    let rope = st.buffer.rope();
+    let cursor_byte = rope.char_to_byte(st.cursor.offset);
+    let block_idx = st
+        .parsed
+        .source_map
+        .block_for_byte(cursor_byte)
+        .expect("cursor byte must map to a block");
+    assert!(
+        st.parsed.block_own_line_count(block_idx) > 0,
+        "cursor landed in a zero-own block after Raw→Rendered snap (byte {cursor_byte})"
+    );
+}

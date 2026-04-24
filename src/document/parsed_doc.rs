@@ -8,7 +8,7 @@ use crate::config::Theme;
 use crate::diagram::DiagramSource;
 use crate::document::SourceMap;
 use crate::markdown::{
-    inlines_to_plain, parse_offsets, parse_raw, promote_diagram_code_blocks,
+    inlines_to_plain, parse_offsets, parse_raw, promote_diagram_code_blocks, promote_html_comments,
     promote_image_paragraphs, Block, ImageRowOverride, Renderer,
 };
 
@@ -277,6 +277,12 @@ impl ParsedDoc {
         //    prevent the Html comment block from being absorbed and the
         //    comment would flash into the rendered view between drag events.
         let mut blocks = parse_raw(source);
+        // Promote pure-comment `Block::Html` entries to `Block::HtmlComment`
+        // FIRST — the tui-columns merge below looks for `Block::HtmlComment`
+        // adjacent to a `Block::Table` and must run against the promoted
+        // variant.  Promotion preserves block order and count, so
+        // `real_ranges` stays 1:1 with `blocks`.
+        promote_html_comments(&mut blocks);
         merge_trailing_tui_columns_comments(&mut blocks, &mut real_ranges);
         // Promote paragraphs that contain only an image inline into
         // `Block::ImageBlock` so the renderer can reserve multi-row space
@@ -569,12 +575,12 @@ fn merge_trailing_tui_columns_comments(
     while i + 1 < blocks.len() {
         let is_pair = matches!(
             (&blocks[i], &blocks[i + 1]),
-            (Block::Table { user_widths: None, .. }, Block::Html(body))
+            (Block::Table { user_widths: None, .. }, Block::HtmlComment(body))
                 if crate::markdown::table_layout::parse_column_widths_comment(body).is_some()
         );
         if is_pair {
             let body = match &blocks[i + 1] {
-                Block::Html(s) => s.clone(),
+                Block::HtmlComment(s) => s.clone(),
                 _ => unreachable!(),
             };
             let widths = crate::markdown::table_layout::parse_column_widths_comment(&body).unwrap();
@@ -951,6 +957,65 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── HTML-comment hiding (Phase 12) ───────────────────────────────────
+
+    /// A block-level HTML comment contributes zero rendered lines — its
+    /// `per_block_own` count must be 0 so navigation can detect the block
+    /// as hidden without inspecting the AST variant.
+    #[test]
+    fn html_comment_block_owns_zero_rendered_lines() {
+        let src = "Alpha.\n\n<!-- hidden -->\n\nBeta.\n";
+        let doc = ParsedDoc::build(src, theme(), true, 24);
+        // The comment block must be present in `blocks`.
+        assert!(
+            doc.blocks
+                .iter()
+                .any(|b| matches!(b, Block::HtmlComment(_))),
+            "blocks: {:?}",
+            doc.blocks
+        );
+        // Find its byte offset — the `<` of the `<!--`.
+        let comment_byte = src.find("<!--").unwrap();
+        let block_idx = doc
+            .source_map
+            .block_for_byte(comment_byte)
+            .expect("comment bytes must map to a block");
+        assert_eq!(doc.block_own_line_count(block_idx), 0);
+        // And no rendered line anywhere contains the marker text.
+        for line in &doc.lines {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                !text.contains("<!--"),
+                "comment leaked into rendered output: {text:?}"
+            );
+        }
+    }
+
+    /// The trailing `tui-columns` comment is absorbed into the preceding
+    /// table by `merge_trailing_tui_columns_comments`.  Regression guard
+    /// after the Phase 12 parser refactor changed the variant the merge
+    /// function looks for.
+    #[test]
+    fn tui_columns_still_absorbed_through_parsed_doc() {
+        let src = "| a | b |\n|---|---|\n| 1 | 2 |\n<!-- tui-columns: [10, 20] -->\n";
+        let doc = ParsedDoc::build(src, theme(), true, 24);
+        assert!(matches!(
+            doc.blocks.first(),
+            Some(Block::Table {
+                user_widths: Some(_),
+                ..
+            })
+        ));
+        // The comment must NOT appear as its own surviving block.
+        assert!(
+            !doc.blocks
+                .iter()
+                .any(|b| matches!(b, Block::HtmlComment(_))),
+            "comment should have been absorbed: {:?}",
+            doc.blocks
+        );
     }
 
     /// Each blank line's rendered-line range must map back to that same line

@@ -1081,7 +1081,7 @@ Was old Phase 10.  Renumbered to flow after the Phase 9 status-region infrastruc
 
 ---
 
-### Phase 12 — Hide HTML Comments in Rendered Views
+### Phase 12 — Hide HTML Comments in Rendered Views ✅
 *Goal: `<!-- ... -->` is annotation, not content — render it invisibly in Preview/Rendered modes while keeping it editable in Raw.*
 
 Extracted from old Phase 11.  This is a **parser + renderer + navigation** change, not polish — it shares the invariants that the virtual-blank-line mechanism relied on in Phase 1 and specialises Phase 6's `tui-columns` handling.  Keeping it isolated from Phase 13's table polish and Phase 14's visual polish makes the test surface tractable.
@@ -1093,26 +1093,26 @@ Extracted from old Phase 11.  This is a **parser + renderer + navigation** chang
 - Phase 6's `merge_trailing_tui_columns_comments` (in `document/parsed_doc.rs`) already strips trailing `<!-- tui-columns: ... -->` blocks from tables and attaches `user_widths` to `Block::Table`.  Phase 12 generalises this pattern.
 
 **Tasks — AST:**
-- [ ] New `Block::HtmlComment(String)` variant — content excluding delimiters, byte range preserved for source-map fidelity.  Emitted by a parser post-pass that detects comment-only `Block::Html` (content matches `<!-- ... -->` with optional surrounding whitespace).
-- [ ] New `Inline::HtmlComment(String)` variant.  Parser branch in `parser.rs` distinguishes `<!-- ... -->` from inline HTML tags when building inline sequences.
+- [x] New `Block::HtmlComment(String)` variant — stores the full source text (delimiters included) so helpers like `parse_column_widths_comment` work uniformly on `Block::Html` and `Block::HtmlComment` bodies; byte range preserved by the `SourceMap` block-index it's stored under.  Emitted by a parser post-pass (`promote_html_comments`) that detects comment-only `Block::Html` via `is_html_comment_only` (matches one or more `<!-- ... -->` comments with optional surrounding/interleaving whitespace).
+- [x] New `Inline::HtmlComment(String)` variant.  The inline parser in `parser.rs` branches on `Event::Html` / `Event::InlineHtml` and distinguishes `<!-- ... -->` from inline HTML tags via the same `is_html_comment_only` helper.
 
 **Tasks — renderer:**
-- [ ] `Block::HtmlComment` emits zero lines in Preview and Rendered modes.
-- [ ] `Inline::HtmlComment` emits zero spans in Preview and Rendered modes (the surrounding paragraph's other inlines render normally).
-- [ ] Raw mode is untouched — it reads the rope directly.
+- [x] `Block::HtmlComment` emits zero lines in Preview and Rendered modes (sibling arm to `Block::Html` in `src/markdown/renderer.rs`).
+- [x] `Inline::HtmlComment` emits zero spans in Preview and Rendered modes (the surrounding paragraph's other inlines render normally).  `rendered_inline_char_width` also reports 0 so table cell width calculations ignore comments.
+- [x] Raw mode is untouched — it reads the rope directly.
 
 **Tasks — source map & navigation:**
-- [ ] `per_block_own` counts zero lines for `HtmlComment` blocks in Preview/Rendered, matching the virtual-blank-line convention from Phase 1.  The byte range is still present in the AST so `SourceMap` coverage stays complete.
-- [ ] Hybrid-mode vertical movement (`move_up_visual` / `move_down_visual`) skips zero-rendered-line blocks so the cursor doesn't stall on an invisible comment.
-- [ ] Clicking a comment in hybrid mode is impossible (no screen cells belong to it); switching raw → hybrid with the cursor inside a comment snaps the cursor to the start of the next visible block.
+- [x] `per_block_own` counts zero lines for `HtmlComment` blocks in Preview/Rendered, matching the virtual-blank-line convention from Phase 1.  The byte range is still present in the AST so `SourceMap` coverage stays complete.
+- [x] Hybrid-mode vertical movement (`move_line_skipping_alignment` in `src/editor/edit_ops.rs`) skips zero-rendered-line blocks whose source starts with `<!--` so the cursor doesn't stall on an invisible comment.  The check deliberately filters by source prefix rather than "any zero-own block" so that suppressed blank lines (when `preserve_blank_lines = false`) remain selectable.
+- [x] Clicking a comment in hybrid mode is impossible (no screen cells belong to it); switching raw → hybrid with the cursor inside a comment snaps the cursor to the start of the next visible block via `snap_cursor_out_of_hidden_block` invoked from `Action::ToggleRawMode`.
 
 **Tasks — Phase 6 specialisation:**
-- [ ] After the generic `HtmlComment` promotion pass runs, Phase 6's `merge_trailing_tui_columns_comments` still runs and extracts `user_widths` from trailing `tui-columns` comments.  The two passes don't conflict: the first hides the comment visually, the second extracts semantic data from its source bytes.  Test: an isolated `<!-- tui-columns: [10, 20, 30] -->` block outside any table stays as a hidden `Block::HtmlComment` — no widths are attached to any table.
+- [x] `promote_html_comments` runs FIRST in both `parse()` and `ParsedDoc::build_with_overrides`, converting every comment-only `Block::Html` to `Block::HtmlComment`.  Phase 6's `merge_trailing_tui_columns_comments` then matches on `Block::HtmlComment` (not `Block::Html`) when adjacent to a preceding `Block::Table`.  An isolated `<!-- tui-columns: [10, 20, 30] -->` block outside any table stays as a hidden `Block::HtmlComment` — no widths are attached to any table (covered by `isolated_tui_columns_comment_not_adjacent_to_table_stays_hidden_comment`).
 
 **Tasks — testing:**
-- [ ] Unit tests: round-trip `<!-- hello -->` through parser → renderer → Preview (zero lines); inline `paragraph <!-- x --> text` renders as `paragraph  text` (two spaces collapse at the renderer's discretion); block-level comment between paragraphs renders as zero lines and cursor skips over it.
-- [ ] Integration test in `tests/editing.rs`: down-arrow past a block comment lands on the following block's first line, not on the comment.
-- [ ] Regression test that Phase 6's `tui-columns` extraction still works when the trailing comment is now a `Block::HtmlComment`.
+- [x] Unit tests (parser + renderer): `block_level_html_comment_promotes_to_html_comment`, `block_level_html_comment_renders_zero_lines`, `inline_html_comment_produces_inline_html_comment_variant`, `inline_html_comment_is_hidden_from_paragraph`, `paragraph_containing_only_inline_comments_renders_zero_lines`, `block_level_html_comment_between_paragraphs_is_invisible`, and the `is_html_comment_only_detects_comment_and_rejects_other_html` lexical case list.
+- [x] Integration test in `tests/editing.rs`: `down_arrow_past_block_comment_skips_hidden_bytes` — pressing Down from the line just before a comment lands the cursor on a block with non-zero rendered lines, past the comment's source.  `toggle_raw_to_rendered_snaps_cursor_out_of_comment` covers the mode-switch snap.
+- [x] Regression test that Phase 6's `tui-columns` extraction still works when the trailing comment is now a `Block::HtmlComment`: `tui_columns_still_absorbed_after_html_comment_promotion` in `parser.rs` and `tui_columns_still_absorbed_through_parsed_doc` in `parsed_doc.rs`.
 
 **Acceptance criteria:** `<!-- ... -->` renders as zero lines in Preview and Rendered modes and as source text in Raw.  Cursor navigation skips comment blocks.  Phase 6's `tui-columns` extraction still works.
 

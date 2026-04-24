@@ -41,6 +41,15 @@ pub enum Block {
     },
     /// Raw HTML — rendered as a plain fenced block for now.
     Html(String),
+    /// HTML comment (`<!-- ... -->`) promoted out of `Block::Html` by the
+    /// parser's post-pass when the block's body is a single comment.  The
+    /// stored string is the full source text including the `<!--` / `-->`
+    /// delimiters — matching `Block::Html`'s convention — so that helpers
+    /// like `parse_column_widths_comment` keep working on either variant.
+    /// The renderer emits zero lines for this block; the source bytes are
+    /// still covered by the `SourceMap` via the block's recorded byte range,
+    /// so navigation and selection over the raw bytes remain well-defined.
+    HtmlComment(String),
     /// A paragraph whose sole inline content is an image, promoted to a
     /// block so the renderer can reserve a multi-row region for the
     /// terminal-graphics overlay.  Paragraphs with mixed inline content
@@ -78,6 +87,11 @@ pub enum Inline {
         url: String,
     },
     Highlight(Vec<Inline>),
+    /// Inline HTML comment (`<!-- ... -->`) detected mid-paragraph.  Rendered
+    /// as zero spans in Preview/Rendered modes; the surrounding paragraph's
+    /// other inlines render normally.  Stored with delimiters included so
+    /// callers can round-trip the raw text if needed.
+    HtmlComment(String),
     SoftBreak,
     HardBreak,
 }
@@ -99,6 +113,7 @@ pub fn inlines_to_plain(inlines: &[Inline]) -> String {
             Inline::Code(c) => out.push_str(c),
             Inline::Link { text, .. } => out.push_str(&inlines_to_plain(text)),
             Inline::Image { alt, .. } => out.push_str(alt),
+            Inline::HtmlComment(_) => {}
             Inline::SoftBreak => out.push(' '),
             Inline::HardBreak => out.push('\n'),
         }
