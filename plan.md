@@ -872,7 +872,7 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 **Tasks — navigation stack:**
 - [x] `App::nav_back: Vec<NavEntry>` and `App::nav_forward: Vec<NavEntry>` where `NavEntry = { path, scroll, cursor_offset, mode }`.  `NavigateBack` pops `nav_back` and pushes the current state onto `nav_forward`; `NavigateForward` is the inverse.  Following a new link clears `nav_forward` (browser semantics).
 - [x] **Dirty-buffer guard**: `App::dirty_guard: Option<DirtyGuardPrompt>` drives a three-button `ModalView` (`Save` / `Discard` / `Cancel`) rendered above the editor when follow-link would navigate away from a dirty buffer.  Reused for back / forward navigation too.
-- Phase 10 note: this navigation stack stays per-tab-history so Phase 10 can lift it into a `Vec<Tab>` without re-architecting.
+- Forward-compatibility note: this navigation stack stays per-tab-history so the tabs phase (Phase 19) can lift it into a `Vec<Tab>` without re-architecting.
 
 **Tasks — hover target display:**
 - [x] Added `mouse_ops::hovered_link_target(state, col, row, width) -> Option<LinkTarget>` and `App::hovered_link: Option<LinkTarget>`, updated on every mouse-move event.  Pointer shape keeps using the faster `hit_test_clickable` bool path.  Phase 9 will surface the target + `Inline::Link::title` on the hint line.
@@ -886,7 +886,7 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 
 **Tasks — deferred to later phases:**
 - [ ] Hint-line tooltip with link target + title (Phase 9 — hint line      ownership).
-- [ ] Tab-bar integration of the nav stack (Phase 10 — tab bar ownership).
+- [ ] Tab-bar integration of the nav stack (Phase 19 — tabs).
 
 **Acceptance criteria:** Clicking a URL link in Preview opens the browser. `Ctrl`-click on a link in Rendered/Raw mode opens it without moving the cursor. `Ctrl-Enter` on a link in rendered/raw mode follows it. Clicking a relative `.md`path navigates to that file in the same editor window, reusing the imagecache's base-dir-resolution convention. `Alt+Left` / `Alt+Right` walk the navigation history. Heading anchors (`#slug`) scroll to the matching heading. Dirty buffers prompt before being replaced. The pointer shape already changes on hover (Phase 5); the hint-line tooltip is explicitly deferred to Phase 9.
 
@@ -973,13 +973,12 @@ This phase deliberately owns the **entire** bottom region so later phases (file-
 
 ---
 
-### Phase 10 — Command Palette, File Picker, Overlays, and Tabs
-*Goal: keyboard-driven discovery and navigation — every action reachable without a mouse, and multiple files open simultaneously.*
+### Phase 10 — Command Palette, Cheat Sheet, and Configuration Overlays
+*Goal: keyboard-driven discovery and configuration — every action reachable without a mouse, and `config.toml` / `keybindings.toml` editable without leaving the editor.*
 
-Scope covers old Phase 9 *minus* the bottom-bar work (now Phase 9).  Consumes the Phase 9 transient-message channel for "Configuration updated" notifications and the `?` popover widget for the cheat sheet.
+Tabs, multi-file CLI, and the file picker were originally bundled here but are deferred to Phases 19 and 20.  Users who want multiple files open simultaneously can run another terminal in the meantime; those features are convenience, not core.
 
 **Starting state (already in place after Phases 8–9):**
-- Phase 8 builds a per-tab nav stack (`App::nav_back` / `App::nav_forward`) and dirty-buffer guard modal.  Phase 10 lifts this into a `Vec<Tab>` without re-architecting.
 - Phase 9's `ModalView` + `?` popover + transient-message channel are the UI primitives for every overlay below.
 - `KeyMap::bindings()` already iterates every bound `(KeyEvent, Action)` pair for the default handler — the cheat sheet and command-palette listings consume the same source.
 
@@ -988,11 +987,20 @@ Scope covers old Phase 9 *minus* the bottom-bar work (now Phase 9).  Consumes th
 - [ ] Fuzzy matcher: prefer `nucleo-matcher` (modern, well-maintained, used by Helix) over rolling our own.  Add to `Cargo.toml` in this phase.
 - [ ] Each result row shows `action label` + the bound chord (via `KeyMap::chord_for(action)`), so users learn bindings organically.
 - [ ] Selecting a result dispatches the `Action` through the normal `edit_ops::apply` path — no palette-specific handlers.
+- [ ] Empty-state listing: when the input is blank, the palette shows a curated "Suggested" list of discovery-worthy actions rather than every bound action.  Source of truth is a `featured: bool` flag on each `Action` variant (or a small ordered registry in `ui::command_palette` if flag plumbing is awkward), so the enum stays canonical.  Default suggested entries, in order:
+      - `Show Markdown Cheat Sheet`
+      - `Insert Table`
+      - `Open Settings`
+      - `Open Keybinds`
+      - `Export HTML` — hidden from the suggested list until Phase 16 wires its dispatch.
+      - `Reload from Disk` — same disclaimer, against Phase 11.
+      - `Open Config Folder` — dispatches `open::that(&config_dir)`.
+- [ ] Actions already surfaced on the hint line (`Save`, `Copy`, `Cut`, `Paste`, `Quit`, mode switches) are intentionally omitted from the suggested list — the hint line is their discovery surface.  They remain matchable by typed input.
+- [ ] A "Recent" section above "Suggested" is explicitly out of scope for this phase; revisit after the palette ships and usage patterns are known.
 
-**Tasks — file picker (Ctrl-O):**
-- [ ] New widget `src/ui/file_picker.rs`: overlay with a filterable tree rooted at the current document's directory (or the CWD when no file is open).  Prefer a small custom implementation over `tui-tree-widget` — the picker only needs expand/collapse + flat-filter, not full tree manipulation.
-- [ ] Recent files shown at the top (persisted in `$XDG_DATA_HOME/edamame/recent.json`, capped at 20).  Selecting a recent file jumps directly without walking the tree.
-- [ ] Selecting a `.md` file opens it in the active tab (subject to Phase 8's dirty-buffer guard); selecting a non-`.md` file calls `open::that(path)` (Phase 8 dispatch path, no re-implementation).
+**Tasks — markdown cheat sheet:**
+- [ ] Accessible from the command palette (`Show Markdown Cheat Sheet`).  Content tailored to what edamame supports: CommonMark + GFM tables + task lists + strikethrough + footnotes.  No HTML, no raw inline styling shortcuts beyond what the renderer honours.
+- [ ] Content is a static `&str` fixture in `src/ui/cheat_sheet.rs` — not parsed from a Markdown file at runtime; the cheat sheet itself is internal doc, not user-facing content.
 
 **Tasks — settings overlay:**
 - [ ] Accessible from the command palette (`Open Settings`).  Key/value list of the sections in `config.toml`, sourced from `ConfigSchema` (a new struct that mirrors `Config` with metadata — description, type, default).  No keybind settings in this overlay.
@@ -1003,25 +1011,22 @@ Scope covers old Phase 9 *minus* the bottom-bar work (now Phase 9).  Consumes th
 - [ ] Separate overlay (command palette entry `Open Keybinds`).  Action-keybind table with edit-in-place.  On confirm, the override is written to `keybindings.toml` via `KeyMap::save_overrides()` (a new method — today `KeyMap` only *reads*) and the `KeyMap` in-memory is updated so the change takes effect immediately.
 - [ ] Conflict detection: assigning an already-bound chord produces a sticky `Error` transient message and the edit is rejected.
 
-**Tasks — markdown cheat sheet:**
-- [ ] Accessible from the command palette (`Show Markdown Cheat Sheet`).  Reuses the Phase 9 `?` popover widget.  Content tailored to what edamame supports: CommonMark + GFM tables + task lists + strikethrough + footnotes.  No HTML, no raw inline styling shortcuts beyond what the renderer honours.
-- [ ] Content is a static `&str` fixture in `src/ui/cheat_sheet.rs` — not parsed from a Markdown file at runtime; the cheat sheet itself is internal doc, not user-facing content.
-
-**Tasks — tabs:**
-- [ ] Promote `App::file_path` + `App::editor` + Phase 8's `nav_back` / `nav_forward` into `App::tabs: Vec<Tab>` and `App::active_tab: usize`.  `Tab { path, editor_state, nav_back, nav_forward, scroll }`.  All existing single-file code paths reduce to `self.tabs[self.active_tab].editor_state` style accesses.
-- [ ] Tab bar rendered *only when more than one file is open* — single-file sessions show no tab bar, saving a row.  Users who want dedicated single-file windows open another terminal.
-- [ ] New bindings: `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle tabs; `Ctrl+W` closes the active tab (subject to dirty-buffer guard).
-- [ ] Ellipsis truncation when total tab width exceeds terminal width; active tab is always visible.
-
-**Tasks — multi-file CLI:**
-- [ ] Accept `edamame file1.md file2.md file3.md` — each argument opens in its own tab.  First tab is active on startup.  Zero-arg launch continues to show the file picker (if not already the Phase 0 behaviour).
+**Tasks — insert table:**
+- [ ] New `Action::InsertTable` in `src/config/keymap.rs` with default binding `Ctrl+Shift+T`.  Listed in the palette's suggested list as `Insert Table`.  Rationale: inserting a table is otherwise impossible outside Raw mode, so it needs both a palette entry (for discovery) and a keybind (for graduation).
+- [ ] New modal widget `src/ui/insert_table_modal.rs`, built on Phase 9's `ModalView`: two numeric inputs — `Rows` (body-row count, default 2) and `Columns` (default 3) — plus `Insert` / `Cancel` buttons.  GFM tables require a header row, so the header is always included; there is no "no-header" mode.  Alignment customisation is not offered in the modal; users tune columns after insertion via Phase 6's table-manipulation actions.
+- [ ] Pre-flight guard: `InsertTable` requires the cursor to be on a **blank line** — a line containing only whitespace (empty counts).  If it isn't, the action flashes a sticky `Error` ("Insert Table requires a blank line") via Phase 9's transient-message channel and leaves the buffer untouched.  Also catches the "file ends without trailing newline" case (cursor past the last byte of a non-blank final line → same error).  This one test subsumes the mid-paragraph / heading / list / block-quote / code-block / existing-table cases without a block-type classifier.
+- [ ] New helper `table_edit::insert_table(state, rows, cols)`: emits a GFM pipe table with empty header cells, neutral `---` alignment, and `rows` empty body rows.  Because the pre-flight guarantees a blank cursor line, the helper only needs to check the two neighbour lines and prepend / append a blank line where one is missing (CommonMark requires a blank line before and after a table).  The cursor lands in the first header cell on completion so the user can start typing immediately.
 
 **Tasks — testing:**
 - [ ] Integration test: `nucleo-matcher` is wired and a palette-dispatched `Action::Save` produces the same buffer state as a keyboard-dispatched one.
 - [ ] Integration test: `Config::save()` via the settings overlay produces the `Configuration updated` flash exactly once.
-- [ ] `TestBackend` snapshots for the tab bar (1 tab hidden, 2 tabs visible, N tabs truncated).
+- [ ] Integration test: conflict detection in the keybinds overlay rejects a duplicate chord and flashes a sticky error.
+- [ ] Unit test: the palette's empty-state listing matches the configured suggested order and excludes hint-line-surfaced actions.
+- [ ] Integration test: `Action::InsertTable` with rows=2, cols=3, dispatched from a blank line between two paragraphs, yields a GFM-valid table with surrounding blank lines; the cursor rests in the first header cell.
+- [ ] Integration test: `Action::InsertTable` on a non-blank line (mid-paragraph, heading, list item, fenced code block, existing table row) flashes the blank-line error and leaves the buffer unchanged.
+- [ ] Integration test: `Action::InsertTable` at the end of a file that lacks a trailing newline flashes the blank-line error; dispatching again after a single `Enter` succeeds.
 
-**Acceptance criteria:** `Ctrl-P` opens a fuzzy-searchable action palette.  `Ctrl-O` opens a file picker with recent files on top.  The settings overlay edits `config.toml` in place with live feedback.  The keybinds overlay edits `keybindings.toml` with conflict detection.  Multiple files open via CLI args or file picker share a tab bar; `Ctrl+Tab` cycles.  The markdown cheat sheet is one keybind away.
+**Acceptance criteria:** `Ctrl-P` opens a fuzzy-searchable action palette.  Opening the palette with no input shows a curated suggestions list rather than a full action dump.  The markdown cheat sheet is one palette entry away.  The settings overlay edits `config.toml` in place with live feedback.  The keybinds overlay edits `keybindings.toml` with conflict detection.  `Insert Table` — via the palette or `Ctrl+Shift+T` — opens a rows/columns modal and inserts a GFM-valid pipe table at the cursor, but only when the cursor is on a blank line; any other cursor position flashes a sticky error and leaves the buffer untouched.
 
 ---
 
@@ -1030,13 +1035,12 @@ Scope covers old Phase 9 *minus* the bottom-bar work (now Phase 9).  Consumes th
 
 Was old Phase 10.  Renumbered to flow after the Phase 9 status-region infrastructure it consumes.  Agentic workflows (where an AI agent and the user are editing the same file concurrently) are the motivating use case.
 
-**Starting state (already in place after Phases 9–10):**
+**Starting state (already in place after Phase 9):**
 - Phase 9 provides the hint-line modal-prompt channel and sticky `Error` transient messages.  This phase only writes the specific prompt definitions — no new UI primitives.
-- Phase 10 provides the tab-level state model; a file-change watcher attaches per-tab rather than per-process.
 
 **Tasks — watcher:**
 - [ ] Add `notify` (latest stable 7.x) and `similar` (2.x) as dependencies.
-- [ ] `App::file_watcher: Option<notify::RecommendedWatcher>` — one watcher per `App`, with a filter that dispatches events only for paths matching an open tab's `file_path`.  Sends `AppEvent::FileChanged(PathBuf)` into the existing `mpsc` channel.
+- [ ] `App::file_watcher: Option<notify::RecommendedWatcher>` — one watcher per `App`, with a filter that dispatches events only for `App::file_path`.  Sends `AppEvent::FileChanged(PathBuf)` into the existing `mpsc` channel.  When the tabs phase (Phase 19) lands, the filter expands to match any open tab's path; no watcher-API change is required.
 - [ ] Debounce: coalesce multiple `Modify` events within a 200 ms window before dispatching — editors like vim produce a write-rename-delete sequence that would otherwise fire the reload prompt three times.
 
 **Tasks — reload flow (clean buffer):**
@@ -1117,7 +1121,7 @@ Extracted from old Phase 11.  This is a **parser + renderer + navigation** chang
 ### Phase 13 — Table Rendering Polish
 *Goal: production-quality table visuals: smart column widths, row striping, drag-drop feedback, and user-facing disclosure of comment injection.*
 
-Extracted from old Phase 11.  These items are cohesive (all table-layer concerns) and share the `table_layout` module as their implementation surface.  Consolidates deferred polish items from Phase 6.
+These items are cohesive (all table-layer concerns) and share the `table_layout` module as their implementation surface.  Consolidates deferred polish items from Phase 6.
 
 **Starting state (already in place):**
 - Phase 2 built `table_layout::compute_widths` with user-width overrides.
@@ -1192,17 +1196,7 @@ Extracted from old Phase 11.  Pulls in the "Heading visual hierarchy — framing
 
 ---
 
-### Phase 15 — Security
-*Goal: Ensure the application is not vulnerable to unintentional code execution.*
-
-- [ ] Check if input sanitization is needed. edamame should not run any code in files it opens.
-- [ ] Check if sanitization is needed for images.
-- [ ] Dependencies — supply chain vulnerabilities.
-- [ ] Any other security concerns?
-
----
-
-### Phase 16 — Exporting
+### Phase 16 — Exporting ✅
 *Goal: Export .md files to other basic formats.*
 
 HTML is the single built-in target; it doubles as the intermediate format for
@@ -1296,6 +1290,68 @@ On occasion a user may start using a new terminal application, which may have im
 
 ---
 
+### Phase 19 — Tabs and Multi-file CLI
+*Goal: open multiple files simultaneously in a single editor instance.*
+
+Deferred from the original Phase 10 scope.  Until this phase lands, users who need concurrent files run another terminal.  The nav-stack shape established in Phase 8 was chosen so this phase is a mechanical lift rather than a re-architecture.
+
+**Starting state (already in place):**
+- Phase 8's `App::nav_back` / `App::nav_forward` and dirty-buffer guard modal are already per-history-chain rather than per-process, so they lift cleanly into a per-tab struct.
+- Phase 11's `notify` watcher (if landed) attaches per-`App` with a single-path filter — this phase extends that filter to match any open tab's path; no watcher-API change is required.
+
+**Tasks — tabs:**
+- [ ] Promote `App::file_path` + `App::editor` + Phase 8's `nav_back` / `nav_forward` into `App::tabs: Vec<Tab>` and `App::active_tab: usize`.  `Tab { path, editor_state, nav_back, nav_forward, scroll }`.  All existing single-file code paths reduce to `self.tabs[self.active_tab].editor_state` style accesses.
+- [ ] Tab bar rendered *only when more than one file is open* — single-file sessions show no tab bar, saving a row.
+- [ ] New bindings: `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle tabs; `Ctrl+W` closes the active tab (subject to the Phase 8 dirty-buffer guard).
+- [ ] Ellipsis truncation when total tab width exceeds terminal width; active tab is always visible.
+- [ ] Extend Phase 11's file-change watcher filter (if landed) from `App::file_path` to "any open tab's path"; `AppEvent::FileChanged(PathBuf)` is routed to the matching tab.
+
+**Tasks — multi-file CLI:**
+- [ ] Accept `edamame file1.md file2.md file3.md` — each argument opens in its own tab.  First tab is active on startup.
+
+**Tasks — testing:**
+- [ ] `TestBackend` snapshots for the tab bar (1 tab hidden, 2 tabs visible, N tabs truncated).
+- [ ] Integration test: multi-arg CLI invocation opens N tabs with the first active.
+- [ ] Integration test: `Ctrl+W` on a dirty tab opens the dirty-buffer guard and does not close until the user confirms.
+
+**Acceptance criteria:** Multiple files open via CLI args share a tab bar; `Ctrl+Tab` cycles; `Ctrl+W` closes with the dirty-buffer guard.  Single-file sessions look identical to today — no tab bar row consumed.
+
+---
+
+### Phase 20 — File Picker
+*Goal: open files without leaving the editor.*
+
+Deferred from the original Phase 10 scope.  Until this phase lands, opening a file means relaunching `edamame` with a new path.
+
+**Starting state (already in place):**
+- Phase 10's command palette + `ModalView` overlay pattern.  The picker is just another modal overlay dispatched by an `Action`.
+- Phase 19's tabs (if landed) — selecting a file opens in the active tab, subject to the dirty-buffer guard.  When Phase 19 hasn't landed, selecting a file replaces the single open buffer (same guard).
+
+**Tasks — file picker (Ctrl-O):**
+- [ ] New widget `src/ui/file_picker.rs`: overlay with a filterable tree rooted at the current document's directory (or the CWD when no file is open).  Prefer a small custom implementation over `tui-tree-widget` — the picker only needs expand/collapse + flat-filter, not full tree manipulation.
+- [ ] Recent files shown at the top (persisted in `$XDG_DATA_HOME/edamame/recent.json`, capped at 20).  Selecting a recent file jumps directly without walking the tree.
+- [ ] Selecting a `.md` file opens it in the active tab (subject to Phase 8's dirty-buffer guard); selecting a non-`.md` file calls `open::that(path)` (Phase 8 dispatch path, no re-implementation).
+- [ ] Command-palette entry `Open File` dispatches the same overlay, so users who can't reach `Ctrl-O` still have a path in.
+
+**Tasks — testing:**
+- [ ] Integration test: recent-files persistence round-trips via `$XDG_DATA_HOME/edamame/recent.json`.
+- [ ] Integration test: selecting a `.md` file dispatches through the same navigation path as a Phase 8 link click.
+- [ ] `TestBackend` snapshot for the picker overlay with a small fixture tree.
+
+**Acceptance criteria:** `Ctrl-O` opens a file picker with recent files on top.  Selecting a `.md` file opens it in the current tab; selecting a non-`.md` file opens it externally.
+
+---
+
+### Phase 21 — Security
+*Goal: Ensure the application is not vulnerable to unintentional code execution.*
+
+- [ ] Check if input sanitization is needed. edamame should not run any code in files it opens.
+- [ ] Check if sanitization is needed for images.
+- [ ] Dependencies — supply chain vulnerabilities.
+- [ ] Any other security concerns?
+
+---
+
 ## Deferred Work
 
 These features should be **architecturally anticipated** from Phase 0 but not implemented until after the numbered phases are complete.
@@ -1339,6 +1395,7 @@ These features should be **architecturally anticipated** from Phase 0 but not im
   ```
   Unknown keys are a hard error; missing keys fall back to the default theme
 - Implement a live theme preview mode in the settings overlay
+- Theme fetching from a remote source.
 
 ### Heading visual hierarchy — `tui-big-text` variant
 Terminals use a fixed character-cell grid; the app cannot change font size at the cell level.  The zero-dep **framing/rules** approach has been folded into Phase 14 ("Visual Polish").  The larger step below stays deferred to the theming phase:
