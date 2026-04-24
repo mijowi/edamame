@@ -1011,22 +1011,13 @@ Tabs, multi-file CLI, and the file picker were originally bundled here but are d
 - [ ] Separate overlay (command palette entry `Open Keybinds`).  Action-keybind table with edit-in-place.  On confirm, the override is written to `keybindings.toml` via `KeyMap::save_overrides()` (a new method — today `KeyMap` only *reads*) and the `KeyMap` in-memory is updated so the change takes effect immediately.
 - [ ] Conflict detection: assigning an already-bound chord produces a sticky `Error` transient message and the edit is rejected.
 
-**Tasks — insert table:**
-- [ ] New `Action::InsertTable` in `src/config/keymap.rs` with default binding `Ctrl+Shift+T`.  Listed in the palette's suggested list as `Insert Table`.  Rationale: inserting a table is otherwise impossible outside Raw mode, so it needs both a palette entry (for discovery) and a keybind (for graduation).
-- [ ] New modal widget `src/ui/insert_table_modal.rs`, built on Phase 9's `ModalView`: two numeric inputs — `Rows` (body-row count, default 2) and `Columns` (default 3) — plus `Insert` / `Cancel` buttons.  GFM tables require a header row, so the header is always included; there is no "no-header" mode.  Alignment customisation is not offered in the modal; users tune columns after insertion via Phase 6's table-manipulation actions.
-- [ ] Pre-flight guard: `InsertTable` requires the cursor to be on a **blank line** — a line containing only whitespace (empty counts).  If it isn't, the action flashes a sticky `Error` ("Insert Table requires a blank line") via Phase 9's transient-message channel and leaves the buffer untouched.  Also catches the "file ends without trailing newline" case (cursor past the last byte of a non-blank final line → same error).  This one test subsumes the mid-paragraph / heading / list / block-quote / code-block / existing-table cases without a block-type classifier.
-- [ ] New helper `table_edit::insert_table(state, rows, cols)`: emits a GFM pipe table with empty header cells, neutral `---` alignment, and `rows` empty body rows.  Because the pre-flight guarantees a blank cursor line, the helper only needs to check the two neighbour lines and prepend / append a blank line where one is missing (CommonMark requires a blank line before and after a table).  The cursor lands in the first header cell on completion so the user can start typing immediately.
-
 **Tasks — testing:**
 - [ ] Integration test: `nucleo-matcher` is wired and a palette-dispatched `Action::Save` produces the same buffer state as a keyboard-dispatched one.
 - [ ] Integration test: `Config::save()` via the settings overlay produces the `Configuration updated` flash exactly once.
 - [ ] Integration test: conflict detection in the keybinds overlay rejects a duplicate chord and flashes a sticky error.
 - [ ] Unit test: the palette's empty-state listing matches the configured suggested order and excludes hint-line-surfaced actions.
-- [ ] Integration test: `Action::InsertTable` with rows=2, cols=3, dispatched from a blank line between two paragraphs, yields a GFM-valid table with surrounding blank lines; the cursor rests in the first header cell.
-- [ ] Integration test: `Action::InsertTable` on a non-blank line (mid-paragraph, heading, list item, fenced code block, existing table row) flashes the blank-line error and leaves the buffer unchanged.
-- [ ] Integration test: `Action::InsertTable` at the end of a file that lacks a trailing newline flashes the blank-line error; dispatching again after a single `Enter` succeeds.
 
-**Acceptance criteria:** `Ctrl-P` opens a fuzzy-searchable action palette.  Opening the palette with no input shows a curated suggestions list rather than a full action dump.  The markdown cheat sheet is one palette entry away.  The settings overlay edits `config.toml` in place with live feedback.  The keybinds overlay edits `keybindings.toml` with conflict detection.  `Insert Table` — via the palette or `Ctrl+Shift+T` — opens a rows/columns modal and inserts a GFM-valid pipe table at the cursor, but only when the cursor is on a blank line; any other cursor position flashes a sticky error and leaves the buffer untouched.
+**Acceptance criteria:** `Ctrl-P` opens a fuzzy-searchable action palette.  Opening the palette with no input shows a curated suggestions list rather than a full action dump.  The markdown cheat sheet is one palette entry away.  The settings overlay edits `config.toml` in place with live feedback.  The keybinds overlay edits `keybindings.toml` with conflict detection.
 
 ---
 
@@ -1193,6 +1184,24 @@ Extracted from old Phase 11.  Pulls in the "Heading visual hierarchy — framing
 - [ ] **Consider dropping.**  Old Phase 11 proposed a "Display Images" three-button modal (Always / Never / This time only) on first-encounter, but Phase 7 already ships `config.image.enabled` (master switch) and an `http`/`https`-specific remote-policy modal.  A third, per-document prompt would be redundant.  Leave unimplemented unless user feedback identifies a concrete gap.
 
 **Acceptance criteria:** Task checkboxes render as Unicode glyphs in Preview/Rendered and toggle on click.  Headings show a visual hierarchy via rules.  Emoji support is opt-in and layout-safe when disabled.  Scroll granularity is configurable.
+
+---
+
+### Phase 15 — Table Insertion
+*Goal: Add table insertion command*
+
+**Tasks — insert table:**
+- [ ] New `Action::InsertTable` in `src/config/keymap.rs` with default binding `Ctrl+Shift+T`.  Listed in the palette's suggested list as `Insert Table`.  Rationale: inserting a table is otherwise impossible outside Raw mode, so it needs both a palette entry (for discovery) and a keybind (for graduation).
+- [ ] New modal widget `src/ui/insert_table_modal.rs`, built on Phase 9's `ModalView`: two numeric inputs — `Rows` (body-row count, default 2) and `Columns` (default 3) — plus `Insert` / `Cancel` buttons.  GFM tables require a header row, so the header is always included; there is no "no-header" mode.  Alignment customisation is not offered in the modal; users tune columns after insertion via Phase 6's table-manipulation actions.
+- [ ] Pre-flight guard: `InsertTable` requires the cursor to be on a **blank line** — a line containing only whitespace (empty counts).  If it isn't, the action flashes a sticky `Error` ("Insert Table requires a blank line") via Phase 9's transient-message channel and leaves the buffer untouched.  Also catches the "file ends without trailing newline" case (cursor past the last byte of a non-blank final line → same error).  This one test subsumes the mid-paragraph / heading / list / block-quote / code-block / existing-table cases without a block-type classifier.
+- [ ] New helper `table_edit::insert_table(state, rows, cols)`: emits a GFM pipe table with empty header cells, neutral `---` alignment, and `rows` empty body rows.  Because the pre-flight guarantees a blank cursor line, the helper only needs to check the two neighbour lines and prepend / append a blank line where one is missing (CommonMark requires a blank line before and after a table).  The cursor lands in the first header cell on completion so the user can start typing immediately.
+
+**Tasks — testing:**
+- [ ] Integration test: `Action::InsertTable` with rows=2, cols=3, dispatched from a blank line between two paragraphs, yields a GFM-valid table with surrounding blank lines; the cursor rests in the first header cell.
+- [ ] Integration test: `Action::InsertTable` on a non-blank line (mid-paragraph, heading, list item, fenced code block, existing table row) flashes the blank-line error and leaves the buffer unchanged.
+- [ ] Integration test: `Action::InsertTable` at the end of a file that lacks a trailing newline flashes the blank-line error; dispatching again after a single `Enter` succeeds.
+
+**Acceptance criteria:** `Insert Table` — via the palette or `Ctrl+Shift+T` — opens a rows/columns modal and inserts a GFM-valid pipe table at the cursor, but only when the cursor is on a blank line; any other cursor position flashes a sticky error and leaves the buffer untouched.
 
 ---
 
