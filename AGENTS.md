@@ -266,6 +266,46 @@ they exist:
   on the `[ ]` glyph toggles and returns immediately — the cursor does NOT
   move.  Clicks elsewhere on the task line fall through to normal placement.
 
+## Phase 10 Architectural Notes (Command Palette + Overlays)
+
+- **One `KeyMap`, mutated in place.** `App::keymap: Option<KeyMap>` is built
+  once in `run()` and held for the life of the process.  The keybinds overlay
+  calls `KeyMap::rebind(&action, key_str, &mut overrides)` directly on it so
+  rebinds take effect on the next keystroke without rebuilding.  Don't clone
+  the keymap into the overlay state — that breaks live propagation.
+- **Combined view+edit keybindings overlay.** `Action::ShowCheatSheet` is now
+  an alias that opens the same `KeybindsView` as `Action::OpenKeybinds`; the
+  Phase 9 read-only `?` cheat sheet and the standalone `cheat_sheet.rs` are
+  gone.  Action variants are kept for backwards-compat with user keybindings.
+- **`ModalView` is scrollable; Phase 10 overlays are not.** `ModalState`
+  carries `scroll`, `last_total`, `last_visible`, plus `scroll_by(i32)`.  Up /
+  Down / PgUp / PgDn / Home / End route to scroll, never to button focus —
+  Left / Right and Tab / Shift-Tab still cycle buttons.  Mouse-wheel events
+  are forwarded into open `ModalView` slots via `modal_wheel_delta` in the
+  run loop; the palette / settings / keybinds overlays don't scroll yet
+  because their bodies fit comfortably.
+- **External-editor flow needs three things.** When the settings overlay's
+  "Open config.toml in default editor" fires, the App must (1) pause its
+  crossterm read thread, (2) drain the rx channel, and (3) suspend the
+  terminal — in that order — before `Command::new($EDITOR).status()`.  Skip
+  any of these and the editor races our read thread for stdin: bytes get
+  split, keystrokes feel laggy, and OSC responses to startup-time queries
+  leak into the buffer (the original symptom was `1;rgb:0e0e/0909/1d1d` —
+  a partially-consumed background-colour reply — landing at the top of
+  `config.toml`).  The read thread is poll-based (`crossterm::event::poll(100ms)`)
+  precisely so a `read_paused: Arc<AtomicBool>` flag can stop it without
+  having to interrupt a blocked `read()` syscall.  After the editor exits,
+  `terminal::re_enter(mouse, keyboard_enhancement)` reinstates alt-screen +
+  raw mode + transient features (mirroring `setup` minus the `Terminal`
+  construction), and `Config::load()` is re-run so any edits the user made
+  take effect immediately.
+- **Preview-mode Ctrl-key allowlist.** `input::modal::default::preview_safe_action`
+  decides which Ctrl-* chords fire in Preview mode.  Read-only overlay
+  openers (`ShowCommandPalette`, `OpenSettings`, `OpenKeybinds`,
+  `OpenConfigFolder`, `ShowMarkdownCheatSheet`, `ShowCheatSheet`) belong on
+  the allowlist — adding a new modal-opening action means adding it here too,
+  otherwise Ctrl-P / similar will silently no-op in Preview.
+
 ## Code Style
 
 Always write idiomatic, modern Rust. Prefer language and standard-library features over manual workarounds. Specific rules:

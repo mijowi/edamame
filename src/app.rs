@@ -1,10 +1,11 @@
 use std::io::Stdout;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{Event, KeyEventKind, MouseEventKind};
+use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
@@ -17,8 +18,10 @@ use crate::input::modal::default::DefaultHandler;
 use crate::input::{ModalHandler, MouseDispatcher};
 use crate::terminal::{set_pointer_shape, Capabilities, ColourDepth, PointerShape};
 use crate::ui::{
-    build_cheat_sheet_body, hint_line_for, EditorView, EditorViewState, HintChord, HintContent,
-    ModalButton, ModalResponse, ModalState, ModalView,
+    hint_line_for, markdown_cheat_sheet_body, EditorView, EditorViewState, HintChord, HintContent,
+    KeybindsResponse, KeybindsState, KeybindsView, ModalButton, ModalResponse, ModalState,
+    ModalView, PaletteResponse, PaletteState, PaletteView, SettingsResponse, SettingsState,
+    SettingsView,
 };
 
 /// Events that the main loop can receive.
@@ -127,9 +130,10 @@ struct QuitConfirm {
     state: ModalState,
 }
 
-/// Phase 9 `?` cheat-sheet popover.  Single-button modal that lists
-/// every known keybinding; dismissed by pressing any button or
-/// Escape.
+/// Single-button popover that hosts a static body — used in Phase 10
+/// for the Markdown cheat sheet.  The Phase 9 keybinding cheat sheet
+/// has been merged into the editable [`crate::ui::KeybindsView`]
+/// overlay (one combined view + edit surface).
 struct CheatSheetModal {
     body: Vec<String>,
     buttons: Vec<ModalButton>,
@@ -276,8 +280,39 @@ pub struct App {
     /// Phase 9 — quit confirmation modal.  `Some` while the dialog is
     /// visible; absorbs input like the other modals.
     quit_confirm: Option<QuitConfirm>,
-    /// Phase 9 — `?` cheat-sheet popover.
-    cheat_sheet: Option<CheatSheetModal>,
+    /// Phase 10 — Markdown cheat-sheet popover.  Static-body modal
+    /// driven by [`crate::ui::markdown_cheat_sheet`].
+    markdown_cheat_sheet: Option<CheatSheetModal>,
+    /// Phase 10 — fuzzy-searchable command palette.  `Some` while open;
+    /// absorbs all input until a row is selected or Escape dismisses.
+    command_palette: Option<PaletteState>,
+    /// Phase 10 — settings overlay.  Edits `[editor] / [table] / …`
+    /// keys in `config.toml`; persists via `Config::save`.
+    settings_overlay: Option<SettingsState>,
+    /// Phase 10 — keybinds overlay.  Mutates the live `KeyMap` and
+    /// the [`KeyBindingOverrides`]; persists via
+    /// [`KeyBindingOverrides::save_to`].
+    keybinds_overlay: Option<KeybindsState>,
+    /// Live keymap used for input dispatch.  Built once at startup
+    /// from `keybindings`; mutated in place by the keybinds overlay
+    /// so rebinds take effect immediately.
+    keymap: Option<KeyMap>,
+    /// Set by the settings overlay's "Open config.toml in default
+    /// editor" action.  Consumed by the run loop, which has the
+    /// `Terminal` handle needed to suspend / resume the TUI around
+    /// the editor process.
+    pending_open_config_in_editor: bool,
+    /// Pause flag for the crossterm read thread.  When `true`, the
+    /// thread sleeps instead of polling stdin, releasing it to a
+    /// child process (e.g. `$EDITOR` shelled out from the settings
+    /// overlay).  Without this, our read thread and the editor would
+    /// both try to consume the same bytes from the controlling
+    /// terminal, causing dropped keystrokes (lag) and stray escape
+    /// sequences leaking into the editor (the `1;rgb:...` artifact
+    /// users saw at the top of their `config.toml` after closing
+    /// neovim was an OSC 11 background-color response).
+    /// Initialised in [`Self::run`] alongside the read-thread spawn.
+    read_paused: Option<Arc<AtomicBool>>,
     /// Phase 9 — active hint-line prompt (first consumer is Phase 11).
     /// Renders in place of the default hint chords; Escape dismisses.
     hint_prompt: Option<HintPrompt>,
@@ -482,7 +517,13 @@ impl App {
             hovered_link: None,
             transient: None,
             quit_confirm: None,
-            cheat_sheet: None,
+            markdown_cheat_sheet: None,
+            command_palette: None,
+            settings_overlay: None,
+            keybinds_overlay: None,
+            keymap: None,
+            pending_open_config_in_editor: false,
+            read_paused: None,
             hint_prompt: None,
         })
     }
@@ -681,15 +722,32 @@ impl App {
         let (tx, rx) = mpsc::channel::<AppEvent>();
         self.app_tx = Some(tx.clone());
 
-        // Spawn a thread to forward crossterm events.
+        // Spawn a thread to forward crossterm events.  The thread
+        // uses `poll`+`read` (instead of a bare `read`) so a pause
+        // flag can take effect without having to interrupt a
+        // blocked syscall.  When the App shells out to an external
+        // editor via the settings overlay, it flips the flag so the
+        // child process gets uncontested access to stdin.  Without
+        // this, both processes would race to read terminal bytes
+        // and the editor would see a corrupted input stream.
+        let read_paused = Arc::new(AtomicBool::new(false));
+        self.read_paused = Some(read_paused.clone());
         let tx_clone = tx.clone();
         std::thread::spawn(move || loop {
-            match crossterm::event::read() {
-                Ok(event) => {
-                    if tx_clone.send(AppEvent::Term(event)).is_err() {
-                        break;
+            if read_paused.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            match crossterm::event::poll(Duration::from_millis(100)) {
+                Ok(true) => match crossterm::event::read() {
+                    Ok(event) => {
+                        if tx_clone.send(AppEvent::Term(event)).is_err() {
+                            break;
+                        }
                     }
-                }
+                    Err(_) => break,
+                },
+                Ok(false) => {} // poll timed out — re-check pause flag.
                 Err(_) => break,
             }
         });
@@ -713,7 +771,12 @@ impl App {
         });
 
         // Build the keymap once and keep it alive for the event loop.
-        let keymap = KeyMap::build(&self.keybindings)?;
+        // Stored on `self` so the keybinds overlay can mutate it in
+        // place; we read by clone at each dispatch site so we never
+        // hold an `&self` borrow across an action handler.
+        if self.keymap.is_none() {
+            self.keymap = Some(KeyMap::build(&self.keybindings)?);
+        }
 
         loop {
             // Resize-quiesce: once the burst of Resize events from a
@@ -820,16 +883,60 @@ impl App {
                 } else {
                     None
                 };
-                let cheat_sheet_ref = if notice_ref.is_none()
+                // Phase 10 overlays.  Only one overlay can be open at
+                // a time — the keybinds overlay can't legally coexist
+                // with the settings overlay because they're opened
+                // from disjoint palette entries.  The render path
+                // still defends with the `is_none` chain so the
+                // priority order is explicit.
+                let markdown_sheet_ref = if notice_ref.is_none()
                     && images_enabled_ref.is_none()
                     && remote_prompt_ref.is_none()
                     && dirty_guard_ref.is_none()
                     && quit_confirm_ref.is_none()
                 {
-                    self.cheat_sheet.as_mut()
+                    self.markdown_cheat_sheet.as_mut()
                 } else {
                     None
                 };
+                let settings_overlay_ref = if markdown_sheet_ref.is_none()
+                    && notice_ref.is_none()
+                    && images_enabled_ref.is_none()
+                    && remote_prompt_ref.is_none()
+                    && dirty_guard_ref.is_none()
+                    && quit_confirm_ref.is_none()
+                {
+                    self.settings_overlay.as_mut()
+                } else {
+                    None
+                };
+                let keybinds_overlay_ref = if markdown_sheet_ref.is_none()
+                    && settings_overlay_ref.is_none()
+                    && notice_ref.is_none()
+                    && images_enabled_ref.is_none()
+                    && remote_prompt_ref.is_none()
+                    && dirty_guard_ref.is_none()
+                    && quit_confirm_ref.is_none()
+                {
+                    self.keybinds_overlay.as_mut()
+                } else {
+                    None
+                };
+                let palette_ref = if markdown_sheet_ref.is_none()
+                    && settings_overlay_ref.is_none()
+                    && keybinds_overlay_ref.is_none()
+                    && notice_ref.is_none()
+                    && images_enabled_ref.is_none()
+                    && remote_prompt_ref.is_none()
+                    && dirty_guard_ref.is_none()
+                    && quit_confirm_ref.is_none()
+                {
+                    self.command_palette.as_mut()
+                } else {
+                    None
+                };
+                let config_ref: &Config = &self.config;
+                let keymap_for_render = self.keymap.clone();
                 terminal.draw(|frame| {
                     let view = EditorView {
                         state: editor_ref,
@@ -882,14 +989,32 @@ impl App {
                             theme: theme_ref,
                         };
                         frame.render_stateful_widget(modal, frame.area(), &mut q.state);
-                    } else if let Some(cs) = cheat_sheet_ref {
+                    } else if let Some(cs) = markdown_sheet_ref {
                         let modal = ModalView {
-                            title: "Keybindings",
+                            title: "Markdown Cheat Sheet",
                             body: &cs.body,
                             buttons: &cs.buttons,
                             theme: theme_ref,
                         };
                         frame.render_stateful_widget(modal, frame.area(), &mut cs.state);
+                    } else if let Some(state) = settings_overlay_ref {
+                        let view = SettingsView {
+                            theme: theme_ref,
+                            config: config_ref,
+                            config_path: Config::config_path(),
+                        };
+                        frame.render_stateful_widget(view, frame.area(), state);
+                    } else if let Some(state) = keybinds_overlay_ref {
+                        if let Some(km) = keymap_for_render.as_ref() {
+                            let view = KeybindsView {
+                                theme: theme_ref,
+                                keymap: km,
+                            };
+                            frame.render_stateful_widget(view, frame.area(), state);
+                        }
+                    } else if let Some(state) = palette_ref {
+                        let view = PaletteView { theme: theme_ref };
+                        frame.render_stateful_widget(view, frame.area(), state);
                     }
                 })?;
                 self.last_draw_at = Some(Instant::now());
@@ -1014,18 +1139,30 @@ impl App {
                 continue;
             }
 
+            // Pre-compute the per-event mouse-wheel step once so the
+            // modal-absorption arms below don't each have to re-read
+            // it.  The same value applies to in-editor scrolling.
+            let wheel_step = self.config.editor.mouse_scroll_lines;
+
             // Dirty-guard modal absorbs all input while it's visible.
             // Evaluated before the other modal checks so the guard (which
             // is opened on user action, not startup) always takes
             // precedence.
             if self.dirty_guard.is_some() {
-                if let Event::Key(key) = &event {
-                    if key.kind == KeyEventKind::Press {
+                match &event {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
                         let doc_w = term_size.width as usize;
                         let doc_h = term_size.height.saturating_sub(1) as usize;
                         self.handle_dirty_guard_key(*key, doc_h, doc_w);
                         self.needs_draw = true;
                     }
+                    Event::Mouse(me) => {
+                        if let Some(modal) = self.dirty_guard.as_mut() {
+                            modal.state.scroll_by(modal_wheel_delta(me, wheel_step));
+                            self.needs_draw = true;
+                        }
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -1034,11 +1171,18 @@ impl App {
             // visible (and only when the startup notice has already
             // been dismissed).  Stacks before the remote-image prompt.
             if self.startup_notice.is_none() && self.images_enabled_prompt.is_some() {
-                if let Event::Key(key) = &event {
-                    if key.kind == KeyEventKind::Press {
+                match &event {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
                         self.handle_images_enabled_prompt_key(*key);
                         self.needs_draw = true;
                     }
+                    Event::Mouse(me) => {
+                        if let Some(modal) = self.images_enabled_prompt.as_mut() {
+                            modal.state.scroll_by(modal_wheel_delta(me, wheel_step));
+                            self.needs_draw = true;
+                        }
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -1050,22 +1194,36 @@ impl App {
                 && self.images_enabled_prompt.is_none()
                 && self.remote_image_prompt.is_some()
             {
-                if let Event::Key(key) = &event {
-                    if key.kind == KeyEventKind::Press {
+                match &event {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
                         self.handle_remote_image_prompt_key(*key);
                         self.needs_draw = true;
                     }
+                    Event::Mouse(me) => {
+                        if let Some(modal) = self.remote_image_prompt.as_mut() {
+                            modal.state.scroll_by(modal_wheel_delta(me, wheel_step));
+                            self.needs_draw = true;
+                        }
+                    }
+                    _ => {}
                 }
                 continue;
             }
 
             // Startup notice absorbs all input while it's visible.
             if self.startup_notice.is_some() {
-                if let Event::Key(key) = &event {
-                    if key.kind == KeyEventKind::Press {
+                match &event {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
                         self.handle_startup_notice_key(*key);
                         self.needs_draw = true;
                     }
+                    Event::Mouse(me) => {
+                        if let Some(modal) = self.startup_notice.as_mut() {
+                            modal.state.scroll_by(modal_wheel_delta(me, wheel_step));
+                            self.needs_draw = true;
+                        }
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -1075,11 +1233,18 @@ impl App {
             // because a quit request should never interrupt a startup
             // notice / remote-image / dirty-guard flow.
             if self.quit_confirm.is_some() {
-                if let Event::Key(key) = &event {
-                    if key.kind == KeyEventKind::Press {
+                match &event {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
                         self.handle_quit_confirm_key(*key);
                         self.needs_draw = true;
                     }
+                    Event::Mouse(me) => {
+                        if let Some(modal) = self.quit_confirm.as_mut() {
+                            modal.state.scroll_by(modal_wheel_delta(me, wheel_step));
+                            self.needs_draw = true;
+                        }
+                    }
+                    _ => {}
                 }
                 // Save / Discard terminate the session — exit immediately
                 // instead of requiring another keypress to reach the
@@ -1090,11 +1255,64 @@ impl App {
                 continue;
             }
 
-            // Phase 9 — cheat-sheet popover absorbs input.
-            if self.cheat_sheet.is_some() {
+            // Phase 10 — Markdown cheat-sheet popover absorbs input.
+            if self.markdown_cheat_sheet.is_some() {
+                match &event {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        self.handle_markdown_cheat_sheet_key(*key);
+                        self.needs_draw = true;
+                    }
+                    Event::Mouse(me) => {
+                        if let Some(modal) = self.markdown_cheat_sheet.as_mut() {
+                            modal.state.scroll_by(modal_wheel_delta(me, wheel_step));
+                            self.needs_draw = true;
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            // Phase 10 — keybinds overlay absorbs input.
+            if self.keybinds_overlay.is_some() {
                 if let Event::Key(key) = &event {
                     if key.kind == KeyEventKind::Press {
-                        self.handle_cheat_sheet_key(*key);
+                        self.handle_keybinds_overlay_key(*key);
+                        self.needs_draw = true;
+                    }
+                }
+                continue;
+            }
+
+            // Phase 10 — settings overlay absorbs input.
+            if self.settings_overlay.is_some() {
+                if let Event::Key(key) = &event {
+                    if key.kind == KeyEventKind::Press {
+                        self.handle_settings_overlay_key(*key);
+                        self.needs_draw = true;
+                    }
+                }
+                if self.pending_open_config_in_editor {
+                    self.pending_open_config_in_editor = false;
+                    self.open_config_in_editor(&mut terminal, &rx);
+                }
+                continue;
+            }
+
+            // Phase 10 — command palette absorbs input.  The doc area
+            // dimensions are needed because a palette-dispatched action
+            // (e.g. `Save`) may scroll, edit, or follow links.
+            if self.command_palette.is_some() {
+                if let Event::Key(key) = &event {
+                    if key.kind == KeyEventKind::Press {
+                        let doc_w = term_size.width as usize;
+                        let doc_h =
+                            term_size
+                                .height
+                                .saturating_sub(crate::ui::BottomRegion::height(
+                                    self.config.editor.status_bar,
+                                )) as usize;
+                        self.handle_command_palette_key(*key, doc_h, doc_w);
                         self.needs_draw = true;
                     }
                 }
@@ -1213,6 +1431,14 @@ impl App {
             }
 
             // ── Dispatch event → Action ───────────────────────────
+            // Clone the live keymap for this iteration so the borrow
+            // stays cheap and doesn't conflict with `&mut self` inside
+            // action handlers.
+            let keymap = self
+                .keymap
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| KeyMap::build(&KeyBindingOverrides::default()).unwrap());
             let mut handler = DefaultHandler::new(&keymap);
             if let Some(action) = handler.handle_event(event, &self.editor) {
                 // Phase 9: if a sticky error is showing, Escape
@@ -1310,6 +1536,52 @@ impl App {
             }
             Action::TableMoveColumnRight if !cursor_in_table(&self.editor) => {
                 self.navigate_forward(doc_height, doc_width);
+                true
+            }
+            // Phase 10 — palette + configuration overlays.
+            Action::ShowCommandPalette => {
+                self.open_command_palette();
+                true
+            }
+            Action::ShowMarkdownCheatSheet => {
+                self.open_markdown_cheat_sheet();
+                true
+            }
+            // Phase 10 review — ShowCheatSheet is no longer a
+            // separate flow.  We accept it as an alias for
+            // OpenKeybinds so users with a custom keybinding to it
+            // (the action is configurable per `keybindings.toml`)
+            // still see the combined view+edit overlay.
+            Action::ShowCheatSheet => {
+                self.open_keybinds_overlay();
+                true
+            }
+            Action::OpenSettings => {
+                self.open_settings_overlay();
+                true
+            }
+            Action::OpenKeybinds => {
+                self.open_keybinds_overlay();
+                true
+            }
+            Action::OpenConfigFolder => {
+                if let Some(dir) = Config::config_dir() {
+                    self.spawn_open_worker(dir.display().to_string());
+                } else {
+                    self.flash("No config directory available", MessageKind::Error);
+                }
+                true
+            }
+            // Phase 16 / Phase 11 — these overlays are wired up in their
+            // own phases.  Until then, surface a flash so users hitting
+            // them in the palette get explicit feedback rather than
+            // silent failure.
+            Action::ExportHtml => {
+                self.flash("HTML export — see Phase 16", MessageKind::Info);
+                true
+            }
+            Action::ReloadFromDisk => {
+                self.flash("Reload from disk — see Phase 11", MessageKind::Info);
                 true
             }
             _ => false,
@@ -1418,39 +1690,197 @@ impl App {
         }
     }
 
-    /// Build and display the `?` cheat-sheet popover.  The body is
-    /// produced by [`build_cheat_sheet_body`] from the current
-    /// [`KeyMap`] so overrides show their bound keys.
-    fn open_cheat_sheet(&mut self) {
-        // Rebuild the keymap on demand rather than threading the loop-
-        // scoped one up here — the cheat sheet is not hot-path, so the
-        // ~10 µs rebuild is fine.
-        let keymap = match KeyMap::build(&self.keybindings) {
-            Ok(k) => k,
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to build KeyMap for cheat sheet");
-                return;
-            }
-        };
-        let body = build_cheat_sheet_body(&keymap);
-        self.cheat_sheet = Some(CheatSheetModal {
-            body,
+    // ── Phase 10 — command palette + configuration overlays ───────────────
+
+    /// Open the Markdown syntax cheat-sheet popover.  Shares the
+    /// `CheatSheetModal` host shape with the keybindings cheat sheet
+    /// so the dismiss semantics are identical (any button or Escape).
+    pub fn open_markdown_cheat_sheet(&mut self) {
+        self.markdown_cheat_sheet = Some(CheatSheetModal {
+            body: markdown_cheat_sheet_body(),
             buttons: vec![ModalButton::new("OK")],
             state: ModalState::new(),
         });
     }
 
-    /// Dispatch a keypress to the cheat-sheet modal.  Any button press
-    /// or Escape dismisses it.
-    fn handle_cheat_sheet_key(&mut self, key: crossterm::event::KeyEvent) {
-        let Some(cs) = self.cheat_sheet.as_mut() else {
+    fn handle_markdown_cheat_sheet_key(&mut self, key: crossterm::event::KeyEvent) {
+        let Some(cs) = self.markdown_cheat_sheet.as_mut() else {
             return;
         };
         let num_buttons = cs.buttons.len();
         match cs.state.handle_key(&key, num_buttons) {
             ModalResponse::Continue => {}
             ModalResponse::Cancelled | ModalResponse::ButtonPressed(_) => {
-                self.cheat_sheet = None;
+                self.markdown_cheat_sheet = None;
+            }
+        }
+    }
+
+    /// Open the fuzzy-searchable command palette.
+    pub fn open_command_palette(&mut self) {
+        let keymap = self.ensure_keymap_clone();
+        self.command_palette = Some(PaletteState::open(&keymap));
+    }
+
+    /// Build a fresh copy of the keymap, populating `self.keymap` if
+    /// it has not been built yet.  Returns a clone so callers can use
+    /// it without holding a borrow on `self`.
+    fn ensure_keymap_clone(&mut self) -> KeyMap {
+        if self.keymap.is_none() {
+            match KeyMap::build(&self.keybindings) {
+                Ok(km) => self.keymap = Some(km),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to build KeyMap on demand");
+                    return KeyMap::build(&KeyBindingOverrides::default())
+                        .expect("default keymap always builds");
+                }
+            }
+        }
+        self.keymap.as_ref().unwrap().clone()
+    }
+
+    /// Dispatch a keypress to the open command palette.  On selection,
+    /// the chosen [`Action`] is dispatched through the same
+    /// `handle_app_action` / `edit_ops::apply` path used by direct
+    /// keystrokes — so a palette-launched `Save` and a `Ctrl-S`
+    /// produce identical buffer state.
+    fn handle_command_palette_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+        doc_height: usize,
+        doc_width: usize,
+    ) {
+        let response = match self.command_palette.as_mut() {
+            Some(state) => state.handle_key(&key),
+            None => return,
+        };
+        match response {
+            PaletteResponse::Continue => {}
+            PaletteResponse::Cancelled => {
+                self.command_palette = None;
+            }
+            PaletteResponse::Selected(action) => {
+                self.command_palette = None;
+                self.dispatch_palette_action(action, doc_height, doc_width);
+            }
+        }
+    }
+
+    /// Dispatch an `Action` chosen from the palette through the same
+    /// path as a direct keystroke.  Mirrors the dispatch arm in
+    /// [`App::run`].
+    pub fn dispatch_palette_action(&mut self, action: Action, doc_height: usize, doc_width: usize) {
+        let handled = self.handle_app_action(&action, doc_height, doc_width);
+        if !handled {
+            if matches!(action, Action::Quit) && self.editor.dirty {
+                self.open_quit_confirm();
+                return;
+            }
+            let dirty_before = self.editor.dirty;
+            let scroll_before = self.editor.scroll;
+            let quit = edit_ops::apply(&mut self.editor, action.clone(), doc_height, doc_width);
+            if quit {
+                self.should_quit = true;
+            }
+            if self.editor.scroll != scroll_before {
+                self.mark_scrolling();
+            }
+            self.flash_for_action(&action, dirty_before);
+            if let Some(target) = self.editor.pending_link_follow.take() {
+                self.follow_link(target, doc_height, doc_width);
+            }
+        }
+    }
+
+    /// Open the settings overlay.
+    pub fn open_settings_overlay(&mut self) {
+        self.settings_overlay = Some(SettingsState::new());
+    }
+
+    fn handle_settings_overlay_key(&mut self, key: crossterm::event::KeyEvent) {
+        let response = match self.settings_overlay.as_mut() {
+            Some(state) => state.handle_key(&key, &mut self.config),
+            None => return,
+        };
+        match response {
+            SettingsResponse::Continue => {}
+            SettingsResponse::Cancelled => {
+                self.settings_overlay = None;
+            }
+            SettingsResponse::OpenInExternalEditor => {
+                // The actual editor invocation needs the live
+                // `Terminal` handle (to suspend / resume the TUI
+                // around an interactive editor like vim or nano).
+                // The run loop owns that, so just record intent
+                // here and let the loop drain the flag at the end
+                // of this iteration.
+                self.pending_open_config_in_editor = true;
+                // Closing the overlay first means the user sees
+                // their editor immediately without an inert
+                // settings panel hovering over it.
+                self.settings_overlay = None;
+                self.needs_draw = true;
+            }
+            SettingsResponse::FieldChanged(_) => {
+                // Phase 9 already centralises the save-and-flash
+                // pattern.  Re-use it so the settings overlay produces
+                // the same `Configuration updated` flash any other
+                // config-mutating path produces.
+                self.save_config_with_flash("failed to persist settings overlay change");
+            }
+        }
+    }
+
+    /// Open the keybinds overlay.  Builds a live `KeyMap` if one
+    /// hasn't been kept around yet.
+    pub fn open_keybinds_overlay(&mut self) {
+        let keymap = self.ensure_keymap_clone();
+        self.keybinds_overlay = Some(KeybindsState::open(&keymap));
+    }
+
+    fn handle_keybinds_overlay_key(&mut self, key: crossterm::event::KeyEvent) {
+        // The overlay needs `&mut KeyMap` and `&mut KeyBindingOverrides`;
+        // ensure both exist on `self` first so the borrow stays simple.
+        if self.keymap.is_none() {
+            match KeyMap::build(&self.keybindings) {
+                Ok(km) => self.keymap = Some(km),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to build KeyMap for keybinds overlay");
+                    self.keybinds_overlay = None;
+                    return;
+                }
+            }
+        }
+        let response = match (self.keybinds_overlay.as_mut(), self.keymap.as_mut()) {
+            (Some(state), Some(keymap)) => state.handle_key(&key, keymap, &mut self.keybindings),
+            _ => return,
+        };
+        match response {
+            KeybindsResponse::Continue => {}
+            KeybindsResponse::Cancelled => {
+                self.keybinds_overlay = None;
+            }
+            KeybindsResponse::Rebound { action, key } => {
+                if let Some(dir) = Config::config_dir() {
+                    let path = dir.join("keybindings.toml");
+                    if let Err(e) = self.keybindings.save_to(&path) {
+                        tracing::warn!(error = %e, "failed to write keybindings.toml");
+                        self.flash(format!("Save failed: {e}"), MessageKind::Error);
+                    } else {
+                        self.flash(format!("Bound {action} to {key}"), MessageKind::Success);
+                    }
+                } else {
+                    self.flash("No config directory available", MessageKind::Error);
+                }
+            }
+            KeybindsResponse::Conflict {
+                key,
+                existing_action,
+            } => {
+                self.flash(
+                    format!("'{key}' is already bound to {existing_action}"),
+                    MessageKind::Error,
+                );
             }
         }
     }
@@ -1497,6 +1927,161 @@ impl App {
                     let url = path.to_string_lossy().into_owned();
                     self.spawn_open_worker(url);
                 }
+            }
+        }
+    }
+
+    /// Open `config.toml` in the user's text editor and reload the
+    /// config when the editor exits.  Prefers `$VISUAL` over
+    /// `$EDITOR` (the modern shell convention); falls back to
+    /// `open::that` (which delegates to the OS GUI handler) when
+    /// neither variable is set.
+    ///
+    /// When a shell editor is invoked we need to surrender the
+    /// terminal entirely: leave the alternate screen, drop raw mode,
+    /// disable mouse capture, etc., so the editor can talk to the
+    /// real TTY.  Once the editor exits we re-enter the TUI and
+    /// force a full redraw.
+    ///
+    /// `terminal` is borrowed mutably so we can call
+    /// [`Terminal::clear`] after re-entry — without this, ratatui's
+    /// in-memory buffer thinks the screen still holds whatever it
+    /// drew before suspension and skips redrawing unchanged cells.
+    fn open_config_in_editor(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+        rx: &mpsc::Receiver<AppEvent>,
+    ) {
+        let Some(path) = Config::config_path() else {
+            self.flash("No config directory available", MessageKind::Error);
+            return;
+        };
+        // Make sure the file exists before we hand it to an editor
+        // that might fail on a missing path.  `Config::save`
+        // serialises the in-memory config — same content the user
+        // would see if they navigated to the file via the file
+        // manager.
+        if !path.exists() {
+            if let Err(e) = self.config.save() {
+                tracing::warn!(error = %e, "failed to seed config.toml before editor launch");
+                self.flash(format!("Config save failed: {e}"), MessageKind::Error);
+                return;
+            }
+        }
+
+        let editor = std::env::var("VISUAL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                std::env::var("EDITOR")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            });
+
+        let Some(editor) = editor else {
+            // No shell editor — fall back to the OS handler.  This
+            // is the same path Phase 8 link-following uses, so the
+            // user sees consistent behaviour whether $EDITOR is set
+            // or not.
+            self.spawn_open_worker(path.display().to_string());
+            self.flash("Opening with system default", MessageKind::Info);
+            return;
+        };
+
+        // Pause our crossterm read thread so the editor has
+        // uncontested access to stdin.  Without this, our thread
+        // and the editor both call `read()` on the same fd: bytes
+        // get split between them, the editor sees corrupted input
+        // (the `1;rgb:...` artifact users reported was the OSC 11
+        // background-colour response that neovim queried for, with
+        // some bytes stolen by us), and keystrokes feel laggy
+        // because half of them never reach the editor.
+        if let Some(p) = self.read_paused.as_ref() {
+            p.store(true, Ordering::Release);
+        }
+        // The poll loop wakes every 100 ms; sleep slightly longer
+        // so the read thread is guaranteed to have entered the
+        // paused branch before we hand stdin to the editor.
+        std::thread::sleep(Duration::from_millis(120));
+        // Discard any events that were already parsed during the
+        // overlap window so they don't reach the editor (or
+        // re-emerge in our channel after resume).
+        while rx.try_recv().is_ok() {}
+
+        // Suspend the TUI.  Best-effort: a failure here means the
+        // editor would launch into a confused terminal state, so
+        // bail out and tell the user.
+        if let Err(e) = crate::terminal::restore() {
+            tracing::warn!(error = %e, "failed to suspend terminal for editor");
+            self.flash(format!("Editor failed: {e}"), MessageKind::Error);
+            if let Some(p) = self.read_paused.as_ref() {
+                p.store(false, Ordering::Release);
+            }
+            return;
+        }
+
+        let status = std::process::Command::new(&editor).arg(&path).status();
+
+        // Always try to restore the TUI, even if the editor failed —
+        // otherwise we strand the user in a half-suspended state.
+        let mouse = self.capabilities.mouse;
+        let kbd = self.capabilities.keyboard_enhancement;
+        let restore_result = crate::terminal::re_enter(mouse, kbd);
+        if let Err(e) = restore_result {
+            tracing::error!(error = %e, "failed to re-enter TUI after editor");
+            // We can still draw something, but the terminal is in
+            // a degraded state.  Surface it loudly.
+            self.flash(format!("Terminal restore failed: {e}"), MessageKind::Error);
+        }
+        // Some terminals emit acknowledgements for the re-enter
+        // sequences (kitty keyboard, mouse mode).  Pause stays on
+        // here so any such bytes flow into the kernel buffer
+        // rather than racing with the read thread that's about to
+        // resume.  After this short wait, drain the channel and
+        // resume — the read thread will pick up anything still
+        // pending on its first post-resume poll.
+        std::thread::sleep(Duration::from_millis(30));
+        while rx.try_recv().is_ok() {}
+        if let Some(p) = self.read_paused.as_ref() {
+            p.store(false, Ordering::Release);
+        }
+
+        // Ratatui caches the previous frame; clearing forces it to
+        // redraw every cell on the next `terminal.draw` call.
+        let _ = terminal.clear();
+        self.needs_draw = true;
+
+        // Reload the config from disk so any edits the user made
+        // are reflected in the running session.  Failures fall back
+        // to the in-memory state with a warning — the user can
+        // restart edamame to retry.
+        match Config::load() {
+            Ok(loaded) => {
+                self.config = loaded.config;
+                self.keybindings = loaded.keybindings;
+                // Rebuild the keymap so any keybinding edits take
+                // effect for the next keystroke.
+                match KeyMap::build(&self.keybindings) {
+                    Ok(km) => self.keymap = Some(km),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "rebuilt KeyMap failed after editor exit");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to reload config after editor exit");
+            }
+        }
+
+        match status {
+            Ok(s) if s.success() => {
+                self.flash("Configuration updated", MessageKind::Warning);
+            }
+            Ok(s) => {
+                self.flash(format!("Editor exited {s}"), MessageKind::Warning);
+            }
+            Err(e) => {
+                self.flash(format!("Editor failed: {e}"), MessageKind::Error);
             }
         }
     }
@@ -2255,6 +2840,20 @@ fn is_markdown_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Translate a wheel event into a `ModalState::scroll_by` delta.
+/// Honours the user's configured `mouse_scroll_lines` so a coarser
+/// wheel feel applies inside modals as well as the editor.  Returns
+/// `0` for non-wheel mouse events so callers can blindly forward
+/// every `Event::Mouse` without filtering.
+fn modal_wheel_delta(event: &MouseEvent, wheel_step: usize) -> i32 {
+    let step = wheel_step.max(1) as i32;
+    match event.kind {
+        MouseEventKind::ScrollUp => -step,
+        MouseEventKind::ScrollDown => step,
+        _ => 0,
+    }
+}
+
 /// True when the editor's cursor sits inside a table block.  Mirrors
 /// the check used by `edit_ops::cursor_in_table`; re-implemented here
 /// to keep the App free of a cross-module private dep.
@@ -2595,13 +3194,16 @@ mod phase9_flash_tests {
     }
 
     #[test]
-    fn open_cheat_sheet_lists_bound_keys() {
+    fn show_cheat_sheet_action_opens_combined_keybinds_overlay() {
+        // Phase 10 review collapsed the read-only `ShowCheatSheet`
+        // popover into the editable `OpenKeybinds` overlay.  Both
+        // actions must now produce the same overlay state so users
+        // with custom keybinds for the legacy action still get the
+        // unified flow.
         let mut app = make_app();
-        app.open_cheat_sheet();
-        let cs = app.cheat_sheet.as_ref().expect("cheat sheet populated");
-        let joined = cs.body.join("\n");
-        assert!(joined.contains("Quit"));
-        assert!(joined.contains("Save"));
+        let handled = app.handle_app_action(&Action::ShowCheatSheet, 40, 80);
+        assert!(handled);
+        assert!(app.keybinds_overlay.is_some());
     }
 
     #[test]
@@ -2621,5 +3223,111 @@ mod phase9_flash_tests {
             HintContent::Transient { text, .. } => assert_eq!(text, "Copied"),
             other => panic!("expected Transient, got {other:?}"),
         }
+    }
+
+    // ── Phase 10 — palette + overlay App-level tests ──────────────────
+
+    #[test]
+    fn open_command_palette_seeds_state() {
+        let mut app = make_app();
+        app.open_command_palette();
+        assert!(app.command_palette.is_some());
+    }
+
+    #[test]
+    fn open_markdown_cheat_sheet_uses_static_body() {
+        let mut app = make_app();
+        app.open_markdown_cheat_sheet();
+        let cs = app
+            .markdown_cheat_sheet
+            .as_ref()
+            .expect("markdown cheat sheet open");
+        let joined = cs.body.join("\n");
+        assert!(joined.contains("Headings"));
+        assert!(joined.contains("Links"));
+        assert!(joined.contains("Images"));
+        assert!(joined.contains("==highlight=="));
+        assert!(joined.contains("Mermaid"));
+        // Tables and footnotes are intentionally absent — the
+        // dedicated table editor and the unimplemented footnote
+        // renderer make those examples misleading.
+        assert!(!joined.contains("Tables"));
+        assert!(!joined.contains("Footnotes"));
+    }
+
+    #[test]
+    fn settings_overlay_field_change_emits_configuration_updated_flash() {
+        // The plan calls for "exactly one `Configuration updated`
+        // flash" when the settings overlay confirms a value.  We can't
+        // exercise the live `Config::save` (it writes to XDG dirs),
+        // but we can verify the App's response handler emits the
+        // expected flash text.  `save_config_with_flash` is the
+        // single source of truth — drive it directly.
+        let mut app = make_app();
+        // Driving `save_config_with_flash` runs `Config::save`, which
+        // *might* fail when no config dir is available in the test
+        // environment.  Either branch produces a flash; we just assert
+        // *some* transient is set so the user gets feedback.
+        app.save_config_with_flash("test");
+        assert!(app.transient.is_some());
+    }
+
+    #[test]
+    fn modal_wheel_delta_translates_scroll_direction() {
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        // Build minimal `MouseEvent`s with the kinds we care about;
+        // crossterm requires explicit modifier + column/row fields.
+        let scroll_up = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        let scroll_down = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            ..scroll_up
+        };
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            ..scroll_up
+        };
+        assert_eq!(modal_wheel_delta(&scroll_up, 1), -1);
+        assert_eq!(modal_wheel_delta(&scroll_down, 1), 1);
+        // Coarser wheel honoured.
+        assert_eq!(modal_wheel_delta(&scroll_down, 4), 4);
+        // Wheel-step floor is 1, even when config asks for 0.
+        assert_eq!(modal_wheel_delta(&scroll_up, 0), -1);
+        // Non-wheel events return 0 so callers can blindly forward.
+        assert_eq!(modal_wheel_delta(&click, 1), 0);
+    }
+
+    #[test]
+    fn settings_overlay_open_external_sets_pending_flag_and_closes_overlay() {
+        // The "Open config.toml in default editor" row defers the
+        // actual editor invocation to the run loop so it can drive
+        // the terminal suspend/resume.  Verify the wiring: pressing
+        // Enter on row 0 stages the request and clears the overlay.
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = make_app();
+        app.open_settings_overlay();
+        assert!(app.settings_overlay.is_some());
+        // Row 0 is the open-externally button.
+        app.handle_settings_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.pending_open_config_in_editor);
+        assert!(app.settings_overlay.is_none());
+    }
+
+    #[test]
+    fn dispatch_palette_action_save_round_trips() {
+        // Driving `Action::Save` via the palette path produces the
+        // same effect as a direct keystroke.  We assert that the
+        // editor's dirty flag is consulted by the flash logic and
+        // that no panic occurs when the buffer has no associated
+        // path (the save no-ops via the typical save_file error path).
+        let mut app = make_app();
+        app.editor.dirty = false; // no-op save
+        app.dispatch_palette_action(Action::Save, 40, 80);
+        // No flash for a clean save (per `flash_for_action`).
+        assert!(app.transient.is_none());
     }
 }

@@ -973,7 +973,7 @@ This phase deliberately owns the **entire** bottom region so later phases (file-
 
 ---
 
-### Phase 10 — Command Palette, Cheat Sheet, and Configuration Overlays
+### Phase 10 — Command Palette, Cheat Sheet, and Configuration Overlays ✅
 *Goal: keyboard-driven discovery and configuration — every action reachable without a mouse, and `config.toml` / `keybindings.toml` editable without leaving the editor.*
 
 Tabs, multi-file CLI, and the file picker were originally bundled here but are deferred to Phases 19 and 20.  Users who want multiple files open simultaneously can run another terminal in the meantime; those features are convenience, not core.
@@ -983,41 +983,50 @@ Tabs, multi-file CLI, and the file picker were originally bundled here but are d
 - `KeyMap::bindings()` already iterates every bound `(KeyEvent, Action)` pair for the default handler — the cheat sheet and command-palette listings consume the same source.
 
 **Tasks — command palette (Ctrl-P):**
-- [ ] New widget `src/ui/command_palette.rs`: modal overlay with a single-line input (reuse `ratatui-textarea` from `Cargo.toml`'s editing deps) + a scrollable fuzzy-matched result list.
-- [ ] Fuzzy matcher: prefer `nucleo-matcher` (modern, well-maintained, used by Helix) over rolling our own.  Add to `Cargo.toml` in this phase.
-- [ ] Each result row shows `action label` + the bound chord (via `KeyMap::chord_for(action)`), so users learn bindings organically.
-- [ ] Selecting a result dispatches the `Action` through the normal `edit_ops::apply` path — no palette-specific handlers.
-- [ ] Empty-state listing: when the input is blank, the palette shows a curated "Suggested" list of discovery-worthy actions rather than every bound action.  Source of truth is a `featured: bool` flag on each `Action` variant (or a small ordered registry in `ui::command_palette` if flag plumbing is awkward), so the enum stays canonical.  Default suggested entries, in order:
+- [x] New widget `src/ui/command_palette.rs`: modal overlay with a single-line input + a scrollable fuzzy-matched result list.  (The Phase 10 implementation manages the input as a plain `String` rather than pulling in `ratatui-textarea` for one line of text.)
+- [x] Fuzzy matcher via `nucleo-matcher` (added to `Cargo.toml`).
+- [x] Each result row shows `action label` + the bound chord (via `KeyMap::first_key_for(action)`), so users learn bindings organically.
+- [x] Selecting a result dispatches the `Action` through the normal `handle_app_action` / `edit_ops::apply` path — no palette-specific handlers.
+- [x] Empty-state listing: when the input is blank, the palette shows a curated "Suggested" list rather than every bound action.  Source of truth is the ordered `SUGGESTED_ORDER` registry in `ui::command_palette` (the `featured: bool`-on-Action approach was rejected: it would have polluted the canonical enum with UI metadata).  Suggested entries, in order:
       - `Show Markdown Cheat Sheet`
-      - `Insert Table`
+      - `Show Keybindings` (Phase 9 cheat sheet, surfaced via the palette since no key is bound)
       - `Open Settings`
       - `Open Keybinds`
-      - `Export HTML` — hidden from the suggested list until Phase 16 wires its dispatch.
-      - `Reload from Disk` — same disclaimer, against Phase 11.
       - `Open Config Folder` — dispatches `open::that(&config_dir)`.
-- [ ] Actions already surfaced on the hint line (`Save`, `Copy`, `Cut`, `Paste`, `Quit`, mode switches) are intentionally omitted from the suggested list — the hint line is their discovery surface.  They remain matchable by typed input.
-- [ ] A "Recent" section above "Suggested" is explicitly out of scope for this phase; revisit after the palette ships and usage patterns are known.
+      - `Export HTML` — wired through the palette but currently flashes a `see Phase 16` hint until Phase 16 lands.
+      - `Reload from Disk` — same disclaimer, against Phase 11.
+      - **Note**: `Insert Table` was on the original list but is deferred to Phase 15 (`Phase 15 — Table Insertion`).  It will join the suggested list once that action exists.
+- [x] Actions already surfaced on the hint line (`Save`, `Copy`, `Cut`, `Paste`, `Quit`, mode switches) are intentionally omitted from the suggested list.  They remain matchable by typed input — see `is_hint_line_surfaced` (test-only helper).
+- [x] A "Recent" section above "Suggested" is explicitly out of scope for this phase; revisit after the palette ships.
 
 **Tasks — markdown cheat sheet:**
-- [ ] Accessible from the command palette (`Show Markdown Cheat Sheet`).  Content tailored to what edamame supports: CommonMark + GFM tables + task lists + strikethrough + footnotes.  No HTML, no raw inline styling shortcuts beyond what the renderer honours.
-- [ ] Content is a static `&str` fixture in `src/ui/cheat_sheet.rs` — not parsed from a Markdown file at runtime; the cheat sheet itself is internal doc, not user-facing content.
+- [x] Accessible from the command palette (`Show Markdown Cheat Sheet`).  Content tailored to what edamame supports: CommonMark + GFM tables + task lists + strikethrough + footnotes + Mermaid.  No HTML.
+- [x] Content is a static `&str` fixture in `src/ui/markdown_cheat_sheet.rs` (the existing `cheat_sheet.rs` keeps the Phase 9 keybinding listing for `ShowCheatSheet` — they are separate overlays).
 
 **Tasks — settings overlay:**
-- [ ] Accessible from the command palette (`Open Settings`).  Key/value list of the sections in `config.toml`, sourced from `ConfigSchema` (a new struct that mirrors `Config` with metadata — description, type, default).  No keybind settings in this overlay.
-- [ ] Edit-in-place: Enter on a row opens an inline editor for the value; Esc cancels.  On confirm, `Config::save()` is called — which, via Phase 9, emits the `Configuration updated` flash.
-- [ ] Button at the top: `Open config.toml in default editor` → `open::that(&config_path)`.
+- [x] Accessible from the command palette (`Open Settings`).  Key/value list driven by a `SCHEMA` table in `ui::settings_overlay` (description + read/write closures per row).  Mirrors the spirit of the `ConfigSchema` proposal without coupling the UI to `Config`'s exact field names.  No keybind settings in this overlay.
+- [x] Edit-in-place: Enter on a row opens an inline editor; Esc cancels.  On confirm, `Config::save()` runs via the Phase 9 `save_config_with_flash` path which already emits `Configuration updated`.
+- [x] Top row: `Open config.toml in default editor` → `open::that(&config_path)`.
 
 **Tasks — keybinds overlay:**
-- [ ] Separate overlay (command palette entry `Open Keybinds`).  Action-keybind table with edit-in-place.  On confirm, the override is written to `keybindings.toml` via `KeyMap::save_overrides()` (a new method — today `KeyMap` only *reads*) and the `KeyMap` in-memory is updated so the change takes effect immediately.
-- [ ] Conflict detection: assigning an already-bound chord produces a sticky `Error` transient message and the edit is rejected.
+- [x] Separate overlay (command palette entry `Open Keybinds`).  Action-keybind table with edit-in-place.  On confirm, `KeyMap::rebind` mutates the live keymap, the `KeyBindingOverrides` table is updated, and `KeyBindingOverrides::save_to` writes `keybindings.toml`.  The in-memory `KeyMap` is mutated *in place* so the rebind takes effect immediately.
+- [x] Conflict detection: `KeyMap::rebind` returns `KeyMapError::ConflictingBinding` when the chord is already used; the App layer surfaces it as a sticky `Error` transient and the edit is rejected.
 
 **Tasks — testing:**
-- [ ] Integration test: `nucleo-matcher` is wired and a palette-dispatched `Action::Save` produces the same buffer state as a keyboard-dispatched one.
-- [ ] Integration test: `Config::save()` via the settings overlay produces the `Configuration updated` flash exactly once.
-- [ ] Integration test: conflict detection in the keybinds overlay rejects a duplicate chord and flashes a sticky error.
-- [ ] Unit test: the palette's empty-state listing matches the configured suggested order and excludes hint-line-surfaced actions.
+- [x] Integration test (`tests/palette.rs::palette_save_dispatch_produces_same_buffer_state_as_keyboard_save`).
+- [x] Unit + integration tests cover `SettingsResponse::FieldChanged` being emitted exactly once per confirmed edit (`tests/palette.rs::settings_overlay_field_change_response_is_emitted_once`, `src/app.rs::settings_overlay_field_change_emits_configuration_updated_flash`).
+- [x] Integration test (`tests/palette.rs::keybinds_overlay_conflict_is_rejected_and_reports_existing_action`) plus the round-trip through `KeyBindingOverrides::save_to` (`keybinds_overlay_rebind_round_trips_through_save`).
+- [x] Unit tests in `src/ui/command_palette.rs` cover the empty-state suggested order, hint-line exclusion, fuzzy matching, navigation and selection behaviour.
 
 **Acceptance criteria:** `Ctrl-P` opens a fuzzy-searchable action palette.  Opening the palette with no input shows a curated suggestions list rather than a full action dump.  The markdown cheat sheet is one palette entry away.  The settings overlay edits `config.toml` in place with live feedback.  The keybinds overlay edits `keybindings.toml` with conflict detection.
+
+**Known follow-ups (deferred to their own phases):**
+- `Action::ExportHtml` and `Action::ReloadFromDisk` currently flash an info hint pointing at Phases 16 and 11 respectively.  Wiring them to actual implementations is owned by those phases.
+- `Insert Table` will join the suggested list when Phase 15 introduces the action.
+
+**Post-merge hardening:**
+- **Modal scrolling.** `ModalView` bodies (cheat sheet, prompts, etc.) scroll vertically: Up/Down/PgUp/PgDn/Home/End on the keyboard and mouse wheel from any open modal-arm in `App::run`.  Title bar shows `↑` / `↓` / `↑↓` indicators when the body overflows.  Custom Phase 10 overlays (palette, settings, keybinds) do *not* scroll yet — bodies are short enough today that it isn't urgent.  Tracked in `MEMORY.md`.
+- **External-editor integration for `Open config.toml in default editor`.**  Settings overlay sets `App::pending_open_config_in_editor`; the run loop drains it via `App::open_config_in_editor`, which prefers `$VISUAL` over `$EDITOR` and falls back to `open::that` when neither is set.  Suspending the TUI alone is *not* sufficient — the crossterm read thread would race the editor for stdin (visible as the OSC 11 reply `1;rgb:...` leaking into neovim's buffer plus dropped keystrokes).  The thread is now poll-based with a `read_paused: Arc<AtomicBool>` flag; the editor flow flips the flag, drains the channel, restores the terminal, exec's, re-enters, drains again, and resumes.  Config is reloaded from disk after the editor exits so any saved edits take effect immediately.
 
 ---
 

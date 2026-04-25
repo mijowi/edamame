@@ -684,6 +684,22 @@ pub fn apply(
         // wasn't wired up, which is the normal situation in unit
         // tests that drive edit_ops directly.
         Action::ShowCheatSheet => {}
+
+        // ── Phase 10 — command palette + configuration overlays ───
+        // Same story as `ShowCheatSheet`: these all open UI overlays
+        // owned by the App (palette state, settings overlay, keybinds
+        // overlay, OS file open, HTML export, file reload).  They are
+        // intercepted in `App::handle_app_action` *before*
+        // `edit_ops::apply` is called; reaching one of these arms
+        // means a unit test is dispatching them directly with no App
+        // attached, so a no-op is the correct behaviour.
+        Action::ShowCommandPalette
+        | Action::ShowMarkdownCheatSheet
+        | Action::OpenSettings
+        | Action::OpenKeybinds
+        | Action::OpenConfigFolder
+        | Action::ExportHtml
+        | Action::ReloadFromDisk => {}
     }
 
     // After any action that mutated the buffer (detected by a change in length

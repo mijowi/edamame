@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::path::Path;
 use std::str::FromStr;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -110,6 +111,31 @@ pub enum Action {
     /// doesn't consume a dedicated key that would collide with
     /// typing inside a cell / paragraph / list.
     ShowCheatSheet, // Configurable!
+    // ── Phase 10 — command palette and configuration overlays ─────
+    /// Open the fuzzy-searchable command palette (Ctrl-P).  Lists
+    /// every bound action and routes the chosen one through the
+    /// normal `edit_ops::apply` path.
+    ShowCommandPalette,
+    /// Show the static Markdown syntax cheat sheet (CommonMark + GFM
+    /// tables / task lists / strikethrough / footnotes).
+    ShowMarkdownCheatSheet,
+    /// Open the settings overlay — edits `[editor] / [modal] / [table]
+    /// / [images] / [export]` keys in `config.toml` in place.
+    OpenSettings,
+    /// Open the keybinds overlay — edits `keybindings.toml` with
+    /// conflict detection.
+    OpenKeybinds,
+    /// Reveal the active config directory in the OS file manager / open
+    /// it via `open::that`.
+    OpenConfigFolder,
+    /// Phase 16 — palette entry for the built-in HTML exporter.  Wired
+    /// up here so the palette's `Suggested` list can reference it.
+    ExportHtml,
+    /// Phase 11 — palette entry that re-reads the file from disk,
+    /// discarding in-memory edits.  Surfaces only as a palette entry
+    /// for now; Phase 11 will also wire it from the file-watcher
+    /// prompt.
+    ReloadFromDisk,
 }
 
 impl fmt::Display for Action {
@@ -175,6 +201,13 @@ impl fmt::Display for Action {
             Action::NavigateBack => "NavigateBack",
             Action::NavigateForward => "NavigateForward",
             Action::ShowCheatSheet => "ShowCheatSheet",
+            Action::ShowCommandPalette => "ShowCommandPalette",
+            Action::ShowMarkdownCheatSheet => "ShowMarkdownCheatSheet",
+            Action::OpenSettings => "OpenSettings",
+            Action::OpenKeybinds => "OpenKeybinds",
+            Action::OpenConfigFolder => "OpenConfigFolder",
+            Action::ExportHtml => "ExportHtml",
+            Action::ReloadFromDisk => "ReloadFromDisk",
         };
         f.write_str(s)
     }
@@ -244,6 +277,13 @@ impl FromStr for Action {
             "NavigateBack" => Ok(Action::NavigateBack),
             "NavigateForward" => Ok(Action::NavigateForward),
             "ShowCheatSheet" => Ok(Action::ShowCheatSheet),
+            "ShowCommandPalette" => Ok(Action::ShowCommandPalette),
+            "ShowMarkdownCheatSheet" => Ok(Action::ShowMarkdownCheatSheet),
+            "OpenSettings" => Ok(Action::OpenSettings),
+            "OpenKeybinds" => Ok(Action::OpenKeybinds),
+            "OpenConfigFolder" => Ok(Action::OpenConfigFolder),
+            "ExportHtml" => Ok(Action::ExportHtml),
+            "ReloadFromDisk" => Ok(Action::ReloadFromDisk),
             other => Err(KeyMapError::UnknownAction(other.to_owned())),
         }
     }
@@ -257,6 +297,8 @@ pub enum KeyMapError {
     UnknownAction(String),
     #[error("unparseable key string: '{0}'")]
     UnparseableKey(String),
+    #[error("'{key}' is already bound to {action}")]
+    ConflictingBinding { key: String, action: String },
 }
 
 /// Parse a human-readable key string such as `"ctrl+q"`, `"up"`, `"page_up"`,
@@ -332,7 +374,7 @@ pub fn parse_key(s: &str) -> Result<KeyEvent, KeyMapError> {
 /// display bindings; the inverse of `parse_key` is good enough here
 /// even if it's not strictly round-tripping (e.g. we emit `Ctrl-C`
 /// rather than `ctrl+c` for readability).
-fn format_key(ev: &KeyEvent) -> String {
+pub fn format_key(ev: &KeyEvent) -> String {
     let mut parts: Vec<String> = Vec::new();
     if ev.modifiers.contains(KeyModifiers::CONTROL) {
         parts.push("Ctrl".into());
@@ -383,6 +425,27 @@ fn format_key(ev: &KeyEvent) -> String {
 #[serde(transparent)]
 pub struct KeyBindingOverrides(pub HashMap<String, String>);
 
+impl KeyBindingOverrides {
+    /// Persist the overrides to `path` as TOML.  Used by the Phase 10
+    /// keybinds overlay so a rebind takes effect immediately and
+    /// survives the next startup.  Returns the underlying I/O / TOML
+    /// error verbatim — callers typically log + flash on failure
+    /// rather than treating it as fatal.
+    pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
+        use anyhow::Context;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create config directory: {}", parent.display())
+            })?;
+        }
+        let toml_str =
+            toml::to_string_pretty(self).context("Failed to serialize keybindings to TOML")?;
+        std::fs::write(path, toml_str)
+            .with_context(|| format!("Failed to write keybindings file: {}", path.display()))?;
+        Ok(())
+    }
+}
+
 // ─── KeyMap ───────────────────────────────────────────────────────────────────
 
 /// Maps `KeyEvent`s to `Action`s. Built from compiled-in defaults, then
@@ -427,6 +490,40 @@ impl KeyMap {
     /// cheat-sheet can list all bindings when asked.
     pub fn bindings(&self) -> impl Iterator<Item = (&KeyEvent, &Action)> {
         self.bindings.iter()
+    }
+
+    /// Rebind `action` to `new_key` (parsed from `parse_key`-style
+    /// syntax).  If `new_key` is already bound to a *different*
+    /// action, returns `Err` and leaves the keymap unchanged — that's
+    /// the conflict-detection contract from Phase 10's keybinds
+    /// overlay.  On success, the overrides table is updated to keep
+    /// the on-disk shape in sync with the in-memory keymap.
+    ///
+    /// Existing bindings of the same `action` are removed so the
+    /// caller doesn't have to track stale mappings.
+    pub fn rebind(
+        &mut self,
+        action: &Action,
+        new_key: &str,
+        overrides: &mut KeyBindingOverrides,
+    ) -> Result<(), KeyMapError> {
+        let parsed = parse_key(new_key)?;
+        if let Some(existing) = self.bindings.get(&parsed) {
+            if existing != action {
+                return Err(KeyMapError::ConflictingBinding {
+                    key: new_key.to_owned(),
+                    action: existing.to_string(),
+                });
+            }
+            // Same action already bound to the same key — no-op.
+            return Ok(());
+        }
+        // Drop any prior key bound to this action so we don't end up
+        // with two chords for the same action sticking around.
+        self.bindings.retain(|_, a| a != action);
+        self.bindings.insert(parsed, action.clone());
+        overrides.0.insert(action.to_string(), new_key.to_owned());
+        Ok(())
     }
 
     /// Look up the action bound to a key event, if any.
@@ -566,6 +663,15 @@ impl KeyMap {
         // `?` would collide with typing text in cells / paragraphs,
         // and surfacing a separate help key (F1 etc.) would duplicate
         // the command-palette surface for no real gain.
+
+        // Phase 10 — command palette.  Ctrl-P is the primary chord
+        // (also surfaced on the bottom-region hint line as `^P Menu`).
+        // The other Phase 10 actions (`ShowMarkdownCheatSheet`,
+        // `OpenSettings`, `OpenKeybinds`, `OpenConfigFolder`,
+        // `ExportHtml`, `ReloadFromDisk`) are intentionally unbound:
+        // they are reached only via the palette, so the user can
+        // search-and-execute without memorising a chord per overlay.
+        bind!("ctrl+p", Action::ShowCommandPalette);
 
         Self { bindings: b }
     }
