@@ -1160,7 +1160,7 @@ These items are cohesive (all table-layer concerns) and share the `table_layout`
 Extracted from old Phase 11.  Pulls in the "Heading visual hierarchy — framing/rules" item from *Deferred Work* since the plan itself flagged it as "do this now."  Items are independent — any subset can ship.
 
 **Tasks — checkbox glyphs:**
-- [ ] Replace the current `[ ]` / `[x]` text rendering of task-list checkboxes with Unicode glyphs (e.g. ☐ / ☑ or ▢ / ▣) in Preview and Rendered modes.  Raw mode is untouched.
+- [ ] Replace the current `[ ]` / `[x]` text rendering of task-list checkboxes with Unicode glyphs (e.g. ☐ / ☑) in Preview and Rendered modes.  Raw mode is untouched. 
 - [ ] `Theme::checkbox_unchecked` and `Theme::checkbox_checked` are `&'static str` slots (not `Style`) so themes can switch glyph sets — `[ ]` / `[x]` remains an opt-in for users on terminals without reliable Unicode.
 - [ ] Click hit-test on the task-list checkbox (Phase 5's `toggle_checkbox_at`) must be updated to account for the rendered glyph width rather than the 3-char `[ ]` raw form.
 
@@ -1454,8 +1454,18 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 ---
 
-## Miscellaneous Issues
+## Miscellaneous Issues / Features
 
 - [ ] When switching between hybrid edit mode and raw edit mode, it seems that the position in the document is not correctly preserved. The rendered and raw documents are different lengths, so when switching between modes we don't end up looking at the same line. Sometimes the cursor is not even visible. Instead we should preserve the *cursor* position on the screen. So, if the cursor is on row 20 of the terminal in rendered mode, when the user switches to raw mode, we should reposition the document so that the cursor (and the line it was on) is still on row 20 of the terminal.
 - [ ] If the cursor is at the last line of the visible area and the user adds content that causes the cursor to move to the next row of the editor, the cursor goes off the screen. Instead, the editor should scroll the document down 1 line so that the cursor is always visible.
 - [ ] List item alignment: In all cases (ordered, unordered, task lists) the text of a list item should be left-padded with spaces so that the text is all aligned on the left side, and the list marker hangs off on the left at the top.
+- [ ] Warn user whenever reading any .toml config file if the file cannot be parsed.
+- [ ] Add support for footnotes. Add to Markdown cheat sheet.
+- [ ] Deleting text should follow the same grouping that adding text does in the undo/redo stack. So, if I press backspace 3 times to delete "Cat", it should be undo-able in one `Ctrl-z` stroke that restores "Cat".
+- [ ] Add row/column delete buttons to tables
+- [ ] Action for toggling table drag handles on/off
+- [ ] Add a background color to modal inputs when selected, ex. keybindings
+- [ ] Test keybindings and settings modals
+- [ ] Extend scroll support to Phase 10 custom overlays (palette, settings, keybinds). Reuse existing scroll functionality from `ModalView` where possible.
+- [ ] Add "Open current file in system editor" action. Should save before opening in editor
+- [ ] Clean up source and tests
