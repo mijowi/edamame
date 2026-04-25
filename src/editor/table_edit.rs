@@ -648,7 +648,12 @@ fn count_unescaped_pipes(s: &str) -> usize {
 /// True when a line is a valid GFM alignment row, e.g. `|---|:-:|---:|`.
 fn is_alignment_row(line: &str) -> bool {
     let t = line.trim();
-    if !t.starts_with('|') || !t.ends_with('|') {
+    // A valid alignment row needs at least `|x|` (3 bytes) — a literal
+    // single `|` (which `starts_with('|')` AND `ends_with('|')` both
+    // accept) would otherwise panic on the `[1..len-1]` slice below.
+    // This came up live: a user mid-edit can leave the alignment row
+    // as a lone `|` for one keystroke before re-typing the dashes.
+    if t.len() < 3 || !t.starts_with('|') || !t.ends_with('|') {
         return false;
     }
     let inner = &t[1..t.len() - 1];
@@ -771,6 +776,16 @@ mod tests {
         assert!(is_alignment_row("| :--- | ---: | :---: |"));
         assert!(!is_alignment_row("| abc | def |"));
         assert!(!is_alignment_row("|  |  |"));
+    }
+
+    /// Regression: a single `|` (which a user can leave for one
+    /// keystroke while editing the alignment row) used to panic on the
+    /// `[1..len-1]` slice.
+    #[test]
+    fn is_alignment_row_single_pipe_does_not_panic() {
+        assert!(!is_alignment_row("|"));
+        assert!(!is_alignment_row(" | "));
+        assert!(!is_alignment_row(""));
     }
 
     #[test]

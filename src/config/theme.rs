@@ -48,6 +48,24 @@ pub struct Theme {
     pub table_border: Style,
     pub table_header: Style,
     pub table_cell: Style,
+    /// Background fill for even-numbered data rows (0-indexed: row 0 = first
+    /// data row).  Only applied when `config.table.row_striping` is true; the
+    /// default is `Style::default()` so no visible change is produced for
+    /// users who haven't opted in.
+    pub table_row_even: Style,
+    /// Background fill for odd-numbered data rows.  See `table_row_even`.
+    pub table_row_odd: Style,
+    /// Highlight applied during a row / column drag to mark the destination
+    /// separator the cursor is currently hovering.  Painted as a post-pass
+    /// over the table border so no buffer mutation is required.
+    pub table_drop_indicator: Style,
+    /// Style for the *inert* drop-target separators painted during a
+    /// row / column drag — every separator that's a valid drop site
+    /// gets this style; the one the pointer is currently over upgrades
+    /// to `table_drop_indicator`.  Themes can use a dimmer shade than
+    /// the active indicator so the affordance reads as a set of
+    /// possibilities with one pointer-tracked highlight.
+    pub table_drop_target: Style,
 
     // ── Status bar ────────────────────────────────────────────────
     pub status_bar: Style,
@@ -160,6 +178,24 @@ impl Default for Theme {
             table_border: Style::default().fg(Color::Indexed(240)),
             table_header: Style::default().add_modifier(Modifier::BOLD),
             table_cell: Style::default(),
+            // Row striping enabled by default with a subtle two-step
+            // contrast that reads on dark backgrounds without being
+            // obtrusive.  `table_row_even` matches the document
+            // background (no bg = inherit) so the first data row is
+            // visually unchanged; `table_row_odd` adds a barely-darker
+            // panel.  Themes targeting light terminals should invert.
+            table_row_even: Style::default(),
+            table_row_odd: Style::default().bg(Color::Indexed(235)),
+            // Active drop indicator — the separator the pointer is
+            // currently hovering during a row / column drag.  Dull
+            // yellow so it reads on top of both bare borders and
+            // striped backgrounds without overwhelming the table.
+            table_drop_indicator: Style::default().fg(Color::Indexed(178)),
+            // Inert drop targets — every separator that *could* receive
+            // the drop, painted at a dimmer shade than the active
+            // indicator so the user sees the full set of valid
+            // positions without losing the pointer-tracked highlight.
+            table_drop_target: Style::default().fg(Color::Indexed(101)),
 
             // Status bar: dark background, light text
             status_bar: Style::default().bg(Color::Indexed(236)).fg(Color::White),
@@ -309,6 +345,13 @@ impl Theme {
             table_border: Style::default(),
             table_header: Style::default().add_modifier(Modifier::BOLD),
             table_cell: Style::default(),
+            // Monochrome row striping uses DIM on the odd row to suggest
+            // a subtle separation without colour.
+            table_row_even: Style::default(),
+            table_row_odd: Style::default().add_modifier(Modifier::DIM),
+            table_drop_indicator: Style::default()
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            table_drop_target: Style::default().add_modifier(Modifier::REVERSED),
 
             status_bar: Style::default().add_modifier(Modifier::REVERSED),
             status_mode: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),

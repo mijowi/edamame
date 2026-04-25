@@ -6,9 +6,170 @@ use ratatui::text::{Line, Span};
 use crate::config::Theme;
 
 use super::ast::{inlines_to_plain, Block, Inline, ListItem};
-use super::table_layout;
+use super::table_layout::{self, MIN_COL_WIDTH};
 
 const IMAGE_PREFIX: &str = "Image: ";
+
+/// One character from a styled sequence, tagged with the style its
+/// source span carried.  Used by the table renderer's inline-aware
+/// wrap pipeline so bold / italic / code-span styling survives a cell
+/// breaking across multiple rendered rows.
+#[derive(Debug, Clone, Copy)]
+struct StyledChar {
+    ch: char,
+    style: Style,
+}
+
+/// Wrap a sequence of styled chars into rows of width ≤ `width`,
+/// breaking on whitespace where possible.  A token whose width
+/// exceeds `width` is hard-split at character boundaries.  Mirrors
+/// the algorithm in `table_layout::wrap_cell` but operates on
+/// `StyledChar` so per-char styles are preserved across breaks.
+///
+/// Returns at least one (possibly empty) row.
+fn wrap_styled_chars(chars: &[StyledChar], width: usize) -> Vec<Vec<StyledChar>> {
+    if width == 0 {
+        return vec![chars.to_vec()];
+    }
+    if chars.is_empty() {
+        return vec![Vec::new()];
+    }
+
+    // Tokenize into runs of whitespace+word, mirroring `split_soft`.
+    let mut tokens: Vec<Vec<StyledChar>> = Vec::new();
+    let mut tok: Vec<StyledChar> = Vec::new();
+    let mut in_ws = true;
+    for c in chars {
+        if c.ch.is_whitespace() {
+            if !in_ws && !tok.is_empty() {
+                tokens.push(std::mem::take(&mut tok));
+            }
+            tok.push(*c);
+            in_ws = true;
+        } else {
+            tok.push(*c);
+            in_ws = false;
+        }
+    }
+    if !tok.is_empty() {
+        tokens.push(tok);
+    }
+
+    let mut rows: Vec<Vec<StyledChar>> = Vec::new();
+    let mut current: Vec<StyledChar> = Vec::new();
+    let mut current_w = 0usize;
+
+    for token in tokens {
+        let w = token.len();
+        if current.is_empty() {
+            if w <= width {
+                current.extend(&token);
+                current_w = w;
+            } else {
+                for chunk in hard_split_styled(&token, width) {
+                    rows.push(chunk);
+                }
+                current.clear();
+                current_w = 0;
+            }
+        } else if current_w + w <= width {
+            current.extend(&token);
+            current_w += w;
+        } else {
+            rows.push(std::mem::take(&mut current));
+            // Drop leading whitespace of the wrapped token before
+            // placing it on the new row — matches `wrap_cell`'s
+            // `trim_start` behaviour.
+            let trimmed: Vec<StyledChar> = token
+                .iter()
+                .skip_while(|c| c.ch.is_whitespace())
+                .copied()
+                .collect();
+            let tw = trimmed.len();
+            if tw <= width {
+                current.extend(&trimmed);
+                current_w = tw;
+            } else {
+                for chunk in hard_split_styled(&trimmed, width) {
+                    rows.push(chunk);
+                }
+                current_w = 0;
+            }
+        }
+    }
+    if !current.is_empty() {
+        rows.push(current);
+    }
+    if rows.is_empty() {
+        rows.push(Vec::new());
+    }
+    rows
+}
+
+/// Hard-split a token whose char-count exceeds `width` into chunks
+/// of size ≤ `width`.  Counterpart of `table_layout::hard_split`
+/// for styled sequences.
+fn hard_split_styled(token: &[StyledChar], width: usize) -> Vec<Vec<StyledChar>> {
+    if width == 0 || token.is_empty() {
+        return vec![token.to_vec()];
+    }
+    let mut rows = Vec::new();
+    for chunk in token.chunks(width) {
+        rows.push(chunk.to_vec());
+    }
+    rows
+}
+
+/// Append a `StyledChar` slice as a sequence of `Span`s, coalescing
+/// runs of consecutive chars that share the same style.  Keeps the
+/// output line tight without losing any style transitions.
+fn extend_with_styled_chars(out: &mut Vec<Span<'static>>, chars: &[StyledChar]) {
+    if chars.is_empty() {
+        return;
+    }
+    let mut current_style = chars[0].style;
+    let mut buf = String::new();
+    for c in chars {
+        if c.style != current_style {
+            if !buf.is_empty() {
+                out.push(Span::styled(std::mem::take(&mut buf), current_style));
+            }
+            current_style = c.style;
+        }
+        buf.push(c.ch);
+    }
+    if !buf.is_empty() {
+        out.push(Span::styled(buf, current_style));
+    }
+}
+
+/// Number of characters in the longest whitespace-delimited word in `text`.
+/// Used by the table renderer to compute a column's `min` — the floor below
+/// which `compute_widths` would have to break a word to fit.
+fn longest_word_chars(text: &str) -> usize {
+    text.split_whitespace()
+        .map(|w| w.chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
+/// Truncate `text` to at most `width` character cells.  Used by the table
+/// renderer's single-line path when an inline-formatted cell's rendered
+/// width exceeds the column allocation: rather than overflowing the
+/// trailing border we fall back to plain text and append a `…` to signal
+/// the truncation.
+fn truncate_to_width(text: &str, width: usize) -> String {
+    let mut out = String::with_capacity(width);
+    let mut count = 0usize;
+    for ch in text.chars() {
+        if count >= width {
+            break;
+        }
+        out.push(ch);
+        count += 1;
+    }
+    out
+}
 
 /// Callback used by the renderer to look up the aspect-aware row count
 /// for an image block.  See `Renderer::with_image_row_override`.
@@ -55,6 +216,10 @@ pub struct Renderer<'t> {
     /// renderer falls back to `image_max_height` whenever this returns
     /// `None`, so pre-decode layout is stable.
     image_row_override: Option<ImageRowOverride<'t>>,
+    /// Phase 13 — when true, alternating data rows in tables are filled
+    /// with `Theme::table_row_even` / `Theme::table_row_odd`.  Off by
+    /// default; opt-in via `config.table.row_striping`.
+    row_striping: bool,
 }
 
 impl<'t> Renderer<'t> {
@@ -65,6 +230,7 @@ impl<'t> Renderer<'t> {
             code_wrap: false,
             image_max_height: 24,
             image_row_override: None,
+            row_striping: false,
         }
     }
 
@@ -89,6 +255,13 @@ impl<'t> Renderer<'t> {
     /// leave blank padding rows beneath them.
     pub fn with_image_row_override(mut self, override_fn: ImageRowOverride<'t>) -> Self {
         self.image_row_override = Some(override_fn);
+        self
+    }
+
+    /// Toggle alternating-row background fill for table data rows.
+    /// Wired to `config.table.row_striping`.
+    pub fn with_row_striping(mut self, on: bool) -> Self {
+        self.row_striping = on;
         self
     }
 
@@ -544,7 +717,19 @@ impl<'t> Renderer<'t> {
         }
     }
 
-    // ── Table (Phase 0 — basic rendering) ─────────────────────────
+    // ── Table ─────────────────────────────────────────────────────
+    //
+    // Layout pipeline:
+    //   1. Per-cell width metrics are computed from the rendered inline
+    //      width (`max`) and the longest plain-text word in the cell
+    //      (`min`).  Fed to `table_layout::compute_widths` along with the
+    //      viewport width so prose columns proportionally absorb slack
+    //      while short / numeric columns stay at `max`.
+    //   2. Cells whose allocated width is below their natural width get
+    //      word-wrapped via `table_layout::wrap_cell` — the row's height
+    //      becomes the max wrap count across its cells.
+    //   3. Multi-row data rows render as N consecutive lines, each padded
+    //      to keep the surrounding `│` borders aligned vertically.
 
     fn render_table(
         &self,
@@ -558,34 +743,46 @@ impl<'t> Renderer<'t> {
             return;
         }
 
-        // Natural widths — one row of natural per-cell widths per table row.
-        // Fed into `table_layout::compute_widths`, which applies the user
-        // override when provided and otherwise shrinks to fit the viewport.
-        let mut cell_widths: Vec<Vec<usize>> = Vec::with_capacity(rows.len() + 1);
-        cell_widths.push(
-            headers
-                .iter()
-                .take(col_count)
-                .map(|c| self.rendered_inlines_char_width(c))
-                .collect(),
-        );
+        // Per-cell `max` (rendered char width) and `min` (longest word in
+        // plain-text form).  Headers participate in the column metrics
+        // alongside data rows because a long header word should also keep
+        // the column from collapsing past its widest bound.
+        let mut cell_max_widths: Vec<Vec<usize>> = Vec::with_capacity(rows.len() + 1);
+        let mut cell_min_widths: Vec<Vec<usize>> = Vec::with_capacity(rows.len() + 1);
+        let header_max: Vec<usize> = headers
+            .iter()
+            .take(col_count)
+            .map(|c| self.rendered_inlines_char_width(c))
+            .collect();
+        let header_min: Vec<usize> = headers
+            .iter()
+            .take(col_count)
+            .map(|c| longest_word_chars(&inlines_to_plain(c)))
+            .collect();
+        cell_max_widths.push(header_max);
+        cell_min_widths.push(header_min);
         for row in rows {
-            cell_widths.push(
+            cell_max_widths.push(
                 row.iter()
                     .take(col_count)
                     .map(|c| self.rendered_inlines_char_width(c))
                     .collect(),
             );
+            cell_min_widths.push(
+                row.iter()
+                    .take(col_count)
+                    .map(|c| longest_word_chars(&inlines_to_plain(c)))
+                    .collect(),
+            );
         }
 
-        // Until cell wrapping lands, always render at natural widths (or the
-        // user's override).  Passing `self.viewport_width` here would cause
-        // `compute_widths` to shrink columns below their content width, which
-        // overflows the right-hand cells past the trailing `│` because
-        // `render_table_row` doesn't truncate.  The viewport-aware shrink
-        // path is only safe to enable once multi-line cell wrapping is wired
-        // up (see Phase 7+ polish).
-        let widths = table_layout::compute_widths(&cell_widths, col_count, usize::MAX, user_widths);
+        let widths = table_layout::compute_widths(
+            &cell_max_widths,
+            &cell_min_widths,
+            col_count,
+            self.viewport_width,
+            user_widths,
+        );
 
         let border_style = self.theme.table_border;
         let header_style = self.theme.table_header;
@@ -599,9 +796,8 @@ impl<'t> Renderer<'t> {
             .collect();
         out.push(Line::styled(top, border_style));
 
-        // Header row
-        let header_line = self.render_table_row(headers, &widths, col_count, header_style);
-        out.push(header_line);
+        // Header row — may wrap onto multiple lines like data rows do.
+        self.render_table_row(headers, &widths, col_count, header_style, out);
 
         // Thick separator under the header: ┝━━━━━┿━━━━━┥
         // Uses the heavy-horizontal box-drawing glyph (`━`) with light-vertical
@@ -615,7 +811,14 @@ impl<'t> Renderer<'t> {
             .collect();
         out.push(Line::styled(thick, border_style));
 
-        // Data rows, each followed by a thin separator except the last.
+        // Data rows, each followed by an inter-row separator except the
+        // last.  When `row_striping` is off, the separator is a thin
+        // box-drawing rule (`├─┼─┤`).  When striping is on, the rule
+        // would clash with the alternating background fill — so we
+        // emit a *blank* separator whose background matches the row
+        // immediately above it.  Visual effect: each data row appears
+        // as a 2-row band of its own colour, with no horizontal rule
+        // breaking up the stripe.
         let thin: String = std::iter::once("├".to_string())
             .chain(widths.iter().enumerate().map(|(i, &w)| {
                 let corner = if i + 1 < col_count { "┼" } else { "┤" };
@@ -623,10 +826,22 @@ impl<'t> Renderer<'t> {
             }))
             .collect();
         for (i, row) in rows.iter().enumerate() {
-            let row_line = self.render_table_row(row, &widths, col_count, self.theme.table_cell);
-            out.push(row_line);
+            let cell_style = if self.row_striping {
+                if i % 2 == 0 {
+                    self.theme.table_cell.patch(self.theme.table_row_even)
+                } else {
+                    self.theme.table_cell.patch(self.theme.table_row_odd)
+                }
+            } else {
+                self.theme.table_cell
+            };
+            self.render_table_row(row, &widths, col_count, cell_style, out);
             if i + 1 < rows.len() {
-                out.push(Line::styled(thin.clone(), border_style));
+                if self.row_striping {
+                    out.push(self.blank_table_separator(&widths, col_count, cell_style));
+                } else {
+                    out.push(Line::styled(thin.clone(), border_style));
+                }
             }
         }
 
@@ -640,43 +855,117 @@ impl<'t> Renderer<'t> {
         out.push(Line::styled(bottom, border_style));
     }
 
+    /// Build a stripe-aware blank-separator line — a `│ … │ … │` row
+    /// where every cell is filled with NBSP (U+00A0) under the supplied
+    /// style.  The leading `│`s remain at the table-border style so the
+    /// side edges of the table stay continuous; the cell-padding NBSPs
+    /// in between pick up the row-above's bg fill (or no bg for plain
+    /// rows).  Replaces the `├─┼─┤` thin rule when `row_striping` is on
+    /// so the alternating-band visual rhythm isn't broken by horizontal
+    /// rules.
+    ///
+    /// NBSP rather than regular spaces is the marker that lets
+    /// `ui::table_view::classify_table_sub_lines` distinguish a stripe
+    /// separator from the empty wrap-continuation line that
+    /// `render_table_row` emits for short cells in a multi-row data
+    /// row — those use ASCII spaces.  NBSP is visually identical to a
+    /// regular space in every terminal we target, so the user never
+    /// sees a difference.
+    fn blank_table_separator(
+        &self,
+        widths: &[usize],
+        col_count: usize,
+        cell_style: Style,
+    ) -> Line<'static> {
+        let border_style = self.theme.table_border;
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(col_count * 2 + 1);
+        spans.push(Span::styled("│", border_style));
+        for i in 0..col_count {
+            let width = widths.get(i).copied().unwrap_or(MIN_COL_WIDTH);
+            spans.push(Span::styled("\u{00A0}".repeat(width + 2), cell_style));
+            spans.push(Span::styled("│", border_style));
+        }
+        Line::from(spans)
+    }
+
+    /// Render one logical table row into `out`.  When any cell needs more
+    /// than one wrap line, all cells in the row align onto the same number
+    /// of rendered lines (shorter cells emit blank-padded continuation
+    /// lines so the surrounding `│` borders stay vertically aligned).
+    ///
+    /// Phase 13: wrap is *inline-aware* — each cell's `Vec<Inline>` is
+    /// flattened to a per-char `(char, style)` sequence, wrapped on
+    /// whitespace boundaries, then re-grouped into styled spans for
+    /// each rendered sub-line.  Bold / italic / code spans preserved
+    /// across line breaks.
     fn render_table_row(
         &self,
         cells: &[Vec<Inline>],
         widths: &[usize],
         col_count: usize,
         default_style: Style,
-    ) -> Line<'static> {
+        out: &mut Vec<Line<'static>>,
+    ) {
         let border_style = self.theme.table_border;
-        let mut spans = vec![Span::styled("│", border_style)];
 
+        // Flatten each cell into a per-char (char, style) sequence and
+        // wrap to its column width.  `cell_rows[c]` is `Vec<row>`; each
+        // `row` is `Vec<StyledChar>`.  Always returns ≥1 row.
+        let mut cell_rows: Vec<Vec<Vec<StyledChar>>> = Vec::with_capacity(col_count);
         for i in 0..col_count {
             let cell_inlines: &[Inline] = cells.get(i).map(|v| v.as_slice()).unwrap_or(&[]);
-            let width = widths.get(i).copied().unwrap_or(3);
-
-            let cell_spans = if cell_inlines.is_empty() {
-                // Empty cell: pad with spaces to fill the column.
-                let padded = format!(" {:width$} ", "", width = width);
-                vec![Span::styled(padded, default_style)]
-            } else {
-                // Render the cell content and measure its char width so the
-                // trailing-space padding keeps borders aligned regardless of
-                // what inline decorations are present.
-                let rendered = self.render_inlines(cell_inlines, default_style);
-                let rendered_width: usize =
-                    rendered.iter().map(|s| s.content.chars().count()).sum();
-                let pad = width.saturating_sub(rendered_width);
-                let mut s = vec![Span::styled(" ", default_style)];
-                s.extend(rendered);
-                s.push(Span::styled(format!("{} ", " ".repeat(pad)), default_style));
-                s
-            };
-
-            spans.extend(cell_spans);
-            spans.push(Span::styled("│", border_style));
+            let width = widths.get(i).copied().unwrap_or(MIN_COL_WIDTH);
+            let chars = self.cell_styled_chars(cell_inlines, default_style);
+            let wrapped = wrap_styled_chars(&chars, width);
+            cell_rows.push(wrapped);
         }
 
-        Line::from(spans)
+        let row_height = cell_rows.iter().map(|r| r.len()).max().unwrap_or(1).max(1);
+
+        for sub in 0..row_height {
+            let mut spans: Vec<Span<'static>> = Vec::with_capacity(col_count * 4 + 1);
+            spans.push(Span::styled("│", border_style));
+            for i in 0..col_count {
+                let width = widths.get(i).copied().unwrap_or(MIN_COL_WIDTH);
+                let row: &[StyledChar] = cell_rows[i].get(sub).map(|v| v.as_slice()).unwrap_or(&[]);
+                let row_w: usize = row.iter().map(|c| c.ch.to_string().chars().count()).sum();
+                // Cells whose rendered width exceeds the allocated column
+                // width truncate with `…` (rare — only fires when a cell
+                // is a single un-breakable token that overflows even the
+                // hard-split fallback).  Use plain-text fallback for the
+                // truncation path so we don't try to paint a partial
+                // styled run.
+                spans.push(Span::styled(" ", default_style));
+                if row_w <= width {
+                    extend_with_styled_chars(&mut spans, row);
+                    let pad = width.saturating_sub(row_w);
+                    spans.push(Span::styled(format!("{} ", " ".repeat(pad)), default_style));
+                } else {
+                    let plain: String = row.iter().map(|c| c.ch).collect();
+                    let truncated = truncate_to_width(&plain, width.saturating_sub(1));
+                    spans.push(Span::styled(format!("{truncated}…"), default_style));
+                    spans.push(Span::styled(" ", default_style));
+                }
+                spans.push(Span::styled("│", border_style));
+            }
+            out.push(Line::from(spans));
+        }
+    }
+
+    /// Flatten a cell's `Vec<Inline>` into a per-char styled sequence.
+    /// Drives the inline-aware wrap pipeline — each emitted character
+    /// remembers the style its source span carried (bold / italic / code
+    /// span / link / etc.) so the wrapped output preserves formatting
+    /// across line breaks.
+    fn cell_styled_chars(&self, cell_inlines: &[Inline], default_style: Style) -> Vec<StyledChar> {
+        let mut out: Vec<StyledChar> = Vec::new();
+        for span in self.render_inlines(cell_inlines, default_style) {
+            let style = span.style;
+            for ch in span.content.chars() {
+                out.push(StyledChar { ch, style });
+            }
+        }
+        out
     }
 
     // ── Inline rendering ──────────────────────────────────────────
@@ -913,6 +1202,46 @@ mod tests {
             texts[4]
         );
         assert!(texts[6].starts_with('└'), "bottom: {:?}", texts[6]);
+    }
+
+    /// A multi-row data row whose cell contains styled inlines
+    /// (e.g. `**bold**` or `` `code` ``) must preserve the inline
+    /// styling on every wrapped sub-line.  Plain-text rendering would
+    /// drop the bold/code spans — Phase 13's inline-aware wrap keeps
+    /// them.
+    #[test]
+    fn table_multirow_cell_preserves_inline_styles() {
+        // Force a wrap: narrow viewport so the prose cell breaks.
+        // The bold word in cell 1 should come out as a styled span
+        // (BOLD modifier set) on whichever sub-line it lands on.
+        let theme = Box::leak(Box::new(Theme::default()));
+        let r = Renderer::new(theme).with_viewport_width(28);
+
+        let blocks = parse(
+            "| Name | Notes |\n\
+             |---|---|\n\
+             | a | This row has a **really** long note |\n",
+        );
+        let lines = r.render(&blocks);
+
+        // Walk every line of the rendered table and assert that at
+        // least one span carries the BOLD modifier with content
+        // matching `really` (possibly trimmed by wrap).
+        let mut found_bold = false;
+        for line in &lines {
+            for span in &line.spans {
+                if span.style.add_modifier.contains(Modifier::BOLD)
+                    && span.content.contains("really")
+                {
+                    found_bold = true;
+                }
+            }
+        }
+        assert!(
+            found_bold,
+            "wrapped cell lost the **really** bold styling — multi-row \
+             rendering must preserve inline formatting (lines: {lines:#?})",
+        );
     }
 
     #[test]

@@ -97,6 +97,27 @@ pub struct EditorState {
     /// release (when the drag commits via `write_column_widths`) or on any
     /// non-resize action that invalidates the drag.
     pub live_table_widths: Option<(usize, Vec<Option<usize>>)>,
+    /// Phase 13 — propagated from `config.table.row_striping`.  Controls
+    /// whether the renderer fills alternating data rows with
+    /// `Theme::table_row_even` / `Theme::table_row_odd`.  Set by the App
+    /// at construction time and re-read on every `refresh_parsed`.
+    pub row_striping: bool,
+    /// Phase 13 — most-recently observed terminal column width, fed
+    /// into `Renderer::with_viewport_width` on every `refresh_parsed`
+    /// so the min-max proportional column-width algorithm adapts to
+    /// the user's actual viewport.  Set to a sensible 80 default until
+    /// the App posts the real width via [`set_viewport_width`].  Stored
+    /// in the editor (rather than threaded as a parameter through
+    /// `refresh_parsed`) so call-sites that don't know the width — e.g.
+    /// undo/redo, paste, file load — pick up the cached value.
+    pub viewport_width: usize,
+    /// Phase 13 — set on the Release event of a column-border drag, this
+    /// flags the App to either commit the in-progress `live_table_widths`
+    /// (writing the `tui-columns` comment to the buffer) or open the
+    /// width-injection warning modal.  Carries the `table_byte_start` of
+    /// the table whose widths are pending.  Cleared by
+    /// [`commit_pending_column_widths`] / [`cancel_pending_column_widths`].
+    pub pending_column_widths_commit: Option<usize>,
     /// Phase 8 — mouse-ops and edit-ops set this when a click / keypress
     /// requests a link be followed.  The App consumes it on the next
     /// loop iteration and dispatches to its own navigation stack /
@@ -197,6 +218,9 @@ impl EditorState {
             images_enabled: true,
             parsed_version: 0,
             live_table_widths: None,
+            row_striping: false,
+            viewport_width: 80,
+            pending_column_widths_commit: None,
             pending_link_follow: None,
             parsed_dirty: false,
             cursor_block_line_range: None,
@@ -274,6 +298,102 @@ impl EditorState {
         }
     }
 
+    /// Toggle row striping for table data rows and re-render so the
+    /// change is visible on the next frame.  Wired to
+    /// `config.table.row_striping` at App startup; tests use this as a
+    /// public entrypoint into the otherwise-private `refresh_parsed`.
+    pub fn set_row_striping(&mut self, on: bool) {
+        if self.row_striping == on {
+            return;
+        }
+        self.row_striping = on;
+        self.refresh_parsed();
+    }
+
+    /// Update the cached terminal width and re-render if it changed.
+    /// Called by the App on terminal-resize events so the table
+    /// column-width algorithm picks up the new viewport.  Called with
+    /// the document area width (status bar / hint line excluded).
+    pub fn set_viewport_width(&mut self, width: usize) {
+        let width = width.max(1);
+        if self.viewport_width == width {
+            return;
+        }
+        self.viewport_width = width;
+        self.refresh_parsed();
+    }
+
+    /// Commit the pending column-width drag (if any) by writing the
+    /// `<!-- tui-columns: [...] -->` comment into the buffer.  Called by
+    /// the App after a column-border drag release once the
+    /// width-injection warning modal has been resolved (or skipped).
+    /// No-op when no pending commit is recorded — a Cancel from the
+    /// modal goes through [`cancel_pending_column_widths`] instead.
+    pub fn commit_pending_column_widths(&mut self) {
+        let Some(table_byte_start) = self.pending_column_widths_commit.take() else {
+            return;
+        };
+        let live_widths = self
+            .live_table_widths
+            .as_ref()
+            .filter(|(start, _)| *start == table_byte_start)
+            .map(|(_, w)| w.clone());
+        self.live_table_widths = None;
+        let Some(widths) = live_widths else {
+            self.refresh_parsed();
+            return;
+        };
+        let source = self.buffer.contents();
+        let Some(info) = crate::editor::table_edit::find_table_at(&source, table_byte_start) else {
+            self.refresh_parsed();
+            return;
+        };
+        let byte_delta = crate::editor::table_edit::write_column_widths(&source, &info, &widths);
+        let rope = self.buffer.rope();
+        let char_delta = EditDelta {
+            offset: rope.byte_to_char(byte_delta.offset),
+            removed: byte_delta.removed,
+            inserted: byte_delta.inserted,
+        };
+        self.apply_delta(char_delta);
+    }
+
+    /// Discard the pending column-width drag without writing the comment.
+    /// Cancels both the live preview (so the table snaps back to its
+    /// pre-drag widths on the next render) and the pending-commit flag.
+    pub fn cancel_pending_column_widths(&mut self) {
+        self.pending_column_widths_commit = None;
+        self.live_table_widths = None;
+        self.refresh_parsed();
+    }
+
+    /// True if a column-border drag has just released and the App still
+    /// needs to decide whether to commit (or open the warning modal).
+    pub fn has_pending_column_widths(&self) -> bool {
+        self.pending_column_widths_commit.is_some()
+    }
+
+    /// Whether the table whose first byte is `table_byte_start` already
+    /// carries a `<!-- tui-columns: [...] -->` comment immediately after
+    /// it.  Used by the App to skip the width-injection warning when the
+    /// comment is already present (the user has already accepted the
+    /// injection on a previous drag for this table).
+    pub fn table_has_tui_columns_comment(&self, table_byte_start: usize) -> bool {
+        let source = self.buffer.contents();
+        let Some(info) = crate::editor::table_edit::find_table_at(&source, table_byte_start) else {
+            return false;
+        };
+        if info.end >= source.len() {
+            return false;
+        }
+        let comment_line_end = source[info.end..]
+            .find('\n')
+            .map(|i| info.end + i)
+            .unwrap_or(source.len());
+        let comment_line = &source[info.end..comment_line_end];
+        crate::markdown::table_layout::parse_column_widths_comment(comment_line).is_some()
+    }
+
     /// Re-parse and re-render after an edit. Called automatically by `edit_ops`.
     pub(crate) fn refresh_parsed(&mut self) {
         let content = self.buffer.contents();
@@ -304,6 +424,8 @@ impl EditorState {
             self.image_max_height,
             self.live_table_widths.as_ref(),
             Some(&override_fn),
+            self.row_striping,
+            self.viewport_width,
         );
         self.parsed_version = self.parsed_version.wrapping_add(1);
         self.parsed_dirty = false;

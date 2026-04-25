@@ -136,6 +136,25 @@ struct CheatSheetModal {
     state: ModalState,
 }
 
+/// Phase 13 — width-injection warning shown the first time a user
+/// commits a column-border drag on a table without a `tui-columns`
+/// comment.  Buttons (in order):
+///   0 → `Continue` — write the comment for this table; ask again next time.
+///   1 → `Continue and don't ask again` — flip
+///       `config.table.warn_on_width_injection` to false and persist it.
+///   2 → `Cancel` — discard the live width preview without writing.
+///
+/// `pending_table_start` carries the `table_byte_start` from the released
+/// drag so the App can either complete or cancel via
+/// [`EditorState::commit_pending_column_widths`] /
+/// [`EditorState::cancel_pending_column_widths`] when the modal resolves.
+struct WidthInjectionWarning {
+    body: Vec<String>,
+    buttons: Vec<ModalButton>,
+    state: ModalState,
+    pending_table_start: usize,
+}
+
 /// Phase 9 generic modal prompt hosted on the hint line.  Phase 11
 /// (file-change detection) is the first consumer; landing the
 /// scaffolding here means later phases only need to populate the
@@ -278,6 +297,10 @@ pub struct App {
     quit_confirm: Option<QuitConfirm>,
     /// Phase 9 — `?` cheat-sheet popover.
     cheat_sheet: Option<CheatSheetModal>,
+    /// Phase 13 — width-injection warning shown after the first
+    /// column-border drag on a table without an existing `tui-columns`
+    /// comment.  `Some` while the dialog is visible; absorbs input.
+    width_injection_warning: Option<WidthInjectionWarning>,
     /// Phase 9 — active hint-line prompt (first consumer is Phase 11).
     /// Renders in place of the default hint chords; Escape dismisses.
     hint_prompt: Option<HintPrompt>,
@@ -418,7 +441,10 @@ impl App {
         // area; the declined-session flip happens in the prompt handler.
         if matches!(config.images.enabled, crate::config::ImagesEnabled::Never) {
             editor.images_enabled = false;
+            editor.set_row_striping(config.table.row_striping);
             editor.refresh_parsed();
+        } else {
+            editor.set_row_striping(config.table.row_striping);
         }
 
         // PreviewView borrows `editor.parsed.lines` at render time, so
@@ -483,6 +509,7 @@ impl App {
             transient: None,
             quit_confirm: None,
             cheat_sheet: None,
+            width_injection_warning: None,
             hint_prompt: None,
         })
     }
@@ -757,6 +784,12 @@ impl App {
             let doc_height_lines =
                 (term_size.height as usize).saturating_sub(bottom_rows_for_decode);
             self.last_area_width = term_size.width;
+            // Phase 13 — feed the live document-area width into the editor
+            // so the table-column min-max algorithm adapts to the user's
+            // terminal.  Cheap: `set_viewport_width` short-circuits when the
+            // cached width already matches, so this only triggers a
+            // refresh_parsed on the rare frame after a resize quiesce.
+            self.editor.set_viewport_width(term_size.width as usize);
             self.dispatch_visible_image_decodes(self.editor.scroll, doc_height_lines);
 
             // ── Draw ──────────────────────────────────────────────
@@ -830,12 +863,28 @@ impl App {
                 } else {
                     None
                 };
+                // Phase 13 — width-injection warning sits below cheat
+                // sheet / quit-confirm in priority since it's a
+                // local-edit confirmation, not a global UI state.
+                let width_warning_ref = if notice_ref.is_none()
+                    && images_enabled_ref.is_none()
+                    && remote_prompt_ref.is_none()
+                    && dirty_guard_ref.is_none()
+                    && quit_confirm_ref.is_none()
+                    && cheat_sheet_ref.is_none()
+                {
+                    self.width_injection_warning.as_mut()
+                } else {
+                    None
+                };
+                let drop_indicator = drop_indicator_for(&self.drag_target);
                 terminal.draw(|frame| {
                     let view = EditorView {
                         state: editor_ref,
                         theme: theme_ref,
                         filename: &filename,
                         show_table_handles: show_handles,
+                        table_drop_indicator: drop_indicator,
                         capabilities: capabilities_ref,
                         is_scrolling,
                         status_bar_layout: layout,
@@ -890,6 +939,14 @@ impl App {
                             theme: theme_ref,
                         };
                         frame.render_stateful_widget(modal, frame.area(), &mut cs.state);
+                    } else if let Some(ww) = width_warning_ref {
+                        let modal = ModalView {
+                            title: "Custom column widths",
+                            body: &ww.body,
+                            buttons: &ww.buttons,
+                            theme: theme_ref,
+                        };
+                        frame.render_stateful_widget(modal, frame.area(), &mut ww.state);
                     }
                 })?;
                 self.last_draw_at = Some(Instant::now());
@@ -1101,6 +1158,21 @@ impl App {
                 continue;
             }
 
+            // Phase 13 — width-injection warning absorbs input until
+            // the user picks Continue / Continue and don't ask again /
+            // Cancel.  Sits below the cheat sheet so a `?` invocation
+            // mid-warning still reaches the cheat sheet first
+            // (matches the precedence used by every other prompt).
+            if self.width_injection_warning.is_some() {
+                if let Event::Key(key) = &event {
+                    if key.kind == KeyEventKind::Press {
+                        self.handle_width_injection_warning_key(*key);
+                        self.needs_draw = true;
+                    }
+                }
+                continue;
+            }
+
             // `term_size` was already fetched at the top of the loop
             // (for `dispatch_visible_image_decodes`); reuse here.
             let viewport_height = term_size.height as usize;
@@ -1189,6 +1261,11 @@ impl App {
                         if let Some(target) = self.editor.pending_link_follow.take() {
                             self.follow_link(target, doc_height, doc_width);
                         }
+                        // Phase 13: a column-border drag release sets
+                        // `pending_column_widths_commit`; either commit
+                        // straight through or open the warning modal
+                        // depending on config + table state.
+                        self.handle_pending_column_widths();
                         self.needs_draw = true;
                     }
                 }
@@ -1455,6 +1532,94 @@ impl App {
         }
     }
 
+    // ── Phase 13 — column-width injection warning ────────────────────────
+
+    /// Drain `EditorState::pending_column_widths_commit` (set by a
+    /// column-border drag's Release) and decide what happens next:
+    ///   * No pending commit → no-op.
+    ///   * Table already has a `<!-- tui-columns: ... -->` comment, OR
+    ///     `config.table.warn_on_width_injection` is false → commit
+    ///     immediately.
+    ///   * Otherwise → open the warning modal carrying the table's
+    ///     `table_byte_start` so its handler can call back to commit /
+    ///     cancel via `EditorState`.
+    fn handle_pending_column_widths(&mut self) {
+        let Some(table_byte_start) = self.editor.pending_column_widths_commit else {
+            return;
+        };
+        let already_has_comment = self.editor.table_has_tui_columns_comment(table_byte_start);
+        if already_has_comment || !self.config.table.warn_on_width_injection {
+            self.editor.commit_pending_column_widths();
+            return;
+        }
+        self.open_width_injection_warning(table_byte_start);
+    }
+
+    /// Stage the three-button warning explaining that committing the
+    /// drag will inject a `<!-- tui-columns: ... -->` comment into the
+    /// Markdown source.  Intentionally verbose body text since a
+    /// first-time user might not know what the comment is for.
+    fn open_width_injection_warning(&mut self, pending_table_start: usize) {
+        let body = vec![
+            "Setting custom column widths adds a".to_owned(),
+            "<!-- tui-columns: [...] --> comment to the".to_owned(),
+            "Markdown source so the layout persists.".to_owned(),
+            String::new(),
+            "Continue?".to_owned(),
+        ];
+        self.width_injection_warning = Some(WidthInjectionWarning {
+            body,
+            buttons: vec![
+                ModalButton::new("Continue"),
+                ModalButton::new("Continue and don't ask again"),
+                ModalButton::new("Cancel"),
+            ],
+            state: ModalState::new(),
+            pending_table_start,
+        });
+    }
+
+    /// Apply a keypress to the width-injection warning.  Buttons:
+    ///   * 0 `Continue` — commit the pending widths; no config change.
+    ///   * 1 `Continue and don't ask again` — flip
+    ///     `config.table.warn_on_width_injection` to false, persist via
+    ///     `Config::save()` (with the standard `Configuration updated`
+    ///     flash), then commit.
+    ///   * 2 `Cancel` — drop the live preview without writing.
+    /// Escape behaves like Cancel.
+    fn handle_width_injection_warning_key(&mut self, key: crossterm::event::KeyEvent) {
+        let Some(warn) = self.width_injection_warning.as_mut() else {
+            return;
+        };
+        let num_buttons = warn.buttons.len();
+        let response = warn.state.handle_key(&key, num_buttons);
+        match response {
+            ModalResponse::Continue => {}
+            ModalResponse::Cancelled => {
+                self.width_injection_warning = None;
+                self.editor.cancel_pending_column_widths();
+            }
+            ModalResponse::ButtonPressed(idx) => {
+                self.width_injection_warning = None;
+                match idx {
+                    0 => {
+                        self.editor.commit_pending_column_widths();
+                    }
+                    1 => {
+                        self.config.table.warn_on_width_injection = false;
+                        self.save_config_with_flash(
+                            "failed to persist table.warn_on_width_injection",
+                        );
+                        self.editor.commit_pending_column_widths();
+                    }
+                    _ => {
+                        self.editor.cancel_pending_column_widths();
+                    }
+                }
+            }
+        }
+    }
+
     /// Resolve the link under the keyboard cursor by scanning the
     /// current raw line for `[text](url)` syntax and classifying the
     /// URL.  Mirrors `mouse_ops::link_at_offset` — keyboard and mouse
@@ -1582,7 +1747,10 @@ impl App {
         // effect for the new one.
         if !self.images_layout_enabled() {
             new_editor.images_enabled = false;
+            new_editor.set_row_striping(self.config.table.row_striping);
             new_editor.refresh_parsed();
+        } else {
+            new_editor.set_row_striping(self.config.table.row_striping);
         }
         self.editor = new_editor;
         // Image cache is owned by `EditorState`, so swapping to a new
@@ -2262,6 +2430,39 @@ fn cursor_in_table(state: &EditorState) -> bool {
     let cursor_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
     let source = state.buffer.contents();
     crate::editor::table_edit::find_table_at(&source, cursor_byte).is_some()
+}
+
+/// Translate the App's `drag_target` into a UI-layer `DropIndicator` for
+/// the renderer's post-pass.  Returns `None` when no relevant drag is in
+/// progress (text-selection drags don't paint a table indicator); the
+/// painter is then a no-op.  Column-border resize drags currently return
+/// `None` because the live-preview re-render is itself the affordance —
+/// adding a vertical guideline on top would be redundant noise.
+fn drop_indicator_for(
+    drag_target: &Option<mouse_ops::DragTarget>,
+) -> Option<crate::ui::DropIndicator> {
+    match drag_target.as_ref()? {
+        mouse_ops::DragTarget::TableRow {
+            table_byte_start,
+            row_idx,
+            hover_row_idx,
+        } => Some(crate::ui::DropIndicator::Row {
+            table_byte_start: *table_byte_start,
+            src_row_idx: *row_idx,
+            hover_row_idx: *hover_row_idx,
+        }),
+        mouse_ops::DragTarget::TableColumnHeader {
+            table_byte_start,
+            col_idx,
+            hover_col_idx,
+        } => Some(crate::ui::DropIndicator::Column {
+            table_byte_start: *table_byte_start,
+            src_col_idx: *col_idx,
+            hover_col_idx: *hover_col_idx,
+        }),
+        mouse_ops::DragTarget::TableColumnBorder { .. }
+        | mouse_ops::DragTarget::TextSelection { .. } => None,
+    }
 }
 
 // ── Extension trait for DefaultHandler ───────────────────────────────────────

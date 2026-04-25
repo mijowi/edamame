@@ -99,6 +99,17 @@ bold = true
 
 [table_cell]
 
+[table_row_even]
+
+[table_row_odd]
+bg = 235
+
+[table_drop_indicator]
+fg = 178
+
+[table_drop_target]
+fg = 101
+
 [status_bar]
 fg = "White"
 bg = 236

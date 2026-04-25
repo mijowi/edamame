@@ -21,4 +21,4 @@ pub use preview::{PreviewState, PreviewView};
 pub use raw_view::{RawView, RawViewState};
 pub use rendered_view::{RenderedView, RenderedViewState};
 pub use status_bar::{StatusBar, StatusBarState};
-pub use table_view::{TableHit, TableLayoutSnapshot};
+pub use table_view::{DropIndicator, TableHit, TableLayoutSnapshot};

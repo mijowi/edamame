@@ -124,6 +124,7 @@ fn rendered_view_paints_selection_across_multiple_rendered_blocks() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                drop_indicator: None,
                 show_table_handles: false,
                 state: &state,
                 theme,
@@ -173,6 +174,7 @@ fn setext_heading_reveals_both_title_and_underline_on_cursor() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                drop_indicator: None,
                 show_table_handles: false,
                 state: &state,
                 theme,
@@ -230,6 +232,7 @@ fn rendered_view_selection_in_table_cell_does_not_spill_into_borders() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                drop_indicator: None,
                 show_table_handles: false,
                 state: &state,
                 theme,
@@ -300,6 +303,7 @@ fn rendered_view_selection_inside_cursors_own_cell_survives_cell_overlay() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                drop_indicator: None,
                 show_table_handles: false,
                 state: &state,
                 theme,
@@ -349,6 +353,7 @@ fn rendered_view_cell_scoped_reveal_keeps_neighbouring_pipes_rendered() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                drop_indicator: None,
                 show_table_handles: false,
                 state: &state,
                 theme,
@@ -425,6 +430,7 @@ fn table_view_paints_row_and_column_handles_when_enabled() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                drop_indicator: None,
                 state: &state,
                 theme,
                 show_table_handles: true,
@@ -502,6 +508,328 @@ fn table_view_paints_row_and_column_handles_when_enabled() {
     );
 }
 
+/// Phase 13 — for a multi-row data row whose cell wrapped to two
+/// rendered sub-lines, exactly ONE `⠿` row-handle glyph paints (on
+/// the row's first sub-line).  Painting on every wrapped sub-line
+/// reads as visual noise without making the row easier to grab.
+#[test]
+fn table_view_paints_one_row_handle_per_logical_row() {
+    use edamame::config::Theme;
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
+    // First data row's second cell wraps under a narrow viewport.
+    let src = "| Name | Notes |\n|---|---|\n| a | This is a very long note that wraps |\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    // Cursor in the data row so handles paint.
+    let target = src.find("This").unwrap();
+    state.cursor.offset = state.buffer.rope().byte_to_char(target);
+    state.update_cursor_block();
+
+    let backend = TestBackend::new(28, 12);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                drop_indicator: None,
+                state: &state,
+                theme,
+                show_table_handles: true,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let symbol_at = |x: u16, y: u16| {
+        buf.cell((x, y))
+            .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+    };
+
+    assert_eq!(view_state.table_snapshots.len(), 1);
+    let snap = &view_state.table_snapshots[0];
+    assert_eq!(snap.row_ranges.len(), 1, "one logical data row");
+    let y_range = &snap.row_ranges[0];
+    // Wrapped: the row spans more than one rendered y.
+    assert!(
+        y_range.end - y_range.start > 1,
+        "test fixture must produce a wrapped row, got {y_range:?}",
+    );
+    let handle_col = snap.row_handle_col.expect("row handle col is set");
+    let mut painted = 0usize;
+    for y in y_range.start..y_range.end {
+        if symbol_at(handle_col, y) == '⠿' {
+            painted += 1;
+        }
+    }
+    assert_eq!(
+        painted, 1,
+        "exactly one ⠿ row handle should paint per logical row, got {painted}",
+    );
+}
+
+/// Phase 13 — when the cursor enters a *wrapped* table cell, the
+/// rendered table layout (including the row's wrap continuation
+/// sub-lines) must stay intact.  Pre-fix behaviour collapsed the
+/// row to a single line of raw markdown like
+/// `| a | This is ... long note |`; the post-fix behaviour leaves
+/// every rendered table line in place and paints just a cursor
+/// indicator on the cursor's wrap sub-line.
+#[test]
+fn rendered_view_wrapped_cell_keeps_table_layout_when_cursor_inside() {
+    use edamame::config::Theme;
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
+    let src = "| Name | Notes |\n|---|---|\n| a | This is a very long note that wraps |\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    // Cursor on a char inside the wrapped cell (the second cell of the
+    // first data row).
+    let target = src.find("very").unwrap();
+    state.cursor.offset = state.buffer.rope().byte_to_char(target);
+    state.update_cursor_block();
+    // Force the reveal delay to be elapsed so we test the steady-state
+    // behaviour, not the jitter-suppression path.
+    state.cursor_block_entered_at =
+        Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+
+    let backend = TestBackend::new(28, 12);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                drop_indicator: None,
+                state: &state,
+                theme,
+                show_table_handles: false,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |y: u16| -> String {
+        (0..28u16)
+            .map(|x| {
+                buf.cell((x, y))
+                    .and_then(|c| c.symbol().chars().next())
+                    .unwrap_or(' ')
+            })
+            .collect()
+    };
+
+    // Every visible row of the rendered table starts with a box-drawing
+    // glyph (`┌`, `│`, `┝`, `└`).  If the row collapsed to a raw line
+    // we'd see `|` (ASCII pipe) at column 0 — explicitly rule that out.
+    for y in 0u16..8 {
+        let row = row_text(y);
+        if row.is_empty() {
+            continue;
+        }
+        let first = row.chars().next().unwrap();
+        if first == ' ' {
+            continue; // blank rows past the table
+        }
+        assert!(
+            !row.starts_with('|'),
+            "row {y} should not collapse to raw markdown ({row:?})",
+        );
+    }
+
+    // Confirm the table's box-drawing glyphs are still visible.
+    let mut found_top = false;
+    let mut found_bottom = false;
+    for y in 0u16..12 {
+        let row = row_text(y);
+        if row.starts_with('┌') {
+            found_top = true;
+        }
+        if row.starts_with('└') {
+            found_bottom = true;
+        }
+    }
+    assert!(found_top, "top border must still render");
+    assert!(found_bottom, "bottom border must still render");
+}
+
+/// Phase 13 — when a cell's raw markdown is too wide for the
+/// rendered cell (e.g. `**_words_**` in a column whose auto-fit is
+/// keyed off the rendered "words"), the cell horizontally scrolls to
+/// keep the cursor's chunk visible.  The user must see *raw* chars
+/// (`*`, `_`) where the cursor is — not the rendered bold-italic
+/// glyphs of the formatted output.
+#[test]
+fn rendered_view_wrapped_cell_shows_raw_markdown_chunk() {
+    use edamame::config::Theme;
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
+    // Cell content `**_words_**` renders as the 5-char word "words".
+    // With a narrow viewport the column auto-fits to ~5 chars, so the
+    // raw 11-char source can't sit on the rendered row.
+    let src = "| a | b |\n|---|---|\n| x | **_words_** |\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    let target = src.find("words").unwrap();
+    state.cursor.offset = state.buffer.rope().byte_to_char(target);
+    state.update_cursor_block();
+    state.cursor_block_entered_at =
+        Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+
+    let backend = TestBackend::new(20, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                drop_indicator: None,
+                state: &state,
+                theme,
+                show_table_handles: false,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |y: u16| -> String {
+        (0..20u16)
+            .map(|x| {
+                buf.cell((x, y))
+                    .and_then(|c| c.symbol().chars().next())
+                    .unwrap_or(' ')
+            })
+            .collect()
+    };
+
+    // Find the data row (starts with `│`, not `┌` / `┝` / `└`).
+    let mut data_row_text = None;
+    for y in 0u16..8 {
+        let row = row_text(y);
+        if row.starts_with('│') && !row.contains('━') {
+            // The first `│`-prefixed row is the header; skip until we
+            // see one whose content isn't `a` / `b`.
+            if row.contains('x') || row.contains('*') || row.contains('w') {
+                data_row_text = Some(row);
+                break;
+            }
+        }
+    }
+    let data_row = data_row_text.expect("data row should be on screen");
+    // The cursor's chunk should expose at least one `*` or `_` (raw
+    // markdown markers), proving we didn't just paint rendered styled
+    // text.
+    assert!(
+        data_row.contains('*') || data_row.contains('_'),
+        "cursor's cell should show raw markdown chars; got {data_row:?}",
+    );
+}
+
+/// Phase 13 — handles paint only on the table the cursor is inside.
+/// With the cursor parked in a paragraph above a table, the table's
+/// drag handles must be invisible; moving the cursor onto the table
+/// reveals them.  Snapshots are still captured for hit-testing in
+/// either case.
+#[test]
+fn table_view_handles_only_paint_when_cursor_in_table() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // A paragraph followed by a table.  Cursor starts at offset 0 (in
+    // the paragraph), then later we move it into the table.
+    let src = "intro line\n\n| aa | bb |\n|---|---|\n| 1  | 2  |\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+
+    // Cursor in the paragraph: snapshot exists, but no glyphs.
+    let backend = TestBackend::new(30, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                drop_indicator: None,
+                state: &state,
+                theme,
+                show_table_handles: true,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let symbol_at = |buf: &ratatui::buffer::Buffer, x: u16, y: u16| {
+        buf.cell((x, y))
+            .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+    };
+
+    assert_eq!(view_state.table_snapshots.len(), 1);
+    // No `⠿` (row/column reorder) glyphs anywhere on the screen yet.
+    let mut painted = 0usize;
+    for y in 0u16..10 {
+        for x in 0u16..30 {
+            if symbol_at(&buf, x, y) == '⠿' {
+                painted += 1;
+            }
+        }
+    }
+    assert_eq!(
+        painted, 0,
+        "no handles should paint when cursor is outside the table",
+    );
+
+    // Move cursor into the table's first cell — find a byte offset
+    // inside the first data row.  The table starts at byte 12 (`| aa`)
+    // so byte 35 is comfortably inside `| 1  | 2  |`.
+    let table_start = src.find("| aa").unwrap();
+    let data_byte = src[table_start..]
+        .find("| 1")
+        .map(|off| table_start + off + 2) // jump past `| ` to land on '1'
+        .unwrap();
+    let target_char = state.buffer.rope().byte_to_char(data_byte);
+    state.cursor.offset = target_char;
+    state.update_cursor_block();
+
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                drop_indicator: None,
+                state: &state,
+                theme,
+                show_table_handles: true,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+
+    let mut painted = 0usize;
+    for y in 0u16..10 {
+        for x in 0u16..30 {
+            if symbol_at(&buf, x, y) == '⠿' {
+                painted += 1;
+            }
+        }
+    }
+    assert!(
+        painted > 0,
+        "cursor inside the table should reveal `⠿` handle glyphs",
+    );
+}
+
 #[test]
 fn table_view_snapshots_empty_when_no_table() {
     use edamame::document::Buffer;
@@ -517,6 +845,7 @@ fn table_view_snapshots_empty_when_no_table() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                drop_indicator: None,
                 state: &state,
                 theme,
                 show_table_handles: true,
@@ -636,4 +965,242 @@ fn status_bar_shows_cursor_position() {
         })
         .collect();
     assert!(out.contains("5:12"), "got: {out:?}");
+}
+
+// ── Phase 13: row striping and drop indicators ──────────────────────────────
+
+/// With `row_striping = true`, alternating data rows pick up
+/// `Theme::table_row_even` / `Theme::table_row_odd` as their background.
+/// Asserts that row 0's cell carries the `table_row_even` style and row
+/// 1's carries `table_row_odd` (themed to a contrasting bg here so we
+/// can verify the difference).
+#[test]
+fn table_row_striping_alternates_bg_per_data_row() {
+    use edamame::config::Theme;
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+    use ratatui::style::{Color, Style};
+
+    // Build a custom theme whose row striping styles are visibly
+    // different so the assertion has a clear signal to check.
+    let mut theme_owned = Theme::default();
+    theme_owned.table_row_even = Style::default().bg(Color::Indexed(238));
+    theme_owned.table_row_odd = Style::default().bg(Color::Indexed(237));
+    let theme: &'static Theme = Box::leak(Box::new(theme_owned));
+
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    state.set_row_striping(true);
+
+    let backend = TestBackend::new(20, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                drop_indicator: None,
+                state: &state,
+                theme,
+                show_table_handles: false,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let cell_at = |x: u16, y: u16| buf.cell((x, y)).cloned().unwrap_or_default();
+
+    // Layout: y=0 top border, y=1 header, y=2 thick sep, y=3 data row 0,
+    // y=4 thin sep, y=5 data row 1.  Pick a column inside the cell
+    // content area (x=2 sits inside col 0's `1` / `3`).
+    let row0_bg = cell_at(2, 3).bg;
+    let row1_bg = cell_at(2, 5).bg;
+    assert_eq!(
+        row0_bg,
+        Color::Indexed(238),
+        "row 0 even-stripe bg mismatch"
+    );
+    assert_eq!(row1_bg, Color::Indexed(237), "row 1 odd-stripe bg mismatch");
+}
+
+/// With `row_striping` on, the inter-row separator between two data
+/// rows is rendered as a *blank* line (NBSP-padded) instead of the
+/// `├─┼─┤` rule.  The blank line carries the background of the row
+/// immediately above it so each striped row reads as a 2-row band of
+/// its own colour, with no horizontal rule breaking up the rhythm.
+#[test]
+fn table_row_striping_replaces_thin_rule_with_blank_separator() {
+    use edamame::config::Theme;
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+    use ratatui::style::{Color, Style};
+
+    let mut theme_owned = Theme::default();
+    theme_owned.table_row_even = Style::default().bg(Color::Indexed(238));
+    theme_owned.table_row_odd = Style::default().bg(Color::Indexed(237));
+    let theme: &'static Theme = Box::leak(Box::new(theme_owned));
+
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    state.set_row_striping(true);
+
+    let backend = TestBackend::new(20, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                drop_indicator: None,
+                state: &state,
+                theme,
+                show_table_handles: false,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let symbol_at = |x: u16, y: u16| {
+        buf.cell((x, y))
+            .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+    };
+    let bg_at = |x: u16, y: u16| buf.cell((x, y)).map(|c| c.bg).unwrap_or(Color::Reset);
+
+    // Layout when stripe is on: y=0 top, y=1 header, y=2 thick,
+    // y=3 row 0, y=4 BLANK separator (bg matches row 0), y=5 row 1,
+    // y=6 bottom.
+    // The "thin rule" position (y=4) must NOT carry `├` / `┼` /
+    // `─` glyphs — only `│` and NBSP (which renders visually as a
+    // space).
+    for x in 0u16..16 {
+        let g = symbol_at(x, 4);
+        assert!(
+            g != '├' && g != '┼' && g != '┤' && g != '─',
+            "stripe-on separator at ({x}, 4) should be blank, got {g:?}",
+        );
+    }
+
+    // The blank separator below row 0 should pick up row 0's bg
+    // (Indexed(238)) on the cell-padding NBSPs.
+    assert_eq!(
+        bg_at(2, 4),
+        Color::Indexed(238),
+        "blank separator below row 0 should carry row 0's bg",
+    );
+}
+
+/// With striping disabled (the default), the renderer must NOT apply
+/// either striping style — every data row falls through to
+/// `Theme::table_cell` and the cell background stays at terminal
+/// default.
+#[test]
+fn table_row_striping_off_leaves_default_bg() {
+    use edamame::config::Theme;
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+    use ratatui::style::{Color, Style};
+
+    let mut theme_owned = Theme::default();
+    theme_owned.table_row_even = Style::default().bg(Color::Indexed(238));
+    theme_owned.table_row_odd = Style::default().bg(Color::Indexed(237));
+    let theme: &'static Theme = Box::leak(Box::new(theme_owned));
+
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    // Note: row_striping is false (default).
+
+    let backend = TestBackend::new(20, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                drop_indicator: None,
+                state: &state,
+                theme,
+                show_table_handles: false,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let bg_at = |x: u16, y: u16| buf.cell((x, y)).map(|c| c.bg).unwrap_or(Color::Reset);
+    // Both data rows should have the same (default) background — neither
+    // stripe colour should leak through.
+    assert_ne!(bg_at(2, 3), Color::Indexed(238));
+    assert_ne!(bg_at(2, 3), Color::Indexed(237));
+    assert_eq!(bg_at(2, 3), bg_at(2, 5));
+}
+
+/// During a row-handle drag, `paint_drop_indicator` overlays a heavy
+/// horizontal rule on the destination separator.  The painter renders
+/// `DROP_ROW_GLYPH` ('━') styled with `Theme::table_drop_indicator`
+/// across the table's full width on the separator y-coordinate.
+#[test]
+fn table_view_paints_drop_indicator_on_row_drag() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::table_view::DropIndicator;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+
+    // Drag from data row index 2 (first data row) onto data row 3
+    // (second data row).  The painter should highlight the separator
+    // *below* the second data row → drop_below.
+    let indicator = DropIndicator::Row {
+        table_byte_start: 0,
+        src_row_idx: 2,
+        hover_row_idx: 3,
+    };
+
+    let backend = TestBackend::new(30, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                drop_indicator: Some(indicator),
+                state: &state,
+                theme,
+                show_table_handles: false,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let symbol_at = |x: u16, y: u16| {
+        buf.cell((x, y))
+            .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+    };
+
+    assert_eq!(view_state.table_snapshots.len(), 1);
+    let snap = &view_state.table_snapshots[0];
+    assert_eq!(snap.row_ranges.len(), 2);
+    // Drop is below hover row (data idx = 1 → second data row).  Its
+    // separator y is row_ranges[1].end.
+    let sep_y = snap.row_ranges[1].end;
+    let first_x = snap.col_ranges.first().unwrap().start;
+    let last_x = snap.col_ranges.last().unwrap().end;
+    let mut found = 0usize;
+    for x in first_x.saturating_sub(1)..=last_x {
+        if symbol_at(x, sep_y) == '━' {
+            found += 1;
+        }
+    }
+    assert!(
+        found > 0,
+        "drop indicator should paint ━ on separator y={sep_y}, got 0 matches"
+    );
 }
