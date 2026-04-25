@@ -95,6 +95,17 @@ fn preview_safe_action(action: &Action) -> bool {
             | Action::ScrollPageDown
             | Action::ScrollToTop
             | Action::ScrollToBottom
+            // Phase 10 — overlay-opening actions are read-only:
+            // they pop a modal that absorbs subsequent input.
+            // Suppressing them in Preview would leave Ctrl-P unable
+            // to launch the command palette while the user is just
+            // browsing.
+            | Action::ShowCommandPalette
+            | Action::ShowMarkdownCheatSheet
+            | Action::ShowCheatSheet
+            | Action::OpenSettings
+            | Action::OpenKeybinds
+            | Action::OpenConfigFolder
     )
 }
 

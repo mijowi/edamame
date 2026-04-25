@@ -72,6 +72,11 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 # system-library dependency.
 open = "5"
 
+# Phase 10 — fuzzy matching for the command palette.  Helix uses the
+# parent `nucleo` crate; we only need the matcher (no async source
+# layer), so we depend on `nucleo-matcher` directly.
+nucleo-matcher = "0.3"
+
 # Phase 16 — HTML export:
 # `base64` encodes local image bytes into `data:` URIs when the user opts in
 # to self-contained HTML. `tempfile` hosts the intermediate HTML file for
