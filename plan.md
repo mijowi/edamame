@@ -1472,17 +1472,24 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 ---
 
 ## Miscellaneous Issues / Features
+- [ ] Fix the command palette's position relative to the top of the terminal so that it doesn't jump around vertically as the user types and it searches.
 
-- [ ] When switching between hybrid edit mode and raw edit mode, it seems that the position in the document is not correctly preserved. The rendered and raw documents are different lengths, so when switching between modes we don't end up looking at the same line. Sometimes the cursor is not even visible. Instead we should preserve the *cursor* position on the screen. So, if the cursor is on row 20 of the terminal in rendered mode, when the user switches to raw mode, we should reposition the document so that the cursor (and the line it was on) is still on row 20 of the terminal.
-- [ ] If the cursor is at the last line of the visible area and the user adds content that causes the cursor to move to the next row of the editor, the cursor goes off the screen. Instead, the editor should scroll the document down 1 line so that the cursor is always visible.
+- [ ] Rename table drag handle verbiage in config file, settings modal, and action in command palette to "table buttons", since we've added delete buttons.
+- [ ] The cursor should change to a hand when hovering over table manipulation buttons (no change when buttons are not visible).
+
+- [ ] Display a warning modal to the user whenever reading any .toml config file (config, keybindings, and themes) if the file cannot be parsed as .toml or if there are unrecognized keys/values. The modal should specify the problematic file (and lines if this doesn't add too much complexity). The modal should reuse existing `ModalView` and be scrollable in case content overflows.
 - [ ] List item alignment: In all cases (ordered, unordered, task lists) the text of a list item should be left-padded with spaces so that the text is all aligned on the left side, and the list marker hangs off on the left at the top.
-- [ ] Warn user whenever reading any .toml config file if the file cannot be parsed.
-- [ ] Add support for footnotes. Add to Markdown cheat sheet.
-- [ ] Deleting text should follow the same grouping that adding text does in the undo/redo stack. So, if I press backspace 3 times to delete "Cat", it should be undo-able in one `Ctrl-z` stroke that restores "Cat".
-- [ ] Add row/column delete buttons to tables
-- [ ] Action for toggling table drag handles on/off
+
+- [ ] Is `ScrollContainerState` themeable? It should have a theme that is shared across all modals, with per-modal overrides possible.
 - [ ] Add a background color to modal inputs when selected, ex. keybindings
+
+- [ ] Press keys to set chord in keybinding modal instead of typing in e.g. `Ctrl-c`
+- [ ] Add next cell/prev cell to keybindings modal
+
+- [ ] Heading table of contents 
+- [ ] Add support for footnotes. Add to Markdown cheat sheet.
 - [ ] Test keybindings and settings modals
-- [ ] Extend scroll support to Phase 10 custom overlays (palette, settings, keybinds). Reuse existing scroll functionality from `ModalView` where possible.
-- [ ] Add "Open current file in system editor" action. Should save before opening in editor
 - [ ] Clean up source and tests
+- [ ] Table row/column deletion hover preview? Optional — when the pointer is over a delete glyph, paint the
+  target row/column in a "danger" style (e.g., theme's selection-or-warning color)
+  so the user sees what's about to go. Adds polish but more work.
