@@ -106,10 +106,10 @@ pub fn hint_line_for(state: &EditorState) -> HintSet {
             chords: vec![
                 HintChord::new("⇥", "Next cell"),
                 HintChord::new("⇧⇥", "Prev cell"),
-                HintChord::new("⌥↑↓", "Move row"),
-                HintChord::new("⌥←→", "Move col"),
-                HintChord::new("⌥⇧↑↓", "Insert row"),
+                HintChord::new("⌥↑↓←→", "Move row/col"),
+                HintChord::new("⌥⇧↑↓←→", "Insert row/col"),
                 HintChord::new("⌥⌫", "Del row"),
+                HintChord::new("⌥⇧⌫", "Del col"),
             ],
         },
         Mode::Rendered | Mode::Raw => {
