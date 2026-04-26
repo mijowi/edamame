@@ -100,7 +100,16 @@ impl SettingsState {
             theme_names,
             rows: build_rows(),
         };
-        state.focused = state.first_focusable_index().unwrap_or(0);
+        // Default focus to the first editable setting ("Theme") rather
+        // than the "open externally" pair at the top.  Most users open
+        // the overlay to tweak a setting; the externals are still one
+        // Up arrow away.
+        state.focused = state
+            .rows
+            .iter()
+            .position(|r| r.label == "Theme")
+            .or_else(|| state.first_focusable_index())
+            .unwrap_or(0);
         state
     }
 
@@ -752,16 +761,16 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_first_row_emits_open_config_folder() {
+    fn enter_on_open_config_folder_row_emits_open_config_folder() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        // Focus defaults to row 0, which is now "Open Config folder".
+        focus_row(&mut state, "Open config folder");
         let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
         assert_eq!(resp, SettingsResponse::OpenConfigFolder);
     }
 
     #[test]
-    fn enter_on_second_row_emits_open_external_editor() {
+    fn enter_on_config_toml_row_emits_open_external_editor() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
         focus_row(&mut state, "Open config.toml in default editor");
@@ -770,19 +779,27 @@ mod tests {
     }
 
     #[test]
+    fn default_focus_is_theme_row() {
+        // Most users open Settings to adjust a setting, not the
+        // externals.  Default focus skips past the open-externally
+        // pair and lands on Theme.
+        let state = SettingsState::new();
+        assert_eq!(state.rows[state.focused].label, "Theme");
+    }
+
+    #[test]
     fn arrow_navigation_skips_divider_row() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        // Focus starts on "Open Config folder" (row 0).
-        state.handle_key(&key(KeyCode::Down), &mut config);
+        // Default focus is "Theme" — Up must skip the blank divider
+        // and land on "Open config.toml in default editor".
+        state.handle_key(&key(KeyCode::Up), &mut config);
         assert_eq!(
             state.rows[state.focused].label,
             "Open config.toml in default editor"
         );
-        // The next Down must skip the blank divider and land on
-        // "Theme", not on the divider itself.
-        state.handle_key(&key(KeyCode::Down), &mut config);
-        assert_eq!(state.rows[state.focused].label, "Theme");
+        state.handle_key(&key(KeyCode::Up), &mut config);
+        assert_eq!(state.rows[state.focused].label, "Open config folder");
     }
 
     #[test]
@@ -847,7 +864,7 @@ mod tests {
         assert_eq!(
             labels,
             vec![
-                "Open Config folder",
+                "Open config folder",
                 "Open config.toml in default editor",
                 "",
                 "Theme",

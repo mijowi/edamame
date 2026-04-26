@@ -157,8 +157,12 @@ impl SettingsStateExt for SettingsState {
         // the order rows scroll past on Down.  We cheat slightly by
         // mirroring the curated row order here — the overlay's own
         // `rows_match_curated_list` test guards against drift.
+        // An empty entry mirrors the non-focusable divider so indices
+        // line up with `state.focused` even though Down skips it.
         const ORDER: &[&str] = &[
+            "Open config folder",
             "Open config.toml in default editor",
+            "",
             "Theme",
             "Use hint line",
             "Hint duration",

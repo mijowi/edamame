@@ -3682,12 +3682,13 @@ mod phase9_flash_tests {
         // actual editor invocation to the run loop so it can drive
         // the terminal suspend/resume.  Verify the wiring: pressing
         // Enter on that row stages the request and clears the overlay.
-        // Row 0 is now "Open Config folder", so step Down once first.
+        // Default focus is "Theme"; one Up skips the divider and
+        // lands on the editor row.
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = make_app();
         app.open_settings_overlay();
         assert!(app.settings_overlay.is_some());
-        app.handle_settings_overlay_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_settings_overlay_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         app.handle_settings_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.pending_open_config_in_editor);
         assert!(app.settings_overlay.is_none());
@@ -3695,14 +3696,16 @@ mod phase9_flash_tests {
 
     #[test]
     fn settings_overlay_open_config_folder_closes_overlay() {
-        // The new top-row "Open Config folder" entry hands the path
-        // to the OS file manager via `spawn_open_worker` and closes
-        // the overlay.  No `pending_open_config_in_editor` flag is
-        // set — that path is editor-only.
+        // The top-row "Open config folder" entry hands the path to
+        // the OS file manager via `spawn_open_worker` and closes the
+        // overlay.  No `pending_open_config_in_editor` flag is set —
+        // that path is editor-only.  Default focus is "Theme"; two
+        // Up presses (skipping the divider) reach the folder row.
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = make_app();
         app.open_settings_overlay();
-        // Focus defaults to row 0 = "Open Config folder".
+        app.handle_settings_overlay_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        app.handle_settings_overlay_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         app.handle_settings_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(!app.pending_open_config_in_editor);
         assert!(app.settings_overlay.is_none());
