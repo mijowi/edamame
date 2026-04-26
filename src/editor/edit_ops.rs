@@ -995,6 +995,28 @@ pub fn paste_text(
     state.ensure_cursor_visible(viewport_height, viewport_width);
 }
 
+/// Phase 15 — wrapper around [`table_edit::insert_table`] that mutates
+/// `EditorState` and lands the cursor in the new table's first header
+/// cell.  The caller is expected to have run the blank-line pre-flight
+/// already (the App-level handler does this before opening the modal),
+/// so this function unconditionally inserts.  In Preview mode the
+/// caller flips the editor into Rendered first, mirroring how typing
+/// actions transition out of Preview.
+pub fn insert_table_at_cursor(
+    state: &mut EditorState,
+    rows: usize,
+    cols: usize,
+    viewport_height: usize,
+    viewport_width: usize,
+) {
+    enter_edit_if_preview(state, viewport_height);
+    let source = state.buffer.contents();
+    let cursor_byte = cursor_byte(state);
+    let (byte_delta, cursor_target) = table_edit::insert_table(&source, cursor_byte, rows, cols);
+    apply_byte_delta(state, byte_delta, cursor_target);
+    state.ensure_cursor_visible(viewport_height, viewport_width);
+}
+
 /// Move the cursor one visual step horizontally when inside a table.
 ///
 /// Each cell exposes a contiguous range `[cell_first, cell_end]` of valid

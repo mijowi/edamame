@@ -1177,9 +1177,9 @@ These items are cohesive (all table-layer concerns) and share the `table_layout`
 Extracted from old Phase 11.  Pulls in the "Heading visual hierarchy — framing/rules" item from *Deferred Work* since the plan itself flagged it as "do this now."  Items are independent — any subset can ship.
 
 **Tasks — checkbox glyphs:**
-- [ ] Replace the current `[ ]` / `[x]` text rendering of task-list checkboxes with Unicode glyphs (e.g. ☐ / ☑) in Preview and Rendered modes.  Raw mode is untouched. 
+- [ ] Replace the current `[x]` text rendering of completed task-list checkboxes with Unicode glyph (`[✓]`) in Preview and Rendered modes.  Raw mode is untouched. 
 - [ ] `Theme::checkbox_unchecked` and `Theme::checkbox_checked` are `&'static str` slots (not `Style`) so themes can switch glyph sets — `[ ]` / `[x]` remains an opt-in for users on terminals without reliable Unicode.
-- [ ] Click hit-test on the task-list checkbox (Phase 5's `toggle_checkbox_at`) must be updated to account for the rendered glyph width rather than the 3-char `[ ]` raw form.
+- [ ] Ensure click hit-test on the task-list checkbox remains on all 3 characters of the box.
 
 **Tasks — heading visual hierarchy (framing/rules):**
 - [ ] H1 gets a full-width `═══` rule above and below.
@@ -1204,19 +1204,19 @@ Extracted from old Phase 11.  Pulls in the "Heading visual hierarchy — framing
 
 ---
 
-### Phase 15 — Table Insertion
+### Phase 15 — Table Insertion ✅
 *Goal: Add table insertion command*
 
 **Tasks — insert table:**
-- [ ] New `Action::InsertTable` in `src/config/keymap.rs` with default binding `Ctrl+Shift+T`.  Listed in the palette's suggested list as `Insert Table`.  Rationale: inserting a table is otherwise impossible outside Raw mode, so it needs both a palette entry (for discovery) and a keybind (for graduation).
-- [ ] New modal widget `src/ui/insert_table_modal.rs`, built on Phase 9's `ModalView`: two numeric inputs — `Rows` (body-row count, default 2) and `Columns` (default 3) — plus `Insert` / `Cancel` buttons.  GFM tables require a header row, so the header is always included; there is no "no-header" mode.  Alignment customisation is not offered in the modal; users tune columns after insertion via Phase 6's table-manipulation actions.
-- [ ] Pre-flight guard: `InsertTable` requires the cursor to be on a **blank line** — a line containing only whitespace (empty counts).  If it isn't, the action flashes a sticky `Error` ("Insert Table requires a blank line") via Phase 9's transient-message channel and leaves the buffer untouched.  Also catches the "file ends without trailing newline" case (cursor past the last byte of a non-blank final line → same error).  This one test subsumes the mid-paragraph / heading / list / block-quote / code-block / existing-table cases without a block-type classifier.
-- [ ] New helper `table_edit::insert_table(state, rows, cols)`: emits a GFM pipe table with empty header cells, neutral `---` alignment, and `rows` empty body rows.  Because the pre-flight guarantees a blank cursor line, the helper only needs to check the two neighbour lines and prepend / append a blank line where one is missing (CommonMark requires a blank line before and after a table).  The cursor lands in the first header cell on completion so the user can start typing immediately.
+- [x] New `Action::InsertTable` in `src/config/keymap.rs` with default binding `Ctrl+Shift+T`.  Listed in the palette's suggested list as `Insert Table`.  Rationale: inserting a table is otherwise impossible outside Raw mode, so it needs both a palette entry (for discovery) and a keybind (for graduation).
+- [x] New modal widget `src/ui/insert_table_modal.rs`: two numeric inputs — `Rows` (body-row count, default 2) and `Columns` (default 3) — plus `Insert` / `Cancel` buttons.  GFM tables require a header row, so the header is always included; there is no "no-header" mode.  Alignment customisation is not offered in the modal; users tune columns after insertion via Phase 6's table-manipulation actions.  Built as a custom `StatefulWidget` (not on top of `ModalView`) because the rows/cols field-with-spinner shape doesn't fit `ModalView`'s body+buttons template.
+- [x] Pre-flight guard: `InsertTable` requires the cursor to be on a **blank line** — a line containing only whitespace (empty counts).  If it isn't, the action flashes a sticky `Error` ("Insert Table requires a blank line") via Phase 9's transient-message channel and leaves the buffer untouched.  Also catches the "file ends without trailing newline" case (cursor past the last byte of a non-blank final line → same error).  This one test subsumes the mid-paragraph / heading / list / block-quote / code-block / existing-table cases without a block-type classifier.  Implemented as `table_edit::cursor_line_is_blank` so the App-level handler and the modal's Insert path both run it.
+- [x] New helper `table_edit::insert_table(source, cursor_byte, rows, cols)`: emits a GFM pipe table with empty header cells, neutral `---` alignment, and `rows` empty body rows.  Because the pre-flight guarantees a blank cursor line, the helper only needs to prepend a `\n` when the line above carries content — the cursor's existing blank line itself supplies the trailing gap (its newline survives the insertion at line-start).  The cursor lands in the first header cell on completion so the user can start typing immediately.  Wrapped in `edit_ops::insert_table_at_cursor` for stateful application against `EditorState`.
 
 **Tasks — testing:**
-- [ ] Integration test: `Action::InsertTable` with rows=2, cols=3, dispatched from a blank line between two paragraphs, yields a GFM-valid table with surrounding blank lines; the cursor rests in the first header cell.
-- [ ] Integration test: `Action::InsertTable` on a non-blank line (mid-paragraph, heading, list item, fenced code block, existing table row) flashes the blank-line error and leaves the buffer unchanged.
-- [ ] Integration test: `Action::InsertTable` at the end of a file that lacks a trailing newline flashes the blank-line error; dispatching again after a single `Enter` succeeds.
+- [x] Integration test: `Action::InsertTable` with rows=2, cols=3, dispatched from a blank line between two paragraphs, yields a GFM-valid table with surrounding blank lines; the cursor rests in the first header cell.
+- [x] Integration test: `Action::InsertTable` on a non-blank line (mid-paragraph, heading, list item, fenced code block, existing table row) flashes the blank-line error and leaves the buffer unchanged.
+- [x] Integration test: `Action::InsertTable` at the end of a file that lacks a trailing newline flashes the blank-line error; dispatching again after a single `Enter` succeeds.
 
 **Acceptance criteria:** `Insert Table` — via the palette or `Ctrl+Shift+T` — opens a rows/columns modal and inserts a GFM-valid pipe table at the cursor, but only when the cursor is on a blank line; any other cursor position flashes a sticky error and leaves the buffer untouched.
 
@@ -1473,12 +1473,9 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 ## Miscellaneous Issues / Features
 
-- [ ] Display a warning modal to the user whenever reading any .toml config file (config, keybindings, and themes) if the file cannot be parsed as .toml or if there are unrecognized keys/values. The modal should specify the problematic file (and lines if this doesn't add too much complexity). The modal should reuse the existing modal container and be scrollable in case content overflows.
+- [ ] Is `ScrollContainerState` themeable? It should have a theme that is shared across all modals, with per-modal overrides possible. We also want common body text, header text, input, etc theming across all modals, again with per-modal overrides possible.
 
-- [ ] List item alignment: In all cases (ordered, unordered, task lists) the text of a list item should be left-padded with spaces so that the text is all aligned on the left side, and the list marker hangs off on the left at the top.
-
-- [ ] Is `ScrollContainerState` themeable? It should have a theme that is shared across all modals, with per-modal overrides possible.
-- [ ] Add a background color to modal inputs when selected, ex. keybindings
+- [ ] Add a background color to modal inputs when selected. Most modal views already do this, but the settings and keybindings do not. 
 
 - [ ] Press keys to set chord in keybinding modal instead of typing in e.g. `Ctrl-c`
 - [ ] Add next cell/prev cell to keybindings modal
@@ -1490,3 +1487,4 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 - [ ] Table row/column deletion hover preview? Optional — when the pointer is over a delete glyph, paint the
   target row/column in a "danger" style (e.g., theme's selection-or-warning color)
   so the user sees what's about to go. Adds polish but more work.
+- [ ] Theme Markdown cheat sheet so it looks like rendered Markdown (with raw Markdown shown)

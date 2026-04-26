@@ -2,6 +2,7 @@ pub mod bottom_region;
 pub mod command_palette;
 pub mod editor_view;
 pub mod image_view;
+pub mod insert_table_modal;
 pub mod keybinds_overlay;
 pub mod line_render;
 pub mod link_view;
@@ -19,6 +20,7 @@ pub use bottom_region::{hint_line_for, BottomRegion, HintChord, HintContent, Hin
 pub use command_palette::{PaletteEntry, PaletteResponse, PaletteState, PaletteView};
 pub use editor_view::{EditorView, EditorViewState};
 pub use image_view::{ImageHit, ImageLayoutSnapshot};
+pub use insert_table_modal::{InsertTableResponse, InsertTableState, InsertTableView};
 pub use keybinds_overlay::KeybindsResponse;
 pub use keybinds_overlay::{KeybindsState, KeybindsView};
 pub use link_view::LinkLayoutSnapshot;

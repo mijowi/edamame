@@ -114,6 +114,13 @@ fn preview_safe_action(action: &Action) -> bool {
             // editing mode.
             | Action::OpenInExternalEditor
             | Action::ToggleTableButtons
+            // Phase 15 — `InsertTable` is allowed from Preview so
+            // the default Ctrl+Shift+T chord opens the rows/columns
+            // modal without requiring the user to enter edit mode
+            // first.  The modal itself absorbs subsequent input;
+            // pre-flight blank-line checks fire only when the user
+            // hits Insert.
+            | Action::InsertTable
     )
 }
 

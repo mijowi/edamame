@@ -759,6 +759,101 @@ fn collect_raw(info: &TableInfo) -> String {
     info.rows.iter().map(format_row_with_nl).collect()
 }
 
+// ─── Phase 15 — table insertion ──────────────────────────────────────────────
+
+/// True when the line of `source` containing byte `cursor_byte` is blank —
+/// i.e. consists of nothing but whitespace.  `cursor_byte` past the last
+/// byte of `source` is treated as belonging to the final line; a buffer
+/// that doesn't end with `\n` therefore reports `false` for cursors at
+/// EOF when the final line carries content (the "file ends without
+/// trailing newline" case the Phase 15 pre-flight catches).
+pub fn cursor_line_is_blank(source: &str, cursor_byte: usize) -> bool {
+    let bytes = source.as_bytes();
+    let pos = cursor_byte.min(bytes.len());
+    let start = line_start_byte(bytes, pos);
+    let end = line_end_byte(bytes, start);
+    source[start..end].trim().is_empty()
+}
+
+/// Phase 15 — emit a fresh GFM pipe table at the cursor, assuming the
+/// pre-flight has already verified the cursor is on a blank line.
+///
+/// Returns `(delta, cursor_byte)` where `cursor_byte` is the post-edit
+/// byte offset of the first header cell's content position.  The
+/// caller applies the delta with `edit_ops::apply_byte_delta` and then
+/// re-maps `cursor_byte` to a char offset.
+///
+/// CommonMark requires a blank line before and after a table.  The
+/// cursor's own blank line — preserved unchanged after the insertion
+/// at `line_start` — supplies the trailing separator in every case
+/// (it sits between the new table and whatever line follows, blank
+/// or otherwise; if the cursor's line is the buffer's last line,
+/// there is no following block to separate from).  Only the leading
+/// padding may be missing: a `\n` is prepended when the line above
+/// the cursor's blank line carries content.
+pub fn insert_table(
+    source: &str,
+    cursor_byte: usize,
+    rows: usize,
+    cols: usize,
+) -> (EditDelta, usize) {
+    debug_assert!(cols >= 1, "table must have at least one column");
+    let bytes = source.as_bytes();
+    let pos = cursor_byte.min(bytes.len());
+    let line_start = line_start_byte(bytes, pos);
+
+    // Determine whether a non-blank line sits immediately above the
+    // cursor's blank line.  When `line_start == 0`, no prior line
+    // exists and the prefix is unnecessary regardless.
+    let need_prefix = if line_start == 0 {
+        false
+    } else {
+        // The byte just before `line_start` is the trailing `\n` of
+        // the previous line.  Walk back from there to the start of
+        // that previous line.
+        let prev_end = line_start.saturating_sub(1); // index of `\n`
+        let prev_start = line_start_byte(bytes, prev_end.saturating_sub(1));
+        !source[prev_start..prev_end].trim().is_empty()
+    };
+
+    let header = empty_row_text(cols);
+    let alignment = alignment_row_text(cols);
+    let body = empty_row_text(cols).repeat(rows);
+    let table_text = format!("{header}{alignment}{body}");
+
+    let mut inserted = String::with_capacity(table_text.len() + 1);
+    if need_prefix {
+        inserted.push('\n');
+    }
+    inserted.push_str(&table_text);
+
+    // Cursor target: the content position of the first header cell.
+    // `empty_row_text` lays the row out as `|   |   |...`, so the
+    // first cell's content_start sits one byte past the leading `|`,
+    // and `cell_cursor_offset`-style placement skips one space.  In
+    // bytes: prefix_len + 1 (the `|`) + 1 (skip leading space) = +2.
+    let prefix_len = if need_prefix { 1 } else { 0 };
+    let cursor_target = line_start + prefix_len + 2;
+
+    let delta = EditDelta {
+        offset: line_start,
+        removed: String::new(),
+        inserted,
+    };
+    (delta, cursor_target)
+}
+
+/// Build the alignment row text with neutral `---` cells: `| --- | --- |\n`.
+fn alignment_row_text(col_count: usize) -> String {
+    let mut s = String::with_capacity(6 * col_count + 2);
+    s.push('|');
+    for _ in 0..col_count {
+        s.push_str(" --- |");
+    }
+    s.push('\n');
+    s
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1043,5 +1138,128 @@ mod tests {
         let row = r"| a \| x | b |";
         assert_eq!(column_for_offset(row, 4), 0); // inside first cell
         assert_eq!(column_for_offset(row, 10), 1); // inside second cell
+    }
+
+    // ── Phase 15 — `insert_table` and `cursor_line_is_blank` ─────────────────
+
+    #[test]
+    fn cursor_line_is_blank_recognises_empty_and_whitespace_lines() {
+        assert!(cursor_line_is_blank("", 0));
+        assert!(cursor_line_is_blank("\n", 0));
+        assert!(cursor_line_is_blank("hello\n\nworld\n", 6)); // on the blank line
+        assert!(cursor_line_is_blank("hello\n   \nworld\n", 8)); // whitespace-only line
+    }
+
+    #[test]
+    fn cursor_line_is_blank_rejects_text_lines() {
+        assert!(!cursor_line_is_blank("hello\n", 0));
+        assert!(!cursor_line_is_blank("# Heading\n", 4));
+    }
+
+    #[test]
+    fn cursor_line_is_blank_rejects_eof_when_final_line_has_content() {
+        // No trailing newline — cursor at len() lands on the final
+        // non-blank line.
+        let src = "no trailing newline";
+        assert!(!cursor_line_is_blank(src, src.len()));
+    }
+
+    #[test]
+    fn insert_table_between_paragraphs_pads_with_blank_lines() {
+        let src = "para one\n\npara two\n";
+        // Byte 9 is the start of the blank line between the two
+        // paragraphs.
+        let cursor = 9usize;
+        assert!(cursor_line_is_blank(src, cursor));
+        let (delta, cursor_target) = insert_table(src, cursor, 2, 3);
+
+        // Build the post-edit source.
+        let mut post = String::new();
+        post.push_str(&src[..delta.offset]);
+        post.push_str(&delta.inserted);
+        post.push_str(&src[delta.offset..]);
+
+        // The cursor's pre-existing blank line carries the trailing
+        // gap, so only the leading `\n` is added by the helper.
+        assert_eq!(
+            post,
+            "para one\n\
+             \n\
+             |   |   |   |\n\
+             | --- | --- | --- |\n\
+             |   |   |   |\n\
+             |   |   |   |\n\
+             \n\
+             para two\n"
+        );
+        // Cursor target should land in the first header cell — between
+        // the leading `| ` and the trailing ` |`.
+        let around: &str = &post[cursor_target - 2..cursor_target + 2];
+        assert_eq!(
+            around, "|   ",
+            "cursor should land in the first header cell, around={around:?}"
+        );
+    }
+
+    #[test]
+    fn insert_table_at_start_of_buffer_omits_leading_padding() {
+        let src = "\nparagraph\n";
+        let cursor = 0;
+        assert!(cursor_line_is_blank(src, cursor));
+        let (delta, _cursor_target) = insert_table(src, cursor, 1, 2);
+        assert_eq!(delta.offset, 0);
+        // The first byte must be a `|` — no `\n` prefix when cursor is
+        // already at the top of the buffer.
+        assert!(delta.inserted.starts_with('|'));
+        // The cursor's blank line — preserved post-insertion — supplies
+        // the trailing separator before "paragraph".
+        let mut post = String::new();
+        post.push_str(&src[..delta.offset]);
+        post.push_str(&delta.inserted);
+        post.push_str(&src[delta.offset..]);
+        assert!(
+            post.contains("|\n\nparagraph"),
+            "table should be followed by a blank line, post={post}"
+        );
+    }
+
+    #[test]
+    fn insert_table_at_end_of_buffer_with_blank_trailing_line() {
+        let src = "para\n\n";
+        // Cursor on the trailing empty line (byte 6).
+        let cursor = src.len();
+        assert!(cursor_line_is_blank(src, cursor));
+        let (delta, _) = insert_table(src, cursor, 1, 1);
+        // The leading `\n` is needed because `para` is non-blank.
+        assert!(
+            delta.inserted.starts_with('\n'),
+            "leading newline missing, got {:?}",
+            delta.inserted
+        );
+        // The helper never appends a trailing newline of its own —
+        // the cursor's existing blank line plays that role when one
+        // is needed.
+        let trailing_newlines = delta
+            .inserted
+            .chars()
+            .rev()
+            .take_while(|c| *c == '\n')
+            .count();
+        assert_eq!(
+            trailing_newlines, 1,
+            "delta should end with the table's own row terminator only, got {:?}",
+            delta.inserted
+        );
+    }
+
+    #[test]
+    fn insert_table_emits_alignment_row_with_dashes() {
+        let src = "\n";
+        let (delta, _) = insert_table(src, 0, 0, 3);
+        assert!(
+            delta.inserted.contains("| --- | --- | --- |"),
+            "alignment row missing dashes, got {:?}",
+            delta.inserted
+        );
     }
 }

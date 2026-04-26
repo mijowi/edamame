@@ -147,10 +147,10 @@ pub enum Action {
     /// flip handles for the current session without committing the
     /// change.
     ToggleTableButtons,
-    /// Stub for a future "insert a Markdown table at cursor" command.
-    /// Currently flashes a not-implemented hint; surfaces in the
-    /// palette so the entry is discoverable as soon as the feature
-    /// lands.
+    /// Phase 15 — open the rows/columns modal that inserts a fresh
+    /// GFM pipe table at the cursor.  Requires the cursor to be on
+    /// a blank line; the App-level handler flashes a sticky error
+    /// when that pre-flight fails.
     InsertTable,
 }
 
@@ -694,6 +694,12 @@ impl KeyMap {
         // they are reached only via the palette, so the user can
         // search-and-execute without memorising a chord per overlay.
         bind!("ctrl+p", Action::ShowCommandPalette);
+
+        // Phase 15 — graduation chord for the Insert Table command.
+        // Tables can't be authored from Rendered mode without this
+        // flow, so a discoverable keybind sits next to the palette
+        // entry.
+        bind!("ctrl+shift+t", Action::InsertTable);
 
         Self { bindings: b }
     }
