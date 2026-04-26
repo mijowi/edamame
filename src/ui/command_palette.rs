@@ -18,10 +18,13 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, StatefulWidget, Widget},
+    widgets::{Paragraph, StatefulWidget, Widget},
 };
 
 use crate::config::{Action, KeyMap, Theme};
+use crate::ui::scroll_container::{
+    centered_rect_for_content, draw_frame, ContentSize, ScrollContainerState,
+};
 
 /// One palette row: an action plus its display label.
 ///
@@ -72,6 +75,11 @@ pub struct PaletteState {
     /// [`PaletteState::open`] — there is no reason to rebuild on every
     /// keystroke since the action surface is static.
     pub entries: Vec<PaletteEntry>,
+    /// Vertical scroll bookkeeping for the result list.  Up/Down move
+    /// `focused` and pull the viewport via `ensure_visible`; PgUp/PgDn
+    /// and the mouse wheel drive `scroll_state.scroll` directly without
+    /// touching focus.
+    pub scroll_state: ScrollContainerState,
     /// Indices into `entries` that match the current `query`, ordered
     /// by fuzzy score.  Recomputed lazily inside [`PaletteView::render`]
     /// rather than on every keystroke so we don't pay the matcher cost
@@ -91,6 +99,7 @@ impl PaletteState {
             query: String::new(),
             focused: 0,
             entries,
+            scroll_state: ScrollContainerState::default(),
             matched: Vec::new(),
             matched_for_query: None,
         }
@@ -100,6 +109,11 @@ impl PaletteState {
     /// keystrokes are absorbed (`Continue`); Enter selects the focused
     /// row; Escape cancels.
     pub fn handle_key(&mut self, key: &KeyEvent) -> PaletteResponse {
+        // PgUp/PgDn/Home/End move the viewport without touching focus —
+        // standard list-box behaviour, mirrors the editor's scroll keys.
+        if self.scroll_state.handle_paging_key(key) {
+            return PaletteResponse::Continue;
+        }
         match key.code {
             KeyCode::Esc => PaletteResponse::Cancelled,
             KeyCode::Enter => {
@@ -117,6 +131,7 @@ impl PaletteState {
                 self.refresh_matched();
                 if !self.matched.is_empty() && self.focused > 0 {
                     self.focused -= 1;
+                    self.scroll_state.ensure_visible(self.focused as u16);
                 }
                 PaletteResponse::Continue
             }
@@ -124,6 +139,7 @@ impl PaletteState {
                 self.refresh_matched();
                 if !self.matched.is_empty() && self.focused + 1 < self.matched.len() {
                     self.focused += 1;
+                    self.scroll_state.ensure_visible(self.focused as u16);
                 }
                 PaletteResponse::Continue
             }
@@ -172,6 +188,7 @@ impl PaletteState {
         self.matched.clear();
         self.matched_for_query = None;
         self.focused = 0;
+        self.scroll_state.scroll = 0;
     }
 
     /// Recompute `matched` if the cached query is stale.  Matcher state
@@ -237,21 +254,46 @@ impl<'a> StatefulWidget for PaletteView<'a> {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         state.refresh_matched();
-        let modal_area = palette_rect(area);
-        Clear.render(modal_area, buf);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(" Command Palette ", self.theme.modal_title))
-            .style(self.theme.status_bar);
-        let inner = block.inner(modal_area);
-        block.render(modal_area, buf);
+        // Content-aware sizing: width tracks the longest entry row,
+        // height tracks the match count.  Pinned-top covers the input
+        // row + divider.  The "(no matches)" / "(no suggested
+        // commands)" placeholder factors into width too so the modal
+        // doesn't snap narrower than its empty-state copy.
+        let content_width = palette_content_width(state).max(NO_MATCHES_WIDTH);
+        let scrolling_height = state.matched.len().max(1) as u16;
+        let content = ContentSize {
+            width: content_width,
+            height: scrolling_height,
+            pinned_top: 2, // input row + divider
+            pinned_bottom: 0,
+        };
+        let modal_area = centered_rect_for_content(content, area);
 
+        // Pre-compute layout so the title's arrow indicator reflects
+        // the post-observe scroll bounds.
+        let inner_h = modal_area.height.saturating_sub(2);
+        let pinned_top: u16 = 2;
+        let list_height = inner_h.saturating_sub(pinned_top);
+        state
+            .scroll_state
+            .observe(state.matched.len() as u16, list_height);
+        // Rebound focus into the visible window so wheel scrolling +
+        // arrow keys cooperate naturally.
+        state.scroll_state.ensure_visible(state.focused as u16);
+
+        let inner = draw_frame(
+            modal_area,
+            buf,
+            "Command Palette",
+            state.scroll_state.arrow(),
+            self.theme,
+        );
         if inner.height < 2 || inner.width == 0 {
             return;
         }
 
-        // Top row: the live input — ":" prompt + query + a static cursor
+        // Top row: the live input — `›` prompt + query + a static cursor
         // glyph so the user sees where typing lands even though the
         // palette uses a single Paragraph rather than a real text widget.
         let input_area = Rect {
@@ -277,21 +319,16 @@ impl<'a> StatefulWidget for PaletteView<'a> {
 
         let list_area = Rect {
             x: inner.x,
-            y: inner.y + 2,
+            y: inner.y + pinned_top,
             width: inner.width,
-            height: inner.height.saturating_sub(2),
+            height: list_height,
         };
         if list_area.height == 0 {
             return;
         }
 
-        // Scroll so the focused row is visible.
+        let scroll = state.scroll_state.scroll as usize;
         let visible_rows = list_area.height as usize;
-        let scroll = if state.focused >= visible_rows {
-            state.focused - visible_rows + 1
-        } else {
-            0
-        };
 
         let mut lines: Vec<Line<'_>> = Vec::with_capacity(visible_rows);
         if state.matched.is_empty() {
@@ -325,6 +362,28 @@ impl<'a> StatefulWidget for PaletteView<'a> {
     }
 }
 
+/// Width of "(no suggested commands)" / "(no matches)" copy, used so
+/// the empty-state palette doesn't snap narrower than the placeholder.
+const NO_MATCHES_WIDTH: u16 = 23;
+
+/// Content-aware width for the palette body: max over `entries` of
+/// `marker(2) + label_w + 1 (gap) + chord_w`.  We size on the *whole*
+/// entry list rather than the current `matched` set so the modal
+/// doesn't jiggle in width as the user types.
+fn palette_content_width(state: &PaletteState) -> u16 {
+    state
+        .entries
+        .iter()
+        .map(|e| {
+            let label_w = e.label.chars().count();
+            let chord_w = e.chord.as_deref().map(|c| c.chars().count()).unwrap_or(0);
+            // 2 marker + label + 1 gap + chord
+            2 + label_w + 1 + chord_w
+        })
+        .max()
+        .unwrap_or(0) as u16
+}
+
 /// Format one palette row: focused rows render in `modal_button_focused`
 /// style with a leading `›`; the chord (when bound) is right-aligned in
 /// `status_info` so the eye scans it as metadata, not part of the label.
@@ -352,22 +411,6 @@ fn format_row(entry: &PaletteEntry, focused: bool, theme: &Theme, width: u16) ->
         Span::raw(pad_str),
         Span::styled(chord, chord_style),
     ])
-}
-
-/// Centred rectangle for the palette: ~70 % wide, 16 rows tall, but
-/// shrinks to fit short terminals.
-fn palette_rect(area: Rect) -> Rect {
-    let target_width = (area.width as usize * 7 / 10).max(40);
-    let width = target_width.min(area.width as usize) as u16;
-    let target_height = 18u16.min(area.height);
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(target_height)) / 2;
-    Rect {
-        x,
-        y,
-        width,
-        height: target_height,
-    }
 }
 
 /// Curated "Suggested" entries shown when the palette opens with no
@@ -668,5 +711,138 @@ mod tests {
         let entries = build_entries(&keymap());
         let save = entries.iter().find(|e| e.action == Action::Save).unwrap();
         assert!(save.chord.is_some(), "Save chord should be Ctrl-S");
+    }
+
+    // ── Scroll-container integration ────────────────────────────────────
+
+    use crate::config::Theme;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn theme() -> &'static Theme {
+        Box::leak(Box::new(Theme::default()))
+    }
+
+    fn render(state: &mut PaletteState, w: u16, h: u16) -> String {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_stateful_widget(PaletteView { theme: theme() }, frame.area(), state);
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol().chars().next().unwrap_or(' '))
+            .collect()
+    }
+
+    #[test]
+    fn palette_renders_scroll_arrow_when_more_rows_than_visible_height() {
+        let mut state = PaletteState::open(&keymap());
+        // Empty-state list is ~7 rows; force a long match list by
+        // typing a single char that fuzzy-matches most actions.
+        state.handle_key(&key(KeyCode::Char('e')));
+        // 80 cols × 6 rows leaves only ~2 list rows after the input,
+        // divider, and frame chrome — guaranteed overflow.
+        let contents = render(&mut state, 80, 6);
+        assert!(
+            contents.contains("Command Palette ↓"),
+            "expected ↓ arrow, got: {contents}"
+        );
+    }
+
+    #[test]
+    fn palette_pgdown_advances_scroll_without_moving_focus() {
+        let mut state = PaletteState::open(&keymap());
+        state.handle_key(&key(KeyCode::Char('e')));
+        // Render once so scroll_state.last_visible is populated.
+        render(&mut state, 80, 6);
+        let focused_before = state.focused;
+        state.handle_key(&key(KeyCode::PageDown));
+        assert_eq!(state.focused, focused_before, "PgDn must not move focus");
+        assert!(
+            state.scroll_state.scroll > 0,
+            "PgDn must advance scroll, got {}",
+            state.scroll_state.scroll
+        );
+    }
+
+    #[test]
+    fn palette_wheel_scrolls_list() {
+        let mut state = PaletteState::open(&keymap());
+        state.handle_key(&key(KeyCode::Char('e')));
+        render(&mut state, 80, 6);
+        let focused_before = state.focused;
+        state.scroll_state.scroll_by(2);
+        assert_eq!(state.scroll_state.scroll, 2);
+        assert_eq!(state.focused, focused_before);
+    }
+
+    #[test]
+    fn palette_down_arrow_pulls_viewport_back_to_focus_after_wheel_off_top() {
+        let mut state = PaletteState::open(&keymap());
+        state.handle_key(&key(KeyCode::Char('e')));
+        render(&mut state, 80, 6);
+        // Wheel scrolls past the focused row.
+        state.scroll_state.scroll_by(5);
+        // Down arrow must move focus AND pull the viewport with it.
+        state.handle_key(&key(KeyCode::Down));
+        assert!(
+            state.focused as u16 >= state.scroll_state.scroll,
+            "focus {} must be at or below viewport top {}",
+            state.focused,
+            state.scroll_state.scroll
+        );
+        let visible_top = state.scroll_state.scroll;
+        let visible_bottom = visible_top + state.scroll_state.last_visible;
+        assert!(
+            (state.focused as u16) < visible_bottom,
+            "focus {} must be above viewport bottom {}",
+            state.focused,
+            visible_bottom
+        );
+    }
+
+    #[test]
+    fn palette_modal_width_shrinks_to_longest_row_in_wide_terminal() {
+        let mut state = PaletteState::open(&keymap());
+        state.refresh_matched();
+        // 200-col terminal: a 70%-width modal would be 140 cols.
+        // Content-aware sizing should produce something much narrower
+        // (the longest entry label is ~35 chars).
+        let term_w = 200u16;
+        let term_h = 30u16;
+        let contents = render(&mut state, term_w, term_h);
+        // Find a row containing horizontal-border glyphs and measure
+        // its run length.  The modal is vertically centred so we scan
+        // every row and pick the one with the most border chars.
+        let max_border = (0..term_h)
+            .map(|y| {
+                let row: String = contents
+                    .chars()
+                    .skip((y as usize) * term_w as usize)
+                    .take(term_w as usize)
+                    .collect();
+                row.chars().filter(|&c| c == '─').count()
+            })
+            .max()
+            .unwrap_or(0);
+        assert!(
+            max_border > 0,
+            "expected to find a border row, got {max_border}"
+        );
+        // Border content is modal_width - 2 (corners).  +2 to compare.
+        let modal_width = max_border + 2;
+        assert!(
+            modal_width < 100,
+            "expected content-aware width well below 70% of 200, got modal width {modal_width}"
+        );
+        assert!(
+            modal_width >= 30,
+            "expected modal at least 30 cols wide, got modal width {modal_width}"
+        );
     }
 }

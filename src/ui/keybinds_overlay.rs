@@ -17,10 +17,13 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, StatefulWidget, Widget},
+    widgets::{Paragraph, StatefulWidget, Widget},
 };
 
 use crate::config::{Action, KeyBindingOverrides, KeyMap, KeyMapError, Theme};
+use crate::ui::scroll_container::{
+    centered_rect_for_content, draw_frame, ContentSize, ScrollContainerState,
+};
 
 /// Outcome of dispatching a key event to the keybinds overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +65,11 @@ pub struct KeybindsState {
     /// Last error message produced by an invalid value.  Cleared on
     /// the next successful edit / cancel.
     pub last_error: Option<String>,
+    /// Vertical scroll bookkeeping for the row table.  Up/Down move
+    /// `focused` and pull the viewport via `ensure_visible`; PgUp/PgDn
+    /// and the mouse wheel drive `scroll_state.scroll` directly without
+    /// touching focus.
+    pub scroll_state: ScrollContainerState,
     /// All rows, including category headers.  Built once at
     /// construction time from the static `CATEGORIES` table; cheap to
     /// clone for tests.
@@ -78,6 +86,7 @@ impl KeybindsState {
             focused: 0,
             editing: None,
             last_error: None,
+            scroll_state: ScrollContainerState::default(),
             rows,
         };
         state.focused = state.first_binding_index().unwrap_or(0);
@@ -171,6 +180,10 @@ impl KeybindsState {
             }
             return KeybindsResponse::Continue;
         }
+        // PgUp/PgDn/Home/End move the viewport without touching focus.
+        if self.scroll_state.handle_paging_key(key) {
+            return KeybindsResponse::Continue;
+        }
         match key.code {
             KeyCode::Esc => KeybindsResponse::Cancelled,
             KeyCode::Up => {
@@ -212,6 +225,7 @@ impl KeybindsState {
         while (0..len).contains(&idx) {
             if matches!(self.rows[idx as usize], Row::Binding { .. }) {
                 self.focused = idx as usize;
+                self.scroll_state.ensure_visible(self.focused as u16);
                 return;
             }
             idx += delta;
@@ -236,79 +250,172 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
     type State = KeybindsState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let rect = overlay_rect(area, state.rows.len() as u16);
-        Clear.render(rect, buf);
+        // Build all body lines first.  Headers introduce a blank
+        // separator above themselves (except at the top), so the
+        // expanded line count is greater than `state.rows.len()` and
+        // must be computed up-front for accurate scroll bookkeeping.
+        let body_lines = build_body_lines(state, self.keymap, self.theme);
+        let scroll_offsets_per_row = focus_offsets(state);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(" Keybindings ", self.theme.modal_title))
-            .style(self.theme.status_bar);
-        let inner = block.inner(rect);
-        block.render(rect, buf);
+        let content_width = keybinds_content_width(state, self.keymap);
+        let pinned_bottom: u16 = if state.last_error.is_some() { 2 } else { 0 };
+        let content = ContentSize {
+            width: content_width,
+            height: body_lines.len() as u16,
+            pinned_top: 0,
+            pinned_bottom,
+        };
+        let rect = centered_rect_for_content(content, area);
+
+        let inner_h = rect.height.saturating_sub(2);
+        let table_height = inner_h.saturating_sub(pinned_bottom);
+        state
+            .scroll_state
+            .observe(body_lines.len() as u16, table_height);
+        // ensure_visible operates on the *body-line* coordinate, not
+        // the rows index: the focused binding row sits at
+        // `scroll_offsets_per_row[focused]` body lines down.
+        let focus_body_row = scroll_offsets_per_row
+            .get(state.focused)
+            .copied()
+            .unwrap_or(0) as u16;
+        state.scroll_state.ensure_visible(focus_body_row);
+
+        let inner = draw_frame(
+            rect,
+            buf,
+            "Keybindings",
+            state.scroll_state.arrow(),
+            self.theme,
+        );
         if inner.height < 2 || inner.width == 0 {
             return;
         }
 
-        let mut lines: Vec<Line<'_>> = Vec::with_capacity(state.rows.len() + 2);
-        for (idx, row) in state.rows.iter().enumerate() {
-            match row {
-                Row::Header(title) => {
-                    // Skip header *separator* row when at top of body.
-                    if !lines.is_empty() {
-                        lines.push(Line::from(""));
-                    }
-                    lines.push(Line::from(Span::styled(
-                        format!("— {} —", title),
-                        self.theme.h2,
-                    )));
-                }
-                Row::Binding { action, label } => {
-                    let focused = idx == state.focused;
-                    let chord = if focused && state.editing.is_some() {
-                        format!("{}▏", state.editing.as_deref().unwrap_or(""))
-                    } else {
-                        self.keymap.first_key_for(action).unwrap_or_default()
-                    };
-                    let marker = if focused { "› " } else { "  " };
-                    let label_style = if focused {
-                        self.theme.modal_button_focused
-                    } else {
-                        self.theme.status_bar
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("{marker}{:<22}", label), label_style),
-                        Span::styled(chord, self.theme.status_filename),
-                    ]));
-                }
-            }
-        }
+        let scroll = state.scroll_state.scroll as usize;
+        let visible_rows = table_height as usize;
+
+        let table_area = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: table_height,
+        };
+        let visible: Vec<Line<'_>> = body_lines
+            .into_iter()
+            .skip(scroll)
+            .take(visible_rows)
+            .collect();
+        Paragraph::new(visible)
+            .style(self.theme.status_bar)
+            .render(table_area, buf);
+
         if let Some(err) = state.last_error.as_ref() {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
+            // Blank spacer row, then the error.
+            let err_area = Rect {
+                x: inner.x,
+                y: inner.y + table_height + 1,
+                width: inner.width,
+                height: 1,
+            };
+            Paragraph::new(Line::from(Span::styled(
                 format!("✗ {err}"),
                 self.theme.transient_error,
-            )));
-        }
-        Paragraph::new(lines)
+            )))
             .style(self.theme.status_bar)
-            .render(inner, buf);
+            .render(err_area, buf);
+        }
     }
 }
 
-fn overlay_rect(area: Rect, rows: u16) -> Rect {
-    let target_width = (area.width as usize * 8 / 10).max(50);
-    let width = target_width.min(area.width as usize) as u16;
-    // Each category adds a blank separator + the header row, plus
-    // the binding rows themselves.  Add 4 for borders + error line.
-    let height = (rows + 6).min(area.height);
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-    Rect {
-        x,
-        y,
-        width,
-        height,
+/// Build the full body line list, mirroring the renderer above so
+/// scroll bookkeeping uses identical line counts.
+fn build_body_lines<'a>(state: &KeybindsState, keymap: &KeyMap, theme: &'a Theme) -> Vec<Line<'a>> {
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(state.rows.len() + 2);
+    for (idx, row) in state.rows.iter().enumerate() {
+        match row {
+            Row::Header(title) => {
+                if !lines.is_empty() {
+                    lines.push(Line::from(""));
+                }
+                lines.push(Line::from(Span::styled(format!("— {} —", title), theme.h2)));
+            }
+            Row::Binding { action, label } => {
+                let focused = idx == state.focused;
+                let chord = if focused && state.editing.is_some() {
+                    format!("{}▏", state.editing.as_deref().unwrap_or(""))
+                } else {
+                    keymap.first_key_for(action).unwrap_or_default()
+                };
+                let marker = if focused { "› " } else { "  " };
+                let label_style = if focused {
+                    theme.modal_button_focused
+                } else {
+                    theme.status_bar
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{marker}{:<22}", label), label_style),
+                    Span::styled(chord, theme.status_filename),
+                ]));
+            }
+        }
     }
+    lines
+}
+
+/// For each `state.rows[i]`, the body-line index where that row
+/// renders.  Used by `ensure_visible` to translate focused-row index
+/// into the body coords the scroll state operates in.
+fn focus_offsets(state: &KeybindsState) -> Vec<usize> {
+    let mut offsets = Vec::with_capacity(state.rows.len());
+    let mut line: usize = 0;
+    let mut started = false;
+    for row in &state.rows {
+        match row {
+            Row::Header(_) => {
+                if started {
+                    line += 1; // blank separator
+                }
+                offsets.push(line);
+                line += 1; // header line
+                started = true;
+            }
+            Row::Binding { .. } => {
+                offsets.push(line);
+                line += 1;
+                started = true;
+            }
+        }
+    }
+    offsets
+}
+
+/// Content-aware width: max over rows of `marker(2) + label_pad(22) +
+/// chord_w`, plus the longest header (`— Title —`) and the longest
+/// error so neither gets clipped.  Sized over the whole row set so
+/// width doesn't jiggle as focus moves.
+fn keybinds_content_width(state: &KeybindsState, keymap: &KeyMap) -> u16 {
+    let row_max = state
+        .rows
+        .iter()
+        .map(|r| match r {
+            Row::Header(t) => t.chars().count() + 4, // "— x —"
+            Row::Binding { action, .. } => {
+                let chord_w = keymap
+                    .first_key_for(action)
+                    .map(|s| s.chars().count())
+                    .unwrap_or(0);
+                2 + 22 + chord_w
+            }
+        })
+        .max()
+        .unwrap_or(0);
+    let err_max = state
+        .last_error
+        .as_deref()
+        .map(|e| 2 + e.chars().count())
+        .unwrap_or(0);
+    row_max.max(err_max) as u16
 }
 
 /// Build the row list from the static category table.  Headers and
@@ -547,5 +654,97 @@ mod tests {
             }
         }
         assert!(found_next_cell, "Table section missing TableNextCell row");
+    }
+
+    // ── Scroll-container integration ────────────────────────────────────
+
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn theme_ref() -> &'static Theme {
+        Box::leak(Box::new(Theme::default()))
+    }
+
+    fn render(state: &mut KeybindsState, keymap: &KeyMap, w: u16, h: u16) -> String {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_stateful_widget(
+                    KeybindsView {
+                        theme: theme_ref(),
+                        keymap,
+                    },
+                    frame.area(),
+                    state,
+                );
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol().chars().next().unwrap_or(' '))
+            .collect()
+    }
+
+    #[test]
+    fn keybinds_renders_scroll_arrow_when_more_rows_than_visible_height() {
+        let km = keymap();
+        let mut state = KeybindsState::open(&km);
+        // 80 cols × 8 rows: only ~5 row slots; keybinds has many more.
+        let contents = render(&mut state, &km, 80, 8);
+        assert!(
+            contents.contains("Keybindings ↓") || contents.contains("Keybindings ↑↓"),
+            "expected scroll arrow in title, got: {contents}"
+        );
+    }
+
+    #[test]
+    fn keybinds_pgdown_advances_scroll_without_moving_focus() {
+        let mut km = keymap();
+        let mut overrides = KeyBindingOverrides::default();
+        let mut state = KeybindsState::open(&km);
+        render(&mut state, &km, 80, 8);
+        let focused_before = state.focused;
+        state.handle_key(&key(KeyCode::PageDown), &mut km, &mut overrides);
+        assert_eq!(state.focused, focused_before);
+        assert!(state.scroll_state.scroll > 0, "PgDn must advance scroll");
+    }
+
+    #[test]
+    fn keybinds_wheel_scrolls_list() {
+        let km = keymap();
+        let mut state = KeybindsState::open(&km);
+        render(&mut state, &km, 80, 8);
+        let focused_before = state.focused;
+        state.scroll_state.scroll_by(2);
+        assert_eq!(state.scroll_state.scroll, 2);
+        assert_eq!(state.focused, focused_before);
+    }
+
+    #[test]
+    fn keybinds_modal_width_shrinks_to_content_in_wide_terminal() {
+        let km = keymap();
+        let mut state = KeybindsState::open(&km);
+        let term_w = 200u16;
+        let term_h = 40u16;
+        let contents = render(&mut state, &km, term_w, term_h);
+        let max_border = (0..term_h)
+            .map(|y| {
+                let row: String = contents
+                    .chars()
+                    .skip((y as usize) * term_w as usize)
+                    .take(term_w as usize)
+                    .collect();
+                row.chars().filter(|&c| c == '─').count()
+            })
+            .max()
+            .unwrap_or(0);
+        let modal_width = max_border + 2;
+        assert!(
+            modal_width < 130,
+            "expected content-aware width well below 80% of 200, got modal width {modal_width}"
+        );
     }
 }

@@ -40,10 +40,13 @@ use ratatui::{
     layout::Rect,
     style::Modifier,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, StatefulWidget, Widget},
+    widgets::{Paragraph, StatefulWidget, Widget},
 };
 
 use crate::config::{Config, ImagesEnabled, RemoteImagePolicy, StatusBarLayout, Theme};
+use crate::ui::scroll_container::{
+    centered_rect_for_content, draw_frame, ContentSize, ScrollContainerState,
+};
 
 /// Outcome of dispatching a key event to the settings overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +90,11 @@ pub struct SettingsState {
     /// Falls back to `["default"]` when the config dir is not
     /// readable so cycling is never a no-op.
     pub theme_names: Vec<String>,
+    /// Vertical scroll bookkeeping for the row table.  Up/Down move
+    /// `focused` and pull the viewport via `ensure_visible`; PgUp/PgDn
+    /// and the mouse wheel drive `scroll_state.scroll` directly without
+    /// touching focus.
+    pub scroll_state: ScrollContainerState,
     rows: Vec<RowDef>,
 }
 
@@ -98,6 +106,7 @@ impl SettingsState {
             editing: None,
             last_error: None,
             theme_names,
+            scroll_state: ScrollContainerState::default(),
             rows: build_rows(),
         };
         // Default focus to the first editable setting ("Theme") rather
@@ -155,6 +164,11 @@ impl SettingsState {
                 }
                 _ => {}
             }
+            return SettingsResponse::Continue;
+        }
+
+        // PgUp/PgDn/Home/End move the viewport without touching focus.
+        if self.scroll_state.handle_paging_key(key) {
             return SettingsResponse::Continue;
         }
 
@@ -219,6 +233,7 @@ impl SettingsState {
         while (0..len).contains(&idx) {
             if self.rows[idx as usize].kind.focusable {
                 self.focused = idx as usize;
+                self.scroll_state.ensure_visible(self.focused as u16);
                 return;
             }
             idx += delta;
@@ -247,85 +262,159 @@ impl<'a> StatefulWidget for SettingsView<'a> {
     type State = SettingsState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let rect = overlay_rect(area, state.rows.len() as u16);
-        Clear.render(rect, buf);
+        // Build per-row spans (without the inline description) so we
+        // can size the modal and figure out which rows fit on screen.
+        let row_lines = build_row_lines(state, self.config, self.theme);
+        let content_width = settings_content_width(state, self.config);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(" Settings ", self.theme.modal_title))
-            .style(self.theme.status_bar);
-        let inner = block.inner(rect);
-        block.render(rect, buf);
+        // Pinned-bottom region: 1 description row when the focused row
+        // has one, plus 2 rows for the error footer (blank + ✗ msg).
+        let focused_row = state.rows.get(state.focused);
+        let has_description = focused_row.and_then(|r| r.description).is_some();
+        let pinned_bottom: u16 = (if has_description { 1 } else { 0 })
+            + (if state.last_error.is_some() { 2 } else { 0 });
+
+        let content = ContentSize {
+            width: content_width,
+            height: row_lines.len() as u16,
+            pinned_top: 0,
+            pinned_bottom,
+        };
+        let rect = centered_rect_for_content(content, area);
+
+        // Pre-compute layout so the title's arrow indicator reflects
+        // the post-observe scroll bounds.
+        let inner_h = rect.height.saturating_sub(2);
+        let table_height = inner_h.saturating_sub(pinned_bottom);
+        state
+            .scroll_state
+            .observe(row_lines.len() as u16, table_height);
+        state.scroll_state.ensure_visible(state.focused as u16);
+
+        let inner = draw_frame(
+            rect,
+            buf,
+            "Settings",
+            state.scroll_state.arrow(),
+            self.theme,
+        );
         if inner.height < 2 || inner.width == 0 {
             return;
         }
 
-        let mut lines: Vec<Line<'_>> = Vec::new();
+        let scroll = state.scroll_state.scroll as usize;
+        let visible_rows = table_height as usize;
 
-        for (idx, row) in state.rows.iter().enumerate() {
-            // A non-focusable empty row is a blank-line divider used
-            // to set the "open externally" pair apart from the
-            // editable settings beneath it.
-            if !row.kind.focusable && row.label.is_empty() {
-                lines.push(Line::from(""));
-                continue;
-            }
-            let focused = idx == state.focused;
-            let marker = if focused { "› " } else { "  " };
-            let label_style = if focused {
-                self.theme.modal_button_focused
-            } else {
-                self.theme.status_bar
-            };
-            let value = if focused && state.editing.is_some() {
-                format!("{}▏", state.editing.as_deref().unwrap_or(""))
-            } else {
-                (row.kind.read)(self.config, &state.theme_names)
-            };
-            let label_padded = format!("{marker}{:<28}", row.label);
-            lines.push(Line::from(vec![
-                Span::styled(label_padded, label_style),
-                Span::styled(value, self.theme.status_filename),
-            ]));
-            if focused {
-                if let Some(desc) = row.description {
-                    lines.push(Line::from(Span::styled(
-                        format!("    {}", desc),
-                        self.theme.status_info.add_modifier(Modifier::DIM),
-                    )));
-                }
+        let table_area = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: table_height,
+        };
+        let visible: Vec<Line<'_>> = row_lines
+            .into_iter()
+            .skip(scroll)
+            .take(visible_rows)
+            .collect();
+        Paragraph::new(visible)
+            .style(self.theme.status_bar)
+            .render(table_area, buf);
+
+        // Pinned footer: description (when present) followed by error.
+        let mut footer_y = inner.y + table_height;
+        if has_description {
+            if let Some(desc) = focused_row.and_then(|r| r.description) {
+                let desc_area = Rect {
+                    x: inner.x,
+                    y: footer_y,
+                    width: inner.width,
+                    height: 1,
+                };
+                Paragraph::new(Line::from(Span::styled(
+                    format!("    {}", desc),
+                    self.theme.status_info.add_modifier(Modifier::DIM),
+                )))
+                .style(self.theme.status_bar)
+                .render(desc_area, buf);
+                footer_y += 1;
             }
         }
-
         if let Some(err) = state.last_error.as_ref() {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
+            // Blank spacer row, then the error.
+            let err_area = Rect {
+                x: inner.x,
+                y: footer_y + 1,
+                width: inner.width,
+                height: 1,
+            };
+            Paragraph::new(Line::from(Span::styled(
                 format!("✗ {err}"),
                 self.theme.transient_error,
-            )));
-        }
-
-        Paragraph::new(lines)
+            )))
             .style(self.theme.status_bar)
-            .render(inner, buf);
+            .render(err_area, buf);
+        }
     }
 }
 
-fn overlay_rect(area: Rect, rows: u16) -> Rect {
-    let target_width = (area.width as usize * 8 / 10).max(60);
-    let width = target_width.min(area.width as usize) as u16;
-    // +1 for the focused row's description, +4 for top/bottom
-    // borders and an error-line spacer.  The "open externally" pair
-    // and divider are normal rows, counted in `rows`.
-    let height = (rows + 5).min(area.height);
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-    Rect {
-        x,
-        y,
-        width,
-        height,
+/// Build one display line per row.  The focused row's description is
+/// *not* included here — it's pinned into the modal's footer instead.
+fn build_row_lines<'a>(state: &SettingsState, config: &Config, theme: &'a Theme) -> Vec<Line<'a>> {
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(state.rows.len());
+    for (idx, row) in state.rows.iter().enumerate() {
+        if !row.kind.focusable && row.label.is_empty() {
+            lines.push(Line::from(""));
+            continue;
+        }
+        let focused = idx == state.focused;
+        let marker = if focused { "› " } else { "  " };
+        let label_style = if focused {
+            theme.modal_button_focused
+        } else {
+            theme.status_bar
+        };
+        let value = if focused && state.editing.is_some() {
+            format!("{}▏", state.editing.as_deref().unwrap_or(""))
+        } else {
+            (row.kind.read)(config, &state.theme_names)
+        };
+        let label_padded = format!("{marker}{:<28}", row.label);
+        lines.push(Line::from(vec![
+            Span::styled(label_padded, label_style),
+            Span::styled(value, theme.status_filename),
+        ]));
     }
+    lines
+}
+
+/// Content-aware width: max over rows of `marker(2) + label_pad(28) +
+/// value_w`, plus the longest description so the pinned-footer copy
+/// doesn't get clipped.  Sizes against the *whole* row set so the
+/// modal width doesn't jiggle as focus moves.
+fn settings_content_width(state: &SettingsState, config: &Config) -> u16 {
+    let row_max = state
+        .rows
+        .iter()
+        .map(|r| {
+            let value_w = (r.kind.read)(config, &state.theme_names).chars().count();
+            // 2 marker + 28 label padding + value width
+            2 + 28 + value_w
+        })
+        .max()
+        .unwrap_or(0);
+    let desc_max = state
+        .rows
+        .iter()
+        .filter_map(|r| r.description)
+        .map(|d| 4 + d.chars().count()) // 4 = "    " indent
+        .max()
+        .unwrap_or(0);
+    let err_max = state
+        .last_error
+        .as_deref()
+        .map(|e| 2 + e.chars().count())
+        .unwrap_or(0);
+    row_max.max(desc_max).max(err_max) as u16
 }
 
 // ─── Row catalogue ─────────────────────────────────────────────────────────
@@ -904,5 +993,112 @@ mod tests {
                 "stale row '{stale}' is still in the schema"
             );
         }
+    }
+
+    // ── Scroll-container integration ────────────────────────────────────
+
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn theme_ref() -> &'static Theme {
+        Box::leak(Box::new(Theme::default()))
+    }
+
+    fn render(state: &mut SettingsState, config: &Config, w: u16, h: u16) -> String {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_stateful_widget(
+                    SettingsView {
+                        theme: theme_ref(),
+                        config,
+                    },
+                    frame.area(),
+                    state,
+                );
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol().chars().next().unwrap_or(' '))
+            .collect()
+    }
+
+    #[test]
+    fn settings_renders_scroll_arrow_when_more_rows_than_visible_height() {
+        let config = Config::default();
+        let mut state = SettingsState::new();
+        // 80 cols × 8 rows: only ~5 row slots after frame + footer.
+        // Settings has 13 rows.
+        let contents = render(&mut state, &config, 80, 8);
+        assert!(
+            contents.contains("Settings ↓") || contents.contains("Settings ↑↓"),
+            "expected scroll arrow in title, got: {contents}"
+        );
+    }
+
+    #[test]
+    fn settings_pgdown_advances_scroll_without_moving_focus() {
+        let config = Config::default();
+        let mut state = SettingsState::new();
+        render(&mut state, &config, 80, 8);
+        let focused_before = state.focused;
+        state.handle_key(&key(KeyCode::PageDown), &mut Config::default());
+        assert_eq!(state.focused, focused_before, "PgDn must not move focus");
+        assert!(state.scroll_state.scroll > 0, "PgDn must advance scroll");
+    }
+
+    #[test]
+    fn settings_wheel_scrolls_list() {
+        let config = Config::default();
+        let mut state = SettingsState::new();
+        render(&mut state, &config, 80, 8);
+        let focused_before = state.focused;
+        state.scroll_state.scroll_by(2);
+        assert_eq!(state.scroll_state.scroll, 2);
+        assert_eq!(state.focused, focused_before);
+    }
+
+    #[test]
+    fn settings_modal_width_shrinks_to_content_in_wide_terminal() {
+        let config = Config::default();
+        let mut state = SettingsState::new();
+        let term_w = 200u16;
+        let term_h = 30u16;
+        let contents = render(&mut state, &config, term_w, term_h);
+        let max_border = (0..term_h)
+            .map(|y| {
+                let row: String = contents
+                    .chars()
+                    .skip((y as usize) * term_w as usize)
+                    .take(term_w as usize)
+                    .collect();
+                row.chars().filter(|&c| c == '─').count()
+            })
+            .max()
+            .unwrap_or(0);
+        let modal_width = max_border + 2;
+        // 80% of 200 would be 160; content is much narrower.
+        assert!(
+            modal_width < 130,
+            "expected content-aware width well below 80% of 200, got modal width {modal_width}"
+        );
+    }
+
+    #[test]
+    fn settings_description_appears_in_pinned_footer() {
+        let config = Config::default();
+        let mut state = SettingsState::new();
+        // Default focus is on the Theme row, which has a description.
+        let contents = render(&mut state, &config, 100, 25);
+        // Description text should be present somewhere in the rendered
+        // buffer — the pinned-footer slot is at the bottom of the modal.
+        assert!(
+            contents.contains("Active theme"),
+            "expected Theme description in pinned footer, got: {contents}"
+        );
     }
 }

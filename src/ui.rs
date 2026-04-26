@@ -10,6 +10,7 @@ pub mod modal;
 pub mod preview;
 pub mod raw_view;
 pub mod rendered_view;
+pub mod scroll_container;
 pub mod settings_overlay;
 pub mod status_bar;
 pub mod table_view;
@@ -27,6 +28,10 @@ pub use modal::{ModalButton, ModalResponse, ModalState, ModalView};
 pub use preview::{PreviewState, PreviewView};
 pub use raw_view::{RawView, RawViewState};
 pub use rendered_view::{RenderedView, RenderedViewState};
+pub use scroll_container::{
+    centered_rect_for_content, draw_frame, format_title, wrapped_rows, ContentSize,
+    ScrollContainerState,
+};
 pub use settings_overlay::SettingsResponse;
 pub use settings_overlay::{SettingsState, SettingsView};
 pub use status_bar::{StatusBar, StatusBarState};

@@ -1355,22 +1355,40 @@ impl App {
 
             // Phase 10 — keybinds overlay absorbs input.
             if self.keybinds_overlay.is_some() {
-                if let Event::Key(key) = &event {
-                    if key.kind == KeyEventKind::Press {
+                match &event {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
                         self.handle_keybinds_overlay_key(*key);
                         self.needs_draw = true;
                     }
+                    Event::Mouse(me) => {
+                        if let Some(state) = self.keybinds_overlay.as_mut() {
+                            state
+                                .scroll_state
+                                .scroll_by(modal_wheel_delta(me, wheel_step));
+                            self.needs_draw = true;
+                        }
+                    }
+                    _ => {}
                 }
                 continue;
             }
 
             // Phase 10 — settings overlay absorbs input.
             if self.settings_overlay.is_some() {
-                if let Event::Key(key) = &event {
-                    if key.kind == KeyEventKind::Press {
+                match &event {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
                         self.handle_settings_overlay_key(*key);
                         self.needs_draw = true;
                     }
+                    Event::Mouse(me) => {
+                        if let Some(state) = self.settings_overlay.as_mut() {
+                            state
+                                .scroll_state
+                                .scroll_by(modal_wheel_delta(me, wheel_step));
+                            self.needs_draw = true;
+                        }
+                    }
+                    _ => {}
                 }
                 if self.pending_open_config_in_editor {
                     self.pending_open_config_in_editor = false;
@@ -1383,8 +1401,8 @@ impl App {
             // dimensions are needed because a palette-dispatched action
             // (e.g. `Save`) may scroll, edit, or follow links.
             if self.command_palette.is_some() {
-                if let Event::Key(key) = &event {
-                    if key.kind == KeyEventKind::Press {
+                match &event {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
                         let doc_w = term_size.width as usize;
                         let doc_h =
                             term_size
@@ -1395,6 +1413,15 @@ impl App {
                         self.handle_command_palette_key(*key, doc_h, doc_w);
                         self.needs_draw = true;
                     }
+                    Event::Mouse(me) => {
+                        if let Some(state) = self.command_palette.as_mut() {
+                            state
+                                .scroll_state
+                                .scroll_by(modal_wheel_delta(me, wheel_step));
+                            self.needs_draw = true;
+                        }
+                    }
+                    _ => {}
                 }
                 if self.pending_open_file_in_editor {
                     self.pending_open_file_in_editor = false;
