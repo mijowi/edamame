@@ -1,5 +1,6 @@
-//! `TableView` — per-frame layout snapshot plus the drag-handle rendering
-//! needed for Phase 6's mouse-driven row/column drag and column resize.
+//! `TableView` — per-frame layout snapshot plus the row/column-button
+//! rendering needed for mouse-driven row/column drag, column resize,
+//! and row/column delete.
 //!
 //! Phase 6 deliberately does NOT introduce a standalone `StatefulWidget` for
 //! tables.  The rendered table lines continue to flow through `ParsedDoc`'s
@@ -53,7 +54,7 @@ pub const COLUMN_RESIZE_GLYPH: char = '⇔';
 /// right `│` (overlaying the border for each data row) and on the
 /// bottom-border row (centred over each column).  Clicks on the glyph
 /// delete that row / column outright; undo restores it.  Gated by the
-/// same `config.table.show_drag_handles` flag as the reorder / resize
+/// same `config.table.show_buttons` flag as the reorder / resize
 /// handles.
 pub const DELETE_HANDLE_GLYPH: char = '✕';
 
@@ -320,7 +321,7 @@ pub fn build_snapshots_cached(
 /// `show_handles` controls whether snapshots carry the row-handle / column-
 /// handle coordinates (and therefore whether hit-testing classifies clicks
 /// on those cells as handle hits).  Pass `capabilities.mouse && config.table
-/// .show_drag_handles` from the caller.
+/// .show_buttons` from the caller.
 pub fn build_snapshots(
     state: &EditorState,
     area: Rect,
@@ -662,7 +663,7 @@ fn is_blank_stripe_line(line: &Line<'_>) -> bool {
 
 // ── Handle rendering ────────────────────────────────────────────────────────
 
-/// Paint the drag-handle glyphs on top of each snapshot's table.  The
+/// Paint the row/column-button glyphs on top of each snapshot's table.  The
 /// underlying rendered lines have already been drawn; this layer overlays:
 ///   * `⠿` in the external left gutter for each data row (row-reorder),
 ///   * `⠿` on the centre of each column's top-border cell (column-reorder),
@@ -1184,7 +1185,7 @@ mod tests {
     /// Disabled delete handles (`None` field) leave the original
     /// hit-test chain unchanged — the right border on a data row
     /// resolves to `ColumnBorder`, as it did before delete handles
-    /// existed.  This is what `config.table.show_drag_handles = false`
+    /// existed.  This is what `config.table.show_buttons = false`
     /// must guarantee.
     #[test]
     fn hit_test_falls_through_when_delete_handles_disabled() {

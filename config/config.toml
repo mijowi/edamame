@@ -44,9 +44,10 @@ suppress_capability_warnings = false
 
 # ── Table ─────────────────────────────────────────────────────────────────────
 [table]
-# Show row / column drag handles (`≡` gutter glyph + `⇔` resize glyph) on
-# tables when the terminal supports mouse reporting.  Default: true.
-show_drag_handles = true
+# Show row / column buttons on tables when the terminal supports mouse
+# reporting: `⠿` reorder grips, `⇔` resize glyph, and `✕` row/column
+# delete glyphs.  Default: true.
+show_buttons = true
 # Stripe alternating data rows with `theme.table_row_even` / `table_row_odd`.
 row_striping = true
 # Show a confirmation modal the first time a column-border drag would inject

@@ -170,7 +170,7 @@ impl SettingsStateExt for SettingsState {
             "Scroll speed",
             "Show images",
             "Show remote images",
-            "Show table drag handles",
+            "Show table buttons",
             "Export inlined images",
             "Export diagrams as SVG",
         ];

@@ -125,7 +125,7 @@ fn rendered_view_paints_selection_across_multiple_rendered_blocks() {
         .draw(|frame| {
             let view = RenderedView {
                 drop_indicator: None,
-                show_table_handles: false,
+                show_table_buttons: false,
                 state: &state,
                 theme,
             };
@@ -175,7 +175,7 @@ fn setext_heading_reveals_both_title_and_underline_on_cursor() {
         .draw(|frame| {
             let view = RenderedView {
                 drop_indicator: None,
-                show_table_handles: false,
+                show_table_buttons: false,
                 state: &state,
                 theme,
             };
@@ -233,7 +233,7 @@ fn rendered_view_selection_in_table_cell_does_not_spill_into_borders() {
         .draw(|frame| {
             let view = RenderedView {
                 drop_indicator: None,
-                show_table_handles: false,
+                show_table_buttons: false,
                 state: &state,
                 theme,
             };
@@ -304,7 +304,7 @@ fn rendered_view_selection_inside_cursors_own_cell_survives_cell_overlay() {
         .draw(|frame| {
             let view = RenderedView {
                 drop_indicator: None,
-                show_table_handles: false,
+                show_table_buttons: false,
                 state: &state,
                 theme,
             };
@@ -354,7 +354,7 @@ fn rendered_view_cell_scoped_reveal_keeps_neighbouring_pipes_rendered() {
         .draw(|frame| {
             let view = RenderedView {
                 drop_indicator: None,
-                show_table_handles: false,
+                show_table_buttons: false,
                 state: &state,
                 theme,
             };
@@ -433,7 +433,7 @@ fn table_view_paints_row_and_column_handles_when_enabled() {
                 drop_indicator: None,
                 state: &state,
                 theme,
-                show_table_handles: true,
+                show_table_buttons: true,
             };
             frame.render_stateful_widget(view, frame.area(), &mut view_state);
         })
@@ -538,7 +538,7 @@ fn table_view_paints_one_row_handle_per_logical_row() {
                 drop_indicator: None,
                 state: &state,
                 theme,
-                show_table_handles: true,
+                show_table_buttons: true,
             };
             frame.render_stateful_widget(view, frame.area(), &mut view_state);
         })
@@ -609,7 +609,7 @@ fn rendered_view_wrapped_cell_keeps_table_layout_when_cursor_inside() {
                 drop_indicator: None,
                 state: &state,
                 theme,
-                show_table_handles: false,
+                show_table_buttons: false,
             };
             frame.render_stateful_widget(view, frame.area(), &mut view_state);
         })
@@ -695,7 +695,7 @@ fn rendered_view_wrapped_cell_shows_raw_markdown_chunk() {
                 drop_indicator: None,
                 state: &state,
                 theme,
-                show_table_handles: false,
+                show_table_buttons: false,
             };
             frame.render_stateful_widget(view, frame.area(), &mut view_state);
         })
@@ -735,9 +735,9 @@ fn rendered_view_wrapped_cell_shows_raw_markdown_chunk() {
     );
 }
 
-/// Phase 13 — handles paint only on the table the cursor is inside.
+/// Phase 13 — buttons paint only on the table the cursor is inside.
 /// With the cursor parked in a paragraph above a table, the table's
-/// drag handles must be invisible; moving the cursor onto the table
+/// buttons must be invisible; moving the cursor onto the table
 /// reveals them.  Snapshots are still captured for hit-testing in
 /// either case.
 #[test]
@@ -763,7 +763,7 @@ fn table_view_handles_only_paint_when_cursor_in_table() {
                 drop_indicator: None,
                 state: &state,
                 theme,
-                show_table_handles: true,
+                show_table_buttons: true,
             };
             frame.render_stateful_widget(view, frame.area(), &mut view_state);
         })
@@ -809,7 +809,7 @@ fn table_view_handles_only_paint_when_cursor_in_table() {
                 drop_indicator: None,
                 state: &state,
                 theme,
-                show_table_handles: true,
+                show_table_buttons: true,
             };
             frame.render_stateful_widget(view, frame.area(), &mut view_state);
         })
@@ -848,7 +848,7 @@ fn table_view_snapshots_empty_when_no_table() {
                 drop_indicator: None,
                 state: &state,
                 theme,
-                show_table_handles: true,
+                show_table_buttons: true,
             };
             frame.render_stateful_widget(view, frame.area(), &mut view_state);
         })
@@ -1003,7 +1003,7 @@ fn table_row_striping_alternates_bg_per_data_row() {
                 drop_indicator: None,
                 state: &state,
                 theme,
-                show_table_handles: false,
+                show_table_buttons: false,
             };
             frame.render_stateful_widget(view, frame.area(), &mut view_state);
         })
@@ -1057,7 +1057,7 @@ fn table_row_striping_replaces_thin_rule_with_blank_separator() {
                 drop_indicator: None,
                 state: &state,
                 theme,
-                show_table_handles: false,
+                show_table_buttons: false,
             };
             frame.render_stateful_widget(view, frame.area(), &mut view_state);
         })
@@ -1124,7 +1124,7 @@ fn table_row_striping_off_leaves_default_bg() {
                 drop_indicator: None,
                 state: &state,
                 theme,
-                show_table_handles: false,
+                show_table_buttons: false,
             };
             frame.render_stateful_widget(view, frame.area(), &mut view_state);
         })
@@ -1173,7 +1173,7 @@ fn table_view_paints_drop_indicator_on_row_drag() {
                 drop_indicator: Some(indicator),
                 state: &state,
                 theme,
-                show_table_handles: false,
+                show_table_buttons: false,
             };
             frame.render_stateful_widget(view, frame.area(), &mut view_state);
         })

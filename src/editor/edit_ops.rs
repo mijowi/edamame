@@ -722,7 +722,7 @@ pub fn apply(
         | Action::ExportHtml
         | Action::ReloadFromDisk
         | Action::OpenInExternalEditor
-        | Action::ToggleTableDragHandles
+        | Action::ToggleTableButtons
         | Action::InsertTable => {}
     }
 

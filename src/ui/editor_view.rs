@@ -25,11 +25,11 @@ pub struct EditorView<'a> {
     pub state: &'a mut EditorState,
     pub theme: &'a Theme,
     pub filename: &'a str,
-    /// Passed through to `RenderedView::show_table_handles`.  Callers in
-    /// production pass `config.table.show_drag_handles && capabilities.mouse`;
+    /// Passed through to `RenderedView::show_table_buttons`.  Callers in
+    /// production pass `config.table.show_buttons && capabilities.mouse`;
     /// unit tests default to `false` so they don't paint the gutter glyphs
     /// over their assertions.
-    pub show_table_handles: bool,
+    pub show_table_buttons: bool,
     /// Phase 13 — when `Some`, an in-progress table drag is active and
     /// the painter overlays the destination separator with the
     /// `Theme::table_drop_indicator` highlight after the handle glyphs.
@@ -135,7 +135,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                     RenderedView {
                         state: &*self.state,
                         theme: self.theme,
-                        show_table_handles: self.show_table_handles,
+                        show_table_buttons: self.show_table_buttons,
                         drop_indicator: self.table_drop_indicator,
                     },
                     doc_area,

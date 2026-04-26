@@ -1472,12 +1472,9 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 ---
 
 ## Miscellaneous Issues / Features
-- [ ] Fix the command palette's position relative to the top of the terminal so that it doesn't jump around vertically as the user types and it searches.
 
-- [ ] Rename table drag handle verbiage in config file, settings modal, and action in command palette to "table buttons", since we've added delete buttons.
-- [ ] The cursor should change to a hand when hovering over table manipulation buttons (no change when buttons are not visible).
+- [ ] Display a warning modal to the user whenever reading any .toml config file (config, keybindings, and themes) if the file cannot be parsed as .toml or if there are unrecognized keys/values. The modal should specify the problematic file (and lines if this doesn't add too much complexity). The modal should reuse the existing modal container and be scrollable in case content overflows.
 
-- [ ] Display a warning modal to the user whenever reading any .toml config file (config, keybindings, and themes) if the file cannot be parsed as .toml or if there are unrecognized keys/values. The modal should specify the problematic file (and lines if this doesn't add too much complexity). The modal should reuse existing `ModalView` and be scrollable in case content overflows.
 - [ ] List item alignment: In all cases (ordered, unordered, task lists) the text of a list item should be left-padded with spaces so that the text is all aligned on the left side, and the list marker hangs off on the left at the top.
 
 - [ ] Is `ScrollContainerState` themeable? It should have a theme that is shared across all modals, with per-modal overrides possible.

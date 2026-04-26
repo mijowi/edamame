@@ -456,11 +456,11 @@ impl App {
         let monochrome = capabilities.colour_depth == ColourDepth::NoColour;
         let theme: &'static Theme = Box::leak(Box::new(Theme::from_file(&theme_file, monochrome)));
 
-        // Table drag handles depend on mouse reporting; disable them on
+        // Table buttons depend on mouse reporting; disable them on
         // terminals that don't deliver mouse events so we never render inert
         // gutter glyphs.
         if !capabilities.mouse {
-            config.table.show_drag_handles = false;
+            config.table.show_buttons = false;
         }
 
         let buffer = match &file_path {
@@ -890,7 +890,7 @@ impl App {
             if should_draw {
                 let filename = self.display_filename();
                 let is_scrolling = self.is_scrolling();
-                let show_handles = self.config.table.show_drag_handles;
+                let show_handles = self.config.table.show_buttons;
                 let layout = self.config.editor.status_bar;
                 let hint = self.hint_content();
                 let editor_ref = &mut self.editor;
@@ -1014,7 +1014,7 @@ impl App {
                         state: editor_ref,
                         theme: theme_ref,
                         filename: &filename,
-                        show_table_handles: show_handles,
+                        show_table_buttons: show_handles,
                         table_drop_indicator: drop_indicator,
                         capabilities: capabilities_ref,
                         is_scrolling,
@@ -1494,8 +1494,13 @@ impl App {
                             rel_row,
                             doc_width,
                         );
-                        if mouse_ops::hit_test_clickable(&self.editor, rel_col, rel_row, doc_width)
-                        {
+                        if mouse_ops::hit_test_clickable(
+                            &self.editor,
+                            rel_col,
+                            rel_row,
+                            doc_width,
+                            &self.view_state.rendered.table_snapshots,
+                        ) {
                             PointerShape::Hand
                         } else {
                             PointerShape::Text
@@ -1736,20 +1741,20 @@ impl App {
                 }
                 true
             }
-            Action::ToggleTableDragHandles => {
+            Action::ToggleTableButtons => {
                 // In-memory only — never write the change back to
                 // `config.toml`.  Settings the user wants to keep
                 // belong in the settings overlay.  Skip the toggle on
                 // terminals where mouse reporting is unavailable: the
                 // gutter glyphs would be inert and confusing.
                 if self.capabilities.mouse {
-                    self.config.table.show_drag_handles = !self.config.table.show_drag_handles;
-                    let state = if self.config.table.show_drag_handles {
+                    self.config.table.show_buttons = !self.config.table.show_buttons;
+                    let state = if self.config.table.show_buttons {
                         "on"
                     } else {
                         "off"
                     };
-                    self.flash(format!("Table drag handles {state}"), MessageKind::Info);
+                    self.flash(format!("Table buttons {state}"), MessageKind::Info);
                 } else {
                     self.flash("Mouse not supported on this terminal", MessageKind::Error);
                 }

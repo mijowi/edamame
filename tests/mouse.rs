@@ -467,14 +467,14 @@ fn hit_test_returns_true_over_task_checkbox() {
     // Rows 0 and 1 both expose a `[ ]`/`[x]` glyph at cols 0-2.
     for (row, col) in [(0u16, 0u16), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)] {
         assert!(
-            mouse_ops::hit_test_clickable(&st, col, row, VW),
+            mouse_ops::hit_test_clickable(&st, col, row, VW, &[]),
             "expected hit-test TRUE at ({col}, {row})"
         );
     }
     // Col 3 is the space AFTER `]`, outside the glyph.
-    assert!(!mouse_ops::hit_test_clickable(&st, 3, 0, VW));
+    assert!(!mouse_ops::hit_test_clickable(&st, 3, 0, VW, &[]));
     // Col 5 is in the body text.
-    assert!(!mouse_ops::hit_test_clickable(&st, 5, 0, VW));
+    assert!(!mouse_ops::hit_test_clickable(&st, 5, 0, VW, &[]));
 }
 
 #[test]
@@ -483,11 +483,65 @@ fn hit_test_returns_true_over_markdown_link() {
     // `[docs](url)` renders as just `docs` — 4 chars at rendered cols 4..=7.
     // The URL is invisible in rendered mode, so only the link text is a
     // visible "clickable region".
-    assert!(mouse_ops::hit_test_clickable(&st, 5, 0, VW)); // inside "docs"
-    assert!(mouse_ops::hit_test_clickable(&st, 7, 0, VW)); // last char of "docs"
-                                                           // Click outside the link text.
-    assert!(!mouse_ops::hit_test_clickable(&st, 2, 0, VW));
-    assert!(!mouse_ops::hit_test_clickable(&st, 10, 0, VW));
+    assert!(mouse_ops::hit_test_clickable(&st, 5, 0, VW, &[])); // inside "docs"
+    assert!(mouse_ops::hit_test_clickable(&st, 7, 0, VW, &[])); // last char of "docs"
+                                                                // Click outside the link text.
+    assert!(!mouse_ops::hit_test_clickable(&st, 2, 0, VW, &[]));
+    assert!(!mouse_ops::hit_test_clickable(&st, 10, 0, VW, &[]));
+}
+
+/// Pointer-shape feedback: hovering over any of the four table buttons
+/// (row reorder `⠿`, column reorder `⠿`, row delete `✕`, column delete
+/// `✕`) returns true so the App switches to the hand pointer.  Resize
+/// borders intentionally don't return true — they're a drag, not a
+/// discrete click target.
+#[test]
+fn hit_test_returns_true_over_each_table_button() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n";
+    let st = state(src);
+
+    // Layout: col 0 at x=2..5, col 1 at x=6..9.  Top border y=0,
+    // header y=1, thick separator y=2, data row y=3, bottom border y=4.
+    let mut snap =
+        snapshot_with_delete_handles(src, vec![2..5, 6..9], vec![3..4], Some(9), Some(4));
+    snap.row_handle_col = Some(0);
+    snap.top_border_row = Some(0);
+    let snapshots = [snap];
+
+    // Row-reorder `⠿` at (x=0, y=3).
+    assert!(
+        mouse_ops::hit_test_clickable(&st, 0, 3, VW, &snapshots),
+        "row-reorder handle should classify as clickable",
+    );
+    // Column-reorder `⠿` on top border (y=0) inside col 0's x-range.
+    assert!(
+        mouse_ops::hit_test_clickable(&st, 3, 0, VW, &snapshots),
+        "column-reorder handle should classify as clickable",
+    );
+    // Row-delete `✕` at right border (x=9, y=3) on data row.
+    assert!(
+        mouse_ops::hit_test_clickable(&st, 9, 3, VW, &snapshots),
+        "row-delete glyph should classify as clickable",
+    );
+    // Column-delete `✕` on bottom border (y=4) inside col 1's x-range.
+    assert!(
+        mouse_ops::hit_test_clickable(&st, 7, 4, VW, &snapshots),
+        "column-delete glyph should classify as clickable",
+    );
+
+    // Interior resize border (between columns at x=5, on a data row)
+    // — `⇔` glyph plus the `±1` tolerance window — must flip the
+    // cursor to hand so the resize affordance is discoverable.
+    assert!(
+        mouse_ops::hit_test_clickable(&st, 5, 3, VW, &snapshots),
+        "interior resize border should classify as clickable",
+    );
+    // Leftmost outer border at x=1 is inert (no column to its left
+    // to resize), so it must NOT flip the cursor.
+    assert!(
+        !mouse_ops::hit_test_clickable(&st, 1, 3, VW, &snapshots),
+        "leftmost outer border should NOT classify as clickable",
+    );
 }
 
 // ── Drag outside doc area is benign ─────────────────────────────────────────
@@ -1324,7 +1378,7 @@ fn right_border_on_data_row_deletes() {
     assert!(!st.drag_in_progress);
 }
 
-/// When `show_drag_handles` is off, `build_snapshots` leaves the new
+/// When `show_buttons` is off, `build_snapshots` leaves the new
 /// delete-handle fields at `None`, so the right border at x=9 stays
 /// a pure resize target on data rows (existing behaviour) and clicks
 /// on the bottom-border row don't delete a column.

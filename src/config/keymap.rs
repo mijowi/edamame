@@ -142,11 +142,11 @@ pub enum Action {
     /// buffer is reloaded from disk after the editor exits so any
     /// external edits are picked up.
     OpenInExternalEditor,
-    /// Toggle the in-memory `config.table.show_drag_handles` flag.
+    /// Toggle the in-memory `config.table.show_buttons` flag.
     /// Intentionally does NOT persist to `config.toml` — the user can
     /// flip handles for the current session without committing the
     /// change.
-    ToggleTableDragHandles,
+    ToggleTableButtons,
     /// Stub for a future "insert a Markdown table at cursor" command.
     /// Currently flashes a not-implemented hint; surfaces in the
     /// palette so the entry is discoverable as soon as the feature
@@ -225,7 +225,7 @@ impl fmt::Display for Action {
             Action::ExportHtml => "ExportHtml",
             Action::ReloadFromDisk => "ReloadFromDisk",
             Action::OpenInExternalEditor => "OpenInExternalEditor",
-            Action::ToggleTableDragHandles => "ToggleTableDragHandles",
+            Action::ToggleTableButtons => "ToggleTableButtons",
             Action::InsertTable => "InsertTable",
         };
         f.write_str(s)
@@ -304,7 +304,7 @@ impl FromStr for Action {
             "ExportHtml" => Ok(Action::ExportHtml),
             "ReloadFromDisk" => Ok(Action::ReloadFromDisk),
             "OpenInExternalEditor" => Ok(Action::OpenInExternalEditor),
-            "ToggleTableDragHandles" => Ok(Action::ToggleTableDragHandles),
+            "ToggleTableButtons" => Ok(Action::ToggleTableButtons),
             "InsertTable" => Ok(Action::InsertTable),
             other => Err(KeyMapError::UnknownAction(other.to_owned())),
         }

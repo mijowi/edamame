@@ -732,15 +732,15 @@ fn build_rows() -> Vec<RowDef> {
             },
         },
         RowDef {
-            label: "Show table drag handles",
+            label: "Show table buttons",
             description: Some("Show table row/column move/resize glyphs"),
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,
-                read: |c, _| c.table.show_drag_handles.to_string(),
+                read: |c, _| c.table.show_buttons.to_string(),
                 write_string: no_write,
                 cycle: Some(|c, _, _| {
-                    c.table.show_drag_handles = !c.table.show_drag_handles;
+                    c.table.show_buttons = !c.table.show_buttons;
                     true
                 }),
             },
@@ -963,7 +963,7 @@ mod tests {
                 "Scroll speed",
                 "Show images",
                 "Show remote images",
-                "Show table drag handles",
+                "Show table buttons",
                 "Export inlined images",
                 "Export diagrams as SVG",
             ]

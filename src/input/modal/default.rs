@@ -109,11 +109,11 @@ fn preview_safe_action(action: &Action) -> bool {
             // Both are palette-only by default but a user may bind a
             // chord — allow them to fire from Preview without first
             // entering edit mode.  `OpenInExternalEditor` saves and
-            // suspends the TUI; `ToggleTableDragHandles` is a tiny
+            // suspends the TUI; `ToggleTableButtons` is a tiny
             // in-memory flip — neither needs the buffer to be in an
             // editing mode.
             | Action::OpenInExternalEditor
-            | Action::ToggleTableDragHandles
+            | Action::ToggleTableButtons
     )
 }
 

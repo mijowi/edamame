@@ -333,13 +333,14 @@ impl Default for ModalConfig {
 
 /// Table-editing configuration.
 ///
-/// `show_drag_handles` governs whether Phase 6's row/column drag handles
-/// (`≡` gutter glyph on each data row and `⇔` glyphs above each column) are
-/// rendered and hit-tested.  Defaults to `true`: the renderer still checks
-/// the terminal's detected `Capabilities::mouse` flag before enabling the
-/// feature at runtime, so setting this to `true` on a mouseless terminal is
-/// a no-op — `App::new` overrides it to `false` when `capabilities.mouse` is
-/// absent so persisted config stays faithful to what the user actually sees.
+/// `show_buttons` governs whether the row/column buttons — the `⠿`
+/// reorder grips, the `⇔` resize glyph, and the `✕` row/column delete
+/// glyphs — are rendered and hit-tested.  Defaults to `true`: the
+/// renderer still checks the terminal's detected `Capabilities::mouse`
+/// flag before enabling the feature at runtime, so setting this to
+/// `true` on a mouseless terminal is a no-op — `App::new` overrides it
+/// to `false` when `capabilities.mouse` is absent so persisted config
+/// stays faithful to what the user actually sees.
 ///
 /// `row_striping` (Phase 13): when true, alternating data rows are filled
 /// with `Theme::table_row_even` / `Theme::table_row_odd` to aid visual
@@ -355,7 +356,7 @@ impl Default for ModalConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TableConfig {
-    pub show_drag_handles: bool,
+    pub show_buttons: bool,
     pub row_striping: bool,
     pub warn_on_width_injection: bool,
 }
@@ -363,7 +364,7 @@ pub struct TableConfig {
 impl Default for TableConfig {
     fn default() -> Self {
         Self {
-            show_drag_handles: true,
+            show_buttons: true,
             row_striping: true,
             warn_on_width_injection: true,
         }

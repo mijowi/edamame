@@ -28,8 +28,8 @@ pub struct RenderedViewState {
     /// First visible rendered line (scroll offset).
     pub scroll: usize,
     /// Snapshots of every visible table, captured at the end of the last
-    /// render.  Used by mouse-event handling to hit-test against the columns,
-    /// borders, and drag handles of the table under the pointer.
+    /// render.  Used by mouse-event handling to hit-test against the
+    /// columns, borders, and buttons of the table under the pointer.
     pub table_snapshots: Vec<TableLayoutSnapshot>,
     /// Snapshots of every visible `Block::ImageBlock`, captured at the end
     /// of the last render.  Phase 7 uses them as the hit-test surface
@@ -68,18 +68,19 @@ pub struct RenderedViewState {
 pub struct RenderedView<'a> {
     pub state: &'a EditorState,
     pub theme: &'a Theme,
-    /// When true, the table renderer paints `⠿` row/column drag handles
-    /// and `⇔` column-resize glyphs over each visible table.  Controlled
-    /// by `config.table.show_drag_handles` AND `capabilities.mouse` (the
-    /// App zeros the first when the second is false), so terminals
-    /// without mouse reporting never show inert glyphs.
+    /// When true, the table renderer paints the row/column buttons —
+    /// `⠿` reorder grips, `⇔` resize glyph, `✕` delete glyphs — over
+    /// each visible table.  Controlled by `config.table.show_buttons`
+    /// AND `capabilities.mouse` (the App zeros the first when the
+    /// second is false), so terminals without mouse reporting never
+    /// show inert glyphs.
     ///
-    /// Phase 13: handles only paint on the table that contains the
+    /// Phase 13: buttons only paint on the table that contains the
     /// cursor — moving the cursor out of the table hides them so they
     /// never compete with the rendered content during navigation.  The
     /// gating is enforced by `paint_handles_for_cursor_table` in
     /// `table_view`.
-    pub show_table_handles: bool,
+    pub show_table_buttons: bool,
     /// Phase 13 — when `Some`, an in-progress table drag is highlighted
     /// after the handles are painted.  `None` when no relevant drag is
     /// active.
@@ -543,10 +544,11 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         }
 
         // Phase 6: build per-frame snapshots of every visible table, then
-        // paint the drag-handle glyphs over the rendered content.  The
-        // snapshots are retained on `RenderedViewState` so the next mouse
-        // event can hit-test against them.  The cached variant skips the
-        // visible-line walk when scroll, area, parsed-doc version, AND
+        // paint the row/column-button glyphs over the rendered content.
+        // The snapshots are retained on `RenderedViewState` so the next
+        // mouse event can hit-test against them.  The cached variant
+        // skips the visible-line walk when scroll, area, parsed-doc
+        // version, AND
         // the show-handles flag all match the previous frame.
         //
         // Phase 13: handles paint only on the table the cursor is
@@ -559,11 +561,11 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         table_view::build_snapshots_cached(
             self.state,
             area,
-            self.show_table_handles,
+            self.show_table_buttons,
             &mut view_state.table_snapshots,
             &mut view_state.table_snapshots_key,
         );
-        let cursor_table_start = if self.show_table_handles {
+        let cursor_table_start = if self.show_table_buttons {
             cursor_table_block_start(self.state, &view_state.table_snapshots)
         } else {
             None

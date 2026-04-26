@@ -98,12 +98,50 @@ pub fn hovered_link_target(
 }
 
 /// Hit-test the position `(col, row)` (in document-area-relative coords) to
-/// determine whether it falls on a clickable element (task-list checkbox
-/// glyph or a Markdown link).
+/// determine whether it falls on a clickable element: a task-list checkbox
+/// glyph, a Markdown link, one of the four table buttons (row-reorder
+/// `⠿`, column-reorder `⠿`, row-delete `✕`, column-delete `✕`), or a
+/// resizable column border (the `⇔` glyph and the surrounding `±1`
+/// resize-tolerance window).
+///
+/// The leftmost outer column border is intentionally NOT classified —
+/// there's no column to its left to resize, so a click there falls
+/// through to cell placement and the cursor stays as text.
 ///
 /// Used by the app's mouse-move handler to update the terminal pointer shape
 /// so the mouse cursor renders as a pointing hand over clickable regions.
-pub fn hit_test_clickable(state: &EditorState, col: u16, row: u16, viewport_width: usize) -> bool {
+pub fn hit_test_clickable(
+    state: &EditorState,
+    col: u16,
+    row: u16,
+    viewport_width: usize,
+    snapshots: &[TableLayoutSnapshot],
+) -> bool {
+    // Table buttons + resize borders — snapshot hit-test is independent
+    // of rendered-line content (the `⠿` row-reorder glyph sits in the
+    // external gutter, beyond the table's own line width).  Checked
+    // first so the "past end of line" early-return below doesn't
+    // suppress the hand cursor for gutter clicks.
+    for snap in snapshots {
+        match snap.hit_test(col, row) {
+            Some(TableHit::RowHandle { .. })
+            | Some(TableHit::ColumnHandle { .. })
+            | Some(TableHit::DeleteRowHandle { .. })
+            | Some(TableHit::DeleteColumnHandle { .. }) => return true,
+            // Match the click dispatcher's predicate: only borders that
+            // actually drive a resize (interior + the rightmost outer)
+            // turn the cursor into a hand.  `col_idx == 0` is the
+            // leftmost outer border with no column to its left, so a
+            // click there falls through to cell placement.
+            Some(TableHit::ColumnBorder { col_idx })
+                if col_idx > 0 && col_idx <= snap.col_count =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+
     let c = col as usize;
     let r = row as usize;
     let Some((line, visual_col)) = rendered_line_at_row(state, r) else {

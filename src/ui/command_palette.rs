@@ -23,7 +23,7 @@ use ratatui::{
 
 use crate::config::{Action, KeyMap, Theme};
 use crate::ui::scroll_container::{
-    centered_rect_for_content, draw_frame, ContentSize, ScrollContainerState,
+    draw_frame, top_anchored_rect_for_content, ContentSize, ScrollContainerState,
 };
 
 /// One palette row: an action plus its display label.
@@ -268,7 +268,12 @@ impl<'a> StatefulWidget for PaletteView<'a> {
             pinned_top: 2, // input row + divider
             pinned_bottom: 0,
         };
-        let modal_area = centered_rect_for_content(content, area);
+        // Top-anchored rather than centred: the palette's match count
+        // changes per keystroke, so a centred modal would shift the
+        // input row up and down as the user types.  Anchoring near the
+        // top pins the input and lets only the result list grow or
+        // shrink underneath it.
+        let modal_area = top_anchored_rect_for_content(content, area);
 
         // Pre-compute layout so the title's arrow indicator reflects
         // the post-observe scroll bounds.
@@ -424,7 +429,7 @@ const SUGGESTED_ORDER: &[Action] = &[
     Action::OpenSettings,
     Action::OpenKeybinds,
     Action::InsertTable,
-    Action::ToggleTableDragHandles,
+    Action::ToggleTableButtons,
     Action::ExportHtml,
     Action::OpenInExternalEditor,
     Action::ShowMarkdownCheatSheet,
@@ -507,7 +512,7 @@ const ALL_ACTIONS: &[Action] = &[
     Action::OpenKeybinds,
     Action::ExportHtml,
     Action::OpenInExternalEditor,
-    Action::ToggleTableDragHandles,
+    Action::ToggleTableButtons,
     Action::InsertTable,
     // File ops.
     Action::Save,
@@ -554,7 +559,7 @@ fn label_for(action: &Action) -> Option<&'static str> {
         Action::OpenKeybinds => "Open keybindings",
         Action::ExportHtml => "Export HTML",
         Action::OpenInExternalEditor => "Open current file in system editor",
-        Action::ToggleTableDragHandles => "Toggle table drag handles",
+        Action::ToggleTableButtons => "Toggle table buttons",
         Action::InsertTable => "Insert table",
         Action::Save => "Save file",
         Action::Open => "Open file",
@@ -616,7 +621,7 @@ mod tests {
                 "Open settings".to_owned(),
                 "Open keybindings".to_owned(),
                 "Insert table".to_owned(),
-                "Toggle table drag handles".to_owned(),
+                "Toggle table buttons".to_owned(),
                 "Export HTML".to_owned(),
                 "Open current file in system editor".to_owned(),
                 "Show Markdown cheat sheet".to_owned(),
@@ -817,8 +822,8 @@ mod tests {
         let term_h = 30u16;
         let contents = render(&mut state, term_w, term_h);
         // Find a row containing horizontal-border glyphs and measure
-        // its run length.  The modal is vertically centred so we scan
-        // every row and pick the one with the most border chars.
+        // its run length.  Scan every row and pick the one with the
+        // most border chars.
         let max_border = (0..term_h)
             .map(|y| {
                 let row: String = contents
@@ -843,6 +848,46 @@ mod tests {
         assert!(
             modal_width >= 30,
             "expected modal at least 30 cols wide, got modal width {modal_width}"
+        );
+    }
+
+    #[test]
+    fn palette_top_y_does_not_change_when_match_count_changes() {
+        // Regression: previously the palette was vertically centred so
+        // its y position shifted by half the height delta on every
+        // keystroke that altered the match count, making the input row
+        // jump as the user typed.  Top-anchored placement keeps the
+        // top of the modal at a fixed offset, provided the modal
+        // actually fits in the terminal — pick a generous height so a
+        // worst-case match list (every entry typed `e` matches) still
+        // fits without the bottom-edge clamp pulling y back up.
+        let term_w = 80u16;
+        let term_h = 60u16;
+
+        // y of the topmost row that contains a horizontal-border glyph
+        // (the modal's top edge).
+        let modal_top_y = |state: &mut PaletteState| -> u16 {
+            let contents = render(state, term_w, term_h);
+            (0..term_h)
+                .find(|&y| {
+                    contents
+                        .chars()
+                        .skip((y as usize) * term_w as usize)
+                        .take(term_w as usize)
+                        .any(|c| c == '─')
+                })
+                .expect("palette frame border not found in render")
+        };
+
+        let mut state = PaletteState::open(&keymap());
+        let y_empty = modal_top_y(&mut state);
+        // Single-char query that produces a different (typically larger)
+        // match count than the curated empty-state list.
+        state.handle_key(&key(KeyCode::Char('e')));
+        let y_typed = modal_top_y(&mut state);
+        assert_eq!(
+            y_empty, y_typed,
+            "modal top must not move when match count changes"
         );
     }
 }
