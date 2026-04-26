@@ -274,6 +274,30 @@ pub fn apply(
                         }
                         // Outer border — fall through to cell placement.
                     }
+                    TableHit::DeleteRowHandle { row_idx } => {
+                        delete_table_row_at(
+                            state,
+                            snap.table_byte_start,
+                            row_idx,
+                            viewport_height,
+                            viewport_width,
+                        );
+                        *drag_target = None;
+                        state.drag_in_progress = false;
+                        return;
+                    }
+                    TableHit::DeleteColumnHandle { col_idx } => {
+                        delete_table_column_at(
+                            state,
+                            snap.table_byte_start,
+                            col_idx,
+                            viewport_height,
+                            viewport_width,
+                        );
+                        *drag_target = None;
+                        state.drag_in_progress = false;
+                        return;
+                    }
                     TableHit::Cell { .. } => {
                         // Fall through to normal cell placement below.
                     }
@@ -672,6 +696,69 @@ fn commit_column_border_drag(state: &mut EditorState, table_byte_start: usize) {
         state.live_table_widths = None;
         state.refresh_parsed();
     }
+}
+
+/// Click-driven delete of a single table row.  Looks up the table at
+/// `table_byte_start`, builds a `delete_row` `EditDelta`, converts it
+/// to char-offsets, and applies it through the editor's history so
+/// undo restores the row.  No-op when the table has scrolled off-screen
+/// between snapshot and click, or when `row_idx` is the header /
+/// alignment row (`< 2`) — `table_edit::delete_row` already guards both.
+fn delete_table_row_at(
+    state: &mut EditorState,
+    table_byte_start: usize,
+    row_idx: usize,
+    viewport_height: usize,
+    viewport_width: usize,
+) {
+    let source = state.buffer.contents();
+    let Some(info) = table_edit::find_table_at(&source, table_byte_start) else {
+        return;
+    };
+    let Some(delta) = table_edit::delete_row(&info, row_idx) else {
+        return;
+    };
+    let rope = state.buffer.rope();
+    let char_delta = EditDelta {
+        offset: rope.byte_to_char(delta.offset),
+        removed: delta.removed,
+        inserted: delta.inserted,
+    };
+    state.selection = None;
+    state.apply_delta(char_delta);
+    state.update_cursor_block();
+    state.ensure_cursor_visible(viewport_height, viewport_width);
+}
+
+/// Click-driven delete of a single table column.  Mirrors
+/// `delete_table_row_at` for the column axis.  No-op when the table
+/// scrolled off-screen between snapshot and click, when the table only
+/// has one column, or when `col_idx` is out of range — all guarded by
+/// `table_edit::delete_column`.
+fn delete_table_column_at(
+    state: &mut EditorState,
+    table_byte_start: usize,
+    col_idx: usize,
+    viewport_height: usize,
+    viewport_width: usize,
+) {
+    let source = state.buffer.contents();
+    let Some(info) = table_edit::find_table_at(&source, table_byte_start) else {
+        return;
+    };
+    let Some(delta) = table_edit::delete_column(&info, col_idx) else {
+        return;
+    };
+    let rope = state.buffer.rope();
+    let char_delta = EditDelta {
+        offset: rope.byte_to_char(delta.offset),
+        removed: delta.removed,
+        inserted: delta.inserted,
+    };
+    state.selection = None;
+    state.apply_delta(char_delta);
+    state.update_cursor_block();
+    state.ensure_cursor_visible(viewport_height, viewport_width);
 }
 
 /// Commit a column-drag release: swap the source column to the hover

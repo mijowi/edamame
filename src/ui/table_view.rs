@@ -49,6 +49,13 @@ pub const DROP_COL_GLYPH: char = '┃';
 /// and the two columns adjacent to it, within the Phase 6 `±1` tolerance)
 /// still drive a resize.
 pub const COLUMN_RESIZE_GLYPH: char = '⇔';
+/// Delete-handle glyph — `✕` (U+2715).  Painted on the table's outer
+/// right `│` (overlaying the border for each data row) and on the
+/// bottom-border row (centred over each column).  Clicks on the glyph
+/// delete that row / column outright; undo restores it.  Gated by the
+/// same `config.table.show_drag_handles` flag as the reorder / resize
+/// handles.
+pub const DELETE_HANDLE_GLYPH: char = '✕';
 
 /// Per-frame snapshot of one visible table's layout.
 ///
@@ -87,6 +94,20 @@ pub struct TableLayoutSnapshot {
     /// `⇔` column-resize glyphs on each interior `│` of the header row.
     /// `None` when the header scrolled off the viewport.
     pub header_row: Option<u16>,
+    /// Column (doc-area x) where the `✕` row-delete glyph is painted.
+    /// Sits ON the table's outer right `│` (i.e. the same column as
+    /// `col_ranges.last().end`) — the glyph overlays the border cell
+    /// for each data row.  Resize on data rows therefore shifts to
+    /// "one cell inside the border"; resize on the header (`⇔`),
+    /// alignment, top-border, and bottom-border rows at the same x
+    /// still works because those rows have no delete-row hit and fall
+    /// through to `ColumnBorder`.  `None` when handles are disabled.
+    pub delete_row_handle_col: Option<u16>,
+    /// Row (doc-area y) of the `└─┴─┘` bottom border, where the
+    /// column-delete `✕` glyphs are painted (one per column, centred on
+    /// the bottom-border cell).  `None` when handles are disabled OR
+    /// when the bottom border scrolled off the viewport.
+    pub bottom_border_row: Option<u16>,
 }
 
 /// What a `(col, row)` click lands on inside a table.
@@ -108,6 +129,16 @@ pub enum TableHit {
     RowHandle { row_idx: usize },
     /// Click on the `⇔` column-drag glyph above a column.
     ColumnHandle { col_idx: usize },
+    /// Click on the `✕` row-delete glyph on the right outer `│`.
+    /// `row_idx` is a `TableInfo` row index (≥ 2 — header and alignment
+    /// can't be deleted, so they don't carry a delete handle, leaving
+    /// the same border cell as a resize target on those rows).
+    DeleteRowHandle { row_idx: usize },
+    /// Click on the `✕` column-delete glyph on the bottom-border row.
+    /// `col_idx` is the 0-indexed column.  Only emitted when the table
+    /// has more than one column (a single-column table can't lose its
+    /// last column).
+    DeleteColumnHandle { col_idx: usize },
 }
 
 impl TableLayoutSnapshot {
@@ -115,10 +146,44 @@ impl TableLayoutSnapshot {
     /// against this snapshot.  Returns `None` when the click falls outside
     /// any tracked region.
     ///
-    /// Precedence: row handle → column handle → column border → cell.
-    /// Borders are hit within `±1` of their `│` col so the user doesn't have
-    /// to land on the single character of the rendered pipe exactly.
+    /// Precedence: delete handle → row handle → column handle → column
+    /// border → cell.  Delete handles win over `ColumnBorder` because
+    /// the row-delete glyph sits ON the outer right `│` itself — for
+    /// data rows it overlays the border, so a click there deletes the
+    /// row; resize on data rows is still reachable via the cell just
+    /// inside (`border - 1`) or just outside (`border + 1`).  Clicks
+    /// at the same x on header / alignment / top / bottom border rows
+    /// have no delete handle and fall through to `ColumnBorder`, so
+    /// the right column stays resizable from those rows.  Borders are
+    /// hit within `±1` of their `│` col.
     pub fn hit_test(&self, col: u16, row: u16) -> Option<TableHit> {
+        // Row-delete handle — click in the right-side external gutter at
+        // the delete-handle column AND within a data-row y-range.  Checked
+        // BEFORE ColumnBorder so the `✕` cell wins over the right-border
+        // resize tolerance window.
+        if let Some(handle_col) = self.delete_row_handle_col {
+            if col == handle_col {
+                for (i, y_range) in self.row_ranges.iter().enumerate() {
+                    if row >= y_range.start && row < y_range.end {
+                        return Some(TableHit::DeleteRowHandle { row_idx: 2 + i });
+                    }
+                }
+            }
+        }
+
+        // Column-delete handle — click on the bottom-border row, anywhere
+        // within a column's x range.  Same column-spanning policy as the
+        // top-row column-reorder handle.
+        if let Some(bot_y) = self.bottom_border_row {
+            if row == bot_y {
+                for (c, x_range) in self.col_ranges.iter().enumerate() {
+                    if col >= x_range.start && col < x_range.end {
+                        return Some(TableHit::DeleteColumnHandle { col_idx: c });
+                    }
+                }
+            }
+        }
+
         // Row-reorder handle — click in the external gutter at the row-handle
         // column AND within a data-row y-range.
         if let Some(handle_col) = self.row_handle_col {
@@ -350,6 +415,8 @@ pub fn build_snapshots(
                         row_handle_col: None,
                         top_border_row: None,
                         header_row: None,
+                        delete_row_handle_col: None,
+                        bottom_border_row: None,
                     });
                     open_table_block = Some(table_start);
                 }
@@ -401,6 +468,16 @@ pub fn build_snapshots(
                         if let Some((_, range)) = current_data_row_y.take() {
                             snap.row_ranges.push(range);
                         }
+                        if matches!(sub_kind, Some(TableSubLineKind::BottomBorder))
+                            && show_handles
+                            && snap.bottom_border_row.is_none()
+                            && snap.col_count > 1
+                        {
+                            // Single-column tables can't lose their last
+                            // column, so we don't surface the column-delete
+                            // handle for them at all.
+                            snap.bottom_border_row = Some(y);
+                        }
                     }
                     Some(TableSubLineKind::DataRow { row, .. }) => {
                         match current_data_row_y.as_mut() {
@@ -422,6 +499,20 @@ pub fn build_snapshots(
                 if show_handles && snap.row_handle_col.is_none() && !snap.col_ranges.is_empty() {
                     let outer_left = snap.col_ranges[0].start.saturating_sub(1);
                     snap.row_handle_col = Some(outer_left.saturating_sub(1));
+                }
+                // Row-delete column — ON the outer right `│` itself
+                // (`col_ranges.last().end`), overlaying the border for
+                // each data row.  `hit_test` checks delete handles
+                // before `ColumnBorder`, so a click on the `✕` cell on
+                // a data row deletes; clicks at the same x on header /
+                // alignment / top / bottom border rows fall through to
+                // `ColumnBorder` and resize the last column.
+                if show_handles
+                    && snap.delete_row_handle_col.is_none()
+                    && !snap.col_ranges.is_empty()
+                {
+                    let outer_right = snap.col_ranges.last().unwrap().end;
+                    snap.delete_row_handle_col = Some(outer_right);
                 }
             }
         } else {
@@ -657,6 +748,48 @@ pub fn paint_handles(
                     if border_x < area.x + area.width {
                         if let Some(cell) = buf.cell_mut((border_x, y)) {
                             cell.set_char(COLUMN_RESIZE_GLYPH);
+                            cell.set_style(handle_style);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Row-delete glyphs ON the right outer `│` — one per data row,
+        // painted at the row's first rendered sub-line.  Skips header
+        // (row_idx 0) and alignment (row_idx 1) because they aren't
+        // deletable; `row_ranges` already only tracks data rows so this
+        // loop naturally does the right thing.  Same multi-row "one
+        // glyph per logical row" rule as the row-reorder gutter.
+        if let Some(col) = snap.delete_row_handle_col {
+            if col < area.x + area.width {
+                for y_range in &snap.row_ranges {
+                    let y = y_range.start;
+                    if y >= area.y && y < area.y + area.height {
+                        if let Some(cell) = buf.cell_mut((col, y)) {
+                            cell.set_char(DELETE_HANDLE_GLYPH);
+                            cell.set_style(handle_style);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Column-delete glyphs on the bottom border — centred within
+        // each column's content span (mirrors the column-reorder
+        // glyphs on the top border).  `bottom_border_row` is `None`
+        // for single-column tables, so no glyph is painted there.
+        if let Some(y) = snap.bottom_border_row {
+            if y >= area.y && y < area.y + area.height {
+                for x_range in &snap.col_ranges {
+                    if x_range.end <= x_range.start {
+                        continue;
+                    }
+                    let width = x_range.end - x_range.start;
+                    let x = x_range.start + width / 2;
+                    if x < area.x + area.width {
+                        if let Some(cell) = buf.cell_mut((x, y)) {
+                            cell.set_char(DELETE_HANDLE_GLYPH);
                             cell.set_style(handle_style);
                         }
                     }
@@ -923,6 +1056,8 @@ mod tests {
             row_handle_col: None,
             top_border_row: None,
             header_row: None,
+            delete_row_handle_col: None,
+            bottom_border_row: None,
         }
     }
 
@@ -995,6 +1130,101 @@ mod tests {
     fn hit_test_returns_none_outside_any_region() {
         let s = snap(vec![1..4, 5..8], vec![3..4]);
         assert!(s.hit_test(100, 100).is_none());
+    }
+
+    #[test]
+    fn hit_test_returns_delete_row_handle_when_handle_set() {
+        // delete_row_handle_col sits ON the outer right `│`.  With
+        // col_ranges last.end = 8, handle_col = 8 (same column as the
+        // border).  For data rows that click resolves to delete; the
+        // header / alignment rows have no row_range entry and fall
+        // through to ColumnBorder.
+        let mut s = snap(vec![1..4, 5..8], vec![3..4, 4..5]);
+        s.delete_row_handle_col = Some(8);
+        let hit = s.hit_test(8, 3).unwrap();
+        assert_eq!(hit, TableHit::DeleteRowHandle { row_idx: 2 });
+        let hit = s.hit_test(8, 4).unwrap();
+        assert_eq!(hit, TableHit::DeleteRowHandle { row_idx: 3 });
+    }
+
+    /// With the `✕` glyph painted ON the right border, the cell just
+    /// inside the border (`last.end - 1`) becomes the resize target on
+    /// data rows.  This documents the new contract: the explicit `✕`
+    /// cell deletes; the cell next to it still resizes via the
+    /// `ColumnBorder ±1` tolerance.
+    #[test]
+    fn hit_test_cell_just_inside_right_border_still_resizes() {
+        let mut s = snap(vec![1..4, 5..8], vec![3..4]);
+        s.delete_row_handle_col = Some(8); // same as last.end
+                                           // x=7 is one cell inside the right `│` at x=8 — within the
+                                           // ColumnBorder ±1 window.
+        let hit = s.hit_test(7, 3).unwrap();
+        assert_eq!(hit, TableHit::ColumnBorder { col_idx: 2 });
+    }
+
+    /// On non-data rows (header / alignment / top / bottom border),
+    /// the same x as the delete glyph has no `row_range` match, so the
+    /// click falls through to `ColumnBorder`.  This keeps the right
+    /// column resizable via the header `⇔` glyph (and via clicks on
+    /// the surrounding border rows).
+    #[test]
+    fn hit_test_right_border_on_non_data_row_still_resizes() {
+        let mut s = snap(vec![1..4, 5..8], vec![5..6]); // single data row at y=5
+        s.delete_row_handle_col = Some(8);
+        // y=3 is in the header / alignment region (between
+        // top_border heuristic at y=3 and the data row at y=5) —
+        // outside row_ranges, so the delete-handle check finds no
+        // row and the click falls through to ColumnBorder.
+        assert_eq!(
+            s.hit_test(8, 3),
+            Some(TableHit::ColumnBorder { col_idx: 2 })
+        );
+    }
+
+    /// Disabled delete handles (`None` field) leave the original
+    /// hit-test chain unchanged — the right border on a data row
+    /// resolves to `ColumnBorder`, as it did before delete handles
+    /// existed.  This is what `config.table.show_drag_handles = false`
+    /// must guarantee.
+    #[test]
+    fn hit_test_falls_through_when_delete_handles_disabled() {
+        let s = snap(vec![1..4, 5..8], vec![3..4]);
+        // (8, 3) is the right `│`; with no delete handle, it's just a
+        // border click.
+        assert_eq!(
+            s.hit_test(8, 3),
+            Some(TableHit::ColumnBorder { col_idx: 2 })
+        );
+    }
+
+    #[test]
+    fn hit_test_returns_delete_column_handle_on_bottom_border() {
+        let mut s = snap(vec![1..4, 5..8], vec![3..4]);
+        s.bottom_border_row = Some(5);
+        // Click in middle of column 0's content range (cols 1..4).
+        let hit = s.hit_test(2, 5).unwrap();
+        assert_eq!(hit, TableHit::DeleteColumnHandle { col_idx: 0 });
+        // Click in middle of column 1's content range (cols 5..8).
+        let hit = s.hit_test(6, 5).unwrap();
+        assert_eq!(hit, TableHit::DeleteColumnHandle { col_idx: 1 });
+    }
+
+    /// `row_ranges` only tracks data rows, so the delete-row check
+    /// can't fire on a y outside any data-row range.  Combined with
+    /// `hit_test_right_border_on_non_data_row_still_resizes`, this
+    /// ensures the header / alignment rows on the same border column
+    /// keep their resize behaviour.
+    #[test]
+    fn hit_test_delete_row_handle_skips_header_and_alignment() {
+        let mut s = snap(vec![1..4, 5..8], vec![5..6]); // single data row at y=5
+        s.delete_row_handle_col = Some(8);
+        // The next assertion — that y=2 produces ColumnBorder, not
+        // DeleteRowHandle — is the actual contract.  See
+        // `hit_test_right_border_on_non_data_row_still_resizes`.
+        assert_ne!(
+            s.hit_test(8, 2),
+            Some(TableHit::DeleteRowHandle { row_idx: 2 })
+        );
     }
 
     /// `build_snapshots_cached` must leave `snapshots` untouched when the

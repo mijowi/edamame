@@ -554,6 +554,8 @@ fn fake_snapshot(
         row_handle_col,
         top_border_row,
         header_row: None,
+        delete_row_handle_col: None,
+        bottom_border_row: None,
     }
 }
 
@@ -1143,4 +1145,215 @@ fn table_has_tui_columns_comment_detects_existing_persistence() {
 
     let without = state("| a | b |\n|---|---|\n| 1 | 2 |\n");
     assert!(!without.table_has_tui_columns_comment(0));
+}
+
+// ── Delete-handle clicks ────────────────────────────────────────────────────
+//
+// Snapshots constructed here are slightly richer than `fake_snapshot`
+// produces, so we build them inline.  All four variants live behind a
+// tiny helper to keep each test focused on the assertion.
+
+fn snapshot_with_delete_handles(
+    src: &str,
+    col_ranges: Vec<std::ops::Range<u16>>,
+    row_ranges: Vec<std::ops::Range<u16>>,
+    delete_row_handle_col: Option<u16>,
+    bottom_border_row: Option<u16>,
+) -> TableLayoutSnapshot {
+    TableLayoutSnapshot {
+        table_byte_start: 0,
+        table_byte_end: src.len(),
+        col_count: col_ranges.len(),
+        row_count: 2 + row_ranges.len(),
+        col_ranges,
+        row_ranges,
+        row_handle_col: None,
+        top_border_row: None,
+        header_row: None,
+        delete_row_handle_col,
+        bottom_border_row,
+    }
+}
+
+#[test]
+fn delete_row_handle_click_removes_data_row() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    // Layout (matches `row_handle_drag_swaps_rows_in_buffer`): col content at
+    // x=2..5 and x=6..9; data rows at y=3 and y=5.  Right outer `│` sits at
+    // x=9 (last col_range.end), and the `✕` glyph overlays that border.
+    let snap = snapshot_with_delete_handles(src, vec![2..5, 6..9], vec![3..4, 5..6], Some(9), None);
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    // Click the `✕` (which sits on the right border at x=9) for the FIRST
+    // data row (y=3).  Deletes the first data row, leaving "| 3 | 4 |".
+    mouse_ops::apply(&mut st, click(9, 3), &mut target, &snapshots, VP, VW);
+
+    let after = st.contents();
+    assert!(
+        !after.contains("| 1 | 2 |"),
+        "expected first data row deleted, got: {after:?}"
+    );
+    assert!(
+        after.contains("| 3 | 4 |"),
+        "expected second data row preserved, got: {after:?}"
+    );
+    // Click should not enter a drag.
+    assert!(target.is_none());
+    assert!(!st.drag_in_progress);
+}
+
+#[test]
+fn delete_column_handle_click_removes_column() {
+    let src = "| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    // Three columns at x=2..5, x=6..9, x=10..13.  Bottom border at y=4
+    // (top border y=0, header y=1, thick separator y=2, data row y=3,
+    // bottom border y=4).
+    let snap =
+        snapshot_with_delete_handles(src, vec![2..5, 6..9, 10..13], vec![3..4], None, Some(4));
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    // Click the column-delete `✕` centred on column 1 (x=7, halfway between
+    // x_range start 6 and end 9, on the bottom-border row).
+    mouse_ops::apply(&mut st, click(7, 4), &mut target, &snapshots, VP, VW);
+
+    let after = st.contents();
+    // Column "b"/"2" gone, "a"/"1" and "c"/"3" remain.
+    assert!(
+        !after.contains(" b "),
+        "expected column b deleted, got: {after:?}"
+    );
+    assert!(
+        !after.contains(" 2 "),
+        "expected data 2 deleted, got: {after:?}"
+    );
+    assert!(after.contains(" a "), "got: {after:?}");
+    assert!(after.contains(" c "), "got: {after:?}");
+    assert!(target.is_none());
+    assert!(!st.drag_in_progress);
+}
+
+/// The right outer `│` cell on a DATA ROW now carries the `✕` glyph
+/// and deletes that row, so right-column resize on data rows happens
+/// at the cell just inside the border (`last.end - 1`, within the
+/// `ColumnBorder ±1` tolerance).  Verifies that path is still wired
+/// and behaves as a resize drag.
+#[test]
+fn right_column_resize_still_works_via_cell_just_inside_border() {
+    let src = "| headerA | headerB |\n|-----|-----|\n| foo   | bar   |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    // Mirror `column_border_drag_writes_tui_columns_comment` layout:
+    // col 0 at x=2..12, col 1 at x=13..23.  Right outer `│` at x=23,
+    // delete glyph painted there too — but the cell at x=22 is one
+    // inside the border and still resolves to ColumnBorder.
+    let snap =
+        snapshot_with_delete_handles(src, vec![2..12, 13..23], vec![3..4], Some(23), Some(5));
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    mouse_ops::apply(&mut st, click(22, 3), &mut target, &snapshots, VP, VW);
+    assert!(
+        matches!(
+            target,
+            Some(mouse_ops::DragTarget::TableColumnBorder { .. })
+        ),
+        "expected ColumnBorder drag at border-1, got: {target:?}",
+    );
+    assert_eq!(st.contents(), src);
+}
+
+/// Click directly on the right border at the same x as the `✕` glyph
+/// but on a non-data row (e.g. header / alignment / top / bottom
+/// border) must still resolve to `ColumnBorder`.  This preserves
+/// resize access from those rows.
+#[test]
+fn right_border_on_non_data_row_still_resizes() {
+    let src = "| headerA | headerB |\n|-----|-----|\n| foo   | bar   |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    let snap =
+        snapshot_with_delete_handles(src, vec![2..12, 13..23], vec![3..4], Some(23), Some(5));
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    // y=1 is the header row — outside row_ranges (which only carries
+    // data rows), so the delete-handle hit-test bails and the click
+    // falls through to ColumnBorder at the border ±1 window.
+    mouse_ops::apply(&mut st, click(23, 1), &mut target, &snapshots, VP, VW);
+    assert!(
+        matches!(
+            target,
+            Some(mouse_ops::DragTarget::TableColumnBorder { .. })
+        ),
+        "expected ColumnBorder drag on non-data row, got: {target:?}",
+    );
+    assert_eq!(st.contents(), src);
+}
+
+/// The `✕` click on a data row deletes that row — the inverse of the
+/// resize-still-works case above.  Documents the new contract that
+/// the right-border cell on a data row is reclaimed for delete.
+#[test]
+fn right_border_on_data_row_deletes() {
+    let src = "| headerA | headerB |\n|-----|-----|\n| foo   | bar   |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    let snap =
+        snapshot_with_delete_handles(src, vec![2..12, 13..23], vec![3..4], Some(23), Some(5));
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    mouse_ops::apply(&mut st, click(23, 3), &mut target, &snapshots, VP, VW);
+    let after = st.contents();
+    assert!(
+        !after.contains("foo"),
+        "expected data row deleted, got: {after:?}"
+    );
+    assert!(target.is_none());
+    assert!(!st.drag_in_progress);
+}
+
+/// When `show_drag_handles` is off, `build_snapshots` leaves the new
+/// delete-handle fields at `None`, so the right border at x=9 stays
+/// a pure resize target on data rows (existing behaviour) and clicks
+/// on the bottom-border row don't delete a column.
+#[test]
+fn delete_handles_inert_when_handle_fields_are_none() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    let snap = snapshot_with_delete_handles(src, vec![2..5, 6..9], vec![3..4], None, None);
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    // Click on the right border at (9, 3): with delete handle disabled,
+    // this is a column-resize drag, not a delete.
+    mouse_ops::apply(&mut st, click(9, 3), &mut target, &snapshots, VP, VW);
+    assert!(
+        matches!(
+            target,
+            Some(mouse_ops::DragTarget::TableColumnBorder { .. })
+        ),
+        "expected ColumnBorder drag with handles disabled, got: {target:?}",
+    );
+    // No buffer change.
+    assert_eq!(st.contents(), src);
+
+    // Reset and try a click on what would be the column-delete bottom
+    // border centre — without the snapshot field set, no delete fires.
+    target = None;
+    mouse_ops::apply(&mut st, click(7, 4), &mut target, &snapshots, VP, VW);
+    assert_eq!(st.contents(), src);
 }
