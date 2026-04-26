@@ -315,7 +315,10 @@ impl<'t> Renderer<'t> {
                 self.render_list(*ordered, *start, items, out, indent_prefix);
             }
             Block::HorizontalRule => {
-                out.push(Line::styled("─".repeat(80), self.theme.rule));
+                out.push(Line::styled(
+                    "─".repeat(self.viewport_width.max(1)),
+                    self.theme.rule,
+                ));
             }
             Block::Table {
                 col_count,
@@ -417,7 +420,10 @@ impl<'t> Renderer<'t> {
         out.push(Line::from(spans));
 
         if level == H1 {
-            out.push(Line::styled("─".repeat(80), self.theme.h1_rule));
+            out.push(Line::styled(
+                "─".repeat(self.viewport_width.max(1)),
+                self.theme.h1_rule,
+            ));
         }
     }
 

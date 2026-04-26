@@ -421,7 +421,10 @@ impl ParsedDoc {
             // `Renderer::render_heading`.
             let block_source = &source[real_ranges[i].start..real_ranges[i].end.min(total_bytes)];
             if count == 1 && matches!(detect_setext(block_source), Some(SetextKind::H2)) {
-                lines.push(Line::styled("─".repeat(80), theme.rule));
+                lines.push(Line::styled(
+                    "─".repeat(viewport_width.max(1)),
+                    theme.rule,
+                ));
                 rendered_to_block.push(idx);
                 if let Some(n) = all_per_block_own.last_mut() {
                     *n += 1;
