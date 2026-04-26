@@ -614,9 +614,12 @@ impl App {
     /// notification — save/copy/cut outcomes, link-open failures,
     /// `Config::save` successes, etc.
     pub fn flash(&mut self, text: impl Into<String>, kind: MessageKind) {
-        let text = text.into();
+        let mut text = text.into();
         let until = match kind {
-            MessageKind::Error => None,
+            MessageKind::Error => {
+                text.push_str(" — Esc to dismiss");
+                None
+            }
             _ => Some(Instant::now() + Duration::from_millis(self.config.editor.transient_ms)),
         };
         self.transient = Some(TransientMessage { text, kind, until });
