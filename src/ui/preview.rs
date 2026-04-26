@@ -119,6 +119,107 @@ mod tests {
         }
     }
 
+    /// A list item whose text wraps in the viewport must hang-indent: the
+    /// marker (`• `, `[ ] `, `1. `) sits alone on column 0 of the first
+    /// visual row, and every wrapped continuation row begins at the column
+    /// where the first row's text started — so the wrapped text is flush
+    /// with the first character after the marker.
+    #[test]
+    fn list_item_wrap_hangs_indent_after_marker() {
+        let theme = theme();
+        // Bullet item with enough words to force wrap at width 12.  Marker
+        // takes 2 cells; text begins at column 2.
+        let lines = Renderer::new(theme).render(&parse("- alpha bravo charlie delta\n"));
+        let mut state = PreviewState::default();
+
+        let backend = TestBackend::new(12, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_stateful_widget(
+                    PreviewView { lines: &lines },
+                    frame.area(),
+                    &mut state,
+                );
+            })
+            .unwrap();
+
+        let tbuf = terminal.backend().buffer().clone();
+        let row_text = |y: u16| -> String {
+            (0..12)
+                .map(|x| {
+                    tbuf.cell((x, y))
+                        .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                })
+                .collect()
+        };
+        // Row 0: marker hangs off at col 0; text starts at col 2.
+        let r0 = row_text(0);
+        assert!(r0.starts_with("• "), "row 0 = {r0:?}");
+        // Row 1+ are wrapped continuations.  At least one continuation row
+        // must exist, and its first two cells must be blanks (the hanging
+        // indent), with non-blank content starting at column 2.
+        let r1 = row_text(1);
+        assert_eq!(
+            &r1[..2],
+            "  ",
+            "continuation row should be left-padded by indent: {r1:?}"
+        );
+        assert!(
+            r1.chars().nth(2).map(|c| c != ' ').unwrap_or(false),
+            "continuation row must have text starting at indent column: {r1:?}"
+        );
+        // Sanity: the wrap must actually have produced a continuation row
+        // (i.e. the first row didn't fit the entire body).
+        assert!(
+            r1.trim_end().chars().any(|c| c.is_alphabetic()),
+            "expected wrapped body on row 1: {r1:?}"
+        );
+    }
+
+    /// Same hanging-indent rule applies to ordered, task, and nested lists —
+    /// the wrap continuation aligns with the first row's text column for any
+    /// recognized list marker.
+    #[test]
+    fn list_item_wrap_hangs_indent_for_task_and_ordered() {
+        let theme = theme();
+        // Task item: marker `[ ] ` is 4 cells.
+        let lines = Renderer::new(theme).render(&parse("- [ ] alpha bravo charlie delta\n"));
+        let mut state = PreviewState::default();
+        let backend = TestBackend::new(14, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_stateful_widget(
+                    PreviewView { lines: &lines },
+                    frame.area(),
+                    &mut state,
+                );
+            })
+            .unwrap();
+        let tbuf = terminal.backend().buffer().clone();
+        let row_text = |y: u16| -> String {
+            (0..14)
+                .map(|x| {
+                    tbuf.cell((x, y))
+                        .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                })
+                .collect()
+        };
+        let r0 = row_text(0);
+        assert!(r0.starts_with("[ ] "), "row 0 = {r0:?}");
+        let r1 = row_text(1);
+        assert_eq!(
+            &r1[..4],
+            "    ",
+            "task continuation must be padded by 4 cells: {r1:?}"
+        );
+        assert!(
+            r1.chars().nth(4).map(|c| c != ' ').unwrap_or(false),
+            "row 1 must start text at col 4: {r1:?}"
+        );
+    }
+
     /// A code block line should have its background style applied to every
     /// cell of the row, from the first content column through the last cell
     /// of the viewport — even when the viewport is wider than the renderer's
@@ -256,7 +357,8 @@ fn paint_preview_selection(
             span.content.chars().map(move |c| (c, style))
         })
         .collect();
-    let rows = visual_rows_of_chars(&chars, width);
+    let indent = super::line_render::compute_hanging_indent(line);
+    let rows = visual_rows_of_chars(&chars, width, indent);
     for (row_off, &(row_start, row_end, _)) in rows.iter().enumerate() {
         if row_off as u16 >= rows_used {
             break;
@@ -271,9 +373,12 @@ fn paint_preview_selection(
         if row_sel_start >= row_sel_end {
             continue;
         }
+        // Continuation rows are pre-padded with `indent` blank cells; the
+        // selection background must shift by the same amount.
+        let row_indent = if row_off == 0 { 0 } else { indent };
         for i in row_sel_start..row_sel_end {
-            let x_off = (i - row_start) as u16;
-            let x = area.x + x_off;
+            let x_off = row_indent + (i - row_start);
+            let x = area.x + x_off as u16;
             if x >= area.x + area.width {
                 break;
             }

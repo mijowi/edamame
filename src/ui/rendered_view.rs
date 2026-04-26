@@ -1137,7 +1137,8 @@ fn paint_cols_on_line(
             span.content.chars().map(move |c| (c, style))
         })
         .collect();
-    let rows = super::line_render::visual_rows_of_chars(&chars, width);
+    let indent = super::line_render::compute_hanging_indent(line);
+    let rows = super::line_render::visual_rows_of_chars(&chars, width, indent);
     for (row_off, &(row_start, row_end, _)) in rows.iter().enumerate() {
         if row_off as u16 >= rows_used {
             break;
@@ -1151,9 +1152,13 @@ fn paint_cols_on_line(
         if row_sel_start >= row_sel_end {
             continue;
         }
+        // Continuation rows are pre-padded with `indent` blank cells so the
+        // wrapped text aligns with the first row's text column; the
+        // selection background must shift by the same amount.
+        let row_indent = if row_off == 0 { 0 } else { indent };
         for i in row_sel_start..row_sel_end {
-            let x_off = (i - row_start) as u16;
-            let x = area.x + x_off;
+            let x_off = row_indent + (i - row_start);
+            let x = area.x + x_off as u16;
             if x >= area.x + area.width {
                 break;
             }
