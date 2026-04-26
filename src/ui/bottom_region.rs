@@ -19,9 +19,10 @@ use crate::editor::{EditorState, Mode};
 use super::status_bar::{StatusBar, StatusBarState};
 
 /// A single keybind chord + label pair (e.g. `^C` + `Copy`).  The
-/// chord glyph renders in the contrasting `hint_chord` theme slot
-/// (nano-style badge), followed by a single space, the label in
-/// `hint_label`, and a two-space separator between successive hints.
+/// chord glyph alone renders in the contrasting `hint_chord` theme
+/// slot (no surrounding padding inside the badge), followed by a
+/// single space, the label in `hint_label`, and a two-space separator
+/// between successive hints.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HintChord {
     pub chord: String,
@@ -34,20 +35,6 @@ impl HintChord {
             chord: chord.into(),
             label: label.into(),
         }
-    }
-
-    /// Width in cells when chord *and* label are rendered.  Layout:
-    /// ` {chord} ` (2-space padding inside the chord badge) +
-    /// `{label}` (no padding) + `  ` (2-space separator to the next
-    /// hint).
-    fn full_width(&self) -> usize {
-        self.chord.chars().count() + 2 + self.label.chars().count() + 2
-    }
-
-    /// Width when only the chord badge is shown (label dropped under
-    /// width pressure): ` {chord} ` + `  ` separator.
-    fn chord_only_width(&self) -> usize {
-        self.chord.chars().count() + 2 + 2
     }
 }
 
@@ -160,52 +147,22 @@ pub fn hint_line_for(state: &EditorState) -> HintSet {
     }
 }
 
-/// Lay out a chord list into spans that fit `width` cells.  When the
-/// full chord+label set doesn't fit, labels are dropped right-to-left
-/// so the leftmost (highest-priority) chords keep their labels
-/// longest; when even the bare chord badges don't all fit, the
-/// rightmost chords drop off entirely.
+/// Lay out a chord list into spans.  Always renders every chord with
+/// its label — if the row is too narrow, the trailing chords are
+/// truncated by ratatui's non-wrapping `Paragraph`.  A bare chord
+/// badge with no label isn't useful, so we don't bother dropping
+/// labels under width pressure.
 ///
-/// Layout per hint: ` {chord} ` in `hint_chord` (2-space padding
-/// creates the "badge" appearance), then `{label}` in `hint_label`,
-/// then `  ` (two spaces) in `hint_bar` as the separator before the
-/// next hint.  That gives 1 visible space between chord and label
-/// (the trailing pad inside the chord badge) and 2 between hints,
-/// matching the reviewed layout.
-pub fn lay_out_chords(chords: &[HintChord], theme: &Theme, width: usize) -> Vec<Span<'static>> {
-    if chords.is_empty() || width == 0 {
-        return Vec::new();
-    }
-    let mut show_label = vec![false; chords.len()];
-    let mut used: usize = chords.iter().map(HintChord::chord_only_width).sum();
-    let mut last_visible = chords.len();
-    while used > width && last_visible > 0 {
-        last_visible -= 1;
-        used -= chords[last_visible].chord_only_width();
-    }
-    for i in 0..last_visible {
-        let delta = chords[i].full_width() - chords[i].chord_only_width();
-        if used + delta <= width {
-            show_label[i] = true;
-            used += delta;
-        }
-    }
-
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(last_visible * 3);
-    for (i, chord) in chords.iter().enumerate().take(last_visible) {
-        // Chord badge: ` ^C ` painted with hint_chord bg so it reads
-        // as a discrete pill sitting on the hint bar.
-        spans.push(Span::styled(format!(" {} ", chord.chord), theme.hint_chord));
-        if show_label[i] {
-            // Label sits on hint_label bg (same family as hint_bar)
-            // with no extra padding — the 1-space chord trailing
-            // padding is the only gap between chord and label.
-            spans.push(Span::styled(chord.label.clone(), theme.hint_label));
-        }
-        // Separator: two spaces of hint_bar between hints (also
-        // painted after the last chord, and the trailing-fill step
-        // in [`HintLine::render`] reuses the same bg for the rest of
-        // the row).
+/// Layout per hint: `{chord}` in `hint_chord` (the badge is exactly
+/// the chord glyph — no surrounding padding gets the badge bg), then
+/// ` {label}` in `hint_label` (a single leading space separates label
+/// from chord), then `  ` (two spaces) in `hint_bar` as the separator
+/// before the next hint.
+pub fn lay_out_chords(chords: &[HintChord], theme: &Theme) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(chords.len() * 3);
+    for chord in chords {
+        spans.push(Span::styled(chord.chord.clone(), theme.hint_chord));
+        spans.push(Span::styled(format!(" {}", chord.label), theme.hint_label));
         spans.push(Span::styled("  ".to_string(), theme.hint_bar));
     }
     spans
@@ -228,18 +185,15 @@ impl<'a> Widget for HintLine<'a> {
         let spans: Vec<Span<'_>> = match &self.content {
             HintContent::Chords(set) => {
                 let mut v: Vec<Span<'_>> = Vec::new();
-                let mut remaining = width;
                 // Prelude — plain text on the hint bar, followed by a
                 // two-space gap that acts as a separator before the
                 // chord row.  Rendered as hint_bar bg + hint_label fg
                 // so it reads as a sentence, not another chord.
                 if let Some(prelude) = &set.prelude {
                     let text = format!(" {}  ", prelude);
-                    let w = text.chars().count();
                     v.push(Span::styled(text, self.theme.hint_label));
-                    remaining = remaining.saturating_sub(w);
                 }
-                v.extend(lay_out_chords(&set.chords, self.theme, remaining));
+                v.extend(lay_out_chords(&set.chords, self.theme));
                 v
             }
             HintContent::Transient { text, style } => {
@@ -247,10 +201,8 @@ impl<'a> Widget for HintLine<'a> {
             }
             HintContent::Prompt { prompt, chords } => {
                 let prompt_text = format!(" {}  ", prompt);
-                let prompt_w = prompt_text.chars().count();
                 let prompt_span = Span::styled(prompt_text, self.theme.transient_warning);
-                let chord_spans =
-                    lay_out_chords(chords, self.theme, width.saturating_sub(prompt_w));
+                let chord_spans = lay_out_chords(chords, self.theme);
                 let mut v = vec![prompt_span];
                 v.extend(chord_spans);
                 v
@@ -532,32 +484,17 @@ mod tests {
     // ── lay_out_chords ────────────────────────────────────────────
 
     #[test]
-    fn lay_out_drops_labels_when_tight() {
+    fn lay_out_always_includes_labels() {
         let chords = vec![
             HintChord::new("^A", "Alpha"),
             HintChord::new("^B", "Bravo"),
             HintChord::new("^C", "Charlie"),
         ];
-        // Generous width: all three get labels.
-        let wide = lay_out_chords(&chords, theme(), 80);
-        let concat: String = wide.iter().map(|s| s.content.to_string()).collect();
+        let spans = lay_out_chords(&chords, theme());
+        let concat: String = spans.iter().map(|s| s.content.to_string()).collect();
         assert!(concat.contains("Alpha"));
+        assert!(concat.contains("Bravo"));
         assert!(concat.contains("Charlie"));
-
-        // Chord-only baseline width (3 chords × 6 cells each) is 18.
-        // At width 24, budget after baseline is 6 — enough for one
-        // label (Alpha at 5 cells).  Bravo and Charlie stay bare.
-        let medium = lay_out_chords(&chords, theme(), 24);
-        let concat: String = medium.iter().map(|s| s.content.to_string()).collect();
-        assert!(concat.contains("Alpha"));
-        assert!(!concat.contains("Charlie"), "got: {:?}", concat);
-
-        // Tight width: the chord badges still render but every label
-        // is dropped.
-        let tight = lay_out_chords(&chords, theme(), 19);
-        let concat: String = tight.iter().map(|s| s.content.to_string()).collect();
-        assert!(concat.contains("^A"));
-        assert!(!concat.contains("Alpha"), "got: {:?}", concat);
     }
 
     // ── BottomRegion rendering ────────────────────────────────────
