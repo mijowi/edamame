@@ -361,7 +361,9 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 // active cell's column range.  Each sub of the cell
                 // gets its own chunk so the cell's natural wrap is
                 // preserved while the cursor edits inside it.
-                let w = wrapped_cell.as_ref().expect("wrapped_sub_idx implies wrapped_cell");
+                let w = wrapped_cell
+                    .as_ref()
+                    .expect("wrapped_sub_idx implies wrapped_cell");
                 let sub_idx = wrapped_sub_idx_opt.unwrap();
                 let overlay = &w.subs[sub_idx];
                 if let Some(line) = editor.parsed.lines.get(virtual_idx) {

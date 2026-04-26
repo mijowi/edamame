@@ -85,6 +85,17 @@ pub fn apply(
                 sync_cursor_to_scroll(state, viewport_height);
             }
             state.visual_selection = None;
+            // Capture the cursor's screen row before the mode switch.  The
+            // two editing modes use different scroll units (rendered lines
+            // vs. buffer lines), so without an adjustment the same `scroll`
+            // value lands the user in a different part of the document and
+            // the cursor often jumps off-screen.  Skip when transitioning
+            // from Preview — there's no editing cursor to anchor on.
+            let preserve_screen_row = if state.mode == Mode::Preview {
+                None
+            } else {
+                Some(state.cursor_screen_row(viewport_width))
+            };
             let was_raw = state.mode == Mode::Raw;
             state.mode = match state.mode {
                 Mode::Preview => Mode::Rendered,
@@ -98,6 +109,16 @@ pub fn apply(
             if was_raw && state.mode == Mode::Rendered {
                 snap_cursor_out_of_hidden_block(state, viewport_width);
                 state.update_cursor_block();
+            }
+            if let Some(row) = preserve_screen_row {
+                state.set_scroll_for_cursor_screen_row(row, viewport_width);
+                // Don't call `ensure_cursor_visible` here — it's tuned to
+                // make the cursor's whole BLOCK fit (it scrolls up if the
+                // block starts above `scroll`), which clobbers the helper
+                // when the cursor sits inside a tall block (a long
+                // paragraph, a table) that legitimately overflows the
+                // viewport.  The helper already places the cursor's line
+                // at the requested row.
             }
         }
 
@@ -699,7 +720,10 @@ pub fn apply(
         | Action::OpenKeybinds
         | Action::OpenConfigFolder
         | Action::ExportHtml
-        | Action::ReloadFromDisk => {}
+        | Action::ReloadFromDisk
+        | Action::OpenInExternalEditor
+        | Action::ToggleTableDragHandles
+        | Action::InsertTable => {}
     }
 
     // After any action that mutated the buffer (detected by a change in length
@@ -721,6 +745,27 @@ pub fn apply(
     // is expected to reach every byte.
     if state.mode == Mode::Rendered && !suppress_autonumber {
         clamp_cursor_out_of_marker(state);
+    }
+
+    // After an edit, the cursor may have moved onto a new line or onto a
+    // newly-wrapped visual row past the viewport bottom (e.g. typing the
+    // character that pushes the line into a second visual row).  Pull
+    // scroll along so the cursor stays visible.  The cursor-movement
+    // arms above already do this for navigation actions; this catches
+    // pure edit actions (InsertChar / Newline / Backspace / …) which
+    // don't.
+    //
+    // In Rendered mode, `ensure_cursor_visible` reads `parsed.lines` and
+    // the visual-row cache to detect wrap.  In-line edits leave both
+    // stale (the deferred-reparse optimization), so the wrap check would
+    // miss the visual row the just-typed char produced.  Flush before
+    // the visibility check.  Raw mode reads the live buffer directly,
+    // so no flush is needed there.
+    if edited && state.mode != Mode::Preview {
+        if state.mode != Mode::Raw {
+            state.flush_parsed_if_dirty();
+        }
+        state.ensure_cursor_visible(viewport_height, viewport_width);
     }
 
     false

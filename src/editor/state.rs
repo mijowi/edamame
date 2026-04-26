@@ -725,14 +725,31 @@ impl EditorState {
         }
 
         if self.mode == crate::editor::Mode::Raw {
-            // Raw mode: cursor visibility is in buffer-line coordinates.
+            // Raw mode: cursor visibility is wrap-aware — long buffer lines
+            // wrap at `viewport_width` and consume multiple visual rows, so
+            // a cursor whose buffer-line is inside `[scroll, scroll+vp_h)`
+            // can still be visually past the viewport bottom.  Use
+            // `cursor_screen_row` (which sums per-line visual rows from the
+            // live buffer) to detect both the above- and below-viewport
+            // cases.
             let (cursor_line, _) = self.cursor.line_col(&self.buffer);
             if cursor_line < self.scroll {
                 self.scroll = cursor_line;
+                return;
             }
-            let visible_end = self.scroll + viewport_height;
-            if cursor_line >= visible_end {
-                self.scroll = cursor_line + 1 - viewport_height;
+            if viewport_width == 0 {
+                let visible_end = self.scroll + viewport_height;
+                if cursor_line >= visible_end {
+                    self.scroll = cursor_line + 1 - viewport_height;
+                }
+                return;
+            }
+            let cursor_row = self.cursor_screen_row(viewport_width);
+            if cursor_row >= viewport_height {
+                self.set_scroll_for_cursor_screen_row(
+                    viewport_height.saturating_sub(1),
+                    viewport_width,
+                );
             }
             return;
         }
@@ -773,6 +790,45 @@ impl EditorState {
     /// inline on every call.
     fn visual_rows_between(&self, first: usize, last: usize, width: usize) -> usize {
         self.parsed.visual_rows_between(first, last, width)
+    }
+
+    /// Estimated screen row (0-indexed within the viewport) at which the
+    /// cursor currently appears.  Sums the visual rows consumed by every
+    /// line between `scroll` and the cursor's line, plus the cursor's
+    /// sub-line within its own (potentially-wrapped) line.  In Rendered /
+    /// Preview mode the unit is rendered lines (mirroring `RenderedView`);
+    /// in Raw mode the unit is buffer lines (mirroring `RawView`).
+    /// Returns 0 when the cursor is currently above the viewport.
+    ///
+    /// Used by `Action::ToggleRawMode` to keep the cursor on the same
+    /// screen row when switching between Rendered and Raw, since the two
+    /// modes use different scroll units and the same `scroll` value
+    /// otherwise jumps to a totally different part of the document.
+    pub fn cursor_screen_row(&self, viewport_width: usize) -> usize {
+        if viewport_width == 0 {
+            return 0;
+        }
+        match self.mode {
+            crate::editor::Mode::Raw => raw_cursor_screen_row(self, viewport_width),
+            _ => rendered_cursor_screen_row(self, viewport_width),
+        }
+    }
+
+    /// Set `scroll` so the cursor's line appears at `target_row` on
+    /// screen.  Quantized by line boundaries — the cursor will land at
+    /// `target_row` exactly when possible, otherwise on the nearest
+    /// line-start row at or above `target_row` (so the cursor stays
+    /// visible rather than disappearing past the bottom).
+    pub fn set_scroll_for_cursor_screen_row(&mut self, target_row: usize, viewport_width: usize) {
+        if viewport_width == 0 {
+            return;
+        }
+        match self.mode {
+            crate::editor::Mode::Raw => {
+                set_raw_scroll_for_screen_row(self, target_row, viewport_width)
+            }
+            _ => set_rendered_scroll_for_screen_row(self, target_row, viewport_width),
+        }
     }
 
     /// Number of raw source lines for the block that currently contains the
@@ -918,6 +974,202 @@ fn raw_col_for_visual(row: &(usize, usize, usize), visual_col: usize, is_last_ro
         next_start.saturating_sub(start).saturating_sub(1)
     };
     start + visual_col.min(max_visual)
+}
+
+// ── Cursor screen-row helpers ──────────────────────────────────────────────
+
+fn raw_cursor_screen_row(state: &EditorState, width: usize) -> usize {
+    let (cursor_line, cursor_col) = state.cursor.line_col(&state.buffer);
+    if cursor_line < state.scroll {
+        return 0;
+    }
+    let mut rows = 0usize;
+    for i in state.scroll..cursor_line {
+        let text = line_text_trimmed(&state.buffer, i);
+        rows += crate::ui::line_render::visual_rows_of_str(&text, width)
+            .len()
+            .max(1);
+    }
+    let cursor_text = line_text_trimmed(&state.buffer, cursor_line);
+    let cursor_rows = crate::ui::line_render::visual_rows_of_str(&cursor_text, width);
+    let (sub, _) = crate::ui::line_render::sub_line_of_col(&cursor_rows, cursor_col);
+    rows + sub
+}
+
+fn set_raw_scroll_for_screen_row(state: &mut EditorState, target_row: usize, width: usize) {
+    let (cursor_line, cursor_col) = state.cursor.line_col(&state.buffer);
+    let cursor_text = line_text_trimmed(&state.buffer, cursor_line);
+    let cursor_rows = crate::ui::line_render::visual_rows_of_str(&cursor_text, width);
+    let (cursor_sub, _) = crate::ui::line_render::sub_line_of_col(&cursor_rows, cursor_col);
+    // We want screen_row(scroll) = target_row.  In Raw mode that decomposes to
+    // (visual rows in lines [scroll..cursor_line)) + cursor_sub, so the line-
+    // count walk needs to consume `target_row - cursor_sub` rows.
+    let need = target_row.saturating_sub(cursor_sub);
+    let mut acc = 0usize;
+    let mut scroll = cursor_line;
+    while scroll > 0 && acc < need {
+        let prev = scroll - 1;
+        let text = line_text_trimmed(&state.buffer, prev);
+        let rows = crate::ui::line_render::visual_rows_of_str(&text, width)
+            .len()
+            .max(1);
+        if acc + rows > need {
+            break;
+        }
+        acc += rows;
+        scroll -= 1;
+    }
+    state.scroll = scroll;
+}
+
+fn rendered_cursor_screen_row(state: &EditorState, width: usize) -> usize {
+    let cursor_rendered = cursor_rendered_line_idx(state);
+    if cursor_rendered < state.scroll {
+        return 0;
+    }
+    let rows_before = state
+        .parsed
+        .visual_rows_before(cursor_rendered, width)
+        .saturating_sub(state.parsed.visual_rows_before(state.scroll, width));
+    rows_before + cursor_sub_line_in_rendered(state, cursor_rendered, width)
+}
+
+fn set_rendered_scroll_for_screen_row(state: &mut EditorState, target_row: usize, width: usize) {
+    let cursor_rendered = cursor_rendered_line_idx(state);
+    // Subtract the cursor's sub-line within its rendered line: walking
+    // backward by full rendered-line counts only consumes
+    // `target_row - cursor_sub` rows before the cursor's line, since the
+    // cursor lives `cursor_sub` rows into its own line.
+    let cursor_sub = cursor_sub_line_in_rendered(state, cursor_rendered, width);
+    let need = target_row.saturating_sub(cursor_sub);
+    let mut acc = 0usize;
+    let mut scroll = cursor_rendered;
+    while scroll > 0 && acc < need {
+        let prev = scroll - 1;
+        let rows = state.parsed.visual_rows_for_line_at(prev, width);
+        if acc + rows > need {
+            break;
+        }
+        acc += rows;
+        scroll -= 1;
+    }
+    state.scroll = scroll;
+}
+
+/// Visual sub-line offset of the cursor within its rendered line.  In
+/// Rendered/Preview mode the cursor's line is painted from the live
+/// buffer (the "cursor block reveal" path), so the wrap that determines
+/// the cursor's sub-line is over the buffer text — not the parsed
+/// rendered text, which can drop or expand chars relative to source.
+/// Falls back to the parsed line's wrap when the cursor's buffer-line
+/// text isn't available.
+fn cursor_sub_line_in_rendered(
+    state: &EditorState,
+    _cursor_rendered: usize,
+    width: usize,
+) -> usize {
+    let (cursor_buf_line, cursor_col) = state.cursor.line_col(&state.buffer);
+    let line_text = line_text_trimmed(&state.buffer, cursor_buf_line);
+    let rows = crate::ui::line_render::visual_rows_of_str(&line_text, width);
+    let (sub, _) = crate::ui::line_render::sub_line_of_col(&rows, cursor_col);
+    sub
+}
+
+/// Rendered-line index where the cursor currently appears in `RenderedView`.
+/// Mirrors the `cursor_rendered_line` computation in `ui::rendered_view` so
+/// scroll arithmetic that needs to match the on-screen cursor position
+/// (e.g. preserving the cursor's screen row across a mode switch) lands on
+/// the same line the view actually paints.
+fn cursor_rendered_line_idx(state: &EditorState) -> usize {
+    let cursor_offset = state.cursor.offset;
+    let cursor_byte = state.buffer.rope().char_to_byte(cursor_offset);
+    let cursor_block_idx = state
+        .parsed
+        .source_map
+        .block_for_byte(cursor_byte)
+        .unwrap_or(0);
+    let cursor_block_lines = state
+        .parsed
+        .source_map
+        .rendered_lines_for_block(cursor_block_idx);
+    if cursor_block_lines.is_empty() {
+        return state.scroll;
+    }
+    let cursor_block_own = state.parsed.block_own_line_count(cursor_block_idx);
+    let block_range = state.parsed.source_map.original_range_for_byte(cursor_byte);
+
+    let raw_block_source: String = block_range
+        .as_ref()
+        .map(|r| {
+            let source = state.buffer.contents();
+            let end = r.end.min(source.len());
+            source[r.start..end].to_owned()
+        })
+        .unwrap_or_default();
+
+    let block_start_byte = block_range.as_ref().map(|r| r.start).unwrap_or(0);
+    let cursor_offset_in_block = cursor_byte.saturating_sub(block_start_byte);
+
+    let raw_lines: Vec<&str> = raw_block_source.split('\n').collect();
+    let mut byte_pos = 0usize;
+    let mut cursor_raw_line = 0usize;
+    for (i, line) in raw_lines.iter().enumerate() {
+        let line_end = byte_pos + line.len();
+        if cursor_offset_in_block <= line_end {
+            cursor_raw_line = i;
+            break;
+        }
+        byte_pos = line_end + 1;
+    }
+
+    let is_table = crate::editor::table_edit::is_table_block(&raw_block_source);
+    let cursor_in_block = if is_table && cursor_block_own >= 3 {
+        let block_lines = state
+            .parsed
+            .lines
+            .get(cursor_block_lines.clone())
+            .unwrap_or(&[]);
+        let kinds = crate::ui::table_view::classify_table_sub_lines(block_lines);
+        let last_replaceable = cursor_block_own.saturating_sub(2);
+        let sub = match cursor_raw_line {
+            0 => kinds
+                .iter()
+                .position(|k| {
+                    matches!(
+                        k,
+                        crate::ui::table_view::TableSubLineKind::Header { sub: 0 }
+                    )
+                })
+                .unwrap_or(1),
+            1 => kinds
+                .iter()
+                .position(|k| matches!(k, crate::ui::table_view::TableSubLineKind::ThickSeparator))
+                .unwrap_or(2),
+            r => {
+                let target = r - 2;
+                kinds
+                    .iter()
+                    .position(|k| {
+                        matches!(
+                            k,
+                            crate::ui::table_view::TableSubLineKind::DataRow { row, sub: 0 }
+                                if *row == target
+                        )
+                    })
+                    .unwrap_or(2 * r - 1)
+            }
+        };
+        sub.min(last_replaceable)
+    } else {
+        let preceding_non_blank = raw_lines
+            .iter()
+            .take(cursor_raw_line)
+            .filter(|l| !l.trim().is_empty())
+            .count();
+        preceding_non_blank.min(cursor_block_own.saturating_sub(1))
+    };
+
+    cursor_block_lines.start + cursor_in_block
 }
 
 #[cfg(test)]
@@ -1112,5 +1364,62 @@ mod tests {
             used,
             vp_h
         );
+    }
+
+    /// `cursor_screen_row` paired with `set_scroll_for_cursor_screen_row`
+    /// should round-trip — switching modes and asking the editor to put the
+    /// cursor at the captured row must end with the cursor at the same
+    /// visual row.  Regression test for the rendered → raw mode-switch
+    /// jumping the visible region.
+    #[test]
+    fn cursor_screen_row_round_trips_across_mode_switch() {
+        // Document with enough text that scrolling kicks in.  Plain
+        // paragraphs map 1:1 between rendered and raw, so we can compare
+        // rows precisely.
+        let mut src = String::new();
+        for i in 0..20 {
+            src.push_str(&format!("line {i}\n"));
+        }
+        let vp_w = 40;
+        let mut state = EditorState::new(Buffer::from_str(&src), theme());
+        state.mode = crate::editor::Mode::Rendered;
+        // Place cursor on line 12 and scroll so it sits a few rows down
+        // from the top of the viewport.
+        state.cursor.offset = state.buffer.line_to_char(12);
+        state.update_cursor_block();
+        state.scroll = 9; // cursor at screen row 3 in Rendered mode.
+
+        let row_before = state.cursor_screen_row(vp_w);
+        assert_eq!(row_before, 3);
+
+        // Simulate switching to Raw mode: in Raw the same `scroll` value is
+        // a buffer-line index, but those happen to coincide for plain
+        // paragraphs.  Force an artificial mismatch by shifting scroll
+        // before re-anchoring, so we exercise the helper rather than a
+        // happy 1:1 alignment.
+        state.mode = crate::editor::Mode::Raw;
+        state.scroll = 0; // pretend the mode switch left the cursor far above
+
+        state.set_scroll_for_cursor_screen_row(row_before, vp_w);
+        let row_after = state.cursor_screen_row(vp_w);
+        assert_eq!(row_after, row_before);
+    }
+
+    /// `set_scroll_for_cursor_screen_row` must clamp to scroll = 0 when the
+    /// requested row is larger than the cursor's distance from the document
+    /// start — the cursor will land on a smaller screen row but stay
+    /// visible (no negative scroll, no off-screen cursor).
+    #[test]
+    fn set_scroll_for_cursor_screen_row_clamps_at_top() {
+        let src = "line 0\nline 1\nline 2\n";
+        let mut state = EditorState::new(Buffer::from_str(src), theme());
+        state.mode = crate::editor::Mode::Raw;
+        // Cursor on line 1, asking for screen row 50 (way past the top).
+        state.cursor.offset = state.buffer.line_to_char(1);
+        state.scroll = 0;
+        state.set_scroll_for_cursor_screen_row(50, 40);
+        assert_eq!(state.scroll, 0);
+        // Cursor stays visible at row 1 (its line is 1 line below the top).
+        assert_eq!(state.cursor_screen_row(40), 1);
     }
 }

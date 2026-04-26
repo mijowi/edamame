@@ -803,3 +803,158 @@ fn toggle_raw_to_rendered_snaps_cursor_out_of_comment() {
         "cursor landed in a zero-own block after Raw→Rendered snap (byte {cursor_byte})"
     );
 }
+
+/// Switching between Rendered and Raw must keep the cursor on the same
+/// screen row.  The two modes use different scroll units (rendered lines
+/// vs. buffer lines), so without an adjustment the same `scroll` value
+/// often pushes the cursor far away from where it was — sometimes
+/// off-screen entirely.
+#[test]
+fn toggle_raw_mode_preserves_cursor_screen_row() {
+    let mut src = String::new();
+    for i in 0..30 {
+        src.push_str(&format!("line {i}\n"));
+    }
+    let mut st = state(&src);
+    // Enter Rendered with the cursor near the middle of the document.
+    apply(&mut st, Action::EnterEditMode);
+    st.cursor.offset = st.buffer.line_to_char(15);
+    st.update_cursor_block();
+    st.scroll = 12; // cursor at screen row 3.
+
+    let row_before_first_toggle = st.cursor_screen_row(VW);
+
+    apply(&mut st, Action::ToggleRawMode);
+    assert_eq!(st.mode, Mode::Raw);
+    assert_eq!(st.cursor_screen_row(VW), row_before_first_toggle);
+
+    apply(&mut st, Action::ToggleRawMode);
+    assert_eq!(st.mode, Mode::Rendered);
+    assert_eq!(st.cursor_screen_row(VW), row_before_first_toggle);
+}
+
+/// When the cursor sits at the bottom of the visible viewport and the user
+/// types a `\n`, the new cursor position is on a fresh line that's one
+/// row below the previous bottom.  The viewport must scroll one row down
+/// so the cursor stays visible.
+#[test]
+fn newline_at_viewport_bottom_scrolls_to_keep_cursor_visible() {
+    let mut src = String::new();
+    for i in 0..40 {
+        src.push_str(&format!("line {i}\n"));
+    }
+    let vp_h = 10;
+    let vp_w = 40;
+    let mut st = state(&src);
+    st.mode = Mode::Raw;
+    // Park the cursor at the end of the bottom-most visible line.
+    st.scroll = 5;
+    let cursor_line = st.scroll + vp_h - 1; // last visible line
+    let line_start = st.buffer.line_to_char(cursor_line);
+    let line_text = st.buffer.line(cursor_line).unwrap_or_default();
+    let line_len = line_text.trim_end_matches('\n').chars().count();
+    st.cursor.offset = line_start + line_len;
+    st.cursor.preferred_col = line_len;
+    st.update_cursor_block();
+
+    let scroll_before = st.scroll;
+    edit_ops::apply(&mut st, Action::Newline, vp_h, vp_w);
+
+    assert!(
+        st.scroll > scroll_before,
+        "scroll {} did not advance after newline at viewport bottom",
+        st.scroll
+    );
+
+    // Cursor must remain inside the viewport.
+    let (cursor_line_after, _) = st.cursor.line_col(&st.buffer);
+    assert!(cursor_line_after >= st.scroll && cursor_line_after < st.scroll + vp_h);
+}
+
+/// In Raw mode, typing a character that extends a line past the viewport
+/// width — pushing the cursor onto a new VISUAL row (wrap), without
+/// adding a `\n` — must scroll the document so the cursor remains
+/// visible.  Previously `ensure_cursor_visible` only checked buffer-line
+/// coordinates and missed the wrap.
+#[test]
+fn type_at_viewport_bottom_wraps_and_scrolls_in_raw_mode() {
+    // Document of identical short lines, with the bottom-most visible line
+    // intentionally long enough that one more keystroke wraps it.
+    let mut src = String::new();
+    for _ in 0..40 {
+        src.push_str("short\n");
+    }
+    let vp_h = 10;
+    let vp_w = 20;
+    let mut st = state(&src);
+    st.mode = Mode::Raw;
+    st.scroll = 0;
+
+    // Pad the bottom-most visible line to exactly vp_w chars so that the
+    // next typed char overflows and wraps onto a new visual row.
+    let cursor_line = vp_h - 1;
+    let pad = "X".repeat(vp_w - "short".len());
+    let line_start = st.buffer.line_to_char(cursor_line);
+    st.buffer.insert(line_start + "short".len(), &pad);
+    // Cursor at end of that line.
+    let line_text = st.buffer.line(cursor_line).unwrap_or_default();
+    let line_len = line_text.trim_end_matches('\n').chars().count();
+    st.cursor.offset = line_start + line_len;
+    st.cursor.preferred_col = line_len;
+    st.update_cursor_block();
+
+    let scroll_before = st.scroll;
+    edit_ops::apply(&mut st, Action::InsertChar('Y'), vp_h, vp_w);
+
+    assert!(
+        st.scroll > scroll_before,
+        "scroll {} did not advance after a wrap-inducing keystroke (cursor on visual row past viewport bottom)",
+        st.scroll
+    );
+}
+
+/// Same scenario as `type_at_viewport_bottom_wraps_and_scrolls_in_raw_mode`,
+/// but in Rendered mode.  The deferred-reparse optimization leaves
+/// `parsed.lines` and the visual-row cache stale after an in-line edit, so
+/// without an explicit flush the wrap check would miss the new visual row.
+#[test]
+fn type_at_viewport_bottom_wraps_and_scrolls_in_rendered_mode() {
+    let vp_h = 10;
+    let vp_w = 20;
+    // 40-line paragraph (single block via soft breaks).  The bottom-most
+    // visible line is padded to exactly `vp_w` chars so one more typed
+    // char wraps it onto a new visual row.
+    let mut src = String::new();
+    for i in 0..40 {
+        let prefix = format!("s{i}");
+        if i == vp_h - 1 {
+            src.push_str(&prefix);
+            src.push_str(&"X".repeat(vp_w - prefix.len()));
+            src.push('\n');
+        } else {
+            src.push_str(&prefix);
+            src.push('\n');
+        }
+    }
+    let mut st = state(&src);
+    apply(&mut st, Action::EnterEditMode);
+    st.scroll = 0;
+
+    let cursor_buf_line = vp_h - 1;
+    let line_start = st.buffer.line_to_char(cursor_buf_line);
+    let line_text = st.buffer.line(cursor_buf_line).unwrap_or_default();
+    let line_len = line_text.trim_end_matches('\n').chars().count();
+    assert_eq!(line_len, vp_w, "line padding length is wrong");
+    st.cursor.offset = line_start + line_len;
+    st.cursor.preferred_col = line_len;
+    st.update_cursor_block();
+
+    let scroll_before = st.scroll;
+    edit_ops::apply(&mut st, Action::InsertChar('Y'), vp_h, vp_w);
+
+    assert!(
+        st.scroll > scroll_before,
+        "scroll {} did not advance after wrap-inducing keystroke in Rendered mode",
+        st.scroll
+    );
+}
