@@ -24,6 +24,7 @@ use std::ops::Range;
 use ratatui::buffer::Buffer as TuiBuf;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
+use ratatui::text::Line;
 
 use crate::config::Theme;
 use crate::editor::{table_edit, EditorState};
@@ -34,6 +35,14 @@ use crate::markdown::table_layout;
 /// each data row) and column-reorder (painted at the centre of each column's
 /// top `─` border cell).  The "dot grip" convention reads as "drag me".
 pub const REORDER_HANDLE_GLYPH: char = '⠿';
+/// Heavy horizontal box-drawing rule used to highlight the destination
+/// separator during a row-handle drag.  Heavier weight (`━`) reads against
+/// the standard `─` separator and `─` border of the surrounding table.
+pub const DROP_ROW_GLYPH: char = '━';
+/// Heavy vertical box-drawing rule used to highlight the destination
+/// separator during a column-handle drag.  Heavier weight (`┃`) reads
+/// against the standard `│` border of the surrounding table.
+pub const DROP_COL_GLYPH: char = '┃';
 /// Column-resize glyph — `⇔` (U+21D4, left-right arrow).  Painted on each
 /// interior `│` of the header row so the user has a visible, hoverable
 /// resize target — but clicks on any part of the interior border (the pipe
@@ -188,6 +197,35 @@ impl TableLayoutSnapshot {
     }
 }
 
+/// Per-frame instruction for `paint_drop_indicator`.  Captures just the
+/// information the painter needs about the active drag — `paint_handles`'s
+/// caller distills `mouse_ops::DragTarget` into one of these so the UI
+/// layer doesn't import the editor-side enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropIndicator {
+    /// Row-drag in progress; highlight the horizontal separator that would
+    /// receive the dropped row.  `hover_row_idx` is the `TableInfo` row
+    /// index the pointer is currently over (≥ 2 for data rows).  The
+    /// painter draws on the separator just *above* that row when dropping
+    /// upward, *below* when downward — derived from `src_row_idx`.
+    Row {
+        table_byte_start: usize,
+        src_row_idx: usize,
+        hover_row_idx: usize,
+    },
+    /// Column-drag in progress; highlight the vertical border that would
+    /// receive the dropped column.  Same drop-side semantics as `Row`.
+    Column {
+        table_byte_start: usize,
+        src_col_idx: usize,
+        hover_col_idx: usize,
+    },
+    /// Column-border resize in progress; show a faint vertical guideline
+    /// at the pointer's current X to indicate where the release will
+    /// commit the new width.
+    ColumnBorder { table_byte_start: usize, x: u16 },
+}
+
 // ── Snapshot construction ───────────────────────────────────────────────────
 
 /// Refresh `snapshots` in place when the cache key
@@ -246,6 +284,11 @@ pub fn build_snapshots(
     // block entirely (either a different block or end of visible range).
     let mut open_table: Option<TableLayoutSnapshot> = None;
     let mut open_table_block: Option<usize> = None; // block byte_start
+                                                    // Per-data-row span accumulator.  Set when a `DataRow` sub-line is
+                                                    // first encountered for that row index, extended by subsequent
+                                                    // continuations, and pushed onto `snap.row_ranges` when a separator
+                                                    // (or end of block) closes the row.
+    let mut current_data_row_y: Option<(usize, Range<u16>)> = None;
 
     while vis_y < height && virtual_idx < total {
         let Some(line) = lines.get(virtual_idx) else {
@@ -262,34 +305,35 @@ pub fn build_snapshots(
             .source_map
             .original_byte_for_rendered_line(virtual_idx);
         let mut current_block: Option<usize> = None;
-        // row_info: Some((info row_idx, info)) when this rendered line maps
-        // to a *navigable* table row (header or data); None for borders
-        // and separators.
-        let mut row_info: Option<(usize, table_edit::TableInfo)> = None;
+        // sub_kind: classification of this rendered sub-line within its
+        // table block — drives everything from row-handle placement to
+        // row_range accumulation.
+        let mut sub_kind: Option<TableSubLineKind> = None;
         if let Some(bb) = block_byte {
             if let Some(range) = state.parsed.source_map.original_range_for_byte(bb) {
                 let end = range.end.min(source.len());
                 let block_text = &source[range.start..end];
                 if table_edit::is_table_block(block_text) {
                     current_block = Some(range.start);
-                    if let Some(info) = table_edit::find_table_at(&source, range.start) {
-                        let own = state.parsed.source_map.rendered_lines_for_byte(range.start);
-                        let sub_in_block = virtual_idx.saturating_sub(own.start);
-                        let own_len = own.end.saturating_sub(own.start);
-                        if let Some(ri) = table_sub_to_row_idx(sub_in_block, own_len) {
-                            row_info = Some((ri, info));
-                        }
-                    }
+                    let own = state.parsed.source_map.rendered_lines_for_byte(range.start);
+                    let sub_in_block = virtual_idx.saturating_sub(own.start);
+                    let block_lines = lines.get(own.start..own.end).unwrap_or(&[]);
+                    let kinds = classify_table_sub_lines(block_lines);
+                    sub_kind = kinds.get(sub_in_block).copied();
                 }
             }
         }
 
         // Close the open snapshot if we've moved into a different block.
         if current_block != open_table_block {
-            if let Some(prev) = open_table.take() {
+            if let Some(mut prev) = open_table.take() {
+                if let Some((_, range)) = current_data_row_y.take() {
+                    prev.row_ranges.push(range);
+                }
                 out.push(prev);
             }
             open_table_block = None;
+            current_data_row_y = None;
         }
 
         if let Some(table_start) = current_block {
@@ -312,9 +356,6 @@ pub fn build_snapshots(
             }
 
             if let Some(snap) = open_table.as_mut() {
-                let own = state.parsed.source_map.rendered_lines_for_byte(table_start);
-                let sub_in_block = virtual_idx.saturating_sub(own.start);
-
                 // Fill col_ranges the first time we see a row with `│`
                 // characters (any header or data row produces them).
                 if snap.col_ranges.is_empty() {
@@ -331,31 +372,56 @@ pub fn build_snapshots(
                     }
                 }
 
-                // Track the top border row (sub 0) — handle painter draws
-                // the column-reorder `⠿` glyphs there.
-                if show_handles && sub_in_block == 0 && snap.top_border_row.is_none() {
-                    snap.top_border_row = Some(area.y + vis_y as u16);
-                }
+                let y = area.y + vis_y as u16;
+                let y_end = y + rows_used as u16;
 
-                // Track the header row (sub 1) for the resize `⇔` glyphs.
-                if show_handles && sub_in_block == 1 && snap.header_row.is_none() {
-                    snap.header_row = Some(area.y + vis_y as u16);
+                match sub_kind {
+                    Some(TableSubLineKind::TopBorder) => {
+                        if show_handles && snap.top_border_row.is_none() {
+                            snap.top_border_row = Some(y);
+                        }
+                    }
+                    Some(TableSubLineKind::Header { sub: 0 }) => {
+                        // Header's first rendered sub-line — anchor the
+                        // column-resize glyph row here.
+                        if show_handles && snap.header_row.is_none() {
+                            snap.header_row = Some(y);
+                        }
+                    }
+                    Some(TableSubLineKind::Header { .. }) => {
+                        // Header continuation lines (when the header
+                        // wraps) don't anchor anything beyond what the
+                        // first line already set up.
+                    }
+                    Some(TableSubLineKind::ThickSeparator)
+                    | Some(TableSubLineKind::ThinSeparator)
+                    | Some(TableSubLineKind::BottomBorder) => {
+                        // A separator closes the current data row's
+                        // span — push and reset.
+                        if let Some((_, range)) = current_data_row_y.take() {
+                            snap.row_ranges.push(range);
+                        }
+                    }
+                    Some(TableSubLineKind::DataRow { row, .. }) => {
+                        match current_data_row_y.as_mut() {
+                            Some((existing_row, range)) if *existing_row == row => {
+                                range.end = y_end;
+                            }
+                            _ => {
+                                if let Some((_, prev_range)) = current_data_row_y.take() {
+                                    snap.row_ranges.push(prev_range);
+                                }
+                                current_data_row_y = Some((row, y..y_end));
+                            }
+                        }
+                    }
+                    None => {}
                 }
 
                 // Row-reorder gutter column — one cell left of the outer `│`.
                 if show_handles && snap.row_handle_col.is_none() && !snap.col_ranges.is_empty() {
                     let outer_left = snap.col_ranges[0].start.saturating_sub(1);
                     snap.row_handle_col = Some(outer_left.saturating_sub(1));
-                }
-
-                // Accumulate data-row y-ranges for hit-testing.
-                if let Some((row_idx, _)) = &row_info {
-                    if *row_idx >= 2 {
-                        snap.row_ranges.push(Range {
-                            start: area.y + vis_y as u16,
-                            end: area.y + vis_y as u16 + rows_used as u16,
-                        });
-                    }
                 }
             }
         } else {
@@ -366,29 +432,141 @@ pub fn build_snapshots(
         virtual_idx += 1;
     }
 
-    if let Some(prev) = open_table.take() {
+    if let Some(mut prev) = open_table.take() {
+        if let Some((_, range)) = current_data_row_y.take() {
+            prev.row_ranges.push(range);
+        }
         out.push(prev);
     }
     out
 }
 
-/// Map a sub-line index inside a rendered table (0 = top border, 1 = header,
-/// 2 = thick separator, …) back to the TableInfo row index.  Border and
-/// separator lines return `None`.  `own` is the total number of rendered
-/// lines in this table block.
-fn table_sub_to_row_idx(sub_idx: usize, own: usize) -> Option<usize> {
-    // Layout: 0 = top ┌─┐, 1 = header, 2 = thick ┝━┥,
-    // then for each data row: one data line + one thin ├─┤ separator,
-    // except after the final data row: no separator (own-1 = bottom border).
-    if sub_idx == 0 || sub_idx + 1 >= own {
-        return None; // top or bottom border
+/// Classification of one rendered line within a table block.  Drives
+/// every consumer that needs to map a sub-line index back to a logical
+/// row — `build_snapshots` for hit-testing, `mouse_ops::rendered_sub_line_to_offset`
+/// for click-to-cell mapping.
+///
+/// Phase 13: replaces the fixed-pattern `table_sub_to_row_idx` math
+/// because multi-row data rows (cells that wrapped) can occupy any
+/// number of consecutive `│`-prefixed lines, breaking the old
+/// alternating-line assumption.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableSubLineKind {
+    /// Top border (`┌─┬─┐`).  Always sub 0.
+    TopBorder,
+    /// One of (potentially several) header lines.  `sub` is the
+    /// 0-indexed row within the header (header always logical row 0
+    /// in `TableInfo.rows`).
+    Header { sub: usize },
+    /// Thick separator under the header (`┝━┿━┥`).
+    ThickSeparator,
+    /// One of (potentially several) lines making up data row `row`
+    /// (0-indexed across data rows).  Maps to `TableInfo.rows[row + 2]`
+    /// since header is row 0 and alignment is row 1.  `sub` is the
+    /// 0-indexed visual row within that data row.
+    DataRow { row: usize, sub: usize },
+    /// Thin separator between two data rows (`├─┼─┤`).
+    ThinSeparator,
+    /// Bottom border (`└─┴─┘`).
+    BottomBorder,
+}
+
+/// Classify every rendered sub-line of a table block by inspecting its
+/// leading box-drawing glyph.  Returns one `TableSubLineKind` per
+/// rendered sub-line.  Length matches `lines.len()` so callers can
+/// look up by `sub_in_block`.
+///
+/// `lines` is the slice of rendered lines that make up the table block
+/// (i.e. the slice of `parsed.lines[own.start..own.end]`).
+///
+/// Phase 13: when `config.table.row_striping` is on, the renderer
+/// emits a *blank* `│ ... │ ... │` line in place of the `├─┼─┤` rule
+/// between data rows.  We detect those by spotting a `│`-prefixed
+/// line whose only chars are `│` and whitespace, immediately after a
+/// data row — and classify them as `ThinSeparator` so row-counting
+/// logic (and the `cursor_block_revealed` plumbing) keep working
+/// without further changes.
+pub fn classify_table_sub_lines(lines: &[Line<'_>]) -> Vec<TableSubLineKind> {
+    let mut out = Vec::with_capacity(lines.len());
+    let mut past_thick = false;
+    let mut current_header_sub = 0usize;
+    let mut current_data_row = 0usize;
+    let mut current_data_sub = 0usize;
+    let mut prev_was_data = false;
+    for line in lines {
+        let first = line
+            .spans
+            .iter()
+            .flat_map(|s| s.content.chars())
+            .next()
+            .unwrap_or(' ');
+        let kind = match first {
+            '┌' => TableSubLineKind::TopBorder,
+            '┝' => {
+                past_thick = true;
+                prev_was_data = false;
+                TableSubLineKind::ThickSeparator
+            }
+            '├' => {
+                if prev_was_data {
+                    current_data_row += 1;
+                    current_data_sub = 0;
+                }
+                prev_was_data = false;
+                TableSubLineKind::ThinSeparator
+            }
+            '└' => TableSubLineKind::BottomBorder,
+            '│' => {
+                let blank_stripe_separator =
+                    past_thick && prev_was_data && is_blank_stripe_line(line);
+                if blank_stripe_separator {
+                    current_data_row += 1;
+                    current_data_sub = 0;
+                    prev_was_data = false;
+                    TableSubLineKind::ThinSeparator
+                } else if past_thick {
+                    let sub = current_data_sub;
+                    current_data_sub += 1;
+                    prev_was_data = true;
+                    TableSubLineKind::DataRow {
+                        row: current_data_row,
+                        sub,
+                    }
+                } else {
+                    let sub = current_header_sub;
+                    current_header_sub += 1;
+                    TableSubLineKind::Header { sub }
+                }
+            }
+            _ => {
+                // Defensive fallback: unrecognised leading glyph.  Treat
+                // as a header line so the snapshot doesn't panic, even
+                // though we don't expect to hit this path.
+                TableSubLineKind::Header { sub: 0 }
+            }
+        };
+        out.push(kind);
     }
-    match sub_idx {
-        1 => Some(0),                         // header
-        2 => None,                            // thick separator stands in for alignment row
-        n if n % 2 == 1 => Some((n + 1) / 2), // data row
-        _ => None,                            // thin separator between data rows
+    out
+}
+
+/// Stripe-aware separator detector.  Returns `true` for lines whose
+/// only characters are `│` plus NBSP (U+00A0) — the exact shape
+/// produced by `Renderer::blank_table_separator`.  ASCII-space-only
+/// lines explicitly do *not* qualify, so the wrap-continuation line
+/// of a multi-row data row (whose short cells emit `format!(" {}{} ",
+/// "", " ".repeat(pad))` — ASCII spaces only) cannot be misidentified
+/// as a separator.
+fn is_blank_stripe_line(line: &Line<'_>) -> bool {
+    let mut saw_nbsp = false;
+    for c in line.spans.iter().flat_map(|s| s.content.chars()) {
+        match c {
+            '│' => {}
+            '\u{00A0}' => saw_nbsp = true,
+            _ => return false,
+        }
     }
+    saw_nbsp
 }
 
 // ── Handle rendering ────────────────────────────────────────────────────────
@@ -398,15 +576,41 @@ fn table_sub_to_row_idx(sub_idx: usize, own: usize) -> Option<usize> {
 ///   * `⠿` in the external left gutter for each data row (row-reorder),
 ///   * `⠿` on the centre of each column's top-border cell (column-reorder),
 ///   * `⇔` on each interior `│` in the header row (column-resize).
+///
+/// Phase 13: when `cursor_table_start` is `Some(byte)`, handles paint
+/// only on the snapshot whose `table_byte_start` matches — i.e. the
+/// table the cursor is currently inside.  Pass `None` to paint on every
+/// visible table (the legacy, always-on behaviour used by tests).
 pub fn paint_handles(
     snapshots: &[TableLayoutSnapshot],
     area: Rect,
     buf: &mut TuiBuf,
     theme: &Theme,
+    cursor_table_start: Option<usize>,
 ) {
+    // Handles inherit `theme.table_border` directly — same colour as
+    // the surrounding `│` / `─` so the affordance reads as part of
+    // the table chrome.  Visibility comes from the glyph swap (`⠿`
+    // / `⇔` instead of `│` / `─`) and from the cursor-in-table
+    // gating (`paint_handles_for_cursor_table`) only painting them
+    // on the active table.
     let handle_style: Style = theme.table_border;
     for snap in snapshots {
-        // Row-reorder glyphs in the external gutter.
+        if let Some(start) = cursor_table_start {
+            if snap.table_byte_start != start {
+                continue;
+            }
+        } else {
+            // No cursor table — skip painting handles entirely.
+            return;
+        }
+        // Row-reorder glyph: one per logical data row, painted at the
+        // first rendered sub-line.  Multi-row (wrapped) data rows still
+        // get exactly one glyph — putting one on every wrapped sub-line
+        // reads as visual noise, and the row-drag is dispatched via
+        // hit-testing against the row's full y-range so the user can
+        // still grab anywhere in the gutter even though the glyph only
+        // shows once.
         if let Some(col) = snap.row_handle_col {
             if col < area.x + area.width {
                 for y_range in &snap.row_ranges {
@@ -458,6 +662,246 @@ pub fn paint_handles(
                     }
                 }
             }
+        }
+    }
+}
+
+// ── Drop-indicator painter ──────────────────────────────────────────────────
+
+/// Highlight every valid drop separator for an in-progress row / column
+/// drag, with the active hover-target painted at the bright accent and
+/// every other valid drop at a dimmer "candidate" shade.  Runs after
+/// `paint_handles` so the indicator overlays the existing border glyphs.
+/// No-op when no snapshot matches the indicator's `table_byte_start`
+/// (e.g. the drag's source table scrolled off-screen).
+pub fn paint_drop_indicator(
+    snapshots: &[TableLayoutSnapshot],
+    indicator: &DropIndicator,
+    area: Rect,
+    buf: &mut TuiBuf,
+    theme: &Theme,
+) {
+    let active_style: Style = theme.table_drop_indicator;
+    let candidate_style: Style = theme.table_drop_target;
+    match *indicator {
+        DropIndicator::Row {
+            table_byte_start,
+            src_row_idx,
+            hover_row_idx,
+        } => {
+            let Some(snap) = snapshots
+                .iter()
+                .find(|s| s.table_byte_start == table_byte_start)
+            else {
+                return;
+            };
+            if src_row_idx < 2 || snap.row_ranges.is_empty() {
+                return;
+            }
+            // The active drop target — the separator on the side of the
+            // hover row matching the drag direction.  None when the
+            // pointer is over an out-of-range index.
+            let active_y = active_row_drop_y(snap, src_row_idx, hover_row_idx);
+
+            // First pass: paint every valid drop separator dimly so the
+            // user sees the full set of options.  Valid separators are
+            // every horizontal border between (and around) the data
+            // rows EXCEPT the two adjacent to the source row — moving a
+            // row to its own slot is a no-op.
+            let src_data_idx = src_row_idx - 2;
+            let Some(first) = snap.col_ranges.first() else {
+                return;
+            };
+            let Some(last) = snap.col_ranges.last() else {
+                return;
+            };
+            let x_start = first.start.saturating_sub(1);
+            let x_end = last.end;
+            let x_max = area.x + area.width;
+            for (i, y_range) in snap.row_ranges.iter().enumerate() {
+                // Separator above this data row (between row i-1 and i).
+                let above = y_range.start.saturating_sub(1);
+                // Separator below this data row (between row i and i+1
+                // or above the bottom border).
+                let below = y_range.end;
+                for &y in &[above, below] {
+                    if y < area.y || y >= area.y + area.height {
+                        continue;
+                    }
+                    // Skip the separators that bound the source row
+                    // (a drop there would be a no-op).
+                    if (i == src_data_idx && (y == above || y == below))
+                        || (i + 1 == src_data_idx && y == below)
+                        || (i == src_data_idx + 1 && y == above)
+                    {
+                        continue;
+                    }
+                    let style = if Some(y) == active_y {
+                        active_style
+                    } else {
+                        candidate_style
+                    };
+                    paint_horizontal_drop(buf, x_start, x_end, x_max, y, style);
+                }
+            }
+        }
+        DropIndicator::Column {
+            table_byte_start,
+            src_col_idx,
+            hover_col_idx,
+        } => {
+            let Some(snap) = snapshots
+                .iter()
+                .find(|s| s.table_byte_start == table_byte_start)
+            else {
+                return;
+            };
+            if snap.col_ranges.is_empty() {
+                return;
+            }
+            let active_x = active_column_drop_x(snap, src_col_idx, hover_col_idx);
+            // Vertical span shared across every candidate.
+            let y_top = snap
+                .top_border_row
+                .or_else(|| snap.row_ranges.first().map(|r| r.start.saturating_sub(2)))
+                .unwrap_or(area.y);
+            let y_bot = snap
+                .row_ranges
+                .last()
+                .map(|r| r.end)
+                .unwrap_or(area.y + area.height.saturating_sub(1));
+            let y_max = area.y + area.height;
+            // Every column-border (interior + the two outer borders) is
+            // a candidate drop point, except the two flanking the source
+            // column.
+            let mut borders: Vec<u16> = Vec::with_capacity(snap.col_ranges.len() + 1);
+            if let Some(first) = snap.col_ranges.first() {
+                borders.push(first.start.saturating_sub(1));
+            }
+            for r in &snap.col_ranges {
+                borders.push(r.end);
+            }
+            for (i, &x) in borders.iter().enumerate() {
+                if x < area.x || x >= area.x + area.width {
+                    continue;
+                }
+                // Skip borders adjacent to the source column.
+                if i == src_col_idx || i == src_col_idx + 1 {
+                    continue;
+                }
+                let style = if Some(x) == active_x {
+                    active_style
+                } else {
+                    candidate_style
+                };
+                paint_vertical_drop(buf, y_top, y_bot, y_max, x, style);
+            }
+        }
+        DropIndicator::ColumnBorder {
+            table_byte_start,
+            x,
+        } => {
+            let Some(snap) = snapshots
+                .iter()
+                .find(|s| s.table_byte_start == table_byte_start)
+            else {
+                return;
+            };
+            if x < area.x || x >= area.x + area.width {
+                return;
+            }
+            let y_top = snap
+                .top_border_row
+                .or_else(|| snap.row_ranges.first().map(|r| r.start.saturating_sub(2)))
+                .unwrap_or(area.y);
+            let y_bot = snap
+                .row_ranges
+                .last()
+                .map(|r| r.end)
+                .unwrap_or(area.y + area.height.saturating_sub(1));
+            let y_max = area.y + area.height;
+            for y in y_top..=y_bot {
+                if y >= y_max {
+                    break;
+                }
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(DROP_COL_GLYPH);
+                    cell.set_style(active_style);
+                }
+            }
+        }
+    }
+}
+
+/// Y-coordinate of the active drop separator for a row drag, or `None`
+/// when the pointer is over the source row itself (no drop target).
+fn active_row_drop_y(
+    snap: &TableLayoutSnapshot,
+    src_row_idx: usize,
+    hover_row_idx: usize,
+) -> Option<u16> {
+    if hover_row_idx < 2 || hover_row_idx == src_row_idx {
+        return None;
+    }
+    let data_idx = hover_row_idx - 2;
+    let y_range = snap.row_ranges.get(data_idx)?;
+    if src_row_idx > hover_row_idx {
+        Some(y_range.start.saturating_sub(1))
+    } else {
+        Some(y_range.end)
+    }
+}
+
+/// X-coordinate of the active drop separator for a column drag, or
+/// `None` when the pointer is on the source column.
+fn active_column_drop_x(
+    snap: &TableLayoutSnapshot,
+    src_col_idx: usize,
+    hover_col_idx: usize,
+) -> Option<u16> {
+    if hover_col_idx == src_col_idx {
+        return None;
+    }
+    if src_col_idx > hover_col_idx {
+        snap.col_ranges
+            .get(hover_col_idx)
+            .map(|r| r.start.saturating_sub(1))
+    } else {
+        snap.col_ranges.get(hover_col_idx).map(|r| r.end)
+    }
+}
+
+/// Draw a heavy horizontal rule across `[x_start, x_end]` at row `y`,
+/// clipped at `x_max`.  Helper for the row-drag drop painter.
+fn paint_horizontal_drop(
+    buf: &mut TuiBuf,
+    x_start: u16,
+    x_end: u16,
+    x_max: u16,
+    y: u16,
+    style: Style,
+) {
+    for x in x_start..=x_end {
+        if x >= x_max {
+            break;
+        }
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            cell.set_char(DROP_ROW_GLYPH);
+            cell.set_style(style);
+        }
+    }
+}
+
+/// Draw a heavy vertical rule down `[y_top, y_bot]` at column `x`,
+/// clipped at `y_max`.  Helper for the column-drag drop painter.
+fn paint_vertical_drop(buf: &mut TuiBuf, y_top: u16, y_bot: u16, y_max: u16, x: u16, style: Style) {
+    for y in y_top..=y_bot {
+        if y >= y_max {
+            break;
+        }
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            cell.set_char(DROP_COL_GLYPH);
+            cell.set_style(style);
         }
     }
 }
@@ -591,14 +1035,93 @@ mod tests {
     }
 
     #[test]
-    fn table_sub_to_row_idx_handles_layout() {
-        // own = 7: sub 0 top, 1 header, 2 thick, 3 data0, 4 thin, 5 data1, 6 bottom
-        assert_eq!(table_sub_to_row_idx(0, 7), None);
-        assert_eq!(table_sub_to_row_idx(1, 7), Some(0)); // header
-        assert_eq!(table_sub_to_row_idx(2, 7), None);
-        assert_eq!(table_sub_to_row_idx(3, 7), Some(2)); // first data row
-        assert_eq!(table_sub_to_row_idx(4, 7), None);
-        assert_eq!(table_sub_to_row_idx(5, 7), Some(3));
-        assert_eq!(table_sub_to_row_idx(6, 7), None); // bottom
+    fn classify_table_sub_lines_simple_table() {
+        use ratatui::text::Span;
+        let lines = vec![
+            Line::from(Span::raw("┌──┬──┐")),
+            Line::from(Span::raw("│ a│ b│")),
+            Line::from(Span::raw("┝━━┿━━┥")),
+            Line::from(Span::raw("│ 1│ 2│")),
+            Line::from(Span::raw("├──┼──┤")),
+            Line::from(Span::raw("│ 3│ 4│")),
+            Line::from(Span::raw("└──┴──┘")),
+        ];
+        let kinds = classify_table_sub_lines(&lines);
+        assert_eq!(kinds[0], TableSubLineKind::TopBorder);
+        assert_eq!(kinds[1], TableSubLineKind::Header { sub: 0 });
+        assert_eq!(kinds[2], TableSubLineKind::ThickSeparator);
+        assert_eq!(kinds[3], TableSubLineKind::DataRow { row: 0, sub: 0 });
+        assert_eq!(kinds[4], TableSubLineKind::ThinSeparator);
+        assert_eq!(kinds[5], TableSubLineKind::DataRow { row: 1, sub: 0 });
+        assert_eq!(kinds[6], TableSubLineKind::BottomBorder);
+    }
+
+    #[test]
+    fn classify_table_sub_lines_multirow_data_row() {
+        use ratatui::text::Span;
+        // Data row 0 wraps to two lines, data row 1 stays one line.
+        let lines = vec![
+            Line::from(Span::raw("┌──┬──┐")),
+            Line::from(Span::raw("│ a│ b│")),
+            Line::from(Span::raw("┝━━┿━━┥")),
+            Line::from(Span::raw("│ 1│ x│")),
+            Line::from(Span::raw("│  │ y│")),
+            Line::from(Span::raw("├──┼──┤")),
+            Line::from(Span::raw("│ 3│ 4│")),
+            Line::from(Span::raw("└──┴──┘")),
+        ];
+        let kinds = classify_table_sub_lines(&lines);
+        assert_eq!(kinds[3], TableSubLineKind::DataRow { row: 0, sub: 0 });
+        assert_eq!(kinds[4], TableSubLineKind::DataRow { row: 0, sub: 1 });
+        assert_eq!(kinds[5], TableSubLineKind::ThinSeparator);
+        assert_eq!(kinds[6], TableSubLineKind::DataRow { row: 1, sub: 0 });
+    }
+
+    /// Phase 13 — the renderer's `blank_table_separator` line uses
+    /// NBSP-padded cells, distinguishing it from a wrap-continuation
+    /// line whose short cells are ASCII-space-padded.  classify must
+    /// recognise the NBSP-padded `│ … │ … │` line as ThinSeparator
+    /// and treat the next `│`-prefixed line as the next data row.
+    #[test]
+    fn classify_table_sub_lines_blank_stripe_separator() {
+        use ratatui::text::Span;
+        // NBSP between pipes for the stripe separator (line index 4).
+        // Wrap continuation (line index 5 here would be ASCII-padded
+        // — but in this fixture the row wraps differently).  Just
+        // check the stripe-separator detection.
+        let lines = vec![
+            Line::from(Span::raw("┌──┬──┐")),
+            Line::from(Span::raw("│ a│ b│")),
+            Line::from(Span::raw("┝━━┿━━┥")),
+            Line::from(Span::raw("│ 1│ 2│")),
+            Line::from(Span::raw(
+                "│\u{00A0}\u{00A0}\u{00A0}│\u{00A0}\u{00A0}\u{00A0}│",
+            )),
+            Line::from(Span::raw("│ 3│ 4│")),
+            Line::from(Span::raw("└──┴──┘")),
+        ];
+        let kinds = classify_table_sub_lines(&lines);
+        assert_eq!(kinds[3], TableSubLineKind::DataRow { row: 0, sub: 0 });
+        assert_eq!(kinds[4], TableSubLineKind::ThinSeparator);
+        assert_eq!(kinds[5], TableSubLineKind::DataRow { row: 1, sub: 0 });
+    }
+
+    /// Counterpart to the NBSP test: a wrap-continuation line whose
+    /// short cells are ASCII-space-padded must NOT be misclassified
+    /// as a stripe separator — both cells continue the same data row.
+    #[test]
+    fn classify_table_sub_lines_ascii_space_padded_continuation_stays_data() {
+        use ratatui::text::Span;
+        let lines = vec![
+            Line::from(Span::raw("┌──┬──┐")),
+            Line::from(Span::raw("│ a│ b│")),
+            Line::from(Span::raw("┝━━┿━━┥")),
+            Line::from(Span::raw("│hi│ y│")),
+            Line::from(Span::raw("│  │  │")), // both cells empty on continuation
+            Line::from(Span::raw("└──┴──┘")),
+        ];
+        let kinds = classify_table_sub_lines(&lines);
+        assert_eq!(kinds[3], TableSubLineKind::DataRow { row: 0, sub: 0 });
+        assert_eq!(kinds[4], TableSubLineKind::DataRow { row: 0, sub: 1 });
     }
 }

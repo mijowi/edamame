@@ -17,19 +17,29 @@
 //! content width is measured with `unicode-width` to handle CJK / wide
 //! characters correctly.
 //!
-//! # Width calculation strategy
+//! # Width calculation strategy — min-max proportional
 //!
-//! 1. **Natural width**: the max rendered width of any cell in a column.
-//!    If the sum of natural widths (plus borders/padding) fits within the
-//!    budget, use them as-is.
+//! Mirrors the algorithm browsers use for `table-layout: auto`, which is
+//! also what `rich` and `tabulate` converge on:
 //!
-//! 2. **Shrink to fit**: if natural widths exceed the budget, proportionally
-//!    shrink the wider columns while respecting a minimum of
-//!    `MIN_COL_WIDTH = 3` (enough to render `...`).
+//! 1. **Per-column metrics**: `min = longest word` (cells can never wrap
+//!    below this without breaking a word), `max = longest cell`.
 //!
-//! 3. **User overrides**: if `user_widths` is supplied, those widths are
-//!    used verbatim — the caller is responsible for clamping them to a
-//!    sensible range.
+//! 2. **Fits naturally**: when the sum of every column's `max` (plus
+//!    borders) fits the viewport budget, use the `max` widths as-is.
+//!
+//! 3. **Below max but above min**: distribute the remaining slack
+//!    (`viewport - borders - sum(min)`) across unpinned columns weighted
+//!    by `(max - min)`.  Wide-prose columns absorb most of the slack;
+//!    short / numeric columns stay at their `max` since their `min == max`.
+//!
+//! 4. **Below sum(min)**: every column drops to its `min` and the table
+//!    overflows the viewport horizontally — never break a word to fit.
+//!
+//! 5. **User overrides**: any column with a `Some(w)` entry in
+//!    `user_widths` is pinned to `w` (clamped to `MIN_COL_WIDTH`); pinned
+//!    columns are excluded from the proportional distribution so the
+//!    user's drag-set widths survive viewport pressure.
 //!
 //! # Cell wrapping
 //!
@@ -58,24 +68,29 @@ pub const MIN_COL_WIDTH: usize = 3;
 pub const PER_COL_OVERHEAD: usize = 3;
 pub const ROW_END_OVERHEAD: usize = 1;
 
-/// Compute column widths for a table.
+/// Compute column widths for a table using min-max proportional distribution.
 ///
-/// - `cell_widths[row][col]` is the natural (un-wrapped) rendered width of
-///   the cell at that position in character cells.
-/// - `viewport_width` is the total character-cell budget for the table row,
-///   including borders and padding.  Pass `usize::MAX` to disable shrinking
-///   (i.e. always use natural widths).
-/// - `user_widths`, if `Some`, is a per-column user override.  Each entry
-///   is either `Some(w)` to pin that column to `w` cells (clamped to
-///   `MIN_COL_WIDTH`) or `None` to let the column auto-size to its natural
-///   width.  Lengths must match `col_count`.
+/// Inputs:
+/// - `cell_max_widths[row][col]` — the longest cell in that position
+///   (the column's `max`).
+/// - `cell_min_widths[row][col]` — the longest single *word* in that cell
+///   (the column's `min`; never wraps below this without breaking a word).
+///   When the cell text contains no spaces `min == max` for that cell.
+/// - `viewport_width` is the total character-cell budget including borders
+///   and padding.  Pass `usize::MAX` to disable proportional distribution
+///   and always return `max` widths.
+/// - `user_widths`, if `Some`, pins specific columns: `Some(w)` per entry
+///   sets that column's width (clamped to `MIN_COL_WIDTH`), `None` lets the
+///   column participate in the proportional distribution.  Length must
+///   match `col_count`.
 ///
-/// When shrinking to fit `viewport_width`, only columns without a user
-/// override are shrunk — pinned columns stay at the user's width.
-///
-/// Returns a `Vec<usize>` of length `col_count`.
+/// Returns a `Vec<usize>` of length `col_count`.  When the viewport can
+/// fit every column at `max`, returns `max`s; when it can fit at least the
+/// `min`s, distributes slack weighted by `(max - min)`; otherwise returns
+/// `min`s and lets the caller decide whether to truncate or accept overflow.
 pub fn compute_widths(
-    cell_widths: &[Vec<usize>],
+    cell_max_widths: &[Vec<usize>],
+    cell_min_widths: &[Vec<usize>],
     col_count: usize,
     viewport_width: usize,
     user_widths: Option<&[Option<usize>]>,
@@ -84,16 +99,30 @@ pub fn compute_widths(
         return Vec::new();
     }
 
-    // Natural widths — start from the max content width in each column
-    // (clamped to MIN_COL_WIDTH).
-    let mut widths = vec![MIN_COL_WIDTH; col_count];
-    for row in cell_widths {
+    // Per-column max (longest cell) and min (longest word), each clamped to
+    // MIN_COL_WIDTH so a single-cell column never collapses below the room
+    // needed for a `...` ellipsis indicator.
+    let mut col_max = vec![MIN_COL_WIDTH; col_count];
+    let mut col_min = vec![MIN_COL_WIDTH; col_count];
+    for row in cell_max_widths {
         for (i, w) in row.iter().take(col_count).enumerate() {
-            widths[i] = widths[i].max(*w);
+            col_max[i] = col_max[i].max(*w);
+        }
+    }
+    for row in cell_min_widths {
+        for (i, w) in row.iter().take(col_count).enumerate() {
+            col_min[i] = col_min[i].max(*w);
+        }
+    }
+    // Min can never exceed max (e.g. a long single word forces both equal).
+    for i in 0..col_count {
+        if col_min[i] > col_max[i] {
+            col_max[i] = col_min[i];
         }
     }
 
-    // Apply user overrides on top of naturals.
+    // Apply user overrides as pinned widths.
+    let mut widths = col_max.clone();
     let mut pinned = vec![false; col_count];
     if let Some(uw) = user_widths {
         for (i, w) in uw.iter().take(col_count).enumerate() {
@@ -104,38 +133,82 @@ pub fn compute_widths(
         }
     }
 
-    // If the table already fits, we're done.
     let border_budget = PER_COL_OVERHEAD * col_count + ROW_END_OVERHEAD;
-    let total_natural: usize = widths.iter().sum::<usize>() + border_budget;
-    if total_natural <= viewport_width {
-        return widths;
+    let pinned_total: usize = widths
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| pinned[*i])
+        .map(|(_, w)| *w)
+        .sum();
+
+    // Remaining cells available for unpinned columns.  When viewport_width
+    // is `usize::MAX` (callers that disable proportional distribution),
+    // this is also `usize::MAX` and the natural-fit branch always wins.
+    let available = viewport_width
+        .saturating_sub(border_budget)
+        .saturating_sub(pinned_total);
+
+    let unpinned: Vec<usize> = (0..col_count).filter(|i| !pinned[*i]).collect();
+    let unpinned_max_total: usize = unpinned.iter().map(|i| col_max[*i]).sum();
+    let unpinned_min_total: usize = unpinned.iter().map(|i| col_min[*i]).sum();
+
+    if unpinned_max_total <= available {
+        // Every unpinned column fits at `max` — no compression needed.
+        for &i in &unpinned {
+            widths[i] = col_max[i];
+        }
+    } else if unpinned_min_total <= available {
+        // Slack distribution: assign `min` to every column, then divvy up
+        // the leftover space weighted by each column's prose flexibility
+        // (`max - min`).  Columns whose `min == max` get nothing — they
+        // already render fully at their floor.
+        let slack = available - unpinned_min_total;
+        let total_weight: usize = unpinned.iter().map(|i| col_max[*i] - col_min[*i]).sum();
+        if total_weight == 0 {
+            // No flexibility anywhere (every cell is one long word).  Use
+            // mins as-is and accept that this fits exactly.
+            for &i in &unpinned {
+                widths[i] = col_min[i];
+            }
+        } else {
+            // Integer-weighted division with remainder distribution: assign
+            // floor(slack * weight / total_weight) to each column and hand
+            // out the leftover cells one at a time to the columns with the
+            // largest fractional residuals so we use every available cell.
+            let mut residuals: Vec<(usize, usize)> = Vec::with_capacity(unpinned.len());
+            let mut assigned = 0usize;
+            for &i in &unpinned {
+                let weight = col_max[i] - col_min[i];
+                let numer = slack * weight;
+                let extra = numer / total_weight;
+                let remainder = numer % total_weight;
+                widths[i] = col_min[i] + extra;
+                assigned += extra;
+                residuals.push((i, remainder));
+            }
+            // Hand out the remaining cells to the columns whose integer
+            // truncation lost the most.  Sort by residual (descending),
+            // breaking ties on column index so the result is deterministic.
+            residuals.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            let mut leftover = slack.saturating_sub(assigned);
+            for (i, _) in residuals {
+                if leftover == 0 {
+                    break;
+                }
+                if widths[i] < col_max[i] {
+                    widths[i] += 1;
+                    leftover -= 1;
+                }
+            }
+        }
+    } else {
+        // Even the mins don't fit — assign `min` to every column.  The
+        // caller may truncate or accept horizontal overflow.
+        for &i in &unpinned {
+            widths[i] = col_min[i];
+        }
     }
 
-    // Shrink: only auto (non-pinned) columns are candidates so that user
-    // widths are respected under viewport pressure.  If every column is
-    // pinned the user has asked for an over-wide table; leave it and let
-    // the caller deal with overflow.
-    let mut excess = total_natural - viewport_width;
-    while excess > 0 {
-        let mut best_idx = None;
-        let mut best_w = MIN_COL_WIDTH;
-        for (i, w) in widths.iter().enumerate() {
-            if pinned[i] {
-                continue;
-            }
-            if *w > best_w {
-                best_w = *w;
-                best_idx = Some(i);
-            }
-        }
-        match best_idx {
-            Some(i) => {
-                widths[i] -= 1;
-                excess -= 1;
-            }
-            None => break,
-        }
-    }
     widths
 }
 
@@ -198,6 +271,38 @@ pub fn wrap_cell(text: &str, width: usize) -> Vec<String> {
         rows.push(String::new());
     }
     rows
+}
+
+/// Wrap `text` like [`wrap_cell`], but also report the char index in
+/// `text` where each output row begins.  Used by the wrapped-cell
+/// editing path in `RenderedView` to map a cursor's char offset
+/// inside the cell back to a (sub-line, column) coordinate.
+///
+/// Word-wrap drops the whitespace that sits exactly at a break point
+/// (the space between the last word of row N and the first word of
+/// row N+1 isn't drawn on either row).  Continuation rows therefore
+/// start at the first non-whitespace char *after* the previous row's
+/// last char.  A cursor that lands on a dropped whitespace char maps
+/// to the start of the next row, since that's where the next visible
+/// character actually shows up.
+pub fn wrap_cell_with_indices(text: &str, width: usize) -> Vec<(usize, String)> {
+    let rows = wrap_cell(text, width);
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<(usize, String)> = Vec::with_capacity(rows.len());
+    let mut idx = 0;
+    for (i, row) in rows.into_iter().enumerate() {
+        if i > 0 {
+            // Continuation rows start after any whitespace dropped at
+            // the wrap point.
+            while idx < chars.len() && chars[idx].is_whitespace() {
+                idx += 1;
+            }
+        }
+        let row_start = idx;
+        idx += row.chars().count();
+        out.push((row_start, row));
+    }
+    out
 }
 
 /// Split `text` into tokens, each token being either a single whitespace
@@ -480,57 +585,105 @@ pub fn compute_cell_overlay(
 mod tests {
     use super::*;
 
+    /// Helper: build mins=maxes (single-word cells) so the existing tests
+    /// keep exercising the "no-wrap" path before they get a separate
+    /// proportional-distribution test below.
+    fn maxes_eq_mins(cells: Vec<Vec<usize>>) -> (Vec<Vec<usize>>, Vec<Vec<usize>>) {
+        let mins = cells.clone();
+        (cells, mins)
+    }
+
     #[test]
     fn compute_widths_uses_natural_when_room_available() {
-        let cells = vec![vec![2, 4, 3], vec![3, 5, 2]];
-        let widths = compute_widths(&cells, 3, 80, None);
+        let (maxes, mins) = maxes_eq_mins(vec![vec![2, 4, 3], vec![3, 5, 2]]);
+        let widths = compute_widths(&maxes, &mins, 3, 80, None);
         assert_eq!(widths, vec![3, 5, 3]); // clamped to MIN where natural was 2
     }
 
     #[test]
-    fn compute_widths_shrinks_to_fit_budget() {
-        // cells all 10 wide, 3 cols → natural total = 10*3 + borders = 40
-        let cells = vec![vec![10, 10, 10]];
-        let widths = compute_widths(&cells, 3, 20, None); // cramped budget
-        let border = PER_COL_OVERHEAD * 3 + ROW_END_OVERHEAD;
-        assert!(widths.iter().sum::<usize>() + border <= 20);
-        // Every column should still be at least MIN wide.
+    fn compute_widths_returns_mins_when_max_exceeds_budget_and_no_slack() {
+        // Cells all 10 chars; cells are single words so min == max == 10.
+        // No slack possible — every column drops to its `min` and the table
+        // overflows the viewport horizontally rather than truncate.
+        let (maxes, mins) = maxes_eq_mins(vec![vec![10, 10, 10]]);
+        let widths = compute_widths(&maxes, &mins, 3, 20, None);
+        assert_eq!(widths, vec![10, 10, 10]);
+        // All columns are at their floor — never below MIN.
         assert!(widths.iter().all(|w| *w >= MIN_COL_WIDTH));
     }
 
     #[test]
+    fn compute_widths_distributes_slack_proportionally_to_max_minus_min() {
+        // Col 0: prose, max=20, min=4 (longest word).  Col 1: short label,
+        // max=5, min=5.  Viewport is wider than the mins but tight on max.
+        // Col 1 should stay at its `max` (no flexibility); col 0 absorbs
+        // all the available slack.
+        let maxes = vec![vec![20, 5]];
+        let mins = vec![vec![4, 5]];
+        // border = 3*2 + 1 = 7.  Pick viewport = 7 + 4 + 5 + 6 = 22:
+        //   slack = 22 - 7 - 4 - 5 = 6.
+        //   total_weight = (20-4) + (5-5) = 16.
+        //   col0 extra = 6*16/16 = 6 → width = 4 + 6 = 10.
+        //   col1 extra = 0 → width = 5.
+        let widths = compute_widths(&maxes, &mins, 2, 22, None);
+        assert_eq!(widths, vec![10, 5]);
+    }
+
+    #[test]
+    fn compute_widths_caps_each_column_at_max_during_distribution() {
+        // Two prose columns; viewport big enough that the proportional
+        // formula would overshoot col 0's max.  Width must clamp at max.
+        let maxes = vec![vec![8, 8]];
+        let mins = vec![vec![3, 3]];
+        // border = 3*2 + 1 = 7.  Viewport = 7 + 8 + 8 = 23 → fits at max.
+        let widths = compute_widths(&maxes, &mins, 2, 23, None);
+        assert_eq!(widths, vec![8, 8]);
+    }
+
+    #[test]
     fn compute_widths_respects_user_override() {
-        let cells = vec![vec![1, 1, 1]];
-        let widths = compute_widths(&cells, 3, 80, Some(&[Some(15), Some(7), Some(20)]));
+        let (maxes, mins) = maxes_eq_mins(vec![vec![1, 1, 1]]);
+        let widths = compute_widths(&maxes, &mins, 3, 80, Some(&[Some(15), Some(7), Some(20)]));
         assert_eq!(widths, vec![15, 7, 20]);
     }
 
     #[test]
     fn compute_widths_clamps_user_override_to_min() {
-        let cells = vec![vec![1, 1]];
-        let widths = compute_widths(&cells, 2, 80, Some(&[Some(1), Some(0)])); // both below MIN
+        let (maxes, mins) = maxes_eq_mins(vec![vec![1, 1]]);
+        let widths = compute_widths(&maxes, &mins, 2, 80, Some(&[Some(1), Some(0)])); // both below MIN
         assert_eq!(widths, vec![MIN_COL_WIDTH, MIN_COL_WIDTH]);
     }
 
     #[test]
     fn compute_widths_mixes_pinned_and_auto_columns() {
         // Col 0: natural 3, user-set to 5.  Col 1: natural 6, auto.
-        let cells = vec![vec![3, 6]];
-        let widths = compute_widths(&cells, 2, 80, Some(&[Some(5), None]));
+        let (maxes, mins) = maxes_eq_mins(vec![vec![3, 6]]);
+        let widths = compute_widths(&maxes, &mins, 2, 80, Some(&[Some(5), None]));
         assert_eq!(widths, vec![5, 6]);
     }
 
     #[test]
     fn compute_widths_shrink_leaves_pinned_columns_alone() {
-        // Tight viewport; pinned col 0 stays, auto col 1 shrinks.
-        let cells = vec![vec![10, 10]];
-        // border = PER_COL_OVERHEAD*2 + ROW_END = 3*2 + 1 = 7. viewport 17.
-        // Pinned col 0 = 8, so col 1 must shrink from 10 to fit: 17 - 7 - 8 = 2
-        // → but clamps to MIN_COL_WIDTH=3, so total = 7+8+3 = 18 (one over).
-        let widths = compute_widths(&cells, 2, 17, Some(&[Some(8), None]));
+        // Tight viewport; pinned col 0 stays at its width, auto col 1
+        // distributes from whatever's left.  Col 1 has slack room (max 10,
+        // min 4) so it lands somewhere in `[4, 10]`.
+        let maxes = vec![vec![10, 10]];
+        let mins = vec![vec![10, 4]];
+        let widths = compute_widths(&maxes, &mins, 2, 17, Some(&[Some(8), None]));
         assert_eq!(widths[0], 8); // pinned
         assert!(widths[1] >= MIN_COL_WIDTH);
         assert!(widths[1] <= 10);
+    }
+
+    #[test]
+    fn compute_widths_narrow_prose_column_stays_at_min_with_no_slack() {
+        // Single column, prose with max=12, min=3.  Viewport with no slack:
+        // border = 3 + 1 = 4; if viewport = 4 + 3 = 7, the column gets
+        // exactly its min.
+        let maxes = vec![vec![12]];
+        let mins = vec![vec![3]];
+        let widths = compute_widths(&maxes, &mins, 1, 7, None);
+        assert_eq!(widths, vec![3]);
     }
 
     #[test]

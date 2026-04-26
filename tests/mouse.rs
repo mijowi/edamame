@@ -664,6 +664,11 @@ fn column_border_drag_writes_tui_columns_comment() {
         VW,
     );
 
+    // Phase 13: Release no longer auto-commits — it stages a pending
+    // commit that the App resolves (via the warning modal or directly).
+    // Tests bypass the App by calling the commit method themselves.
+    assert!(st.has_pending_column_widths());
+    st.commit_pending_column_widths();
     let after = st.contents();
     assert!(
         after.contains("<!-- tui-columns:"),
@@ -717,6 +722,7 @@ fn column_border_drag_widens_table_and_leaves_neighbour_auto() {
         VW,
     );
 
+    st.commit_pending_column_widths();
     let after = st.contents();
     assert!(
         after.contains("<!-- tui-columns: [5, _] -->"),
@@ -773,6 +779,7 @@ fn right_outer_border_drag_resizes_last_column() {
         VW,
     );
 
+    st.commit_pending_column_widths();
     let after = st.contents();
     assert!(
         after.contains("<!-- tui-columns: [_, 9] -->"),
@@ -1058,4 +1065,82 @@ fn link_target_parse_classifies_inputs_correctly() {
         LinkTarget::parse("sibling.md", Some(&base)),
         LinkTarget::LocalFile(base.join("sibling.md"))
     );
+}
+
+// ── Phase 13: column-width injection guard ──────────────────────────────────
+
+/// On a table without a `tui-columns` comment, the Release of a column-
+/// border drag stages a pending commit but does NOT yet write the
+/// comment.  The App is responsible for either committing immediately
+/// (when warnings are off) or showing the warning modal.  Until that
+/// resolves, the buffer must be unchanged.
+#[test]
+fn column_border_drag_release_defers_commit_when_no_existing_comment() {
+    let src = "| abc | defghi |\n| --- | --- |\n| bar | baz |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    let snap = fake_snapshot(
+        0,
+        src.len(),
+        2,
+        3,
+        vec![1..6, 7..15],
+        vec![3..4],
+        None,
+        None,
+    );
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    mouse_ops::apply(&mut st, click(6, 3), &mut target, &snapshots, VP, VW);
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Drag { col: 8, row: 3 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Release,
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+
+    // The Release set the pending flag — buffer is still untouched.
+    assert!(st.has_pending_column_widths());
+    assert_eq!(st.contents(), src);
+
+    // Cancelling the pending commit must drop the live preview without
+    // ever writing the `tui-columns` comment.
+    st.cancel_pending_column_widths();
+    assert!(!st.has_pending_column_widths());
+    assert!(
+        st.live_table_widths.is_none(),
+        "Cancel must clear the live preview"
+    );
+    assert!(
+        !st.contents().contains("tui-columns"),
+        "Cancel must NOT inject a comment, got: {:?}",
+        st.contents()
+    );
+}
+
+/// Tables that already have a `tui-columns` comment skip the warning —
+/// `table_has_tui_columns_comment` returns true so the App's
+/// `handle_pending_column_widths` path commits immediately.  This test
+/// is the EditorState half of that contract: it just verifies the
+/// detection.  The full warning-skip flow is exercised by the
+/// pre-existing `column_border_drag_writes_tui_columns_comment` test.
+#[test]
+fn table_has_tui_columns_comment_detects_existing_persistence() {
+    let with = state("| a | b |\n|---|---|\n| 1 | 2 |\n<!-- tui-columns: [5, 7] -->\n");
+    assert!(with.table_has_tui_columns_comment(0));
+
+    let without = state("| a | b |\n|---|---|\n| 1 | 2 |\n");
+    assert!(!without.table_has_tui_columns_comment(0));
 }

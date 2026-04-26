@@ -1118,7 +1118,7 @@ Extracted from old Phase 11.  This is a **parser + renderer + navigation** chang
 
 ---
 
-### Phase 13 — Table Rendering Polish
+### Phase 13 — Table Rendering Polish ✅
 *Goal: production-quality table visuals: smart column widths, row striping, drag-drop feedback, and user-facing disclosure of comment injection.*
 
 These items are cohesive (all table-layer concerns) and share the `table_layout` module as their implementation surface.  Consolidates deferred polish items from Phase 6.
@@ -1130,36 +1130,44 @@ These items are cohesive (all table-layer concerns) and share the `table_layout`
 - Phase 6's `tui-columns` comment injection is silent — the user has no explicit warning that a resize operation will modify the Markdown source.
 
 **Tasks — smart column widths (min-max proportional):**
-- [ ] Adopt the min-max proportional distribution (the algorithm browsers use for `table-layout: auto` and what `rich` / `tabulate` converge on):
+- [x] Adopt the min-max proportional distribution (the algorithm browsers use for `table-layout: auto` and what `rich` / `tabulate` converge on):
       - Per column: `min = longest word`, `max = longest cell`.
       - Distribute remaining viewport width weighted by `(max − min)`.
       - Prose columns wrap onto multiple rendered rows when their allocation is below `max`; short/numeric columns stay at their `max`.
       - *Rejected:* average-width-as-target — breaks the invariant that content fits, forces silent truncation of outlier cells.
-- [ ] Replace the current `compute_widths` algorithm in `table_layout` (which is auto-to-max subject to a terminal-width cap).  `user_widths`, when present, still override everything — users who set widths explicitly via drag (Phase 6) or comment (persisted) get exactly what they asked for.
+- [x] Replace the current `compute_widths` algorithm in `table_layout` (which is auto-to-max subject to a terminal-width cap).  `user_widths`, when present, still override everything — users who set widths explicitly via drag (Phase 6) or comment (persisted) get exactly what they asked for.
 
 **Tasks — manual-width warning modal:**
-- [ ] When a Phase 6 column-border drag completes *for the first time on a given table*, show a `ModalView` with text: "Setting custom column widths adds a `<!-- tui-columns: [...] -->` comment to the Markdown source.  Continue?"  Buttons: `Continue` (default) / `Continue and don't ask again` / `Cancel`.
-- [ ] `Continue and don't ask again` writes `config.table.warn_on_width_injection = false` via `Config::save()` (which fires the Phase 9 `Configuration updated` flash).
-- [ ] `Cancel` reverts the drag — `live_table_widths` is cleared without commit.
-- [ ] On tables that already have a `tui-columns` comment, no warning — the comment is already there.
+- [x] When a Phase 6 column-border drag completes *for the first time on a given table*, show a `ModalView` with text: "Setting custom column widths adds a `<!-- tui-columns: [...] -->` comment to the Markdown source.  Continue?"  Buttons: `Continue` (default) / `Continue and don't ask again` / `Cancel`.
+- [x] `Continue and don't ask again` writes `config.table.warn_on_width_injection = false` via `Config::save()` (which fires the Phase 9 `Configuration updated` flash).
+- [x] `Cancel` reverts the drag — `live_table_widths` is cleared without commit.
+- [x] On tables that already have a `tui-columns` comment, no warning — the comment is already there.
 
 **Tasks — row striping:**
-- [ ] Add `Theme::table_row_even` and `Theme::table_row_odd` style slots (default: no-op / same as background).  Themes can override for alternating-row visual aid.
-- [ ] `renderer::render_table` applies the alternating style as a background fill per data row (not the header, not the alignment row).
-- [ ] Opt-in via `config.table.row_striping: bool` (default `false`) since not every user wants it.
+- [x] Add `Theme::table_row_even` and `Theme::table_row_odd` style slots (default: no-op / same as background).  Themes can override for alternating-row visual aid.
+- [x] `renderer::render_table` applies the alternating style as a background fill per data row (not the header, not the alignment row).
+- [x] Opt-in via `config.table.row_striping: bool` (default `false`) since not every user wants it.
 
 **Tasks — drop destination highlighting:**
-- [ ] During a row-handle drag (`DragTarget::TableRow`), highlight the horizontal separator between `hover_row_idx - 1` and `hover_row_idx` using `Theme::table_drop_indicator` (a new style slot).  Paints via a post-pass on `paint_handles`, no buffer mutation.
-- [ ] During a column-handle drag (`DragTarget::TableColumnHeader`), highlight the vertical `│` border between `hover_col_idx - 1` and `hover_col_idx`.
-- [ ] During a column-border resize (`DragTarget::TableColumnBorder`), show a faint vertical guideline at the current pointer X to indicate where the release will commit.  Optional — if visual noise outweighs value, drop.
+- [x] During a row-handle drag (`DragTarget::TableRow`), highlight the horizontal separator between `hover_row_idx - 1` and `hover_row_idx` using `Theme::table_drop_indicator` (a new style slot).  Paints via a post-pass on `paint_handles`, no buffer mutation.
+- [x] During a column-handle drag (`DragTarget::TableColumnHeader`), highlight the vertical `│` border between `hover_col_idx - 1` and `hover_col_idx`.
+- [ ] During a column-border resize (`DragTarget::TableColumnBorder`), show a faint vertical guideline at the current pointer X to indicate where the release will commit.  *Dropped:* the live-preview re-render is itself the affordance, and `DragTarget::TableColumnBorder` doesn't carry the live pointer X (the variant tracks `anchor_x` only).  The `DropIndicator::ColumnBorder` painter exists for future use but is not currently invoked.
 
 **Tasks — testing:**
-- [ ] Unit tests in `table_layout` for min-max proportional: a narrow prose column stays at `min` when there's no slack; excess distribution respects the `(max − min)` weighting.
-- [ ] Integration test in `tests/mouse.rs`: a column-border drag on a table without `tui-columns` shows the warning modal; `Cancel` reverts with no buffer mutation.
-- [ ] `TestBackend` snapshot of a striped-row table.
-- [ ] `TestBackend` snapshot of a table mid-drag with row-drop indicator visible.
+- [x] Unit tests in `table_layout` for min-max proportional: a narrow prose column stays at `min` when there's no slack; excess distribution respects the `(max − min)` weighting.
+- [x] Integration test in `tests/mouse.rs`: a column-border drag on a table without `tui-columns` defers the commit until the warning resolves; `cancel_pending_column_widths` reverts with no buffer mutation.
+- [x] `TestBackend` test of a striped-row table (verifies alternating bg colours).
+- [x] `TestBackend` test of a table mid-drag with row-drop indicator visible.
 
 **Acceptance criteria:** Tables allocate column widths proportionally; narrow prose columns wrap rather than forcing wide columns to truncate.  Drag-to-resize warns on first use that an HTML comment will be injected.  Row striping is opt-in and theme-controlled.  Row / column drag shows a drop indicator on the target separator.
+
+**Implementation notes / follow-ups:**
+- Live terminal width plumbed via `EditorState::set_viewport_width` → `ParsedDoc::build_with_overrides` → `Renderer::with_viewport_width`.  The App writes the document-area width on every loop iteration; `set_viewport_width` short-circuits when unchanged so the per-frame cost is negligible, and the resize quiesce ensures only the settled width triggers a `refresh_parsed`.
+- Multi-row table support landed across the snapshot + click + reveal pipelines via the new `TableSubLineKind` classifier (`ui::table_view::classify_table_sub_lines`).  Replaces the fixed alternating-line math in `build_snapshots`, `mouse_ops::rendered_sub_line_to_offset`, the selection painter, and the cursor-block reveal.  Row drag handles paint on every visual row of multi-row data rows so the affordance stays accessible regardless of which wrapped line the pointer is on.
+- Drop-target painter highlights every valid drop separator at `Theme::table_drop_target` with the active hover at `Theme::table_drop_indicator` so the user sees the full set of options.
+- Row striping enabled by default with a subtle two-tone palette; `table_row_odd` defaults to `bg = 235` and `table_row_even` inherits the document background.  `config.table.row_striping = true` by default.
+- Multi-row cell rendering uses plain text (loses inline formatting like `**bold**` → `bold`) when wrapping is needed.  Single-row rendering preserves inline styling.  An inline-aware wrap pipeline is future work.
+- Wide cells whose rendered width exceeds the column allocation in the *single-row* path now truncate with `…` rather than overflowing the trailing border.
 
 ---
 

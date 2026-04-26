@@ -197,6 +197,10 @@ pub struct ThemeFile {
     pub table_border: StyleSpec,
     pub table_header: StyleSpec,
     pub table_cell: StyleSpec,
+    pub table_row_even: StyleSpec,
+    pub table_row_odd: StyleSpec,
+    pub table_drop_indicator: StyleSpec,
+    pub table_drop_target: StyleSpec,
 
     // Status bar
     pub status_bar: StyleSpec,
@@ -268,6 +272,41 @@ impl From<&ThemeFile> for Theme {
             table_border: (&f.table_border).into(),
             table_header: (&f.table_header).into(),
             table_cell: (&f.table_cell).into(),
+            // Row striping: when the section is missing from older theme
+            // files (serde fills with an empty StyleSpec), fall back to
+            // the compiled defaults so striping stays visible after the
+            // user upgrades.  Empty `even` is fine (no bg = inherit);
+            // empty `odd` falls back to the subtle indexed bg.
+            table_row_even: (&f.table_row_even).into(),
+            table_row_odd: {
+                let s: Style = (&f.table_row_odd).into();
+                if s == Style::default() {
+                    Style::default().bg(ratatui::style::Color::Indexed(235))
+                } else {
+                    s
+                }
+            },
+            // `table_drop_indicator` / `table_drop_target` are
+            // post-Phase 13.  When the section is missing from older
+            // theme files (serde fills the field with a fully-empty
+            // `StyleSpec`), fall back to the compiled default so the
+            // drop indicator stays visible during a drag.
+            table_drop_indicator: {
+                let s: Style = (&f.table_drop_indicator).into();
+                if s == Style::default() {
+                    Style::default().fg(ratatui::style::Color::Indexed(178))
+                } else {
+                    s
+                }
+            },
+            table_drop_target: {
+                let s: Style = (&f.table_drop_target).into();
+                if s == Style::default() {
+                    Style::default().fg(ratatui::style::Color::Indexed(101))
+                } else {
+                    s
+                }
+            },
 
             status_bar: (&f.status_bar).into(),
             status_mode: (&f.status_mode).into(),
@@ -346,6 +385,10 @@ impl From<&Theme> for ThemeFile {
             table_border: (&t.table_border).into(),
             table_header: (&t.table_header).into(),
             table_cell: (&t.table_cell).into(),
+            table_row_even: (&t.table_row_even).into(),
+            table_row_odd: (&t.table_row_odd).into(),
+            table_drop_indicator: (&t.table_drop_indicator).into(),
+            table_drop_target: (&t.table_drop_target).into(),
 
             status_bar: (&t.status_bar).into(),
             status_mode: (&t.status_mode).into(),
@@ -424,6 +467,10 @@ mod tests {
         check!(table_border);
         check!(table_header);
         check!(table_cell);
+        check!(table_row_even);
+        check!(table_row_odd);
+        check!(table_drop_indicator);
+        check!(table_drop_target);
         check!(status_bar);
         check!(status_mode);
         check!(status_filename);

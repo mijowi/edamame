@@ -30,4 +30,4 @@ pub use rendered_view::{RenderedView, RenderedViewState};
 pub use settings_overlay::SettingsResponse;
 pub use settings_overlay::{SettingsState, SettingsView};
 pub use status_bar::{StatusBar, StatusBarState};
-pub use table_view::{TableHit, TableLayoutSnapshot};
+pub use table_view::{DropIndicator, TableHit, TableLayoutSnapshot};

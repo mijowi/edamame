@@ -246,6 +246,8 @@ impl ParsedDoc {
             image_max_height,
             None,
             None,
+            false,
+            80,
         )
     }
 
@@ -265,6 +267,8 @@ impl ParsedDoc {
         image_max_height: usize,
         live_table_widths: Option<&(usize, Vec<Option<usize>>)>,
         image_row_override: Option<ImageRowOverride>,
+        row_striping: bool,
+        viewport_width: usize,
     ) -> Self {
         // 1. Extract top-level block byte ranges.
         let mut real_ranges = parse_offsets::top_level_block_ranges(source);
@@ -299,8 +303,13 @@ impl ParsedDoc {
             apply_live_table_widths(&mut blocks, &real_ranges, *override_start, widths);
         }
 
-        // 3. Render, tracking per-block rendered line counts.
-        let mut renderer = Renderer::new(theme).with_image_max_height(image_max_height);
+        // 3. Render, tracking per-block rendered line counts.  The
+        // viewport width feeds the table-column min-max distribution so
+        // wide tables wrap proportionally rather than overflow.
+        let mut renderer = Renderer::new(theme)
+            .with_viewport_width(viewport_width.max(1))
+            .with_image_max_height(image_max_height)
+            .with_row_striping(row_striping);
         if let Some(override_fn) = image_row_override {
             renderer = renderer.with_image_row_override(override_fn);
         }
@@ -797,7 +806,8 @@ mod tests {
     fn live_widths_preview_still_hides_trailing_tui_columns_comment() {
         let src = "| a | b |\n|---|---|\n| 1 | 2 |\n<!-- tui-columns: [5, 6] -->\n";
         let live = (0usize, vec![Some(7), None]);
-        let doc = ParsedDoc::build_with_overrides(src, theme(), true, 24, Some(&live), None);
+        let doc =
+            ParsedDoc::build_with_overrides(src, theme(), true, 24, Some(&live), None, false, 80);
         for line in &doc.lines {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert!(

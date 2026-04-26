@@ -30,6 +30,11 @@ pub struct EditorView<'a> {
     /// unit tests default to `false` so they don't paint the gutter glyphs
     /// over their assertions.
     pub show_table_handles: bool,
+    /// Phase 13 — when `Some`, an in-progress table drag is active and
+    /// the painter overlays the destination separator with the
+    /// `Theme::table_drop_indicator` highlight after the handle glyphs.
+    /// `None` when no relevant drag is in flight.
+    pub table_drop_indicator: Option<crate::ui::table_view::DropIndicator>,
     /// Detected terminal capabilities — threaded through for the
     /// Phase 7 image overlay.  Without `capabilities.image_protocol`
     /// (and `image_picker`), `image_view::paint_images` is a no-op and
@@ -131,6 +136,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                         state: &*self.state,
                         theme: self.theme,
                         show_table_handles: self.show_table_handles,
+                        drop_indicator: self.table_drop_indicator,
                     },
                     doc_area,
                     buf,

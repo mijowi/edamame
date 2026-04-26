@@ -340,16 +340,32 @@ impl Default for ModalConfig {
 /// feature at runtime, so setting this to `true` on a mouseless terminal is
 /// a no-op — `App::new` overrides it to `false` when `capabilities.mouse` is
 /// absent so persisted config stays faithful to what the user actually sees.
+///
+/// `row_striping` (Phase 13): when true, alternating data rows are filled
+/// with `Theme::table_row_even` / `Theme::table_row_odd` to aid visual
+/// scanning on wide tables.  Off by default so users who prefer plain
+/// borders see no change.
+///
+/// `warn_on_width_injection` (Phase 13): when true, the first column-border
+/// drag on a table without a `<!-- tui-columns: [...] -->` comment opens a
+/// modal warning that committing the resize will inject the comment into
+/// the Markdown source.  Set false (either via the modal's "Continue and
+/// don't ask again" button or directly in `config.toml`) to skip the
+/// warning on subsequent drags.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TableConfig {
     pub show_drag_handles: bool,
+    pub row_striping: bool,
+    pub warn_on_width_injection: bool,
 }
 
 impl Default for TableConfig {
     fn default() -> Self {
         Self {
             show_drag_handles: true,
+            row_striping: true,
+            warn_on_width_injection: true,
         }
     }
 }

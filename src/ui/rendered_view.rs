@@ -1,7 +1,7 @@
 use ratatui::{
     buffer::Buffer as TuiBuf,
     layout::Rect,
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::StatefulWidget,
 };
@@ -11,7 +11,8 @@ use crate::document::detect_setext;
 use crate::editor::table_edit;
 use crate::editor::EditorState;
 use crate::markdown::table_layout::{
-    compute_cell_overlay, table_raw_col_to_rendered_col, CellOverlay,
+    compute_cell_overlay, raw_pipe_positions, rendered_pipe_positions,
+    table_raw_col_to_rendered_col, wrap_cell_with_indices, CellOverlay,
 };
 
 use super::image_view::{self, ImageLayoutSnapshot};
@@ -67,12 +68,22 @@ pub struct RenderedViewState {
 pub struct RenderedView<'a> {
     pub state: &'a EditorState,
     pub theme: &'a Theme,
-    /// When true, the table renderer paints `≡` row-drag handles in an
-    /// external left-side gutter and `⇔` column-drag handles one row above
-    /// each table's top border.  Controlled by `config.table.show_drag_handles`
-    /// AND `capabilities.mouse` (the App zeros the first when the second is
-    /// false), so terminals without mouse reporting never show inert glyphs.
+    /// When true, the table renderer paints `⠿` row/column drag handles
+    /// and `⇔` column-resize glyphs over each visible table.  Controlled
+    /// by `config.table.show_drag_handles` AND `capabilities.mouse` (the
+    /// App zeros the first when the second is false), so terminals
+    /// without mouse reporting never show inert glyphs.
+    ///
+    /// Phase 13: handles only paint on the table that contains the
+    /// cursor — moving the cursor out of the table hides them so they
+    /// never compete with the rendered content during navigation.  The
+    /// gating is enforced by `paint_handles_for_cursor_table` in
+    /// `table_view`.
     pub show_table_handles: bool,
+    /// Phase 13 — when `Some`, an in-progress table drag is highlighted
+    /// after the handles are painted.  `None` when no relevant drag is
+    /// active.
+    pub drop_indicator: Option<crate::ui::table_view::DropIndicator>,
 }
 
 impl<'a> StatefulWidget for RenderedView<'a> {
@@ -166,21 +177,54 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 _ => cursor_position_in_block(editor, cursor_byte, &raw_block_source),
             };
 
-        // Map the cursor's raw source line to a rendered line within the block.
-        // For tables the rendered layout is: top border, header, thick
-        // separator (alignment row), then (data row, thin separator)* ending
-        // with a data row and finally the bottom border.  Raw line 0 (header)
-        // → sub 1; raw line 1 (alignment) → sub 2 (the thick separator);
-        // raw line r ≥ 2 (data) → sub 2r − 1.  We must never replace a border
-        // or separator line with raw text.
+        // Map the cursor's raw source line to a rendered line within the
+        // block.  For tables the rendered layout is: top border, header
+        // (one or more lines), thick separator (alignment row), then
+        // (data row(s), thin separator)*, and finally the bottom border.
+        // Phase 13: cells may now wrap, so any single TableInfo row can
+        // span multiple rendered sub-lines.  Use the box-drawing-glyph
+        // classifier to find the FIRST sub-line of the target row — the
+        // raw-text replacement always lands on that line.  We must
+        // never replace a border or separator line with raw text.
         let is_table = table_edit::is_table_block(&raw_block_source);
         let is_setext = detect_setext(&raw_block_source).is_some();
         let cursor_in_block = if is_table && cursor_block_own >= 3 {
             let last_replaceable = cursor_block_own.saturating_sub(2);
+            let block_lines = editor
+                .parsed
+                .lines
+                .get(cursor_block_lines.clone())
+                .unwrap_or(&[]);
+            let kinds = crate::ui::table_view::classify_table_sub_lines(block_lines);
             let sub = match cursor_raw_line {
-                0 => 1,
-                1 => 2,
-                r => 2 * r - 1,
+                0 => kinds
+                    .iter()
+                    .position(|k| {
+                        matches!(
+                            k,
+                            crate::ui::table_view::TableSubLineKind::Header { sub: 0 }
+                        )
+                    })
+                    .unwrap_or(1),
+                1 => kinds
+                    .iter()
+                    .position(|k| {
+                        matches!(k, crate::ui::table_view::TableSubLineKind::ThickSeparator)
+                    })
+                    .unwrap_or(2),
+                r => {
+                    let target = r - 2;
+                    kinds
+                        .iter()
+                        .position(|k| {
+                            matches!(
+                                k,
+                                crate::ui::table_view::TableSubLineKind::DataRow { row, sub: 0 }
+                                    if *row == target
+                            )
+                        })
+                        .unwrap_or(2 * r - 1)
+                }
             };
             sub.min(last_replaceable)
         } else {
@@ -198,7 +242,35 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 .count();
             preceding_non_blank.min(cursor_block_own.saturating_sub(1))
         };
-        let cursor_rendered_line = cursor_block_lines.start + cursor_in_block;
+        // Wrapped-cell case: when the cursor sits in a data-row cell that
+        // wraps onto multiple rendered sub-lines (or is in a row whose
+        // *other* cells wrap), build a per-chunk overlay so each
+        // rendered sub of the cell can be painted with its own raw
+        // chunk.  Returns `None` for non-data rows, for cells that fit
+        // in a single sub of a single-sub row (existing
+        // `compute_cell_overlay` path), and for cells whose raw text
+        // wraps wider than the row's rendered height (existing
+        // `compute_cell_chunk_overlay` path keeps the cursor's chunk
+        // visible via horizontal scroll).
+        let wrapped_cell = if is_table && cursor_raw_line >= 2 {
+            compute_wrapped_cell_overlay(
+                editor,
+                cursor_block_lines.clone(),
+                cursor_raw_line - 2,
+                cursor_col,
+                &raw_block_source,
+            )
+        } else {
+            None
+        };
+
+        // When in a wrapped cell, the cursor's actual sub-line lives
+        // at `row_first_line_idx + cursor_sub`.  For non-wrapped cells
+        // it's the row's first sub.
+        let cursor_rendered_line = match &wrapped_cell {
+            Some(w) => w.row_first_line_idx + w.cursor_sub,
+            None => cursor_block_lines.start + cursor_in_block,
+        };
 
         // Determine the scroll offset; sync from editor state.
         view_state.scroll = editor.scroll;
@@ -241,6 +313,18 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             // rendered positions — not just the single line the cursor is on.
             let in_cursor_block =
                 virtual_idx >= cursor_block_lines.start && virtual_idx < cursor_block_lines.end;
+            // Sub-line index within `wrapped_cell.subs` if `virtual_idx`
+            // lands on one of the wrapped cell's chunks — multi-sub
+            // overlay paints raw chunks across all those subs so the
+            // cell's wrap is preserved when the cursor enters it.
+            let wrapped_sub_idx_opt: Option<usize> = wrapped_cell.as_ref().and_then(|w| {
+                let end = w.row_first_line_idx + w.subs.len();
+                if virtual_idx >= w.row_first_line_idx && virtual_idx < end {
+                    Some(virtual_idx - w.row_first_line_idx)
+                } else {
+                    None
+                }
+            });
             if reveal_raw && is_setext && in_cursor_block {
                 let sub = virtual_idx - cursor_block_lines.start;
                 let raw_text = raw_lines.get(sub).copied().unwrap_or("");
@@ -270,21 +354,64 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     self.theme,
                 );
                 rows_used = render_line(&styled, area, buf, vis_y as u16, wrap) as usize;
+            } else if reveal_raw && wrapped_sub_idx_opt.is_some() {
+                // Multi-sub wrapped-cell overlay: paint the rendered row
+                // first (so neighbouring cells and borders stay), then
+                // overlay the appropriate raw wrap chunk into the
+                // active cell's column range.  Each sub of the cell
+                // gets its own chunk so the cell's natural wrap is
+                // preserved while the cursor edits inside it.
+                let w = wrapped_cell.as_ref().expect("wrapped_sub_idx implies wrapped_cell");
+                let sub_idx = wrapped_sub_idx_opt.unwrap();
+                let overlay = &w.subs[sub_idx];
+                if let Some(line) = editor.parsed.lines.get(virtual_idx) {
+                    rows_used = render_line(line, area, buf, vis_y as u16, wrap) as usize;
+                    let sel_in_cell = selection_bytes.and_then(|(sa, sb)| {
+                        let block_start = block_range_for_cursor.as_ref()?.start;
+                        // Every chunk of the wrapped cell is a slice of
+                        // a single raw row (`cursor_raw_line`), so the
+                        // raw-row start byte is the same for every sub.
+                        let raw_line_start_in_block =
+                            raw_line_byte_start(&raw_block_source, cursor_raw_line);
+                        let cell_byte_start =
+                            block_start + raw_line_start_in_block + overlay.raw_cell_byte_start;
+                        let cell_byte_end = cell_byte_start + overlay.raw_text.len();
+                        let lo = sa.max(cell_byte_start).min(cell_byte_end);
+                        let hi = sb.max(cell_byte_start).min(cell_byte_end);
+                        if lo >= hi {
+                            return None;
+                        }
+                        let start_col = overlay.raw_text[..lo - cell_byte_start].chars().count();
+                        let end_col = overlay.raw_text[..hi - cell_byte_start].chars().count();
+                        Some((start_col, end_col))
+                    });
+                    overlay_raw_cell(buf, area, vis_y as u16, overlay, sel_in_cell, self.theme);
+                } else {
+                    rows_used = 1;
+                }
             } else if reveal_raw && virtual_idx == cursor_rendered_line {
                 let raw_text = raw_lines.get(cursor_raw_line).copied().unwrap_or("");
                 // Prefer cell-scoped reveal for table rows — replace only the
                 // active cell's content area with raw text, keeping the box-
-                // drawing borders and neighbouring cells rendered.
+                // drawing borders and neighbouring cells rendered.  Two cell
+                // overlays are tried in order: `compute_cell_overlay` for
+                // cells whose raw text fits in the rendered cell width, and
+                // `compute_cell_chunk_overlay` for wider raw cells (e.g.
+                // `**_word_**` in a 5-cell column) — the latter horizontally
+                // scrolls the cell, showing the chunk that contains the
+                // cursor.
+                let line_opt = editor.parsed.lines.get(virtual_idx);
                 let cell_overlay = if is_table {
-                    editor
-                        .parsed
-                        .lines
-                        .get(virtual_idx)
-                        .and_then(|line| compute_cell_overlay(raw_text, line, cursor_col))
+                    line_opt.and_then(|line| compute_cell_overlay(raw_text, line, cursor_col))
                 } else {
                     None
                 };
-                if let Some(overlay) = cell_overlay {
+                let chunk_overlay = if is_table && cell_overlay.is_none() {
+                    line_opt.and_then(|line| compute_cell_chunk_overlay(raw_text, line, cursor_col))
+                } else {
+                    None
+                };
+                if let Some(overlay) = cell_overlay.or(chunk_overlay) {
                     let line = &editor.parsed.lines[virtual_idx];
                     rows_used = render_line(line, area, buf, vis_y as u16, wrap) as usize;
 
@@ -310,9 +437,8 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     });
                     overlay_raw_cell(buf, area, vis_y as u16, &overlay, sel_in_cell, self.theme);
                 } else {
-                    // Fall back to full row-reveal (non-table blocks, or when
-                    // raw cell content won't fit in the rendered cell width).
-                    // Compute selection cols within the raw line (if any).
+                    // Non-table block (or pipe-mismatched table line — e.g.
+                    // mid-edit alignment row): full-line raw reveal.
                     let sel_cols = selection_bytes.and_then(|(sa, sb)| {
                         let block_start = block_range_for_cursor.as_ref()?.start;
                         let raw_line_start_in_block =
@@ -337,16 +463,23 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     rows_used = render_line(&styled, area, buf, vis_y as u16, wrap) as usize;
                 }
             } else if !reveal_raw && virtual_idx == cursor_rendered_line {
-                // Still in jitter delay: show the rendered version with a cursor indicator
-                // at the cursor's column so there is no visible column-jump when it reveals.
+                // Still in jitter delay: show the rendered version with
+                // a cursor indicator at the cursor's column so there's
+                // no visible column-jump when the reveal fires.
                 if let Some(line) = editor.parsed.lines.get(virtual_idx) {
-                    // Raw col → rendered col isn't 1:1 for table rows: padded
-                    // cells mean the cursor column shifts.  Walk the pipe
-                    // positions to place the jitter-delay indicator at the
-                    // same visual col the cell overlay will use on reveal, so
-                    // the cursor doesn't jump when the delay elapses.
                     let raw_text = raw_lines.get(cursor_raw_line).copied().unwrap_or("");
-                    let visual_col = if is_table {
+                    let visual_col = if let Some(w) = &wrapped_cell {
+                        // Wrapped-cell mapping resolves cursor offset →
+                        // (sub-line, col-in-sub) using `wrap_cell_with_indices`,
+                        // then converts col-in-sub to a rendered x by adding
+                        // the cell's leading-pipe column.
+                        w.visual_col
+                    } else if is_table {
+                        // Raw col → rendered col isn't 1:1 for table rows:
+                        // padded cells shift the cursor column.  Walk pipe
+                        // positions so the jitter-delay indicator lands at
+                        // the same visual col the cell overlay will use on
+                        // reveal — avoids a cursor jump at the delay edge.
                         table_raw_col_to_rendered_col(raw_text, line, cursor_col)
                             .unwrap_or(cursor_col)
                     } else if let Some(col) =
@@ -378,11 +511,17 @@ impl<'a> StatefulWidget for RenderedView<'a> {
 
             // Paint the selection overlay across the line's visual rows if
             // the line's block is part of the active selection and this is
-            // NOT the cursor's raw-displayed line (that line was painted by
-            // `make_raw_line_with_selection` and must not be re-painted).
+            // NOT a line that already painted its own selection (cursor's
+            // raw line, setext-revealed lines, or any sub of the active
+            // wrapped cell — the cell-overlay paths above handle their own
+            // selection highlighting per chunk).
             if let Some((sa, sb)) = selection_bytes {
                 let setext_revealed = reveal_raw && is_setext && in_cursor_block;
-                if !(reveal_raw && virtual_idx == cursor_rendered_line) && !setext_revealed {
+                let wrapped_revealed = reveal_raw && wrapped_sub_idx_opt.is_some();
+                if !(reveal_raw && virtual_idx == cursor_rendered_line)
+                    && !setext_revealed
+                    && !wrapped_revealed
+                {
                     paint_selection_overlay(
                         editor,
                         buf,
@@ -407,6 +546,14 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // event can hit-test against them.  The cached variant skips the
         // visible-line walk when scroll, area, parsed-doc version, AND
         // the show-handles flag all match the previous frame.
+        //
+        // Phase 13: handles paint only on the table the cursor is
+        // currently inside — keeps the affordance visible during the
+        // table-edit interaction without competing with surrounding
+        // content during ordinary navigation.  Snapshots are still
+        // captured for every visible table so mouse hit-testing on
+        // adjacent tables continues to work even though no glyph is
+        // painted on them.
         table_view::build_snapshots_cached(
             self.state,
             area,
@@ -414,7 +561,27 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             &mut view_state.table_snapshots,
             &mut view_state.table_snapshots_key,
         );
-        table_view::paint_handles(&view_state.table_snapshots, area, buf, self.theme);
+        let cursor_table_start = if self.show_table_handles {
+            cursor_table_block_start(self.state, &view_state.table_snapshots)
+        } else {
+            None
+        };
+        table_view::paint_handles(
+            &view_state.table_snapshots,
+            area,
+            buf,
+            self.theme,
+            cursor_table_start,
+        );
+        if let Some(indicator) = self.drop_indicator {
+            table_view::paint_drop_indicator(
+                &view_state.table_snapshots,
+                &indicator,
+                area,
+                buf,
+                self.theme,
+            );
+        }
 
         // Phase 7: build per-frame snapshots of every visible image block.
         // Image painting itself happens in `EditorView::render` (after this
@@ -447,6 +614,300 @@ impl<'a> StatefulWidget for RenderedView<'a> {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Byte offset of the table block the cursor is currently inside, or
+/// `None` when the cursor isn't in a table.  Used to gate the drag-
+/// handle painter so handles only show on the active table.
+///
+/// Walks the snapshot list rather than reparsing — the snapshots
+/// already carry every visible table's `table_byte_start`, and we can
+/// match by checking whether the cursor's byte falls in `[start, end)`.
+fn cursor_table_block_start(
+    state: &EditorState,
+    snapshots: &[crate::ui::table_view::TableLayoutSnapshot],
+) -> Option<usize> {
+    let cursor_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
+    snapshots
+        .iter()
+        .find(|s| cursor_byte >= s.table_byte_start && cursor_byte < s.table_byte_end)
+        .map(|s| s.table_byte_start)
+}
+
+/// Cell-scoped overlay for cells whose raw markdown is too wide to fit
+/// in the rendered cell.  Wraps the cell's source bytes onto chunks of
+/// the cell's full width, picks the chunk the cursor is on, and
+/// returns it as a normal `CellOverlay` so the existing painter can
+/// stamp it directly onto the rendered table row.
+///
+/// Effect: while the cursor is in the cell, the cell horizontally
+/// scrolls (per character typed) — the chunk the cursor is on stays
+/// visible, with the rest of the source paged off-screen.  Switching
+/// to Raw mode is the canonical way to see the entire raw cell at
+/// once.
+///
+/// Hard-wrap (one-char-per-step) rather than word-aware wrap because
+/// (a) cursor → chunk mapping is then trivial (`offset / cell_width`),
+/// (b) the chunks are predictable as the user types, and
+/// (c) word-boundary breaks would force the cursor to jump to a new
+/// chunk mid-word, which is jarring during line editing.
+fn compute_cell_chunk_overlay(
+    raw_row: &str,
+    rendered_line: &Line<'_>,
+    cursor_col_raw: usize,
+) -> Option<CellOverlay> {
+    let raw_pipes = raw_pipe_positions(raw_row);
+    let rendered_pipes = rendered_pipe_positions(rendered_line);
+    if raw_pipes.len() < 2 || rendered_pipes.len() != raw_pipes.len() {
+        return None;
+    }
+
+    let col_count = raw_pipes.len() - 1;
+    let preceding = raw_pipes
+        .iter()
+        .take_while(|&&p| p < cursor_col_raw)
+        .count();
+    let cell_idx = preceding.saturating_sub(1).min(col_count - 1);
+
+    let raw_cell_start = raw_pipes[cell_idx] + 1;
+    let raw_cell_end = raw_pipes[cell_idx + 1];
+    let raw_cell_text: String = raw_row
+        .chars()
+        .skip(raw_cell_start)
+        .take(raw_cell_end - raw_cell_start)
+        .collect();
+    let rendered_start = rendered_pipes[cell_idx] + 1;
+    let rendered_end = rendered_pipes[cell_idx + 1];
+    let cell_width = rendered_end.saturating_sub(rendered_start);
+    if cell_width == 0 {
+        return None;
+    }
+
+    let raw_chars: Vec<char> = raw_cell_text.chars().collect();
+    if raw_chars.len() <= cell_width {
+        // Cell content fits — `compute_cell_overlay` should have been
+        // chosen instead.  Return None so the caller falls through.
+        return None;
+    }
+
+    // Hard-wrap by `cell_width`.  Cursor's chunk + col-in-chunk are
+    // straight integer division / modulo of the cursor's offset
+    // within the cell.
+    let cursor_in_cell = cursor_col_raw.saturating_sub(raw_cell_start);
+    let total_chunks = raw_chars.len().div_ceil(cell_width);
+    let max_chunk_idx = total_chunks.saturating_sub(1);
+    let chunk_idx = (cursor_in_cell / cell_width).min(max_chunk_idx);
+    let col_in_chunk = (cursor_in_cell - chunk_idx * cell_width).min(cell_width.saturating_sub(1));
+
+    let chunk_start_chars = chunk_idx * cell_width;
+    let chunk_end_chars = (chunk_start_chars + cell_width).min(raw_chars.len());
+    let chunk: String = raw_chars[chunk_start_chars..chunk_end_chars]
+        .iter()
+        .collect();
+
+    // Selection mapping: byte offset of the chunk's first char inside
+    // `raw_row`.  Selection bytes are then intersected with
+    // [chunk_byte_start, chunk_byte_start + chunk.len()) and mapped to
+    // chars within the chunk.
+    let chunk_byte_start = raw_row
+        .char_indices()
+        .nth(raw_cell_start + chunk_start_chars)
+        .map(|(b, _)| b)
+        .unwrap_or(raw_row.len());
+
+    Some(CellOverlay {
+        rendered_start,
+        rendered_end,
+        raw_text: chunk,
+        cursor_in_cell: Some(col_in_chunk),
+        raw_cell_byte_start: chunk_byte_start,
+    })
+}
+
+/// Information about the cursor's position inside a *wrapped* table
+/// cell — i.e. one whose content broke onto multiple rendered
+/// sub-lines because it overflowed the column's allocated width.
+///
+/// Used by `RenderedView::render` to:
+/// 1. Push `cursor_rendered_line` from the row's first sub onto the
+///    sub the cursor actually occupies (`sub_offset`).
+/// 2. Place the cursor indicator at the right rendered column
+///    (`visual_col`) on that sub.
+struct WrappedCellOverlay {
+    /// Sub-line index in `editor.parsed.lines` of the cell's row's
+    /// first rendered sub.
+    row_first_line_idx: usize,
+    /// Per-chunk overlay info — one entry per wrap chunk that fits
+    /// within the row's rendered height.  Index `i` is painted on
+    /// `editor.parsed.lines[row_first_line_idx + i]`.  Each entry is
+    /// already shaped for `overlay_raw_cell` (rendered_start shifted
+    /// for continuation chunks, cursor_in_cell only on the cursor's
+    /// chunk).
+    subs: Vec<CellOverlay>,
+    /// Index within `subs` that contains the cursor.
+    cursor_sub: usize,
+    /// Document-area-relative rendered column for the cursor.  Used by
+    /// the jitter-delay branch to draw the cursor indicator at the
+    /// same column the reveal-time overlay will use, so there's no
+    /// jump when the reveal fires.
+    visual_col: usize,
+}
+
+/// Resolve the cursor's wrapped-cell layout — one `CellOverlay` per
+/// rendered sub-line of the row, mapping the wrap chunks of the raw
+/// cell text onto the rendered sub-lines.  Returns `None` for single-
+/// sub-line cells in single-sub-line rows (existing single-sub
+/// `compute_cell_overlay` / `compute_cell_chunk_overlay` paths handle
+/// those), and also when the raw cell wraps to *more* chunks than the
+/// rendered row has sub-lines (existing `compute_cell_chunk_overlay`
+/// keeps the cursor's chunk visible by horizontally scrolling — more
+/// useful than truncating raw chunks).
+fn compute_wrapped_cell_overlay(
+    editor: &EditorState,
+    block_lines_range: std::ops::Range<usize>,
+    data_row_idx: usize,
+    cursor_col_raw: usize,
+    raw_block_source: &str,
+) -> Option<WrappedCellOverlay> {
+    use crate::ui::table_view::{classify_table_sub_lines, TableSubLineKind};
+
+    let block_lines = editor.parsed.lines.get(block_lines_range.clone())?;
+    let kinds = classify_table_sub_lines(block_lines);
+
+    // Find the row's first sub and how many sub-lines it spans.
+    let row_start_local = kinds.iter().position(|k| {
+        matches!(
+            k,
+            TableSubLineKind::DataRow { row, sub: 0 } if *row == data_row_idx
+        )
+    })?;
+    let row_height = kinds[row_start_local..]
+        .iter()
+        .take_while(|k| matches!(k, TableSubLineKind::DataRow { row, .. } if *row == data_row_idx))
+        .count();
+
+    // Pipe geometry: the row's first sub-line carries the column ranges
+    // (every wrap sub-line of the same row has identical pipe positions
+    // by construction in `render_table_row`).
+    let first_line = block_lines.get(row_start_local)?;
+    let rendered_pipes = rendered_pipe_positions(first_line);
+    let raw_row = raw_block_source.split('\n').nth(data_row_idx + 2)?;
+    let raw_pipes = raw_pipe_positions(raw_row);
+    if raw_pipes.len() < 2 || rendered_pipes.len() != raw_pipes.len() {
+        return None;
+    }
+
+    let col_count = raw_pipes.len() - 1;
+    let preceding = raw_pipes
+        .iter()
+        .take_while(|&&p| p < cursor_col_raw)
+        .count();
+    let cell_idx = preceding.saturating_sub(1).min(col_count - 1);
+
+    // Cell's raw + rendered ranges.
+    let raw_cell_start_char = raw_pipes[cell_idx] + 1;
+    let raw_cell_end_char = raw_pipes[cell_idx + 1];
+    let raw_cell_text: String = raw_row
+        .chars()
+        .skip(raw_cell_start_char)
+        .take(raw_cell_end_char - raw_cell_start_char)
+        .collect();
+    let cell_rendered_start = rendered_pipes[cell_idx] + 1;
+    let cell_rendered_end = rendered_pipes[cell_idx + 1];
+    // Effective content width = rendered cell width − 2 leading/trailing
+    // padding spaces the renderer always emits around cell content.
+    let content_width = cell_rendered_end
+        .saturating_sub(cell_rendered_start)
+        .saturating_sub(2);
+    if content_width == 0 {
+        return None;
+    }
+
+    // Re-run the renderer's word-wrap so we know which sub-line + col
+    // the cursor's char index lands on.  Word-wrap drops whitespace at
+    // break points, so a cursor on dropped whitespace maps to the start
+    // of the next visible row.
+    let wrapped = wrap_cell_with_indices(&raw_cell_text, content_width);
+    if wrapped.is_empty() {
+        return None;
+    }
+
+    // Single-sub cell in a single-sub row: leave it to the existing
+    // `compute_cell_overlay` path.  Multi-sub raw beyond the row's
+    // rendered height: leave it to `compute_cell_chunk_overlay` so the
+    // cursor's chunk stays visible via horizontal scroll.
+    if wrapped.len() <= 1 && row_height <= 1 {
+        return None;
+    }
+    if wrapped.len() > row_height {
+        return None;
+    }
+
+    // Locate cursor: which chunk + col within that chunk.
+    let cursor_in_cell = cursor_col_raw.saturating_sub(raw_cell_start_char);
+    let last_idx = wrapped.len() - 1;
+    let mut cursor_sub = last_idx;
+    let mut cursor_col_in_chunk = wrapped[last_idx].1.chars().count();
+    for (i, (start_idx, row_text)) in wrapped.iter().enumerate() {
+        let next_start = wrapped.get(i + 1).map(|(s, _)| *s).unwrap_or(usize::MAX);
+        if cursor_in_cell < next_start {
+            cursor_sub = i;
+            let row_chars = row_text.chars().count();
+            let pos_in_row = cursor_in_cell.saturating_sub(*start_idx);
+            cursor_col_in_chunk = pos_in_row.min(row_chars);
+            break;
+        }
+    }
+
+    // raw_row char index → byte offset.  +1 sentinel so we can index
+    // past the last char without panicking.
+    let raw_row_byte_at: Vec<usize> = raw_row
+        .char_indices()
+        .map(|(b, _)| b)
+        .chain(std::iter::once(raw_row.len()))
+        .collect();
+
+    let mut subs: Vec<CellOverlay> = Vec::with_capacity(wrapped.len());
+    for (i, (start_in_cell, chunk_text)) in wrapped.iter().enumerate() {
+        // First chunk inherits the cell's leading-pad space directly
+        // from the raw cell text — paint it from `cell_rendered_start`
+        // so the pad lines up.  Continuation chunks have the leading
+        // pad dropped at the wrap point, so paint them one column to
+        // the right and let the rendered ' ' that the renderer
+        // already drew in the leading-pad column show through.
+        let has_leading_pad = chunk_text.starts_with(' ');
+        let painted_start = if has_leading_pad {
+            cell_rendered_start
+        } else {
+            cell_rendered_start + 1
+        };
+        let chunk_first_char_in_row = raw_cell_start_char + start_in_cell;
+        let raw_cell_byte_start = raw_row_byte_at
+            .get(chunk_first_char_in_row)
+            .copied()
+            .unwrap_or(raw_row.len());
+        let cursor_in_cell = if i == cursor_sub {
+            Some(cursor_col_in_chunk.min(chunk_text.chars().count()))
+        } else {
+            None
+        };
+        subs.push(CellOverlay {
+            rendered_start: painted_start,
+            rendered_end: cell_rendered_end,
+            raw_text: chunk_text.clone(),
+            cursor_in_cell,
+            raw_cell_byte_start,
+        });
+    }
+
+    let visual_col = subs[cursor_sub].rendered_start + cursor_col_in_chunk;
+
+    Some(WrappedCellOverlay {
+        row_first_line_idx: block_lines_range.start + row_start_local,
+        subs,
+        cursor_sub,
+        visual_col,
+    })
+}
 
 /// Build a `Line` showing `raw_text` with a block cursor at `cursor_col`.
 ///
@@ -555,24 +1016,24 @@ fn paint_selection_overlay(
     let sub_idx_in_block = rendered_line_idx.saturating_sub(rendered_span.start);
     let is_table = table_edit::is_table_block(block_text);
     let raw_line_idx = if is_table {
-        // Table rendered layout: sub 0 = top border, sub 1 = header,
-        // sub 2 = thick separator (= alignment raw row), then data rows at
-        // odd sub indexes ≥ 3, thin separators at even sub indexes between
-        // them, and the final sub = bottom border.  Only header and data
-        // rows map to raw lines that can carry selection highlighting.
-        let own_count = editor.parsed.block_own_line_count(
-            editor
-                .parsed
-                .source_map
-                .block_for_byte(block_range.start)
-                .unwrap_or(0),
-        );
-        if sub_idx_in_block == 0 || sub_idx_in_block + 1 >= own_count {
-            return;
-        }
-        match sub_idx_in_block {
-            1 => 0,
-            n if n >= 3 && n % 2 == 1 => (n + 1) / 2,
+        // Phase 13: tables can have multi-line headers / data rows when
+        // cell content wraps.  Use the box-drawing-glyph classifier
+        // instead of a fixed alternating-line pattern so the selection
+        // highlight maps onto the right raw row regardless of wrap.
+        let own_end = rendered_span.end.min(editor.parsed.lines.len());
+        let block_lines = editor
+            .parsed
+            .lines
+            .get(rendered_span.start..own_end)
+            .unwrap_or(&[]);
+        let kinds = crate::ui::table_view::classify_table_sub_lines(block_lines);
+        match kinds.get(sub_idx_in_block) {
+            Some(crate::ui::table_view::TableSubLineKind::Header { sub: 0 }) => 0,
+            Some(crate::ui::table_view::TableSubLineKind::DataRow { row, sub: 0 }) => row + 2,
+            // Continuation sub-lines, separators, and borders don't carry
+            // a 1:1 raw-byte mapping, so we skip the highlight rather
+            // than paint a speculative one that would look wrong against
+            // the wrapped text.
             _ => return,
         }
     } else {
@@ -762,7 +1223,15 @@ fn overlay_raw_cell(
     let cell_width = overlay.rendered_end.saturating_sub(overlay.rendered_start);
     let raw_chars: Vec<char> = overlay.raw_text.chars().collect();
     let cursor_style = theme.cursor;
-    let base_style = theme.normal;
+    // `theme.normal` carries `bg(Color::Reset)` to anchor unstyled text against
+    // the terminal default; if we let that bg through here it would clobber the
+    // table-row stripe painted under the cell.  Strip the bg so the underlying
+    // cell's bg is preserved — selection/cursor styles bring their own bg back
+    // when applied on top.
+    let base_style = Style {
+        bg: None,
+        ..theme.normal
+    };
 
     for i in 0..cell_width {
         let col = overlay.rendered_start + i;
@@ -779,6 +1248,14 @@ fn overlay_raw_cell(
             style = cursor_style;
         }
         if let Some(cell) = buf.cell_mut((abs_x, abs_y)) {
+            // `Cell::set_style` only inserts/removes modifiers via
+            // `add_modifier` / `sub_modifier`; without an explicit clear,
+            // modifiers from the underlying rendered cell — e.g. `BOLD`
+            // painted for `**TUI framework**` — survive the overlay and
+            // bleed through.  Zero them by hand so the raw markdown chars
+            // render in plain weight, while leaving fg/bg untouched so the
+            // row's stripe color shows through.
+            cell.modifier = Modifier::empty();
             cell.set_char(ch);
             cell.set_style(style);
         }

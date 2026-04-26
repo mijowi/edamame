@@ -512,17 +512,36 @@ fn current_widths_for_table(
 fn natural_widths(info: &table_edit::TableInfo) -> Vec<usize> {
     let col_count = info.col_count;
     let mut cell_widths: Vec<Vec<usize>> = Vec::with_capacity(info.rows.len());
+    let mut cell_min_widths: Vec<Vec<usize>> = Vec::with_capacity(info.rows.len());
     for row in &info.rows {
         let mut row_widths = Vec::with_capacity(col_count);
+        let mut row_min_widths = Vec::with_capacity(col_count);
         for cell in row.cells.iter().take(col_count) {
-            row_widths.push(cell.raw.trim().chars().count());
+            let trimmed = cell.raw.trim();
+            row_widths.push(trimmed.chars().count());
+            row_min_widths.push(longest_word_chars(trimmed));
         }
         while row_widths.len() < col_count {
             row_widths.push(0);
+            row_min_widths.push(0);
         }
         cell_widths.push(row_widths);
+        cell_min_widths.push(row_min_widths);
     }
-    table_layout::compute_widths(&cell_widths, col_count, usize::MAX, None)
+    // `usize::MAX` viewport disables the proportional path; we want
+    // natural / max widths here for drag-anchor purposes.
+    table_layout::compute_widths(&cell_widths, &cell_min_widths, col_count, usize::MAX, None)
+}
+
+/// Number of characters in the longest whitespace-delimited word in `text`.
+/// Returns 0 when `text` is empty or all whitespace.  Used to compute the
+/// per-cell `min` (the floor that the column-width algorithm must respect
+/// to avoid breaking a word across rendered rows).
+fn longest_word_chars(text: &str) -> usize {
+    text.split_whitespace()
+        .map(|w| w.chars().count())
+        .max()
+        .unwrap_or(0)
 }
 
 fn apply_user_widths(natural: &[usize], user: &[Option<usize>]) -> Vec<usize> {
@@ -632,33 +651,27 @@ fn commit_row_drag(
     state.update_cursor_block();
 }
 
-/// Commit a column-resize release: if `live_table_widths` holds the
-/// preview for this table, write the widths into the buffer as a
-/// `tui-columns` comment and clear the live override.
+/// Hand the pending column-resize off to the App by setting the
+/// pending-commit flag.  The App then decides — on the next loop
+/// iteration — whether to call [`EditorState::commit_pending_column_widths`]
+/// directly or stage a width-injection warning modal first.
+///
+/// Phase 13 split this out of `mouse_ops::apply` so `config.table.warn_on_width_injection`
+/// can intercept the commit without dragging config plumbing into the mouse layer.
 fn commit_column_border_drag(state: &mut EditorState, table_byte_start: usize) {
-    let live_widths = state
+    // Only flag a pending commit when the live preview actually targets
+    // this table — otherwise the drag was a no-op (no width change) and
+    // the live state is already clean.
+    if state
         .live_table_widths
         .as_ref()
-        .filter(|(start, _)| *start == table_byte_start)
-        .map(|(_, w)| w.clone());
-    state.live_table_widths = None;
-    let Some(widths) = live_widths else {
+        .is_some_and(|(start, _)| *start == table_byte_start)
+    {
+        state.pending_column_widths_commit = Some(table_byte_start);
+    } else {
+        state.live_table_widths = None;
         state.refresh_parsed();
-        return;
-    };
-    let source = state.buffer.contents();
-    let Some(info) = table_edit::find_table_at(&source, table_byte_start) else {
-        state.refresh_parsed();
-        return;
-    };
-    let byte_delta = table_edit::write_column_widths(&source, &info, &widths);
-    let rope = state.buffer.rope();
-    let char_delta = crate::document::EditDelta {
-        offset: rope.byte_to_char(byte_delta.offset),
-        removed: byte_delta.removed,
-        inserted: byte_delta.inserted,
-    };
-    state.apply_delta(char_delta);
+    }
 }
 
 /// Commit a column-drag release: swap the source column to the hover
@@ -1052,20 +1065,42 @@ fn rendered_sub_line_to_offset(
         .rendered_lines_for_byte(block_start_byte);
     let sub_idx_in_block = rendered_line_idx.saturating_sub(rendered_span.start);
 
-    // Table box-drawing: sub 0 = top border, sub 1 = header (raw 0),
-    // sub 2 = thick separator (alignment raw row — not a click target;
-    // snap to the first data row), data rows at odd sub ≥ 3, thin
-    // separators at even sub ≥ 4 (snap to the preceding data row),
-    // and sub = own-1 is the bottom border (snap to the last data row).
+    // Table click → raw-row index.  Phase 13: classify the rendered
+    // sub-line by leading box-drawing glyph instead of relying on a
+    // fixed alternating-line pattern, since data rows may now span
+    // multiple rendered lines after cell-wrap.
     let is_table = table_edit::is_table_block(block_text);
     let raw_line_idx = if is_table {
-        let own = rendered_span.end.saturating_sub(rendered_span.start);
-        match sub_idx_in_block {
-            0 | 1 => 0,
-            2 => 2,
-            s if s + 1 >= own => 1 + (own.saturating_sub(3)) / 2,
-            s if s % 2 == 1 => (s + 1) / 2,
-            s => s / 2,
+        let block_lines = state
+            .parsed
+            .lines
+            .get(rendered_span.start..rendered_span.end.min(state.parsed.lines.len()))
+            .unwrap_or(&[]);
+        let kinds = crate::ui::table_view::classify_table_sub_lines(block_lines);
+        match kinds.get(sub_idx_in_block) {
+            Some(crate::ui::table_view::TableSubLineKind::TopBorder)
+            | Some(crate::ui::table_view::TableSubLineKind::Header { .. }) => 0, // header line
+            Some(crate::ui::table_view::TableSubLineKind::ThickSeparator) => 2, // alignment-row → first data row
+            Some(crate::ui::table_view::TableSubLineKind::DataRow { row, .. }) => row + 2,
+            Some(crate::ui::table_view::TableSubLineKind::ThinSeparator) => {
+                // A separator click snaps to the data row immediately
+                // preceding it.  Walk back through `kinds` to find it.
+                let mut row = 0usize;
+                for k in &kinds[..sub_idx_in_block] {
+                    if let crate::ui::table_view::TableSubLineKind::DataRow { row: r, .. } = k {
+                        row = *r;
+                    }
+                }
+                row + 2
+            }
+            Some(crate::ui::table_view::TableSubLineKind::BottomBorder) | None => {
+                // Bottom border or out-of-range — snap to the last data
+                // row.  Total data rows = info.rows.len() - 2 (header +
+                // alignment).  Tables always have at least one data row
+                // for `is_table_block` to be true.
+                let last_data = block_text.split('\n').count().saturating_sub(2);
+                last_data.max(2)
+            }
         }
     } else {
         sub_idx_in_block

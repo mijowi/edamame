@@ -67,7 +67,7 @@ Two horizontal rules
 Table
 | Crate | Version | Purpose |
 |---|---|---|
-| `ratatui` | latest (0.29+) | TUI framework |
+| `ratatui` | latest (0.29+) | **TUI framework** |
 | `crossterm` | latest | Terminal backend, raw mode, event handling |
 | `pulldown-cmark` | 0.13 | CommonMark + GFM parsing with source-map offsets |
 | `ropey` | 2.x (beta) or 1.6 stable | Rope data structure for the text buffer |

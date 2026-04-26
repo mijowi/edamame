@@ -42,6 +42,18 @@ suppress_capability_warnings = false
 # [modal]
 # handler = "default"
 
+# ── Table ─────────────────────────────────────────────────────────────────────
+[table]
+# Show row / column drag handles (`≡` gutter glyph + `⇔` resize glyph) on
+# tables when the terminal supports mouse reporting.  Default: true.
+show_drag_handles = true
+# Stripe alternating data rows with `theme.table_row_even` / `table_row_odd`.
+row_striping = true
+# Show a confirmation modal the first time a column-border drag would inject
+# a `<!-- tui-columns: [...] -->` comment into the Markdown source.  The
+# modal's "Continue and don't ask again" button flips this to false.
+warn_on_width_injection = true
+
 # ── Images ────────────────────────────────────────────────────────────────────
 [images]
 # Master switch for inline image rendering: "ask" | "always" | "never".
