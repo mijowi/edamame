@@ -10,7 +10,9 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
-use crate::config::{Action, Config, KeyBindingOverrides, KeyMap, Theme, ThemeFile};
+use crate::config::{
+    Action, Config, ConfigWarning, KeyBindingOverrides, KeyMap, Theme, ThemeFile, WarningKind,
+};
 use crate::document::Buffer;
 use crate::editor::link::LinkTarget;
 use crate::editor::{edit_ops, mouse_ops, EditorState, Mode, RAW_REVEAL_DELAY};
@@ -74,6 +76,19 @@ struct DirtyGuardPrompt {
 /// startup capability-notice in Phase 4; the `ModalView` widget itself is
 /// generic enough to host other modals in later phases.
 struct StartupNotice {
+    body: Vec<String>,
+    buttons: Vec<ModalButton>,
+    state: ModalState,
+}
+
+/// Surfaces non-fatal problems detected while reading `config.toml`,
+/// `keybindings.toml`, or the active theme file.  Built from
+/// `LoadedConfig::warnings` at startup and from the post-editor reload
+/// inside `open_config_in_editor`.  The body is composed once at
+/// construction and then rendered by the shared `ModalView` widget,
+/// which handles vertical scrolling for us when there are many
+/// warnings.
+struct ConfigWarningModal {
     body: Vec<String>,
     buttons: Vec<ModalButton>,
     state: ModalState,
@@ -201,6 +216,14 @@ pub struct App {
     editor: EditorState,
     view_state: EditorViewState,
     should_quit: bool,
+    /// When `Some`, a config-warning modal is displayed and absorbs
+    /// key events.  Built from any `ConfigWarning`s returned by
+    /// [`crate::config::Config::load`] at startup and from the same
+    /// reload that runs after the user closes the external editor (see
+    /// `open_config_in_editor`).  Sits at the top of the modal priority
+    /// list so a parse error or unknown key is the first thing the user
+    /// sees — the editor still runs on defaults underneath.
+    config_warning_modal: Option<ConfigWarningModal>,
     /// When `Some`, a startup notice modal is displayed and absorbs key
     /// events.  Cleared to `None` once the user dismisses it.
     startup_notice: Option<StartupNotice>,
@@ -447,6 +470,7 @@ impl App {
         theme_file: ThemeFile,
         file_path: Option<PathBuf>,
         capabilities: Capabilities,
+        config_warnings: Vec<ConfigWarning>,
     ) -> Result<Self> {
         // Leak the theme so it can be stored as `&'static Theme`.  This is
         // intentional: the theme lives for the duration of the process.
@@ -509,6 +533,7 @@ impl App {
 
         // Decide whether to show the capability-notice on startup.
         let startup_notice = build_startup_notice(&capabilities, &config);
+        let config_warning_modal = build_config_warning_modal(&config_warnings);
         let images_enabled_prompt = build_images_enabled_prompt(&editor, &config);
         let remote_image_prompt = build_remote_image_prompt(&editor, &config);
         let wheel_step = config.editor.mouse_scroll_lines;
@@ -540,6 +565,7 @@ impl App {
             editor,
             view_state,
             should_quit: false,
+            config_warning_modal,
             startup_notice,
             images_enabled_prompt,
             session_images_enabled: None,
@@ -897,10 +923,19 @@ impl App {
                 let theme_ref = self.theme;
                 let capabilities_ref = &self.capabilities;
                 let view_state_ref = &mut self.view_state;
-                let notice_ref = self.startup_notice.as_mut();
+                // Config-warning modal sits above every other modal so a
+                // parse error or unknown-key warning is the first thing
+                // the user sees on startup (or when they return from the
+                // external editor).
+                let config_warning_ref = self.config_warning_modal.as_mut();
+                let notice_ref = if config_warning_ref.is_none() {
+                    self.startup_notice.as_mut()
+                } else {
+                    None
+                };
                 // Images-enabled prompt stacks after the capability
                 // notice so the user sees them one at a time.
-                let images_enabled_ref = if notice_ref.is_none() {
+                let images_enabled_ref = if config_warning_ref.is_none() && notice_ref.is_none() {
                     self.images_enabled_prompt.as_mut()
                 } else {
                     None
@@ -1022,7 +1057,15 @@ impl App {
                         hint,
                     };
                     frame.render_stateful_widget(view, frame.area(), view_state_ref);
-                    if let Some(notice) = notice_ref {
+                    if let Some(warn) = config_warning_ref {
+                        let modal = ModalView {
+                            title: "Config warnings",
+                            body: &warn.body,
+                            buttons: &warn.buttons,
+                            theme: theme_ref,
+                        };
+                        frame.render_stateful_widget(modal, frame.area(), &mut warn.state);
+                    } else if let Some(notice) = notice_ref {
                         let modal = ModalView {
                             title: "Terminal capabilities",
                             body: &notice.body,
@@ -1238,6 +1281,32 @@ impl App {
                     }
                     Event::Mouse(me) => {
                         if let Some(modal) = self.dirty_guard.as_mut() {
+                            modal.state.scroll_by(modal_wheel_delta(me, wheel_step));
+                            self.needs_draw = true;
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            // Config-warning modal absorbs all input while it's
+            // visible.  This block must come before every other
+            // auto-firing modal block (images / remote / startup
+            // notice) because the render path also gives the warning
+            // modal top priority — if we let a lower-priority modal
+            // absorb input here while the warning modal is what's on
+            // screen, the user would see their Enter / Space presses
+            // do nothing (they'd really be silently dismissing a
+            // hidden modal underneath).
+            if self.config_warning_modal.is_some() {
+                match &event {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        self.handle_config_warning_modal_key(*key);
+                        self.needs_draw = true;
+                    }
+                    Event::Mouse(me) => {
+                        if let Some(modal) = self.config_warning_modal.as_mut() {
                             modal.state.scroll_by(modal_wheel_delta(me, wheel_step));
                             self.needs_draw = true;
                         }
@@ -2267,6 +2336,11 @@ impl App {
         // restart edamame to retry.  Run the reload regardless of
         // whether the editor actually launched: if we fell back to
         // the OS handler the user might still have edited the file.
+        //
+        // Any non-fatal warnings (parse error, unknown keys, invalid
+        // keybinding entries) returned by `Config::load` are routed
+        // into the same `ConfigWarningModal` we use at startup so the
+        // user sees their typo as soon as they exit the editor.
         match Config::load() {
             Ok(loaded) => {
                 self.config = loaded.config;
@@ -2278,6 +2352,10 @@ impl App {
                     Err(e) => {
                         tracing::warn!(error = %e, "rebuilt KeyMap failed after editor exit");
                     }
+                }
+                if let Some(modal) = build_config_warning_modal(&loaded.warnings) {
+                    self.config_warning_modal = Some(modal);
+                    self.needs_draw = true;
                 }
             }
             Err(e) => {
@@ -2702,6 +2780,23 @@ impl App {
     }
 
     // ── End Phase 8 navigation helpers ────────────────────────────────────
+
+    /// Apply a keypress targeted at the config-warning modal.  Any
+    /// button press (or Escape) dismisses it — the modal is purely
+    /// informational, so there's no action to dispatch on close.
+    fn handle_config_warning_modal_key(&mut self, key: crossterm::event::KeyEvent) {
+        let Some(modal) = self.config_warning_modal.as_mut() else {
+            return;
+        };
+        let num_buttons = modal.buttons.len();
+        let response = modal.state.handle_key(&key, num_buttons);
+        match response {
+            ModalResponse::Continue => {}
+            ModalResponse::Cancelled | ModalResponse::ButtonPressed(_) => {
+                self.config_warning_modal = None;
+            }
+        }
+    }
 
     /// Apply a keypress targeted at the startup-notice modal.  On dismissal
     /// clears the notice and, if the user chose "Don't show this again",
@@ -3179,6 +3274,57 @@ fn build_images_enabled_prompt(
     })
 }
 
+/// Build the config-warning modal from the parse warnings returned by
+/// [`crate::config::Config::load`].  Returns `None` when there are no
+/// warnings — the modal only appears when there's something to report.
+///
+/// Body lines are grouped by file: each group leads with the file path
+/// (header style), followed by indented detail lines describing what
+/// went wrong.  Multiple warnings against the same file get separate
+/// groups in load order so the user can scroll through them.
+fn build_config_warning_modal(warnings: &[ConfigWarning]) -> Option<ConfigWarningModal> {
+    if warnings.is_empty() {
+        return None;
+    }
+    let mut body: Vec<String> = Vec::new();
+    body.push(
+        "Some configuration files had problems. Defaults were used for the affected entries."
+            .to_owned(),
+    );
+    body.push(String::new());
+    for (idx, warning) in warnings.iter().enumerate() {
+        if idx > 0 {
+            body.push(String::new());
+        }
+        body.push(format!("• {}", warning.path.display()));
+        match &warning.kind {
+            WarningKind::ParseError(msg) => {
+                body.push("  Parse error:".to_owned());
+                for line in msg.lines() {
+                    body.push(format!("    {line}"));
+                }
+            }
+            WarningKind::UnknownKeys(keys) => {
+                body.push("  Unrecognised keys (ignored):".to_owned());
+                for k in keys {
+                    body.push(format!("    {k}"));
+                }
+            }
+            WarningKind::InvalidKeybindings(errs) => {
+                body.push("  Invalid keybinding entries (skipped):".to_owned());
+                for e in errs {
+                    body.push(format!("    {e}"));
+                }
+            }
+        }
+    }
+    Some(ConfigWarningModal {
+        body,
+        buttons: vec![ModalButton::new("Ok")],
+        state: ModalState::new(),
+    })
+}
+
 /// Construct the startup-notice modal when there's something worth reporting
 /// and the user hasn't asked to suppress it.
 fn build_startup_notice(caps: &Capabilities, config: &Config) -> Option<StartupNotice> {
@@ -3450,7 +3596,7 @@ mod phase9_flash_tests {
 
     use super::*;
 
-    fn make_app() -> App {
+    pub(super) fn make_app() -> App {
         let caps = Capabilities::default();
         let theme_file = (&Theme::default()).into();
         App::new(
@@ -3459,6 +3605,7 @@ mod phase9_flash_tests {
             theme_file,
             None,
             caps,
+            Vec::new(),
         )
         .expect("build app")
     }
@@ -3755,5 +3902,110 @@ mod phase9_flash_tests {
         app.dispatch_palette_action(Action::Save, 40, 80);
         // No flash for a clean save (per `flash_for_action`).
         assert!(app.transient.is_none());
+    }
+}
+
+#[cfg(test)]
+mod config_warning_modal_tests {
+    //! `build_config_warning_modal` composes the body of the warning
+    //! popup from a slice of [`ConfigWarning`].  These tests exercise
+    //! the body shape directly so a regression in the formatting
+    //! shows up without rendering through ratatui.
+
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn empty_warnings_returns_none() {
+        assert!(build_config_warning_modal(&[]).is_none());
+    }
+
+    #[test]
+    fn parse_error_body_contains_path_and_message() {
+        let warnings = vec![ConfigWarning {
+            path: PathBuf::from("/home/u/.config/edamame/config.toml"),
+            kind: WarningKind::ParseError("expected integer, found string at line 3".into()),
+        }];
+        let modal = build_config_warning_modal(&warnings).expect("modal built");
+        let joined = modal.body.join("\n");
+        assert!(joined.contains("/home/u/.config/edamame/config.toml"));
+        assert!(joined.contains("Parse error"));
+        assert!(joined.contains("line 3"));
+        assert_eq!(modal.buttons.len(), 1);
+        assert_eq!(modal.buttons[0].label, "Ok");
+    }
+
+    #[test]
+    fn unknown_keys_body_lists_each_path() {
+        let warnings = vec![ConfigWarning {
+            path: PathBuf::from("config.toml"),
+            kind: WarningKind::UnknownKeys(vec!["editor.tab_widht".into(), "boguss".into()]),
+        }];
+        let modal = build_config_warning_modal(&warnings).expect("modal built");
+        let joined = modal.body.join("\n");
+        assert!(joined.contains("Unrecognised keys"));
+        assert!(joined.contains("editor.tab_widht"));
+        assert!(joined.contains("boguss"));
+    }
+
+    #[test]
+    fn invalid_keybindings_body_lists_each_error() {
+        let warnings = vec![ConfigWarning {
+            path: PathBuf::from("keybindings.toml"),
+            kind: WarningKind::InvalidKeybindings(vec![
+                "Quitt = \"ctrl+x\": unknown action name: 'Quitt'".into(),
+            ]),
+        }];
+        let modal = build_config_warning_modal(&warnings).expect("modal built");
+        let joined = modal.body.join("\n");
+        assert!(joined.contains("Invalid keybinding entries"));
+        assert!(joined.contains("Quitt"));
+    }
+
+    #[test]
+    fn multiple_warnings_separated_by_blank_lines() {
+        let warnings = vec![
+            ConfigWarning {
+                path: PathBuf::from("a.toml"),
+                kind: WarningKind::ParseError("oops".into()),
+            },
+            ConfigWarning {
+                path: PathBuf::from("b.toml"),
+                kind: WarningKind::UnknownKeys(vec!["x".into()]),
+            },
+        ];
+        let modal = build_config_warning_modal(&warnings).expect("modal built");
+        // The body must mention both files so the modal lets the user
+        // address each independently.
+        let joined = modal.body.join("\n");
+        assert!(joined.contains("a.toml"));
+        assert!(joined.contains("b.toml"));
+    }
+
+    #[test]
+    fn modal_dismissed_on_button_press() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = phase9_flash_tests::make_app();
+        let warnings = vec![ConfigWarning {
+            path: PathBuf::from("config.toml"),
+            kind: WarningKind::ParseError("oops".into()),
+        }];
+        app.config_warning_modal = build_config_warning_modal(&warnings);
+        assert!(app.config_warning_modal.is_some());
+        app.handle_config_warning_modal_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.config_warning_modal.is_none());
+    }
+
+    #[test]
+    fn modal_dismissed_on_escape() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = phase9_flash_tests::make_app();
+        let warnings = vec![ConfigWarning {
+            path: PathBuf::from("config.toml"),
+            kind: WarningKind::UnknownKeys(vec!["bogus".into()]),
+        }];
+        app.config_warning_modal = build_config_warning_modal(&warnings);
+        app.handle_config_warning_modal_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.config_warning_modal.is_none());
     }
 }

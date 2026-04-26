@@ -4,8 +4,8 @@ pub mod theme;
 pub mod theme_file;
 
 pub use config::{
-    Config, CustomExportEntry, ExportConfig, HtmlExportConfig, ImagesEnabled, LoadedConfig,
-    RemoteImagePolicy, StatusBarLayout,
+    Config, ConfigWarning, CustomExportEntry, ExportConfig, HtmlExportConfig, ImagesEnabled,
+    LoadedConfig, RemoteImagePolicy, StatusBarLayout, WarningKind,
 };
 pub use keymap::{Action, KeyBindingOverrides, KeyMap, KeyMapError};
 pub use theme::Theme;

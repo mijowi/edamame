@@ -41,6 +41,7 @@ fn main() -> Result<()> {
         config,
         keybindings,
         theme,
+        warnings: config_warnings,
     } = loaded;
 
     // ── Set up logging (disabled by default) ──────────────────────
@@ -82,7 +83,14 @@ fn main() -> Result<()> {
     }
 
     // ── Run the app ───────────────────────────────────────────────
-    let mut app = App::new(config, keybindings, theme, file_path, capabilities)?;
+    let mut app = App::new(
+        config,
+        keybindings,
+        theme,
+        file_path,
+        capabilities,
+        config_warnings,
+    )?;
     let run_result = app.run(terminal);
 
     // ── Restore terminal ──────────────────────────────────────────
