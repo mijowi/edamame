@@ -7,28 +7,32 @@
 //! directly.  The in-app overlay should always be simpler than
 //! reading the TOML.
 //!
-//! Layout per the Phase 10 review:
+//! Layout:
 //!
 //! ```text
-//! Config location: <path>
-//! [ Open config.toml in default editor ]
+//! Open Config folder              <config_dir>
+//! Open config.toml in default editor
 //!
-//! Theme                  catppuccin
+//! Theme                           catppuccin
 //!   Active theme (resolves to themes/<name>.toml)
 //!
-//! Use hint line          true
-//! Hint duration          1500
+//! Use hint line                   true
+//! Hint duration                   1500
 //!   Hint line message duration in ms
 //! ...
 //! ```
+//!
+//! The first two rows are "open externally" actions — the folder row
+//! shells `xdg-open` (or the OS equivalent) on the config directory;
+//! the file row suspends the TUI and runs `$VISUAL`/`$EDITOR` on
+//! `config.toml`.  A blank divider separates them from the editable
+//! settings beneath.
 //!
 //! Each row's description appears beneath it only when the row is
 //! focused, conserving vertical space.  Booleans and enum-valued
 //! fields cycle on Enter; numeric and theme-name fields open an
 //! inline editor (Theme also cycles via Left/Right when not editing
 //! through the available `themes/*.toml` files).
-
-use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -46,9 +50,17 @@ use crate::config::{Config, ImagesEnabled, RemoteImagePolicy, StatusBarLayout, T
 pub enum SettingsResponse {
     Continue,
     Cancelled,
-    /// User chose `Open in default editor` — caller should
-    /// `open::that(&config_path)`.
+    /// User chose `Open config.toml in default editor` — caller
+    /// should suspend the TUI and run `$VISUAL`/`$EDITOR`, falling
+    /// back to `open::that(&config_path)`.
     OpenInExternalEditor,
+    /// User chose the new top-row "Open Config folder" entry —
+    /// caller should `open::that(&config_dir)` so the OS file
+    /// manager surfaces the folder.  Distinct from
+    /// `OpenInExternalEditor` because this path doesn't need to
+    /// suspend the TUI: `xdg-open` returns immediately and edamame
+    /// stays in the foreground.
+    OpenConfigFolder,
     /// A field changed.  The overlay's [`Config`] reference has
     /// already been mutated; the caller is expected to call
     /// `Config::save` and flash a `Configuration updated`
@@ -156,6 +168,7 @@ impl SettingsState {
                 };
                 match &row.kind.action {
                     RowAction::OpenExternalEditor => SettingsResponse::OpenInExternalEditor,
+                    RowAction::OpenConfigFolder => SettingsResponse::OpenConfigFolder,
                     RowAction::Cycle => self.cycle_focused(config, 1),
                     RowAction::Edit => {
                         let current = (row.kind.read)(config, &self.theme_names);
@@ -219,7 +232,6 @@ impl Default for SettingsState {
 pub struct SettingsView<'a> {
     pub theme: &'a Theme,
     pub config: &'a Config,
-    pub config_path: Option<PathBuf>,
 }
 
 impl<'a> StatefulWidget for SettingsView<'a> {
@@ -241,19 +253,14 @@ impl<'a> StatefulWidget for SettingsView<'a> {
 
         let mut lines: Vec<Line<'_>> = Vec::new();
 
-        // Top header: config path + open-externally button.
-        let path_text = self
-            .config_path
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "<no path>".to_owned());
-        lines.push(Line::from(vec![
-            Span::styled("Config location: ", self.theme.status_info),
-            Span::styled(path_text, self.theme.status_filename),
-        ]));
-        lines.push(Line::from(""));
-
         for (idx, row) in state.rows.iter().enumerate() {
+            // A non-focusable empty row is a blank-line divider used
+            // to set the "open externally" pair apart from the
+            // editable settings beneath it.
+            if !row.kind.focusable && row.label.is_empty() {
+                lines.push(Line::from(""));
+                continue;
+            }
             let focused = idx == state.focused;
             let marker = if focused { "› " } else { "  " };
             let label_style = if focused {
@@ -298,9 +305,10 @@ impl<'a> StatefulWidget for SettingsView<'a> {
 fn overlay_rect(area: Rect, rows: u16) -> Rect {
     let target_width = (area.width as usize * 8 / 10).max(60);
     let width = target_width.min(area.width as usize) as u16;
-    // Header (path + button + spacer) = 3 rows; +1 for selected
-    // row's description; +4 for borders + error spacer.
-    let height = (rows + 8).min(area.height);
+    // +1 for the focused row's description, +4 for top/bottom
+    // borders and an error-line spacer.  The "open externally" pair
+    // and divider are normal rows, counted in `rows`.
+    let height = (rows + 5).min(area.height);
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     Rect {
@@ -339,6 +347,10 @@ struct RowKind {
 enum RowAction {
     /// "Open config.toml in default editor" sentinel.
     OpenExternalEditor,
+    /// "Open Config folder" sentinel — fires the `OpenConfigFolder`
+    /// action via the OS file manager (`xdg-open` on Linux,
+    /// `open` on macOS, `explorer` on Windows).
+    OpenConfigFolder,
     /// Enter cycles the value (boolean toggle / enum advance).
     Cycle,
     /// Enter opens an inline text editor (numeric field).
@@ -470,11 +482,41 @@ fn cycle_theme(config: &mut Config, delta: i32, themes: &[String]) -> bool {
 fn build_rows() -> Vec<RowDef> {
     vec![
         RowDef {
+            label: "Open config folder",
+            description: Some("Press Enter to open externally"),
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::OpenConfigFolder,
+                read: |_, _| {
+                    Config::config_dir()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default()
+                },
+                write_string: no_write,
+                cycle: None,
+            },
+        },
+        RowDef {
             label: "Open config.toml in default editor",
             description: Some("Press Enter to open externally"),
             kind: RowKind {
                 focusable: true,
                 action: RowAction::OpenExternalEditor,
+                read: |_, _| String::new(),
+                write_string: no_write,
+                cycle: None,
+            },
+        },
+        // Blank divider — sets the "open externally" pair apart
+        // from the editable settings beneath.  Non-focusable so
+        // arrow-key navigation skips it; the View renders an empty
+        // line for any non-focusable row with an empty label.
+        RowDef {
+            label: "",
+            description: None,
+            kind: RowKind {
+                focusable: false,
+                action: RowAction::Cycle,
                 read: |_, _| String::new(),
                 write_string: no_write,
                 cycle: None,
@@ -710,13 +752,37 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_first_row_emits_open_external() {
+    fn enter_on_first_row_emits_open_config_folder() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        // Focus is row 0 (the externally-edit row) by default —
-        // verified by Default::default().
+        // Focus defaults to row 0, which is now "Open Config folder".
+        let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
+        assert_eq!(resp, SettingsResponse::OpenConfigFolder);
+    }
+
+    #[test]
+    fn enter_on_second_row_emits_open_external_editor() {
+        let mut config = Config::default();
+        let mut state = SettingsState::new();
+        focus_row(&mut state, "Open config.toml in default editor");
         let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
         assert_eq!(resp, SettingsResponse::OpenInExternalEditor);
+    }
+
+    #[test]
+    fn arrow_navigation_skips_divider_row() {
+        let mut config = Config::default();
+        let mut state = SettingsState::new();
+        // Focus starts on "Open Config folder" (row 0).
+        state.handle_key(&key(KeyCode::Down), &mut config);
+        assert_eq!(
+            state.rows[state.focused].label,
+            "Open config.toml in default editor"
+        );
+        // The next Down must skip the blank divider and land on
+        // "Theme", not on the divider itself.
+        state.handle_key(&key(KeyCode::Down), &mut config);
+        assert_eq!(state.rows[state.focused].label, "Theme");
     }
 
     #[test]
@@ -774,12 +840,16 @@ mod tests {
     fn rows_match_curated_list() {
         // The phase 10 review pinned the exact set of rows.  Lock it
         // in here so adding a new row to `build_rows` becomes an
-        // explicit, reviewable change.
+        // explicit, reviewable change.  The empty entry between the
+        // "open externally" pair and the editable settings is the
+        // non-focusable divider row.
         let labels: Vec<&str> = build_rows().iter().map(|r| r.label).collect();
         assert_eq!(
             labels,
             vec![
+                "Open Config folder",
                 "Open config.toml in default editor",
+                "",
                 "Theme",
                 "Use hint line",
                 "Hint duration",

@@ -371,18 +371,20 @@ fn palette_rect(area: Rect) -> Rect {
 }
 
 /// Curated "Suggested" entries shown when the palette opens with no
-/// input.  Sourced verbatim from the plan; ordering is intentional —
-/// the markdown cheat sheet is the most discovery-worthy entry, so it
-/// sits at the top.  The keybindings entry is the combined
-/// view-and-edit overlay (Phase 10 review collapsed the separate
-/// "Show Keybindings" / "Open Keybinds" entries into one).
+/// input.  Ordering is the user-pinned grouping: configuration
+/// surfaces first, then the table-insert / handle-toggle pair,
+/// export, then the "open externally / look up syntax" pair at the
+/// end.  `InsertTable` is intentionally surfaced even though its
+/// handler is still a stub — landing the palette entry now means
+/// muscle-memory stays stable when the real implementation arrives.
 const SUGGESTED_ORDER: &[Action] = &[
-    Action::ShowMarkdownCheatSheet,
     Action::OpenSettings,
     Action::OpenKeybinds,
-    Action::OpenConfigFolder,
+    Action::InsertTable,
+    Action::ToggleTableDragHandles,
     Action::ExportHtml,
-    Action::ReloadFromDisk,
+    Action::OpenInExternalEditor,
+    Action::ShowMarkdownCheatSheet,
 ];
 
 /// True when `action` is part of the curated suggested list.
@@ -449,13 +451,21 @@ fn build_entries(keymap: &KeyMap) -> Vec<PaletteEntry> {
 /// excluded because the Phase 10 review merged it into `OpenKeybinds`
 /// — surfacing both would be confusing.
 const ALL_ACTIONS: &[Action] = &[
-    // Phase 10 entries (palette-only).
+    // Phase 10 entries (palette-only).  `OpenConfigFolder` is no
+    // longer surfaced here — it lives on the first row of the
+    // settings overlay (the "Open Config folder" entry), which is
+    // where users go to discover config-file locations.  Surfacing
+    // it twice was redundant and made the palette noisier.
+    // `ReloadFromDisk` is dropped from the palette until Phase 11
+    // implements it; today it would just flash a "see Phase 11" hint
+    // and add nothing.
     Action::ShowMarkdownCheatSheet,
     Action::OpenSettings,
     Action::OpenKeybinds,
-    Action::OpenConfigFolder,
     Action::ExportHtml,
-    Action::ReloadFromDisk,
+    Action::OpenInExternalEditor,
+    Action::ToggleTableDragHandles,
+    Action::InsertTable,
     // File ops.
     Action::Save,
     Action::Open,
@@ -496,38 +506,39 @@ const ALL_ACTIONS: &[Action] = &[
 /// action from the palette entirely.
 fn label_for(action: &Action) -> Option<&'static str> {
     Some(match action {
-        Action::ShowMarkdownCheatSheet => "Show Markdown Cheat Sheet",
-        Action::OpenSettings => "Open Settings",
-        Action::OpenKeybinds => "Open Keybindings",
-        Action::OpenConfigFolder => "Open Config Folder",
+        Action::ShowMarkdownCheatSheet => "Show Markdown cheat sheet",
+        Action::OpenSettings => "Open settings",
+        Action::OpenKeybinds => "Open keybindings",
         Action::ExportHtml => "Export HTML",
-        Action::ReloadFromDisk => "Reload from Disk",
-        Action::Save => "Save File",
-        Action::Open => "Open File",
+        Action::OpenInExternalEditor => "Open current file in system editor",
+        Action::ToggleTableDragHandles => "Toggle table drag handles",
+        Action::InsertTable => "Insert table",
+        Action::Save => "Save file",
+        Action::Open => "Open file",
         Action::Undo => "Undo",
         Action::Redo => "Redo",
         Action::Copy => "Copy",
         Action::Cut => "Cut",
         Action::Paste => "Paste",
-        Action::SelectAll => "Select All",
-        Action::ExitToPreview => "Exit to Preview",
-        Action::ToggleRawMode => "Toggle Raw Mode",
-        Action::EnterEditMode => "Enter Edit Mode",
+        Action::SelectAll => "Select all",
+        Action::ExitToPreview => "Exit to preview",
+        Action::ToggleRawMode => "Toggle raw mode",
+        Action::EnterEditMode => "Enter edit mode",
         Action::Quit => "Quit",
-        Action::ToggleCheckbox => "Toggle Checkbox",
-        Action::FollowLinkUnderCursor => "Follow Link Under Cursor",
-        Action::NavigateBack => "Navigate Back",
-        Action::NavigateForward => "Navigate Forward",
-        Action::TableMoveRowUp => "Table: Move Row Up",
-        Action::TableMoveRowDown => "Table: Move Row Down",
-        Action::TableMoveColumnLeft => "Table: Move Column Left",
-        Action::TableMoveColumnRight => "Table: Move Column Right",
-        Action::TableInsertRowAbove => "Table: Insert Row Above",
-        Action::TableInsertRowBelow => "Table: Insert Row Below",
-        Action::TableInsertColumnLeft => "Table: Insert Column Left",
-        Action::TableInsertColumnRight => "Table: Insert Column Right",
-        Action::TableDeleteRow => "Table: Delete Row",
-        Action::TableDeleteColumn => "Table: Delete Column",
+        Action::ToggleCheckbox => "Toggle checkbox",
+        Action::FollowLinkUnderCursor => "Follow link under cursor",
+        Action::NavigateBack => "Navigate back",
+        Action::NavigateForward => "Navigate forward",
+        Action::TableMoveRowUp => "Table: Move row up",
+        Action::TableMoveRowDown => "Table: Move row down",
+        Action::TableMoveColumnLeft => "Table: Move column left",
+        Action::TableMoveColumnRight => "Table: Move column right",
+        Action::TableInsertRowAbove => "Table: Insert row above",
+        Action::TableInsertRowBelow => "Table: Insert row below",
+        Action::TableInsertColumnLeft => "Table: Insert column left",
+        Action::TableInsertColumnRight => "Table: Insert column right",
+        Action::TableDeleteRow => "Table: Delete row",
+        Action::TableDeleteColumn => "Table: Delete column",
         _ => return None,
     })
 }
@@ -559,12 +570,13 @@ mod tests {
         assert_eq!(
             labels,
             vec![
-                "Show Markdown Cheat Sheet".to_owned(),
-                "Open Settings".to_owned(),
-                "Open Keybindings".to_owned(),
-                "Open Config Folder".to_owned(),
+                "Open settings".to_owned(),
+                "Open keybindings".to_owned(),
+                "Insert table".to_owned(),
+                "Toggle table drag handles".to_owned(),
                 "Export HTML".to_owned(),
-                "Reload from Disk".to_owned(),
+                "Open current file in system editor".to_owned(),
+                "Show Markdown cheat sheet".to_owned(),
             ]
         );
     }

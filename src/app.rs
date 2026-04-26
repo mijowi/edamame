@@ -159,6 +159,20 @@ struct WidthInjectionWarning {
     pending_table_start: usize,
 }
 
+/// Result of [`App::run_external_editor`].  Tells the caller whether
+/// the editor actually ran so it can decide whether a post-exit
+/// reload is appropriate.
+enum ExternalEditorOutcome {
+    /// `$VISUAL` / `$EDITOR` was unset; the path was handed to the
+    /// OS handler via `open::that`.  No suspend happened.
+    OsHandler,
+    /// The TUI couldn't be suspended.  An error was already flashed.
+    SuspendFailed,
+    /// The editor process ran (or failed to launch) — here's the
+    /// outcome.
+    Exited(std::io::Result<std::process::ExitStatus>),
+}
+
 /// Phase 9 generic modal prompt hosted on the hint line.  Phase 11
 /// (file-change detection) is the first consumer; landing the
 /// scaffolding here means later phases only need to populate the
@@ -321,6 +335,11 @@ pub struct App {
     /// `Terminal` handle needed to suspend / resume the TUI around
     /// the editor process.
     pending_open_config_in_editor: bool,
+    /// Set by the palette's `OpenInExternalEditor` action.  Same
+    /// motivation as `pending_open_config_in_editor` — the dispatch
+    /// site doesn't have the `Terminal` handle, so the run loop
+    /// drains the flag.
+    pending_open_file_in_editor: bool,
     /// Pause flag for the crossterm read thread.  When `true`, the
     /// thread sleeps instead of polling stdin, releasing it to a
     /// child process (e.g. `$EDITOR` shelled out from the settings
@@ -549,6 +568,7 @@ impl App {
             keybinds_overlay: None,
             keymap: None,
             pending_open_config_in_editor: false,
+            pending_open_file_in_editor: false,
             read_paused: None,
             width_injection_warning: None,
             hint_prompt: None,
@@ -1054,7 +1074,6 @@ impl App {
                         let view = SettingsView {
                             theme: theme_ref,
                             config: config_ref,
-                            config_path: Config::config_path(),
                         };
                         frame.render_stateful_widget(view, frame.area(), state);
                     } else if let Some(state) = keybinds_overlay_ref {
@@ -1377,6 +1396,10 @@ impl App {
                         self.needs_draw = true;
                     }
                 }
+                if self.pending_open_file_in_editor {
+                    self.pending_open_file_in_editor = false;
+                    self.open_current_file_in_editor(&mut terminal, &rx);
+                }
                 continue;
             }
 
@@ -1568,6 +1591,14 @@ impl App {
                     }
                 }
                 self.needs_draw = true;
+                // Phase 10 — `OpenInExternalEditor` defers to the run
+                // loop the same way the settings overlay defers
+                // `OpenConfigFolder` (we own `terminal` / `rx` here,
+                // not in `handle_app_action`).
+                if self.pending_open_file_in_editor {
+                    self.pending_open_file_in_editor = false;
+                    self.open_current_file_in_editor(&mut terminal, &rx);
+                }
                 // New decodes (e.g. from an edit that added an image
                 // inside the viewport, or a scroll that brought one
                 // into the prefetch window) are picked up by
@@ -1663,6 +1694,49 @@ impl App {
             }
             Action::ReloadFromDisk => {
                 self.flash("Reload from disk — see Phase 11", MessageKind::Info);
+                true
+            }
+            Action::OpenInExternalEditor => {
+                if self.editor.buffer.path().is_none() {
+                    self.flash("No file path for buffer", MessageKind::Error);
+                } else {
+                    // The actual editor invocation needs the live
+                    // `Terminal` handle, owned by the run loop.
+                    // Mirrors the settings-overlay "Open config.toml"
+                    // flow.
+                    self.pending_open_file_in_editor = true;
+                    self.needs_draw = true;
+                }
+                true
+            }
+            Action::ToggleTableDragHandles => {
+                // In-memory only — never write the change back to
+                // `config.toml`.  Settings the user wants to keep
+                // belong in the settings overlay.  Skip the toggle on
+                // terminals where mouse reporting is unavailable: the
+                // gutter glyphs would be inert and confusing.
+                if self.capabilities.mouse {
+                    self.config.table.show_drag_handles = !self.config.table.show_drag_handles;
+                    let state = if self.config.table.show_drag_handles {
+                        "on"
+                    } else {
+                        "off"
+                    };
+                    self.flash(format!("Table drag handles {state}"), MessageKind::Info);
+                } else {
+                    self.flash("Mouse not supported on this terminal", MessageKind::Error);
+                }
+                self.needs_draw = true;
+                true
+            }
+            Action::InsertTable => {
+                // Stub — palette entry exists so users can find it,
+                // but the table-insertion command itself isn't built
+                // yet.  Replace this arm with the real implementation
+                // once `editor::table_edit::insert_blank_table` (or
+                // similar) lands.
+                self.flash("Insert Table — not implemented yet", MessageKind::Info);
+                self.needs_draw = true;
                 true
             }
             _ => false,
@@ -1902,6 +1976,21 @@ impl App {
                 self.settings_overlay = None;
                 self.needs_draw = true;
             }
+            SettingsResponse::OpenConfigFolder => {
+                // OS file-manager opens via `xdg-open` etc. return
+                // immediately, so unlike the editor flow we don't
+                // need to suspend the TUI — just hand the path to
+                // a worker thread (mirrors `Action::OpenConfigFolder`
+                // in `handle_app_action`) and close the overlay so
+                // the user sees their file manager unobscured.
+                if let Some(dir) = Config::config_dir() {
+                    self.spawn_open_worker(dir.display().to_string());
+                } else {
+                    self.flash("No config directory available", MessageKind::Error);
+                }
+                self.settings_overlay = None;
+                self.needs_draw = true;
+            }
             SettingsResponse::FieldChanged(_) => {
                 // Phase 9 already centralises the save-and-flash
                 // pattern.  Re-use it so the settings overlay produces
@@ -2138,6 +2227,119 @@ impl App {
             }
         }
 
+        let outcome = self.run_external_editor(&path, terminal, rx);
+
+        // Reload the config from disk so any edits the user made
+        // are reflected in the running session.  Failures fall back
+        // to the in-memory state with a warning — the user can
+        // restart edamame to retry.  Run the reload regardless of
+        // whether the editor actually launched: if we fell back to
+        // the OS handler the user might still have edited the file.
+        match Config::load() {
+            Ok(loaded) => {
+                self.config = loaded.config;
+                self.keybindings = loaded.keybindings;
+                // Rebuild the keymap so any keybinding edits take
+                // effect for the next keystroke.
+                match KeyMap::build(&self.keybindings) {
+                    Ok(km) => self.keymap = Some(km),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "rebuilt KeyMap failed after editor exit");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to reload config after editor exit");
+            }
+        }
+
+        match outcome {
+            ExternalEditorOutcome::Exited(Ok(s)) if s.success() => {
+                self.flash("Configuration updated", MessageKind::Warning);
+            }
+            ExternalEditorOutcome::Exited(Ok(s)) => {
+                self.flash(format!("Editor exited {s}"), MessageKind::Warning);
+            }
+            ExternalEditorOutcome::Exited(Err(e)) => {
+                self.flash(format!("Editor failed: {e}"), MessageKind::Error);
+            }
+            // Suspend failure / OS-handler fallback already flashed
+            // their own status — no extra message here.
+            ExternalEditorOutcome::SuspendFailed | ExternalEditorOutcome::OsHandler => {}
+        }
+    }
+
+    /// Save the current buffer (best-effort) and open it in the
+    /// user's `$VISUAL` / `$EDITOR`.  After the editor exits the
+    /// buffer is reloaded from disk so external edits are picked up
+    /// — without this, subsequent saves from edamame would silently
+    /// overwrite work done in the other editor.  Falls back to the
+    /// OS handler when no shell editor is set; same flow the
+    /// settings overlay uses for `config.toml`.
+    fn open_current_file_in_editor(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+        rx: &mpsc::Receiver<AppEvent>,
+    ) {
+        let Some(path) = self.editor.buffer.path().map(|p| p.to_path_buf()) else {
+            self.flash("No file path for buffer", MessageKind::Error);
+            return;
+        };
+
+        // Save first so the external editor sees the in-memory state.
+        if self.editor.dirty {
+            if let Err(e) = self.editor.buffer.save_file() {
+                tracing::warn!(error = %e, "failed to save buffer before editor launch");
+                self.flash(format!("Save failed: {e}"), MessageKind::Error);
+                return;
+            }
+            self.editor.dirty = false;
+        }
+
+        let outcome = self.run_external_editor(&path, terminal, rx);
+
+        // Reload the buffer from disk so any external edits are
+        // reflected.  Skipped on suspend failure (terminal is in a
+        // degraded state already) and on the OS-handler fallback
+        // (the OS handler returns immediately and the user may not
+        // have closed the file yet — reloading prematurely would
+        // discard their in-edamame edits while they're still
+        // working).
+        if matches!(outcome, ExternalEditorOutcome::Exited(_)) {
+            if let Err(e) = self.load_file_into_editor(path) {
+                tracing::warn!(error = %e, "failed to reload buffer after editor exit");
+                self.flash(format!("Reload failed: {e}"), MessageKind::Error);
+                return;
+            }
+        }
+
+        match outcome {
+            ExternalEditorOutcome::Exited(Ok(s)) if s.success() => {
+                self.flash("File reloaded", MessageKind::Success);
+            }
+            ExternalEditorOutcome::Exited(Ok(s)) => {
+                self.flash(format!("Editor exited {s}"), MessageKind::Warning);
+            }
+            ExternalEditorOutcome::Exited(Err(e)) => {
+                self.flash(format!("Editor failed: {e}"), MessageKind::Error);
+            }
+            ExternalEditorOutcome::SuspendFailed | ExternalEditorOutcome::OsHandler => {}
+        }
+    }
+
+    /// Suspend the TUI, run an external editor on `path`, and resume.
+    /// Shared between the settings-overlay "Open config.toml" flow
+    /// and the palette "Open current file in system editor" flow:
+    /// both need the same read-thread / terminal dance around
+    /// `Command::status()`.  The caller is responsible for any
+    /// pre-launch save / post-exit reload — this helper only owns
+    /// the suspend / resume window.
+    fn run_external_editor(
+        &mut self,
+        path: &Path,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+        rx: &mpsc::Receiver<AppEvent>,
+    ) -> ExternalEditorOutcome {
         let editor = std::env::var("VISUAL")
             .ok()
             .filter(|s| !s.trim().is_empty())
@@ -2154,7 +2356,7 @@ impl App {
             // or not.
             self.spawn_open_worker(path.display().to_string());
             self.flash("Opening with system default", MessageKind::Info);
-            return;
+            return ExternalEditorOutcome::OsHandler;
         };
 
         // Pause our crossterm read thread so the editor has
@@ -2186,10 +2388,10 @@ impl App {
             if let Some(p) = self.read_paused.as_ref() {
                 p.store(false, Ordering::Release);
             }
-            return;
+            return ExternalEditorOutcome::SuspendFailed;
         }
 
-        let status = std::process::Command::new(&editor).arg(&path).status();
+        let status = std::process::Command::new(&editor).arg(path).status();
 
         // Always try to restore the TUI, even if the editor failed —
         // otherwise we strand the user in a half-suspended state.
@@ -2220,39 +2422,7 @@ impl App {
         let _ = terminal.clear();
         self.needs_draw = true;
 
-        // Reload the config from disk so any edits the user made
-        // are reflected in the running session.  Failures fall back
-        // to the in-memory state with a warning — the user can
-        // restart edamame to retry.
-        match Config::load() {
-            Ok(loaded) => {
-                self.config = loaded.config;
-                self.keybindings = loaded.keybindings;
-                // Rebuild the keymap so any keybinding edits take
-                // effect for the next keystroke.
-                match KeyMap::build(&self.keybindings) {
-                    Ok(km) => self.keymap = Some(km),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "rebuilt KeyMap failed after editor exit");
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to reload config after editor exit");
-            }
-        }
-
-        match status {
-            Ok(s) if s.success() => {
-                self.flash("Configuration updated", MessageKind::Warning);
-            }
-            Ok(s) => {
-                self.flash(format!("Editor exited {s}"), MessageKind::Warning);
-            }
-            Err(e) => {
-                self.flash(format!("Editor failed: {e}"), MessageKind::Error);
-            }
-        }
+        ExternalEditorOutcome::Exited(status)
     }
 
     /// Spawn a worker thread that calls `open::that` and reports the
@@ -3511,14 +3681,30 @@ mod phase9_flash_tests {
         // The "Open config.toml in default editor" row defers the
         // actual editor invocation to the run loop so it can drive
         // the terminal suspend/resume.  Verify the wiring: pressing
-        // Enter on row 0 stages the request and clears the overlay.
+        // Enter on that row stages the request and clears the overlay.
+        // Row 0 is now "Open Config folder", so step Down once first.
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = make_app();
         app.open_settings_overlay();
         assert!(app.settings_overlay.is_some());
-        // Row 0 is the open-externally button.
+        app.handle_settings_overlay_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app.handle_settings_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.pending_open_config_in_editor);
+        assert!(app.settings_overlay.is_none());
+    }
+
+    #[test]
+    fn settings_overlay_open_config_folder_closes_overlay() {
+        // The new top-row "Open Config folder" entry hands the path
+        // to the OS file manager via `spawn_open_worker` and closes
+        // the overlay.  No `pending_open_config_in_editor` flag is
+        // set — that path is editor-only.
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = make_app();
+        app.open_settings_overlay();
+        // Focus defaults to row 0 = "Open Config folder".
+        app.handle_settings_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!app.pending_open_config_in_editor);
         assert!(app.settings_overlay.is_none());
     }
 

@@ -136,6 +136,22 @@ pub enum Action {
     /// for now; Phase 11 will also wire it from the file-watcher
     /// prompt.
     ReloadFromDisk,
+    /// Save the current buffer and open it in `$VISUAL` / `$EDITOR`
+    /// (falling back to the OS handler).  Reuses the same suspend /
+    /// resume flow the settings overlay uses for `config.toml`.  The
+    /// buffer is reloaded from disk after the editor exits so any
+    /// external edits are picked up.
+    OpenInExternalEditor,
+    /// Toggle the in-memory `config.table.show_drag_handles` flag.
+    /// Intentionally does NOT persist to `config.toml` — the user can
+    /// flip handles for the current session without committing the
+    /// change.
+    ToggleTableDragHandles,
+    /// Stub for a future "insert a Markdown table at cursor" command.
+    /// Currently flashes a not-implemented hint; surfaces in the
+    /// palette so the entry is discoverable as soon as the feature
+    /// lands.
+    InsertTable,
 }
 
 impl fmt::Display for Action {
@@ -208,6 +224,9 @@ impl fmt::Display for Action {
             Action::OpenConfigFolder => "OpenConfigFolder",
             Action::ExportHtml => "ExportHtml",
             Action::ReloadFromDisk => "ReloadFromDisk",
+            Action::OpenInExternalEditor => "OpenInExternalEditor",
+            Action::ToggleTableDragHandles => "ToggleTableDragHandles",
+            Action::InsertTable => "InsertTable",
         };
         f.write_str(s)
     }
@@ -284,6 +303,9 @@ impl FromStr for Action {
             "OpenConfigFolder" => Ok(Action::OpenConfigFolder),
             "ExportHtml" => Ok(Action::ExportHtml),
             "ReloadFromDisk" => Ok(Action::ReloadFromDisk),
+            "OpenInExternalEditor" => Ok(Action::OpenInExternalEditor),
+            "ToggleTableDragHandles" => Ok(Action::ToggleTableDragHandles),
+            "InsertTable" => Ok(Action::InsertTable),
             other => Err(KeyMapError::UnknownAction(other.to_owned())),
         }
     }
