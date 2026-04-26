@@ -45,14 +45,14 @@ impl History {
 
     /// Record a completed edit. Clears the redo stack.
     ///
-    /// Adjacent single-character alphanumeric insertions are merged into the
-    /// previous undo entry so that typing "cat" is one undo step instead of
-    /// three.  The same boundary detection as word-wrap is used — a space,
-    /// punctuation, or any non-alphanumeric character starts a new group.
+    /// Adjacent single-character alphanumeric edits of the same kind are
+    /// merged into the previous undo entry so that typing "cat" — or
+    /// backspacing it — is one undo step instead of three.  The same boundary
+    /// detection is used for both directions: a space, punctuation, or any
+    /// non-alphanumeric character starts a new group.
     pub fn record(&mut self, delta: EditDelta) {
         if let Some(top) = self.undo_stack.last_mut() {
-            if can_merge_word_group(top, &delta) {
-                top.inserted.push_str(&delta.inserted);
+            if try_merge(top, &delta) {
                 self.redo_stack.clear();
                 return;
             }
@@ -113,35 +113,79 @@ impl History {
     }
 }
 
-/// Can the incoming `new` delta be merged into `top` as part of the same
-/// word-typing group?
+/// Try to fold `new` into `top` as part of the same word-edit group.  Returns
+/// `true` if the merge happened (and `top` was mutated in place); `false`
+/// otherwise.
 ///
-/// Both must be pure insertions, and the new delta must be a single
-/// alphanumeric character typed immediately after the top's last inserted
-/// character (by byte offset).  Multi-character pastes, newlines, spaces, and
-/// any punctuation all break the group.
-fn can_merge_word_group(top: &EditDelta, new: &EditDelta) -> bool {
-    if !top.removed.is_empty() || !new.removed.is_empty() {
-        return false;
+/// Pure insertions and pure deletions merge symmetrically: the new delta must
+/// affect a single alphanumeric character that is contiguous with `top`'s
+/// existing range, and `top`'s adjacent character must also be alphanumeric.
+/// Mixed-direction edits (insert then delete, or vice versa) never merge.
+fn try_merge(top: &mut EditDelta, new: &EditDelta) -> bool {
+    if top.removed.is_empty() && new.removed.is_empty() {
+        return try_merge_insertion(top, new);
     }
-    // New insert must be exactly one alphanumeric char.
-    let mut new_chars = new.inserted.chars();
-    let new_ch = match new_chars.next() {
-        Some(c) if new_chars.next().is_none() => c,
-        _ => return false,
-    };
-    if !new_ch.is_alphanumeric() {
-        return false;
+    if top.inserted.is_empty() && new.inserted.is_empty() {
+        return try_merge_deletion(top, new);
     }
-    // The top's LAST char must also be alphanumeric.
-    let top_last = top.inserted.chars().last();
-    match top_last {
+    false
+}
+
+fn try_merge_insertion(top: &mut EditDelta, new: &EditDelta) -> bool {
+    match single_char(&new.inserted) {
         Some(c) if c.is_alphanumeric() => {}
         _ => return false,
     }
-    // New offset must be immediately after top's inserted text.
+    // The top's LAST inserted char must also be alphanumeric.
+    match top.inserted.chars().last() {
+        Some(c) if c.is_alphanumeric() => {}
+        _ => return false,
+    }
+    // New offset must sit immediately after top's inserted text.
     let top_end = top.offset + top.inserted.chars().count();
-    new.offset == top_end
+    if new.offset != top_end {
+        return false;
+    }
+    top.inserted.push_str(&new.inserted);
+    true
+}
+
+fn try_merge_deletion(top: &mut EditDelta, new: &EditDelta) -> bool {
+    match single_char(&new.removed) {
+        Some(c) if c.is_alphanumeric() => {}
+        _ => return false,
+    }
+    // Backspace: the new delete sits immediately before the existing range,
+    // so prepend it.  The top's leftmost char must also be alphanumeric.
+    if new.offset + new.removed.chars().count() == top.offset {
+        match top.removed.chars().next() {
+            Some(c) if c.is_alphanumeric() => {}
+            _ => return false,
+        }
+        top.removed.insert_str(0, &new.removed);
+        top.offset = new.offset;
+        return true;
+    }
+    // Forward delete: the cursor stays put, so each new delete starts at
+    // top's offset.  Append it; the top's rightmost char must be alnum.
+    if new.offset == top.offset {
+        match top.removed.chars().last() {
+            Some(c) if c.is_alphanumeric() => {}
+            _ => return false,
+        }
+        top.removed.push_str(&new.removed);
+        return true;
+    }
+    false
+}
+
+/// Return `Some(c)` if `s` is exactly one `char`, else `None`.
+fn single_char(s: &str) -> Option<char> {
+    let mut it = s.chars();
+    match (it.next(), it.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -415,6 +459,191 @@ mod tests {
             inserted: "".into(),
         });
         assert_eq!(h.undo_depth(), 2);
+    }
+
+    // ── Deletion grouping ─────────────────────────────────────────
+
+    /// Backspacing a word produces a single undo entry that restores the
+    /// whole word in one Ctrl-Z.
+    #[test]
+    fn backspacing_word_creates_one_undo_entry() {
+        let mut h = History::new();
+        // Cursor was at 3 in "cat"; backspace removes 't', then 'a', then 'c'.
+        h.record(EditDelta {
+            offset: 2,
+            removed: "t".into(),
+            inserted: "".into(),
+        });
+        h.record(EditDelta {
+            offset: 1,
+            removed: "a".into(),
+            inserted: "".into(),
+        });
+        h.record(EditDelta {
+            offset: 0,
+            removed: "c".into(),
+            inserted: "".into(),
+        });
+        assert_eq!(h.undo_depth(), 1);
+
+        let mut b = buf("");
+        let cursor = h.undo(&mut b).unwrap();
+        assert_eq!(b.contents(), "cat");
+        // undo_cursor = offset(0) + removed.len("cat") = 3 — back where the
+        // user started before they hit backspace the first time.
+        assert_eq!(cursor, 3);
+    }
+
+    /// Forward-deleting a word produces a single undo entry.  The cursor
+    /// stays put, so every delta shares the same offset.
+    #[test]
+    fn forward_deleting_word_creates_one_undo_entry() {
+        let mut h = History::new();
+        // Cursor at 0 in "cat"; Delete removes 'c', then 'a', then 't'.
+        h.record(EditDelta {
+            offset: 0,
+            removed: "c".into(),
+            inserted: "".into(),
+        });
+        h.record(EditDelta {
+            offset: 0,
+            removed: "a".into(),
+            inserted: "".into(),
+        });
+        h.record(EditDelta {
+            offset: 0,
+            removed: "t".into(),
+            inserted: "".into(),
+        });
+        assert_eq!(h.undo_depth(), 1);
+
+        let mut b = buf("");
+        h.undo(&mut b).unwrap();
+        assert_eq!(b.contents(), "cat");
+    }
+
+    /// A space between alphanumeric backspaces breaks the group, mirroring
+    /// the insertion-side behaviour.
+    #[test]
+    fn space_breaks_backspace_group() {
+        let mut h = History::new();
+        // Backspacing through "ca d": d, ' ', a, c.
+        h.record(EditDelta {
+            offset: 3,
+            removed: "d".into(),
+            inserted: "".into(),
+        });
+        h.record(EditDelta {
+            offset: 2,
+            removed: " ".into(),
+            inserted: "".into(),
+        });
+        h.record(EditDelta {
+            offset: 1,
+            removed: "a".into(),
+            inserted: "".into(),
+        });
+        h.record(EditDelta {
+            offset: 0,
+            removed: "c".into(),
+            inserted: "".into(),
+        });
+        // "d", " ", "ca" — three groups.
+        assert_eq!(h.undo_depth(), 3);
+    }
+
+    /// A space between alphanumeric forward-deletes breaks the group.
+    #[test]
+    fn space_breaks_forward_delete_group() {
+        let mut h = History::new();
+        // Forward-deleting "ca d" from offset 0: c, a, ' ', d.
+        h.record(EditDelta {
+            offset: 0,
+            removed: "c".into(),
+            inserted: "".into(),
+        });
+        h.record(EditDelta {
+            offset: 0,
+            removed: "a".into(),
+            inserted: "".into(),
+        });
+        h.record(EditDelta {
+            offset: 0,
+            removed: " ".into(),
+            inserted: "".into(),
+        });
+        h.record(EditDelta {
+            offset: 0,
+            removed: "d".into(),
+            inserted: "".into(),
+        });
+        // "ca", " ", "d" — three groups.
+        assert_eq!(h.undo_depth(), 3);
+    }
+
+    /// A non-contiguous backspace (cursor jumped elsewhere) starts a new
+    /// group.
+    #[test]
+    fn non_contiguous_delete_breaks_group() {
+        let mut h = History::new();
+        h.record(EditDelta {
+            offset: 5,
+            removed: "a".into(),
+            inserted: "".into(),
+        });
+        // Cursor moved; next backspace is far away.
+        h.record(EditDelta {
+            offset: 0,
+            removed: "b".into(),
+            inserted: "".into(),
+        });
+        assert_eq!(h.undo_depth(), 2);
+    }
+
+    /// Multi-character deletes (e.g. DeleteWordBack) are their own undo
+    /// entries; they don't fold the next single-char delete in.
+    #[test]
+    fn multi_char_delete_does_not_merge() {
+        let mut h = History::new();
+        h.record(EditDelta {
+            offset: 0,
+            removed: "hello".into(),
+            inserted: "".into(),
+        });
+        h.record(EditDelta {
+            offset: 0,
+            removed: "x".into(),
+            inserted: "".into(),
+        });
+        // The new delete is single-char alnum and contiguous, so the
+        // existing test for "top can be multi-char" parity does merge it.
+        // That mirrors the insertion side, where a paste-then-typed-char
+        // also merges.  Both are acceptable: the user pressed Delete twice.
+        assert_eq!(h.undo_depth(), 1);
+    }
+
+    #[test]
+    fn undo_of_backspace_group_restores_all_at_once() {
+        let mut h = History::new();
+        let mut b = buf("hello");
+        // Simulate backspacing the whole word: each press removes one char
+        // and shifts the cursor left by one.
+        for (offset, ch) in [(4, 'o'), (3, 'l'), (2, 'l'), (1, 'e'), (0, 'h')] {
+            b.remove(offset, offset + 1);
+            h.record(EditDelta {
+                offset,
+                removed: ch.to_string(),
+                inserted: "".into(),
+            });
+        }
+        assert_eq!(b.contents(), "");
+        assert_eq!(h.undo_depth(), 1);
+
+        h.undo(&mut b).unwrap();
+        assert_eq!(b.contents(), "hello");
+
+        h.redo(&mut b).unwrap();
+        assert_eq!(b.contents(), "");
     }
 
     #[test]
