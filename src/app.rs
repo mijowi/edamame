@@ -8,6 +8,7 @@ use anyhow::Result;
 use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
+use ratatui::text::Line;
 use ratatui::Terminal;
 
 use crate::config::{
@@ -64,7 +65,7 @@ struct NavEntry {
 /// the pending target across the modal's lifetime so we can resume the
 /// navigation once the user picks a button.
 struct DirtyGuardPrompt {
-    body: Vec<String>,
+    body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
     state: ModalState,
     /// The destination that was about to be followed when the guard
@@ -76,7 +77,7 @@ struct DirtyGuardPrompt {
 /// startup capability-notice in Phase 4; the `ModalView` widget itself is
 /// generic enough to host other modals in later phases.
 struct StartupNotice {
-    body: Vec<String>,
+    body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
     state: ModalState,
 }
@@ -89,7 +90,7 @@ struct StartupNotice {
 /// which handles vertical scrolling for us when there are many
 /// warnings.
 struct ConfigWarningModal {
-    body: Vec<String>,
+    body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
     state: ModalState,
 }
@@ -99,7 +100,7 @@ struct ConfigWarningModal {
 /// inline for this session), `No` (keep placeholders for this session),
 /// `Always` (persist config), `Never` (persist config).
 struct ImagesEnabledPrompt {
-    body: Vec<String>,
+    body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
     state: ModalState,
 }
@@ -110,7 +111,7 @@ struct ImagesEnabledPrompt {
 /// `No` (dismiss without fetching), `Always` (persist config),
 /// `Never` (persist config).
 struct RemoteImagePrompt {
-    body: Vec<String>,
+    body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
     state: ModalState,
 }
@@ -140,7 +141,7 @@ struct TransientMessage {
 /// Phase 9 quit-confirm dialog shown when the user tries to exit with
 /// unsaved changes.  Three buttons: `Save`, `Discard`, `Cancel`.
 struct QuitConfirm {
-    body: Vec<String>,
+    body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
     state: ModalState,
 }
@@ -150,7 +151,7 @@ struct QuitConfirm {
 /// has been merged into the editable [`crate::ui::KeybindsView`]
 /// overlay (one combined view + edit surface).
 struct CheatSheetModal {
-    body: Vec<String>,
+    body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
     state: ModalState,
 }
@@ -168,7 +169,7 @@ struct CheatSheetModal {
 /// [`EditorState::commit_pending_column_widths`] /
 /// [`EditorState::cancel_pending_column_widths`] when the modal resolves.
 struct WidthInjectionWarning {
-    body: Vec<String>,
+    body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
     state: ModalState,
     pending_table_start: usize,
@@ -1894,10 +1895,7 @@ impl App {
                 if crate::editor::table_edit::cursor_line_is_blank(&source, cursor_byte) {
                     self.open_insert_table_modal();
                 } else {
-                    self.flash(
-                        "Insert Table requires a blank line",
-                        MessageKind::Warning,
-                    );
+                    self.flash("Insert Table requires a blank line", MessageKind::Warning);
                 }
                 self.needs_draw = true;
                 true
@@ -1957,9 +1955,9 @@ impl App {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Current buffer".to_owned());
         let body = vec![
-            format!("{} has unsaved changes.", display),
-            String::new(),
-            "What would you like to do?".to_owned(),
+            Line::raw(format!("{} has unsaved changes.", display)),
+            Line::raw(""),
+            Line::raw("What would you like to do?"),
         ];
         self.quit_confirm = Some(QuitConfirm {
             body,
@@ -2015,7 +2013,7 @@ impl App {
     /// so the dismiss semantics are identical (any button or Escape).
     pub fn open_markdown_cheat_sheet(&mut self) {
         self.markdown_cheat_sheet = Some(CheatSheetModal {
-            body: markdown_cheat_sheet_body(),
+            body: markdown_cheat_sheet_body(self.theme),
             buttons: vec![ModalButton::new("OK")],
             state: ModalState::new(),
         });
@@ -2259,10 +2257,7 @@ impl App {
                     .rope()
                     .char_to_byte(self.editor.cursor.offset);
                 if !crate::editor::table_edit::cursor_line_is_blank(&source, cursor_byte) {
-                    self.flash(
-                        "Insert Table requires a blank line",
-                        MessageKind::Warning,
-                    );
+                    self.flash("Insert Table requires a blank line", MessageKind::Warning);
                     return;
                 }
                 edit_ops::insert_table_at_cursor(
@@ -2306,11 +2301,11 @@ impl App {
     /// first-time user might not know what the comment is for.
     fn open_width_injection_warning(&mut self, pending_table_start: usize) {
         let body = vec![
-            "Setting custom column widths adds a".to_owned(),
-            "<!-- tui-columns: [...] --> comment to the".to_owned(),
-            "Markdown source so the layout persists.".to_owned(),
-            String::new(),
-            "Continue?".to_owned(),
+            Line::raw("Setting custom column widths adds a"),
+            Line::raw("<!-- tui-columns: [...] --> comment to the"),
+            Line::raw("Markdown source so the layout persists."),
+            Line::raw(""),
+            Line::raw("Continue?"),
         ];
         self.width_injection_warning = Some(WidthInjectionWarning {
             body,
@@ -2838,11 +2833,11 @@ impl App {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "current file".to_owned());
         let body = vec![
-            format!("{} has unsaved changes.", display),
-            String::new(),
-            format!("Opening {} will abandon them.", pending.display()),
-            String::new(),
-            "What would you like to do?".to_owned(),
+            Line::raw(format!("{} has unsaved changes.", display)),
+            Line::raw(""),
+            Line::raw(format!("Opening {} will abandon them.", pending.display())),
+            Line::raw(""),
+            Line::raw("What would you like to do?"),
         ];
         self.dirty_guard = Some(DirtyGuardPrompt {
             body,
@@ -3340,10 +3335,10 @@ fn build_remote_image_prompt(editor: &EditorState, config: &Config) -> Option<Re
         return None;
     }
     let body = vec![
-        "This document references one or more remote images.".to_owned(),
-        "Fetching them sends HTTP requests from your machine.".to_owned(),
-        String::new(),
-        "Would you like edamame to fetch remote images?".to_owned(),
+        Line::raw("This document references one or more remote images."),
+        Line::raw("Fetching them sends HTTP requests from your machine."),
+        Line::raw(""),
+        Line::raw("Would you like edamame to fetch remote images?"),
     ];
     // Button order is intentional: the leftmost button is the default
     // focus (`ModalState::new` sets `focused = 0`).  "Yes" allows the
@@ -3377,9 +3372,9 @@ fn build_images_enabled_prompt(
         return None;
     }
     let body = vec![
-        "This document contains images.".to_owned(),
-        String::new(),
-        "Would you like edamame to display images?".to_owned(),
+        Line::raw("This document contains images."),
+        Line::raw(""),
+        Line::raw("Would you like edamame to display images?"),
     ];
     // Button order mirrors the remote-image prompt: Yes/No decide for
     // the session only; Always/Never persist the choice to config.
@@ -3407,34 +3402,33 @@ fn build_config_warning_modal(warnings: &[ConfigWarning]) -> Option<ConfigWarnin
     if warnings.is_empty() {
         return None;
     }
-    let mut body: Vec<String> = Vec::new();
-    body.push(
-        "Some configuration files had problems. Defaults were used for the affected entries."
-            .to_owned(),
-    );
-    body.push(String::new());
+    let mut body: Vec<Line<'static>> = Vec::new();
+    body.push(Line::raw(
+        "Some configuration files had problems. Defaults were used for the affected entries.",
+    ));
+    body.push(Line::raw(""));
     for (idx, warning) in warnings.iter().enumerate() {
         if idx > 0 {
-            body.push(String::new());
+            body.push(Line::raw(""));
         }
-        body.push(format!("• {}", warning.path.display()));
+        body.push(Line::raw(format!("• {}", warning.path.display())));
         match &warning.kind {
             WarningKind::ParseError(msg) => {
-                body.push("  Parse error:".to_owned());
+                body.push(Line::raw("  Parse error:"));
                 for line in msg.lines() {
-                    body.push(format!("    {line}"));
+                    body.push(Line::raw(format!("    {line}")));
                 }
             }
             WarningKind::UnknownKeys(keys) => {
-                body.push("  Unrecognised keys (ignored):".to_owned());
+                body.push(Line::raw("  Unrecognised keys (ignored):"));
                 for k in keys {
-                    body.push(format!("    {k}"));
+                    body.push(Line::raw(format!("    {k}")));
                 }
             }
             WarningKind::InvalidKeybindings(errs) => {
-                body.push("  Invalid keybinding entries (skipped):".to_owned());
+                body.push(Line::raw("  Invalid keybinding entries (skipped):"));
                 for e in errs {
-                    body.push(format!("    {e}"));
+                    body.push(Line::raw(format!("    {e}")));
                 }
             }
         }
@@ -3455,9 +3449,15 @@ fn build_startup_notice(caps: &Capabilities, config: &Config) -> Option<StartupN
     if !caps.has_missing_features() {
         return None;
     }
-    let mut body = caps.missing_features_summary();
-    body.push(String::new());
-    body.push("Affected features will be disabled automatically.".to_owned());
+    let mut body: Vec<Line<'static>> = caps
+        .missing_features_summary()
+        .into_iter()
+        .map(Line::raw)
+        .collect();
+    body.push(Line::raw(""));
+    body.push(Line::raw(
+        "Affected features will be disabled automatically.",
+    ));
     Some(StartupNotice {
         body,
         buttons: vec![
@@ -3917,7 +3917,12 @@ mod phase9_flash_tests {
             .markdown_cheat_sheet
             .as_ref()
             .expect("markdown cheat sheet open");
-        let joined = cs.body.join("\n");
+        let joined = cs
+            .body
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(joined.contains("Headings"));
         assert!(joined.contains("Links"));
         assert!(joined.contains("Images"));
@@ -4244,7 +4249,12 @@ mod config_warning_modal_tests {
             kind: WarningKind::ParseError("expected integer, found string at line 3".into()),
         }];
         let modal = build_config_warning_modal(&warnings).expect("modal built");
-        let joined = modal.body.join("\n");
+        let joined = modal
+            .body
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(joined.contains("/home/u/.config/edamame/config.toml"));
         assert!(joined.contains("Parse error"));
         assert!(joined.contains("line 3"));
@@ -4259,7 +4269,12 @@ mod config_warning_modal_tests {
             kind: WarningKind::UnknownKeys(vec!["editor.tab_widht".into(), "boguss".into()]),
         }];
         let modal = build_config_warning_modal(&warnings).expect("modal built");
-        let joined = modal.body.join("\n");
+        let joined = modal
+            .body
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(joined.contains("Unrecognised keys"));
         assert!(joined.contains("editor.tab_widht"));
         assert!(joined.contains("boguss"));
@@ -4274,7 +4289,12 @@ mod config_warning_modal_tests {
             ]),
         }];
         let modal = build_config_warning_modal(&warnings).expect("modal built");
-        let joined = modal.body.join("\n");
+        let joined = modal
+            .body
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(joined.contains("Invalid keybinding entries"));
         assert!(joined.contains("Quitt"));
     }
@@ -4294,7 +4314,12 @@ mod config_warning_modal_tests {
         let modal = build_config_warning_modal(&warnings).expect("modal built");
         // The body must mention both files so the modal lets the user
         // address each independently.
-        let joined = modal.body.join("\n");
+        let joined = modal
+            .body
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(joined.contains("a.toml"));
         assert!(joined.contains("b.toml"));
     }

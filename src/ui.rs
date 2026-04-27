@@ -25,7 +25,6 @@ pub use keybinds_overlay::KeybindsResponse;
 pub use keybinds_overlay::{KeybindsState, KeybindsView};
 pub use link_view::LinkLayoutSnapshot;
 pub use markdown_cheat_sheet::body_lines as markdown_cheat_sheet_body;
-pub use markdown_cheat_sheet::MARKDOWN_CHEAT_SHEET;
 pub use modal::{ModalButton, ModalResponse, ModalState, ModalView};
 pub use preview::{PreviewState, PreviewView};
 pub use raw_view::{RawView, RawViewState};

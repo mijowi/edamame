@@ -20,10 +20,9 @@
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    text::Span,
+    text::{Line, Span},
     widgets::{Block, Borders, Clear, Widget},
 };
-use unicode_width::UnicodeWidthStr;
 
 use crate::config::Theme;
 
@@ -287,14 +286,14 @@ pub fn draw_frame(
 /// Total wrapped row count for `lines` at `width` columns, mirroring
 /// `Paragraph::wrap(Wrap { trim: false })`.  Pure — used by `ModalView`
 /// to size text bodies before rendering.
-pub fn wrapped_rows(lines: &[String], width: u16) -> u16 {
+pub fn wrapped_rows(lines: &[Line<'_>], width: u16) -> u16 {
     if width == 0 {
         return lines.len() as u16;
     }
     let w = width as usize;
     let mut total: u16 = 0;
     for line in lines {
-        let visual = UnicodeWidthStr::width(line.as_str());
+        let visual = line.width();
         let rows = if visual == 0 {
             1
         } else {
@@ -671,26 +670,26 @@ mod tests {
 
     #[test]
     fn wrapped_rows_counts_each_short_line_once() {
-        let lines = vec!["abc".to_owned(), "def".to_owned()];
+        let lines = vec![Line::raw("abc"), Line::raw("def")];
         assert_eq!(wrapped_rows(&lines, 80), 2);
     }
 
     #[test]
     fn wrapped_rows_counts_blank_lines_as_one_row() {
-        let lines = vec!["".to_owned(), "".to_owned()];
+        let lines = vec![Line::raw(""), Line::raw("")];
         assert_eq!(wrapped_rows(&lines, 80), 2);
     }
 
     #[test]
     fn wrapped_rows_wraps_long_lines() {
-        let lines = vec!["a".repeat(200)];
+        let lines = vec![Line::raw("a".repeat(200))];
         // 200 / 80 = 2.5 → 3 rows.
         assert_eq!(wrapped_rows(&lines, 80), 3);
     }
 
     #[test]
     fn wrapped_rows_handles_zero_width_gracefully() {
-        let lines = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+        let lines = vec![Line::raw("a"), Line::raw("b"), Line::raw("c")];
         assert_eq!(wrapped_rows(&lines, 0), 3);
     }
 }

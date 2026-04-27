@@ -138,9 +138,14 @@ impl ModalState {
 
 /// The modal widget.  Renders on top of whatever the underlying view drew
 /// (callers should draw the editor first, then the modal).
+///
+/// `body` is a slice of styled `Line`s — callers wrap plain strings as
+/// `Line::raw(s)` and use `Line::from(vec![Span::styled(...), ...])` when
+/// they need theme-driven colour or emphasis (e.g. the Markdown cheat
+/// sheet, which mirrors preview-mode styling on top of the raw syntax).
 pub struct ModalView<'a> {
     pub title: &'a str,
-    pub body: &'a [String],
+    pub body: &'a [Line<'a>],
     pub buttons: &'a [ModalButton],
     pub theme: &'a Theme,
 }
@@ -154,12 +159,7 @@ impl<'a> StatefulWidget for ModalView<'a> {
             // callers that want that should use a Paragraph instead.
             return;
         }
-        let body_width = self
-            .body
-            .iter()
-            .map(|l| l.chars().count())
-            .max()
-            .unwrap_or(0) as u16;
+        let body_width = self.body.iter().map(|l| l.width()).max().unwrap_or(0) as u16;
         let button_width = button_row_width(self.buttons);
         let content_width = body_width.max(button_width);
         // Pinned bottom: 1 spacer + 1 button row.
@@ -193,8 +193,7 @@ impl<'a> StatefulWidget for ModalView<'a> {
             return;
         }
 
-        let body_lines: Vec<Line<'_>> = self.body.iter().map(|s| Line::from(s.as_str())).collect();
-        let body_paragraph = Paragraph::new(body_lines)
+        let body_paragraph = Paragraph::new(self.body.to_vec())
             .wrap(Wrap { trim: false })
             .style(self.theme.status_bar);
 
@@ -321,7 +320,7 @@ mod tests {
         let backend = TestBackend::new(60, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut state = ModalState::new();
-        let body = vec!["Hello.".to_owned(), "World.".to_owned()];
+        let body = vec![Line::raw("Hello."), Line::raw("World.")];
         let buttons = vec![ModalButton::new("Ok"), ModalButton::new("Cancel")];
         terminal
             .draw(|frame| {
@@ -413,7 +412,7 @@ mod tests {
         };
         // 5-row body + chrome rows leaves the body fully visible, so
         // max_scroll is 0 after render.
-        let body: Vec<String> = (0..5).map(|i| format!("line {i}")).collect();
+        let body: Vec<Line<'_>> = (0..5).map(|i| Line::raw(format!("line {i}"))).collect();
         let buttons = vec![ModalButton::new("Ok")];
         terminal
             .draw(|frame| {
@@ -436,7 +435,7 @@ mod tests {
         let backend = TestBackend::new(60, 6);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut state = ModalState::new();
-        let body: Vec<String> = (0..8).map(|i| format!("body {i}")).collect();
+        let body: Vec<Line<'_>> = (0..8).map(|i| Line::raw(format!("body {i}"))).collect();
         let buttons = vec![ModalButton::new("Ok")];
         terminal
             .draw(|frame| {
