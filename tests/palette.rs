@@ -54,10 +54,11 @@ fn palette_save_dispatch_produces_same_buffer_state_as_keyboard_save() {
     // Keyboard path: dispatch `Action::Save` directly.
     edit_ops::apply(&mut keyboard_editor, Action::Save, VP, VW);
 
-    // Palette path: open palette, type "save", press Enter.
+    // Palette path: open palette, type "save f" (the trailing " f"
+    // disambiguates "Save file" from "Save a copy"), press Enter.
     let mut palette = PaletteState::open(&keymap());
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    for c in "save".chars() {
+    for c in "save f".chars() {
         palette.handle_key(&KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     let response = palette.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));

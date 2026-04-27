@@ -121,6 +121,10 @@ fn preview_safe_action(action: &Action) -> bool {
             // pre-flight blank-line checks fire only when the user
             // hits Insert.
             | Action::InsertTable
+            // `SaveCopy` opens a path-input modal — read-only with
+            // respect to the buffer until the user submits a path,
+            // so it's safe to launch from Preview.
+            | Action::SaveCopy
     )
 }
 

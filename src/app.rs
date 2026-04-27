@@ -21,10 +21,11 @@ use crate::input::modal::default::DefaultHandler;
 use crate::input::{ModalHandler, MouseDispatcher};
 use crate::terminal::{set_pointer_shape, Capabilities, ColourDepth, PointerShape};
 use crate::ui::{
-    hint_line_for, markdown_cheat_sheet_body, EditorView, EditorViewState, HintChord, HintContent,
-    InsertTableResponse, InsertTableState, InsertTableView, KeybindsResponse, KeybindsState,
-    KeybindsView, ModalButton, ModalResponse, ModalState, ModalView, PaletteResponse, PaletteState,
-    PaletteView, SettingsResponse, SettingsState, SettingsView,
+    default_copy_path, hint_line_for, markdown_cheat_sheet_body, EditorView, EditorViewState,
+    HintChord, HintContent, InsertTableResponse, InsertTableState, InsertTableView,
+    KeybindsResponse, KeybindsState, KeybindsView, ModalButton, ModalResponse, ModalState,
+    ModalView, PaletteResponse, PaletteState, PaletteView, SaveCopyResponse, SaveCopyState,
+    SaveCopyView, SettingsResponse, SettingsState, SettingsView,
 };
 
 /// Events that the main loop can receive.
@@ -355,6 +356,12 @@ pub struct App {
     /// Insert (which dispatches `editor::table_edit::insert_table`)
     /// or cancels.
     insert_table_modal: Option<InsertTableState>,
+    /// Save-a-copy modal: path-input prompt for `Action::SaveCopy`.
+    /// `Some` while the prompt is visible; absorbs all input until
+    /// the user hits Save (which writes the buffer to the entered
+    /// path via `Buffer::save_copy` — leaving the buffer's own path
+    /// untouched) or cancels.
+    save_copy_modal: Option<SaveCopyState>,
     /// Live keymap used for input dispatch.  Built once at startup
     /// from `keybindings`; mutated in place by the keybinds overlay
     /// so rebinds take effect immediately.
@@ -599,6 +606,7 @@ impl App {
             settings_overlay: None,
             keybinds_overlay: None,
             insert_table_modal: None,
+            save_copy_modal: None,
             keymap: None,
             pending_open_config_in_editor: false,
             pending_open_file_in_editor: false,
@@ -1033,10 +1041,25 @@ impl App {
                 } else {
                     None
                 };
+                let save_copy_ref = if markdown_sheet_ref.is_none()
+                    && settings_overlay_ref.is_none()
+                    && keybinds_overlay_ref.is_none()
+                    && insert_table_ref.is_none()
+                    && notice_ref.is_none()
+                    && images_enabled_ref.is_none()
+                    && remote_prompt_ref.is_none()
+                    && dirty_guard_ref.is_none()
+                    && quit_confirm_ref.is_none()
+                {
+                    self.save_copy_modal.as_mut()
+                } else {
+                    None
+                };
                 let palette_ref = if markdown_sheet_ref.is_none()
                     && settings_overlay_ref.is_none()
                     && keybinds_overlay_ref.is_none()
                     && insert_table_ref.is_none()
+                    && save_copy_ref.is_none()
                     && notice_ref.is_none()
                     && images_enabled_ref.is_none()
                     && remote_prompt_ref.is_none()
@@ -1060,6 +1083,7 @@ impl App {
                     && settings_overlay_ref.is_none()
                     && keybinds_overlay_ref.is_none()
                     && insert_table_ref.is_none()
+                    && save_copy_ref.is_none()
                     && palette_ref.is_none()
                 {
                     self.width_injection_warning.as_mut()
@@ -1154,6 +1178,9 @@ impl App {
                         }
                     } else if let Some(state) = insert_table_ref {
                         let view = InsertTableView { theme: theme_ref };
+                        frame.render_stateful_widget(view, frame.area(), state);
+                    } else if let Some(state) = save_copy_ref {
+                        let view = SaveCopyView { theme: theme_ref };
                         frame.render_stateful_widget(view, frame.area(), state);
                     } else if let Some(state) = palette_ref {
                         let view = PaletteView { theme: theme_ref };
@@ -1485,6 +1512,20 @@ impl App {
                                     self.config.editor.status_bar,
                                 )) as usize;
                         self.handle_insert_table_modal_key(*key, doc_h, doc_w);
+                        self.needs_draw = true;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            // Save-a-copy modal absorbs input.  Submitting writes the
+            // buffer to disk via `Buffer::save_copy`; no `EditorState`
+            // mutation, so no doc dimensions are needed.
+            if self.save_copy_modal.is_some() {
+                match &event {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        self.handle_save_copy_modal_key(*key);
                         self.needs_draw = true;
                     }
                     _ => {}
@@ -1900,6 +1941,11 @@ impl App {
                 self.needs_draw = true;
                 true
             }
+            Action::SaveCopy => {
+                self.open_save_copy_modal();
+                self.needs_draw = true;
+                true
+            }
             _ => false,
         }
     }
@@ -2268,6 +2314,50 @@ impl App {
                     doc_width,
                 );
                 self.flash("Table inserted", MessageKind::Success);
+            }
+        }
+    }
+
+    // ── Save-a-copy modal ────────────────────────────────────────────────
+
+    /// Open the path-input prompt seeded with a sensible default
+    /// derived from the current buffer's filename (e.g. `notes.md`
+    /// becomes `notes copy.md`).
+    pub fn open_save_copy_modal(&mut self) {
+        let default = default_copy_path(self.editor.buffer.path());
+        self.save_copy_modal = Some(SaveCopyState::new(default));
+    }
+
+    /// Dispatch a keypress to the open Save Copy modal.  On Save,
+    /// write the buffer to the entered path via `Buffer::save_copy` —
+    /// the buffer's own path is intentionally NOT updated, so the next
+    /// `Save` still writes back to the original file.
+    fn handle_save_copy_modal_key(&mut self, key: crossterm::event::KeyEvent) {
+        let response = match self.save_copy_modal.as_mut() {
+            Some(state) => state.handle_key(&key),
+            None => return,
+        };
+        match response {
+            SaveCopyResponse::Continue => {}
+            SaveCopyResponse::Cancelled => {
+                self.save_copy_modal = None;
+            }
+            SaveCopyResponse::Save(path_str) => {
+                let path = Path::new(&path_str).to_owned();
+                match self.editor.buffer.save_copy(&path) {
+                    Ok(()) => {
+                        self.save_copy_modal = None;
+                        self.flash(format!("Copy saved to {path_str}"), MessageKind::Success);
+                    }
+                    Err(e) => {
+                        // Keep the modal open so the user can correct
+                        // the path; surface the underlying error in
+                        // the modal's error row.
+                        if let Some(state) = self.save_copy_modal.as_mut() {
+                            state.last_error = Some(format!("{e}"));
+                        }
+                    }
+                }
             }
         }
     }

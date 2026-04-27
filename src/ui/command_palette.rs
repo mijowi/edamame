@@ -430,6 +430,7 @@ const SUGGESTED_ORDER: &[Action] = &[
     Action::OpenKeybinds,
     Action::InsertTable,
     Action::ToggleTableButtons,
+    Action::SaveCopy,
     Action::ExportHtml,
     Action::OpenInExternalEditor,
     Action::ShowMarkdownCheatSheet,
@@ -516,6 +517,7 @@ const ALL_ACTIONS: &[Action] = &[
     Action::InsertTable,
     // File ops.
     Action::Save,
+    Action::SaveCopy,
     Action::Open,
     // History.
     Action::Undo,
@@ -562,6 +564,7 @@ fn label_for(action: &Action) -> Option<&'static str> {
         Action::ToggleTableButtons => "Toggle table buttons",
         Action::InsertTable => "Insert table",
         Action::Save => "Save file",
+        Action::SaveCopy => "Save a copy",
         Action::Open => "Open file",
         Action::Undo => "Undo",
         Action::Redo => "Redo",
@@ -622,6 +625,7 @@ mod tests {
                 "Open keybindings".to_owned(),
                 "Insert table".to_owned(),
                 "Toggle table buttons".to_owned(),
+                "Save a copy".to_owned(),
                 "Export HTML".to_owned(),
                 "Open current file in system editor".to_owned(),
                 "Show Markdown cheat sheet".to_owned(),
@@ -647,13 +651,26 @@ mod tests {
     }
 
     #[test]
-    fn typing_save_finds_save_file() {
+    fn typing_save_file_finds_save_file() {
+        // "save" alone is ambiguous now that "Save a copy" is also in
+        // the catalogue — the fuzzy ranker prefers the shorter label.
+        // Typing "save f" disambiguates to "Save file".
         let mut state = PaletteState::open(&keymap());
-        for c in "save".chars() {
+        for c in "save f".chars() {
             state.handle_key(&key(KeyCode::Char(c)));
         }
         let action = state.focused_action().expect("save matched");
         assert_eq!(action, Action::Save);
+    }
+
+    #[test]
+    fn typing_save_a_copy_finds_save_copy() {
+        let mut state = PaletteState::open(&keymap());
+        for c in "save a copy".chars() {
+            state.handle_key(&key(KeyCode::Char(c)));
+        }
+        let action = state.focused_action().expect("save a copy matched");
+        assert_eq!(action, Action::SaveCopy);
     }
 
     #[test]

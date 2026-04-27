@@ -11,6 +11,7 @@ pub mod modal;
 pub mod preview;
 pub mod raw_view;
 pub mod rendered_view;
+pub mod save_copy_modal;
 pub mod scroll_container;
 pub mod settings_overlay;
 pub mod status_bar;
@@ -29,6 +30,9 @@ pub use modal::{ModalButton, ModalResponse, ModalState, ModalView};
 pub use preview::{PreviewState, PreviewView};
 pub use raw_view::{RawView, RawViewState};
 pub use rendered_view::{RenderedView, RenderedViewState};
+pub use save_copy_modal::{
+    default_copy_path, SaveCopyField, SaveCopyResponse, SaveCopyState, SaveCopyView,
+};
 pub use scroll_container::{
     centered_rect_for_content, draw_frame, format_title, wrapped_rows, ContentSize,
     ScrollContainerState,

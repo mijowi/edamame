@@ -65,6 +65,16 @@ impl Buffer {
         Ok(())
     }
 
+    /// Write the buffer contents to `path` without touching the
+    /// buffer's associated path.  The user keeps editing the original
+    /// file; `path` receives a snapshot of the current contents.
+    pub fn save_copy(&self, path: &Path) -> Result<()> {
+        let content = self.rope.to_string();
+        std::fs::write(path, &content)
+            .with_context(|| format!("Failed to write file: {}", path.display()))?;
+        Ok(())
+    }
+
     // ── Query ─────────────────────────────────────────────────────
 
     /// The file path associated with this buffer, if any.
@@ -227,6 +237,24 @@ mod tests {
         assert_eq!(b.line_to_char(1), 4); // after "abc\n"
         assert_eq!(b.line_to_char(2), 8); // after "abc\ndef\n"
         assert_eq!(b.char_to_line(5), 1); // 'd' is on line 1
+    }
+
+    #[test]
+    fn save_copy_writes_to_path_but_does_not_change_buffer_path() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let original = dir.path().join("orig.md");
+        std::fs::write(&original, "# Hello")?;
+        let buf = Buffer::load_file(&original)?;
+
+        let copy = dir.path().join("copy.md");
+        buf.save_copy(&copy)?;
+
+        // The copy was written.
+        assert_eq!(std::fs::read_to_string(&copy)?, "# Hello");
+        // The buffer's associated path is unchanged — that's the
+        // semantic difference from `save_as`.
+        assert_eq!(buf.path(), Some(original.as_path()));
+        Ok(())
     }
 
     #[test]

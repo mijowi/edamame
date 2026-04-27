@@ -723,7 +723,8 @@ pub fn apply(
         | Action::ReloadFromDisk
         | Action::OpenInExternalEditor
         | Action::ToggleTableButtons
-        | Action::InsertTable => {}
+        | Action::InsertTable
+        | Action::SaveCopy => {}
     }
 
     // After any action that mutated the buffer (detected by a change in length

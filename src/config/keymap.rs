@@ -56,6 +56,11 @@ pub enum Action {
     Redo,
     // ── File operations ────────────────────────────────────────────
     Save,
+    /// Write the current buffer to a different path without changing
+    /// the buffer's associated path — subsequent `Save`s still write
+    /// to the original file.  Distinct from a hypothetical "Save As"
+    /// (which would *also* switch the buffer to the new path).
+    SaveCopy,
     Open,
     // ── Mode transitions ───────────────────────────────────────────
     EnterEditMode,
@@ -192,6 +197,7 @@ impl fmt::Display for Action {
             Action::Undo => "Undo",
             Action::Redo => "Redo",
             Action::Save => "Save",
+            Action::SaveCopy => "SaveCopy",
             Action::Open => "Open",
             Action::EnterEditMode => "EnterEditMode",
             Action::ExitToPreview => "ExitToPreview",
@@ -271,6 +277,7 @@ impl FromStr for Action {
             "Undo" => Ok(Action::Undo),
             "Redo" => Ok(Action::Redo),
             "Save" => Ok(Action::Save),
+            "SaveCopy" => Ok(Action::SaveCopy),
             "Open" => Ok(Action::Open),
             "EnterEditMode" => Ok(Action::EnterEditMode),
             "ExitToPreview" => Ok(Action::ExitToPreview),
