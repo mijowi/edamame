@@ -1099,12 +1099,19 @@ fn paint_selection_overlay(
             return;
         };
         (rs, re)
+    } else if let (Some(rs), Some(re)) = (
+        list_raw_col_to_rendered_col(raw_line, line, start_raw_col),
+        list_raw_col_to_rendered_col(raw_line, line, end_raw_col),
+    ) {
+        // List-item lines may shift the content column when the rendered
+        // marker width differs from the raw one (e.g. ordered lists with
+        // 10+ items render numbers right-aligned, adding leading padding).
+        // Use the same map the cursor indicator uses so selection paint
+        // and cursor stay coherent.
+        (rs, re)
     } else {
-        let shift = task_marker_shift(raw_line);
-        (
-            start_raw_col.saturating_sub(shift),
-            end_raw_col.saturating_sub(shift),
-        )
+        // Non-list line: rendered cells align 1:1 with raw chars.
+        (start_raw_col, end_raw_col)
     };
     if rend_start >= rend_end {
         return;
@@ -1177,43 +1184,6 @@ fn paint_cols_on_line(
     }
 }
 
-/// Raw→rendered column shift for task-list items — the renderer strips the
-/// `- ` / `N. ` prefix before the `[ ]` checkbox.  Non-task lines return 0.
-fn task_marker_shift(raw_line: &str) -> usize {
-    let bytes = raw_line.as_bytes();
-    let indent_len = bytes
-        .iter()
-        .take_while(|&&b| b == b' ' || b == b'\t')
-        .count();
-    let rest = &raw_line[indent_len..];
-    let rb = rest.as_bytes();
-    let marker_len = match rb.first() {
-        Some(&b) if b == b'-' || b == b'*' || b == b'+' => {
-            if rb.get(1) == Some(&b' ') {
-                2
-            } else {
-                return 0;
-            }
-        }
-        Some(&b) if b.is_ascii_digit() => {
-            let digits = rb.iter().take_while(|b| b.is_ascii_digit()).count();
-            match rb.get(digits) {
-                Some(&b'.') | Some(&b')') if rb.get(digits + 1) == Some(&b' ') => digits + 2,
-                _ => return 0,
-            }
-        }
-        _ => return 0,
-    };
-    let after_marker = &rest[marker_len..];
-    if after_marker.starts_with("[ ] ")
-        || after_marker.starts_with("[x] ")
-        || after_marker.starts_with("[X] ")
-    {
-        marker_len
-    } else {
-        0
-    }
-}
 
 /// Paint `overlay.raw_text` into the cell's rendered column range, inverting
 /// the character at `overlay.cursor_in_cell` to draw the cursor.  Writes
@@ -1407,8 +1377,9 @@ fn raw_list_marker_char_width(raw_text: &str) -> Option<usize> {
 }
 
 /// Width (in chars) of the rendered list-item marker — leading whitespace
-/// + `• ` / padded digits + `. ` / `[ ] `.  Returns `None` when the
-/// rendered line doesn't start with a recognizable list marker.
+/// + `• ` / padded digits + `. ` plus an optional trailing `[ ] ` task
+/// prefix.  Returns `None` when the rendered line doesn't start with a
+/// recognizable list marker.
 fn rendered_list_marker_char_width(line: &ratatui::text::Line<'_>) -> Option<usize> {
     let text: String = line.spans.iter().flat_map(|s| s.content.chars()).collect();
     let chars: Vec<char> = text.chars().collect();
@@ -1416,24 +1387,31 @@ fn rendered_list_marker_char_width(line: &ratatui::text::Line<'_>) -> Option<usi
     while i < chars.len() && chars[i] == ' ' {
         i += 1;
     }
-    if chars.get(i) == Some(&'•') && chars.get(i + 1) == Some(&' ') {
-        return Some(i + 2);
-    }
-    if chars.get(i) == Some(&'[')
-        && matches!(chars.get(i + 1), Some(' ') | Some('x') | Some('X'))
-        && chars.get(i + 2) == Some(&']')
-        && chars.get(i + 3) == Some(&' ')
+    let after_bullet = if chars.get(i) == Some(&'•') && chars.get(i + 1) == Some(&' ') {
+        Some(i + 2)
+    } else {
+        let digits = chars[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+        if digits > 0
+            && matches!(chars.get(i + digits), Some('.') | Some(')'))
+            && chars.get(i + digits + 1) == Some(&' ')
+        {
+            Some(i + digits + 2)
+        } else {
+            None
+        }
+    }?;
+    // Tasks are decorated bullets — `• ` (or the ordered marker) is followed
+    // by a `[ ] ` / `[x] ` checkbox.  Include those four cells in the marker
+    // width so cursor / selection mapping covers the whole forbidden zone.
+    if chars.get(after_bullet) == Some(&'[')
+        && matches!(chars.get(after_bullet + 1), Some(' ') | Some('x') | Some('X'))
+        && chars.get(after_bullet + 2) == Some(&']')
+        && chars.get(after_bullet + 3) == Some(&' ')
     {
-        return Some(i + 4);
+        Some(after_bullet + 4)
+    } else {
+        Some(after_bullet)
     }
-    let digits = chars[i..].iter().take_while(|c| c.is_ascii_digit()).count();
-    if digits > 0
-        && matches!(chars.get(i + digits), Some('.') | Some(')'))
-        && chars.get(i + digits + 1) == Some(&' ')
-    {
-        return Some(i + digits + 2);
-    }
-    None
 }
 
 #[cfg(test)]
@@ -1478,12 +1456,14 @@ mod tests {
 
     #[test]
     fn rendered_marker_width_task() {
+        // Tasks now render with the bullet kept — `• [ ] foo` — so the
+        // full marker width is 6 (bullet + space + checkbox + space).
         let line = Line::from(vec![
-            Span::raw(""),
+            Span::styled("• ", Style::default()),
             Span::styled("[ ] ", Style::default()),
             Span::raw("foo"),
         ]);
-        assert_eq!(rendered_list_marker_char_width(&line), Some(4));
+        assert_eq!(rendered_list_marker_char_width(&line), Some(6));
     }
 
     #[test]
@@ -1496,16 +1476,16 @@ mod tests {
     }
 
     #[test]
-    fn list_col_map_task_drops_bullet() {
-        // Raw `- [ ] foo` (6-char marker), rendered `[ ] foo` (4-char marker).
-        // Raw col 6 ('f') maps to rendered col 4.
+    fn list_col_map_task_aligns_one_to_one() {
+        // Raw `- [ ] foo` (6-char marker), rendered `• [ ] foo` (also 6).
+        // Cursor at raw col 6 ('f') stays at rendered col 6.
         let line = Line::from(vec![
-            Span::raw(""),
+            Span::styled("• ", Style::default()),
             Span::styled("[ ] ", Style::default()),
             Span::raw("foo"),
         ]);
-        assert_eq!(list_raw_col_to_rendered_col("- [ ] foo", &line, 6), Some(4));
-        assert_eq!(list_raw_col_to_rendered_col("- [ ] foo", &line, 7), Some(5));
+        assert_eq!(list_raw_col_to_rendered_col("- [ ] foo", &line, 6), Some(6));
+        assert_eq!(list_raw_col_to_rendered_col("- [ ] foo", &line, 7), Some(7));
     }
 
     #[test]

@@ -1,13 +1,23 @@
 use std::collections::HashMap;
+use std::ops::Range;
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
 use super::ast::{inlines_to_plain, Block, Inline, ListItem};
+use super::parse_offsets;
 use crate::diagram::DiagramSource;
 
 /// Parse a Markdown string into a list of `Block` AST nodes.
 pub fn parse(text: &str) -> Vec<Block> {
     let mut blocks = parse_raw(text);
+    // Split top-level lists across blank-line gaps so two consecutive
+    // ordered/bullet lists separated by a blank line render as separate
+    // lists rather than one continuous one.  Operating on a transient
+    // ranges vector — `parse` doesn't expose ranges to callers — keeps
+    // callers like the help overlay rendering with the same semantics
+    // as the editor pipeline.
+    let mut ranges = parse_offsets::top_level_block_ranges(text);
+    split_lists_on_blank_lines(&mut blocks, &mut ranges, text);
     // Promote pure-comment `Block::Html` entries to `Block::HtmlComment` BEFORE
     // the tui-columns merge runs so the merge can find the comment by its new
     // variant.  Keeping these two passes separate — generic comment hiding
@@ -197,6 +207,216 @@ pub fn attach_trailing_tui_columns_comments(blocks: &mut Vec<Block>) {
         }
         i += 1;
     }
+}
+
+/// Post-pass: split each top-level `Block::List` whose source contains a
+/// blank line between consecutive top-level items.  pulldown-cmark merges
+/// such lists per CommonMark spec — but for editor purposes we want the
+/// blank-line gap to mark the start of a new list (so two `1. ` ordered
+/// lists separated by a blank line render with their own numbering, and
+/// `Enter`-twice can split a list cleanly).
+///
+/// Mutates both `blocks` and `ranges` so the 1:1 invariant relied on by
+/// `parsed_doc` is preserved.  For each split, the group's `start` is
+/// re-derived from the source line's marker number (ordered) or left as
+/// `None` (bullets).
+pub fn split_lists_on_blank_lines(
+    blocks: &mut Vec<Block>,
+    ranges: &mut Vec<Range<usize>>,
+    source: &str,
+) {
+    let mut i = 0;
+    while i < blocks.len() {
+        if !matches!(&blocks[i], Block::List { .. }) {
+            i += 1;
+            continue;
+        }
+        let list_range = ranges[i].clone();
+        let list_src = &source[list_range.clone()];
+        let item_offsets = top_level_item_offsets(list_src);
+
+        // Identify split points: indices `k > 0` where item k is preceded by
+        // a blank line in the source.
+        let mut split_indices: Vec<usize> = Vec::new();
+        for k in 1..item_offsets.len() {
+            let prev_line_end = line_end_in_str(list_src, item_offsets[k - 1]);
+            let between_start = (prev_line_end + 1).min(item_offsets[k]);
+            if has_blank_line_in_range(list_src, between_start, item_offsets[k]) {
+                split_indices.push(k);
+            }
+        }
+        if split_indices.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        // Pop the list and replace with N split lists.
+        let (ordered, all_items) = match blocks.remove(i) {
+            Block::List { ordered, items, .. } => (ordered, items),
+            _ => unreachable!(),
+        };
+        ranges.remove(i);
+
+        // Defensive: if the AST item count disagrees with what we found in
+        // source (e.g. unusual list formats we don't recognise), restore the
+        // block intact and skip.
+        if all_items.len() != item_offsets.len() {
+            blocks.insert(
+                i,
+                Block::List {
+                    ordered,
+                    start: None,
+                    items: all_items,
+                },
+            );
+            ranges.insert(i, list_range);
+            i += 1;
+            continue;
+        }
+
+        // Build group boundaries: [0, split_indices..., items.len()].
+        let mut group_first: Vec<usize> = vec![0];
+        group_first.extend(split_indices.iter().copied());
+        let mut group_last_exclusive: Vec<usize> = group_first[1..].to_vec();
+        group_last_exclusive.push(all_items.len());
+
+        // Move items into per-group buckets.
+        let mut all_iter = all_items.into_iter();
+        let mut groups: Vec<Vec<ListItem>> = Vec::with_capacity(group_first.len());
+        for (g_first, g_last_exc) in group_first.iter().zip(group_last_exclusive.iter()) {
+            let count = g_last_exc - g_first;
+            let mut grp: Vec<ListItem> = Vec::with_capacity(count);
+            for _ in 0..count {
+                grp.push(all_iter.next().expect("partition matches item count"));
+            }
+            groups.push(grp);
+        }
+
+        let group_count = groups.len();
+        for (g_idx, group_items) in groups.into_iter().enumerate() {
+            let first_item_idx = group_first[g_idx];
+            let group_start_in_src = item_offsets[first_item_idx];
+
+            // The group's source ends just after the natural newline of its
+            // last item's first line.  This leaves the blank-line bytes
+            // between groups uncovered — `parsed_doc` then treats them as
+            // virtual blank-line blocks, the same way it does for any other
+            // gap between top-level blocks.  The final group always extends
+            // to the original list range's end so trailing newlines stay
+            // accounted for.
+            let group_end_in_src = if g_idx + 1 < group_count {
+                let last_item_idx = group_last_exclusive[g_idx] - 1;
+                let last_line_end = line_end_in_str(list_src, item_offsets[last_item_idx]);
+                (last_line_end + 1).min(list_src.len())
+            } else {
+                list_src.len()
+            };
+            let abs_start = list_range.start + group_start_in_src;
+            let abs_end = list_range.start + group_end_in_src;
+
+            let start_num = if ordered {
+                let line_end = line_end_in_str(list_src, group_start_in_src);
+                let line = &list_src[group_start_in_src..line_end];
+                parse_marker_line(line).and_then(|(_, _, num)| num)
+            } else {
+                None
+            };
+
+            blocks.insert(
+                i,
+                Block::List {
+                    ordered,
+                    start: start_num,
+                    items: group_items,
+                },
+            );
+            ranges.insert(i, abs_start..abs_end);
+            i += 1;
+        }
+    }
+}
+
+/// Return the byte offsets of every top-level item-start line within
+/// `list_src`.  "Top-level" means the line's leading-whitespace indent
+/// matches the first item's indent — nested content is ignored.
+fn top_level_item_offsets(list_src: &str) -> Vec<usize> {
+    let bytes = list_src.as_bytes();
+    let mut offsets = Vec::new();
+    let mut first_indent: Option<String> = None;
+    let mut pos = 0;
+    while pos < bytes.len() {
+        let line_end = line_end_in_str(list_src, pos);
+        let line = &list_src[pos..line_end];
+        if let Some((indent, _, _)) = parse_marker_line(line) {
+            if first_indent.is_none() {
+                first_indent = Some(indent.clone());
+            }
+            if first_indent.as_deref() == Some(indent.as_str()) {
+                offsets.push(pos);
+            }
+        }
+        pos = if line_end < bytes.len() {
+            line_end + 1
+        } else {
+            line_end
+        };
+    }
+    offsets
+}
+
+fn line_end_in_str(s: &str, start: usize) -> usize {
+    let bytes = s.as_bytes();
+    let mut p = start;
+    while p < bytes.len() && bytes[p] != b'\n' {
+        p += 1;
+    }
+    p
+}
+
+fn has_blank_line_in_range(s: &str, start: usize, end: usize) -> bool {
+    let bytes = s.as_bytes();
+    let mut pos = start;
+    while pos < end {
+        let mut le = pos;
+        while le < end && bytes[le] != b'\n' {
+            le += 1;
+        }
+        let line = &s[pos..le];
+        if line.chars().all(char::is_whitespace) {
+            return true;
+        }
+        pos = if le < end { le + 1 } else { le };
+    }
+    false
+}
+
+/// Parse the marker prefix of `line` (a raw line without trailing `\n`).
+/// Returns `(indent, marker_or_delim, optional_number)` — bullet markers
+/// have `None` as the number; ordered markers carry their parsed integer.
+/// Returns `None` for lines that don't start with a recognised marker.
+fn parse_marker_line(line: &str) -> Option<(String, char, Option<u64>)> {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        i += 1;
+    }
+    let indent = line[..i].to_owned();
+    let rest = &line[i..];
+    let rb = rest.as_bytes();
+    if let Some(&c) = rb.first() {
+        if matches!(c, b'-' | b'*' | b'+') && rb.get(1) == Some(&b' ') {
+            return Some((indent, c as char, None));
+        }
+    }
+    let digits_len = rb.iter().take_while(|b| b.is_ascii_digit()).count();
+    if digits_len > 0 {
+        let num: u64 = rest[..digits_len].parse().ok()?;
+        let delim = *rb.get(digits_len)?;
+        if matches!(delim, b'.' | b')') && rb.get(digits_len + 1) == Some(&b' ') {
+            return Some((indent, delim as char, Some(num)));
+        }
+    }
+    None
 }
 
 // ─── Block parsing ────────────────────────────────────────────────────────────
@@ -954,6 +1174,97 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ── Blank-line list splitting (Issue 3) ───────────────────────────────
+
+    #[test]
+    fn ordered_lists_separated_by_blank_line_are_split_with_restart_numbering() {
+        let blocks = parse("1. a\n2. b\n\n1. c\n2. d\n");
+        let lists: Vec<&Block> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::List { .. }))
+            .collect();
+        assert_eq!(lists.len(), 2, "expected 2 lists, got {blocks:?}");
+        match lists[0] {
+            Block::List {
+                ordered: true,
+                start: Some(1),
+                items,
+                ..
+            } => assert_eq!(items.len(), 2),
+            other => panic!("first list wrong: {other:?}"),
+        }
+        match lists[1] {
+            Block::List {
+                ordered: true,
+                start: Some(1),
+                items,
+                ..
+            } => assert_eq!(items.len(), 2),
+            other => panic!("second list wrong: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bullet_lists_separated_by_blank_line_are_split() {
+        let blocks = parse("- a\n- b\n\n- c\n- d\n");
+        let lists: Vec<&Block> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::List { .. }))
+            .collect();
+        assert_eq!(lists.len(), 2, "got {blocks:?}");
+    }
+
+    #[test]
+    fn ordered_list_no_blank_line_stays_single_list() {
+        let blocks = parse("1. a\n2. b\n3. c\n");
+        let lists: Vec<&Block> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::List { .. }))
+            .collect();
+        assert_eq!(lists.len(), 1);
+        match lists[0] {
+            Block::List {
+                ordered: true,
+                items,
+                ..
+            } => assert_eq!(items.len(), 3),
+            other => panic!("expected single list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nested_list_with_blank_line_inside_top_level_item_does_not_split() {
+        // A blank line *inside* a nested item's content shouldn't split the
+        // top-level list — the blank-line gap is only relevant between items
+        // at the same indent level.
+        let blocks = parse("- outer\n  - nested\n- next\n");
+        let lists: Vec<&Block> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::List { .. }))
+            .collect();
+        assert_eq!(lists.len(), 1);
+    }
+
+    #[test]
+    fn three_blank_separated_ordered_groups_split_into_three() {
+        let blocks = parse("1. a\n\n1. b\n\n1. c\n");
+        let lists: Vec<&Block> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::List { .. }))
+            .collect();
+        assert_eq!(lists.len(), 3, "got {blocks:?}");
+        for list in lists {
+            match list {
+                Block::List {
+                    items,
+                    start: Some(1),
+                    ..
+                } => assert_eq!(items.len(), 1),
+                other => panic!("group not split correctly: {other:?}"),
+            }
+        }
     }
 
     #[test]

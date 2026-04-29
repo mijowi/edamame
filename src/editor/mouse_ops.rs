@@ -164,6 +164,8 @@ pub fn hit_test_clickable(
 
     // Checkbox: reuse the full click-to-offset translation, since the glyph is
     // rendered as plain `[ ]` / `[x] ` text without a distinguishing style.
+    // Hover hitbox matches the toggle hitbox in `toggle_checkbox_at` —
+    // `item.start..task_box + 3` so the bullet itself shows the click cursor.
     if let Some(offset) = click_to_char_offset(state, c, r, viewport_width) {
         let source = state.buffer.contents();
         let click_byte = state.buffer.rope().char_to_byte(offset);
@@ -171,7 +173,7 @@ pub fn hit_test_clickable(
             if let Some(item_idx) = list_edit::cursor_item_idx(&info, click_byte) {
                 let item = &info.items[item_idx];
                 if let Some(task_box) = item.task_box {
-                    if click_byte >= task_box && click_byte < task_box + 3 {
+                    if click_byte >= item.start && click_byte < task_box + 3 {
                         return true;
                     }
                 }
@@ -1379,17 +1381,7 @@ fn rendered_sub_line_to_offset(
             .take(end - start)
             .map(|(c, _)| *c);
         let in_row = crate::ui::line_render::char_idx_at_cell_col(row_chars, col, row_indent);
-        let rendered_col_in_line = (start + in_row).min(max_in_row);
-        // Task-list items render without the `- ` / `N. ` prefix; shift back
-        // into raw-line space so clicks on `[ ]` toggle the checkbox.  The
-        // shift only applies to row 0; continuation rows show no marker on
-        // either side of the rendered/raw map.
-        let shift = if sub == 0 {
-            task_marker_offset(line_text)
-        } else {
-            0
-        };
-        rendered_col_in_line.saturating_add(shift)
+        (start + in_row).min(max_in_row)
     };
 
     // Advance `raw_col` chars into the raw line.
@@ -1412,54 +1404,6 @@ fn rendered_sub_line_to_offset(
         .rope()
         .byte_to_char(absolute_byte.min(source.len()))
         .min(buffer_len)
-}
-
-/// If `raw_line` is a task-list item, return the byte length of the raw list
-/// marker (`- `, `* `, `1. `, …) that the renderer strips before the `[ ]`
-/// checkbox.  For non-task-list lines, returns 0.
-///
-/// Used by click-to-offset mapping to translate rendered columns to raw
-/// columns: the rendered task line is shorter than the raw line by this many
-/// chars, so `raw_col = rendered_col + task_marker_offset(line)`.
-fn task_marker_offset(raw_line: &str) -> usize {
-    let bytes = raw_line.as_bytes();
-    let indent_len = bytes
-        .iter()
-        .take_while(|&&b| b == b' ' || b == b'\t')
-        .count();
-    let after_indent = &raw_line[indent_len..];
-    let after_bytes = after_indent.as_bytes();
-    let marker_len = match after_bytes.first() {
-        Some(&b) if b == b'-' || b == b'*' || b == b'+' => {
-            if after_bytes.get(1) == Some(&b' ') {
-                2
-            } else {
-                return 0;
-            }
-        }
-        Some(&b) if b.is_ascii_digit() => {
-            let digits = after_bytes
-                .iter()
-                .take_while(|b| b.is_ascii_digit())
-                .count();
-            match after_bytes.get(digits) {
-                Some(&b'.') | Some(&b')') if after_bytes.get(digits + 1) == Some(&b' ') => {
-                    digits + 2
-                }
-                _ => return 0,
-            }
-        }
-        _ => return 0,
-    };
-    let after_marker = &after_indent[marker_len..];
-    if after_marker.starts_with("[ ] ")
-        || after_marker.starts_with("[x] ")
-        || after_marker.starts_with("[X] ")
-    {
-        marker_len
-    } else {
-        0
-    }
 }
 
 /// Cell-aware mapping from a rendered column to a raw column for table rows.
@@ -1992,13 +1936,15 @@ fn toggle_checkbox_at(
         return false;
     };
 
-    // The checkbox is rendered as `[x] ` or `[ ] ` — four chars (`[`, state,
-    // `]`, trailing space) starting at `task_box`.  We consider the click to
-    // hit the checkbox iff its byte falls within the first three chars of that
-    // span (i.e. the `[x]` glyph itself, excluding the trailing space — clicks
-    // past the `]` are normal cursor placement).
-    let box_end = task_box + 3;
-    if click_byte >= task_box && click_byte < box_end {
+    // Toggle hitbox spans the entire bullet+checkbox prefix — `• [ ]`
+    // (i.e. `item.start..task_box + 3` in source bytes).  Clicks anywhere
+    // on the bullet, the leading marker space, or the `[x]` glyph itself
+    // toggle the checkbox; clicks on the trailing space after `]` fall
+    // through to normal cursor placement so the user can put the caret
+    // immediately before the task's text.
+    let hit_start = item.start;
+    let hit_end = task_box + 3;
+    if click_byte >= hit_start && click_byte < hit_end {
         if let Some(res) = list_edit::toggle_checkbox(&info, &source, click_byte) {
             // Checkbox toggle is a 1-for-1 char replacement, so existing
             // offsets stay valid.  Apply the edit without touching cursor
@@ -2167,9 +2113,10 @@ mod tests {
         let mut state = EditorState::new(Buffer::from_str(text), theme());
         state.mode = Mode::Rendered;
         let mut target: Option<DragTarget> = None;
-        // Task items render without their raw `- ` prefix, so the `[` sits at
-        // rendered col 0 and the inner space at rendered col 1.
-        apply(&mut state, click_plain(1, 0), &mut target, &[], 10, 80);
+        // Task items render as `• [ ] todo` — bullet at col 0, checkbox at
+        // cols 2-4.  The whole prefix is a toggle hitbox; clicking on the
+        // bullet itself toggles the checkbox.
+        apply(&mut state, click_plain(0, 0), &mut target, &[], 10, 80);
         assert!(state.buffer.contents().contains("[x]"));
     }
 

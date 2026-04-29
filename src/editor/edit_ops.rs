@@ -1743,6 +1743,13 @@ fn current_list(state: &EditorState) -> Option<(String, ListInfo)> {
 /// merges the current item's content with the end of the preceding line
 /// (or, for the first item, just removes the marker).  Returns `true` when
 /// the edit was applied.
+///
+/// Task items get a two-step erase: the first backspace peels off only the
+/// `[ ] ` checkbox prefix (turning the task back into a plain bullet item),
+/// and a subsequent backspace falls through to the marker-eating path that
+/// removes the bullet itself.  This matches the user-facing rule that the
+/// checkbox is the "extra" decoration on a bullet — deleting it shouldn't
+/// also delete the bullet.
 fn list_backspace_consumes_marker(state: &mut EditorState) -> bool {
     let Some((source, info)) = current_list(state) else {
         return false;
@@ -1754,6 +1761,21 @@ fn list_backspace_consumes_marker(state: &mut EditorState) -> bool {
     let item = &info.items[item_idx];
     if byte != item.content_start {
         return false;
+    }
+
+    // Step 1 of two-step erase for task items.
+    if item.task.is_some() {
+        let removed = source[item.marker_end..item.content_start].to_owned();
+        if removed.is_empty() {
+            return false;
+        }
+        let delta = EditDelta {
+            offset: item.marker_end,
+            removed,
+            inserted: String::new(),
+        };
+        apply_byte_delta(state, delta, item.marker_end);
+        return true;
     }
 
     // Delete from the end of the preceding line (its `\n`) through

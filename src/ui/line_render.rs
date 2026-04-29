@@ -379,10 +379,9 @@ pub fn visual_rows_for_line(line: &Line<'_>, width: usize) -> usize {
 ///
 /// 1. Rendered bullet:           `• text`           → indent = leading_ws + 2
 /// 2. Raw bullet (raw-revealed): `- text`           → indent = leading_ws + 2
-/// 3. Task without bullet:       `[ ] text`         → indent = leading_ws + 4
-/// 4. Bullet + task:             `- [ ] text`       → indent = leading_ws + 6
-/// 5. Ordered (rendered/raw):    `1. text`/` 1. `   → indent = leading_ws + digit_width + 2
-/// 6. Continuation paragraph:    `   text`          → indent = leading_ws
+/// 3. Bullet + task:             `- [ ] text`       → indent = leading_ws + 6
+/// 4. Ordered (rendered/raw):    `1. text`/` 1. `   → indent = leading_ws + digit_width + 2
+/// 5. Continuation paragraph:    `   text`          → indent = leading_ws
 ///
 /// Returns 0 for lines that don't match any of these shapes (plain
 /// paragraphs, blockquoted content, table rows, code blocks, etc.).
@@ -417,11 +416,6 @@ fn compute_hanging_indent_chars(chars: &[char]) -> usize {
     // the surrounding rendered list.
     if matches!(chars.get(i), Some('-') | Some('*') | Some('+')) && chars.get(i + 1) == Some(&' ') {
         return text_start_after_optional_task_prefix(chars, i + 2);
-    }
-    // Task without bullet (the renderer drops the bullet for task items —
-    // the checkbox is the visual anchor).
-    if is_task_marker(chars, i) {
-        return i + 4;
     }
     // Ordered marker: digits + `.`/`)` + space.  Matches both the raw form
     // (`1. `) and the rendered right-aligned form (` 1. `).
@@ -547,10 +541,11 @@ mod tests {
     }
 
     #[test]
-    fn hanging_indent_task_no_bullet() {
-        // Renderer drops `- ` for task items; the checkbox is the marker.
-        let line = Line::from(vec![Span::raw("[ ] "), Span::raw("foo")]);
-        assert_eq!(compute_hanging_indent(&line), 4);
+    fn hanging_indent_rendered_task_includes_bullet_and_checkbox() {
+        // Tasks render as `• [ ] foo` — bullet + space + checkbox + space
+        // = 6 cells of marker before the body text begins.
+        let line = Line::from(vec![Span::raw("• [ ] "), Span::raw("foo")]);
+        assert_eq!(compute_hanging_indent(&line), 6);
     }
 
     #[test]

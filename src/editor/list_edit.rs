@@ -390,6 +390,12 @@ pub fn continue_item(info: &ListInfo, source: &str, cursor_byte: usize) -> Optio
 /// Build an `EditDelta` that exits the list by removing the empty item's
 /// marker prefix, leaving a blank line in its place.  The caller should
 /// invoke this when `Enter` is pressed on an item whose content is empty.
+///
+/// When there are remaining items below the empty exit item AND the list is
+/// ordered, those trailing items are rewritten so their numbering restarts
+/// at 1 — combined with the parser's blank-line list split, this means
+/// `Enter`-twice on a list visually produces two distinct ordered lists.
+/// Bullet lists need no renumbering.
 pub fn exit_list(info: &ListInfo, source: &str, cursor_byte: usize) -> Option<ContinueResult> {
     let item_idx = cursor_item_idx(info, cursor_byte)?;
     let item = &info.items[item_idx];
@@ -397,12 +403,51 @@ pub fn exit_list(info: &ListInfo, source: &str, cursor_byte: usize) -> Option<Co
         return None;
     }
 
-    // Remove the entire empty item line (including any trailing \n) and
-    // replace it with a single `\n` — the blank line separating the list
-    // from whatever follows.
-    let removed = source[item.start..item.end].to_owned();
-    let inserted = "\n".to_owned();
-    let cursor_target = item.start + 1;
+    let trailing = &info.items[item_idx + 1..];
+
+    if trailing.is_empty() {
+        // No items below — replace the empty item with a single `\n`.
+        // Cursor lands at item.start + 1 to preserve the established
+        // "land on the line below the blank" convention.
+        let removed = source[item.start..item.end].to_owned();
+        let inserted = "\n".to_owned();
+        let cursor_target = item.start + 1;
+        return Some(ContinueResult {
+            delta: EditDelta {
+                offset: item.start,
+                removed,
+                inserted,
+            },
+            cursor_byte: cursor_target,
+        });
+    }
+
+    // Items remain after the empty exit item.  Replace from item.start
+    // through info.end with a blank line followed by the trailing items.
+    // For ordered lists, renumber trailing items starting from 1 so the
+    // post-blank-line group renders as its own list under the parser's
+    // blank-line split.
+    let mut inserted = String::from("\n");
+    match info.kind {
+        MarkerKind::Ordered(delim) => {
+            for (k, trailing_item) in trailing.iter().enumerate() {
+                let new_num = (k as u64) + 1;
+                inserted.push_str(&info.indent);
+                inserted.push_str(&new_num.to_string());
+                inserted.push(delim);
+                inserted.push(' ');
+                inserted.push_str(&source[trailing_item.marker_end..trailing_item.end]);
+            }
+        }
+        MarkerKind::Bullet(_) => {
+            let tail_start = trailing[0].start;
+            inserted.push_str(&source[tail_start..info.end]);
+        }
+    }
+
+    let removed = source[item.start..info.end].to_owned();
+    // Cursor at item.start lands on the start of the new blank line.
+    let cursor_target = item.start;
 
     Some(ContinueResult {
         delta: EditDelta {
@@ -735,6 +780,36 @@ mod tests {
             &res.delta.inserted,
         );
         assert_eq!(out, "- foo\n\n");
+    }
+
+    #[test]
+    fn exit_list_with_ordered_trailing_renumbers_from_one() {
+        // `1. a / 2. (empty cursor) / 3. b / 4. c` — pressing Enter should
+        // exit the empty item and renumber the trailing items starting at 1
+        // so the post-split renders as a fresh ordered list.
+        let src = "1. a\n2. \n3. b\n4. c\n";
+        // cursor on the empty item line at byte 8 (just after `2. `).
+        let info = info_at(src, 8);
+        let res = exit_list(&info, src, 8).expect("exit");
+        let mut out = src.to_owned();
+        out.replace_range(
+            res.delta.offset..res.delta.offset + res.delta.removed.len(),
+            &res.delta.inserted,
+        );
+        assert_eq!(out, "1. a\n\n1. b\n2. c\n");
+    }
+
+    #[test]
+    fn exit_list_with_bullet_trailing_keeps_items_unchanged() {
+        let src = "- a\n- \n- b\n";
+        let info = info_at(src, 5);
+        let res = exit_list(&info, src, 5).expect("exit");
+        let mut out = src.to_owned();
+        out.replace_range(
+            res.delta.offset..res.delta.offset + res.delta.removed.len(),
+            &res.delta.inserted,
+        );
+        assert_eq!(out, "- a\n\n- b\n");
     }
 
     #[test]

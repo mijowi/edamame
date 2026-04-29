@@ -538,20 +538,33 @@ fn preview_click_drag_produces_rendered_text_on_copy() {
 // ── Hit-test for pointer-shape feedback ─────────────────────────────────────
 
 #[test]
-fn hit_test_returns_true_over_task_checkbox() {
+fn hit_test_returns_true_over_task_bullet_and_checkbox() {
     let st = state("- [ ] first\n- [x] second\n");
-    // Task items render without the `- ` prefix, so `[` is at rendered col 0.
-    // Rows 0 and 1 both expose a `[ ]`/`[x]` glyph at cols 0-2.
-    for (row, col) in [(0u16, 0u16), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)] {
+    // Task items render as `• [ ] first` — bullet at col 0, checkbox at
+    // cols 2-4.  The whole bullet+checkbox prefix is a toggle hitbox so
+    // clicks anywhere in cols 0..=4 hit; col 5 (the trailing space after
+    // `]`) and beyond fall through to normal cursor placement.
+    for (row, col) in [
+        (0u16, 0u16),
+        (0, 1),
+        (0, 2),
+        (0, 3),
+        (0, 4),
+        (1, 0),
+        (1, 1),
+        (1, 2),
+        (1, 3),
+        (1, 4),
+    ] {
         assert!(
             mouse_ops::hit_test_clickable(&st, col, row, VW, &[]),
             "expected hit-test TRUE at ({col}, {row})"
         );
     }
-    // Col 3 is the space AFTER `]`, outside the glyph.
-    assert!(!mouse_ops::hit_test_clickable(&st, 3, 0, VW, &[]));
-    // Col 5 is in the body text.
+    // Col 5 is the trailing space AFTER `]`.
     assert!(!mouse_ops::hit_test_clickable(&st, 5, 0, VW, &[]));
+    // Col 7 is in the body text.
+    assert!(!mouse_ops::hit_test_clickable(&st, 7, 0, VW, &[]));
 }
 
 #[test]

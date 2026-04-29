@@ -402,11 +402,15 @@ fn backspace_at_content_start_merges_with_non_list_previous_line() {
 }
 
 #[test]
-fn backspace_at_content_start_of_task_item_removes_full_prefix() {
-    // `- [ ] foo` with cursor at content_start (byte 6).  Backspace should
-    // delete the whole `- [ ] ` prefix.
+fn backspace_at_content_start_of_task_item_peels_checkbox_then_bullet() {
+    // Two-step erase: first backspace strips just the `[ ] ` checkbox,
+    // leaving the item as a plain bullet; second backspace strips the
+    // bullet itself.
     let src = "- [ ] foo\n";
     let mut st = editor_at(src, "foo");
+    apply(&mut st, Action::DeleteCharBack);
+    assert_eq!(st.contents(), "- foo\n");
+    assert_eq!(cursor_byte(&st), 2);
     apply(&mut st, Action::DeleteCharBack);
     assert_eq!(st.contents(), "foo\n");
     assert_eq!(cursor_byte(&st), 0);

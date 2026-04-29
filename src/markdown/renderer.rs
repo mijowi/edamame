@@ -618,41 +618,40 @@ impl<'t> Renderer<'t> {
         out: &mut Vec<Line<'static>>,
         indent_prefix: &str,
     ) {
-        // Per-list-type "gutter" width — the number of cells that the
-        // marker (plus its trailing space) occupies, which is also how far
-        // nested content / subsequent blocks in each item must be indented
-        // so the text column aligns.
+        // Two width metrics drive list layout:
         //
-        //   unordered:  `• `             → 2 cells
-        //   ordered:    ` 1. `           → max(3, max_digits + 2) cells
-        //                                   (wider when the list reaches
-        //                                    10+ items so two-digit numbers
-        //                                    right-align under single-digit
-        //                                    ones and every item's text
-        //                                    lines up)
-        //   task list:  `[ ] `           → 4 cells (no bullet/number; the
-        //                                   checkbox is the visual anchor)
+        //   marker_width: cells consumed by the marker prefix that the
+        //   renderer prints in front of the first line of each item.
+        //     • unordered:  `• `              → 2 cells
+        //     • ordered:    ` 1. ` / `10. `   → max_digits + 2 cells
+        //
+        //   nested_indent_width: cells of leading whitespace inserted in
+        //   front of each nested block (sub-list, continuation paragraph,
+        //   …) in this list's items.
+        //     • unordered:  2 cells (matches the bullet column).
+        //     • ordered:    max(4, marker_width).  Ordered list nesting in
+        //       the source uses 4 spaces (the conventional `tab_width`
+        //       indent that satisfies CommonMark's ≥3-cell rule for
+        //       single-digit markers); rendering at the same width keeps
+        //       the de-rendered (raw-mode) view from showing the nested
+        //       marker shifted relative to its rendered position.  For
+        //       lists wide enough that the marker outgrows 4 cells, the
+        //       indent grows with it so multi-digit markers still align
+        //       under their parent's content column.
         let first_num = start.unwrap_or(1);
         let last_num = first_num + items.len().saturating_sub(1) as u64;
         let digit_width = last_num.to_string().len().max(1);
-        let all_task = !items.is_empty() && items.iter().all(|i| i.task.is_some());
-        let gutter_width = if all_task {
-            4
-        } else if ordered {
-            digit_width + 2
-        } else {
-            2
-        };
-        let child_indent_prefix = format!("{indent_prefix}{}", " ".repeat(gutter_width));
+        let marker_width = if ordered { digit_width + 2 } else { 2 };
+        let nested_indent_width = if ordered { marker_width.max(4) } else { 2 };
+        let child_indent_prefix = format!("{indent_prefix}{}", " ".repeat(nested_indent_width));
 
         let mut counter = first_num;
         for item in items {
-            let is_task = item.task.is_some();
-
-            // Task items have no bullet/number — the checkbox is the visual anchor.
-            let (marker, marker_style) = if is_task {
-                (indent_prefix.to_string(), Style::default())
-            } else if ordered {
+            // Marker is the bullet / number prefix.  Tasks are decorated
+            // bullets — they render the same `• ` (or ordered marker)
+            // followed by the `[ ] ` checkbox span emitted just below.
+            // This lets task items and plain bullets coexist in one list.
+            let (marker, marker_style) = if ordered {
                 // Right-align the number inside a `digit_width`-wide slot so
                 // multi-digit numbers (10+) don't push their item's text out
                 // of alignment with the single-digit items above.
@@ -1294,13 +1293,14 @@ mod tests {
     }
 
     #[test]
-    fn nested_ordered_list_uses_marker_width_indent() {
-        // Outer list is single-digit (gutter = 3), so the nested item's text
-        // should start at column 3 (three-space indent).
+    fn nested_ordered_list_aligns_with_source_indent() {
+        // Source nests at 4 spaces (CommonMark / GFM convention).  Render
+        // matches so that switching to raw view doesn't visually shift the
+        // nested marker.
         let lines = render("1. outer\n    1. inner\n2. next\n");
         assert_eq!(lines.len(), 3);
         assert_eq!(line_text(&lines[0]), "1. outer");
-        assert_eq!(line_text(&lines[1]), "   1. inner");
+        assert_eq!(line_text(&lines[1]), "    1. inner");
         assert_eq!(line_text(&lines[2]), "2. next");
     }
 
@@ -1314,14 +1314,22 @@ mod tests {
     }
 
     #[test]
-    fn nested_task_list_uses_four_space_indent() {
+    fn task_items_render_as_bullet_plus_checkbox() {
+        // Tasks are decorated bullets — the bullet always renders, with
+        // the checkbox immediately after.
         let lines = render("- [ ] outer\n    - [ ] inner\n- [ ] next\n");
         assert_eq!(lines.len(), 3);
-        // Task items render without a bullet marker — the checkbox anchors
-        // the item, and nested tasks indent by 4 (the checkbox width).
-        assert_eq!(line_text(&lines[0]), "[ ] outer");
-        assert_eq!(line_text(&lines[1]), "    [ ] inner");
-        assert_eq!(line_text(&lines[2]), "[ ] next");
+        assert_eq!(line_text(&lines[0]), "• [ ] outer");
+        assert_eq!(line_text(&lines[1]), "  • [ ] inner");
+        assert_eq!(line_text(&lines[2]), "• [ ] next");
+    }
+
+    #[test]
+    fn task_and_plain_bullets_coexist_in_one_list() {
+        let lines = render("- regular\n- [ ] task\n- [x] done\n");
+        assert_eq!(line_text(&lines[0]), "• regular");
+        assert_eq!(line_text(&lines[1]), "• [ ] task");
+        assert_eq!(line_text(&lines[2]), "• [x] done");
     }
 
     /// Nested-checklist regression: an empty item Tab-indent produces a
@@ -1335,13 +1343,13 @@ mod tests {
     fn loose_task_list_still_renders_checkboxes() {
         let lines = render("- [ ] parent\n\n    - [ ] nested\n- [ ] sibling\n");
         assert!(
-            line_text(&lines[0]).starts_with("[ ] parent"),
-            "parent should render as a task item, got {:?}",
+            line_text(&lines[0]).starts_with("• [ ] parent"),
+            "parent should render as a task item with bullet, got {:?}",
             line_text(&lines[0])
         );
         assert!(
-            line_text(&lines[lines.len() - 1]).starts_with("[ ] sibling"),
-            "sibling should render as a task item, got {:?}",
+            line_text(&lines[lines.len() - 1]).starts_with("• [ ] sibling"),
+            "sibling should render as a task item with bullet, got {:?}",
             line_text(&lines[lines.len() - 1])
         );
     }

@@ -9,7 +9,7 @@ use crate::diagram::DiagramSource;
 use crate::document::SourceMap;
 use crate::markdown::{
     inlines_to_plain, parse_offsets, parse_raw, promote_diagram_code_blocks, promote_html_comments,
-    promote_image_paragraphs, Block, ImageRowOverride, Renderer,
+    promote_image_paragraphs, split_lists_on_blank_lines, Block, ImageRowOverride, Renderer,
 };
 
 /// Setext heading style detected from raw block source.  `None` for ATX
@@ -281,6 +281,11 @@ impl ParsedDoc {
         //    prevent the Html comment block from being absorbed and the
         //    comment would flash into the rendered view between drag events.
         let mut blocks = parse_raw(source);
+        // Split top-level lists across blank-line gaps so `1. a\n\n1. b\n`
+        // renders as two ordered lists rather than one merged list (and so
+        // `Enter`-twice on a list item produces a clean visual split).
+        // Mutates both vectors so they stay 1:1.
+        split_lists_on_blank_lines(&mut blocks, &mut real_ranges, source);
         // Promote pure-comment `Block::Html` entries to `Block::HtmlComment`
         // FIRST — the tui-columns merge below looks for `Block::HtmlComment`
         // adjacent to a `Block::Table` and must run against the promoted

@@ -183,10 +183,10 @@ mod tests {
     #[test]
     fn list_item_wrap_hangs_indent_for_task_and_ordered() {
         let theme = theme();
-        // Task item: marker `[ ] ` is 4 cells.
+        // Task item: marker is `• [ ] ` (bullet + checkbox) = 6 cells.
         let lines = Renderer::new(theme).render(&parse("- [ ] alpha bravo charlie delta\n"));
         let mut state = PreviewState::default();
-        let backend = TestBackend::new(14, 4);
+        let backend = TestBackend::new(16, 4);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
@@ -199,7 +199,7 @@ mod tests {
             .unwrap();
         let tbuf = terminal.backend().buffer().clone();
         let row_text = |y: u16| -> String {
-            (0..14)
+            (0..16)
                 .map(|x| {
                     tbuf.cell((x, y))
                         .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
@@ -207,16 +207,16 @@ mod tests {
                 .collect()
         };
         let r0 = row_text(0);
-        assert!(r0.starts_with("[ ] "), "row 0 = {r0:?}");
+        assert!(r0.starts_with("• [ ] "), "row 0 = {r0:?}");
         let r1 = row_text(1);
         assert_eq!(
-            &r1[..4],
-            "    ",
-            "task continuation must be padded by 4 cells: {r1:?}"
+            &r1[..6],
+            "      ",
+            "task continuation must be padded by 6 cells: {r1:?}"
         );
         assert!(
-            r1.chars().nth(4).map(|c| c != ' ').unwrap_or(false),
-            "row 1 must start text at col 4: {r1:?}"
+            r1.chars().nth(6).map(|c| c != ' ').unwrap_or(false),
+            "row 1 must start text at col 6: {r1:?}"
         );
     }
 
