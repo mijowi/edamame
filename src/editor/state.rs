@@ -667,8 +667,7 @@ impl EditorState {
             if cursor_line < self.scroll {
                 let target = self.scroll.min(self.buffer.line_count().saturating_sub(1));
                 self.cursor.offset = self.buffer.line_to_char(target);
-                let (_, col) = self.cursor.line_col(&self.buffer);
-                self.cursor.preferred_col = col;
+                self.cursor.preferred_col = self.cursor.cell_col(&self.buffer);
             }
             return;
         }
@@ -831,27 +830,6 @@ impl EditorState {
         }
     }
 
-    /// Number of raw source lines for the block that currently contains the
-    /// cursor. Used by `ensure_cursor_visible` and `RenderedView` to compute
-    /// the virtual height of the cursor block.
-    pub fn raw_line_count_for_cursor(&self) -> usize {
-        let cursor_byte = self.buffer.rope().char_to_byte(self.cursor.offset);
-        self.parsed
-            .source_map
-            .original_range_for_byte(cursor_byte)
-            .map(|r| {
-                let source = self.buffer.contents();
-                let text = &source[r.start..r.end.min(source.len())];
-                // Same counting logic as `raw_source_lines` in rendered_view.rs.
-                let mut count = text.split('\n').count();
-                if text.ends_with('\n') && count > 1 {
-                    count -= 1;
-                }
-                count.max(1)
-            })
-            .unwrap_or(1)
-    }
-
     // ── Visual-line navigation ────────────────────────────────────
 
     /// Move the cursor up by one **visual** line, accounting for word-wrap at
@@ -868,25 +846,31 @@ impl EditorState {
             return;
         }
         let (line, col) = self.cursor.line_col(&self.buffer);
-        let target_visual_col = self.cursor.preferred_col;
+        let target_cell = self.cursor.preferred_col;
 
         let text = line_text_trimmed(&self.buffer, line);
-        let rows = crate::ui::line_render::visual_rows_of_str(&text, col_width);
+        let indent = crate::ui::line_render::compute_hanging_indent_str(&text);
+        let rows = wrap_rows_for_text(&text, col_width, indent);
         let (sub_idx, _) = crate::ui::line_render::sub_line_of_col(&rows, col);
 
         if sub_idx > 0 {
             let target_idx = sub_idx - 1;
             let target = rows[target_idx];
             let is_last = target_idx + 1 == rows.len();
-            let raw_col = raw_col_for_visual(&target, target_visual_col, is_last);
+            let row_indent = if target_idx == 0 { 0 } else { indent };
+            let raw_col = raw_col_for_visual_cells(&text, target, target_cell, is_last, row_indent);
             let line_start = self.buffer.line_to_char(line);
             self.cursor.offset = line_start + raw_col;
         } else if line > 0 {
             let prev_line = line - 1;
             let prev_text = line_text_trimmed(&self.buffer, prev_line);
-            let prev_rows = crate::ui::line_render::visual_rows_of_str(&prev_text, col_width);
+            let prev_indent = crate::ui::line_render::compute_hanging_indent_str(&prev_text);
+            let prev_rows = wrap_rows_for_text(&prev_text, col_width, prev_indent);
+            let target_idx = prev_rows.len() - 1;
             let target = *prev_rows.last().expect("rows always non-empty");
-            let raw_col = raw_col_for_visual(&target, target_visual_col, true);
+            let row_indent = if target_idx == 0 { 0 } else { prev_indent };
+            let raw_col =
+                raw_col_for_visual_cells(&prev_text, target, target_cell, true, row_indent);
             let prev_start = self.buffer.line_to_char(prev_line);
             self.cursor.offset = prev_start + raw_col;
         } else {
@@ -902,17 +886,19 @@ impl EditorState {
             return;
         }
         let (line, col) = self.cursor.line_col(&self.buffer);
-        let target_visual_col = self.cursor.preferred_col;
+        let target_cell = self.cursor.preferred_col;
 
         let text = line_text_trimmed(&self.buffer, line);
-        let rows = crate::ui::line_render::visual_rows_of_str(&text, col_width);
+        let indent = crate::ui::line_render::compute_hanging_indent_str(&text);
+        let rows = wrap_rows_for_text(&text, col_width, indent);
         let (sub_idx, _) = crate::ui::line_render::sub_line_of_col(&rows, col);
 
         if sub_idx + 1 < rows.len() {
             let target_idx = sub_idx + 1;
             let target = rows[target_idx];
             let is_last = target_idx + 1 == rows.len();
-            let raw_col = raw_col_for_visual(&target, target_visual_col, is_last);
+            let row_indent = if target_idx == 0 { 0 } else { indent };
+            let raw_col = raw_col_for_visual_cells(&text, target, target_cell, is_last, row_indent);
             let line_start = self.buffer.line_to_char(line);
             self.cursor.offset = line_start + raw_col;
         } else {
@@ -920,10 +906,13 @@ impl EditorState {
             if line < last_line {
                 let next_line = line + 1;
                 let next_text = line_text_trimmed(&self.buffer, next_line);
-                let next_rows = crate::ui::line_render::visual_rows_of_str(&next_text, col_width);
+                let next_indent = crate::ui::line_render::compute_hanging_indent_str(&next_text);
+                let next_rows = wrap_rows_for_text(&next_text, col_width, next_indent);
                 let target = next_rows[0];
                 let is_last = next_rows.len() == 1;
-                let raw_col = raw_col_for_visual(&target, target_visual_col, is_last);
+                // First row of the next logical line uses no hanging indent;
+                // continuation rows of the same line do.
+                let raw_col = raw_col_for_visual_cells(&next_text, target, target_cell, is_last, 0);
                 let next_start = self.buffer.line_to_char(next_line);
                 self.cursor.offset = next_start + raw_col;
             } else {
@@ -932,17 +921,22 @@ impl EditorState {
         }
     }
 
-    /// Compute the current visual column for the cursor given wrap at
-    /// `col_width`.  Returns 0 when the buffer is empty or on a width of 0.
+    /// Cell column of the cursor measured from the **screen-row** left
+    /// edge, including any hanging-indent padding when the cursor sits on
+    /// a wrapped continuation row.  Used to seed `preferred_col` so
+    /// vertical navigation lands at the same screen X on the target row.
     pub fn current_visual_col(&self, col_width: usize) -> usize {
         if col_width == 0 {
-            return self.cursor.line_col(&self.buffer).1;
+            return self.cursor.cell_col(&self.buffer);
         }
         let (line, col) = self.cursor.line_col(&self.buffer);
         let text = line_text_trimmed(&self.buffer, line);
-        let rows = crate::ui::line_render::visual_rows_of_str(&text, col_width);
-        let (_, visual_col) = crate::ui::line_render::sub_line_of_col(&rows, col);
-        visual_col
+        let indent = crate::ui::line_render::compute_hanging_indent_str(&text);
+        let rows = wrap_rows_for_text(&text, col_width, indent);
+        let (sub_idx, _) = crate::ui::line_render::sub_line_of_col(&rows, col);
+        let row = rows[sub_idx];
+        let row_indent = if sub_idx == 0 { 0 } else { indent };
+        cell_col_within_row(&text, row, col, row_indent)
     }
 }
 
@@ -953,27 +947,66 @@ fn line_text_trimmed(buf: &crate::document::Buffer, line: usize) -> String {
         .unwrap_or_default()
 }
 
-/// Given a visual row `(start, end, next_start)` and a desired visual column,
-/// return the raw column (offset within the line) that lands visually on that
-/// row.
+/// Wrap `text` at `col_width` cells with a hanging `indent` on continuation
+/// rows.  Returns `(start, end, next_start)` tuples (char indices) — the
+/// same shape `visual_rows_of_chars` returns, just bridged from `&str`
+/// since `EditorState` works in raw text.
+fn wrap_rows_for_text(text: &str, col_width: usize, indent: usize) -> Vec<(usize, usize, usize)> {
+    let chars: Vec<(char, ratatui::style::Style)> = text
+        .chars()
+        .map(|c| (c, ratatui::style::Style::default()))
+        .collect();
+    crate::ui::line_render::visual_rows_of_chars(&chars, col_width, indent)
+}
+
+/// Cell-aware inverse of the wrap layout: given the text of a logical line,
+/// one of its visual rows `(start, end, next_start)` (char indices), the
+/// desired screen cell column `target_cell`, whether this row is the last
+/// in its line, and the row's hanging-indent width in cells, return the
+/// absolute char column on the logical line where the cursor should land.
 ///
-/// For non-last rows, the clamp is tighter than `row_width`: `sub_line_of_col`
-/// treats `raw_col == next_start` as the start of the NEXT row, so if
-/// `visual_col` exceeds the target row's width we must land at
-/// `next_start - 1` (the last position still on this row) rather than
-/// `next_start` (which jumps visually onto the following row and leaves the
-/// cursor stuck at the wrap boundary).
-///
-/// For the last visual row of a logical line, `end == next_start` and the
-/// cursor is allowed to sit past the final char, so we clamp to `row_width`.
-fn raw_col_for_visual(row: &(usize, usize, usize), visual_col: usize, is_last_row: bool) -> usize {
-    let (start, end, next_start) = *row;
-    let max_visual = if is_last_row {
-        end.saturating_sub(start)
+/// Wide chars (CJK, emoji) are handled via the snap-past rule: a target
+/// cell that lands inside a wide glyph places the cursor *after* the glyph
+/// rather than splitting it.  For non-last rows, the cursor is kept off the
+/// wrap boundary at `next_start` so it stays visually on this row.  When
+/// `indent > 0` (a continuation row of a wrapped list item), the indent
+/// area is a forbidden zone — clicks inside it snap forward to the row's
+/// first content char.
+fn raw_col_for_visual_cells(
+    text: &str,
+    row: (usize, usize, usize),
+    target_cell: usize,
+    is_last_row: bool,
+    indent: usize,
+) -> usize {
+    let (start, end, next_start) = row;
+    let max_char_in_row = if is_last_row {
+        end
     } else {
-        next_start.saturating_sub(start).saturating_sub(1)
+        next_start.saturating_sub(1).max(start)
     };
-    start + visual_col.min(max_visual)
+    let row_chars = text.chars().skip(start).take(end - start);
+    let in_row_idx = crate::ui::line_render::char_idx_at_cell_col(row_chars, target_cell, indent);
+    let absolute = start + in_row_idx;
+    absolute.min(max_char_in_row)
+}
+
+/// Screen cell column of char position `char_col` within its visual row
+/// `row`, for a logical line whose raw text is `text`.  `indent` is the
+/// hanging-indent in cells for this row (0 for first rows; the line's
+/// detected indent for continuation rows).  Used by `current_visual_col`
+/// to seed `preferred_col` after a horizontal move so subsequent vertical
+/// nav preserves the cursor's screen X.
+fn cell_col_within_row(
+    text: &str,
+    row: (usize, usize, usize),
+    char_col: usize,
+    indent: usize,
+) -> usize {
+    let (start, _, _) = row;
+    let take = char_col.saturating_sub(start);
+    let row_chars = text.chars().skip(start).take(take);
+    crate::ui::line_render::cell_col_at_char_idx(row_chars, take, indent)
 }
 
 // ── Cursor screen-row helpers ──────────────────────────────────────────────
@@ -1310,23 +1343,113 @@ mod tests {
         );
     }
 
+    /// Regression: pressing Down from a wrapped continuation row of a list
+    /// item used to land at content cell `preferred_col` on the next line,
+    /// off by the hanging-indent width because `preferred_col` was stored
+    /// without the indent.  After the fix, a cursor visually at screen
+    /// cell 5 on a list-item continuation row (= 2 cells of indent + 3
+    /// cells into content) lands at screen cell 5 on the next plain
+    /// paragraph too — no horizontal jump by the indent amount.
+    #[test]
+    fn move_down_visual_preserves_screen_cell_across_indent_boundary() {
+        // Logical line 0: list item that wraps.  Logical line 1: plain
+        // paragraph (no marker, no indent).
+        let text = "- list item content that wraps to a second row\nplain paragraph here";
+        let mut state = EditorState::new(Buffer::from_str(text), theme());
+        let width = 30;
+        // Place the cursor on the *continuation* row of line 0, then
+        // sync `preferred_col` from that screen position (5 cells from
+        // the screen-row left edge).  The exact char offset of "screen
+        // cell 5 on row 1" depends on the wrap point, so derive it via
+        // the same helpers the editor uses.
+        let chars: Vec<(char, ratatui::style::Style)> = text
+            .lines()
+            .next()
+            .unwrap()
+            .chars()
+            .map(|c| (c, ratatui::style::Style::default()))
+            .collect();
+        let rows = crate::ui::line_render::visual_rows_of_chars(&chars, width, 2);
+        assert!(rows.len() >= 2, "list item must wrap");
+        let (row1_start, row1_end, _) = rows[1];
+        // Pick screen cell 5 on row 1 → content cell 3 in row 1 → row1_start + 3.
+        state.cursor.offset = row1_start + 3.min(row1_end - row1_start);
+        state.cursor.preferred_col = state.current_visual_col(width);
+        // The seeded preferred_col must reflect the screen position, not
+        // the line-relative cell column.  On row 1 with indent 2, screen
+        // col 5 = content cell 3 + indent 2.
+        assert_eq!(state.cursor.preferred_col, 5);
+
+        state.move_down_visual(width);
+
+        // We're now on logical line 1's first row (plain paragraph, no
+        // indent).  Screen cell 5 there = content cell 5 = char 5.
+        let line1_start = state.buffer.line_to_char(1);
+        assert_eq!(state.cursor.offset, line1_start + 5);
+    }
+
+    /// Regression: clicking on a wrapped continuation row used to seed
+    /// `preferred_col` from the line-relative cell column, which on a
+    /// long wrapped line is huge.  Subsequent vertical nav then clamped
+    /// every target line to its end.  The fix routes click landing
+    /// through `current_visual_col` so `preferred_col` reflects the
+    /// click's screen column.
+    #[test]
+    fn click_on_wrapped_continuation_row_seeds_preferred_col_from_screen() {
+        // 60-cell paragraph that wraps at width 20 to three rows.  No
+        // hanging indent (plain paragraph).
+        let text = "the quick brown fox jumps over the lazy dog one more time";
+        let mut state = EditorState::new(Buffer::from_str(text), theme());
+        state.mode = crate::editor::Mode::Rendered;
+        let viewport_w: usize = 20;
+
+        // Compute char offset for "screen cell 4 on row 2".
+        let rows = crate::ui::line_render::visual_rows_of_str(text, viewport_w);
+        assert!(rows.len() >= 3);
+        let (row2_start, row2_end, _) = rows[2];
+        let target_offset = row2_start + 4.min(row2_end - row2_start);
+        // Simulate a click landing at that offset.
+        let click_action = crate::input::MouseAction::Click {
+            col: 4,
+            row: 2,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        let mut anchor: Option<crate::editor::mouse_ops::DragTarget> = None;
+        crate::editor::mouse_ops::apply(&mut state, click_action, &mut anchor, &[], 24, viewport_w);
+        assert_eq!(state.cursor.offset, target_offset);
+        // The bug: preferred_col would have been ~row2_start + 4 (large).
+        // After the fix it's the *screen* cell column (4).
+        assert_eq!(state.cursor.preferred_col, 4);
+    }
+
     #[test]
     fn move_down_visual_on_list_item_without_offset_bug() {
-        // A single-line list item whose content wraps at width 20.
+        // A single-line list item whose content wraps at width 20.  The
+        // raw text has a 2-cell hanging indent (the `- ` marker), so the
+        // continuation row's first content char sits at screen cell 2.
+        // `preferred_col = 5` is a *screen* cell col — on the continuation
+        // row it should map to content cell `5 - 2 = 3`.
         let text = "- hello world foo bar baz quux wibble";
         let mut state = EditorState::new(Buffer::from_str(text), theme());
-        // Cursor on row 0 at visual col 5 (the 'o' in "hello").
+        // Cursor on row 0 at screen cell 5 (the second 'l' in "hello",
+        // since `- ` consumes cells 0–1 and "hell" runs across cells 2–5).
         state.cursor.offset = 5;
         state.cursor.preferred_col = 5;
 
         state.move_down_visual(20);
 
-        let rows = crate::ui::line_render::visual_rows_of_str(text, 20);
+        let rows = crate::ui::line_render::visual_rows_of_chars(
+            &text
+                .chars()
+                .map(|c| (c, ratatui::style::Style::default()))
+                .collect::<Vec<_>>(),
+            20,
+            2,
+        );
         assert!(rows.len() >= 2);
-        let (row1_start, row1_end, _) = rows[1];
-        let row1_width = row1_end - row1_start;
-        let expected_visual = 5.min(row1_width);
-        assert_eq!(state.cursor.offset, row1_start + expected_visual);
+        let (row1_start, _, _) = rows[1];
+        // Screen cell 5 with indent 2 → content offset 3 within row 1.
+        assert_eq!(state.cursor.offset, row1_start + 3);
     }
 
     /// When the cursor moves to the last rendered line of a document that

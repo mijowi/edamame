@@ -958,3 +958,51 @@ fn type_at_viewport_bottom_wraps_and_scrolls_in_rendered_mode() {
         st.scroll
     );
 }
+
+// ── Grapheme-aware editing on multi-codepoint clusters ───────────────────────
+
+/// Sit the cursor immediately after the family-emoji cluster and Backspace.
+/// The whole 7-char ZWJ sequence must vanish in one keystroke — leaving any
+/// fragment behind would render as garbage.
+#[test]
+fn delete_char_back_removes_full_zwj_grapheme() {
+    let mut st = state("a👨\u{200D}👩\u{200D}👧\u{200D}👦b");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 8; // after the family, before 'b'
+    apply(&mut st, Action::DeleteCharBack);
+    assert_eq!(st.contents(), "ab");
+    assert_eq!(st.cursor.offset, 1);
+}
+
+#[test]
+fn delete_char_forward_removes_full_zwj_grapheme() {
+    let mut st = state("a👨\u{200D}👩\u{200D}👧\u{200D}👦b");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 1; // before the family
+    apply(&mut st, Action::DeleteCharForward);
+    assert_eq!(st.contents(), "ab");
+    assert_eq!(st.cursor.offset, 1);
+}
+
+/// Combining mark deletes with the base character — "é" (e + U+0301) is one
+/// grapheme even though it's two chars.
+#[test]
+fn delete_char_back_removes_combining_mark_with_base() {
+    let mut st = state("e\u{0301}!");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 2; // after the combining mark
+    apply(&mut st, Action::DeleteCharBack);
+    assert_eq!(st.contents(), "!");
+    assert_eq!(st.cursor.offset, 0);
+}
+
+/// MoveLeft / MoveRight in Raw mode must also step by grapheme — the user
+/// wanted Raw mode for raw *Markdown*, not raw codepoints.
+#[test]
+fn move_right_in_raw_mode_steps_over_grapheme() {
+    let mut st = state("a👨\u{200D}👩\u{200D}👧\u{200D}👦b");
+    st.mode = Mode::Raw;
+    st.cursor.offset = 1; // before the family
+    apply(&mut st, Action::MoveRight);
+    assert_eq!(st.cursor.offset, 8); // landed past the whole grapheme
+}

@@ -16,7 +16,7 @@ Also Heading 2
 **Bold text** | __Underscore bold__ | *Italic text* | _Underscore italic_ | **_Bold and italic_**
 
 ~~Strikethrough~~ no strikethrough
- 
+
 ==Highlight==
 
 > Blockquote

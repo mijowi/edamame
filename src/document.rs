@@ -1,5 +1,6 @@
 pub mod buffer;
 pub mod cursor;
+pub mod graphemes;
 pub mod history;
 pub mod parsed_doc;
 pub mod selection;
@@ -7,6 +8,7 @@ pub mod source_map;
 
 pub use buffer::Buffer;
 pub use cursor::Cursor;
+pub use graphemes::{next_grapheme_offset, prev_grapheme_offset};
 pub use history::{EditDelta, History};
 pub use parsed_doc::{detect_setext, gfm_slug, ImageBlockInfo, ParsedDoc};
 pub use selection::{Selection, VisualSelection};

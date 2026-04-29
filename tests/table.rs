@@ -15,6 +15,8 @@
 use edamame::config::{Action, Theme};
 use edamame::document::Buffer;
 use edamame::editor::{edit_ops, EditorState, Mode};
+use edamame::ui::table_view;
+use ratatui::layout::Rect;
 
 const VP: usize = 40;
 const VW: usize = 80;
@@ -566,4 +568,38 @@ fn move_up_between_data_rows_lands_at_cell_end() {
     // Cursor must be just past "11".
     assert_eq!(&contents[byte - 1..byte], "1");
     assert_eq!(&contents[byte..byte + 1], " ");
+}
+
+/// Regression: pasting a multi-byte char (e.g. an emoji) in-line shifts
+/// buffer bytes after the insertion point, leaving `parsed.source_map`
+/// byte ranges stale until the next parse refresh.  `paste_text` does not
+/// flush the parse, so the next render reads the live buffer through stale
+/// ranges; `table_view::build_snapshots` used to panic with "byte index N
+/// is not a char boundary" when a stale boundary fell inside the new
+/// char's UTF-8 sequence.
+#[test]
+fn build_snapshots_does_not_panic_after_inline_emoji_paste() {
+    // Block 0 is a one-byte paragraph; block 2 is a one-byte paragraph
+    // whose pre-edit source_map range (3..4) will land mid-emoji once the
+    // 4-byte 🥇 is inserted at byte offset 1.
+    let src = "a\n\nb";
+    let mut st = editor_at(src, "b");
+    // Move the cursor to between 'a' and the first newline so the paste
+    // lands at byte offset 1 — the byte that becomes the emoji's first
+    // byte and pushes block 2's stale range into the middle of it.
+    let char_off = st.buffer.rope().byte_to_char(1);
+    st.cursor.offset = char_off;
+    st.update_cursor_block();
+    // `paste_text` is the user-facing path that doesn't flush the
+    // parse afterwards (single-char InsertChar does flush via
+    // edit_ops::apply, masking the bug).
+    edit_ops::paste_text(&mut st, "🥇", VP, VW);
+    assert!(
+        st.parsed_dirty,
+        "in-line paste must leave `parsed_dirty = true`",
+    );
+
+    // Pre-fix this panicked at table_view.rs:381 with
+    // "byte index N is not a char boundary".
+    let _ = table_view::build_snapshots(&st, Rect::new(0, 0, 80, 24), false);
 }

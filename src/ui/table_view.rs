@@ -378,7 +378,14 @@ pub fn build_snapshots(
         if let Some(bb) = block_byte {
             if let Some(range) = state.parsed.source_map.original_range_for_byte(bb) {
                 let end = range.end.min(source.len());
-                let block_text = &source[range.start..end];
+                // Use `get` rather than direct indexing: when an in-line edit
+                // has set `parsed_dirty`, the source-map byte ranges are
+                // stale relative to the live buffer and may now land inside
+                // a multi-byte UTF-8 sequence (e.g. an emoji the user just
+                // typed).  Falling back to `""` skips this block's snapshot
+                // for the one frame between the keystroke and the next
+                // parse flush — preferable to panicking.
+                let block_text = source.get(range.start..end).unwrap_or("");
                 if table_edit::is_table_block(block_text) {
                     current_block = Some(range.start);
                     let own = state.parsed.source_map.rendered_lines_for_byte(range.start);

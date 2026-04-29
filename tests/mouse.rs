@@ -1411,3 +1411,64 @@ fn delete_handles_inert_when_handle_fields_are_none() {
     mouse_ops::apply(&mut st, click(7, 4), &mut target, &snapshots, VP, VW);
     assert_eq!(st.contents(), src);
 }
+
+// ── Cell-aware click hit-testing on wrapped lines ─────────────────────────────
+
+/// Regression: clicking on the *second* visual row of a wrapped paragraph
+/// must land in the wrapped continuation, not back on the first row.
+/// Pre-fix the click ignored `sub_row_within_line` and walked from the line
+/// start, so cell column 3 of row 1 lit up char 3 of row 0.
+#[test]
+fn click_on_wrapped_continuation_row_lands_in_continuation_text() {
+    // 32-cell paragraph, viewport width 16 → wraps to 2 visual rows.
+    // Row 0: "the quick brown " (16 chars / 16 cells)
+    // Row 1: "fox jumps over"   (14 chars)
+    let mut st = state("the quick brown fox jumps over\n");
+    st.mode = Mode::Rendered;
+    let viewport_w: usize = 16;
+    let mut mouse = MouseDispatcher::new();
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    let click_area = Rect {
+        x: 0,
+        y: 0,
+        width: viewport_w as u16,
+        height: 24,
+    };
+    let action = mouse
+        .dispatch(click_event(0, 1), click_area)
+        .expect("click dispatched");
+    mouse_ops::apply(&mut st, action, &mut anchor, &[], VP, viewport_w);
+    // Pre-fix: cursor would land at offset 0 (start of row 0).  Post-fix:
+    // it lands at offset 16 (start of row 1's content).
+    assert_eq!(st.cursor.offset, 16);
+}
+
+/// Click on the *fifth* cell of the second wrapped row of a paragraph
+/// containing a leading wide char.  Verifies wide-char snap-past survives
+/// the wrap math.
+#[test]
+fn click_on_wrapped_row_handles_wide_char_in_row() {
+    // Line: "🥇 leader plus more text after"  (29 chars, but 30 cells —
+    // the emoji is 2 cells).  Viewport width 12, so:
+    //   row 0: "🥇 leader "   ends at chars 9 / cells 10
+    //   row 1: "plus more "   chars 9..19 / cells 10
+    //   row 2: "text after"   chars 19..29
+    let mut st = state("🥇 leader plus more text after\n");
+    st.mode = Mode::Rendered;
+    let viewport_w: usize = 12;
+    let mut mouse = MouseDispatcher::new();
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    let click_area = Rect {
+        x: 0,
+        y: 0,
+        width: viewport_w as u16,
+        height: 24,
+    };
+    // Click on cell 5 of row 2 → 't' of "after".  ASCII chars on row 2
+    // start at char 19.  Char at row-cell 5 = chars[19+5] = 'a' of "after".
+    let action = mouse
+        .dispatch(click_event(5, 2), click_area)
+        .expect("click dispatched");
+    mouse_ops::apply(&mut st, action, &mut anchor, &[], VP, viewport_w);
+    assert_eq!(st.contents().chars().nth(st.cursor.offset), Some('a'));
+}

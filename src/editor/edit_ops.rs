@@ -1,5 +1,5 @@
 use crate::config::Action;
-use crate::document::{EditDelta, Selection};
+use crate::document::{next_grapheme_offset, prev_grapheme_offset, EditDelta, Selection};
 use crate::editor::list_edit::{self, ListInfo};
 use crate::editor::table_edit::{
     self, cell_cursor_offset, cell_end_cursor_offset, cursor_cell, find_table_at, RowKind,
@@ -407,11 +407,15 @@ pub fn apply(
             } else if state.mode == Mode::Rendered && list_backspace_consumes_marker(state) {
                 // Handled: the whole marker was deleted as a single atomic edit.
             } else if state.cursor.offset > 0 {
-                let offset = state.cursor.offset - 1;
-                let ch = state.buffer.rope().char(offset).to_string();
+                // Delete the entire preceding grapheme cluster — flag emoji,
+                // ZWJ sequences, and combining marks vanish in one keystroke
+                // rather than leaving fragments behind.
+                let end = state.cursor.offset;
+                let offset = prev_grapheme_offset(&state.buffer, end);
+                let removed = state.buffer.slice_to_string(offset, end);
                 state.apply_delta(EditDelta {
                     offset,
-                    removed: ch,
+                    removed,
                     inserted: String::new(),
                 });
             }
@@ -422,10 +426,11 @@ pub fn apply(
                 delete_selection(state, sel);
             } else if state.cursor.offset < state.buffer.len_chars() {
                 let offset = state.cursor.offset;
-                let ch = state.buffer.rope().char(offset).to_string();
+                let end = next_grapheme_offset(&state.buffer, offset);
+                let removed = state.buffer.slice_to_string(offset, end);
                 state.apply_delta(EditDelta {
                     offset,
-                    removed: ch,
+                    removed,
                     inserted: String::new(),
                 });
             }
@@ -441,7 +446,7 @@ pub fn apply(
             if start < end {
                 let removed = state.buffer.slice_to_string(start, end);
                 state.cursor.offset = start;
-                state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+                state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
                 state.apply_delta(EditDelta {
                     offset: start,
                     removed,
@@ -1062,7 +1067,7 @@ fn table_move_horizontal(state: &mut EditorState, forward: bool) -> bool {
             // the trailing `|` or newline.
             return true;
         }
-        let new_char = (state.cursor.offset + 1).min(state.buffer.len_chars());
+        let new_char = next_grapheme_offset(&state.buffer, state.cursor.offset);
         let new_byte = state.buffer.rope().char_to_byte(new_char);
         set_cursor_byte(state, new_byte.min(cell_end));
     } else {
@@ -1074,7 +1079,7 @@ fn table_move_horizontal(state: &mut EditorState, forward: bool) -> bool {
             }
             return true;
         }
-        let new_char = state.cursor.offset.saturating_sub(1);
+        let new_char = prev_grapheme_offset(&state.buffer, state.cursor.offset);
         let new_byte = state.buffer.rope().char_to_byte(new_char);
         set_cursor_byte(state, new_byte.max(cell_first));
     }
@@ -1307,7 +1312,7 @@ fn try_move_cell_vertical(
     };
     let char_off = state.buffer.rope().byte_to_char(target_byte);
     state.cursor.offset = char_off.min(state.buffer.len_chars());
-    state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+    state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
     state.update_cursor_block();
     state.ensure_cursor_visible(viewport_height, viewport_width);
     true
@@ -1331,7 +1336,7 @@ fn apply_byte_delta(state: &mut EditorState, byte_delta: EditDelta, cursor_byte_
     let clamped_byte = cursor_byte_target.min(source.len());
     let char_off = state.buffer.rope().byte_to_char(clamped_byte);
     state.cursor.offset = char_off.min(state.buffer.len_chars());
-    state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+    state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
     state.update_cursor_block();
 }
 
@@ -1354,7 +1359,7 @@ fn jump_to_cell(
         if let Some(target_byte) = cell_end_cursor_offset(&info, row, col) {
             let char_off = state.buffer.rope().byte_to_char(target_byte);
             state.cursor.offset = char_off.min(state.buffer.len_chars());
-            state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+            state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
             state.update_cursor_block();
             state.ensure_cursor_visible(viewport_height, viewport_width);
         }
@@ -1819,10 +1824,10 @@ fn list_move_horizontal(state: &mut EditorState, forward: bool) -> bool {
             set_cursor_byte(state, info.end.min(source.len()));
             return true;
         }
-        // Normal char-step, but if we'd land before the next item's content
-        // (because we stepped onto a marker char, which shouldn't happen for
-        // correctly-skipped cursors), clamp to content_start.
-        let new_char = (state.cursor.offset + 1).min(state.buffer.len_chars());
+        // Normal grapheme-step, but if we'd land before the next item's
+        // content (because we stepped onto a marker char, which shouldn't
+        // happen for correctly-skipped cursors), clamp to content_start.
+        let new_char = next_grapheme_offset(&state.buffer, state.cursor.offset);
         state.cursor.offset = new_char;
         true
     } else {
@@ -1839,7 +1844,7 @@ fn list_move_horizontal(state: &mut EditorState, forward: bool) -> bool {
             // else stay put at content_start.
             return true;
         }
-        let new_char = state.cursor.offset.saturating_sub(1);
+        let new_char = prev_grapheme_offset(&state.buffer, state.cursor.offset);
         state.cursor.offset = new_char;
         true
     }

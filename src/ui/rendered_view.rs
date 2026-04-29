@@ -1012,7 +1012,15 @@ fn paint_selection_overlay(
     // other blocks that produce one rendered line per raw line (code blocks,
     // lists where each item is a single-line paragraph), it's 1:1.
     let source = editor.buffer.contents();
-    let block_text = &source[block_range.start..block_range.end.min(source.len())];
+    // `source.get(..)` rather than direct indexing — when `parsed_dirty` is
+    // set, an in-line edit (e.g. an emoji insertion) has shifted byte
+    // offsets after the cursor, so `block_range` may now end inside a
+    // multi-byte UTF-8 sequence in the live buffer.  Empty-string fallback
+    // skips selection painting on this block for one frame; the next parse
+    // refresh restores correct ranges.
+    let block_text = source
+        .get(block_range.start..block_range.end.min(source.len()))
+        .unwrap_or("");
     let rendered_span = editor
         .parsed
         .source_map

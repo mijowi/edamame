@@ -352,7 +352,13 @@ pub fn apply(
             {
                 state.selection = None;
                 state.cursor.offset = offset.min(state.buffer.len_chars());
-                state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+                // Click target is a screen position — `preferred_col` must
+                // be the screen cell column (cell within visual sub-row +
+                // any hanging indent).  Plain `cell_col` would store the
+                // line-relative cell column, which on a wrapped continuation
+                // row is far past the line content's right edge and makes
+                // subsequent vertical nav clamp every row to its end.
+                state.cursor.preferred_col = state.current_visual_col(viewport_width);
                 state.update_cursor_block();
                 state.ensure_cursor_visible(viewport_height, viewport_width);
                 *drag_target = Some(DragTarget::TextSelection {
@@ -412,7 +418,7 @@ pub fn apply(
                 {
                     let active = offset.min(state.buffer.len_chars());
                     state.cursor.offset = active;
-                    state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+                    state.cursor.preferred_col = state.current_visual_col(viewport_width);
                     state.selection = Some(Selection { anchor, active });
                     state.update_cursor_block();
                     state.ensure_cursor_visible(viewport_height, viewport_width);
@@ -709,7 +715,7 @@ fn commit_row_drag(
         cur = step;
     }
     state.cursor.offset = saved_cursor.min(state.buffer.len_chars());
-    state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+    state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
     state.update_cursor_block();
 }
 
@@ -837,7 +843,7 @@ fn commit_column_drag(
         cur = step;
     }
     state.cursor.offset = saved_cursor.min(state.buffer.len_chars());
-    state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+    state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
     state.update_cursor_block();
 }
 
@@ -1089,26 +1095,66 @@ pub fn click_to_char_offset(
     viewport_width: usize,
 ) -> Option<usize> {
     match state.mode {
-        Mode::Raw => Some(raw_click_to_offset(state, col, row)),
+        Mode::Raw => Some(raw_click_to_offset(state, col, row, viewport_width)),
         Mode::Preview | Mode::Rendered => {
             Some(rendered_click_to_offset(state, col, row, viewport_width))
         }
     }
 }
 
-/// Raw-mode click: treat each visual row as one buffer line (the raw view's
-/// own wrap is a best-effort wrap that doesn't preserve a stable inverse
-/// mapping, so this is an acceptable approximation).
-fn raw_click_to_offset(state: &EditorState, col: usize, row: usize) -> usize {
-    let target_line = state.scroll + row;
+/// Raw-mode click: walk buffer lines from `state.scroll`, accumulating each
+/// line's wrapped visual-row count, and translate the click into a char
+/// offset on the appropriate visual sub-row.  Cell-aware so wide chars
+/// align and the cursor lands where the user sees it.
+fn raw_click_to_offset(
+    state: &EditorState,
+    col: usize,
+    row: usize,
+    viewport_width: usize,
+) -> usize {
     let line_count = state.buffer.line_count();
-    if target_line >= line_count {
-        return state.buffer.len_chars();
+    let width = viewport_width.max(1);
+    let mut y = 0usize;
+    for target_line in state.scroll..line_count {
+        let text = state
+            .buffer
+            .line(target_line)
+            .map(|s| s.trim_end_matches('\n').to_owned())
+            .unwrap_or_default();
+        let rows = crate::ui::line_render::visual_rows_of_str(&text, width);
+        let used = rows.len().max(1);
+        if row < y + used {
+            let sub_row = row - y;
+            let line_start = state.buffer.line_to_char(target_line);
+            let row_tuple = rows.get(sub_row).copied().unwrap_or((0, 0, 0));
+            let raw_col = char_in_row_at_cell(&text, row_tuple, col, 0, sub_row + 1 == rows.len());
+            return line_start + raw_col;
+        }
+        y += used;
     }
-    let line_start = state.buffer.line_to_char(target_line);
-    let line = state.buffer.line(target_line).unwrap_or_default();
-    let line_len = line.trim_end_matches('\n').chars().count();
-    line_start + col.min(line_len)
+    state.buffer.len_chars()
+}
+
+/// Cell-aware "click landed in this visual row" → char column on the
+/// logical line.  Mirrors `state::raw_col_for_visual_cells` but lives here
+/// because the public copy belongs to mouse hit-testing.  See that
+/// function for the wide-char snap-past rule and forbidden indent zone.
+fn char_in_row_at_cell(
+    text: &str,
+    row: (usize, usize, usize),
+    target_cell: usize,
+    indent: usize,
+    is_last_row: bool,
+) -> usize {
+    let (start, end, next_start) = row;
+    let max_char_in_row = if is_last_row {
+        end
+    } else {
+        next_start.saturating_sub(1).max(start)
+    };
+    let row_chars = text.chars().skip(start).take(end - start);
+    let in_row = crate::ui::line_render::char_idx_at_cell_col(row_chars, target_cell, indent);
+    (start + in_row).min(max_char_in_row)
 }
 
 /// Rendered/Preview click: walk through rendered lines from `state.scroll`,
@@ -1136,7 +1182,7 @@ fn rendered_click_to_offset(
             .max(1);
         if row < y + rows_used {
             let sub_row = row - y;
-            return rendered_sub_line_to_offset(state, idx, sub_row, col);
+            return rendered_sub_line_to_offset(state, idx, sub_row, col, viewport_width);
         }
         y += rows_used;
     }
@@ -1163,6 +1209,7 @@ fn rendered_sub_line_to_offset(
     rendered_line_idx: usize,
     sub_row_within_line: usize,
     col: usize,
+    viewport_width: usize,
 ) -> usize {
     let buffer_len = state.buffer.len_chars();
     let source = state.buffer.contents();
@@ -1181,7 +1228,12 @@ fn rendered_sub_line_to_offset(
         return buffer_len;
     };
     let block_end = block_range.end.min(source.len());
-    let block_text = &source[block_range.start..block_end];
+    // Tolerate stale source-map ranges that land mid-grapheme: when a
+    // pending in-line edit has shifted byte offsets after the cursor,
+    // direct slicing would panic at the char-boundary check.  Mouse
+    // dispatch flushes the parse before reaching here so the empty-
+    // string fallback is defence-in-depth, not the routine path.
+    let block_text = source.get(block_range.start..block_end).unwrap_or("");
 
     // How deep into the block's rendered lines did we click?
     let rendered_span = state
@@ -1260,28 +1312,60 @@ fn rendered_sub_line_to_offset(
     }
     let line_text = &block_text[line_byte_start..line_byte_end];
     let rendered_line = &state.parsed.lines[rendered_line_idx];
-    let row_width = line_row_width(rendered_line, sub_row_within_line);
-    let clamped_col = col.min(row_width);
 
     // Tables: rendered cells are padded to layout width, so a simple col →
     // char mapping lands clicks on the wrong cell whenever the rendered cell
     // is wider than its raw counterpart.  Map through the pipe positions
     // instead so the click stays inside the cell the user clicked on.
     let raw_col = if is_table && rendered_line.spans.iter().any(|s| s.content.contains('│')) {
+        let row_width = line_row_width(rendered_line, sub_row_within_line);
+        let clamped_col = col.min(row_width);
         if let Some(c) = table_click_to_raw_col(line_text, rendered_line, clamped_col) {
             c
         } else {
             clamped_col
         }
     } else {
-        // Task-list items render without the `- ` / `N. ` prefix; the
-        // checkbox and text follow `[ ] ` starting at col = indent.  The
-        // rendered line is therefore shorter than the raw line by the
-        // list-marker width — shift the click col to the matching raw col
-        // so clicks on `[ ]` toggle the checkbox and clicks on text land on
-        // the intended character.
-        let shift = task_marker_offset(line_text);
-        clamped_col.saturating_add(shift)
+        // Non-table click: walk the rendered line's wrap layout to find
+        // which sub-row the click landed on, then translate the click's
+        // cell column into a char position using the cell-aware mapping
+        // (wide-char snap-past, hanging-indent forbidden zone).  Falls
+        // back to row 0 if the rendered line had fewer wrap rows than the
+        // sub_row_within_line we were told.
+        let indent = crate::ui::line_render::compute_hanging_indent(rendered_line);
+        let rendered_chars: Vec<(char, ratatui::style::Style)> = rendered_line
+            .spans
+            .iter()
+            .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
+            .collect();
+        let viewport = viewport_width.max(1);
+        let rows = crate::ui::line_render::visual_rows_of_chars(&rendered_chars, viewport, indent);
+        let sub = sub_row_within_line.min(rows.len().saturating_sub(1));
+        let (start, end, next_start) = rows.get(sub).copied().unwrap_or((0, 0, 0));
+        let row_indent = if sub == 0 { 0 } else { indent };
+        let is_last_row = sub + 1 == rows.len();
+        let max_in_row = if is_last_row {
+            end
+        } else {
+            next_start.saturating_sub(1).max(start)
+        };
+        let row_chars = rendered_chars
+            .iter()
+            .skip(start)
+            .take(end - start)
+            .map(|(c, _)| *c);
+        let in_row = crate::ui::line_render::char_idx_at_cell_col(row_chars, col, row_indent);
+        let rendered_col_in_line = (start + in_row).min(max_in_row);
+        // Task-list items render without the `- ` / `N. ` prefix; shift back
+        // into raw-line space so clicks on `[ ]` toggle the checkbox.  The
+        // shift only applies to row 0; continuation rows show no marker on
+        // either side of the rendered/raw map.
+        let shift = if sub == 0 {
+            task_marker_offset(line_text)
+        } else {
+            0
+        };
+        rendered_col_in_line.saturating_add(shift)
     };
 
     // Advance `raw_col` chars into the raw line.
@@ -1562,7 +1646,7 @@ fn select_word_at_cursor(state: &mut EditorState) {
         active: end,
     });
     state.cursor.offset = end;
-    state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+    state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
 }
 
 /// Expand the selection to the whole line (triple-click).
@@ -1596,7 +1680,7 @@ fn select_line_at_cursor(state: &mut EditorState) {
                     let active = rope.byte_to_char(end_byte);
                     state.selection = Some(Selection { anchor, active });
                     state.cursor.offset = active;
-                    state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+                    state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
                     return;
                 }
             }
@@ -1615,7 +1699,7 @@ fn select_line_at_cursor(state: &mut EditorState) {
         active: end,
     });
     state.cursor.offset = end;
-    state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+    state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
 }
 
 // ── Phase 8 link-follow dispatch ────────────────────────────────────────────
@@ -1733,7 +1817,12 @@ fn link_url_for_click(
         .source_map
         .original_range_for_byte(cursor_byte)?;
     let source = state.buffer.contents();
-    let block_src = &source[block_range.start..block_range.end.min(source.len())];
+    // Char-boundary defensive fallback — see `rendered_sub_line_to_offset`
+    // for the rationale; the App flushes the parse before mouse dispatch
+    // so the unwrap_or path is for safety, not correctness.
+    let block_src = source
+        .get(block_range.start..block_range.end.min(source.len()))
+        .unwrap_or("");
     let blocks = crate::markdown::parse(block_src);
     let mut urls: Vec<(String, Option<String>)> = Vec::new();
     for block in &blocks {
@@ -1930,7 +2019,7 @@ fn apply_byte_delta(state: &mut EditorState, byte_delta: EditDelta, cursor_byte_
     let clamped_byte = cursor_byte_target.min(source.len());
     let char_off = state.buffer.rope().byte_to_char(clamped_byte);
     state.cursor.offset = char_off.min(state.buffer.len_chars());
-    state.cursor.preferred_col = state.cursor.line_col(&state.buffer).1;
+    state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
     state.update_cursor_block();
 }
 

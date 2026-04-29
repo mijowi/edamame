@@ -1,4 +1,88 @@
 use ratatui::{buffer::Buffer as TuiBuf, layout::Rect, style::Style, text::Line};
+use unicode_width::UnicodeWidthChar;
+
+/// Display width of `ch` in terminal cells.  Wide chars (CJK, most emoji)
+/// return 2; ASCII / BMP narrow chars return 1; control chars return 0.
+/// Used by both the renderer and the wrap-row calculator so on-screen
+/// geometry agrees with cursor and selection coordinates.
+pub fn char_cells(ch: char) -> usize {
+    UnicodeWidthChar::width(ch).unwrap_or(0)
+}
+
+/// Char index in `text` (0-based) corresponding to screen cell column
+/// `target_cell`, assuming the row's first content cell sits at column
+/// `indent` (>0 for hanging-indent continuation rows).  Implements the
+/// landing rules used by vertical navigation and mouse clicks alike:
+///
+/// - **Forbidden indent zone:** when `target_cell <= indent` the cursor
+///   lands at char index 0 — the first content char.  The hanging-indent
+///   padding on a wrapped list-item continuation row is virtual, not
+///   text, so the cursor never sits there.
+/// - **Wide-char snap-past:** when `target_cell` falls *inside* a
+///   multi-cell glyph (CJK, emoji), the cursor lands *after* that glyph.
+///   It never visually sits in the right half of a wide char.
+/// - **Past content:** when `target_cell` exceeds the row's total cell
+///   width, returns the total char count of `text` (one past the last
+///   char) — callers clamp to row end as appropriate.
+pub fn char_idx_at_cell_col<I>(iter: I, target_cell: usize, indent: usize) -> usize
+where
+    I: IntoIterator<Item = char>,
+{
+    if target_cell <= indent {
+        return 0;
+    }
+    let mut acc = indent;
+    let mut count = 0;
+    for ch in iter {
+        let w = char_cells(ch);
+        if acc + w > target_cell {
+            return if acc == target_cell { count } else { count + 1 };
+        }
+        acc += w;
+        count += 1;
+    }
+    count
+}
+
+/// Inverse of `char_idx_at_cell_col`: cumulative cell width of the first
+/// `char_idx` chars of `iter`, plus `indent`.  Use this to seed
+/// `preferred_col` after a horizontal cursor move so subsequent vertical
+/// navigation lands at the same screen cell.
+pub fn cell_col_at_char_idx<I>(iter: I, char_idx: usize, indent: usize) -> usize
+where
+    I: IntoIterator<Item = char>,
+{
+    let mut acc = indent;
+    for (i, ch) in iter.into_iter().enumerate() {
+        if i >= char_idx {
+            break;
+        }
+        acc += char_cells(ch);
+    }
+    acc
+}
+
+/// Largest `n` such that the cumulative cell width of
+/// `chars[start..start + n]` fits within `cell_budget`.  When the very
+/// first char is itself wider than `cell_budget` we still return `1` so
+/// the wrap loop makes progress at very narrow viewports — the renderer
+/// will clip the overflowing right half on draw.
+fn chars_within_cell_budget(chars: &[(char, Style)], start: usize, cell_budget: usize) -> usize {
+    let mut total = 0usize;
+    let mut count = 0usize;
+    for (ch, _) in &chars[start..] {
+        let w = char_cells(*ch);
+        if count > 0 && total + w > cell_budget {
+            break;
+        }
+        total += w;
+        count += 1;
+        if total >= cell_budget {
+            break;
+        }
+    }
+    count
+}
 
 /// Write a styled `Line` to the TUI buffer, wrapping at `area.width` when
 /// `wrap` is true. Returns the number of visual rows consumed (≥ 1).
@@ -7,7 +91,8 @@ use ratatui::{buffer::Buffer as TuiBuf, layout::Rect, style::Style, text::Line};
 /// styled blocks (e.g. code blocks) extend to the full width of `area`.  The
 /// wrap algorithm is word-aware: breaks prefer the last non-alphanumeric
 /// character within the row, falling back to a hard break when a single word
-/// exceeds the row width.
+/// exceeds the row width.  `area.width` is interpreted as terminal *cells*,
+/// so wide chars (emoji, CJK) consume two columns of budget per char.
 ///
 /// Hanging-indent: when the line begins with a recognized list marker (or
 /// leading whitespace from a list-item continuation paragraph), wrapped
@@ -16,10 +101,11 @@ use ratatui::{buffer::Buffer as TuiBuf, layout::Rect, style::Style, text::Line};
 /// Detection lives in `compute_hanging_indent`; an indent of 0 (the default
 /// for non-list lines) preserves the legacy zero-padding wrap.
 ///
-/// `cursor_col_override`: when `Some((col, style))`, the character at visual
-/// column `col` on the first output row is rendered with `style` (used to
-/// show a cursor indicator during the jitter-suppression delay in hybrid
-/// rendered mode).
+/// `cursor_col_override`: when `Some((col, style))`, the character at char
+/// index `col` (NOT cell column) on the first output row is rendered with
+/// `style` (used to show a cursor indicator during the jitter-suppression
+/// delay in hybrid rendered mode).  The style applies only to the first cell
+/// of a wide char — terminals can't independently style the right half.
 pub fn render_line(
     line: &Line<'static>,
     area: Rect,
@@ -58,136 +144,128 @@ pub fn render_line_with_cursor(
     }
 
     if !wrap {
-        // No wrapping: write up to `width` chars on a single row.
-        let mut x = area.x;
-        for (idx, (ch, style)) in chars.iter().enumerate() {
-            if x >= area.x + area.width {
-                break;
-            }
-            let effective_style = cursor_col_override
-                .filter(|(col, _)| *col == idx)
-                .map(|(_, s)| s)
-                .unwrap_or(*style);
-            if let Some(cell) = buf.cell_mut((x, abs_y)) {
-                cell.set_char(*ch);
-                cell.set_style(effective_style);
-            }
-            x += 1;
-        }
-        while x < area.x + area.width {
-            if let Some(cell) = buf.cell_mut((x, abs_y)) {
-                cell.set_style(line_style);
-            }
-            x += 1;
-        }
+        paint_row(
+            &chars,
+            0,
+            chars.len(),
+            0,
+            0,
+            area,
+            buf,
+            abs_y,
+            line_style,
+            cursor_col_override,
+        );
         return 1;
     }
 
-    // Hanging indent — only meaningful when the indent leaves at least one
-    // cell of room on continuation rows.  When the viewport is too narrow
-    // for the indent to fit (or the line has no marker), fall back to flat
-    // wrap.
+    // Single source of truth for row breaks — keeps the renderer in lockstep
+    // with the navigation/selection helpers below.
     let indent = compute_hanging_indent(line);
-    let indent = if indent + 1 >= width { 0 } else { indent };
+    let rows = visual_rows_of_chars(&chars, width, indent);
+    let effective_indent = if indent + 1 >= width { 0 } else { indent };
 
-    // Word-aware wrapping. See module docstring.
     let mut cur_visual = visual_y;
-    let mut start = 0;
-    let mut char_col_base = 0usize;
-    let mut row_idx = 0usize;
-
-    while start < chars.len() {
+    for (row_idx, &(start, row_end, _next_start)) in rows.iter().enumerate() {
         if cur_visual >= area.height {
             break;
         }
         let cur_abs_y = area.y + cur_visual;
-        let row_indent = if row_idx == 0 { 0 } else { indent };
-        let row_width = width.saturating_sub(row_indent).max(1);
-
-        let remaining = chars.len() - start;
-        let (row_end, next_start) = if remaining <= row_width {
-            (chars.len(), chars.len())
-        } else {
-            let window = &chars[start..start + row_width];
-            let break_rel = window
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(_, (ch, _))| !ch.is_alphanumeric())
-                .map(|(i, _)| i);
-
-            match break_rel {
-                Some(bp) => {
-                    let end = start + bp + 1;
-                    let mut next = end;
-                    while next < chars.len() && chars[next].0 == ' ' {
-                        next += 1;
-                    }
-                    (end, next)
-                }
-                None => {
-                    let end = start + row_width;
-                    (end, end)
-                }
-            }
-        };
-
-        // Pre-pad the hanging-indent cells with the line's base style so the
-        // continuation rows show as flush-left blank columns rather than the
-        // previous frame's leftover content.
-        let mut x = area.x;
-        for _ in 0..row_indent {
-            if x >= area.x + area.width {
-                break;
-            }
-            if let Some(cell) = buf.cell_mut((x, cur_abs_y)) {
-                cell.set_char(' ');
-                cell.set_style(line_style);
-            }
-            x += 1;
-        }
-        for (rel_idx, (ch, style)) in chars[start..row_end].iter().enumerate() {
-            if x >= area.x + area.width {
-                break;
-            }
-            let abs_col = char_col_base + rel_idx;
-            let effective_style = cursor_col_override
-                .filter(|(col, _)| *col == abs_col)
-                .map(|(_, s)| s)
-                .unwrap_or(*style);
-            if let Some(cell) = buf.cell_mut((x, cur_abs_y)) {
-                cell.set_char(*ch);
-                cell.set_style(effective_style);
-            }
-            x += 1;
-        }
-        while x < area.x + area.width {
-            if let Some(cell) = buf.cell_mut((x, cur_abs_y)) {
-                cell.set_style(line_style);
-            }
-            x += 1;
-        }
-
-        char_col_base += next_start - start;
-        start = next_start;
+        let row_indent = if row_idx == 0 { 0 } else { effective_indent };
+        paint_row(
+            &chars,
+            start,
+            row_end,
+            start,
+            row_indent,
+            area,
+            buf,
+            cur_abs_y,
+            line_style,
+            cursor_col_override,
+        );
         cur_visual += 1;
-        row_idx += 1;
     }
 
     (cur_visual - visual_y).max(1)
 }
 
+/// Paint a single visual row.  `chars[start..end]` are written starting at
+/// `area.x + row_indent` (after writing `row_indent` blanks in `line_style`
+/// so the indent column shows the surrounding background).  `abs_col_base`
+/// is the char-index offset to add to `rel_idx` when matching against
+/// `cursor_col_override` — for wrapped continuation rows this is the row's
+/// `start`; for the no-wrap fast path it's 0.
+#[allow(clippy::too_many_arguments)]
+fn paint_row(
+    chars: &[(char, Style)],
+    start: usize,
+    end: usize,
+    abs_col_base: usize,
+    row_indent: usize,
+    area: Rect,
+    buf: &mut TuiBuf,
+    abs_y: u16,
+    line_style: Style,
+    cursor_col_override: Option<(usize, Style)>,
+) {
+    let mut x = area.x;
+    let area_end = area.x + area.width;
+    for _ in 0..row_indent {
+        if x >= area_end {
+            break;
+        }
+        if let Some(cell) = buf.cell_mut((x, abs_y)) {
+            cell.set_char(' ');
+            cell.set_style(line_style);
+        }
+        x += 1;
+    }
+    for (rel_idx, (ch, style)) in chars[start..end].iter().enumerate() {
+        let cells = char_cells(*ch) as u16;
+        if cells == 0 || x >= area_end {
+            // Zero-width chars (e.g. ZWJ, variation selectors, combining
+            // marks) are conceptually merged into the preceding grapheme
+            // by the terminal — skip without advancing `x` rather than
+            // overwriting the previous cell's glyph.
+            if cells == 0 {
+                continue;
+            }
+            break;
+        }
+        let abs_col = abs_col_base + rel_idx;
+        let effective_style = cursor_col_override
+            .filter(|(col, _)| *col == abs_col)
+            .map(|(_, s)| s)
+            .unwrap_or(*style);
+        if let Some(cell) = buf.cell_mut((x, abs_y)) {
+            cell.set_char(*ch);
+            cell.set_style(effective_style);
+        }
+        x += cells;
+    }
+    while x < area_end {
+        if let Some(cell) = buf.cell_mut((x, abs_y)) {
+            cell.set_style(line_style);
+        }
+        x += 1;
+    }
+}
+
 /// Compute the list of visual rows produced by wrapping `chars` at `width`
-/// with a hanging `indent`.  When `indent > 0`, the first row uses the full
-/// `width` and every continuation row uses `width - indent`.
+/// (in terminal cells) with a hanging `indent`.  When `indent > 0`, the
+/// first row uses the full `width` and every continuation row uses
+/// `width - indent`.
 ///
 /// Returns a list of `(start, end, next_start)` tuples, where:
 /// - `chars[start..end]` is the content placed on that visual row
 /// - `next_start` is the index at which the next visual row begins (may be
 ///   `> end` when trailing spaces are consumed at the wrap point)
 ///
-/// The algorithm mirrors `render_line` exactly so that visual-line navigation
-/// lands the cursor on the same visual row as the renderer draws.
+/// `width` and `indent` are cell counts; the returned indices are char
+/// indices.  `render_line_with_cursor` calls this directly to drive its
+/// row-by-row painting, so the renderer and visual-line navigation always
+/// agree on where rows break.
 pub fn visual_rows_of_chars(
     chars: &[(char, Style)],
     width: usize,
@@ -216,12 +294,13 @@ pub fn visual_rows_of_chars(
         } else {
             width.saturating_sub(indent).max(1)
         };
+        let n_chars = chars_within_cell_budget(chars, start, row_width);
         let remaining = chars.len() - start;
-        let (row_end, next_start) = if remaining <= row_width {
+        let (row_end, next_start) = if n_chars >= remaining {
             (chars.len(), chars.len())
         } else {
-            let window = &chars[start..start + row_width];
-            let break_rel = window
+            let window_end = start + n_chars;
+            let break_rel = chars[start..window_end]
                 .iter()
                 .enumerate()
                 .rev()
@@ -237,7 +316,7 @@ pub fn visual_rows_of_chars(
                     }
                     (end, next)
                 }
-                None => (start + row_width, start + row_width),
+                None => (window_end, window_end),
             }
         };
 
@@ -309,6 +388,19 @@ pub fn visual_rows_for_line(line: &Line<'_>, width: usize) -> usize {
 /// paragraphs, blockquoted content, table rows, code blocks, etc.).
 pub fn compute_hanging_indent(line: &Line<'_>) -> usize {
     let chars: Vec<char> = line.spans.iter().flat_map(|s| s.content.chars()).collect();
+    compute_hanging_indent_chars(&chars)
+}
+
+/// String-based variant of [`compute_hanging_indent`] for use against the
+/// raw buffer text (where there are no `Line` spans available, e.g. inside
+/// `EditorState::move_up_visual` / `move_down_visual`).  Same detection
+/// rules — see that function for the recognized marker shapes.
+pub fn compute_hanging_indent_str(text: &str) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    compute_hanging_indent_chars(&chars)
+}
+
+fn compute_hanging_indent_chars(chars: &[char]) -> usize {
     let mut i = 0;
     while i < chars.len() && chars[i] == ' ' {
         i += 1;
@@ -317,18 +409,18 @@ pub fn compute_hanging_indent(line: &Line<'_>) -> usize {
 
     // Rendered bullet glyph (`•`) — only emitted by the renderer.
     if chars.get(i) == Some(&'•') && chars.get(i + 1) == Some(&' ') {
-        return text_start_after_optional_task_prefix(&chars, i + 2);
+        return text_start_after_optional_task_prefix(chars, i + 2);
     }
     // Raw bullet glyph (`-`, `*`, `+`) — used when the cursor's list-item
     // line is shown raw inside the otherwise-rendered `RenderedView`.  We
     // hang-indent it too so the cursor's row stays visually aligned with
     // the surrounding rendered list.
     if matches!(chars.get(i), Some('-') | Some('*') | Some('+')) && chars.get(i + 1) == Some(&' ') {
-        return text_start_after_optional_task_prefix(&chars, i + 2);
+        return text_start_after_optional_task_prefix(chars, i + 2);
     }
     // Task without bullet (the renderer drops the bullet for task items —
     // the checkbox is the visual anchor).
-    if is_task_marker(&chars, i) {
+    if is_task_marker(chars, i) {
         return i + 4;
     }
     // Ordered marker: digits + `.`/`)` + space.  Matches both the raw form
@@ -338,7 +430,7 @@ pub fn compute_hanging_indent(line: &Line<'_>) -> usize {
         && matches!(chars.get(i + digit_count), Some('.') | Some(')'))
         && chars.get(i + digit_count + 1) == Some(&' ')
     {
-        return text_start_after_optional_task_prefix(&chars, i + digit_count + 2);
+        return text_start_after_optional_task_prefix(chars, i + digit_count + 2);
     }
 
     // Continuation paragraph or otherwise-indented text (e.g. list-item
@@ -531,5 +623,114 @@ mod tests {
         let line_flat = Line::from(vec![Span::raw("hello world foo bar baz")]);
         let flat = visual_rows_for_line(&line_flat, 10);
         assert!(with_marker >= flat);
+    }
+
+    // ── Cell-width awareness ──────────────────────────────────────
+
+    #[test]
+    fn wrap_budget_is_cells_not_chars_for_wide_chars() {
+        // Each emoji is 1 char / 2 cells.  At width 4, two emoji fill the
+        // first row exactly; the third spills onto row 2.
+        let chars: Vec<(char, Style)> = "🥇🥇🥇".chars().map(|c| (c, Style::default())).collect();
+        let rows = visual_rows_of_chars(&chars, 4, 0);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], (0, 2, 2));
+        assert_eq!(rows[1], (2, 3, 3));
+    }
+
+    #[test]
+    fn wrap_force_breaks_when_single_wide_char_exceeds_width() {
+        // Width 1 can't fit a 2-cell emoji, but the wrap loop must still
+        // make progress — emit one char per row even though they overflow.
+        let chars: Vec<(char, Style)> = "🥇🥇".chars().map(|c| (c, Style::default())).collect();
+        let rows = visual_rows_of_chars(&chars, 1, 0);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], (0, 1, 1));
+        assert_eq!(rows[1], (1, 2, 2));
+    }
+
+    #[test]
+    fn render_line_paints_wide_char_using_two_cells() {
+        // After painting "A🥇B" the cells must read 'A', '🥇', <skipped>, 'B'.
+        // The renderer leaves the right-half cell of the wide char unwritten
+        // — terminals own that half.  The next char must land at column 3.
+        let area = Rect::new(0, 0, 10, 1);
+        let mut buf = TuiBuf::empty(area);
+        let line = Line::from(vec![Span::raw("A🥇B")]);
+        render_line(&line, area, &mut buf, 0, false);
+        assert_eq!(
+            buf.cell((0, 0)).map(|c| c.symbol().to_string()),
+            Some("A".into())
+        );
+        assert_eq!(
+            buf.cell((1, 0)).map(|c| c.symbol().to_string()),
+            Some("🥇".into())
+        );
+        assert_eq!(
+            buf.cell((3, 0)).map(|c| c.symbol().to_string()),
+            Some("B".into())
+        );
+    }
+
+    #[test]
+    fn char_idx_at_cell_col_forbidden_indent_zone_snaps_to_row_start() {
+        // Continuation row of a wrapped list item: indent = 2.  Clicks on
+        // cells 0 and 1 land in the virtual padding; cells 2+ are content.
+        // All cells in [0..=indent] must snap to char index 0 — the first
+        // content char of the row.
+        let chars = ['x', 'y', 'z'];
+        for cell in 0..=2 {
+            assert_eq!(
+                char_idx_at_cell_col(chars.iter().copied(), cell, 2),
+                0,
+                "indent zone cell {cell} did not snap to row start",
+            );
+        }
+        // Cell 3 is the first content cell — lands on 'x' (index 0 in the
+        // row, since acc starts at indent=2 and the first char fills cell 2).
+        // Wait: walk acc=2, ch='x', w=1, acc+w=3 NOT > 3, acc=3.  Then
+        // ch='y', w=1, acc+w=4 > 3, acc==3==target → return count=1.
+        assert_eq!(char_idx_at_cell_col(chars.iter().copied(), 3, 2), 1);
+    }
+
+    #[test]
+    fn char_idx_at_cell_col_snaps_past_wide_char() {
+        // 🥇 occupies cells 0–1.  Targeting cell 1 (mid-glyph) must snap
+        // past, returning index 1 (cursor *after* the emoji).  Targeting
+        // cell 0 (the glyph's start) returns index 0 (cursor before).
+        let chars = ['🥇', 'B'];
+        assert_eq!(char_idx_at_cell_col(chars.iter().copied(), 0, 0), 0);
+        assert_eq!(char_idx_at_cell_col(chars.iter().copied(), 1, 0), 1);
+        assert_eq!(char_idx_at_cell_col(chars.iter().copied(), 2, 0), 1);
+    }
+
+    #[test]
+    fn cell_col_at_char_idx_round_trips_with_wide_chars() {
+        let chars = ['A', '🥇', 'B'];
+        // Char 0 → cell 0; char 1 → cell 1 (after A); char 2 → cell 3
+        // (past A and the wide emoji); char 3 → cell 4.
+        assert_eq!(cell_col_at_char_idx(chars.iter().copied(), 0, 0), 0);
+        assert_eq!(cell_col_at_char_idx(chars.iter().copied(), 1, 0), 1);
+        assert_eq!(cell_col_at_char_idx(chars.iter().copied(), 2, 0), 3);
+        assert_eq!(cell_col_at_char_idx(chars.iter().copied(), 3, 0), 4);
+    }
+
+    #[test]
+    fn zero_width_combining_mark_does_not_advance_cell_cursor() {
+        // 'e' + U+0301 ("é") — the combining mark has zero display width;
+        // it must not consume a cell on its own.  After painting, column 1
+        // is the next character ('!'), not blank.
+        let area = Rect::new(0, 0, 4, 1);
+        let mut buf = TuiBuf::empty(area);
+        let line = Line::from(vec![Span::raw("e\u{0301}!")]);
+        render_line(&line, area, &mut buf, 0, false);
+        assert_eq!(
+            buf.cell((0, 0)).map(|c| c.symbol().to_string()),
+            Some("e".into())
+        );
+        assert_eq!(
+            buf.cell((1, 0)).map(|c| c.symbol().to_string()),
+            Some("!".into())
+        );
     }
 }

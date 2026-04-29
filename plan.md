@@ -1188,19 +1188,12 @@ Extracted from old Phase 11.  Pulls in the "Heading visual hierarchy — framing
 - [ ] H4–H6 stay colour + bold (current behaviour).
 - [ ] Readable everywhere, zero new dependencies.  The `tui-big-text` variant stays in Deferred Work for the theming phase.
 - [ ] `per_block_own` accounts for the added rule rows so cursor navigation doesn't skip them.
+- [ ] **Or do we want to differentiate headings with foreground and background colors?**
 
-**Tasks — scroll granularity experiment:**
-- [x] Make the wheel-step configurable: `config.editor.mouse_scroll_lines` (default **1** — finer control out of the box; users can bump to 2 or 3).  Seeds `MouseDispatcher::with_wheel_step` at startup.  Keyboard `ScrollUp` / `ScrollDown` intentionally always step by one line — per-keypress has to be fine-grained, so it stays hardcoded.
-
-**Tasks — emoji support:**
-- [ ] `config.editor.unicode.emoji_support: bool` (default `false`).  No probing of terminal capabilities — no reliable query exists, and terminals that claim emoji support routinely miscompute cell widths and corrupt layout.
-- [ ] When enabled, the renderer passes emoji-bearing strings through `unicode-segmentation` grapheme clusters and uses `unicode-width` cell widths as-is.  When disabled, emoji sequences are rendered as `:shortcode:` text fallback.
-- [ ] Revisit automatic detection only if users request it.
-
-**Tasks — image-display onboarding modal:**
-- [ ] **Consider dropping.**  Old Phase 11 proposed a "Display Images" three-button modal (Always / Never / This time only) on first-encounter, but Phase 7 already ships `config.image.enabled` (master switch) and an `http`/`https`-specific remote-policy modal.  A third, per-document prompt would be redundant.  Leave unimplemented unless user feedback identifies a concrete gap.
-
-**Acceptance criteria:** Task checkboxes render as Unicode glyphs in Preview/Rendered and toggle on click.  Headings show a visual hierarchy via rules.  Emoji support is opt-in and layout-safe when disabled.  Scroll granularity is configurable.
+**Tasks — themes:**
+- [ ] 24 bit default dark/light
+- [ ] 256 color default dark/light
+- [ ] Monochrome default dark/light
 
 ---
 
@@ -1378,11 +1371,9 @@ Deferred from the original Phase 10 scope.  Until this phase lands, opening a fi
 
 ---
 
-## Deferred Work
+### Phase 22 — Vim / Modal Editing
+ **Vim / Kakoune / Helix modal mode**: The `ModalHandler` trait is designed to be swappable. A `KakouneHandler` or `HelixHandler` could be implemented as a community contribution without touching core editor logic. Document the trait contract clearly.
 
-These features should be **architecturally anticipated** from Phase 0 but not implemented until after the numbered phases are complete.
-
-### Vim / Modal Editing
 - Implement `VimHandler` in `input/modal/vim.rs` implementing the `ModalHandler` trait
 - Internal state machine: `Normal`, `Insert`, `Visual`, `VisualLine`, `VisualBlock`, `Command`
 - Support for motions (`w`, `b`, `e`, `0`, `$`, `gg`, `G`, `f`/`F`/`t`/`T`), operators (`d`, `y`, `c`, `=`), text objects (`iw`, `aw`, `is`, `as`, `i"`, `a"`, etc.)
@@ -1395,6 +1386,12 @@ These features should be **architecturally anticipated** from Phase 0 but not im
 - **Marks** (`ma` to set, `` `a `` / `'a` to jump) — a `HashMap<char, rope_offset>` in `VimHandler` state; `'a` jumps to the line, `` `a `` to the exact offset
 - Registers (`"ay`, `"ap`) and macros (`q`/`@`) are deferred further — complex and rarely essential for initial vim support
 - The `ModalHandler` trait ensures that **zero Vim-specific logic touches `EditorState`**
+
+---
+
+## Deferred Work
+
+These features should be **architecturally anticipated** from Phase 0 but not implemented until after the numbered phases are complete.
 
 ### Code Syntax Highlighting
 - In the AST renderer, when rendering a fenced code block, identify the language tag
@@ -1443,9 +1440,7 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 4. **WSL clipboard**: On WSL, `arboard` may not have access to the Windows clipboard without additional configuration (`clip.exe` workaround or `win32yank`). Detect WSL via `$WSL_DISTRO_NAME` and fall back to `clip.exe` / `powershell.exe Get-Clipboard` as appropriate.
 
-5. **Kakoune / Helix modal mode**: The `ModalHandler` trait is designed to be swappable. A `KakouneHandler` or `HelixHandler` could be implemented as a community contribution without touching core editor logic. Document the trait contract clearly.
-
-7. ~~**Split `config.toml` into multiple files?**~~ **Done — 2026-04-22.**
+6. ~~**Split `config.toml` into multiple files?**~~ **Done — 2026-04-22.**
 
    Implemented ahead of schedule to lock in the architecture before more
    UI/UX work accrues coupling to the single-file assumption.  See
@@ -1473,7 +1468,7 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 ## Miscellaneous Issues / Features
 
-- [ ] Is `ScrollContainerState` themeable? It should have a theme that is shared across all modals, with per-modal overrides possible. We also want common body text, header text, input, etc theming across all modals, again with per-modal overrides possible.
+- [ ] Is `ScrollContainerState` themeable? It should have a theme that is shared across all modals, with per-modal overrides possible. We want common background, border, title, body text, header text, input, etc theming across all modals, again with per-modal overrides possible.
 
 - [ ] Add a background color to modal inputs when selected. Most modal views already do this, but the settings and keybindings do not. 
 
@@ -1487,4 +1482,26 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 - [ ] Table row/column deletion hover preview? Optional — when the pointer is over a delete glyph, paint the
   target row/column in a "danger" style (e.g., theme's selection-or-warning color)
   so the user sees what's about to go. Adds polish but more work.
-- [ ] Theme Markdown cheat sheet so it looks like rendered Markdown (with raw Markdown shown)
+- [ ] Add a first-run config setup for images, remote images, mouse, etc based on inferred terminal capabilities.
+- [ ] Add "Esc to dismiss" to `MesageKind::Error` sticky hint line messages
+
+- [ ] If the cursor is on the `t` in `Cat` below, which is followed by a blank line containing only a space, and the user presses the right arrow key at the end of the line, the cursor does not move to the line below with the space. Instead, the cursor jumps back to the first column and replaces `Cat` with ` `. Pressing the left arrow key again returns to `Cat`.
+```
+Cat
+ 
+```
+
+- [ ] It is not possible to start a new ordered list after an ordered list. Even though separated by one or more blank lines, the new list gets swallowed up by the old and joined to it, continuing numbers. This does not seem to be a problem for unordered lists.
+
+- [ ] Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
+
+- [ ] Add undo/redo to hint line
+- [ ] Add `Ctrl-Shift-z` additional binding for undo
+
+- [ ] When the cursor is on a line and the user clicks somewhere else on the same line, the line re-renders. Before re-rendering we should check if the cursor is landing on the same line (wrapped line *or* logical line) and prevent the re-render if yes.
+
+- [ ] Entering two newlines when the cursor is on a list item with other list items below does not break the list in two. In the case of an ordered list this should reorder the new list after the cursor.
+
+- [ ] Nested ordered list items are offset 1 space to the right when de-rendered
+
+- [ ] Combine unordered lists and task lists: Every task list item is an unordered list item that *contains a checkbox*. That is the only difference. This will allow task items and regular items to coexist in the same list.
