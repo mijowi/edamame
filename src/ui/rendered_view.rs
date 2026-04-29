@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::config::Theme;
 use crate::document::detect_setext;
+use crate::editor::mouse_ops;
 use crate::editor::table_edit;
 use crate::editor::EditorState;
 use crate::markdown::table_layout::{
@@ -488,6 +489,15 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     } else if let Some(col) =
                         list_raw_col_to_rendered_col(raw_text, line, cursor_col)
                     {
+                        col
+                    } else if let Some(col) = mouse_ops::paragraph_raw_col_to_rendered_col(
+                        raw_text, line, cursor_col,
+                    ) {
+                        // Paragraph lines with inline links / code spans
+                        // shift the cursor's rendered column relative to its
+                        // raw column.  Use the inverse of the click handler's
+                        // map so the indicator sits where the click landed,
+                        // avoiding a visible jump when the raw reveal fires.
                         col
                     } else {
                         cursor_col

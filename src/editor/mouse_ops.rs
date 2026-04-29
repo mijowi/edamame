@@ -1381,7 +1381,26 @@ fn rendered_sub_line_to_offset(
             .take(end - start)
             .map(|(c, _)| *c);
         let in_row = crate::ui::line_render::char_idx_at_cell_col(row_chars, col, row_indent);
-        (start + in_row).min(max_in_row)
+        let rendered_idx = (start + in_row).min(max_in_row);
+
+        // Translate the rendered char index back to a raw char column on
+        // `line_text`.  For lines whose rendered form drops or transforms
+        // syntax characters (links, code spans), the rendered→raw map
+        // makes the cursor land where the user clicked rather than at the
+        // matching rendered char's *position* in the raw text.  When the
+        // map's rendered length doesn't match the line's actual rendered
+        // length (headings/lists/blockquotes have prefix glyphs the map
+        // doesn't model) we fall back to the 1:1 column mapping that's
+        // been in use since Phase 5.
+        let actual_rendered_count = rendered_chars.len();
+        let map = rendered_to_raw_char_map(line_text);
+        if map.len().saturating_sub(1) == actual_rendered_count {
+            map.get(rendered_idx)
+                .copied()
+                .unwrap_or_else(|| line_text.chars().count())
+        } else {
+            rendered_idx
+        }
     };
 
     // Advance `raw_col` chars into the raw line.
@@ -1902,6 +1921,147 @@ pub fn link_at_offset(source: &str, click_byte: usize) -> Option<String> {
     None
 }
 
+/// Inverse of [`rendered_to_raw_char_map`] for a paragraph-style line:
+/// given a raw char column on `raw_line`, return the rendered char
+/// column it corresponds to on `rendered_line`.  Used by the jitter-
+/// delay cursor overlay (`RenderedView`) so the cursor indicator lands
+/// at the same visual column the click handler placed it — without
+/// this, the indicator briefly draws at the raw column (e.g. col 1 of
+/// the rendered "File link", on `i`) before the raw reveal switches
+/// the line to its raw form (col 1 of `[File link]`, on `F`), and the
+/// cursor visibly jumps.
+///
+/// Returns `None` when the rendered count of `rendered_line` doesn't
+/// match the rendered count produced by `rendered_to_raw_char_map`
+/// (headings/lists/blockquotes/highlights — caller falls back to a
+/// 1:1 mapping, matching the click-handler's fallback).
+pub fn paragraph_raw_col_to_rendered_col(
+    raw_line: &str,
+    rendered_line: &Line<'_>,
+    raw_col: usize,
+) -> Option<usize> {
+    let actual_rendered_count: usize = rendered_line
+        .spans
+        .iter()
+        .map(|s| s.content.chars().count())
+        .sum();
+    let map = rendered_to_raw_char_map(raw_line);
+    if map.len().saturating_sub(1) != actual_rendered_count {
+        return None;
+    }
+    // Map entries are non-decreasing (each rendered char's raw position
+    // strictly advances).  Find the smallest rendered idx whose raw
+    // position is `>= raw_col`.  When `raw_col` lands on a non-rendered
+    // marker (e.g. the `[` of `[link]`) this returns the rendered idx
+    // immediately after the marker — the same place the click handler
+    // would have parked the cursor.
+    let pos = map
+        .iter()
+        .position(|&r| r >= raw_col)
+        .unwrap_or(map.len() - 1);
+    Some(pos.min(actual_rendered_count))
+}
+
+/// Build a map from rendered character index → raw character index on a
+/// single source line.
+///
+/// The renderer drops or transforms certain syntax characters: a link's
+/// `[`, `](url)` markers leave only the bracket text on screen; a code
+/// span's backticks become surrounding spaces.  As a result, the rendered
+/// column the user clicked at doesn't correspond directly to the same
+/// column in the raw text — clicks inside `File link` (rendered) are off
+/// by one against `[File link](./plan.md)` (raw), and clicks past the
+/// rendered end of the line land mid-URL instead of at the raw line's
+/// end.
+///
+/// This map is built by re-parsing `raw_line` with `pulldown-cmark` and
+/// recording the raw byte position of every rendered character emitted
+/// by inline `Text`, `Code`, and `SoftBreak`/`HardBreak` events.  Marker
+/// bytes (asterisks, brackets, the URL portion of a link) sit in the
+/// gaps between events and are correctly skipped.
+///
+/// The returned vector has length `rendered_char_count + 1`: entry `i`
+/// is the raw char index that produced rendered char `i`, and the final
+/// entry is the raw char index just past the last rendered char (so a
+/// click past the rendered end maps to the line's raw end).
+///
+/// Caller is responsible for falling back to a 1:1 mapping when the
+/// returned length doesn't match the actual rendered char count of the
+/// line (e.g. for headings/list items/blockquotes whose rendered prefix
+/// glyphs aren't represented in the raw text, or for `==highlight==`
+/// spans which are post-processed by our parser and not visible to
+/// `pulldown-cmark`).
+fn rendered_to_raw_char_map(raw_line: &str) -> Vec<usize> {
+    use pulldown_cmark::{Event, Options, Parser};
+
+    // Build a byte→char index lookup so events can report their offsets
+    // in raw bytes (pulldown-cmark's native unit) and we can translate
+    // those back to char indices that our caller and `line_text` work
+    // in.  The trailing `byte_to_char[raw_line.len()] = total_chars`
+    // entry covers the past-end sentinel.
+    let mut byte_to_char = vec![0usize; raw_line.len() + 1];
+    let mut char_idx = 0usize;
+    for (byte_idx, _) in raw_line.char_indices() {
+        byte_to_char[byte_idx] = char_idx;
+        char_idx += 1;
+    }
+    byte_to_char[raw_line.len()] = char_idx;
+    let total_chars = char_idx;
+
+    let opts = Options::ENABLE_TABLES
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_SMART_PUNCTUATION;
+
+    let mut map: Vec<usize> = Vec::new();
+
+    for (event, range) in Parser::new_ext(raw_line, opts).into_offset_iter() {
+        let lookup = |byte: usize| {
+            byte_to_char
+                .get(byte.min(byte_to_char.len().saturating_sub(1)))
+                .copied()
+                .unwrap_or(total_chars)
+        };
+
+        match event {
+            Event::Text(s) => {
+                let mut byte = range.start;
+                for c in s.chars() {
+                    map.push(lookup(byte));
+                    byte += c.len_utf8();
+                }
+            }
+            // Code spans render as `" <inner> "` — the opening and closing
+            // backticks become surrounding spaces.  Map the leading space
+            // to the opening backtick, the inner text 1:1, and the
+            // trailing space to the closing backtick.
+            Event::Code(s) => {
+                map.push(lookup(range.start));
+                let mut byte = range.start + 1;
+                for c in s.chars() {
+                    map.push(lookup(byte));
+                    byte += c.len_utf8();
+                }
+                map.push(lookup(range.end.saturating_sub(1)));
+            }
+            // Soft- and hard-breaks render as a single space character.
+            Event::SoftBreak | Event::HardBreak => {
+                map.push(lookup(range.start));
+            }
+            // Inline tags (`Strong`, `Emphasis`, `Strikethrough`, `Link`)
+            // are handled implicitly: their inner `Text` events walk the
+            // content, while the marker bytes (`**`, `*`, `~~`, `[`,
+            // `](url)`) sit in the gaps that no `Text` event covers and
+            // never get pushed.
+            _ => {}
+        }
+    }
+
+    map.push(total_chars);
+    map
+}
+
 // ── Checkbox toggling on click ──────────────────────────────────────────────
 
 /// If `(col, row)` falls on a task-list checkbox glyph, toggle it and return
@@ -2171,5 +2331,73 @@ mod tests {
         apply(&mut state, click_plain(2, 1), &mut target, &[], 10, 80);
         // Line 1 = "second" starting at char 6, col 2 → char 8.
         assert_eq!(state.cursor.offset, 8);
+    }
+
+    /// The forward map covers exactly one entry per rendered char plus a
+    /// trailing past-end sentinel — that's the contract `rendered_sub_line_
+    /// to_offset` and `paragraph_raw_col_to_rendered_col` rely on to detect
+    /// "rendered count matches" and use the map instead of a 1:1 fallback.
+    #[test]
+    fn rendered_to_raw_map_link_has_one_entry_per_visible_char() {
+        let map = rendered_to_raw_char_map("[File link](./plan.md)");
+        // Rendered: "File link" = 9 chars; +1 sentinel = 10 entries.
+        assert_eq!(map.len(), 10);
+        // Each rendered char maps to its position inside the brackets.
+        assert_eq!(&map[..9], &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        // Sentinel points past the closing `)`.
+        assert_eq!(map[9], 22);
+    }
+
+    /// Round-trip: clicking at a rendered col → raw byte (via the forward
+    /// map), then asking for the rendered col of that raw byte (via the
+    /// inverse) should return the original rendered col.  This is what
+    /// keeps the jitter-delay cursor indicator at the same visual column
+    /// the user clicked at, eliminating the "jump" when the raw reveal
+    /// fires.
+    #[test]
+    fn paragraph_raw_col_round_trips_through_map() {
+        use crate::markdown::{parse, Renderer};
+        let raw = "[File link](./plan.md)";
+        let blocks = parse(&format!("{raw}\n"));
+        let renderer = Renderer::new(theme()).with_viewport_width(80);
+        let lines = renderer.render(&blocks);
+        let rendered = &lines[0];
+
+        // Probe rendered cols 0..=9 (every visible char + the past-end
+        // position).  The forward map is `rendered_to_raw_char_map`; its
+        // `i`-th entry is the raw byte that `paragraph_raw_col_to_rendered_col`
+        // should round-trip back to `i`.
+        let forward = rendered_to_raw_char_map(raw);
+        for rendered_col in 0..=9 {
+            let raw_col = forward[rendered_col];
+            let round_tripped = paragraph_raw_col_to_rendered_col(raw, rendered, raw_col);
+            assert_eq!(
+                round_tripped,
+                Some(rendered_col),
+                "round-trip failed at rendered col {rendered_col}: raw {raw_col} \
+                 → {round_tripped:?} (expected Some({rendered_col}))",
+            );
+        }
+    }
+
+    /// Headings have a 2-char rendered prefix (`  `) the parser doesn't
+    /// produce — the inverse helper should detect the count mismatch and
+    /// fall back to `None`, letting callers use a 1:1 mapping for the
+    /// indicator (the same fallback path the click handler takes).
+    #[test]
+    fn paragraph_raw_col_returns_none_for_headings() {
+        use crate::markdown::{parse, Renderer};
+        let raw = "## Heading";
+        let blocks = parse(&format!("{raw}\n"));
+        let renderer = Renderer::new(theme()).with_viewport_width(80);
+        let lines = renderer.render(&blocks);
+        // For `##`, raw and rendered widths happen to coincide (2 vs 2),
+        // but the rendered prefix is `  ` and the raw is `##` — the
+        // pulldown-cmark map only covers "Heading" (7 chars) while the
+        // rendered line has 9 chars.  Mismatch → None.
+        assert_eq!(
+            paragraph_raw_col_to_rendered_col(raw, &lines[0], 5),
+            None,
+        );
     }
 }

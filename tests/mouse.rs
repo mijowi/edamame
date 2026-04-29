@@ -1125,6 +1125,60 @@ fn plain_click_in_rendered_on_link_places_cursor_does_not_follow() {
     assert!(st.selection.is_none());
 }
 
+/// Regression: clicking inside a link's rendered text used to land
+/// `bracket-prefix` chars short of the visible character, because the
+/// renderer drops the `[` from `[text](url)` but the click→offset map
+/// used the rendered column directly as the raw column.  After the
+/// rendered→raw map fix, a click on the *o* of "docs" should land on
+/// the *o* in `[docs]` — raw byte 6 of `See [docs](...)`.
+#[test]
+fn click_inside_rendered_link_text_lands_on_clicked_char() {
+    let src = "See [docs](https://example.com) for more.\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    let mut mouse = MouseDispatcher::new();
+    // Rendered: "See docs for more." — col 5 is 'o' (the second char of
+    // "docs" since "See " is 4 chars + 'd' is col 4, 'o' is col 5).
+    if let Some(a) = mouse.dispatch(click_event(5, 0), area()) {
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+    }
+    // 'o' inside `[docs]` sits at raw byte 6 in `See [docs](https://...)`.
+    assert_eq!(
+        st.contents().chars().nth(st.cursor.offset),
+        Some('o'),
+        "expected cursor on 'o' of 'docs', landed at offset {} ({:?})",
+        st.cursor.offset,
+        st.contents().chars().nth(st.cursor.offset),
+    );
+}
+
+/// Regression: clicking past the rendered end of a line containing a
+/// link used to land mid-URL because the click→offset map clamped the
+/// click to the rendered column count and then re-used that as a raw
+/// column index.  The user expects clicks in the trailing whitespace
+/// to land at the line's actual raw end (after `)`).
+#[test]
+fn click_past_rendered_end_of_link_line_lands_at_raw_end_of_line() {
+    let src = "[File link](./plan.md)\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    let mut mouse = MouseDispatcher::new();
+    // Rendered: "File link" — 9 chars.  Click at col 50 is well past
+    // the rendered text in the trailing whitespace.
+    if let Some(a) = mouse.dispatch(click_event(50, 0), area()) {
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+    }
+    // Raw line `[File link](./plan.md)` is 22 chars; cursor should land
+    // at char 22 (the position just after `)`, before the newline).
+    assert_eq!(
+        st.cursor.offset, 22,
+        "expected cursor at end of raw line (22), got {}",
+        st.cursor.offset,
+    );
+}
+
 #[test]
 fn ctrl_click_in_rendered_on_link_follows_without_moving_cursor() {
     let mut st = state("See [docs](https://example.com) for more.\n");
