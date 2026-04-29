@@ -1491,17 +1491,7 @@ Cat
  
 ```
 
-- [ ] It is not possible to start a new ordered list after an ordered list. Even though separated by one or more blank lines, the new list gets swallowed up by the old and joined to it, continuing numbers. This does not seem to be a problem for unordered lists.
-
 - [ ] Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
 
 - [ ] Add undo/redo to hint line
 - [ ] Add `Ctrl-Shift-z` additional binding for undo
-
-- [ ] When the cursor is on a line and the user clicks somewhere else on the same line, the line re-renders. Before re-rendering we should check if the cursor is landing on the same line (wrapped line *or* logical line) and prevent the re-render if yes.
-
-- [ ] Entering two newlines when the cursor is on a list item with other list items below does not break the list in two. In the case of an ordered list this should reorder the new list after the cursor.
-
-- [ ] Nested ordered list items are offset 1 space to the right when de-rendered
-
-- [ ] Combine unordered lists and task lists: Every task list item is an unordered list item that *contains a checkbox*. That is the only difference. This will allow task items and regular items to coexist in the same list.

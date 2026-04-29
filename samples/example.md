@@ -19,9 +19,8 @@ Also Heading 2
 
 ==Highlight==
 
-> Blockquote
+Block quote
 > > You miss 100% of the shots you don't take.
-> >
 > > \- Wayne Gretzky
 >
 > \- Michael Scott
@@ -50,12 +49,14 @@ Also Heading 2
 
 1. Ordered list
 2. Second item
+    1. nested item
 3. Third item
 
-
+- Bulleted item
 - [ ] A checklist
-- [ ] Incomplete item
-  - [ ] Sub-task
+- [ ] Incomplete wrapped item aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa dddddda aaaaaaaaaaaaaaaa
+  - [x] Checked item with empty list item below
+  - [ ] 
 - [x] Completed item
 
 Two horizontal rules
