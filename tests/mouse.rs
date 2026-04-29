@@ -148,6 +148,83 @@ fn wheel_scroll_can_go_past_last_line() {
     assert_eq!(st.scroll, total.saturating_sub(1));
 }
 
+#[test]
+fn same_line_click_does_not_set_drag_in_progress() {
+    // Two paragraphs: clicking around within the FIRST paragraph (where
+    // the cursor starts) must not set `drag_in_progress`, so the line
+    // doesn't flip from raw → rendered → raw across the click.
+    let mut st = state("first paragraph here\n\nsecond paragraph here\n");
+    st.mode = Mode::Rendered;
+    // Seed cursor on line 0 with reveal already active.
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    st.cursor_block_entered_at = None; // reveal returns true immediately
+    assert!(st.cursor_block_revealed());
+
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    mouse_ops::apply(&mut st, click(10, 0), &mut anchor, &[], VP, VW);
+
+    // Cursor moved within line 0 — drag flag must stay clear so the
+    // raw view persists across the click.
+    assert_eq!(st.cursor_line_idx, Some(0));
+    assert!(
+        !st.drag_in_progress,
+        "same-line click must not suppress raw reveal",
+    );
+    assert!(st.cursor_block_revealed());
+    // A drag target is still set so a subsequent drag would extend a
+    // selection from this anchor.
+    assert!(matches!(
+        anchor,
+        Some(mouse_ops::DragTarget::TextSelection { .. })
+    ));
+}
+
+#[test]
+fn cross_line_click_still_sets_drag_in_progress() {
+    let mut st = state("first paragraph here\n\nsecond paragraph here\n");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    st.cursor_block_entered_at = None;
+
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    // Click on the second paragraph (rendered row 2 — paragraphs are
+    // separated by a blank line).
+    mouse_ops::apply(&mut st, click(3, 2), &mut anchor, &[], VP, VW);
+    assert_ne!(st.cursor_line_idx, Some(0));
+    assert!(
+        st.drag_in_progress,
+        "cross-line click keeps drag-suppression so the new line shows rendered briefly",
+    );
+}
+
+#[test]
+fn same_line_click_inside_table_still_sets_drag_in_progress() {
+    // Tables have cell-based reveal — a click on a different cell of
+    // the same row legitimately needs the suppression to swap which
+    // cell renders raw.  Make sure the same-line guard exempts tables.
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    // Place cursor in the header row's first cell (offset right after
+    // "| ").
+    st.cursor.offset = 2;
+    st.update_cursor_block();
+    st.cursor_block_entered_at = None;
+    let cursor_line = st.cursor_line_idx;
+
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    // Click further along the same header row — col 7 sits inside the
+    // second cell of the rendered table.
+    mouse_ops::apply(&mut st, click(7, 1), &mut anchor, &[], VP, VW);
+    assert_eq!(st.cursor_line_idx, cursor_line);
+    assert!(
+        st.drag_in_progress,
+        "table click must still suppress reveal so the active cell can swap",
+    );
+}
+
 // ── Click-drag selection ────────────────────────────────────────────────────
 
 #[test]

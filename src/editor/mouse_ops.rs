@@ -351,7 +351,29 @@ pub fn apply(
                 click_to_char_offset(state, col as usize, row as usize, viewport_width)
             {
                 state.selection = None;
-                state.cursor.offset = offset.min(state.buffer.len_chars());
+                let new_offset = offset.min(state.buffer.len_chars());
+                // A click landing on the same logical line as the cursor
+                // already occupies should not flip the cursor block out of
+                // its raw view — without this guard, setting
+                // `drag_in_progress` below makes `cursor_block_revealed()`
+                // return false until the mouse-up arrives, so the line
+                // re-renders raw → rendered → raw across the click.
+                // Tables are excluded: their cell-based reveal needs the
+                // suppression to track which cell the click landed in.
+                let new_line = state.buffer.char_to_line(new_offset);
+                let same_logical_line = state.cursor_line_idx == Some(new_line);
+                let cursor_block_is_table = state
+                    .cursor_block_idx
+                    .and_then(|idx| state.parsed.source_map.original_range_for_block(idx))
+                    .map(|range| {
+                        let source = state.buffer.contents();
+                        let end = range.end.min(source.len());
+                        table_edit::is_table_block(&source[range.start..end])
+                    })
+                    .unwrap_or(false);
+                let suppress_drag_flag = same_logical_line && !cursor_block_is_table;
+
+                state.cursor.offset = new_offset;
                 // Click target is a screen position — `preferred_col` must
                 // be the screen cell column (cell within visual sub-row +
                 // any hanging indent).  Plain `cell_col` would store the
@@ -367,7 +389,9 @@ pub fn apply(
                 // Mouse button is down — suppress raw reveal for the block
                 // under the cursor so the user's click anchor stays visually
                 // aligned during any subsequent drag.
-                state.drag_in_progress = true;
+                if !suppress_drag_flag {
+                    state.drag_in_progress = true;
+                }
 
                 // Phase 5 prerequisite for Phase 8: detect clicks on Markdown
                 // link syntax so Phase 8 can wire up URL opening without
