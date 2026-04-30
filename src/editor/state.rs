@@ -298,6 +298,21 @@ impl EditorState {
         }
     }
 
+    /// Swap the editor's theme reference and re-render so styled spans
+    /// pick up the new palette without the user having to reopen the
+    /// document.  Wired to the live theme-change path (settings overlay
+    /// "Theme" cycle and the post-`Config::load` reload after the
+    /// external editor exits).  No-op when the new reference equals
+    /// the current one — same address means same theme, no rebuild
+    /// needed.
+    pub fn set_theme(&mut self, theme: &'static Theme) {
+        if std::ptr::eq(self.theme, theme) {
+            return;
+        }
+        self.theme = theme;
+        self.refresh_parsed();
+    }
+
     /// Toggle row striping for table data rows and re-render so the
     /// change is visible on the next frame.  Wired to
     /// `config.table.row_striping` at App startup; tests use this as a
@@ -1526,6 +1541,27 @@ mod tests {
         state.set_scroll_for_cursor_screen_row(row_before, vp_w);
         let row_after = state.cursor_screen_row(vp_w);
         assert_eq!(row_after, row_before);
+    }
+
+    /// `set_theme` must swap the cached reference and bump
+    /// `parsed_version` so dependent caches invalidate, and re-running
+    /// it with the same pointer must be a no-op (parsed_version
+    /// stable).
+    #[test]
+    fn set_theme_swaps_reference_and_refreshes_parsed() {
+        let original: &'static Theme = theme();
+        let mut state = EditorState::new(Buffer::from_str("# heading\n"), original);
+        let v_before = state.parsed_version;
+
+        // Same reference → no rebuild, version unchanged.
+        state.set_theme(original);
+        assert_eq!(state.parsed_version, v_before);
+
+        // Different reference → rebuild + version bump.
+        let other: &'static Theme = Box::leak(Box::new(Theme::default()));
+        state.set_theme(other);
+        assert!(std::ptr::eq(state.theme, other));
+        assert_ne!(state.parsed_version, v_before);
     }
 
     /// `set_scroll_for_cursor_screen_row` must clamp to scroll = 0 when the

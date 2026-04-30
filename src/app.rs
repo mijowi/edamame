@@ -485,11 +485,34 @@ impl App {
         capabilities: Capabilities,
         config_warnings: Vec<ConfigWarning>,
     ) -> Result<Self> {
-        // Leak the theme so it can be stored as `&'static Theme`.  This is
-        // intentional: the theme lives for the duration of the process.
-        // `Theme::from_file` handles the monochrome fallback internally so
-        // `NoColour` terminals never emit colour escapes regardless of the
-        // theme file's contents.
+        // Leak the theme so it can be stored as `&'static Theme`.
+        //
+        // Why `'static`: `Theme` is read from many places (App,
+        // every widget, `EditorState`) on the hot render path.
+        // Threading a lifetime parameter would propagate through
+        // dozens of types; wrapping in `Arc<Theme>` adds a refcount
+        // bump on every clone and a deref on every read.  `'static`
+        // sidesteps both — readers just hold a plain reference.
+        //
+        // Why leak: `'static` requires a backing allocation that
+        // outlives the program, and `Box::leak` is the simplest way
+        // to promote a heap allocation to that lifetime.  The
+        // process owns the leaked memory until exit; the OS
+        // reclaims it on termination.  `Theme` is a fixed-size
+        // struct of ~100 `Style` values (~few KB), so the one-shot
+        // startup leak is negligible.
+        //
+        // Live updates leak too: `apply_active_theme` (theme cycle
+        // in the settings overlay, post-editor reload) leaks a
+        // fresh `Theme` each time so `self.theme` can be reassigned
+        // while satisfying `'static`.  Theme changes are
+        // user-initiated and rare, so the accumulated cost stays
+        // small across a session — see `apply_active_theme` for the
+        // full rationale and the alternatives considered.
+        //
+        // `Theme::from_file` handles the monochrome fallback
+        // internally so `NoColour` terminals never emit colour
+        // escapes regardless of the theme file's contents.
         let monochrome = capabilities.colour_depth == ColourDepth::NoColour;
         let theme: &'static Theme = Box::leak(Box::new(Theme::from_file(&theme_file, monochrome)));
 
@@ -2198,12 +2221,22 @@ impl App {
                 self.settings_overlay = None;
                 self.needs_draw = true;
             }
-            SettingsResponse::FieldChanged(_) => {
+            SettingsResponse::FieldChanged(label) => {
                 // Phase 9 already centralises the save-and-flash
                 // pattern.  Re-use it so the settings overlay produces
                 // the same `Configuration updated` flash any other
                 // config-mutating path produces.
                 self.save_config_with_flash("failed to persist settings overlay change");
+                if label == "Theme" {
+                    // Live-apply the new theme so the user sees the
+                    // change immediately without restarting.  Any
+                    // parse / unknown-key warnings on
+                    // `themes/<name>.toml` flow through the same
+                    // ConfigWarningModal startup uses; the modal
+                    // sits above the settings overlay in the render
+                    // priority so the user sees the warning first.
+                    self.apply_active_theme();
+                }
             }
         }
     }
@@ -2559,6 +2592,15 @@ impl App {
                         tracing::warn!(error = %e, "rebuilt KeyMap failed after editor exit");
                     }
                 }
+                // Live-apply the theme so a `theme = "..."` edit in
+                // the external editor takes effect without a
+                // restart.  Uses the already-loaded `ThemeFile` so
+                // we don't read the theme TOML twice.
+                let monochrome = self.capabilities.colour_depth == ColourDepth::NoColour;
+                let new_theme: &'static Theme =
+                    Box::leak(Box::new(Theme::from_file(&loaded.theme, monochrome)));
+                self.theme = new_theme;
+                self.editor.set_theme(new_theme);
                 if let Some(modal) = build_config_warning_modal(&loaded.warnings) {
                     self.config_warning_modal = Some(modal);
                     self.needs_draw = true;
@@ -3028,6 +3070,52 @@ impl App {
                 }
                 self.startup_notice = None;
             }
+        }
+    }
+
+    /// Reload the theme named by `self.config.theme` from disk, build
+    /// a fresh `Theme`, leak it into `'static`, and swap it onto
+    /// `self.theme` and the editor.  Any non-fatal warnings raised by
+    /// the theme loader (parse error, unknown keys) are surfaced via
+    /// the existing `ConfigWarningModal`, which renders above the
+    /// settings overlay so a malformed theme is the first thing the
+    /// user sees.
+    ///
+    /// # Leak by design
+    ///
+    /// `Theme` is held everywhere as `&'static Theme` — see the
+    /// constructor for the rationale (every widget and `EditorState`
+    /// reads it on the hot render path, and threading a lifetime or
+    /// wrapping in `Arc` would touch dozens of call sites for no
+    /// observable benefit).  `'static` is obtained by `Box::leak`-ing
+    /// the heap allocation.
+    ///
+    /// Each theme change leaks one fresh `Theme` allocation: the
+    /// previous one is unreachable but never freed, since `'static`
+    /// references can't be invalidated.  The cost per leak is bounded
+    /// — a `Theme` is a fixed-size struct of ~100 `Style` values, on
+    /// the order of a few KB — and theme changes are user-initiated
+    /// (Enter / Left / Right on the settings overlay's Theme row, or
+    /// post-editor reload).  Even an aggressive cycler would
+    /// accumulate at most a few MB across the editor's session.
+    ///
+    /// The alternatives (`Arc<Theme>`, a `RwLock`-guarded static,
+    /// custom arena reset on change) all cost more — either at every
+    /// reader on the render path or in invariants around
+    /// already-rendered `parsed.lines` that hold `Style` values
+    /// copied out of the previous theme.  `Box::leak` keeps the
+    /// rendering path zero-overhead and the live-update path trivial
+    /// to reason about.
+    fn apply_active_theme(&mut self) {
+        let (theme_file, warnings) = Config::load_theme(&self.config.theme);
+        let monochrome = self.capabilities.colour_depth == ColourDepth::NoColour;
+        let new_theme: &'static Theme =
+            Box::leak(Box::new(Theme::from_file(&theme_file, monochrome)));
+        self.theme = new_theme;
+        self.editor.set_theme(new_theme);
+        self.needs_draw = true;
+        if let Some(modal) = build_config_warning_modal(&warnings) {
+            self.config_warning_modal = Some(modal);
         }
     }
 

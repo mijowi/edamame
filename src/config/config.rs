@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::keymap::{parse_key, Action, KeyBindingOverrides};
 use super::theme::Theme;
-use super::theme_file::ThemeFile;
+use super::theme_file::{default_theme_toml, ThemeFile};
 
 /// One problem detected while reading a config file.  Surfaced as a
 /// scrollable modal at startup (and after the user-edited config returns
@@ -195,6 +195,23 @@ impl Config {
     /// Returns the path to the log directory.
     pub fn log_dir() -> Option<PathBuf> {
         dirs::data_dir().map(|d| d.join("edamame"))
+    }
+
+    /// Read a single named theme from `<config_dir>/themes/<name>.toml`.
+    /// Returns the parsed [`ThemeFile`] alongside any non-fatal warnings
+    /// (parse errors, unknown keys) so the caller can surface them in
+    /// the same `ConfigWarningModal` used at startup.  Missing files
+    /// fall back to `Theme::default()`'s `ThemeFile`, matching the
+    /// startup loader.  Used by the live theme-change path so the
+    /// settings overlay validates the chosen theme through the same
+    /// pipeline `Config::load` uses.
+    pub fn load_theme(name: &str) -> (ThemeFile, Vec<ConfigWarning>) {
+        let mut warnings = Vec::new();
+        let theme_file = match Self::config_dir() {
+            Some(dir) => read_theme_named(&dir, name, &mut warnings),
+            None => (&Theme::default()).into(),
+        };
+        (theme_file, warnings)
     }
 }
 
@@ -393,10 +410,10 @@ fn ensure_default_files_in(dir: &Path) {
         &dir.join("keybindings.toml"),
         include_str!("../../config/keybindings.toml"),
     );
-    write_if_absent(
-        &themes_dir.join("default.toml"),
-        include_str!("../../config/themes/default.toml"),
-    );
+    // `default.toml` is generated from `Theme::default()` /
+    // `Palette::default()` rather than shipped as a checked-in file, so
+    // the on-disk default can never drift from the compiled-in one.
+    write_if_absent(&themes_dir.join("default.toml"), &default_theme_toml());
 }
 
 fn write_if_absent(path: &Path, contents: &str) {
