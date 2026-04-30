@@ -490,9 +490,9 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         list_raw_col_to_rendered_col(raw_text, line, cursor_col)
                     {
                         col
-                    } else if let Some(col) = mouse_ops::paragraph_raw_col_to_rendered_col(
-                        raw_text, line, cursor_col,
-                    ) {
+                    } else if let Some(col) =
+                        mouse_ops::paragraph_raw_col_to_rendered_col(raw_text, line, cursor_col)
+                    {
                         // Paragraph lines with inline links / code spans
                         // shift the cursor's rendered column relative to its
                         // raw column.  Use the inverse of the click handler's
@@ -1194,7 +1194,6 @@ fn paint_cols_on_line(
     }
 }
 
-
 /// Paint `overlay.raw_text` into the cell's rendered column range, inverting
 /// the character at `overlay.cursor_in_cell` to draw the cursor.  Writes
 /// directly to the `TuiBuf` — the caller must have already rendered the
@@ -1220,10 +1219,10 @@ fn overlay_raw_cell(
     let cell_width = overlay.rendered_end.saturating_sub(overlay.rendered_start);
     let raw_chars: Vec<char> = overlay.raw_text.chars().collect();
     let cursor_style = theme.cursor;
-    // `theme.normal` carries `bg(Color::Reset)` to anchor unstyled text against
-    // the terminal default; if we let that bg through here it would clobber the
-    // table-row stripe painted under the cell.  Strip the bg so the underlying
-    // cell's bg is preserved — selection/cursor styles bring their own bg back
+    // `theme.normal` carries the theme's `default_bg`; letting it
+    // through here would clobber the table-row stripe painted under
+    // the cell.  Strip the bg so the underlying cell's bg is
+    // preserved — selection/cursor styles bring their own bg back
     // when applied on top.
     let base_style = Style {
         bg: None,
@@ -1414,7 +1413,10 @@ fn rendered_list_marker_char_width(line: &ratatui::text::Line<'_>) -> Option<usi
     // by a `[ ] ` / `[x] ` checkbox.  Include those four cells in the marker
     // width so cursor / selection mapping covers the whole forbidden zone.
     if chars.get(after_bullet) == Some(&'[')
-        && matches!(chars.get(after_bullet + 1), Some(' ') | Some('x') | Some('X'))
+        && matches!(
+            chars.get(after_bullet + 1),
+            Some(' ') | Some('x') | Some('X')
+        )
         && chars.get(after_bullet + 2) == Some(&']')
         && chars.get(after_bullet + 3) == Some(&' ')
     {

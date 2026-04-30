@@ -1,7 +1,7 @@
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
-    widgets::{StatefulWidget, Widget},
+    widgets::{Block, StatefulWidget, Widget},
 };
 
 use crate::config::{StatusBarLayout, Theme};
@@ -87,6 +87,17 @@ impl<'a> StatefulWidget for EditorView<'a> {
         let bar_area = chunks[1];
 
         let _viewport_height = doc_area.height as usize;
+
+        // Paint the document area's "blank page" background first.
+        // Without this, cells that the per-mode views never write to
+        // (e.g. the trailing whitespace below the last paragraph) keep
+        // the terminal's default fg/bg — defeating themes that supply
+        // a concrete `default_text` / `default_bg`.  Subsequent line
+        // and span renders patch onto these cells, so coloured spans
+        // (h1, code blocks, etc.) still win on the cells they touch.
+        Block::default()
+            .style(self.theme.normal)
+            .render(doc_area, buf);
 
         // ── Document area ─────────────────────────────────────────
         let mode = self.state.mode;

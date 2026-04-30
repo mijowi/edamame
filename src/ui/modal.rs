@@ -195,7 +195,7 @@ impl<'a> StatefulWidget for ModalView<'a> {
 
         let body_paragraph = Paragraph::new(self.body.to_vec())
             .wrap(Wrap { trim: false })
-            .style(self.theme.status_bar);
+            .style(self.theme.modal_bg);
 
         let body_area = Rect {
             x: inner.x + 1,
@@ -240,7 +240,7 @@ fn render_buttons(
         let style = if i == focused {
             theme.modal_button_focused
         } else {
-            theme.status_info
+            theme.modal_item
         };
         spans.push(Span::styled(format!("[{label}]"), style));
         if i + 1 < buttons.len() {
@@ -249,7 +249,7 @@ fn render_buttons(
     }
     Paragraph::new(Line::from(spans))
         .alignment(Alignment::Center)
-        .style(theme.status_bar)
+        .style(theme.modal_bg)
         .render(area, buf);
 }
 

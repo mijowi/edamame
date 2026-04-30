@@ -16,7 +16,6 @@ use nucleo_matcher::{Matcher, Utf32Str};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Paragraph, StatefulWidget, Widget},
 };
@@ -307,11 +306,14 @@ impl<'a> StatefulWidget for PaletteView<'a> {
             width: inner.width,
             height: 1,
         };
-        let prompt = Span::styled("› ", self.theme.status_info);
-        let typed = Span::styled(state.query.clone(), self.theme.status_filename);
+        // The input row reads as a focused text input — coloured
+        // background distinguishes the typing area from the
+        // surrounding modal fill.
+        let prompt = Span::styled("› ", self.theme.modal_input_focused);
+        let typed = Span::styled(state.query.clone(), self.theme.modal_input_focused);
         let cursor = Span::styled("▏", self.theme.cursor);
         Paragraph::new(Line::from(vec![prompt, typed, cursor]))
-            .style(self.theme.status_bar)
+            .style(self.theme.modal_input_focused)
             .render(input_area, buf);
 
         // Divider between input and result list.
@@ -319,7 +321,7 @@ impl<'a> StatefulWidget for PaletteView<'a> {
         for x in inner.x..(inner.x + inner.width) {
             buf[(x, divider_y)]
                 .set_symbol("─")
-                .set_style(self.theme.rule);
+                .set_style(self.theme.modal_border);
         }
 
         let list_area = Rect {
@@ -344,7 +346,7 @@ impl<'a> StatefulWidget for PaletteView<'a> {
             };
             lines.push(Line::from(Span::styled(
                 label.to_owned(),
-                self.theme.status_info,
+                self.theme.modal_item,
             )));
         } else {
             for (visible_idx, &entry_idx) in state
@@ -362,7 +364,7 @@ impl<'a> StatefulWidget for PaletteView<'a> {
         }
 
         Paragraph::new(lines)
-            .style(self.theme.status_bar)
+            .style(self.theme.modal_bg)
             .render(list_area, buf);
     }
 }
@@ -389,15 +391,15 @@ fn palette_content_width(state: &PaletteState) -> u16 {
         .unwrap_or(0) as u16
 }
 
-/// Format one palette row: focused rows render in `modal_button_focused`
-/// style with a leading `›`; the chord (when bound) is right-aligned in
-/// `status_info` so the eye scans it as metadata, not part of the label.
+/// Format one palette row: focused rows fill with `modal_item_selected`
+/// (interactive bg + default_bg fg) and render the chord with the
+/// hint colour; unfocused rows use `modal_item` and a dim chord.
 fn format_row(entry: &PaletteEntry, focused: bool, theme: &Theme, width: u16) -> Line<'static> {
     let marker = if focused { "› " } else { "  " };
     let label_style = if focused {
-        theme.modal_button_focused
+        theme.modal_item_selected
     } else {
-        Style::default()
+        theme.modal_item
     };
     let label = format!("{}{}", marker, entry.label);
     let chord = entry.chord.clone().unwrap_or_default();
@@ -406,14 +408,19 @@ fn format_row(entry: &PaletteEntry, focused: bool, theme: &Theme, width: u16) ->
     let total = label_w + chord_w + 1;
     let pad = (width as usize).saturating_sub(total);
     let pad_str = " ".repeat(pad.max(1));
-    let chord_style = if focused {
-        Style::default().add_modifier(Modifier::DIM)
+    let pad_style = if focused {
+        theme.modal_item_selected
     } else {
-        theme.status_info
+        theme.modal_item
+    };
+    let chord_style = if focused {
+        theme.modal_item_selected_hint
+    } else {
+        theme.modal_item.patch(theme.footnote)
     };
     Line::from(vec![
         Span::styled(label, label_style),
-        Span::raw(pad_str),
+        Span::styled(pad_str, pad_style),
         Span::styled(chord, chord_style),
     ])
 }

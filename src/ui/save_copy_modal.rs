@@ -20,7 +20,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Rect},
-    style::Style,
     text::{Line, Span},
     widgets::{Paragraph, StatefulWidget, Widget},
 };
@@ -311,7 +310,7 @@ impl<'a> StatefulWidget for SaveCopyView<'a> {
                     self.theme.transient_error,
                 )))
                 .alignment(Alignment::Center)
-                .style(self.theme.status_bar)
+                .style(self.theme.modal_bg)
                 .render(err_area, buf);
                 row_y = row_y.saturating_add(1);
             }
@@ -351,13 +350,13 @@ fn render_path_row(
         height: 1,
     };
     let value_style = if focused {
-        theme.modal_button_focused
+        theme.modal_input_focused
     } else {
-        Style::default()
+        theme.modal_input_unfocused
     };
 
     let mut spans: Vec<Span<'_>> = Vec::with_capacity(6);
-    spans.push(Span::styled("Path", theme.status_info));
+    spans.push(Span::styled("Path", theme.modal_item));
     spans.push(Span::raw("  "));
     // Leading pad so the value sits one cell off the label.
     spans.push(Span::styled(" ", value_style));
@@ -379,7 +378,7 @@ fn render_path_row(
         spans.push(Span::styled(" ", value_style));
     }
     Paragraph::new(Line::from(spans))
-        .style(theme.status_bar)
+        .style(theme.modal_bg)
         .render(area, buf);
 }
 
@@ -399,19 +398,19 @@ fn render_buttons(area: Rect, buf: &mut Buffer, focus: SaveCopyField, theme: &Th
     let save_style = if focus == SaveCopyField::Save {
         theme.modal_button_focused
     } else {
-        theme.status_info
+        theme.modal_item
     };
     let cancel_style = if focus == SaveCopyField::Cancel {
         theme.modal_button_focused
     } else {
-        theme.status_info
+        theme.modal_item
     };
     spans.push(Span::styled("[ Save ]", save_style));
     spans.push(Span::raw("  "));
     spans.push(Span::styled("[ Cancel ]", cancel_style));
     Paragraph::new(Line::from(spans))
         .alignment(Alignment::Center)
-        .style(theme.status_bar)
+        .style(theme.modal_bg)
         .render(area, buf);
 }
 

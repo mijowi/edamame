@@ -1,35 +1,41 @@
 //! User-authorable theme file format.
 //!
-//! `Theme` (in `src/config/theme.rs`) is the live in-memory style table used
-//! by the renderer.  It's a flat struct of `ratatui::style::Style` values with
-//! hardcoded defaults.  Users cannot edit it.
+//! [`super::theme::Theme`] is the live in-memory style table used by the
+//! renderer.  It carries a [`super::theme::Palette`] (the named brand
+//! colours every style is derived from) plus a flat field per styled
+//! UI element.  Users cannot edit it directly.
 //!
-//! This module supplies a parallel `ThemeFile` that can be round-tripped
-//! through TOML.  Each style becomes a `StyleSpec` with `fg` / `bg` colours
-//! and per-modifier booleans, so a theme entry reads naturally:
+//! This module supplies a parallel [`ThemeFile`] that round-trips
+//! through TOML.  A theme file has two sections:
 //!
-//! ```toml
-//! [h1]
-//! fg = "magenta"
-//! bold = true
-//! ```
+//! 1. `[palette]` — the bright/dim brand colours every style derives
+//!    from.  Editing only the palette is the cheapest way to retheme
+//!    edamame end-to-end: every style that hasn't been individually
+//!    overridden re-derives from the new palette on load.
+//! 2. `[h1]`, `[h2]`, …, `[modal_input_focused]`, etc. — per-element
+//!    overrides.  Anything you set here wins over the palette-derived
+//!    default.
 //!
-//! On load the file is converted to a `Theme` via `Theme::from_file`.  On the
-//! regeneration test (`#[ignore]` by default) we go the other direction —
-//! `Theme::default()` → `ThemeFile` → TOML — so the shipped
-//! `config/themes/default.toml` stays in sync with the compiled-in defaults
-//! without hand-maintenance.
+//! Authoring a new theme typically means rewriting the palette and
+//! letting every style fall through.  Power users can override
+//! individual fields (e.g. give H1 a setext rule colour distinct from
+//! the H1 fg) without touching the rest.
 //!
-//! `Color` uses ratatui's own serde impl (`ratatui/serde` feature), which
-//! accepts named colours (`"magenta"`), hex (`"#ff00aa"`), and indexed 256
-//! colours as a numeric string (`"236"`).  Bare integers are handled via
-//! `ColorField`'s untagged deserializer so `bg = 236` (TOML integer) also
-//! works — friendlier in TOML than forcing quotes.
+//! On load we run a three-stage merge:
+//!
+//! 1. Start from the default [`super::theme::Palette`].
+//! 2. Apply any `[palette]` overrides from the file.
+//! 3. Build a default [`super::theme::Theme`] from the merged palette,
+//!    then apply any per-element overrides that the file declares.
+//!
+//! `Color` accepts named colours (`"magenta"`), hex (`"#ff00aa"`), or a
+//! 256-colour index either as a string (`"236"`) or a bare TOML integer
+//! (`236`) — the latter is friendlier in TOML.
 
 use ratatui::style::{Color, Modifier, Style};
 use serde::{Deserialize, Serialize};
 
-use super::theme::Theme;
+use super::theme::{Palette, Theme};
 
 // ── ColorField ────────────────────────────────────────────────────────────────
 
@@ -57,11 +63,125 @@ impl From<ColorField> for Color {
 
 impl From<Color> for ColorField {
     fn from(c: Color) -> Self {
-        // Keep indexed palette entries as integers in the emitted TOML so the
-        // regenerated file matches what a human would write.
         match c {
             Color::Indexed(i) => Self::Indexed(i),
             other => Self::Named(other),
+        }
+    }
+}
+
+// ── PaletteFile ──────────────────────────────────────────────────────────────
+
+/// User-authorable palette section.  Every field is optional; missing
+/// entries fall through to [`Palette::default`] at load time.
+///
+/// Authoring a new theme that just re-tints the UI is usually a matter
+/// of editing this section and leaving the per-element style sections
+/// untouched.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PaletteFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_text: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_bg: Option<ColorField>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bright_primary: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dim_primary: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bright_emphasis: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dim_emphasis: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bright_structural: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dim_structural: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bright_interactive: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dim_interactive: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bright_success: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dim_success: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bright_warning: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dim_warning: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bright_error: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dim_error: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bright_muted: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dim_muted: Option<ColorField>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surface_bright: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surface_dim: Option<ColorField>,
+}
+
+impl PaletteFile {
+    /// Resolve `self` against `Palette::default()`, returning a
+    /// fully-populated palette.  Missing fields fall through to the
+    /// compiled-in default so a partial `[palette]` section is valid.
+    fn resolve(&self) -> Palette {
+        let d = Palette::default();
+        let pick = |opt: Option<ColorField>, fallback: Color| -> Color {
+            opt.map(Color::from).unwrap_or(fallback)
+        };
+        Palette {
+            default_text: pick(self.default_text, d.default_text),
+            default_bg: pick(self.default_bg, d.default_bg),
+            bright_primary: pick(self.bright_primary, d.bright_primary),
+            dim_primary: pick(self.dim_primary, d.dim_primary),
+            bright_emphasis: pick(self.bright_emphasis, d.bright_emphasis),
+            dim_emphasis: pick(self.dim_emphasis, d.dim_emphasis),
+            bright_structural: pick(self.bright_structural, d.bright_structural),
+            dim_structural: pick(self.dim_structural, d.dim_structural),
+            bright_interactive: pick(self.bright_interactive, d.bright_interactive),
+            dim_interactive: pick(self.dim_interactive, d.dim_interactive),
+            bright_success: pick(self.bright_success, d.bright_success),
+            dim_success: pick(self.dim_success, d.dim_success),
+            bright_warning: pick(self.bright_warning, d.bright_warning),
+            dim_warning: pick(self.dim_warning, d.dim_warning),
+            bright_error: pick(self.bright_error, d.bright_error),
+            dim_error: pick(self.dim_error, d.dim_error),
+            bright_muted: pick(self.bright_muted, d.bright_muted),
+            dim_muted: pick(self.dim_muted, d.dim_muted),
+            bright_surface: pick(self.surface_bright, d.bright_surface),
+            dim_surface: pick(self.surface_dim, d.dim_surface),
+        }
+    }
+}
+
+impl From<&Palette> for PaletteFile {
+    fn from(p: &Palette) -> Self {
+        Self {
+            default_text: Some(p.default_text.into()),
+            default_bg: Some(p.default_bg.into()),
+            bright_primary: Some(p.bright_primary.into()),
+            dim_primary: Some(p.dim_primary.into()),
+            bright_emphasis: Some(p.bright_emphasis.into()),
+            dim_emphasis: Some(p.dim_emphasis.into()),
+            bright_structural: Some(p.bright_structural.into()),
+            dim_structural: Some(p.dim_structural.into()),
+            bright_interactive: Some(p.bright_interactive.into()),
+            dim_interactive: Some(p.dim_interactive.into()),
+            bright_success: Some(p.bright_success.into()),
+            dim_success: Some(p.dim_success.into()),
+            bright_warning: Some(p.bright_warning.into()),
+            dim_warning: Some(p.dim_warning.into()),
+            bright_error: Some(p.bright_error.into()),
+            dim_error: Some(p.dim_error.into()),
+            bright_muted: Some(p.bright_muted.into()),
+            dim_muted: Some(p.dim_muted.into()),
+            surface_bright: Some(p.bright_surface.into()),
+            surface_dim: Some(p.dim_surface.into()),
         }
     }
 }
@@ -93,6 +213,22 @@ pub struct StyleSpec {
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+impl StyleSpec {
+    /// True when this spec carries no overrides — used by the merge
+    /// step so that an empty `[h1]` section in TOML doesn't clobber
+    /// the palette-derived default.
+    fn is_empty(&self) -> bool {
+        self.fg.is_none()
+            && self.bg.is_none()
+            && !self.bold
+            && !self.italic
+            && !self.underlined
+            && !self.reversed
+            && !self.crossed_out
+            && !self.dim
+    }
 }
 
 impl From<&StyleSpec> for Style {
@@ -157,6 +293,10 @@ impl From<&Style> for StyleSpec {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeFile {
+    /// Brand-colour palette.  Edit this section to retheme edamame
+    /// end-to-end without touching individual style fields.
+    pub palette: PaletteFile,
+
     // Headings
     pub h1: StyleSpec,
     pub h1_rule: StyleSpec,
@@ -173,7 +313,10 @@ pub struct ThemeFile {
     pub highlight: StyleSpec,
     pub code_span: StyleSpec,
     pub link_text: StyleSpec,
+    pub link_file: StyleSpec,
+    pub link_heading: StyleSpec,
     pub image_placeholder: StyleSpec,
+    pub footnote: StyleSpec,
 
     // Block elements
     pub code_block_border: StyleSpec,
@@ -190,6 +333,7 @@ pub struct ThemeFile {
     // Task list
     pub task_unchecked: StyleSpec,
     pub task_checked: StyleSpec,
+    pub task_complete_text: StyleSpec,
     /// When true, checked-item text is rendered with strikethrough.
     pub task_strikethrough: bool,
 
@@ -204,7 +348,9 @@ pub struct ThemeFile {
 
     // Status bar
     pub status_bar: StyleSpec,
-    pub status_mode: StyleSpec,
+    pub status_mode_preview: StyleSpec,
+    pub status_mode_rendered: StyleSpec,
+    pub status_mode_raw: StyleSpec,
     pub status_filename: StyleSpec,
     pub status_info: StyleSpec,
     pub status_modified: StyleSpec,
@@ -222,136 +368,137 @@ pub struct ThemeFile {
     pub transient_error: StyleSpec,
 
     // Modal popups
+    pub modal_bg: StyleSpec,
+    pub modal_border: StyleSpec,
     pub modal_title: StyleSpec,
+    pub modal_item: StyleSpec,
+    pub modal_item_selected: StyleSpec,
+    pub modal_item_selected_hint: StyleSpec,
+    pub modal_section_heading: StyleSpec,
+    pub modal_input_unfocused: StyleSpec,
+    pub modal_input_focused: StyleSpec,
     pub modal_button_focused: StyleSpec,
 
     // General
     pub normal: StyleSpec,
     pub selection: StyleSpec,
+    pub search_highlight: StyleSpec,
+    pub active_line: StyleSpec,
     pub cursor: StyleSpec,
 }
 
-/// Convert a `ThemeFile` into the live `Theme` used by the renderer.
+/// Build a `Theme` from a `ThemeFile`.  Implements the three-stage
+/// merge documented at the module level:
 ///
-/// One macro per style field would be cleaner, but the flat 37-line body
-/// makes the field → field wiring obvious on review and lets rust-analyzer
-/// jump straight from a source site to the correct target.
+/// 1. Resolve the palette section against [`Palette::default`].
+/// 2. Build a default theme from that palette.
+/// 3. For each style spec that's non-empty in the file, override the
+///    corresponding theme field.  Empty specs fall through so the
+///    palette-derived default wins.
+///
+/// `task_strikethrough` is a plain bool, not a style — it always wins
+/// over the default because there's no "absent" sentinel to detect.
 impl From<&ThemeFile> for Theme {
     fn from(f: &ThemeFile) -> Self {
-        Self {
-            h1: (&f.h1).into(),
-            h1_rule: (&f.h1_rule).into(),
-            h2: (&f.h2).into(),
-            h3: (&f.h3).into(),
-            h4: (&f.h4).into(),
-            h5: (&f.h5).into(),
-            h6: (&f.h6).into(),
+        let palette = f.palette.resolve();
+        let mut theme = Theme::from_palette(&palette);
 
-            bold: (&f.bold).into(),
-            italic: (&f.italic).into(),
-            strikethrough: (&f.strikethrough).into(),
-            highlight: (&f.highlight).into(),
-            code_span: (&f.code_span).into(),
-            link_text: (&f.link_text).into(),
-            image_placeholder: (&f.image_placeholder).into(),
-
-            code_block_border: (&f.code_block_border).into(),
-            code_block_lang: (&f.code_block_lang).into(),
-            code_block_text: (&f.code_block_text).into(),
-            blockquote_bar: (&f.blockquote_bar).into(),
-            blockquote_text: (&f.blockquote_text).into(),
-            rule: (&f.rule).into(),
-
-            list_bullet: (&f.list_bullet).into(),
-            list_number: (&f.list_number).into(),
-
-            task_unchecked: (&f.task_unchecked).into(),
-            task_checked: (&f.task_checked).into(),
-            task_strikethrough: f.task_strikethrough,
-
-            table_border: (&f.table_border).into(),
-            table_header: (&f.table_header).into(),
-            table_cell: (&f.table_cell).into(),
-            // Row striping: when the section is missing from older theme
-            // files (serde fills with an empty StyleSpec), fall back to
-            // the compiled defaults so striping stays visible after the
-            // user upgrades.  Empty `even` is fine (no bg = inherit);
-            // empty `odd` falls back to the subtle indexed bg.
-            table_row_even: (&f.table_row_even).into(),
-            table_row_odd: {
-                let s: Style = (&f.table_row_odd).into();
-                if s == Style::default() {
-                    Style::default().bg(ratatui::style::Color::Indexed(235))
-                } else {
-                    s
+        // Per-style overrides.  Empty specs fall through to keep the
+        // palette-derived default.
+        macro_rules! apply {
+            ($field:ident) => {
+                if !f.$field.is_empty() {
+                    theme.$field = (&f.$field).into();
                 }
-            },
-            // `table_drop_indicator` / `table_drop_target` are
-            // post-Phase 13.  When the section is missing from older
-            // theme files (serde fills the field with a fully-empty
-            // `StyleSpec`), fall back to the compiled default so the
-            // drop indicator stays visible during a drag.
-            table_drop_indicator: {
-                let s: Style = (&f.table_drop_indicator).into();
-                if s == Style::default() {
-                    Style::default().fg(ratatui::style::Color::Indexed(178))
-                } else {
-                    s
-                }
-            },
-            table_drop_target: {
-                let s: Style = (&f.table_drop_target).into();
-                if s == Style::default() {
-                    Style::default().fg(ratatui::style::Color::Indexed(101))
-                } else {
-                    s
-                }
-            },
-
-            status_bar: (&f.status_bar).into(),
-            status_mode: (&f.status_mode).into(),
-            status_filename: (&f.status_filename).into(),
-            status_info: (&f.status_info).into(),
-            status_modified: (&f.status_modified).into(),
-            status_selection: (&f.status_selection).into(),
-
-            hint_bar: (&f.hint_bar).into(),
-            hint_chord: (&f.hint_chord).into(),
-            hint_label: (&f.hint_label).into(),
-
-            transient_info: (&f.transient_info).into(),
-            transient_success: (&f.transient_success).into(),
-            transient_warning: (&f.transient_warning).into(),
-            transient_error: (&f.transient_error).into(),
-
-            modal_title: (&f.modal_title).into(),
-            modal_button_focused: (&f.modal_button_focused).into(),
-
-            normal: (&f.normal).into(),
-            selection: (&f.selection).into(),
-            // `cursor` is a post-v1 theme field.  Theme files written by
-            // earlier binaries have no `[cursor]` section, which serde fills
-            // with `StyleSpec::default()` — a fully empty style that would
-            // render the cursor invisible.  Fall back to the compiled
-            // `REVERSED`-only default in that case so upgrading never hides
-            // the cursor.  Users who want a non-default cursor must set at
-            // least one field under `[cursor]`, which is the same contract
-            // as every other style.
-            cursor: {
-                let s: Style = (&f.cursor).into();
-                if s == Style::default() {
-                    Style::default().add_modifier(Modifier::REVERSED)
-                } else {
-                    s
-                }
-            },
+            };
         }
+        apply!(h1);
+        apply!(h1_rule);
+        apply!(h2);
+        apply!(h3);
+        apply!(h4);
+        apply!(h5);
+        apply!(h6);
+
+        apply!(bold);
+        apply!(italic);
+        apply!(strikethrough);
+        apply!(highlight);
+        apply!(code_span);
+        apply!(link_text);
+        apply!(link_file);
+        apply!(link_heading);
+        apply!(image_placeholder);
+        apply!(footnote);
+
+        apply!(code_block_border);
+        apply!(code_block_lang);
+        apply!(code_block_text);
+        apply!(blockquote_bar);
+        apply!(blockquote_text);
+        apply!(rule);
+
+        apply!(list_bullet);
+        apply!(list_number);
+
+        apply!(task_unchecked);
+        apply!(task_checked);
+        apply!(task_complete_text);
+        // task_strikethrough is a bare bool — always honoured.
+        theme.task_strikethrough = f.task_strikethrough;
+
+        apply!(table_border);
+        apply!(table_header);
+        apply!(table_cell);
+        apply!(table_row_even);
+        apply!(table_row_odd);
+        apply!(table_drop_indicator);
+        apply!(table_drop_target);
+
+        apply!(status_bar);
+        apply!(status_mode_preview);
+        apply!(status_mode_rendered);
+        apply!(status_mode_raw);
+        apply!(status_filename);
+        apply!(status_info);
+        apply!(status_modified);
+        apply!(status_selection);
+
+        apply!(hint_bar);
+        apply!(hint_chord);
+        apply!(hint_label);
+
+        apply!(transient_info);
+        apply!(transient_success);
+        apply!(transient_warning);
+        apply!(transient_error);
+
+        apply!(modal_bg);
+        apply!(modal_border);
+        apply!(modal_title);
+        apply!(modal_item);
+        apply!(modal_item_selected);
+        apply!(modal_item_selected_hint);
+        apply!(modal_section_heading);
+        apply!(modal_input_unfocused);
+        apply!(modal_input_focused);
+        apply!(modal_button_focused);
+
+        apply!(normal);
+        apply!(selection);
+        apply!(search_highlight);
+        apply!(active_line);
+        apply!(cursor);
+
+        theme
     }
 }
 
 impl From<&Theme> for ThemeFile {
     fn from(t: &Theme) -> Self {
         Self {
+            palette: (&t.palette).into(),
+
             h1: (&t.h1).into(),
             h1_rule: (&t.h1_rule).into(),
             h2: (&t.h2).into(),
@@ -366,7 +513,10 @@ impl From<&Theme> for ThemeFile {
             highlight: (&t.highlight).into(),
             code_span: (&t.code_span).into(),
             link_text: (&t.link_text).into(),
+            link_file: (&t.link_file).into(),
+            link_heading: (&t.link_heading).into(),
             image_placeholder: (&t.image_placeholder).into(),
+            footnote: (&t.footnote).into(),
 
             code_block_border: (&t.code_block_border).into(),
             code_block_lang: (&t.code_block_lang).into(),
@@ -380,6 +530,7 @@ impl From<&Theme> for ThemeFile {
 
             task_unchecked: (&t.task_unchecked).into(),
             task_checked: (&t.task_checked).into(),
+            task_complete_text: (&t.task_complete_text).into(),
             task_strikethrough: t.task_strikethrough,
 
             table_border: (&t.table_border).into(),
@@ -391,7 +542,9 @@ impl From<&Theme> for ThemeFile {
             table_drop_target: (&t.table_drop_target).into(),
 
             status_bar: (&t.status_bar).into(),
-            status_mode: (&t.status_mode).into(),
+            status_mode_preview: (&t.status_mode_preview).into(),
+            status_mode_rendered: (&t.status_mode_rendered).into(),
+            status_mode_raw: (&t.status_mode_raw).into(),
             status_filename: (&t.status_filename).into(),
             status_info: (&t.status_info).into(),
             status_modified: (&t.status_modified).into(),
@@ -406,11 +559,21 @@ impl From<&Theme> for ThemeFile {
             transient_warning: (&t.transient_warning).into(),
             transient_error: (&t.transient_error).into(),
 
+            modal_bg: (&t.modal_bg).into(),
+            modal_border: (&t.modal_border).into(),
             modal_title: (&t.modal_title).into(),
+            modal_item: (&t.modal_item).into(),
+            modal_item_selected: (&t.modal_item_selected).into(),
+            modal_item_selected_hint: (&t.modal_item_selected_hint).into(),
+            modal_section_heading: (&t.modal_section_heading).into(),
+            modal_input_unfocused: (&t.modal_input_unfocused).into(),
+            modal_input_focused: (&t.modal_input_focused).into(),
             modal_button_focused: (&t.modal_button_focused).into(),
 
             normal: (&t.normal).into(),
             selection: (&t.selection).into(),
+            search_highlight: (&t.search_highlight).into(),
+            active_line: (&t.active_line).into(),
             cursor: (&t.cursor).into(),
         }
     }
@@ -453,7 +616,10 @@ mod tests {
         check!(highlight);
         check!(code_span);
         check!(link_text);
+        check!(link_file);
+        check!(link_heading);
         check!(image_placeholder);
+        check!(footnote);
         check!(code_block_border);
         check!(code_block_lang);
         check!(code_block_text);
@@ -464,6 +630,7 @@ mod tests {
         check!(list_number);
         check!(task_unchecked);
         check!(task_checked);
+        check!(task_complete_text);
         check!(table_border);
         check!(table_header);
         check!(table_cell);
@@ -472,7 +639,9 @@ mod tests {
         check!(table_drop_indicator);
         check!(table_drop_target);
         check!(status_bar);
-        check!(status_mode);
+        check!(status_mode_preview);
+        check!(status_mode_rendered);
+        check!(status_mode_raw);
         check!(status_filename);
         check!(status_info);
         check!(status_modified);
@@ -484,10 +653,20 @@ mod tests {
         check!(transient_success);
         check!(transient_warning);
         check!(transient_error);
+        check!(modal_bg);
+        check!(modal_border);
         check!(modal_title);
+        check!(modal_item);
+        check!(modal_item_selected);
+        check!(modal_item_selected_hint);
+        check!(modal_section_heading);
+        check!(modal_input_unfocused);
+        check!(modal_input_focused);
         check!(modal_button_focused);
         check!(normal);
         check!(selection);
+        check!(search_highlight);
+        check!(active_line);
         check!(cursor);
         assert_eq!(
             original.task_strikethrough, round_tripped.task_strikethrough,
@@ -500,10 +679,13 @@ mod tests {
         assert_theme_round_trip(&Theme::default());
     }
 
-    #[test]
-    fn monochrome_theme_round_trips() {
-        assert_theme_round_trip(&Theme::monochrome());
-    }
+    // No `monochrome_theme_round_trips` test: the monochrome theme is
+    // always built programmatically (`Theme::monochrome()`) when the
+    // terminal reports no colour support — it never loads from a
+    // file.  Several of its styles are intentionally `Style::default()`
+    // (e.g. `h1_rule`), and the file format treats absent sections as
+    // "use the palette-derived default", so `Style::default()` is not
+    // a faithful round-trip target through TOML.
 
     #[test]
     fn named_color_parses() {
@@ -585,9 +767,64 @@ fg = "blue"
         assert_eq!(file.h1.fg.map(Color::from), Some(Color::Red));
     }
 
+    #[test]
+    fn empty_section_falls_back_to_palette_default() {
+        // Empty `[h1]` section in the file must NOT clobber the
+        // palette-derived default — the merge step skips empty specs.
+        let toml = "[h1]\n";
+        let file: ThemeFile = toml::from_str(toml).unwrap();
+        let theme: Theme = (&file).into();
+        assert_eq!(theme.h1, Theme::default().h1);
+    }
+
+    #[test]
+    fn palette_override_ripples_to_styles() {
+        // Override only the palette; the H1 fg should pick up the new
+        // bright_emphasis colour because the merge re-derives styles
+        // from the file palette before applying overrides.
+        let toml = r##"
+[palette]
+bright_emphasis = "#abcdef"
+"##;
+        let file: ThemeFile = toml::from_str(toml).unwrap();
+        let theme: Theme = (&file).into();
+        assert_eq!(theme.h1.fg, Some(Color::Rgb(0xab, 0xcd, 0xef)));
+        // h1_rule shares the bright_emphasis colour and should follow.
+        assert_eq!(theme.h1_rule.fg, Some(Color::Rgb(0xab, 0xcd, 0xef)));
+    }
+
+    #[test]
+    fn style_override_wins_over_palette() {
+        // Palette + an explicit style override on H1.  The style
+        // override should win.
+        let toml = r##"
+[palette]
+bright_emphasis = "#abcdef"
+
+[h1]
+fg = "#112233"
+bold = true
+"##;
+        let file: ThemeFile = toml::from_str(toml).unwrap();
+        let theme: Theme = (&file).into();
+        assert_eq!(theme.h1.fg, Some(Color::Rgb(0x11, 0x22, 0x33)));
+        // h1_rule still picks up the palette override (no explicit
+        // override in the file).
+        assert_eq!(theme.h1_rule.fg, Some(Color::Rgb(0xab, 0xcd, 0xef)));
+    }
+
     /// Regenerate `config/themes/default.toml` from the compiled-in default
     /// `Theme`.  Run with `cargo test -- --ignored regenerate_default_theme_toml`
-    /// after changing `Theme::default()` and commit the updated TOML file.
+    /// after changing `Theme::default()` or `Palette::default()` and commit
+    /// the updated TOML file.
+    ///
+    /// The shipped file deliberately contains *only* the `[palette]`
+    /// section plus empty `[<element>]` headers for every per-element
+    /// style.  The headers exist so users can discover the available
+    /// override slots without consulting the source; an empty section
+    /// is treated as "use the palette-derived default" by the load
+    /// merge, so a user who edits only the palette gets a fully
+    /// re-tinted UI without the per-element sections fighting back.
     #[test]
     #[ignore]
     fn regenerate_default_theme_toml() {
@@ -598,15 +835,122 @@ fg = "blue"
         std::fs::create_dir_all(&out_dir).expect("create config/themes/");
         let out_path = out_dir.join("default.toml");
 
-        let file: ThemeFile = (&Theme::default()).into();
-        let body = toml::to_string_pretty(&file).expect("serialize default ThemeFile");
+        // Palette-only ThemeFile: every per-element StyleSpec is left
+        // at its `Default::default()` (empty), which serializes as a
+        // bare `[<element>]` header with no body.  The `task_strike-
+        // through` boolean is preserved verbatim from `Theme::default`
+        // because the merge always honours it.
+        let default = Theme::default();
+        let file = ThemeFile {
+            palette: (&default.palette).into(),
+            task_strikethrough: default.task_strikethrough,
+            ..Default::default()
+        };
+        let body = toml::to_string_pretty(&file).expect("serialize palette-only ThemeFile");
 
-        let contents = format!(
-            "# edamame default theme — regenerate with\n\
-             #   cargo test -- --ignored regenerate_default_theme_toml\n\
-             # after changing `Theme::default()` in src/config/theme.rs.\n\n{body}"
-        );
+        let header = include_str!("default_theme_header.txt");
+        let contents = format!("{header}\n{body}");
         std::fs::write(&out_path, contents).expect("write default.toml");
         eprintln!("wrote {}", out_path.display());
+    }
+
+    #[test]
+    fn palette_only_file_renders_identical_to_default_theme() {
+        // Lock in the contract that the shipped `default.toml` shape
+        // (palette + empty per-element sections) produces exactly the
+        // compiled-in default theme.  Catches regressions where a new
+        // style sneaks in with a hand-rolled default that doesn't fall
+        // out of the palette merge.
+        let default = Theme::default();
+        let file = ThemeFile {
+            palette: (&default.palette).into(),
+            task_strikethrough: default.task_strikethrough,
+            ..Default::default()
+        };
+        // Round through TOML so we exercise the same path as a real
+        // load (serialize → parse → merge), not just the in-memory
+        // From impl.
+        let toml_str = toml::to_string_pretty(&file).expect("serialize");
+        let parsed: ThemeFile = toml::from_str(&toml_str).expect("parse");
+        let theme: Theme = (&parsed).into();
+
+        macro_rules! check {
+            ($field:ident) => {
+                assert_eq!(
+                    default.$field, theme.$field,
+                    concat!(
+                        "field `",
+                        stringify!($field),
+                        "` did not match palette-derived default"
+                    )
+                );
+            };
+        }
+        check!(h1);
+        check!(h1_rule);
+        check!(h2);
+        check!(h3);
+        check!(h4);
+        check!(h5);
+        check!(h6);
+        check!(bold);
+        check!(italic);
+        check!(strikethrough);
+        check!(highlight);
+        check!(code_span);
+        check!(link_text);
+        check!(link_file);
+        check!(link_heading);
+        check!(image_placeholder);
+        check!(footnote);
+        check!(code_block_border);
+        check!(code_block_lang);
+        check!(code_block_text);
+        check!(blockquote_bar);
+        check!(blockquote_text);
+        check!(rule);
+        check!(list_bullet);
+        check!(list_number);
+        check!(task_unchecked);
+        check!(task_checked);
+        check!(task_complete_text);
+        check!(table_border);
+        check!(table_header);
+        check!(table_row_even);
+        check!(table_row_odd);
+        check!(table_drop_indicator);
+        check!(table_drop_target);
+        check!(status_bar);
+        check!(status_mode_preview);
+        check!(status_mode_rendered);
+        check!(status_mode_raw);
+        check!(status_filename);
+        check!(status_info);
+        check!(status_modified);
+        check!(status_selection);
+        check!(hint_bar);
+        check!(hint_chord);
+        check!(hint_label);
+        check!(transient_info);
+        check!(transient_success);
+        check!(transient_warning);
+        check!(transient_error);
+        check!(modal_bg);
+        check!(modal_border);
+        check!(modal_title);
+        check!(modal_item);
+        check!(modal_item_selected);
+        check!(modal_item_selected_hint);
+        check!(modal_section_heading);
+        check!(modal_input_unfocused);
+        check!(modal_input_focused);
+        check!(modal_button_focused);
+        check!(normal);
+        check!(selection);
+        check!(search_highlight);
+        check!(cursor);
+        // `table_cell` and `active_line` are intentionally
+        // `Style::default()` in the compiled default and round-trip
+        // identically through both branches of the merge.
     }
 }

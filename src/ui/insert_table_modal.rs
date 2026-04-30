@@ -16,7 +16,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Rect},
-    style::Style,
     text::{Line, Span},
     widgets::{Paragraph, StatefulWidget, Widget},
 };
@@ -295,7 +294,7 @@ impl<'a> StatefulWidget for InsertTableView<'a> {
                     self.theme.transient_error,
                 )))
                 .alignment(Alignment::Center)
-                .style(self.theme.status_bar)
+                .style(self.theme.modal_bg)
                 .render(err_area, buf);
                 row_y = row_y.saturating_add(1);
             }
@@ -339,9 +338,9 @@ fn render_field_row(
     let label_width = "Columns".chars().count();
     let label_padded = format!("{label:<width$}", label = label, width = label_width);
     let value_style = if focused {
-        theme.modal_button_focused
+        theme.modal_input_focused
     } else {
-        Style::default()
+        theme.modal_input_unfocused
     };
     // Show a trailing cursor glyph on the focused field so the user
     // sees where typing would land.
@@ -351,11 +350,11 @@ fn render_field_row(
         format!(" {value} ")
     };
     Paragraph::new(Line::from(vec![
-        Span::styled(label_padded, theme.status_info),
+        Span::styled(label_padded, theme.modal_item),
         Span::raw("  "),
         Span::styled(value_display, value_style),
     ]))
-    .style(theme.status_bar)
+    .style(theme.modal_bg)
     .render(area, buf);
 }
 
@@ -366,19 +365,19 @@ fn render_buttons(area: Rect, buf: &mut Buffer, focus: InsertTableField, theme: 
     let insert_style = if focus == InsertTableField::Insert {
         theme.modal_button_focused
     } else {
-        theme.status_info
+        theme.modal_item
     };
     let cancel_style = if focus == InsertTableField::Cancel {
         theme.modal_button_focused
     } else {
-        theme.status_info
+        theme.modal_item
     };
     spans.push(Span::styled("[ Insert ]", insert_style));
     spans.push(Span::raw("  "));
     spans.push(Span::styled("[ Cancel ]", cancel_style));
     Paragraph::new(Line::from(spans))
         .alignment(Alignment::Center)
-        .style(theme.status_bar)
+        .style(theme.modal_bg)
         .render(area, buf);
 }
 

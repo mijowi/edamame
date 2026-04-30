@@ -42,9 +42,10 @@ impl<'a> Widget for StatusBar<'a> {
         let s = &self.state;
         let theme = self.theme;
 
-        // Mode badge
+        // Mode badge — colour swaps per-mode so each mode reads at a
+        // glance (orange = Rendered, yellow = Raw, muted = Preview).
         let mode_text = format!(" {} ", s.mode);
-        let mode_span = Span::styled(mode_text.clone(), theme.status_mode);
+        let mode_span = Span::styled(mode_text.clone(), theme.status_mode_style(s.mode));
 
         // Filename + modified flag
         let modified_marker = if s.modified { " [modified]" } else { "" };

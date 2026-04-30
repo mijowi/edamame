@@ -189,6 +189,19 @@ fn link_fallback(url: &str) -> String {
         .unwrap_or_else(|| url.to_string())
 }
 
+/// Pick the right link style for `url`.  Heading anchors (`#section`)
+/// and local file paths read as more peripheral than full web links
+/// per theming.md, so they get the dim variants.
+fn link_style_for(url: &str, theme: &Theme) -> Style {
+    if url.starts_with('#') {
+        theme.link_heading
+    } else if has_url_scheme(url) {
+        theme.link_text
+    } else {
+        theme.link_file
+    }
+}
+
 fn has_url_scheme(url: &str) -> bool {
     let Some((scheme, _)) = url.split_once(':') else {
         return false;
@@ -674,14 +687,17 @@ impl<'t> Renderer<'t> {
                 }
             });
 
-            // Checked-item text style: optionally strikethrough.
+            // Checked-item text style.  `task_complete_text` is the
+            // theme's "muted text" style; `task_strikethrough` keeps
+            // the CROSSED_OUT modifier opt-in so themes can ship the
+            // muted colour without the strikethrough.
             let checked_text_style = if item.task == Some(true) {
                 if self.theme.task_strikethrough {
                     self.theme
-                        .task_checked
+                        .task_complete_text
                         .add_modifier(ratatui::style::Modifier::CROSSED_OUT)
                 } else {
-                    self.theme.task_checked
+                    self.theme.task_complete_text
                 }
             } else {
                 Style::default()
@@ -1019,10 +1035,14 @@ impl<'t> Renderer<'t> {
             }
 
             Inline::Link { text, url, .. } => {
+                // Pick a per-link style by URL kind: in-document
+                // heading anchors and local files read as more
+                // peripheral than full web links per theming.md.
+                let style = link_style_for(url, self.theme);
                 if inlines_to_plain(text).trim().is_empty() {
-                    vec![Span::styled(link_fallback(url), self.theme.link_text)]
+                    vec![Span::styled(link_fallback(url), style)]
                 } else {
-                    self.render_inlines(text, self.theme.link_text)
+                    self.render_inlines(text, style)
                 }
             }
 

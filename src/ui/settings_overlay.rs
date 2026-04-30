@@ -317,7 +317,7 @@ impl<'a> StatefulWidget for SettingsView<'a> {
             .take(visible_rows)
             .collect();
         Paragraph::new(visible)
-            .style(self.theme.status_bar)
+            .style(self.theme.modal_bg)
             .render(table_area, buf);
 
         // Pinned footer: description (when present) followed by error.
@@ -332,9 +332,9 @@ impl<'a> StatefulWidget for SettingsView<'a> {
                 };
                 Paragraph::new(Line::from(Span::styled(
                     format!("    {}", desc),
-                    self.theme.status_info.add_modifier(Modifier::DIM),
+                    self.theme.modal_item.add_modifier(Modifier::DIM),
                 )))
-                .style(self.theme.status_bar)
+                .style(self.theme.modal_bg)
                 .render(desc_area, buf);
                 footer_y += 1;
             }
@@ -351,7 +351,7 @@ impl<'a> StatefulWidget for SettingsView<'a> {
                 format!("✗ {err}"),
                 self.theme.transient_error,
             )))
-            .style(self.theme.status_bar)
+            .style(self.theme.modal_bg)
             .render(err_area, buf);
         }
     }
@@ -367,21 +367,29 @@ fn build_row_lines<'a>(state: &SettingsState, config: &Config, theme: &'a Theme)
             continue;
         }
         let focused = idx == state.focused;
+        let editing = focused && state.editing.is_some();
         let marker = if focused { "› " } else { "  " };
         let label_style = if focused {
-            theme.modal_button_focused
+            theme.modal_item_selected
         } else {
-            theme.status_bar
+            theme.modal_item
         };
-        let value = if focused && state.editing.is_some() {
+        let value = if editing {
             format!("{}▏", state.editing.as_deref().unwrap_or(""))
         } else {
             (row.kind.read)(config, &state.theme_names)
         };
+        let value_style = if editing {
+            theme.modal_input_focused
+        } else if focused {
+            theme.modal_item_selected_hint
+        } else {
+            theme.modal_item.patch(theme.footnote)
+        };
         let label_padded = format!("{marker}{:<28}", row.label);
         lines.push(Line::from(vec![
             Span::styled(label_padded, label_style),
-            Span::styled(value, theme.status_filename),
+            Span::styled(value, value_style),
         ]));
     }
     lines

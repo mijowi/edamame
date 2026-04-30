@@ -1468,30 +1468,48 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 ## Miscellaneous Issues / Features
 
-- [ ] Is `ScrollContainerState` themeable? It should have a theme that is shared across all modals, with per-modal overrides possible. We want common background, border, title, body text, header text, input, etc theming across all modals, again with per-modal overrides possible.
+- Is `ScrollContainerState` themeable? It should have a theme that is shared across all modals, with per-modal overrides possible. We want common background, border, title, body text, header text, input, etc theming across all modals, again with per-modal overrides possible.
 
-- [ ] Add a background color to modal inputs when selected. Most modal views already do this, but the settings and keybindings do not. 
+- Add a background color to modal inputs when selected. Most modal views already do this, but the settings and keybindings do not. 
 
-- [ ] Press keys to set chord in keybinding modal instead of typing in e.g. `Ctrl-c`
-- [ ] Add next cell/prev cell to keybindings modal
+- Press keys to set chord in keybinding modal instead of typing in e.g. `Ctrl-c`
+- Add next cell/prev cell to keybindings modal
 
-- [ ] Heading table of contents 
-- [ ] Add support for footnotes. Add to Markdown cheat sheet.
-- [ ] Test keybindings and settings modals
-- [ ] Clean up source and tests
-- [ ] Table row/column deletion hover preview? Optional — when the pointer is over a delete glyph, paint the
+- Heading table of contents 
+- Add support for footnotes. Add to Markdown cheat sheet.
+- Test keybindings and settings modals
+- Clean up source and tests
+- Table row/column deletion hover preview? Optional — when the pointer is over a delete glyph, paint the
   target row/column in a "danger" style (e.g., theme's selection-or-warning color)
   so the user sees what's about to go. Adds polish but more work.
-- [ ] Add a first-run config setup for images, remote images, mouse, etc based on inferred terminal capabilities.
-- [ ] Add "Esc to dismiss" to `MesageKind::Error` sticky hint line messages
+- Add a first-run config setup for images, remote images, mouse, etc based on inferred terminal capabilities.
+- Add "Esc to dismiss" to `MesageKind::Error` sticky hint line messages
 
-- [ ] If the cursor is on the `t` in `Cat` below, which is followed by a blank line containing only a space, and the user presses the right arrow key at the end of the line, the cursor does not move to the line below with the space. Instead, the cursor jumps back to the first column and replaces `Cat` with ` `. Pressing the left arrow key again returns to `Cat`.
+- If the cursor is on the `t` in `Cat` below, which is followed by a blank line containing only a space, and the user presses the right arrow key at the end of the line, the cursor does not move to the line below with the space. Instead, the cursor jumps back to the first column and replaces `Cat` with ` `. Pressing the left arrow key again returns to `Cat`.
 ```
 Cat
  
 ```
 
-- [ ] Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
+- Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
 
-- [ ] Add undo/redo to hint line
-- [ ] Add `Ctrl-Shift-z` additional binding for undo
+- Add undo/redo to hint line
+- Add `Ctrl-Shift-z` additional binding for undo
+
+- Add `fg = `, `bg = `, `bold = true` etc example to theming.md
+
+- Config warnings modal is too short. Make it bigger.
+
+- H2 denoted with `---` underline should not have a horizontal rule. Should be rendered the same as `## H2`
+
+### Default theme issues
+- inline code purple is not bright enough
+- table stripe is too bright
+- table bottom header is not purple—is it supposed to be?
+- completed checkbox is not green enough
+- code block bg should be darker I think
+- modal hints should use bright purple instead of dim purple
+- Code blocks in Markdown cheat sheet have same bg as modal, so it looks like there's no bg
+- Selected interactive in modals is too bright of a blue. Needs to contrast with bright emphasis and bright structural. Maybe we should use dim blue.
+- Settings selected item label (at bottom) should be bright emphasis
+- Nested block quote should be bright structural to match the level 1 block quote's dim structural

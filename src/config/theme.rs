@@ -1,12 +1,28 @@
 use ratatui::style::{Color, Modifier, Style};
 
-/// All colour and style values for rendering. No hardcoded colours exist
-/// outside this struct — every rendered element derives its style from here.
+/// Edamame's two-tier theming model.
 ///
-/// The default is a dark-mode palette. Full user theming is a deferred feature;
-/// the struct is wired in from Phase 0 so adding it later requires no refactoring.
+/// 1. [`Palette`] — a small named set of brand colours (orange, yellow,
+///    purple, blue, green, red, plus muted greys and surface tones).  Each
+///    colour has a `bright_*` and `dim_*` variant.  Authoring a new theme
+///    boils down to picking shades for these slots.
+/// 2. [`Theme`] — every styled element in the UI gets a precomputed
+///    [`Style`].  `Theme::default()` derives every style from the default
+///    palette, so any change to the palette ripples through the whole UI.
+///
+/// User theme files (`themes/<name>.toml`) may override the palette,
+/// individual styles, or both.  See [`super::theme_file`] for the on-disk
+/// format and the merge order.
+///
+/// No hardcoded colours exist outside [`Palette::default`] — every UI site
+/// reads from `theme.<field>`.
 #[derive(Debug, Clone)]
 pub struct Theme {
+    /// The named brand-colour palette every style is derived from.
+    /// Stored on the theme so user code (e.g. modal selection rendering)
+    /// can reach for `default_bg` as a fg colour against a coloured bg.
+    pub palette: Palette,
+
     // ── Headings ──────────────────────────────────────────────────
     pub h1: Style,
     pub h1_rule: Style,
@@ -22,8 +38,19 @@ pub struct Theme {
     pub strikethrough: Style,
     pub highlight: Style,
     pub code_span: Style,
+    /// Web link (`http://`, `https://`, `mailto:`, etc.) — bright
+    /// foreground + underline so the URL reads as actionable.
     pub link_text: Style,
+    /// File link (relative or absolute path) — dim variant so local
+    /// links read as more peripheral than web links.
+    pub link_file: Style,
+    /// In-document heading link (`#section`) — dim, no underline.
+    pub link_heading: Style,
     pub image_placeholder: Style,
+    /// Footnote / reference marker (deferred renderer feature).  Field
+    /// is in place so themes can already style it ahead of the
+    /// implementation.
+    pub footnote: Style,
 
     // ── Block elements ────────────────────────────────────────────
     pub code_block_border: Style,
@@ -41,6 +68,10 @@ pub struct Theme {
     pub task_unchecked: Style,
     /// Style applied to the `[x]` marker for checked items.
     pub task_checked: Style,
+    /// Style applied to the *text* of completed tasks (the part after
+    /// the checkbox).  Distinct from `task_checked` so the marker can
+    /// stay green while the text fades to muted grey.
+    pub task_complete_text: Style,
     /// Whether to render checked item text with strikethrough (default: true).
     pub task_strikethrough: bool,
 
@@ -69,7 +100,12 @@ pub struct Theme {
 
     // ── Status bar ────────────────────────────────────────────────
     pub status_bar: Style,
-    pub status_mode: Style,
+    /// Mode badge in Preview mode.  See also the Rendered/Raw variants.
+    pub status_mode_preview: Style,
+    /// Mode badge in Rendered mode.
+    pub status_mode_rendered: Style,
+    /// Mode badge in Raw mode.
+    pub status_mode_raw: Style,
     pub status_filename: Style,
     pub status_info: Style,
     pub status_modified: Style,
@@ -97,7 +133,31 @@ pub struct Theme {
     pub transient_error: Style,
 
     // ── Modal popups ──────────────────────────────────────────────
+    /// Background fill for modal bodies (palette, settings, keybinds,
+    /// Save-Copy, Insert-Table, …).  Distinct field so themes can give
+    /// modals a different surface from the status bar even when the
+    /// default palette uses the same shade for both.
+    pub modal_bg: Style,
+    /// Border / chrome of modal frames.
+    pub modal_border: Style,
     pub modal_title: Style,
+    /// Default style for an unfocused row in a list-style modal.
+    pub modal_item: Style,
+    /// Selected row in a list-style modal (palette / settings /
+    /// keybinds).  Filled background so the row reads as the focus.
+    pub modal_item_selected: Style,
+    /// Right-aligned hint text on the focused row (e.g. the chord
+    /// shown next to a palette entry, or the description on a settings
+    /// row).
+    pub modal_item_selected_hint: Style,
+    /// Section heading inside a modal (e.g. `— Editor —` in the
+    /// keybinds overlay).  Slightly distinct from a document H2.
+    pub modal_section_heading: Style,
+    /// Inline editor / text input in an unfocused state.
+    pub modal_input_unfocused: Style,
+    /// Inline editor / text input while focused for typing.
+    pub modal_input_focused: Style,
+    /// Modal button when focused for activation.
     pub modal_button_focused: Style,
 
     // ── General text ──────────────────────────────────────────────
@@ -108,182 +168,301 @@ pub struct Theme {
     /// stays legible.
     pub selection: Style,
 
+    /// Find-in-document highlight — distinct from `selection` so search
+    /// hits remain visible even when one of them is currently selected.
+    pub search_highlight: Style,
+
+    /// Background style applied to the cursor's current line.  Default
+    /// is `Style::default()` (no tint) — the active-line highlight is a
+    /// deferred feature; the field exists so themes can opt in early.
+    pub active_line: Style,
+
     /// Style for the block cursor.  Default is `REVERSED` only, which
     /// swaps fg/bg of whatever's underneath — themable so users can
     /// pick a concrete colour (e.g. a bright fill) if they prefer.
     pub cursor: Style,
 }
 
-impl Default for Theme {
+/// Edamame's brand-colour palette.  Every theme is built from these
+/// nineteen colours.
+///
+/// Each conceptual colour has a `bright_*` and `dim_*` variant so the
+/// renderer can use the bright shade for emphasis (headings, primary
+/// links) and the dim shade for peripheral material (heading anchors,
+/// borders).  `default_text` / `default_bg` are concrete colours rather
+/// than terminal defaults because they're used as foregrounds in
+/// inverse contexts (e.g. selected modal item: `interactive` bg with
+/// `default_bg` fg), where `Color::Reset` would not produce the right
+/// contrast.
+///
+/// `surface_bright` is the chrome surface (status bar, modal body,
+/// inline-code background); `surface_dim` is the elevated surface used
+/// for secondary chrome (hint line, unfocused text inputs) — by
+/// convention slightly *lighter* than `surface_bright`, so an input
+/// reads as recessed against the modal but still distinct from the
+/// document area.
+#[derive(Debug, Clone)]
+pub struct Palette {
+    pub default_text: Color,
+    pub default_bg: Color,
+
+    pub bright_primary: Color,
+    pub dim_primary: Color,
+    pub bright_emphasis: Color,
+    pub dim_emphasis: Color,
+    pub bright_structural: Color,
+    pub dim_structural: Color,
+    pub bright_interactive: Color,
+    pub dim_interactive: Color,
+    pub bright_success: Color,
+    pub dim_success: Color,
+    pub bright_warning: Color,
+    pub dim_warning: Color,
+    pub bright_error: Color,
+    pub dim_error: Color,
+    pub bright_muted: Color,
+    pub dim_muted: Color,
+    pub bright_surface: Color,
+    pub dim_surface: Color,
+}
+
+impl Default for Palette {
     fn default() -> Self {
-        // Dark-mode palette.
-        let h_bold = Modifier::BOLD;
-
+        // Edamame's default palette: warm orange brand on a near-black
+        // background, with a fresh edamame-bean green for success and
+        // a complementary lavender for chrome.  Bright/dim pairs are
+        // tuned for ~30% lightness contrast so both variants read on a
+        // dark surface.
         Self {
-            // Headings: bold + distinct colour per level, decreasing salience
-            h1: Style::default().fg(Color::Magenta).add_modifier(h_bold),
-            h1_rule: Style::default().fg(Color::Magenta),
-            h2: Style::default().fg(Color::Cyan).add_modifier(h_bold),
-            h3: Style::default().fg(Color::Yellow).add_modifier(h_bold),
-            h4: Style::default().fg(Color::Green).add_modifier(h_bold),
-            h5: Style::default().fg(Color::Blue).add_modifier(h_bold),
-            h6: Style::default().fg(Color::Gray).add_modifier(h_bold),
+            default_text: Color::Rgb(0xe6, 0xe6, 0xe6),
+            default_bg: Color::Rgb(0x12, 0x12, 0x16),
 
-            // Inline
-            bold: Style::default().add_modifier(Modifier::BOLD),
-            italic: Style::default().add_modifier(Modifier::ITALIC),
-            strikethrough: Style::default()
-                .add_modifier(Modifier::CROSSED_OUT)
-                .fg(Color::DarkGray),
-            highlight: Style::default().bg(Color::Yellow).fg(Color::Black),
-            code_span: Style::default().fg(Color::Yellow).bg(Color::Indexed(236)),
-            link_text: Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::UNDERLINED),
-            image_placeholder: Style::default()
-                .fg(Color::Blue)
-                .add_modifier(Modifier::ITALIC),
+            // Orange — brand identity, headings, mode chip.
+            bright_primary: Color::Rgb(0xff, 0x96, 0x3c),
+            dim_primary: Color::Rgb(0xb8, 0x68, 0x22),
 
-            // Code block — background matches inline code spans (Indexed(236))
-            // across the border, language label, and body so the whole block
-            // reads as one unit.
-            code_block_border: Style::default()
-                .fg(Color::Indexed(240))
-                .bg(Color::Indexed(236)),
-            code_block_lang: Style::default()
-                .fg(Color::Yellow)
-                .bg(Color::Indexed(236))
-                .add_modifier(Modifier::ITALIC),
-            code_block_text: Style::default().fg(Color::White).bg(Color::Indexed(236)),
+            // Yellow — emphasis / warnings / hints.
+            bright_emphasis: Color::Rgb(0xf5, 0xd2, 0x5a),
+            dim_emphasis: Color::Rgb(0xb8, 0x96, 0x3c),
 
-            // Blockquote: muted vertical bar + slightly dim text
-            blockquote_bar: Style::default().fg(Color::Blue),
-            blockquote_text: Style::default().fg(Color::Gray),
+            // Purple — structural chrome (frames, dividers, asides).
+            bright_structural: Color::Rgb(0xb6, 0x90, 0xe0),
+            dim_structural: Color::Rgb(0x78, 0x60, 0xa6),
 
-            // Horizontal rule
-            rule: Style::default().fg(Color::Indexed(240)),
+            // Blue — links, focus, selection.
+            bright_interactive: Color::Rgb(0x73, 0xb4, 0xeb),
+            dim_interactive: Color::Rgb(0x3a, 0x6b, 0xb0),
 
-            // List markers
-            list_bullet: Style::default().fg(Color::Cyan),
-            list_number: Style::default().fg(Color::Cyan),
+            // Green — success, completed tasks, edamame.
+            bright_success: Color::Rgb(0x9a, 0xd2, 0x6e),
+            dim_success: Color::Rgb(0x5e, 0x90, 0x46),
 
-            // Task list
-            task_unchecked: Style::default().fg(Color::DarkGray),
-            // task_checked styles the [x] marker; strikethrough on text is
-            // controlled separately by task_strikethrough.
-            task_checked: Style::default().fg(Color::Green),
-            task_strikethrough: true,
+            // Warning — same as emphasis in this theme; themes can
+            // diverge by swapping the two.
+            bright_warning: Color::Rgb(0xf5, 0xd2, 0x5a),
+            dim_warning: Color::Rgb(0xb8, 0x96, 0x3c),
 
-            // Table
-            table_border: Style::default().fg(Color::Indexed(240)),
-            table_header: Style::default().add_modifier(Modifier::BOLD),
-            table_cell: Style::default(),
-            // Row striping enabled by default with a subtle two-step
-            // contrast that reads on dark backgrounds without being
-            // obtrusive.  `table_row_even` matches the document
-            // background (no bg = inherit) so the first data row is
-            // visually unchanged; `table_row_odd` adds a barely-darker
-            // panel.  Themes targeting light terminals should invert.
-            table_row_even: Style::default(),
-            table_row_odd: Style::default().bg(Color::Indexed(235)),
-            // Active drop indicator — the separator the pointer is
-            // currently hovering during a row / column drag.  Dull
-            // yellow so it reads on top of both bare borders and
-            // striped backgrounds without overwhelming the table.
-            table_drop_indicator: Style::default().fg(Color::Indexed(178)),
-            // Inert drop targets — every separator that *could* receive
-            // the drop, painted at a dimmer shade than the active
-            // indicator so the user sees the full set of valid
-            // positions without losing the pointer-tracked highlight.
-            table_drop_target: Style::default().fg(Color::Indexed(101)),
+            // Red — errors.
+            bright_error: Color::Rgb(0xeb, 0x73, 0x73),
+            dim_error: Color::Rgb(0xa8, 0x40, 0x40),
 
-            // Status bar: dark background, light text
-            status_bar: Style::default().bg(Color::Indexed(236)).fg(Color::White),
-            status_mode: Style::default()
-                .bg(Color::DarkGray)
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-            // Inner status spans share the status_bar background (Indexed(236))
-            // so the whole row reads as a single chrome block — set
-            // explicitly rather than relying on Paragraph-level inheritance.
-            status_filename: Style::default().fg(Color::White).bg(Color::Indexed(236)),
-            status_info: Style::default().fg(Color::Gray).bg(Color::Indexed(236)),
-            status_modified: Style::default()
-                .fg(Color::Yellow)
-                .bg(Color::Indexed(236))
-                .add_modifier(Modifier::BOLD),
-            status_selection: Style::default()
-                .fg(Color::Cyan)
-                .bg(Color::Indexed(236))
-                .add_modifier(Modifier::BOLD),
+            // Greys — muted text, borders, row striping.
+            bright_muted: Color::Rgb(0xb4, 0xb4, 0xba),
+            dim_muted: Color::Rgb(0x73, 0x73, 0x78),
 
-            // Hint line — the bar itself uses the same bg family as
-            // the status bar so both rows read as a single chrome
-            // block, but one step lighter (237) so they remain
-            // visually distinguishable.  Chord badges contrast
-            // strongly against it, nano-style: light-grey bg with
-            // dark text so the chord "badge" jumps off the bar.
-            hint_bar: Style::default().bg(Color::Indexed(237)).fg(Color::Gray),
-            hint_chord: Style::default()
-                .bg(Color::Indexed(250))
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-            hint_label: Style::default().bg(Color::Indexed(237)).fg(Color::White),
-
-            // Transient messages — kinds escalate in salience.  All
-            // share the hint-bar background so they layer cleanly over
-            // the chord row.
-            transient_info: Style::default().bg(Color::Indexed(237)).fg(Color::White),
-            transient_success: Style::default()
-                .bg(Color::Indexed(237))
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-            transient_warning: Style::default()
-                .bg(Color::Indexed(237))
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-            transient_error: Style::default()
-                .bg(Color::Red)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-
-            // Modal popups
-            modal_title: Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-            modal_button_focused: Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::REVERSED | Modifier::BOLD),
-
-            // General — Color::Reset explicitly emits an SGR reset for fg
-            // and bg, producing the same visual result as leaving both unset
-            // while still exposing the field as a user-configurable knob.
-            normal: Style::default().fg(Color::Reset).bg(Color::Reset),
-
-            // Selection: muted blue background, distinguishable from cursor
-            // which uses REVERSED.  Falls back to REVERSED in monochrome mode.
-            selection: Style::default().bg(Color::Indexed(24)),
-
-            // Cursor: REVERSED only, so it inverts whatever colour the
-            // underlying character already has.  Users can override to pin
-            // the cursor to a specific fill colour.
-            cursor: Style::default().add_modifier(Modifier::REVERSED),
+            // Surfaces — chrome elevation tones, kept as 256-colour
+            // indices because terminals tend to render those greys
+            // more consistently than RGB equivalents.
+            bright_surface: Color::Indexed(236),
+            dim_surface: Color::Indexed(238),
         }
     }
 }
 
 impl Theme {
-    /// Build a `Theme` from a user-authored [`ThemeFile`].
-    ///
-    /// When `monochrome` is true the file is ignored and the compiled-in
-    /// monochrome fallback is returned — preserves the contract that
-    /// `ColourDepth::NoColour` terminals never emit colour escapes, even if
-    /// a colourful theme file is installed.
-    pub fn from_file(file: &super::theme_file::ThemeFile, monochrome: bool) -> Self {
-        if monochrome {
-            Self::monochrome()
-        } else {
-            file.into()
+    /// Build a fully-populated [`Theme`] from `palette`.  Every style
+    /// is derived from a palette entry per the rules in `theming.md`.
+    /// Used both by [`Theme::default`] and by the on-disk theme loader
+    /// after applying user palette overrides.
+    pub fn from_palette(palette: &Palette) -> Self {
+        let bold = Modifier::BOLD;
+        let italic = Modifier::ITALIC;
+        let underline = Modifier::UNDERLINED;
+        let p = palette.clone();
+
+        Self {
+            palette: p.clone(),
+
+            // Headings: bold + a per-level palette colour.  Salience
+            // climbs from h6 (muted) through h2 (brand) and lands on
+            // h1 (emphasis + setext rule) per theming.md.
+            h1: Style::default().fg(p.bright_emphasis).add_modifier(bold),
+            h1_rule: Style::default().fg(p.bright_emphasis),
+            h2: Style::default().fg(p.bright_primary).add_modifier(bold),
+            h3: Style::default().fg(p.bright_structural).add_modifier(bold),
+            h4: Style::default().fg(p.dim_primary).add_modifier(bold),
+            h5: Style::default().fg(p.dim_structural).add_modifier(bold),
+            h6: Style::default().fg(p.bright_muted).add_modifier(bold),
+
+            // Inline
+            bold: Style::default().add_modifier(bold),
+            italic: Style::default().add_modifier(italic),
+            strikethrough: Style::default()
+                .fg(p.bright_muted)
+                .add_modifier(Modifier::CROSSED_OUT),
+            highlight: Style::default().bg(p.dim_emphasis).fg(p.default_bg),
+            code_span: Style::default().fg(p.dim_structural).bg(p.bright_surface),
+            link_text: Style::default()
+                .fg(p.bright_interactive)
+                .add_modifier(underline),
+            link_file: Style::default()
+                .fg(p.dim_interactive)
+                .add_modifier(underline),
+            link_heading: Style::default().fg(p.dim_interactive),
+            image_placeholder: Style::default().fg(p.dim_interactive).add_modifier(italic),
+            footnote: Style::default().fg(p.dim_structural),
+
+            // Code block — surface_bright background reads as a single
+            // unit across border, language label, and body.
+            code_block_border: Style::default().fg(p.dim_muted).bg(p.bright_surface),
+            code_block_lang: Style::default()
+                .fg(p.bright_emphasis)
+                .bg(p.bright_surface)
+                .add_modifier(italic),
+            code_block_text: Style::default().fg(p.default_text).bg(p.bright_surface),
+
+            // Blockquote
+            blockquote_bar: Style::default().fg(p.dim_structural),
+            blockquote_text: Style::default().add_modifier(italic),
+
+            // Horizontal rule
+            rule: Style::default().fg(p.dim_structural),
+
+            // List markers — bright_structural so bullets read as
+            // chrome rather than content.
+            list_bullet: Style::default().fg(p.bright_structural),
+            list_number: Style::default().fg(p.bright_structural),
+
+            // Task list
+            task_unchecked: Style::default().fg(p.bright_emphasis),
+            task_checked: Style::default().fg(p.bright_success),
+            task_complete_text: Style::default()
+                .fg(p.bright_muted)
+                .add_modifier(Modifier::CROSSED_OUT),
+            task_strikethrough: true,
+
+            // Table
+            table_border: Style::default().fg(p.dim_muted),
+            table_header: Style::default().add_modifier(bold),
+            table_cell: Style::default(),
+            table_row_even: Style::default(),
+            table_row_odd: Style::default().bg(p.bright_surface),
+            table_drop_indicator: Style::default().fg(p.bright_emphasis),
+            table_drop_target: Style::default().fg(p.dim_emphasis),
+
+            // Status bar — surface_bright fill.  Mode chip swaps fg/bg
+            // depending on Mode so each mode reads at a glance.
+            status_bar: Style::default().bg(p.bright_surface).fg(p.default_text),
+            status_mode_preview: Style::default()
+                .bg(p.dim_muted)
+                .fg(p.bright_surface)
+                .add_modifier(bold),
+            status_mode_rendered: Style::default()
+                .bg(p.bright_primary)
+                .fg(p.default_bg)
+                .add_modifier(bold),
+            status_mode_raw: Style::default()
+                .bg(p.bright_emphasis)
+                .fg(p.default_bg)
+                .add_modifier(bold),
+            status_filename: Style::default().fg(p.default_text).bg(p.bright_surface),
+            status_info: Style::default().fg(p.bright_primary).bg(p.bright_surface),
+            status_modified: Style::default()
+                .fg(p.bright_emphasis)
+                .bg(p.bright_surface)
+                .add_modifier(bold),
+            status_selection: Style::default()
+                .fg(p.bright_interactive)
+                .bg(p.bright_surface)
+                .add_modifier(bold),
+
+            // Hint line — surface_dim background so it reads as one
+            // step elevated from the status bar.  Chord badges are
+            // bright_interactive on the hint surface for readability.
+            hint_bar: Style::default().bg(p.dim_surface).fg(p.default_text),
+            hint_chord: Style::default()
+                .fg(p.bright_interactive)
+                .bg(p.dim_surface)
+                .add_modifier(bold),
+            hint_label: Style::default().fg(p.default_text).bg(p.dim_surface),
+
+            // Transient messages — escalate in salience.  All sit on
+            // the hint_bar surface so they layer cleanly over the
+            // chord row.
+            transient_info: Style::default().fg(p.default_text).bg(p.dim_surface),
+            transient_success: Style::default()
+                .fg(p.bright_success)
+                .bg(p.dim_surface)
+                .add_modifier(bold),
+            transient_warning: Style::default()
+                .fg(p.bright_warning)
+                .bg(p.dim_surface)
+                .add_modifier(bold),
+            transient_error: Style::default()
+                .fg(p.bright_error)
+                .bg(p.dim_surface)
+                .add_modifier(bold),
+
+            // Modal popups
+            modal_bg: Style::default().bg(p.bright_surface).fg(p.default_text),
+            modal_border: Style::default().fg(p.dim_structural).bg(p.bright_surface),
+            modal_title: Style::default()
+                .fg(p.bright_primary)
+                .bg(p.bright_surface)
+                .add_modifier(bold),
+            modal_item: Style::default().fg(p.default_text).bg(p.bright_surface),
+            modal_item_selected: Style::default()
+                .bg(p.bright_interactive)
+                .fg(p.default_bg)
+                .add_modifier(bold),
+            modal_item_selected_hint: Style::default()
+                .fg(p.bright_emphasis)
+                .bg(p.bright_interactive),
+            modal_section_heading: Style::default()
+                .fg(p.bright_emphasis)
+                .bg(p.bright_surface)
+                .add_modifier(bold),
+            modal_input_unfocused: Style::default().fg(p.default_text).bg(p.dim_surface),
+            modal_input_focused: Style::default().fg(p.default_text).bg(p.dim_interactive),
+            modal_button_focused: Style::default()
+                .fg(p.bright_emphasis)
+                .add_modifier(Modifier::REVERSED | bold),
+
+            // General — concrete `default_text` / `default_bg` so the
+            // document area renders with the theme's "blank page"
+            // colours rather than letting the terminal's defaults show
+            // through.  Themes that prefer the terminal's own bg can
+            // set `[normal] fg = "Reset"` and `bg = "Reset"` in their
+            // TOML.
+            normal: Style::default().fg(p.default_text).bg(p.default_bg),
+
+            // Selection: dim_interactive bg, text colour preserved so
+            // colour-coded content stays legible inside the selection.
+            selection: Style::default().bg(p.dim_interactive).fg(p.default_text),
+
+            // Search highlight: bright_structural bg, default_bg fg —
+            // distinct from selection so a search hit inside the
+            // selection still reads as a hit.
+            search_highlight: Style::default().bg(p.bright_structural).fg(p.default_bg),
+
+            // Active-line highlight is deferred — leave the field in
+            // place so themes can opt in.
+            active_line: Style::default(),
+
+            // Cursor: REVERSED only, so it inverts whatever colour the
+            // underlying character already has.  Users can override to
+            // pin the cursor to a specific fill colour.
+            cursor: Style::default().add_modifier(Modifier::REVERSED),
         }
     }
 
@@ -300,6 +479,30 @@ impl Theme {
         }
     }
 
+    /// Pick the Mode-specific status mode chip style.
+    pub fn status_mode_style(&self, mode: crate::editor::Mode) -> Style {
+        use crate::editor::Mode::*;
+        match mode {
+            Preview => self.status_mode_preview,
+            Rendered => self.status_mode_rendered,
+            Raw => self.status_mode_raw,
+        }
+    }
+
+    /// Build a `Theme` from a user-authored [`ThemeFile`].
+    ///
+    /// When `monochrome` is true the file is ignored and the compiled-in
+    /// monochrome fallback is returned — preserves the contract that
+    /// `ColourDepth::NoColour` terminals never emit colour escapes, even if
+    /// a colourful theme file is installed.
+    pub fn from_file(file: &super::theme_file::ThemeFile, monochrome: bool) -> Self {
+        if monochrome {
+            Self::monochrome()
+        } else {
+            file.into()
+        }
+    }
+
     /// Monochrome fallback theme — used when the terminal reports no colour
     /// support (e.g. `TERM=dumb`).  All colours are stripped; text attributes
     /// (bold, italic, underline, strikethrough) are preserved because they
@@ -312,6 +515,11 @@ impl Theme {
         };
 
         Self {
+            // Palette is preserved verbatim so user code that reads it
+            // (e.g. `default_bg` as a fg) still compiles, but no style
+            // actually consumes it.
+            palette: default.palette.clone(),
+
             h1: strip(default.h1),
             h1_rule: Style::default(),
             h2: strip(default.h2),
@@ -326,7 +534,10 @@ impl Theme {
             highlight: Style::default().add_modifier(Modifier::REVERSED),
             code_span: Style::default().add_modifier(Modifier::REVERSED),
             link_text: Style::default().add_modifier(Modifier::UNDERLINED),
+            link_file: Style::default().add_modifier(Modifier::UNDERLINED),
+            link_heading: Style::default().add_modifier(Modifier::UNDERLINED),
             image_placeholder: Style::default().add_modifier(Modifier::ITALIC),
+            footnote: Style::default(),
 
             code_block_border: Style::default(),
             code_block_lang: Style::default().add_modifier(Modifier::ITALIC),
@@ -340,13 +551,12 @@ impl Theme {
 
             task_unchecked: Style::default(),
             task_checked: Style::default().add_modifier(Modifier::BOLD),
+            task_complete_text: Style::default().add_modifier(Modifier::CROSSED_OUT),
             task_strikethrough: true,
 
             table_border: Style::default(),
             table_header: Style::default().add_modifier(Modifier::BOLD),
             table_cell: Style::default(),
-            // Monochrome row striping uses DIM on the odd row to suggest
-            // a subtle separation without colour.
             table_row_even: Style::default(),
             table_row_odd: Style::default().add_modifier(Modifier::DIM),
             table_drop_indicator: Style::default()
@@ -354,7 +564,10 @@ impl Theme {
             table_drop_target: Style::default().add_modifier(Modifier::REVERSED),
 
             status_bar: Style::default().add_modifier(Modifier::REVERSED),
-            status_mode: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            status_mode_preview: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            status_mode_rendered: Style::default()
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            status_mode_raw: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
             status_filename: Style::default().add_modifier(Modifier::REVERSED),
             status_info: Style::default().add_modifier(Modifier::REVERSED),
             status_modified: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
@@ -369,13 +582,30 @@ impl Theme {
             transient_warning: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
             transient_error: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
 
-            modal_title: Style::default().add_modifier(Modifier::BOLD),
+            modal_bg: Style::default().add_modifier(Modifier::REVERSED),
+            modal_border: Style::default().add_modifier(Modifier::REVERSED),
+            modal_title: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            modal_item: Style::default().add_modifier(Modifier::REVERSED),
+            modal_item_selected: Style::default().add_modifier(Modifier::BOLD),
+            modal_item_selected_hint: Style::default().add_modifier(Modifier::BOLD),
+            modal_section_heading: Style::default()
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            modal_input_unfocused: Style::default().add_modifier(Modifier::REVERSED),
+            modal_input_focused: Style::default().add_modifier(Modifier::BOLD),
             modal_button_focused: Style::default()
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED),
 
             normal: Style::default(),
             selection: Style::default().add_modifier(Modifier::REVERSED),
+            search_highlight: Style::default().add_modifier(Modifier::REVERSED),
+            active_line: Style::default(),
             cursor: Style::default().add_modifier(Modifier::REVERSED),
         }
+    }
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self::from_palette(&Palette::default())
     }
 }

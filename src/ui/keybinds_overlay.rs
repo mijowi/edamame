@@ -307,7 +307,7 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
             .take(visible_rows)
             .collect();
         Paragraph::new(visible)
-            .style(self.theme.status_bar)
+            .style(self.theme.modal_bg)
             .render(table_area, buf);
 
         if let Some(err) = state.last_error.as_ref() {
@@ -322,7 +322,7 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
                 format!("✗ {err}"),
                 self.theme.transient_error,
             )))
-            .style(self.theme.status_bar)
+            .style(self.theme.modal_bg)
             .render(err_area, buf);
         }
     }
@@ -338,24 +338,35 @@ fn build_body_lines<'a>(state: &KeybindsState, keymap: &KeyMap, theme: &'a Theme
                 if !lines.is_empty() {
                     lines.push(Line::from(""));
                 }
-                lines.push(Line::from(Span::styled(format!("— {} —", title), theme.h2)));
+                lines.push(Line::from(Span::styled(
+                    format!("— {} —", title),
+                    theme.modal_section_heading,
+                )));
             }
             Row::Binding { action, label } => {
                 let focused = idx == state.focused;
-                let chord = if focused && state.editing.is_some() {
+                let editing = focused && state.editing.is_some();
+                let chord = if editing {
                     format!("{}▏", state.editing.as_deref().unwrap_or(""))
                 } else {
                     keymap.first_key_for(action).unwrap_or_default()
                 };
                 let marker = if focused { "› " } else { "  " };
                 let label_style = if focused {
-                    theme.modal_button_focused
+                    theme.modal_item_selected
                 } else {
-                    theme.status_bar
+                    theme.modal_item
+                };
+                let chord_style = if editing {
+                    theme.modal_input_focused
+                } else if focused {
+                    theme.modal_item_selected_hint
+                } else {
+                    theme.modal_item.patch(theme.footnote)
                 };
                 lines.push(Line::from(vec![
                     Span::styled(format!("{marker}{:<22}", label), label_style),
-                    Span::styled(chord, theme.status_filename),
+                    Span::styled(chord, chord_style),
                 ]));
             }
         }

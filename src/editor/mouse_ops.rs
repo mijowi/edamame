@@ -2395,9 +2395,6 @@ mod tests {
         // but the rendered prefix is `  ` and the raw is `##` — the
         // pulldown-cmark map only covers "Heading" (7 chars) while the
         // rendered line has 9 chars.  Mismatch → None.
-        assert_eq!(
-            paragraph_raw_col_to_rendered_col(raw, &lines[0], 5),
-            None,
-        );
+        assert_eq!(paragraph_raw_col_to_rendered_col(raw, &lines[0], 5), None,);
     }
 }

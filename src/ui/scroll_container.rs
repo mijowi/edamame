@@ -274,10 +274,13 @@ pub fn draw_frame(
 ) -> Rect {
     Clear.render(area, buf);
     let title_str = format_title(title, arrow);
+    // Border style overrides the surrounding modal_bg fill on the
+    // frame characters only — body fill stays modal_bg.
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_style(theme.modal_border)
         .title(Span::styled(title_str, theme.modal_title))
-        .style(theme.status_bar);
+        .style(theme.modal_bg);
     let inner = block.inner(area);
     block.render(area, buf);
     inner
