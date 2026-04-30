@@ -206,7 +206,7 @@ fn blank() -> Line<'static> {
 /// Reuses the H2 style so the popover's section dividers carry the
 /// same visual weight as a real H2 in preview mode.
 fn section(theme: &Theme, label: &'static str) -> Line<'static> {
-    Line::from(Span::styled(label, theme.h2))
+    Line::from(Span::styled(label, theme.modal_section_heading))
 }
 
 /// Style applied to the *text* of a checked task list item.  Mirrors
@@ -309,13 +309,14 @@ mod tests {
     }
 
     #[test]
-    fn section_headings_carry_h2_style() {
-        // Section labels reuse `theme.h2` so the popover's dividers
-        // visually match a real H2 in preview mode.
+    fn section_headings_use_modal_section_heading_style() {
+        // Section labels in the popover use `modal_section_heading`
+        // so they read as a modal-internal divider rather than as a
+        // document H2 floating on top of the modal surface.
         let theme = Theme::default();
         let lines = body_lines(&theme);
         let headings_label = find_span(&lines, "Headings").expect("Headings label");
-        assert_eq!(headings_label.style, theme.h2);
+        assert_eq!(headings_label.style, theme.modal_section_heading);
     }
 
     #[test]

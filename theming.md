@@ -11,8 +11,8 @@ The assigned colors represent edamame's default theme. The palette is used by ev
 - `success`: green
 - `warning`: same as emphasis in this theme, but can be differentiated in future themes
 - `error`: red
-- `muted`: light grey — muted text, borders, backgrounds
-- `surface`: dark grey — UI surfaces (status line, modal, code block bg); slightly lighter grey — elevated UI surfaces (inputs, hint line)
+- `muted`: light grey — peripheral text (h6, strikethrough) and borders (table rules, separators)
+- `surface`: dark grey — base UI chrome (`bright_surface`: status line, modal body, inline / fenced code bg, table-stripe fill); slightly lighter grey — elevated UI chrome (`dim_surface`: hint line and the transient-message strip that overlays it)
 
 ## Palette Assignments
 
@@ -32,7 +32,7 @@ Active line highlight (not implemented): slightly lighter shade than default bg 
 
 Strikethrough: `bright_muted` fg
 
-Highlight: (bright?) `dim_emphasis` bg, black fg
+Highlight: `dim_emphasis` bg, `default_bg` fg
 
 Block quote: `dim_structural` left bar, italic text
 
@@ -55,14 +55,15 @@ Ordered list number marker (including `.`): `bright_structural` fg
 Horizontal rule: `dim_structural` fg
 
 ### Table
-- Header row: bold, default fg, `dim_structural` bottom border
-- Borders: `dim_muted` fg
-- Row striping: `dim_muted`
+- Header row: bold, default fg
+- Borders: `dim_muted` fg (light `─` rules around and between cells)
+- Header bottom separator: `dim_structural` fg — the heavy `━` rule below the header row is themed independently of the regular borders so the header reads as a structural divider
+- Row striping (when `[table] row_striping = true`): odd data rows get `bright_surface` bg so the table chrome matches the inline-code surface
 
-Inline code: `surface_bright` bg, `dim_structural` fg
+Inline code: `surface_bright` bg, `bright_structural` fg
 
 ### Code block
-- Language: `bright_emphasis` fg, italicized
+- Language: `bright_structural` fg, italicized
 - Block: `surface_bright` bg
 - Text: `default_text` fg (syntax highlighting later)
 
@@ -75,30 +76,46 @@ Mode chip (bold)
   - Rendered: `bright_primary` bg, `default_bg` fg
   - Raw: `bright_emphasis` bg, `default_bg` fg
 File name: `default_text` fg
-Dirty file marker (`*`): `bright emphasis`
+Dirty file marker (`*`): `bright_emphasis` fg, bold
 Cursor coordinates, line count, etc: `bright_primary` fg
 
 ### Hint line: `surface_dim` bg
 Preview hint (`Press any key to edit`): `default_text` fg
-Hint chord: `interactive`, bold
+Hint chord: `bright_interactive` fg, bold
 Hint label: `default_text` fg
 Transient message: 
 - Info: `default_text` fg
 - Warning: `bright_warning` fg
 - Error: `bright_error` fg
 
-Cursor (in editor): Same as status line mode bg
+Cursor (in editor): Each mode has its own cursor style mirroring the status-line mode chip. The renderer picks via `theme.cursor_style(mode)`:
+- Preview: `dim_muted` bg, `bright_surface` fg (matches the Preview mode chip)
+- Rendered: `bright_primary` bg, `default_bg` fg
+- Raw: `bright_emphasis` bg, `default_bg` fg
+
+Cursor (modal text inputs): `theme.cursor` — REVERSED only, so the `▏` glyph inverts whatever's underneath without needing to know the modal's surface colour. Kept distinct from the editor cursor because modal inputs aren't tied to editor mode.
 
 ### Modal windows
 Background: `surface_bright`
-Title: `bright_primary` fg
+Title: `bright_primary` fg, bold
 Border: `dim_structural` fg
 Item: `default_text`
-Selected item: `interactive` bg, `default_bg` fg
-Selected item hint: `bright_emphasis`
-Input (unfocused): `default_text` fg, `surface_dim` bg (lighter than modal background)
-Input (focused): `dim_interactive` bg; `default_text` cursor
-Section heading: `bright_emphasis` fg
+Item hint / sub-label (right-aligned chord, value column, etc. on an unfocused row): `bright_interactive` fg
+Selected item: `dim_interactive` bg, `default_text` fg, bold
+Selected item hint (right-aligned chord / value column on the focused row): `bright_emphasis` fg
+Description (pinned-footer copy explaining the focused row, e.g. settings overlay bottom line): `bright_emphasis` fg
+Input (unfocused): `default_bg` fg, `dim_interactive` bg
+Input (focused): `default_bg` fg, `bright_interactive` bg; modal-input cursor inverts whatever's underneath
+Focused button (e.g. Save / Discard / Cancel in the unsaved-changes confirmation): `bright_interactive` fill (REVERSED, bold)
+Section heading: `bright_structural` fg, bold
+
+#### Command palette input — exception
+Unlike other modal inputs, the command palette's typing row sits flush
+against the modal body — no coloured bg fill — and the `▏` cursor
+glyph is `bright_interactive` so the typing affordance still pops.
+This break is deliberate: the palette is a search affordance, not a
+form field, so it reads as part of the modal rather than as a sunken
+input chip.
 
 ## Follow-ups
 
@@ -118,17 +135,6 @@ can return to them once the visual language settles.
   (dim_structural fg) but the renderer doesn't emit footnote markers
   yet. Once `pulldown-cmark`'s footnote inlines surface, hook the
   style up.
-- **Mode chip → cursor colour.** The design says "Cursor (in editor):
-  Same as status line mode bg", but `theme.cursor` is a single
-  `REVERSED`-only style today. Tying it to mode would mean either
-  three cursor styles (`cursor_preview`, `cursor_rendered`,
-  `cursor_raw`) or computing the mode-derived bg at render time. We
-  haven't picked.
-- **Selected modal item — hint colour against bright bg.**
-  `modal_item_selected` paints the row with a bright_interactive bg.
-  The accompanying `modal_item_selected_hint` uses `bright_emphasis`
-  fg on that bg, which is legible but not maximally accessible.
-  Worth a contrast pass once theme variants land.
 - **Settings overlay layout.** Settings rows are styled but the
   overall row layout (label width, value alignment) is informally
   specified; the cookbook for adding a new row lives in

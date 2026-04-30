@@ -78,6 +78,7 @@ pub struct Theme {
     // ── Table ─────────────────────────────────────────────────────
     pub table_border: Style,
     pub table_header: Style,
+    pub table_header_border: Style,
     pub table_cell: Style,
     /// Background fill for even-numbered data rows (0-indexed: row 0 = first
     /// data row).  Only applied when `config.table.row_striping` is true; the
@@ -143,13 +144,23 @@ pub struct Theme {
     pub modal_title: Style,
     /// Default style for an unfocused row in a list-style modal.
     pub modal_item: Style,
+    /// Right-aligned hint / sub-label on an *unfocused* row (e.g. the
+    /// chord shown next to a palette entry, or the value column in
+    /// settings / keybinds rows).  Mirrors `modal_item_selected_hint`
+    /// for the unfocused state.
+    pub modal_item_hint: Style,
     /// Selected row in a list-style modal (palette / settings /
     /// keybinds).  Filled background so the row reads as the focus.
     pub modal_item_selected: Style,
-    /// Right-aligned hint text on the focused row (e.g. the chord
-    /// shown next to a palette entry, or the description on a settings
-    /// row).
+    /// Right-aligned hint / sub-label on the focused row (e.g. the
+    /// chord shown next to a palette entry, or the value column on
+    /// settings / keybinds rows).
     pub modal_item_selected_hint: Style,
+    /// Pinned-footer description for the focused row (e.g. the
+    /// settings overlay's bottom line that explains the focused
+    /// setting).  Sits on the modal body's `bright_surface` rather
+    /// than on the row's selection bg, so it gets its own field.
+    pub modal_description: Style,
     /// Section heading inside a modal (e.g. `— Editor —` in the
     /// keybinds overlay).  Slightly distinct from a document H2.
     pub modal_section_heading: Style,
@@ -177,9 +188,21 @@ pub struct Theme {
     /// deferred feature; the field exists so themes can opt in early.
     pub active_line: Style,
 
-    /// Style for the block cursor.  Default is `REVERSED` only, which
-    /// swaps fg/bg of whatever's underneath — themable so users can
-    /// pick a concrete colour (e.g. a bright fill) if they prefer.
+    /// Block cursor when the editor is in Preview mode.  Mirrors the
+    /// status-bar mode chip so the cursor reads as the same affordance
+    /// in both places.  Preview is read-only so this primarily
+    /// applies to ad-hoc cursor indicators (e.g. tooling overlays).
+    pub cursor_preview: Style,
+    /// Block cursor when the editor is in Rendered mode.  Mirrors the
+    /// Rendered mode chip's bg.
+    pub cursor_rendered: Style,
+    /// Block cursor when the editor is in Raw mode.  Mirrors the Raw
+    /// mode chip's bg.
+    pub cursor_raw: Style,
+    /// Generic input-line cursor (`▏` glyph) used inside modal text
+    /// inputs.  Default is `REVERSED` only, which swaps fg/bg of
+    /// whatever's underneath — kept distinct from the editor cursor
+    /// because modal inputs aren't tied to editor mode.
     pub cursor: Style,
 }
 
@@ -311,7 +334,7 @@ impl Theme {
                 .fg(p.bright_muted)
                 .add_modifier(Modifier::CROSSED_OUT),
             highlight: Style::default().bg(p.dim_emphasis).fg(p.default_bg),
-            code_span: Style::default().fg(p.dim_structural).bg(p.bright_surface),
+            code_span: Style::default().fg(p.bright_emphasis).bg(p.bright_surface),
             link_text: Style::default()
                 .fg(p.bright_interactive)
                 .add_modifier(underline),
@@ -326,7 +349,7 @@ impl Theme {
             // unit across border, language label, and body.
             code_block_border: Style::default().fg(p.dim_muted).bg(p.bright_surface),
             code_block_lang: Style::default()
-                .fg(p.bright_emphasis)
+                .fg(p.bright_structural)
                 .bg(p.bright_surface)
                 .add_modifier(italic),
             code_block_text: Style::default().fg(p.default_text).bg(p.bright_surface),
@@ -354,6 +377,7 @@ impl Theme {
             // Table
             table_border: Style::default().fg(p.dim_muted),
             table_header: Style::default().add_modifier(bold),
+            table_header_border: Style::default().fg(p.dim_structural),
             table_cell: Style::default(),
             table_row_even: Style::default(),
             table_row_odd: Style::default().bg(p.bright_surface),
@@ -421,21 +445,23 @@ impl Theme {
                 .bg(p.bright_surface)
                 .add_modifier(bold),
             modal_item: Style::default().fg(p.default_text).bg(p.bright_surface),
+            modal_item_hint: Style::default()
+                .fg(p.bright_interactive)
+                .bg(p.bright_surface),
             modal_item_selected: Style::default()
-                .bg(p.bright_interactive)
-                .fg(p.default_bg)
+                .bg(p.dim_interactive)
+                .fg(p.default_text)
                 .add_modifier(bold),
-            modal_item_selected_hint: Style::default()
-                .fg(p.bright_emphasis)
-                .bg(p.bright_interactive),
+            modal_item_selected_hint: Style::default().fg(p.bright_emphasis).bg(p.dim_interactive),
+            modal_description: Style::default().fg(p.bright_emphasis).bg(p.bright_surface),
             modal_section_heading: Style::default()
-                .fg(p.bright_emphasis)
+                .fg(p.bright_structural)
                 .bg(p.bright_surface)
                 .add_modifier(bold),
-            modal_input_unfocused: Style::default().fg(p.default_text).bg(p.dim_surface),
-            modal_input_focused: Style::default().fg(p.default_text).bg(p.dim_interactive),
+            modal_input_unfocused: Style::default().fg(p.default_bg).bg(p.dim_interactive),
+            modal_input_focused: Style::default().fg(p.default_bg).bg(p.bright_interactive),
             modal_button_focused: Style::default()
-                .fg(p.bright_emphasis)
+                .fg(p.bright_interactive)
                 .add_modifier(Modifier::REVERSED | bold),
 
             // General — concrete `default_text` / `default_bg` so the
@@ -459,9 +485,17 @@ impl Theme {
             // place so themes can opt in.
             active_line: Style::default(),
 
-            // Cursor: REVERSED only, so it inverts whatever colour the
-            // underlying character already has.  Users can override to
-            // pin the cursor to a specific fill colour.
+            // Editor block cursor — bg mirrors the status-bar mode chip
+            // so the cursor reads as the same affordance in both
+            // places (per theming.md).  Each variant pairs the chip's
+            // bg with a contrasting fg so the underlying character
+            // stays legible.
+            cursor_preview: Style::default().bg(p.dim_muted).fg(p.bright_surface),
+            cursor_rendered: Style::default().bg(p.bright_primary).fg(p.default_bg),
+            cursor_raw: Style::default().bg(p.bright_emphasis).fg(p.default_bg),
+            // Generic input cursor — REVERSED so the `▏` glyph inside
+            // a modal text input inverts whatever's underneath without
+            // needing to know the surrounding bg.
             cursor: Style::default().add_modifier(Modifier::REVERSED),
         }
     }
@@ -486,6 +520,18 @@ impl Theme {
             Preview => self.status_mode_preview,
             Rendered => self.status_mode_rendered,
             Raw => self.status_mode_raw,
+        }
+    }
+
+    /// Pick the Mode-specific editor cursor style.  Mirrors the
+    /// status-bar mode chip's bg so the cursor reads as the same
+    /// affordance in both places.
+    pub fn cursor_style(&self, mode: crate::editor::Mode) -> Style {
+        use crate::editor::Mode::*;
+        match mode {
+            Preview => self.cursor_preview,
+            Rendered => self.cursor_rendered,
+            Raw => self.cursor_raw,
         }
     }
 
@@ -556,6 +602,7 @@ impl Theme {
 
             table_border: Style::default(),
             table_header: Style::default().add_modifier(Modifier::BOLD),
+            table_header_border: Style::default(),
             table_cell: Style::default(),
             table_row_even: Style::default(),
             table_row_odd: Style::default().add_modifier(Modifier::DIM),
@@ -586,8 +633,10 @@ impl Theme {
             modal_border: Style::default().add_modifier(Modifier::REVERSED),
             modal_title: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
             modal_item: Style::default().add_modifier(Modifier::REVERSED),
+            modal_item_hint: Style::default().add_modifier(Modifier::REVERSED),
             modal_item_selected: Style::default().add_modifier(Modifier::BOLD),
             modal_item_selected_hint: Style::default().add_modifier(Modifier::BOLD),
+            modal_description: Style::default().add_modifier(Modifier::REVERSED),
             modal_section_heading: Style::default()
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED),
             modal_input_unfocused: Style::default().add_modifier(Modifier::REVERSED),
@@ -599,6 +648,9 @@ impl Theme {
             selection: Style::default().add_modifier(Modifier::REVERSED),
             search_highlight: Style::default().add_modifier(Modifier::REVERSED),
             active_line: Style::default(),
+            cursor_preview: Style::default().add_modifier(Modifier::REVERSED),
+            cursor_rendered: Style::default().add_modifier(Modifier::REVERSED),
+            cursor_raw: Style::default().add_modifier(Modifier::REVERSED),
             cursor: Style::default().add_modifier(Modifier::REVERSED),
         }
     }

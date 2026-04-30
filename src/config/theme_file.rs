@@ -340,6 +340,7 @@ pub struct ThemeFile {
     // Table
     pub table_border: StyleSpec,
     pub table_header: StyleSpec,
+    pub table_header_border: StyleSpec,
     pub table_cell: StyleSpec,
     pub table_row_even: StyleSpec,
     pub table_row_odd: StyleSpec,
@@ -372,8 +373,10 @@ pub struct ThemeFile {
     pub modal_border: StyleSpec,
     pub modal_title: StyleSpec,
     pub modal_item: StyleSpec,
+    pub modal_item_hint: StyleSpec,
     pub modal_item_selected: StyleSpec,
     pub modal_item_selected_hint: StyleSpec,
+    pub modal_description: StyleSpec,
     pub modal_section_heading: StyleSpec,
     pub modal_input_unfocused: StyleSpec,
     pub modal_input_focused: StyleSpec,
@@ -384,6 +387,9 @@ pub struct ThemeFile {
     pub selection: StyleSpec,
     pub search_highlight: StyleSpec,
     pub active_line: StyleSpec,
+    pub cursor_preview: StyleSpec,
+    pub cursor_rendered: StyleSpec,
+    pub cursor_raw: StyleSpec,
     pub cursor: StyleSpec,
 }
 
@@ -449,6 +455,7 @@ impl From<&ThemeFile> for Theme {
 
         apply!(table_border);
         apply!(table_header);
+        apply!(table_header_border);
         apply!(table_cell);
         apply!(table_row_even);
         apply!(table_row_odd);
@@ -477,8 +484,10 @@ impl From<&ThemeFile> for Theme {
         apply!(modal_border);
         apply!(modal_title);
         apply!(modal_item);
+        apply!(modal_item_hint);
         apply!(modal_item_selected);
         apply!(modal_item_selected_hint);
+        apply!(modal_description);
         apply!(modal_section_heading);
         apply!(modal_input_unfocused);
         apply!(modal_input_focused);
@@ -488,6 +497,9 @@ impl From<&ThemeFile> for Theme {
         apply!(selection);
         apply!(search_highlight);
         apply!(active_line);
+        apply!(cursor_preview);
+        apply!(cursor_rendered);
+        apply!(cursor_raw);
         apply!(cursor);
 
         theme
@@ -535,6 +547,7 @@ impl From<&Theme> for ThemeFile {
 
             table_border: (&t.table_border).into(),
             table_header: (&t.table_header).into(),
+            table_header_border: (&t.table_header_border).into(),
             table_cell: (&t.table_cell).into(),
             table_row_even: (&t.table_row_even).into(),
             table_row_odd: (&t.table_row_odd).into(),
@@ -563,8 +576,10 @@ impl From<&Theme> for ThemeFile {
             modal_border: (&t.modal_border).into(),
             modal_title: (&t.modal_title).into(),
             modal_item: (&t.modal_item).into(),
+            modal_item_hint: (&t.modal_item_hint).into(),
             modal_item_selected: (&t.modal_item_selected).into(),
             modal_item_selected_hint: (&t.modal_item_selected_hint).into(),
+            modal_description: (&t.modal_description).into(),
             modal_section_heading: (&t.modal_section_heading).into(),
             modal_input_unfocused: (&t.modal_input_unfocused).into(),
             modal_input_focused: (&t.modal_input_focused).into(),
@@ -574,6 +589,9 @@ impl From<&Theme> for ThemeFile {
             selection: (&t.selection).into(),
             search_highlight: (&t.search_highlight).into(),
             active_line: (&t.active_line).into(),
+            cursor_preview: (&t.cursor_preview).into(),
+            cursor_rendered: (&t.cursor_rendered).into(),
+            cursor_raw: (&t.cursor_raw).into(),
             cursor: (&t.cursor).into(),
         }
     }
@@ -633,6 +651,7 @@ mod tests {
         check!(task_complete_text);
         check!(table_border);
         check!(table_header);
+        check!(table_header_border);
         check!(table_cell);
         check!(table_row_even);
         check!(table_row_odd);
@@ -657,8 +676,10 @@ mod tests {
         check!(modal_border);
         check!(modal_title);
         check!(modal_item);
+        check!(modal_item_hint);
         check!(modal_item_selected);
         check!(modal_item_selected_hint);
+        check!(modal_description);
         check!(modal_section_heading);
         check!(modal_input_unfocused);
         check!(modal_input_focused);
@@ -667,6 +688,9 @@ mod tests {
         check!(selection);
         check!(search_highlight);
         check!(active_line);
+        check!(cursor_preview);
+        check!(cursor_rendered);
+        check!(cursor_raw);
         check!(cursor);
         assert_eq!(
             original.task_strikethrough, round_tripped.task_strikethrough,
@@ -916,6 +940,7 @@ bold = true
         check!(task_complete_text);
         check!(table_border);
         check!(table_header);
+        check!(table_header_border);
         check!(table_row_even);
         check!(table_row_odd);
         check!(table_drop_indicator);
@@ -939,8 +964,10 @@ bold = true
         check!(modal_border);
         check!(modal_title);
         check!(modal_item);
+        check!(modal_item_hint);
         check!(modal_item_selected);
         check!(modal_item_selected_hint);
+        check!(modal_description);
         check!(modal_section_heading);
         check!(modal_input_unfocused);
         check!(modal_input_focused);
@@ -948,6 +975,9 @@ bold = true
         check!(normal);
         check!(selection);
         check!(search_highlight);
+        check!(cursor_preview);
+        check!(cursor_rendered);
+        check!(cursor_raw);
         check!(cursor);
         // `table_cell` and `active_line` are intentionally
         // `Style::default()` in the compiled default and round-trip

@@ -306,14 +306,20 @@ impl<'a> StatefulWidget for PaletteView<'a> {
             width: inner.width,
             height: 1,
         };
-        // The input row reads as a focused text input — coloured
-        // background distinguishes the typing area from the
-        // surrounding modal fill.
-        let prompt = Span::styled("› ", self.theme.modal_input_focused);
-        let typed = Span::styled(state.query.clone(), self.theme.modal_input_focused);
-        let cursor = Span::styled("▏", self.theme.cursor);
+        // Unlike other modal inputs, the command palette's input row
+        // sits flush against the modal body — no coloured bg fill —
+        // so the row reads as part of the modal rather than as a
+        // sunken text-input chip.  The `▏` cursor glyph picks up
+        // `bright_interactive` so the typing affordance still pops.
+        let prompt = Span::styled("› ", self.theme.modal_item);
+        let typed = Span::styled(state.query.clone(), self.theme.modal_item);
+        let cursor_style = ratatui::style::Style::default()
+            .fg(self.theme.palette.bright_interactive)
+            .bg(self.theme.palette.bright_surface)
+            .add_modifier(ratatui::style::Modifier::BOLD);
+        let cursor = Span::styled("▏", cursor_style);
         Paragraph::new(Line::from(vec![prompt, typed, cursor]))
-            .style(self.theme.modal_input_focused)
+            .style(self.theme.modal_bg)
             .render(input_area, buf);
 
         // Divider between input and result list.
@@ -416,7 +422,7 @@ fn format_row(entry: &PaletteEntry, focused: bool, theme: &Theme, width: u16) ->
     let chord_style = if focused {
         theme.modal_item_selected_hint
     } else {
-        theme.modal_item.patch(theme.footnote)
+        theme.modal_item_hint
     };
     Line::from(vec![
         Span::styled(label, label_style),

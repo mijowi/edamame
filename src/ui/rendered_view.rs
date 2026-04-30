@@ -282,7 +282,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // keep showing the block as rendered until the reveal delay has elapsed.
         let reveal_raw = editor.cursor_block_revealed();
 
-        let cursor_indicator_style = self.theme.cursor;
+        let cursor_indicator_style = self.theme.cursor_rendered;
 
         let total_rendered = editor.parsed.lines.len();
         // Long-line wrapping is enabled in rendered-edit mode.
@@ -940,7 +940,7 @@ fn make_raw_line_with_selection(
     selection_cols: Option<(usize, usize)>,
     theme: &Theme,
 ) -> Line<'static> {
-    let cursor_style = theme.cursor;
+    let cursor_style = theme.cursor_rendered;
     let sel_style = theme.selection;
     let chars: Vec<char> = raw_text.chars().collect();
     let total = chars.len();
@@ -1218,7 +1218,7 @@ fn overlay_raw_cell(
     let abs_y = area.y + visual_y;
     let cell_width = overlay.rendered_end.saturating_sub(overlay.rendered_start);
     let raw_chars: Vec<char> = overlay.raw_text.chars().collect();
-    let cursor_style = theme.cursor;
+    let cursor_style = theme.cursor_rendered;
     // `theme.normal` carries the theme's `default_bg`; letting it
     // through here would clobber the table-row stripe painted under
     // the cell.  Strip the bg so the underlying cell's bg is

@@ -334,7 +334,6 @@ fn rendered_view_cell_scoped_reveal_keeps_neighbouring_pipes_rendered() {
     use edamame::document::Buffer;
     use edamame::editor::EditorState;
     use edamame::ui::{RenderedView, RenderedViewState};
-    use ratatui::style::Modifier;
 
     let theme = Box::leak(Box::new(Theme::default()));
     let src = "| aaa | bbb | ccc |\n|---|---|---|\n| 1 | 2 | 3 |\n";
@@ -399,16 +398,22 @@ fn rendered_view_cell_scoped_reveal_keeps_neighbouring_pipes_rendered() {
         );
     }
 
-    // Cursor indicator: REVERSED at (8, 1), NOT on the other two 'b' cells.
+    // Cursor indicator: cursor_rendered bg at (8, 1), NOT on the other two
+    // 'b' cells.  Mode chip → cursor parity means the rendered-mode cursor
+    // wears the bright_primary fill from the status bar's mode chip.
     let cell_at = |x: u16, y: u16| buf.cell((x, y)).expect("cell in bounds");
-    assert!(
-        cell_at(8, 1).modifier.contains(Modifier::REVERSED),
-        "cursor cell at (8, 1) should carry REVERSED modifier"
+    let cursor_bg = theme.cursor_rendered.bg;
+    assert!(cursor_bg.is_some(), "cursor_rendered must carry a bg");
+    assert_eq!(
+        cell_at(8, 1).style().bg,
+        cursor_bg,
+        "cursor cell at (8, 1) should carry cursor_rendered bg"
     );
     for x in [9u16, 10] {
-        assert!(
-            !cell_at(x, 1).modifier.contains(Modifier::REVERSED),
-            "non-cursor cell at ({x}, 1) must not carry REVERSED modifier"
+        assert_ne!(
+            cell_at(x, 1).style().bg,
+            cursor_bg,
+            "non-cursor cell at ({x}, 1) must not carry cursor_rendered bg"
         );
     }
 }

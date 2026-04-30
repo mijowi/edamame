@@ -38,7 +38,6 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::Modifier,
     text::{Line, Span},
     widgets::{Paragraph, StatefulWidget, Widget},
 };
@@ -332,7 +331,7 @@ impl<'a> StatefulWidget for SettingsView<'a> {
                 };
                 Paragraph::new(Line::from(Span::styled(
                     format!("    {}", desc),
-                    self.theme.modal_item.add_modifier(Modifier::DIM),
+                    self.theme.modal_description,
                 )))
                 .style(self.theme.modal_bg)
                 .render(desc_area, buf);
@@ -384,7 +383,7 @@ fn build_row_lines<'a>(state: &SettingsState, config: &Config, theme: &'a Theme)
         } else if focused {
             theme.modal_item_selected_hint
         } else {
-            theme.modal_item.patch(theme.footnote)
+            theme.modal_item_hint
         };
         let label_padded = format!("{marker}{:<28}", row.label);
         lines.push(Line::from(vec![

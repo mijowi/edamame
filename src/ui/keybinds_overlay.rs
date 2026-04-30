@@ -362,7 +362,7 @@ fn build_body_lines<'a>(state: &KeybindsState, keymap: &KeyMap, theme: &'a Theme
                 } else if focused {
                     theme.modal_item_selected_hint
                 } else {
-                    theme.modal_item.patch(theme.footnote)
+                    theme.modal_item_hint
                 };
                 lines.push(Line::from(vec![
                     Span::styled(format!("{marker}{:<22}", label), label_style),

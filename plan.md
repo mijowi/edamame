@@ -1502,14 +1502,37 @@ Cat
 
 - H2 denoted with `---` underline should not have a horizontal rule. Should be rendered the same as `## H2`
 
+- Clicking in a `==highlight==` does not put the cursor on the right character due to the offset of the hidden characters
+
+- Scrolling happens by logical line instead of visual line
+
+- The text below contains a large gap after the line `Unknown keys...` when rendered.
+```
+### Theming
+- The `Theme` struct is already wired in from Phase 0
+- Deferred work: document all theme keys, ship several built-in themes (dark, light, dracula, gruvbox, catppuccin, github dark/light)
+- Theme can be selected by name (`theme = "dracula"`) in `config.toml`; resolved first from `~/.config/edamame/themes/`, then from built-ins
+- Custom themes are standalone TOML files in `~/.config/edamame/themes/<name>.toml`, mapping semantic keys to hex colour values:
+  ```toml
+  [ui]
+  background = "#1e1e2e"
+  foreground = "#cdd6f4"
+  cursor     = "#f5e0dc"
+
+  [markdown]
+  heading  = "#cba6f7"
+  bold     = "#f9e2af"
+  code_span = "#a6e3a1"
+  link     = "#89b4fa"
+  ```
+  Unknown keys are a hard error; missing keys fall back to the default theme
+- Implement a live theme preview mode in the settings overlay
+```
+
 ### Default theme issues
-- inline code purple is not bright enough
+- I don't think inline code should be purple. Purple does not say "this is code" to me and we have a lot of other purple elements now.
 - table stripe is too bright
-- table bottom header is not purple—is it supposed to be?
 - completed checkbox is not green enough
 - code block bg should be darker I think
-- modal hints should use bright purple instead of dim purple
 - Code blocks in Markdown cheat sheet have same bg as modal, so it looks like there's no bg
-- Selected interactive in modals is too bright of a blue. Needs to contrast with bright emphasis and bright structural. Maybe we should use dim blue.
-- Settings selected item label (at bottom) should be bright emphasis
 - Nested block quote should be bright structural to match the level 1 block quote's dim structural

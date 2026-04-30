@@ -17,9 +17,9 @@
 #
 #   default_text / default_bg
 #       The "blank page" colours.  default_bg is also used as a *fg*
-#       colour for inverse text (e.g. selected list items on a coloured
-#       background) — pick a value that contrasts with the bright
-#       palette colours.
+#       colour for inverse text (e.g. the rendered/raw mode chip in
+#       the status bar, or text on a search-highlight band) — pick a
+#       value that contrasts with the bright palette colours.
 #
 #   primary             Brand colour.  Headings, mode chip, status
 #                       cursor info.  Default is warm orange.
@@ -32,11 +32,16 @@
 #   warning             Same role as `emphasis` in this theme; split
 #                       so themes can colour them differently.
 #   error               Errors and destructive actions.  Default red.
-#   muted               Borders, peripheral text, row striping.  Grey.
+#   muted               Borders and peripheral text (e.g. h6, the
+#                       Preview mode chip's bg, strikethrough text).
+#                       Grey.
 #   surface             Two chrome surfaces:
 #                         bright_surface — status bar, modal body,
-#                                          inline / fenced code bg
-#                         dim_surface    — hint line, unfocused inputs
+#                                          inline / fenced code bg,
+#                                          row-striping fill
+#                         dim_surface    — hint line and the
+#                                          transient-message strip
+#                                          that overlays it
 #
 # Each colour has a `bright_*` and `dim_*` variant.  The bright shade
 # is the "loud" version (headings, primary chord glyph, mode chip
@@ -226,6 +231,8 @@ surface_dim = 238
 
 [table_header]
 
+[table_header_border]
+
 [table_cell]
 
 [table_row_even]
@@ -274,9 +281,13 @@ surface_dim = 238
 
 [modal_item]
 
+[modal_item_hint]
+
 [modal_item_selected]
 
 [modal_item_selected_hint]
+
+[modal_description]
 
 [modal_section_heading]
 
@@ -293,5 +304,11 @@ surface_dim = 238
 [search_highlight]
 
 [active_line]
+
+[cursor_preview]
+
+[cursor_rendered]
+
+[cursor_raw]
 
 [cursor]

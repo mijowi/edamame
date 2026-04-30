@@ -35,7 +35,7 @@ impl<'a> StatefulWidget for RawView<'a> {
 
         let (cursor_line, cursor_col) = self.state.cursor.line_col(&self.state.buffer);
         let line_count = self.state.buffer.line_count();
-        let cursor_style = self.theme.cursor;
+        let cursor_style = self.theme.cursor_raw;
         let sel_style = self.theme.selection;
         let selection_range = self.state.selection.map(|s| s.range());
 

@@ -815,6 +815,7 @@ impl<'t> Renderer<'t> {
 
         let border_style = self.theme.table_border;
         let header_style = self.theme.table_header;
+        let header_border_style = self.theme.table_header_border;
 
         // Top border: ┌─────┬─────┐
         let top: String = std::iter::once("┌".to_string())
@@ -832,13 +833,13 @@ impl<'t> Renderer<'t> {
         // Uses the heavy-horizontal box-drawing glyph (`━`) with light-vertical
         // joins so the stroke renders visibly thicker than the `─` used for
         // inter-row separators while the side pipes stay light to match `│`.
-        let thick: String = std::iter::once("┝".to_string())
+        let header_border: String = std::iter::once("┝".to_string())
             .chain(widths.iter().enumerate().map(|(i, &w)| {
                 let corner = if i + 1 < col_count { "┿" } else { "┥" };
                 format!("{}{}", "━".repeat(w + 2), corner)
             }))
             .collect();
-        out.push(Line::styled(thick, border_style));
+        out.push(Line::styled(header_border, header_border_style));
 
         // Data rows, each followed by an inter-row separator except the
         // last.  When `row_striping` is off, the separator is a thin
