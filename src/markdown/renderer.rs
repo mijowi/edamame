@@ -419,15 +419,16 @@ impl<'t> Renderer<'t> {
 
         let prefix = match level {
             H1 => "  ",
-            H2 => "  ",
-            H3 => "  ",
-            H4 => "  ",
-            H5 => "  ",
-            H6 => "  ",
+            H2 => "   ",
+            H3 => "    ",
+            H4 => "     ",
+            H5 => "      ",
+            H6 => "       ",
         };
 
         let style = self.theme.heading_style(level);
-        let mut spans = vec![Span::styled(prefix, style)];
+        let prefix_style = style.remove_modifier(Modifier::UNDERLINED | Modifier::CROSSED_OUT);
+        let mut spans = vec![Span::styled(prefix, prefix_style)];
         spans.extend(self.render_inlines(inlines, style));
 
         out.push(Line::from(spans));
