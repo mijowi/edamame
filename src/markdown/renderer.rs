@@ -675,7 +675,12 @@ impl<'t> Renderer<'t> {
                 counter += 1;
                 (s, self.theme.list_number)
             } else {
-                (format!("{indent_prefix}• "), self.theme.list_bullet)
+                let bullet_style = match item.task {
+                    Some(true) => self.theme.task_checked,
+                    Some(false) => self.theme.task_unchecked,
+                    None => self.theme.list_bullet,
+                };
+                (format!("{indent_prefix}• "), bullet_style)
             };
 
             // Task list prefix (checkbox).
