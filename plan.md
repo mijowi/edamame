@@ -219,9 +219,10 @@ edamame/
 ├── overview.md
 ├── config/                         # Reference default config files (include_str!'d
 │   ├── config.toml                 #   at build time, written to ~/.config/edamame/
-│   ├── keybindings.toml            #   on first run if absent)
-│   └── themes/
-│       └── default.toml
+│   └── keybindings.toml            #   on first run if absent).  themes/default.toml
+│                                   #   is NOT checked in — it's generated at first
+│                                   #   run from Theme::default() / Palette::default()
+│                                   #   so it can never drift from the code.
 └── src/
     ├── main.rs                     # Entry point: init terminal, load config, run app
     ├── app.rs                      # App struct, event loop, quit logic
@@ -342,7 +343,9 @@ Three files under `$XDG_CONFIG_HOME/edamame/` (fallback `~/.config/edamame/`):
 ├── config.toml          # [editor], [modal], [table], [image] + `theme = "<name>"`
 ├── keybindings.toml     # keybinding overrides
 └── themes/
-    ├── default.toml     # shipped default; written on first run if missing
+    ├── default.toml     # generated on first run from Theme::default() /
+    │                    #   Palette::default() with palette values commented
+    │                    #   out — not shipped as a checked-in file
     └── <custom>.toml    # add your own; select via `theme = "custom"` in config.toml
 ```
 
@@ -397,11 +400,13 @@ underlined = true
 
 Colours accept named values (`"magenta"`, `"darkgray"`, …), hex (`"#ff00aa"`),
 indexed palette entries as either strings (`"236"`) or bare integers (`236`), and
-`{ r = 0, g = 95, b = 175 }` RGB tables.  The shipped `themes/default.toml` is
-regenerated from `Theme::default()` via the `#[ignore]`'d
-`regenerate_default_theme_toml` test in `src/config/theme_file.rs`.  On monochrome
-terminals (`ColourDepth::NoColour`) the theme file is ignored and the compiled-in
-`Theme::monochrome()` palette is used.
+`{ r = 0, g = 95, b = 175 }` RGB tables.  `themes/default.toml` is generated on
+first run by `theme_file::default_theme_toml()` from `Theme::default()` /
+`Palette::default()` — every palette entry is written as a commented-out
+`# field = value` line so the file documents the compiled defaults without
+overriding them, eliminating any chance of drift between the on-disk file and
+the code.  On monochrome terminals (`ColourDepth::NoColour`) the theme file is
+ignored and the compiled-in `Theme::monochrome()` palette is used.
 
 **Quit confirmation**: The `Quit` action (`Ctrl-Q`) always shows a confirmation dialog (e.g. "Save changes? [Y]es / [N]o / [C]ancel") when there are unsaved changes. When the buffer is clean the app quits immediately. `Ctrl-C` is bound to `Copy` and does not quit. `Escape` is the cancel/dismiss key for modals and dialogs; it does not trigger quit. Note: in crossterm raw mode `ISIG` is disabled, so `Ctrl-C` arrives as a key event rather than SIGINT — we must always intercept it explicitly to prevent SIGINT killing the process and leaving the terminal in raw mode; mapping it to `Copy` satisfies this.
 
@@ -1191,7 +1196,6 @@ Extracted from old Phase 11.  Pulls in the "Heading visual hierarchy — framing
 - [ ] **Or do we want to differentiate headings with foreground and background colors?**
 
 **Tasks — themes:**
-- [ ] 24 bit default dark/light
 - [ ] 256 color default dark/light
 - [ ] Monochrome default dark/light
 
@@ -1433,7 +1437,7 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
    - Debouncing the re-parse to ~50ms after the last keystroke
    - Incremental parsing: `pulldown-cmark` does not natively support incremental parsing, but we can limit re-parsing to the changed block by identifying block boundaries around the edit and splicing the old and new rendered output
    - Benchmark in Phase 1 with large files to determine if this optimisation is needed
-
+   
 2. **Table column width storage**: Storing column widths in an inline HTML comment is a pragmatic choice but slightly pollutes the Markdown file. An alternative is a sidecar file (`.filename.md.tui-meta`). The HTML comment approach is preferred because the file remains self-contained; document this behaviour clearly.
 
 3. **Scrolling in RenderedMode**: When the rendered document is taller than the raw source (e.g. due to table row expansion or long paragraphs wrapping), the visual scroll position and the rope cursor position can diverge. We need a clear mapping between "visual line on screen" and "rope offset". The `SourceMap` addresses this, but edge cases (images, collapsed/expanded blocks) need careful handling.
@@ -1445,18 +1449,18 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
    Implemented ahead of schedule to lock in the architecture before more
    UI/UX work accrues coupling to the single-file assumption.  See
    Section 6 (Config File Architecture) for the current layout.  Summary:
-
    ```
    ~/.config/edamame/
    ├── config.toml          # [editor], [modal], [table], [image] + `theme = "<name>"`
    ├── keybindings.toml     # keybinding overrides
    └── themes/
-       └── default.toml     # written on first run; add community themes as siblings
+       └── default.toml     # generated on first run from Theme::default(); add community themes as siblings
    ```
-
    `Config::load()` → `LoadedConfig { config, keybindings, theme: ThemeFile }`.
-   First-run scaffolding writes all three defaults from `include_str!`'d
-   repo assets and never overwrites.  A user-authored `ThemeFile` format
+   First-run scaffolding writes `config.toml` and `keybindings.toml` from
+   `include_str!`'d repo assets and generates `themes/default.toml` from
+   `Theme::default()` / `Palette::default()`.  Existing files are never
+   overwritten.  A user-authored `ThemeFile` format
    lives in `src/config/theme_file.rs`; `Theme::from_file` converts it
    (with monochrome-fallback short-circuit).  `Config::save()` only writes
    `config.toml`, so an ordinary save-on-prompt path cannot clobber a
@@ -1496,8 +1500,6 @@ Cat
 - Add undo/redo to hint line
 - Add `Ctrl-Shift-z` additional binding for undo
 
-- Add `fg = `, `bg = `, `bold = true` etc example to theming.md
-
 - Config warnings modal is too short. Make it bigger.
 
 - H2 denoted with `---` underline should not have a horizontal rule. Should be rendered the same as `## H2`
@@ -1506,33 +1508,43 @@ Cat
 
 - Scrolling happens by logical line instead of visual line
 
-- The text below contains a large gap after the line `Unknown keys...` when rendered.
-```
-### Theming
-- The `Theme` struct is already wired in from Phase 0
-- Deferred work: document all theme keys, ship several built-in themes (dark, light, dracula, gruvbox, catppuccin, github dark/light)
-- Theme can be selected by name (`theme = "dracula"`) in `config.toml`; resolved first from `~/.config/edamame/themes/`, then from built-ins
-- Custom themes are standalone TOML files in `~/.config/edamame/themes/<name>.toml`, mapping semantic keys to hex colour values:
-  ```toml
-  [ui]
-  background = "#1e1e2e"
-  foreground = "#cdd6f4"
-  cursor     = "#f5e0dc"
+- In indented headings, e.g. `   Heading 2`, the white space of the indent is getting underlined as well as the text. Only the text should be underlined.
 
-  [markdown]
-  heading  = "#cba6f7"
-  bold     = "#f9e2af"
-  code_span = "#a6e3a1"
-  link     = "#89b4fa"
-  ```
-  Unknown keys are a hard error; missing keys fall back to the default theme
-- Implement a live theme preview mode in the settings overlay
-```
+- Implement dedicated theme selection modal. Remove theme from settings overlay. Add action to set theme from command palette.
 
-### Default theme issues
-- I don't think inline code should be purple. Purple does not say "this is code" to me and we have a lot of other purple elements now.
+- Images are padded with the `Reset` terminal background instead of the theme background.
+
+### Theme issues
+- I don't think inline code should be purple. Purple does not say "this is code" to me and we have a lot of other purple elements now. What's a good color for code?
 - table stripe is too bright
 - completed checkbox is not green enough
 - code block bg should be darker I think
 - Code blocks in Markdown cheat sheet have same bg as modal, so it looks like there's no bg
 - Nested block quote should be bright structural to match the level 1 block quote's dim structural
+- block quote text should be purple as well
+- Inline code in a struck through item should be dimmed
+
+## Make the TUI prettier—more like OpenCode
+- Replace modal border with padding.
+- Dim background when modal is open (probably modern terminals only)
+- Keep modal title on left. Add dim `Esc` at top right to signal how to close. Both should be contained *within* the border padding.
+- List all commands in command palette with categories. Keep "Suggested" category at the top.
+- Add command to visit project home page
+- Blink cursor
+
+---
+
+## Edamame Acronyms
+- Enough Developers Are Making A Markdown Editor
+- Engineered Despite Already Many Available Markdown Editors
+- Enterprise-Driven Architecture for Markdown Authoring/Management System
+- Ergonomic, Dependency-Averse Markdown Authoring Made Easy
+- 'Ello, Doesn't Anyone's Mum 'Ave More Eggs
+- Embarassingly Duplicative, Absolutely Mediocre, Amateur Markdown Editor
+- Exceptionally Derivative And Mostly Awful Markdown Editor
+- Error: Data Already Mangled — Another Markdown Editor
+- Eventually, Developers All Make A Markdown Editor
+- Every Damn Agent's Markdown Annoys Me Endlessly
+- Even Dad And Mom Are Markdown Editing
+- Extremely Disappointed At Many Aggravating Markdown Editors
+- Ego Demands Acrimoniously Making A Markdown Editor

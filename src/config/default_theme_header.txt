@@ -1,10 +1,15 @@
 # edamame default theme.
 #
-# Regenerate this file with:
-#     cargo test -- --ignored regenerate_default_theme_toml
-# after changing `Theme::default()` or `Palette::default()` in
-# src/config/theme.rs.  See `theming.md` in the repo root for the
-# full design guide.
+# This file is written on first run from `Theme::default()` and
+# `Palette::default()` in src/config/theme.rs — there is no checked-in
+# `default.toml` in the source tree.  Every palette entry below is
+# commented out: the `# field = value` lines document the compiled-in
+# defaults without overriding them at load time, so the live default
+# theme tracks the code automatically.  To recolour edamame, uncomment
+# any palette line and edit its value (or copy this file to a new
+# theme name first — see "Authoring a theme" below).  Lines you leave
+# commented fall through to the compiled defaults.  See `theming.md`
+# in the repo root for the full design guide.
 #
 # ─── How theming works ────────────────────────────────────────────────
 #
@@ -53,9 +58,11 @@
 #
 # 1. Copy this file to `themes/<your-theme-name>.toml` in your config
 #    directory.
-# 2. Edit the `[palette]` section.  In most cases that's all you need
-#    — every style below derives from the palette at load time and
-#    will track your new shades automatically.
+# 2. Uncomment the `[palette]` lines you want to change and edit their
+#    values.  In most cases that's all you need — every style below
+#    derives from the palette at load time and will track your new
+#    shades automatically.  Any palette entry left commented falls
+#    through to the compiled-in default.
 # 3. Optionally, override individual styles by filling in the matching
 #    `[h1]`, `[modal_input_focused]`, etc. table below.  The headers
 #    are listed bare (no `fg` / `bg` / modifier fields) precisely so

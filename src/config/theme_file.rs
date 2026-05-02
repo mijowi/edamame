@@ -120,9 +120,9 @@ pub struct PaletteFile {
     pub dim_muted: Option<ColorField>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub surface_bright: Option<ColorField>,
+    pub bright_surface: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub surface_dim: Option<ColorField>,
+    pub dim_surface: Option<ColorField>,
 }
 
 impl PaletteFile {
@@ -153,8 +153,8 @@ impl PaletteFile {
             dim_error: pick(self.dim_error, d.dim_error),
             bright_muted: pick(self.bright_muted, d.bright_muted),
             dim_muted: pick(self.dim_muted, d.dim_muted),
-            bright_surface: pick(self.surface_bright, d.bright_surface),
-            dim_surface: pick(self.surface_dim, d.dim_surface),
+            bright_surface: pick(self.bright_surface, d.bright_surface),
+            dim_surface: pick(self.dim_surface, d.dim_surface),
         }
     }
 }
@@ -180,8 +180,8 @@ impl From<&Palette> for PaletteFile {
             dim_error: Some(p.dim_error.into()),
             bright_muted: Some(p.bright_muted.into()),
             dim_muted: Some(p.dim_muted.into()),
-            surface_bright: Some(p.bright_surface.into()),
-            surface_dim: Some(p.dim_surface.into()),
+            bright_surface: Some(p.bright_surface.into()),
+            dim_surface: Some(p.dim_surface.into()),
         }
     }
 }
@@ -597,6 +597,62 @@ impl From<&Theme> for ThemeFile {
     }
 }
 
+// ── Default-theme generation ──────────────────────────────────────────────────
+
+/// Build the contents of `themes/default.toml` from the compiled-in
+/// [`Theme::default`] and [`Palette::default`].
+///
+/// The output is a header (`default_theme_header.txt`) followed by a
+/// `[palette]` section in which every colour entry is *commented out* —
+/// the `# field = value` lines show what the compiled defaults are without
+/// actually overriding anything at load time.  Per-element style sections
+/// (`[h1]`, `[modal_input_focused]`, …) follow as bare empty headers so
+/// users can discover the available override slots.
+///
+/// Called from [`super::config::ensure_default_files_in`] on first run.
+/// There is no checked-in `config/themes/default.toml` — the file is
+/// generated at startup so it can never drift from the code-side defaults.
+pub fn default_theme_toml() -> String {
+    let theme = Theme::default();
+
+    // Build a ThemeFile carrying the default palette + default
+    // task_strikethrough plus all-empty style specs.  Serializing it
+    // produces the full skeleton (palette values + bare `[<element>]`
+    // headers); we then comment out every line inside `[palette]`.
+    let file = ThemeFile {
+        palette: (&theme.palette).into(),
+        task_strikethrough: theme.task_strikethrough,
+        ..ThemeFile::default()
+    };
+    let body = toml::to_string_pretty(&file).expect("serialize default ThemeFile");
+
+    let mut out = String::new();
+    let mut in_palette = false;
+    for line in body.lines() {
+        if in_palette {
+            // A blank line or the next `[...]` header ends the palette
+            // block.  Anything else is a palette entry that we comment
+            // out so it documents the default without overriding it.
+            if line.is_empty() || line.starts_with('[') {
+                in_palette = false;
+            } else {
+                out.push_str("# ");
+                out.push_str(line);
+                out.push('\n');
+                continue;
+            }
+        }
+        if line == "[palette]" {
+            in_palette = true;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    let header = include_str!("default_theme_header.txt");
+    format!("{header}\n{out}")
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -837,47 +893,6 @@ bold = true
         assert_eq!(theme.h1_rule.fg, Some(Color::Rgb(0xab, 0xcd, 0xef)));
     }
 
-    /// Regenerate `config/themes/default.toml` from the compiled-in default
-    /// `Theme`.  Run with `cargo test -- --ignored regenerate_default_theme_toml`
-    /// after changing `Theme::default()` or `Palette::default()` and commit
-    /// the updated TOML file.
-    ///
-    /// The shipped file deliberately contains *only* the `[palette]`
-    /// section plus empty `[<element>]` headers for every per-element
-    /// style.  The headers exist so users can discover the available
-    /// override slots without consulting the source; an empty section
-    /// is treated as "use the palette-derived default" by the load
-    /// merge, so a user who edits only the palette gets a fully
-    /// re-tinted UI without the per-element sections fighting back.
-    #[test]
-    #[ignore]
-    fn regenerate_default_theme_toml() {
-        let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let out_dir = std::path::Path::new(manifest_dir)
-            .join("config")
-            .join("themes");
-        std::fs::create_dir_all(&out_dir).expect("create config/themes/");
-        let out_path = out_dir.join("default.toml");
-
-        // Palette-only ThemeFile: every per-element StyleSpec is left
-        // at its `Default::default()` (empty), which serializes as a
-        // bare `[<element>]` header with no body.  The `task_strike-
-        // through` boolean is preserved verbatim from `Theme::default`
-        // because the merge always honours it.
-        let default = Theme::default();
-        let file = ThemeFile {
-            palette: (&default.palette).into(),
-            task_strikethrough: default.task_strikethrough,
-            ..Default::default()
-        };
-        let body = toml::to_string_pretty(&file).expect("serialize palette-only ThemeFile");
-
-        let header = include_str!("default_theme_header.txt");
-        let contents = format!("{header}\n{body}");
-        std::fs::write(&out_path, contents).expect("write default.toml");
-        eprintln!("wrote {}", out_path.display());
-    }
-
     #[test]
     fn palette_only_file_renders_identical_to_default_theme() {
         // Lock in the contract that the shipped `default.toml` shape
@@ -982,5 +997,148 @@ bold = true
         // `table_cell` and `active_line` are intentionally
         // `Style::default()` in the compiled default and round-trip
         // identically through both branches of the merge.
+    }
+
+    #[test]
+    fn default_theme_toml_palette_lines_are_commented() {
+        // Every palette field must appear as a `# field = …` line so the
+        // generated file documents the compiled-in default without
+        // overriding it at load time.
+        let toml_str = default_theme_toml();
+        for field in [
+            "default_text",
+            "default_bg",
+            "bright_primary",
+            "dim_primary",
+            "bright_emphasis",
+            "dim_emphasis",
+            "bright_structural",
+            "dim_structural",
+            "bright_interactive",
+            "dim_interactive",
+            "bright_success",
+            "dim_success",
+            "bright_warning",
+            "dim_warning",
+            "bright_error",
+            "dim_error",
+            "bright_muted",
+            "dim_muted",
+            "bright_surface",
+            "dim_surface",
+        ] {
+            let commented = format!("# {field} = ");
+            assert!(
+                toml_str.contains(&commented),
+                "expected commented line `{commented}…` in generated default.toml; \
+                 not found in:\n{toml_str}"
+            );
+            // And the same field must not appear uncommented (i.e. not
+            // immediately preceded by a `#`), which would make it an
+            // active override.
+            for line in toml_str.lines() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with(&format!("{field} =")) {
+                    panic!("palette field `{field}` is not commented out: `{line}`");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn default_theme_toml_resolves_to_default_theme() {
+        // The whole point of commenting out the palette: parsing the
+        // generated file must produce exactly `Theme::default()`.  If
+        // someone accidentally leaves a palette line uncommented (or
+        // changes a default without retracing the merge), this fails.
+        let toml_str = default_theme_toml();
+        let parsed: ThemeFile = toml::from_str(&toml_str).expect("parse generated default.toml");
+        let theme: Theme = (&parsed).into();
+        let expected = Theme::default();
+
+        macro_rules! check {
+            ($field:ident) => {
+                assert_eq!(
+                    expected.$field, theme.$field,
+                    concat!(
+                        "field `",
+                        stringify!($field),
+                        "` drifted from Theme::default()"
+                    )
+                );
+            };
+        }
+        check!(h1);
+        check!(h1_rule);
+        check!(h2);
+        check!(h3);
+        check!(h4);
+        check!(h5);
+        check!(h6);
+        check!(bold);
+        check!(italic);
+        check!(strikethrough);
+        check!(highlight);
+        check!(code_span);
+        check!(link_text);
+        check!(link_file);
+        check!(link_heading);
+        check!(image_placeholder);
+        check!(footnote);
+        check!(code_block_border);
+        check!(code_block_lang);
+        check!(code_block_text);
+        check!(blockquote_bar);
+        check!(blockquote_text);
+        check!(rule);
+        check!(list_bullet);
+        check!(list_number);
+        check!(task_unchecked);
+        check!(task_checked);
+        check!(task_complete_text);
+        check!(table_border);
+        check!(table_header);
+        check!(table_header_border);
+        check!(table_cell);
+        check!(table_row_even);
+        check!(table_row_odd);
+        check!(table_drop_indicator);
+        check!(table_drop_target);
+        check!(status_bar);
+        check!(status_mode_preview);
+        check!(status_mode_rendered);
+        check!(status_mode_raw);
+        check!(status_filename);
+        check!(status_info);
+        check!(status_modified);
+        check!(status_selection);
+        check!(hint_bar);
+        check!(hint_chord);
+        check!(hint_label);
+        check!(transient_info);
+        check!(transient_success);
+        check!(transient_warning);
+        check!(transient_error);
+        check!(modal_bg);
+        check!(modal_border);
+        check!(modal_title);
+        check!(modal_item);
+        check!(modal_item_hint);
+        check!(modal_item_selected);
+        check!(modal_item_selected_hint);
+        check!(modal_description);
+        check!(modal_section_heading);
+        check!(modal_input_unfocused);
+        check!(modal_input_focused);
+        check!(modal_button_focused);
+        check!(normal);
+        check!(selection);
+        check!(search_highlight);
+        check!(active_line);
+        check!(cursor_preview);
+        check!(cursor_rendered);
+        check!(cursor_raw);
+        check!(cursor);
+        assert_eq!(expected.task_strikethrough, theme.task_strikethrough);
     }
 }

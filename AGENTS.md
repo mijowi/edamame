@@ -149,11 +149,14 @@ config/
                            #   ~/.config/edamame/config.toml on first run.
   keybindings.toml         # commented-out keybinding overrides reference.
                            #   Written to ~/.config/edamame/keybindings.toml.
-  themes/
-    default.toml           # canonical default theme, round-tripped from
-                           #   Theme::default() via the #[ignore]'d
-                           #   regenerate_default_theme_toml test.
 ```
+
+`themes/default.toml` is **not** checked in: it is generated at first run
+by `theme_file::default_theme_toml()` from `Theme::default()` /
+`Palette::default()`, with every palette value commented out so the live
+default tracks the code automatically.  Edit `Palette::default()` /
+`Theme::from_palette()` in `src/config/theme.rs` and the next first-run
+write picks up the new defaults.
 
 **Architectural layers** (higher depends only on lower):
 1. `main` / `App` — event loop, terminal lifecycle
