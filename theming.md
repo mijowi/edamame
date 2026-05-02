@@ -60,26 +60,26 @@ Horizontal rule: `dim_structural` fg
 - Header bottom separator: `dim_structural` fg — the heavy `━` rule below the header row is themed independently of the regular borders so the header reads as a structural divider
 - Row striping (when `[table] row_striping = true`): odd data rows get `bright_surface` bg so the table chrome matches the inline-code surface
 
-Inline code: `surface_bright` bg, `bright_structural` fg
+Inline code: `bright_surface` bg, `bright_structural` fg
 
 ### Code block
 - Language: `bright_structural` fg, italicized
-- Block: `surface_bright` bg
+- Block: `bright_surface` bg
 - Text: `default_text` fg (syntax highlighting later)
 
 Footnote/reference marker (not implemented yet)
 - `dim_structural` fg
 
-### Status line: `surface_bright` bg
+### Status line: `bright_surface` bg
 Mode chip (bold)
-  - Preview: `dim_muted` bg, `surface_bright` fg
+  - Preview: `dim_muted` bg, `bright_surface` fg
   - Rendered: `bright_primary` bg, `default_bg` fg
   - Raw: `bright_emphasis` bg, `default_bg` fg
 File name: `default_text` fg
 Dirty file marker (`*`): `bright_emphasis` fg, bold
 Cursor coordinates, line count, etc: `bright_primary` fg
 
-### Hint line: `surface_dim` bg
+### Hint line: `dim_surface` bg
 Preview hint (`Press any key to edit`): `default_text` fg
 Hint chord: `bright_interactive` fg, bold
 Hint label: `default_text` fg
@@ -96,7 +96,7 @@ Cursor (in editor): Each mode has its own cursor style mirroring the status-line
 Cursor (modal text inputs): `theme.cursor` — REVERSED only, so the `▏` glyph inverts whatever's underneath without needing to know the modal's surface colour. Kept distinct from the editor cursor because modal inputs aren't tied to editor mode.
 
 ### Modal windows
-Background: `surface_bright`
+Background: `bright_surface`
 Title: `bright_primary` fg, bold
 Border: `dim_structural` fg
 Item: `default_text`
@@ -116,6 +116,17 @@ glyph is `bright_interactive` so the typing affordance still pops.
 This break is deliberate: the palette is a search affordance, not a
 form field, so it reads as part of the modal rather than as a sunken
 input chip.
+
+## Built-in themes
+- [ ] Edamame
+- [ ] Monochrome
+- [x] 256 color dark
+- [ ] 256 color light
+- [ ] GitHub
+- [ ] Dracula
+- [ ] Catpuccin
+- [ ] Tokyo Night
+- [ ] Monokai
 
 ## Follow-ups
 
@@ -153,8 +164,8 @@ can return to them once the visual language settles.
 - **Surface naming.** The palette description in this file says
   "dark grey — UI surfaces (status line, modal, code block bg);
   slightly lighter grey — elevated UI surfaces (inputs, hint
-  line)", but the rule list above uses `surface_bright` for the
-  darker chrome (status / modal / code) and `surface_dim` for the
+  line)", but the rule list above uses `bright_surface` for the
+  darker chrome (status / modal / code) and `dim_surface` for the
   elevated surfaces (hint / inputs). The implementation follows the
   rule list. Consider renaming the variants — `surface_chrome` and
   `surface_elevated` would read more naturally — once we revisit.

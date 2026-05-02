@@ -1,12 +1,16 @@
 # Heading 1
+
 ## Heading 2
+
 ### Heading 3
+
 #### Heading 4
+
 ##### Heading 5
+
 ###### Heading 6
 
 <!-- html comment -->
-
 Also Heading 1
 ==============
 
@@ -20,10 +24,8 @@ Also Heading 2
 ==Highlight==
 
 Block quote
-> > You miss 100% of the shots you don't take.
-> > \- Wayne Gretzky
->
-> \- Michael Scott
+> You miss 100% of the shots you don't take.
+> \- Wayne Gretzky
 
 [Web link](https://google.com)
 
@@ -87,7 +89,7 @@ Table with escaped pipes
 
 Inline code `this is code`
 
-Super long line of inline code `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`
+Super long line of inline code ` let file_appender = tracing_appender::rolling::daily(&log_dir, "debug.log"); let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);`
 
 Code block
 ```rust
