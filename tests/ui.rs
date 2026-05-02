@@ -1209,3 +1209,236 @@ fn table_view_paints_drop_indicator_on_row_drag() {
         "drop indicator should paint ━ on separator y={sep_y}, got 0 matches"
     );
 }
+
+#[test]
+fn rendered_view_code_block_only_opening_fence_de_renders() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // Fenced code block with a language tag.  The renderer produces:
+    //   row 0: " rust " language label
+    //   row 1: " fn main() {} " padded body line
+    // The closing fence has no rendered row of its own.
+    let src = "```rust\nfn main() {}\n```\n";
+
+    let row_text = |term: &Terminal<TestBackend>, y: u16, w: u16| -> String {
+        let buf = term.backend().buffer().clone();
+        (0..w)
+            .map(|x| {
+                buf.cell((x, y))
+                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+            })
+            .collect()
+    };
+
+    let render = |state: &EditorState| -> Terminal<TestBackend> {
+        let backend = TestBackend::new(30, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut view_state = RenderedViewState::default();
+        terminal
+            .draw(|frame| {
+                let view = RenderedView {
+                    drop_indicator: None,
+                    show_table_buttons: false,
+                    state,
+                    theme,
+                };
+                frame.render_stateful_widget(view, frame.area(), &mut view_state);
+            })
+            .unwrap();
+        terminal
+    };
+
+    // Cursor on the opening fence (raw line 0 — the ```rust line).
+    {
+        let mut state = EditorState::new(Buffer::from_str(src), theme);
+        state.mode = Mode::Rendered;
+        state.cursor.offset = 0;
+        let term = render(&state);
+        // Row 0 must show the raw fence ```rust, not the styled "rust" label.
+        assert!(
+            row_text(&term, 0, 30).contains("```rust"),
+            "row 0 should show raw fence: {:?}",
+            row_text(&term, 0, 30)
+        );
+        // Row 1 must still show the body line rendered.
+        assert!(
+            row_text(&term, 1, 30).contains("fn main() {}"),
+            "row 1 should show rendered body: {:?}",
+            row_text(&term, 1, 30)
+        );
+    }
+
+    // Cursor on the body line — must NOT de-render to raw text.  The
+    // rendered body row already shows the same characters, so we instead
+    // assert that the row 0 language label is the styled " rust " (no
+    // backticks bleed in from a misplaced de-render).
+    {
+        let mut state = EditorState::new(Buffer::from_str(src), theme);
+        state.mode = Mode::Rendered;
+        state.cursor.offset = src.find("fn main").unwrap();
+        let term = render(&state);
+        assert!(
+            !row_text(&term, 0, 30).contains("```"),
+            "row 0 must remain the styled language label, got: {:?}",
+            row_text(&term, 0, 30)
+        );
+        assert!(
+            row_text(&term, 1, 30).contains("fn main() {}"),
+            "row 1 should show rendered body: {:?}",
+            row_text(&term, 1, 30)
+        );
+    }
+
+    // Cursor on the closing fence — must NOT replace the body row with ```.
+    {
+        let mut state = EditorState::new(Buffer::from_str(src), theme);
+        state.mode = Mode::Rendered;
+        state.cursor.offset = src.rfind("```").unwrap();
+        let term = render(&state);
+        assert!(
+            row_text(&term, 1, 30).contains("fn main() {}"),
+            "body row must stay rendered when cursor is on closing fence: {:?}",
+            row_text(&term, 1, 30)
+        );
+    }
+}
+
+#[test]
+fn rendered_view_code_block_blank_body_line_aligns_cursor_indicator() {
+    // Regression: blank lines inside code blocks DO render (as NBSP-padded
+    // rows), so the raw-to-rendered mapping must NOT compress them out.
+    // Previously the list-style "preceding non-blank" compression made the
+    // cursor indicator paint one row higher than the body line the cursor
+    // is actually editing for every blank line above it.
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // ```rust
+    // A
+    //          ← blank body line
+    // B
+    // ```
+    let src = "```rust\nA\n\nB\n```\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    // Cursor on the 'B' body line — the line BELOW the blank.
+    state.cursor.offset = src.find('B').unwrap();
+
+    // Match viewport_width to area width so the NBSP-padded blank body
+    // line fits in a single visual row (without this the default 80-col
+    // padding wraps to 3 rows on a 30-col area and hides the bug).
+    let width: u16 = 30;
+    state.set_viewport_width(width as usize);
+
+    let backend = TestBackend::new(width, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |y: u16| -> String {
+        (0..width)
+            .map(|x| {
+                buf.cell((x, y))
+                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+            })
+            .collect()
+    };
+    // Layout: row 0 = " rust " label, row 1 = " A", row 2 = NBSP padding,
+    // row 3 = " B".  The cursor indicator (theme.cursor_rendered) must be
+    // on row 3, not row 2.
+    let row_has_cursor = |y: u16| {
+        (0..width).any(|x| {
+            buf.cell((x, y))
+                .map(|c| {
+                    c.style().bg == theme.cursor_rendered.bg
+                        && c.style().fg == theme.cursor_rendered.fg
+                })
+                .unwrap_or(false)
+        })
+    };
+    assert!(
+        row_text(3).contains('B'),
+        "row 3 should contain the 'B' body line, got: {:?}",
+        row_text(3)
+    );
+    assert!(
+        row_has_cursor(3),
+        "cursor indicator must paint on row 3 (the 'B' line) not above it"
+    );
+    assert!(
+        !row_has_cursor(2),
+        "cursor indicator must not paint on row 2 (the blank padding line)"
+    );
+}
+
+#[test]
+fn rendered_view_bare_code_fence_never_de_renders() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // Code block with no language tag — the renderer emits NO language
+    // label, so nothing in the block has a useful raw form to expose.
+    let src = "```\nfn main() {}\n```\n";
+
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    // Place cursor on the opening fence.
+    state.cursor.offset = 0;
+
+    let backend = TestBackend::new(30, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |y: u16| -> String {
+        (0..30u16)
+            .map(|x| {
+                buf.cell((x, y))
+                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+            })
+            .collect()
+    };
+    // Row 0 is the first body line "fn main() {}" — for a bare ``` fence
+    // there's no language label row.  The cursor is on raw line 0 (the
+    // opening fence), but since there's no language to expose, the
+    // body must remain rendered.
+    assert!(
+        row_text(0).contains("fn main() {}"),
+        "bare fence must not de-render the first body line, got: {:?}",
+        row_text(0)
+    );
+    assert!(
+        !row_text(0).contains("```"),
+        "bare fence must not bleed ``` into rendered output, got: {:?}",
+        row_text(0)
+    );
+}

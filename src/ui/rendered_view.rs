@@ -190,6 +190,35 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // never replace a border or separator line with raw text.
         let is_table = table_edit::is_table_block(&raw_block_source);
         let is_setext = detect_setext(&raw_block_source).is_some();
+        // In a fenced code block only the opening-fence line (raw line 0,
+        // when a language tag is present) should de-render — that's the
+        // language label the renderer turns into ` rust ` styling.  Body
+        // lines render the same as their raw form (just with code-block
+        // background) and the closing fence has no rendered row of its
+        // own, so de-rendering inside the block is visual churn at best
+        // and clobbers the last code line at worst.
+        let cursor_block_ast = editor
+            .parsed
+            .real_ranges
+            .iter()
+            .position(|r| r.start <= cursor_byte && cursor_byte < r.end)
+            .and_then(|i| editor.parsed.blocks.get(i));
+        let is_code_block = matches!(
+            cursor_block_ast,
+            Some(crate::markdown::Block::CodeBlock { .. })
+        );
+        let is_fenced_code_with_lang = matches!(
+            cursor_block_ast,
+            Some(crate::markdown::Block::CodeBlock {
+                language: Some(_),
+                ..
+            })
+        );
+        // True when the cursor's current line is allowed to de-render: any
+        // non-code-block line, or the opening-fence line of a fenced code
+        // block with a language tag.
+        let code_block_allows_reveal =
+            !is_code_block || (is_fenced_code_with_lang && cursor_raw_line == 0);
         let cursor_in_block = if is_table && cursor_block_own >= 3 {
             let last_replaceable = cursor_block_own.saturating_sub(2);
             let block_lines = editor
@@ -229,6 +258,29 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 }
             };
             sub.min(last_replaceable)
+        } else if is_code_block {
+            // Code blocks render every body line — including blank ones,
+            // which are emitted as NBSP-padded rows.  Counting non-blank
+            // raw lines (the list-friendly compression below) would
+            // therefore drift the cursor up by one row per blank, making
+            // edits land below the visible cursor.
+            //
+            // Fenced blocks WITH a language tag render a label row for
+            // the opening fence, so raw lines map 1:1 to rendered lines
+            // (the closing fence has no row of its own and clamps onto
+            // the last body line).  Fenced blocks WITHOUT a language
+            // tag have no label row, so the opening fence has no
+            // rendered counterpart — shift body lines up by one.
+            //  Indented code blocks have no fences at all; their raw
+            //  lines map 1:1.
+            let trimmed = raw_block_source.trim_start();
+            let is_fenced =
+                trimmed.starts_with("```") || trimmed.starts_with("~~~");
+            let opening_fence_has_no_row = is_fenced && !is_fenced_code_with_lang;
+            let shift = if opening_fence_has_no_row { 1 } else { 0 };
+            cursor_raw_line
+                .saturating_sub(shift)
+                .min(cursor_block_own.saturating_sub(1))
         } else {
             // Raw-to-rendered line mapping is 1:1 for simple blocks, but a
             // list that contains a blank-line separator (e.g. the form
@@ -399,7 +451,8 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 } else {
                     rows_used = 1;
                 }
-            } else if reveal_raw && virtual_idx == cursor_rendered_line {
+            } else if reveal_raw && virtual_idx == cursor_rendered_line && code_block_allows_reveal
+            {
                 let raw_text = raw_lines.get(cursor_raw_line).copied().unwrap_or("");
                 // Prefer cell-scoped reveal for table rows — replace only the
                 // active cell's content area with raw text, keeping the box-
@@ -476,10 +529,18 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         render_line_from_visual(&styled, area, buf, vis_y as u16, wrap, skip_rows)
                             as usize;
                 }
-            } else if !reveal_raw && virtual_idx == cursor_rendered_line {
-                // Still in jitter delay: show the rendered version with
-                // a cursor indicator at the cursor's column so there's
-                // no visible column-jump when the reveal fires.
+            } else if virtual_idx == cursor_rendered_line
+                && (!reveal_raw || !code_block_allows_reveal)
+            {
+                // Show the rendered version with a cursor indicator at
+                // the cursor's column.  Two cases land here:
+                //   1. The jitter-delay window before `reveal_raw` flips
+                //      to true — drawing the indicator now avoids a
+                //      visible column-jump when the reveal fires.
+                //   2. A code-block body / closing-fence line where we
+                //      intentionally suppress de-render — the cursor
+                //      still needs to be visible on top of the rendered
+                //      code.
                 if let Some(line) = editor.parsed.lines.get(virtual_idx) {
                     let raw_text = raw_lines.get(cursor_raw_line).copied().unwrap_or("");
                     let visual_col = if let Some(w) = &wrapped_cell {
@@ -544,7 +605,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             if let Some((sa, sb)) = selection_bytes {
                 let setext_revealed = reveal_raw && is_setext && in_cursor_block;
                 let wrapped_revealed = reveal_raw && wrapped_sub_idx_opt.is_some();
-                if !(reveal_raw && virtual_idx == cursor_rendered_line)
+                if !(reveal_raw && virtual_idx == cursor_rendered_line && code_block_allows_reveal)
                     && !setext_revealed
                     && !wrapped_revealed
                 {
