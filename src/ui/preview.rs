@@ -1,6 +1,6 @@
 use ratatui::{buffer::Buffer, layout::Rect, style::Style, text::Line, widgets::StatefulWidget};
 
-use super::line_render::{render_line, visual_rows_of_chars};
+use super::line_render::{render_line_from_visual, visual_rows_of_chars};
 use crate::document::VisualSelection;
 
 /// State for the `PreviewView` widget — scroll offset, selection, and
@@ -46,13 +46,14 @@ pub struct PreviewState {
 /// Usage:
 /// ```ignore
 /// frame.render_stateful_widget(
-///     PreviewView { lines: &editor.parsed.lines },
+///     PreviewView { lines: &editor.parsed.lines, scroll: editor.scroll },
 ///     area,
 ///     &mut state,
 /// );
 /// ```
 pub struct PreviewView<'a> {
     pub lines: &'a [Line<'static>],
+    pub scroll: usize,
 }
 
 #[cfg(test)]
@@ -84,7 +85,10 @@ mod tests {
         terminal
             .draw(|frame| {
                 frame.render_stateful_widget(
-                    PreviewView { lines: &lines },
+                    PreviewView {
+                        lines: &lines,
+                        scroll: 0,
+                    },
                     frame.area(),
                     &mut state,
                 );
@@ -137,7 +141,10 @@ mod tests {
         terminal
             .draw(|frame| {
                 frame.render_stateful_widget(
-                    PreviewView { lines: &lines },
+                    PreviewView {
+                        lines: &lines,
+                        scroll: 0,
+                    },
                     frame.area(),
                     &mut state,
                 );
@@ -191,7 +198,10 @@ mod tests {
         terminal
             .draw(|frame| {
                 frame.render_stateful_widget(
-                    PreviewView { lines: &lines },
+                    PreviewView {
+                        lines: &lines,
+                        scroll: 0,
+                    },
                     frame.area(),
                     &mut state,
                 );
@@ -237,7 +247,10 @@ mod tests {
         terminal
             .draw(|frame| {
                 frame.render_stateful_widget(
-                    PreviewView { lines: &lines },
+                    PreviewView {
+                        lines: &lines,
+                        scroll: 0,
+                    },
                     frame.area(),
                     &mut state,
                 );
@@ -272,6 +285,39 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn visual_scroll_starts_inside_wrapped_line() {
+        let theme = theme();
+        let lines = Renderer::new(theme).render(&parse("abcdefghijklmnopqrstuvwxyz\n"));
+        let mut state = PreviewState::default();
+
+        let backend = TestBackend::new(10, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_stateful_widget(
+                    PreviewView {
+                        lines: &lines,
+                        scroll: 1,
+                    },
+                    frame.area(),
+                    &mut state,
+                );
+            })
+            .unwrap();
+
+        let row: String = (0..10u16)
+            .map(|x| {
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell((x, 0))
+                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+            })
+            .collect();
+        assert_eq!(row, "klmnopqrst");
+    }
 }
 
 impl<'a> StatefulWidget for PreviewView<'a> {
@@ -289,13 +335,17 @@ impl<'a> StatefulWidget for PreviewView<'a> {
         let sel_range = state.selection.map(|s| s.range());
         let sel_style = state.selection_style;
         let width = area.width as usize;
+        let (mut line_idx, mut first_sub_row) = line_at_visual_row(self.lines, self.scroll, width);
         let mut vis_y: u16 = 0;
-        let mut line_idx = state.scroll;
         while vis_y < area.height {
             let Some(line) = self.lines.get(line_idx) else {
                 break;
             };
-            let rows_used = render_line(line, area, buf, area.y + vis_y, true);
+            let skip_rows = first_sub_row;
+            let rows_used = render_line_from_visual(line, area, buf, vis_y, true, skip_rows);
+            if rows_used == 0 {
+                break;
+            }
 
             // Selection overlay: if this rendered line falls inside the
             // selection's line range, paint the theme's selection background
@@ -311,14 +361,7 @@ impl<'a> StatefulWidget for PreviewView<'a> {
                         line.spans.iter().map(|s| s.content.chars().count()).sum()
                     };
                     paint_preview_selection(
-                        line,
-                        buf,
-                        area,
-                        area.y + vis_y,
-                        rows_used,
-                        width,
-                        start_col,
-                        end_col,
+                        line, buf, area, vis_y, rows_used, width, skip_rows, start_col, end_col,
                         sel_style,
                     );
                 }
@@ -326,8 +369,21 @@ impl<'a> StatefulWidget for PreviewView<'a> {
 
             vis_y = vis_y.saturating_add(rows_used.max(1));
             line_idx += 1;
+            first_sub_row = 0;
         }
     }
+}
+
+fn line_at_visual_row(lines: &[Line<'static>], visual_row: usize, width: usize) -> (usize, usize) {
+    let mut acc = 0usize;
+    for (idx, line) in lines.iter().enumerate() {
+        let rows = super::line_render::visual_rows_for_line(line, width).max(1);
+        if visual_row < acc + rows {
+            return (idx, visual_row - acc);
+        }
+        acc += rows;
+    }
+    (lines.len(), 0)
 }
 
 /// Paint `sel_style` as a background over the rendered cells on the visual
@@ -342,6 +398,7 @@ fn paint_preview_selection(
     y_first: u16,
     rows_used: u16,
     width: usize,
+    skip_rows: usize,
     start_col: usize,
     end_col: usize,
     sel_style: Style,
@@ -359,11 +416,13 @@ fn paint_preview_selection(
         .collect();
     let indent = super::line_render::compute_hanging_indent(line);
     let rows = visual_rows_of_chars(&chars, width, indent);
-    for (row_off, &(row_start, row_end, _)) in rows.iter().enumerate() {
-        if row_off as u16 >= rows_used {
+    for (painted_off, (row_off, &(row_start, row_end, _))) in
+        rows.iter().enumerate().skip(skip_rows).enumerate()
+    {
+        if painted_off as u16 >= rows_used {
             break;
         }
-        let y = y_first + row_off as u16;
+        let y = y_first + painted_off as u16;
         if y >= area.y + area.height {
             break;
         }

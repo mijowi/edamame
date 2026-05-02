@@ -7,6 +7,7 @@ use ratatui::{
 
 use crate::config::Theme;
 use crate::editor::EditorState;
+use crate::ui::line_render::render_line_from_visual;
 
 /// Raw (plain text) document view.
 ///
@@ -33,6 +34,7 @@ impl<'a> StatefulWidget for RawView<'a> {
         let height = area.height as usize;
         view_state.scroll = self.state.scroll;
 
+        let width = area.width as usize;
         let (cursor_line, cursor_col) = self.state.cursor.line_col(&self.state.buffer);
         let line_count = self.state.buffer.line_count();
         let cursor_style = self.theme.cursor_raw;
@@ -40,33 +42,14 @@ impl<'a> StatefulWidget for RawView<'a> {
         let selection_range = self.state.selection.map(|s| s.range());
 
         let mut vis_row: usize = 0;
-        let mut buf_line = view_state.scroll;
+        let (mut buf_line, mut first_sub_row) = self
+            .state
+            .raw_line_at_visual_row(view_state.scroll, width.max(1));
 
         while vis_row < height && buf_line < line_count {
             let raw = self.state.buffer.line(buf_line).unwrap_or_default();
             // Strip trailing newline for display.
             let raw = raw.trim_end_matches('\n');
-
-            let display_line: Line<'static> = if buf_line == cursor_line {
-                let chars: Vec<char> = raw.chars().collect();
-                let before: String = chars[..cursor_col.min(chars.len())].iter().collect();
-                let at: String = chars
-                    .get(cursor_col)
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| " ".to_string());
-                let after: String = if cursor_col + 1 <= chars.len() {
-                    chars[cursor_col + 1..].iter().collect()
-                } else {
-                    String::new()
-                };
-                Line::from(vec![
-                    Span::raw(before),
-                    Span::styled(at, cursor_style),
-                    Span::raw(after),
-                ])
-            } else {
-                Line::raw(raw.to_owned())
-            };
 
             // Precompute the selection's char-col range within this buffer line.
             let line_char_count = raw.chars().count();
@@ -86,44 +69,66 @@ impl<'a> StatefulWidget for RawView<'a> {
                 }
             });
 
-            // Write the line to the TUI buffer with wrapping.
-            let row_start = vis_row;
-            let mut x = area.x;
-            let mut char_col = 0usize;
-            for span in &display_line.spans {
-                for ch in span.content.chars() {
-                    if x >= area.x + area.width {
-                        vis_row += 1;
-                        if vis_row >= height {
-                            break;
-                        }
-                        x = area.x;
-                    }
-                    let y = area.y + vis_row as u16;
-                    let in_selection =
-                        matches!(line_sel_cols, Some((s, e)) if char_col >= s && char_col < e);
-                    let style = if in_selection {
-                        span.style.patch(sel_style)
-                    } else {
-                        span.style
-                    };
-                    if let Some(cell) = buf.cell_mut((x, y)) {
-                        cell.set_char(ch);
-                        cell.set_style(style);
-                    }
-                    x += 1;
-                    char_col += 1;
-                }
-                if vis_row >= height {
-                    break;
-                }
+            let display_line = raw_display_line(
+                raw,
+                if buf_line == cursor_line {
+                    Some(cursor_col)
+                } else {
+                    None
+                },
+                line_sel_cols,
+                cursor_style,
+                sel_style,
+            );
+            let rows_used = render_line_from_visual(
+                &display_line,
+                area,
+                buf,
+                vis_row as u16,
+                true,
+                first_sub_row,
+            ) as usize;
+            if rows_used == 0 {
+                break;
             }
-            let _ = row_start;
 
-            vis_row += 1;
+            vis_row += rows_used;
             buf_line += 1;
+            first_sub_row = 0;
         }
     }
+}
+
+fn raw_display_line(
+    raw: &str,
+    cursor_col: Option<usize>,
+    selection: Option<(usize, usize)>,
+    cursor_style: ratatui::style::Style,
+    selection_style: ratatui::style::Style,
+) -> Line<'static> {
+    let mut spans = Vec::new();
+    let chars: Vec<char> = raw.chars().collect();
+    let cursor_at = cursor_col.unwrap_or(usize::MAX);
+    for i in 0..=chars.len() {
+        if i == chars.len() {
+            if cursor_at == i {
+                spans.push(Span::styled(" ", cursor_style));
+            }
+            break;
+        }
+        let in_selection = matches!(selection, Some((s, e)) if i >= s && i < e);
+        let style = if cursor_at == i && in_selection {
+            cursor_style.patch(selection_style)
+        } else if cursor_at == i {
+            cursor_style
+        } else if in_selection {
+            selection_style
+        } else {
+            ratatui::style::Style::default()
+        };
+        spans.push(Span::styled(chars[i].to_string(), style));
+    }
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -206,5 +211,38 @@ mod tests {
         // Col 5 (the space) should not be selected.
         let cell = tbuf.cell((5, 0)).expect("cell in bounds");
         assert_ne!(cell.style().bg, theme.selection.bg);
+    }
+
+    #[test]
+    fn raw_view_visual_scroll_starts_inside_wrapped_line() {
+        let theme = theme();
+        let buf = Buffer::from_str("abcdefghijklmnopqrstuvwxyz\n");
+        let mut state = EditorState::new(buf, theme);
+        state.mode = crate::editor::Mode::Raw;
+        state.scroll = 1;
+        let mut view_state = RawViewState::default();
+
+        let backend = TestBackend::new(10, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let view = RawView {
+                    state: &state,
+                    theme,
+                };
+                StatefulWidget::render(view, frame.area(), frame.buffer_mut(), &mut view_state);
+            })
+            .unwrap();
+
+        let row: String = (0..10u16)
+            .map(|x| {
+                terminal
+                    .backend()
+                    .buffer()
+                    .cell((x, 0))
+                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+            })
+            .collect();
+        assert_eq!(row, "klmnopqrst");
     }
 }

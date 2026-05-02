@@ -336,7 +336,8 @@ pub fn build_snapshots(
     let total = lines.len();
     let width = area.width as usize;
 
-    let mut virtual_idx = state.scroll;
+    let (mut virtual_idx, mut first_sub_row) =
+        state.rendered_line_at_visual_row(state.scroll, width);
     let mut vis_y: usize = 0;
     let height = area.height as usize;
 
@@ -360,10 +361,11 @@ pub fn build_snapshots(
         let Some(line) = lines.get(virtual_idx) else {
             break;
         };
-        let rows_used = state
+        let full_rows_used = state
             .parsed
             .visual_rows_for_line_at(virtual_idx, width)
             .max(1);
+        let rows_used = full_rows_used.saturating_sub(first_sub_row).max(1);
 
         // Does this rendered line belong to a table block?
         let block_byte = state
@@ -529,6 +531,7 @@ pub fn build_snapshots(
 
         vis_y += rows_used;
         virtual_idx += 1;
+        first_sub_row = 0;
     }
 
     if let Some(mut prev) = open_table.take() {

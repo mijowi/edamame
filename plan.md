@@ -1506,8 +1506,6 @@ Cat
 
 - Clicking in a `==highlight==` does not put the cursor on the right character due to the offset of the hidden characters
 
-- Scrolling happens by logical line instead of visual line
-
 - In indented headings, e.g. `   Heading 2`, the white space of the indent is getting underlined as well as the text. Only the text should be underlined.
 
 - Implement dedicated theme selection modal. Remove theme from settings overlay. Add action to set theme from command palette.

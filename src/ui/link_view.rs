@@ -95,7 +95,7 @@ pub fn build_snapshots_cached(
 
 /// Build snapshots for every visible link in the rendered document.
 ///
-/// `scroll` is the first rendered line index on screen.  `area` is the
+/// `scroll` is the first visual row index on screen.  `area` is the
 /// document area rect.  The returned vector preserves document order —
 /// earlier links appear earlier — so hit-testing (which uses `find_map`)
 /// naturally favours the first matching snapshot when two overlap.
@@ -127,9 +127,10 @@ pub fn build_snapshots(state: &EditorState, area: Rect, scroll: usize) -> Vec<Li
         if rendered_range.is_empty() {
             continue;
         }
-        // Skip blocks entirely off-screen.  A block fully below scroll
-        // or fully above area.height can't contribute any snapshots.
-        if rendered_range.end <= scroll {
+        let block_end_rows = state
+            .parsed
+            .visual_rows_before(rendered_range.end, area.width as usize);
+        if block_end_rows <= scroll {
             continue;
         }
         // y_offset: visual rows of the block's first line above `scroll`.
@@ -177,11 +178,10 @@ fn extract_block_links(
     // `visual_rows_for_line` per line — quadratic on large documents.
     let width = area.width as usize;
     let total = state.parsed.lines.len();
-    let scroll_rows = state.parsed.visual_rows_before(scroll, width);
     let block_start_rows = state
         .parsed
         .visual_rows_before(rendered_range.start.min(total), width);
-    let mut y_cursor: isize = block_start_rows as isize - scroll_rows as isize;
+    let mut y_cursor: isize = block_start_rows as isize - scroll as isize;
 
     let mut line_positions: Vec<(usize, u16, u16)> = Vec::new(); // (line_idx, y_start, rows_used)
     for idx in rendered_range.start..rendered_range.end.min(total) {

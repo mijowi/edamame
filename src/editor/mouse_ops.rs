@@ -194,13 +194,18 @@ fn rendered_line_at_row(
     if lines.is_empty() {
         return None;
     }
+    let (mut line_idx, mut first_sub_row) =
+        state.rendered_line_at_visual_row(state.scroll.saturating_add(row), state.viewport_width);
     let mut y = 0usize;
-    for line in lines.iter().skip(state.scroll) {
-        let rows_used = line_render::visual_rows_for_line(line, usize::MAX).max(1);
-        if row < y + rows_used {
-            return Some((line.clone(), row - y));
+    while let Some(line) = lines.get(line_idx) {
+        let rows_used = line_render::visual_rows_for_line(line, state.viewport_width).max(1);
+        let visible_rows = rows_used.saturating_sub(first_sub_row).max(1);
+        if y < visible_rows {
+            return Some((line.clone(), first_sub_row));
         }
-        y += rows_used;
+        y += visible_rows;
+        line_idx += 1;
+        first_sub_row = 0;
     }
     None
 }
@@ -1086,10 +1091,7 @@ pub fn scroll_by_mouse(state: &mut EditorState, delta: i32, _viewport_width: usi
     if delta == 0 {
         return;
     }
-    let total = match state.mode {
-        Mode::Raw => state.buffer.line_count(),
-        _ => state.parsed.line_count(),
-    };
+    let total = state.total_visual_rows_for_mode(state.viewport_width);
     if total == 0 {
         state.scroll = 0;
         return;
@@ -1140,23 +1142,26 @@ fn raw_click_to_offset(
 ) -> usize {
     let line_count = state.buffer.line_count();
     let width = viewport_width.max(1);
+    let (mut target_line, mut first_sub_row) = state.raw_line_at_visual_row(state.scroll, width);
     let mut y = 0usize;
-    for target_line in state.scroll..line_count {
+    while target_line < line_count {
         let text = state
             .buffer
             .line(target_line)
             .map(|s| s.trim_end_matches('\n').to_owned())
             .unwrap_or_default();
         let rows = crate::ui::line_render::visual_rows_of_str(&text, width);
-        let used = rows.len().max(1);
+        let used = rows.len().max(1).saturating_sub(first_sub_row).max(1);
         if row < y + used {
-            let sub_row = row - y;
+            let sub_row = first_sub_row + row - y;
             let line_start = state.buffer.line_to_char(target_line);
             let row_tuple = rows.get(sub_row).copied().unwrap_or((0, 0, 0));
             let raw_col = char_in_row_at_cell(&text, row_tuple, col, 0, sub_row + 1 == rows.len());
             return line_start + raw_col;
         }
         y += used;
+        target_line += 1;
+        first_sub_row = 0;
     }
     state.buffer.len_chars()
 }
@@ -1197,8 +1202,10 @@ fn rendered_click_to_offset(
     if lines.is_empty() {
         return 0;
     }
+    let (mut idx, mut first_sub_row) =
+        state.rendered_line_at_visual_row(state.scroll, viewport_width);
     let mut y = 0usize;
-    for (idx, _line) in lines.iter().enumerate().skip(state.scroll) {
+    while idx < lines.len() {
         // Per-line lookup against `ParsedDoc`'s O(1) visual-row cache —
         // historically this called `visual_rows_for_line` directly, which
         // adds up on rapid mouse-move events over a long document.
@@ -1206,11 +1213,14 @@ fn rendered_click_to_offset(
             .parsed
             .visual_rows_for_line_at(idx, viewport_width)
             .max(1);
-        if row < y + rows_used {
-            let sub_row = row - y;
+        let used = rows_used.saturating_sub(first_sub_row).max(1);
+        if row < y + used {
+            let sub_row = first_sub_row + row - y;
             return rendered_sub_line_to_offset(state, idx, sub_row, col, viewport_width);
         }
-        y += rows_used;
+        y += used;
+        idx += 1;
+        first_sub_row = 0;
     }
     state.buffer.len_chars()
 }

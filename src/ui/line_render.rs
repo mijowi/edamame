@@ -113,7 +113,18 @@ pub fn render_line(
     visual_y: u16,
     wrap: bool,
 ) -> u16 {
-    render_line_with_cursor(line, area, buf, visual_y, wrap, None)
+    render_line_with_cursor_from_visual(line, area, buf, visual_y, wrap, None, 0)
+}
+
+pub fn render_line_from_visual(
+    line: &Line<'static>,
+    area: Rect,
+    buf: &mut TuiBuf,
+    visual_y: u16,
+    wrap: bool,
+    skip_rows: usize,
+) -> u16 {
+    render_line_with_cursor_from_visual(line, area, buf, visual_y, wrap, None, skip_rows)
 }
 
 pub fn render_line_with_cursor(
@@ -123,6 +134,18 @@ pub fn render_line_with_cursor(
     visual_y: u16,
     wrap: bool,
     cursor_col_override: Option<(usize, Style)>,
+) -> u16 {
+    render_line_with_cursor_from_visual(line, area, buf, visual_y, wrap, cursor_col_override, 0)
+}
+
+pub fn render_line_with_cursor_from_visual(
+    line: &Line<'static>,
+    area: Rect,
+    buf: &mut TuiBuf,
+    visual_y: u16,
+    wrap: bool,
+    cursor_col_override: Option<(usize, Style)>,
+    skip_rows: usize,
 ) -> u16 {
     if visual_y >= area.height {
         return 0;
@@ -144,6 +167,9 @@ pub fn render_line_with_cursor(
     }
 
     if !wrap {
+        if skip_rows > 0 {
+            return 0;
+        }
         paint_row(
             &chars,
             0,
@@ -166,7 +192,7 @@ pub fn render_line_with_cursor(
     let effective_indent = if indent + 1 >= width { 0 } else { indent };
 
     let mut cur_visual = visual_y;
-    for (row_idx, &(start, row_end, _next_start)) in rows.iter().enumerate() {
+    for (row_idx, &(start, row_end, _next_start)) in rows.iter().enumerate().skip(skip_rows) {
         if cur_visual >= area.height {
             break;
         }
@@ -187,7 +213,7 @@ pub fn render_line_with_cursor(
         cur_visual += 1;
     }
 
-    (cur_visual - visual_y).max(1)
+    cur_visual - visual_y
 }
 
 /// Paint a single visual row.  `chars[start..end]` are written starting at

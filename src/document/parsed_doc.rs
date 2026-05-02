@@ -187,6 +187,32 @@ impl ParsedDoc {
             .saturating_sub(self.visual_rows_before(first, width))
     }
 
+    /// Total visual rows occupied by the rendered document at `width`.
+    pub fn total_visual_rows(&self, width: usize) -> usize {
+        self.visual_rows_before(self.lines.len(), width)
+    }
+
+    /// Return `(rendered_line_idx, sub_row)` for a document-level visual row.
+    ///
+    /// `sub_row` is the wrapped visual row within `rendered_line_idx`.  If the
+    /// requested row is past EOF, returns `(lines.len(), 0)` so callers can stop
+    /// rendering without special-case arithmetic.
+    pub fn line_at_visual_row(&self, visual_row: usize, width: usize) -> (usize, usize) {
+        self.ensure_visual_rows(width);
+        let borrow = self.visual_rows.borrow();
+        let Some(cache) = borrow.as_ref() else {
+            return (0, 0);
+        };
+        for (idx, window) in cache.visual_row_prefix_sum.windows(2).enumerate() {
+            let start = window[0];
+            let end = window[1];
+            if visual_row < end {
+                return (idx, visual_row.saturating_sub(start));
+            }
+        }
+        (self.lines.len(), 0)
+    }
+
     /// Populate or refresh the visual-row cache for `width`.  Cheap
     /// when the cached width already matches; otherwise walks every
     /// line once and stores per-line counts plus a prefix sum.

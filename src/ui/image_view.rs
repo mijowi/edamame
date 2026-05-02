@@ -91,7 +91,7 @@ impl ImageLayoutSnapshot {
 /// Scan the visible lines for `Block::ImageBlock`s and produce one
 /// snapshot per image whose reserved rows intersect the viewport.
 ///
-/// `scroll` is the number of rendered lines skipped at the top; matches
+/// `scroll` is the number of visual rows skipped at the top; matches
 /// `state.scroll` in rendered-edit mode or the preview's own scroll
 /// offset.  `area` is the document area (editor content region — not
 /// including status/hint bars).
@@ -129,8 +129,8 @@ pub fn build_snapshots(state: &EditorState, area: Rect, scroll: usize) -> Vec<Im
         return out;
     }
     let width = area.width as usize;
-    let total = state.parsed.line_count();
-    if scroll >= total {
+    let total_rows = state.parsed.total_visual_rows(width);
+    if scroll >= total_rows {
         return out;
     }
 
@@ -149,19 +149,8 @@ pub fn build_snapshots(state: &EditorState, area: Rect, scroll: usize) -> Vec<Im
         // which is O(1) after the per-frame cache is populated; the
         // historical loop here re-invoked `visual_rows_for_line` for
         // every preceding line on every scroll tick.
-        let end = rendered_range.start.min(total);
-        let y_offset: isize = if scroll < end {
-            let scroll_rows = state.parsed.visual_rows_before(scroll, width);
-            let end_rows = state.parsed.visual_rows_before(end, width);
-            (end_rows as isize) - (scroll_rows as isize)
-        } else if scroll > rendered_range.start {
-            // Block starts above the viewport — negative y_offset.
-            // Approximate one rendered line per unit (image-block
-            // placeholder rows never wrap, so this is exact for them).
-            -(scroll as isize - rendered_range.start as isize)
-        } else {
-            0
-        };
+        let block_top = state.parsed.visual_rows_before(rendered_range.start, width);
+        let y_offset: isize = block_top as isize - scroll as isize;
 
         let reserved = rendered_range.end.saturating_sub(rendered_range.start) as isize;
         let image_top = area.y as isize + y_offset;

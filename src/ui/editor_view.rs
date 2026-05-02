@@ -135,6 +135,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                 StatefulWidget::render(
                     PreviewView {
                         lines: &self.state.parsed.lines,
+                        scroll: self.state.scroll,
                     },
                     doc_area,
                     buf,

@@ -17,7 +17,7 @@ use crate::markdown::table_layout::{
 };
 
 use super::image_view::{self, ImageLayoutSnapshot};
-use super::line_render::{render_line, render_line_with_cursor};
+use super::line_render::{render_line_from_visual, render_line_with_cursor_from_visual};
 use super::link_view::{self, LinkLayoutSnapshot};
 use super::table_view::{self, TableLayoutSnapshot};
 
@@ -277,6 +277,8 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // Determine the scroll offset; sync from editor state.
         view_state.scroll = editor.scroll;
         let scroll = view_state.scroll;
+        let (mut virtual_idx, mut first_sub_row) =
+            editor.rendered_line_at_visual_row(scroll, area.width as usize);
 
         // Jitter suppression: if the cursor only recently moved to this line,
         // keep showing the block as rendered until the reveal delay has elapsed.
@@ -302,13 +304,13 @@ impl<'a> StatefulWidget for RenderedView<'a> {
 
         // Walk rendered lines from scroll offset. For each line, render it
         // normally EXCEPT cursor_rendered_line, which is shown as raw text.
-        let mut virtual_idx = scroll;
         let mut vis_y: usize = 0;
         while vis_y < height {
             if virtual_idx >= total_rendered {
                 break;
             }
 
+            let skip_rows = first_sub_row;
             let rows_used;
             // Setext headings reveal all of their raw lines (the title and
             // the `===` / `---` underline) at once, on their corresponding
@@ -355,7 +357,9 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     sel_cols,
                     self.theme,
                 );
-                rows_used = render_line(&styled, area, buf, vis_y as u16, wrap) as usize;
+                rows_used =
+                    render_line_from_visual(&styled, area, buf, vis_y as u16, wrap, skip_rows)
+                        as usize;
             } else if reveal_raw && wrapped_sub_idx_opt.is_some() {
                 // Multi-sub wrapped-cell overlay: paint the rendered row
                 // first (so neighbouring cells and borders stay), then
@@ -369,7 +373,9 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 let sub_idx = wrapped_sub_idx_opt.unwrap();
                 let overlay = &w.subs[sub_idx];
                 if let Some(line) = editor.parsed.lines.get(virtual_idx) {
-                    rows_used = render_line(line, area, buf, vis_y as u16, wrap) as usize;
+                    rows_used =
+                        render_line_from_visual(line, area, buf, vis_y as u16, wrap, skip_rows)
+                            as usize;
                     let sel_in_cell = selection_bytes.and_then(|(sa, sb)| {
                         let block_start = block_range_for_cursor.as_ref()?.start;
                         // Every chunk of the wrapped cell is a slice of
@@ -417,7 +423,9 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 };
                 if let Some(overlay) = cell_overlay.or(chunk_overlay) {
                     let line = &editor.parsed.lines[virtual_idx];
-                    rows_used = render_line(line, area, buf, vis_y as u16, wrap) as usize;
+                    rows_used =
+                        render_line_from_visual(line, area, buf, vis_y as u16, wrap, skip_rows)
+                            as usize;
 
                     // Compute selection highlight inside this cell.  The cell's
                     // absolute byte range is [cell_byte_start, cell_byte_end);
@@ -464,7 +472,9 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         sel_cols,
                         self.theme,
                     );
-                    rows_used = render_line(&styled, area, buf, vis_y as u16, wrap) as usize;
+                    rows_used =
+                        render_line_from_visual(&styled, area, buf, vis_y as u16, wrap, skip_rows)
+                            as usize;
                 }
             } else if !reveal_raw && virtual_idx == cursor_rendered_line {
                 // Still in jitter delay: show the rendered version with
@@ -502,13 +512,14 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     } else {
                         cursor_col
                     };
-                    rows_used = render_line_with_cursor(
+                    rows_used = render_line_with_cursor_from_visual(
                         line,
                         area,
                         buf,
                         vis_y as u16,
                         wrap,
                         Some((visual_col, cursor_indicator_style)),
+                        skip_rows,
                     ) as usize;
                 } else {
                     rows_used = 1;
@@ -516,7 +527,9 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             } else {
                 // Normal rendered line.
                 if let Some(line) = editor.parsed.lines.get(virtual_idx) {
-                    rows_used = render_line(line, area, buf, vis_y as u16, wrap) as usize;
+                    rows_used =
+                        render_line_from_visual(line, area, buf, vis_y as u16, wrap, skip_rows)
+                            as usize;
                 } else {
                     break;
                 }
@@ -541,6 +554,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         area,
                         vis_y as u16,
                         rows_used as u16,
+                        skip_rows,
                         virtual_idx,
                         sa,
                         sb,
@@ -549,8 +563,12 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 }
             }
 
-            vis_y += rows_used.max(1);
+            if rows_used == 0 {
+                break;
+            }
+            vis_y += rows_used;
             virtual_idx += 1;
+            first_sub_row = 0;
         }
 
         // Phase 6: build per-frame snapshots of every visible table, then
@@ -996,6 +1014,7 @@ fn paint_selection_overlay(
     area: Rect,
     y_start: u16,
     rows_used: u16,
+    skip_rows: usize,
     rendered_line_idx: usize,
     sel_start_byte: usize,
     sel_end_byte: usize,
@@ -1132,6 +1151,7 @@ fn paint_selection_overlay(
         area,
         y_start,
         rows_used,
+        skip_rows,
         rend_start,
         rend_end,
         theme.selection,
@@ -1146,6 +1166,7 @@ fn paint_cols_on_line(
     area: Rect,
     y_start: u16,
     rows_used: u16,
+    skip_rows: usize,
     start_col: usize,
     end_col: usize,
     sel_bg: Style,
@@ -1164,11 +1185,13 @@ fn paint_cols_on_line(
         .collect();
     let indent = super::line_render::compute_hanging_indent(line);
     let rows = super::line_render::visual_rows_of_chars(&chars, width, indent);
-    for (row_off, &(row_start, row_end, _)) in rows.iter().enumerate() {
-        if row_off as u16 >= rows_used {
+    for (painted_off, (row_off, &(row_start, row_end, _))) in
+        rows.iter().enumerate().skip(skip_rows).enumerate()
+    {
+        if painted_off as u16 >= rows_used {
             break;
         }
-        let y = area.y + y_start + row_off as u16;
+        let y = area.y + y_start + painted_off as u16;
         if y >= area.y + area.height {
             break;
         }

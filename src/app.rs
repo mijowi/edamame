@@ -2821,7 +2821,7 @@ impl App {
         let Some(&line_idx) = self.editor.parsed.heading_anchors.get(slug) else {
             return;
         };
-        self.editor.scroll = line_idx;
+        self.editor.scroll = self.editor.parsed.visual_rows_before(line_idx, doc_width);
         if self.editor.mode != Mode::Preview {
             // Move cursor to the heading's first byte so subsequent
             // keyboard edits operate on that block.
@@ -2961,9 +2961,11 @@ impl App {
             }
         }
         // Restore the saved scroll / cursor / mode on the loaded doc.
-        self.editor.scroll = dest
-            .scroll
-            .min(self.editor.parsed.line_count().saturating_sub(1));
+        self.editor.scroll = dest.scroll.min(
+            self.editor
+                .total_visual_rows_for_mode(doc_width)
+                .saturating_sub(1),
+        );
         self.editor.cursor.offset = dest.cursor_offset.min(self.editor.buffer.len_chars());
         self.editor.mode = dest.mode;
         self.editor.update_cursor_block();
