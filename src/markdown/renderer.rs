@@ -418,12 +418,12 @@ impl<'t> Renderer<'t> {
         use pulldown_cmark::HeadingLevel::*;
 
         let prefix = match level {
-            H1 => "  ",
-            H2 => "   ",
-            H3 => "    ",
-            H4 => "     ",
-            H5 => "      ",
-            H6 => "       ",
+            H1 => " ",
+            H2 => "  ",
+            H3 => "   ",
+            H4 => "    ",
+            H5 => "     ",
+            H6 => "      ",
         };
 
         let style = self.theme.heading_style(level);
@@ -1448,13 +1448,25 @@ mod tests {
     fn setext_h2_renders_same_as_atx_h2() {
         let atx_lines = render("## H2 text\n");
         let setext_lines = render("H2 text\n---\n");
-        eprintln!("ATX H2 lines: {:?}", atx_lines.iter().map(line_text).collect::<Vec<_>>());
-        eprintln!("Setext H2 lines: {:?}", setext_lines.iter().map(line_text).collect::<Vec<_>>());
-        assert_eq!(atx_lines.len(), setext_lines.len(), "ATX: {:?}, Setext: {:?}", 
+        eprintln!(
+            "ATX H2 lines: {:?}",
+            atx_lines.iter().map(line_text).collect::<Vec<_>>()
+        );
+        eprintln!(
+            "Setext H2 lines: {:?}",
+            setext_lines.iter().map(line_text).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            atx_lines.len(),
+            setext_lines.len(),
+            "ATX: {:?}, Setext: {:?}",
             atx_lines.iter().map(line_text).collect::<Vec<_>>(),
-            setext_lines.iter().map(line_text).collect::<Vec<_>>());
-        assert!(!setext_lines.iter().map(line_text).any(|t| t.contains('─')),
-            "Setext H2 should not have a horizontal rule: {:?}", 
-            setext_lines.iter().map(line_text).collect::<Vec<_>>());
+            setext_lines.iter().map(line_text).collect::<Vec<_>>()
+        );
+        assert!(
+            !setext_lines.iter().map(line_text).any(|t| t.contains('─')),
+            "Setext H2 should not have a horizontal rule: {:?}",
+            setext_lines.iter().map(line_text).collect::<Vec<_>>()
+        );
     }
 }

@@ -1497,12 +1497,9 @@ Cat
 
 - Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
 
-- Add undo/redo to hint line
-- Add `Ctrl-Shift-z` additional binding for undo
-
 - Config warnings modal is too short. Make it bigger.
 
-- H2 denoted with `---` underline should not have a horizontal rule. Should be rendered the same as `## H2`
+- Table buttons should be on by default
 
 - Implement a dedicated theme selection modal and remove the theme picker from the settings overlay. Add an action `Switch theme` to the command palette that opens the theme modal.
 
@@ -1512,10 +1509,6 @@ feat(scrolling): scroll by visual row across wrapped lines
 - update preview, rendered, raw, mouse, image, link, and table paths to map visual rows back to wrapped lines
 - add regression coverage for scrolling into the middle of wrapped lines
 ### Theme issues
-- I don't think inline code should be purple. Purple does not say "this is code" to me and we have a lot of other purple elements now. What's a good color for code?
-- table stripe is too bright
-- completed checkbox is not green enough
-- code block bg should be darker I think
 - Code blocks in Markdown cheat sheet have same bg as modal, so it looks like there's no bg
 - Nested block quote should be bright structural to match the level 1 block quote's dim structural
 - block quote text should be purple as well
