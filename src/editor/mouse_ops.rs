@@ -1998,9 +1998,7 @@ pub fn paragraph_raw_col_to_rendered_col(
 /// Caller is responsible for falling back to a 1:1 mapping when the
 /// returned length doesn't match the actual rendered char count of the
 /// line (e.g. for headings/list items/blockquotes whose rendered prefix
-/// glyphs aren't represented in the raw text, or for `==highlight==`
-/// spans which are post-processed by our parser and not visible to
-/// `pulldown-cmark`).
+/// glyphs aren't represented in the raw text).
 fn rendered_to_raw_char_map(raw_line: &str) -> Vec<usize> {
     use pulldown_cmark::{Event, Options, Parser};
 
@@ -2035,11 +2033,38 @@ fn rendered_to_raw_char_map(raw_line: &str) -> Vec<usize> {
         };
 
         match event {
-            Event::Text(s) => {
-                let mut byte = range.start;
-                for c in s.chars() {
-                    map.push(lookup(byte));
-                    byte += c.len_utf8();
+            Event::Text(_s) => {
+                let slice_end = range.end.min(raw_line.len());
+                let raw_slice = &raw_line[range.start..slice_end];
+                let mut byte_cursor = range.start;
+                let mut rest = raw_slice;
+                loop {
+                    match rest.find("==") {
+                        None => break,
+                        Some(start) => {
+                            let after_open = &rest[start + 2..];
+                            match after_open.find("==") {
+                                None => break,
+                                Some(rel_end) => {
+                                    for c in rest[..start].chars() {
+                                        map.push(lookup(byte_cursor));
+                                        byte_cursor += c.len_utf8();
+                                    }
+                                    byte_cursor += 2; // skip opening ==
+                                    for c in after_open[..rel_end].chars() {
+                                        map.push(lookup(byte_cursor));
+                                        byte_cursor += c.len_utf8();
+                                    }
+                                    byte_cursor += 2; // skip closing ==
+                                    rest = &after_open[rel_end + 2..];
+                                }
+                            }
+                        }
+                    }
+                }
+                for c in rest.chars() {
+                    map.push(lookup(byte_cursor));
+                    byte_cursor += c.len_utf8();
                 }
             }
             // Code spans render as `" <inner> "` — the opening and closing
@@ -2406,5 +2431,61 @@ mod tests {
         // pulldown-cmark map only covers "Heading" (7 chars) while the
         // rendered line has 9 chars.  Mismatch → None.
         assert_eq!(paragraph_raw_col_to_rendered_col(raw, &lines[0], 5), None,);
+    }
+
+    /// `==highlight==` markers are stripped by the renderer, so the map
+    /// must skip the `==` characters to keep click alignment correct.
+    #[test]
+    fn rendered_to_raw_map_highlight_skips_markers() {
+        let map = rendered_to_raw_char_map("alpha ==beta== gamma");
+        // Rendered: "alpha beta gamma" = 16 chars; +1 sentinel = 17 entries.
+        assert_eq!(map.len(), 17);
+        // "alpha " maps 1:1 (raw chars 0..6).
+        assert_eq!(&map[..6], &[0, 1, 2, 3, 4, 5]);
+        // "beta" maps to raw chars 8..12 (skipping the opening `==`).
+        assert_eq!(&map[6..10], &[8, 9, 10, 11]);
+        // " gamma" maps to raw chars 14..20 (skipping the closing `==`).
+        assert_eq!(&map[10..16], &[14, 15, 16, 17, 18, 19]);
+        // Sentinel points past the last raw char.
+        assert_eq!(map[16], 20);
+    }
+
+    /// Clicking inside a `==highlight==` span should land on the correct
+    /// raw character rather than being off-by-two because of the markers.
+    #[test]
+    fn click_in_highlight_places_cursor_correctly() {
+        let text = "alpha ==beta== gamma\n";
+        let mut state = EditorState::new(Buffer::from_str(text), theme());
+        state.mode = Mode::Rendered;
+        let mut target: Option<DragTarget> = None;
+        // Rendered line: "alpha beta gamma"
+        // Click on the 't' in "beta" — rendered col 8.
+        apply(&mut state, click_plain(8, 0), &mut target, &[], 10, 80);
+        // Raw char 10 is 't' (0 a,1 l,2 p,3 h,4 a,5 space,6 =,7 =,8 b,9 e,10 t).
+        assert_eq!(state.cursor.offset, 10);
+    }
+
+    /// Round-trip for highlights: every rendered col should map back to
+    /// itself through `paragraph_raw_col_to_rendered_col`.
+    #[test]
+    fn paragraph_raw_col_round_trips_for_highlight() {
+        use crate::markdown::{parse, Renderer};
+        let raw = "alpha ==beta== gamma";
+        let blocks = parse(&format!("{raw}\n"));
+        let renderer = Renderer::new(theme()).with_viewport_width(80);
+        let lines = renderer.render(&blocks);
+        let rendered = &lines[0];
+
+        let forward = rendered_to_raw_char_map(raw);
+        for rendered_col in 0..forward.len().saturating_sub(1) {
+            let raw_col = forward[rendered_col];
+            let round_tripped = paragraph_raw_col_to_rendered_col(raw, rendered, raw_col);
+            assert_eq!(
+                round_tripped,
+                Some(rendered_col),
+                "round-trip failed at rendered col {rendered_col}: raw {raw_col} \
+                 → {round_tripped:?} (expected Some({rendered_col}))",
+            );
+        }
     }
 }

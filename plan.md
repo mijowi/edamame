@@ -1504,14 +1504,13 @@ Cat
 
 - H2 denoted with `---` underline should not have a horizontal rule. Should be rendered the same as `## H2`
 
-- Clicking in a `==highlight==` does not put the cursor on the right character due to the offset of the hidden characters
-
-- In indented headings, e.g. `   Heading 2`, the white space of the indent is getting underlined as well as the text. Only the text should be underlined.
-
-- Implement dedicated theme selection modal. Remove theme from settings overlay. Add action to set theme from command palette.
+- Implement a dedicated theme selection modal and remove the theme picker from the settings overlay. Add an action `Switch theme` to the command palette that opens the theme modal.
 
 - Images are padded with the `Reset` terminal background instead of the theme background.
-
+feat(scrolling): scroll by visual row across wrapped lines
+- treat editor scroll offsets as visual rows instead of logical/rendered line indices
+- update preview, rendered, raw, mouse, image, link, and table paths to map visual rows back to wrapped lines
+- add regression coverage for scrolling into the middle of wrapped lines
 ### Theme issues
 - I don't think inline code should be purple. Purple does not say "this is code" to me and we have a lot of other purple elements now. What's a good color for code?
 - table stripe is too bright

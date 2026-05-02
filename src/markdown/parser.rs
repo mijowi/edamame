@@ -962,6 +962,17 @@ mod tests {
     }
 
     #[test]
+    fn setext_h2_is_heading_not_rule() {
+        let blocks = parse("H2 text\n---\n");
+        eprintln!("setext H2 blocks: {:?}", blocks);
+        assert!(
+            matches!(&blocks[0], Block::Heading { level: HeadingLevel::H2, .. }),
+            "expected H2 heading, got: {:?}",
+            blocks
+        );
+    }
+
+    #[test]
     fn parse_paragraph() {
         let blocks = parse("Hello world\n");
         assert!(matches!(&blocks[0], Block::Paragraph { inlines } if !inlines.is_empty()));
