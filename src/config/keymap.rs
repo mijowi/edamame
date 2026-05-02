@@ -398,6 +398,61 @@ pub fn parse_key(s: &str) -> Result<KeyEvent, KeyMapError> {
     Ok(KeyEvent::new(code, modifiers))
 }
 
+/// Render `ev` as a compact glyph-based chord string suitable for the
+/// bottom-region hint line, where horizontal space is at a premium.
+/// Modifiers collapse to single characters (`^` / `⌥` / `⇧`) and
+/// non-printable keys use Unicode glyphs (`↑` / `↓` / `←` / `→` / `↵`
+/// / `⇥` / `⌫`).  Mirrors [`format_key`] for everything else.
+///
+/// This is the inverse of how the hint line *used* to hardcode chord
+/// glyphs — by going through this formatter, the displayed chord
+/// always tracks whatever the live `KeyMap` has bound for the action.
+pub fn format_key_compact(ev: &KeyEvent) -> String {
+    let mut out = String::new();
+    if ev.modifiers.contains(KeyModifiers::CONTROL) {
+        out.push('^');
+    }
+    if ev.modifiers.contains(KeyModifiers::ALT) {
+        out.push('⌥');
+    }
+    let suffix = match ev.code {
+        KeyCode::Char(' ') => "Space".to_owned(),
+        KeyCode::Char(c) => {
+            if c.is_ascii_alphabetic() {
+                c.to_ascii_uppercase().to_string()
+            } else {
+                c.to_string()
+            }
+        }
+        KeyCode::Up => "↑".to_owned(),
+        KeyCode::Down => "↓".to_owned(),
+        KeyCode::Left => "←".to_owned(),
+        KeyCode::Right => "→".to_owned(),
+        KeyCode::Enter => "↵".to_owned(),
+        KeyCode::Tab => "⇥".to_owned(),
+        // BackTab is the terminal's representation of Shift+Tab — collapse
+        // to the canonical `⇧⇥` glyph so it reads the same regardless of
+        // which form the source `KeyEvent` used.
+        KeyCode::BackTab => "⇥".to_owned(),
+        KeyCode::Backspace => "⌫".to_owned(),
+        KeyCode::Delete => "Del".to_owned(),
+        KeyCode::Esc => "Esc".to_owned(),
+        KeyCode::Home => "Home".to_owned(),
+        KeyCode::End => "End".to_owned(),
+        KeyCode::PageUp => "PgUp".to_owned(),
+        KeyCode::PageDown => "PgDn".to_owned(),
+        KeyCode::Insert => "Ins".to_owned(),
+        KeyCode::F(n) => format!("F{n}"),
+        other => format!("{:?}", other),
+    };
+    let shift = ev.modifiers.contains(KeyModifiers::SHIFT) || ev.code == KeyCode::BackTab;
+    if shift {
+        out.push('⇧');
+    }
+    out.push_str(&suffix);
+    out
+}
+
 /// Render `ev` as a human-readable key string roughly matching what
 /// [`parse_key`] accepts.  Used by the Phase 9 cheat-sheet popover to
 /// display bindings; the inverse of `parse_key` is good enough here
@@ -513,6 +568,16 @@ impl KeyMap {
             .iter()
             .find(|(_, a)| *a == action)
             .map(|(k, _)| format_key(k))
+    }
+
+    /// Like [`KeyMap::first_key_for`] but returns the raw `KeyEvent` so
+    /// callers can apply their own formatter (e.g. the bottom-region
+    /// hint line uses `format_key_compact` instead of `format_key`).
+    pub fn first_key_event_for(&self, action: &Action) -> Option<KeyEvent> {
+        self.bindings
+            .iter()
+            .find(|(_, a)| *a == action)
+            .map(|(k, _)| *k)
     }
 
     /// Iterate every `(KeyEvent, Action)` binding.  Exposed so the

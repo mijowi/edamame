@@ -6,6 +6,7 @@
 //! or preempted by a modal prompt.  In compact mode only the status
 //! line renders.
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
@@ -13,7 +14,8 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
-use crate::config::{StatusBarLayout, Theme};
+use crate::config::keymap::format_key_compact;
+use crate::config::{Action, KeyMap, StatusBarLayout, Theme};
 use crate::editor::{EditorState, Mode};
 
 use super::status_bar::{StatusBar, StatusBarState};
@@ -74,39 +76,41 @@ pub enum HintContent {
 /// Markdown context.  Pure function so it can be unit-tested without
 /// spinning up a terminal.
 ///
+/// Chord glyphs are looked up dynamically from `keymap` so that
+/// rebinds applied through the keybinds overlay (or via
+/// `keybindings.toml`) appear in the hint line on the very next
+/// frame — no chord text is hardcoded.  Chords for actions that the
+/// user has unbound are silently dropped from the row.
+///
 /// Priority: table (Rendered only) > task-list item > mode-default.
 /// Tables don't appear in Raw mode because the table-editing chords
 /// don't work against the raw source — the user is editing the plain
 /// Markdown and `Tab` / `⌥↑↓` insert characters or do nothing.
-pub fn hint_line_for(state: &EditorState) -> HintSet {
+pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
     match state.mode {
         Mode::Preview => HintSet {
             prelude: Some("Press any key to edit".to_owned()),
-            chords: vec![
-                HintChord::new("^P", "Menu"),
-                HintChord::new("^C", "Copy"),
-                HintChord::new("^Q", "Quit"),
-            ],
+            chords: chords_from(
+                keymap,
+                &[
+                    (Action::ShowCommandPalette, "Menu"),
+                    (Action::Copy, "Copy"),
+                    (Action::Quit, "Quit"),
+                ],
+            ),
         },
         Mode::Rendered if cursor_in_table(state) => HintSet {
             prelude: None,
-            chords: vec![
-                HintChord::new("⇥", "Next cell"),
-                HintChord::new("⇧⇥", "Prev cell"),
-                HintChord::new("⌥↑↓←→", "Move row/col"),
-                HintChord::new("⌥⇧↑↓←→", "Insert row/col"),
-                HintChord::new("⌥⌫", "Del row"),
-                HintChord::new("⌥⇧⌫", "Del col"),
-            ],
+            chords: table_chords(keymap),
         },
         Mode::Rendered | Mode::Raw => {
             // Baseline edit-mode hints — Menu anchors the row so
-            // Ctrl-P is always the discovery chord; Cut / Copy /
-            // Paste in keyboard-shortcut alphabetical order; Save;
-            // view-mode toggle; Quit.  The view-mode chord label
-            // flips with the current mode (Rendered → "Raw",
-            // Raw → "Render") so the label always describes the
-            // destination, not the current state.
+            // the command-palette chord is always the discovery
+            // entry; Cut / Copy / Paste in keyboard-shortcut
+            // alphabetical order; Save; view-mode toggle; Quit.
+            // The view-mode chord label flips with the current mode
+            // (Rendered → "Raw", Raw → "Render") so the label always
+            // describes the destination, not the current state.
             //
             // Contextual chords (those that only make sense on
             // specific characters) are prepended to the front of the
@@ -120,24 +124,31 @@ pub fn hint_line_for(state: &EditorState) -> HintSet {
                 Mode::Raw => "Render",
                 _ => "Raw",
             };
-            let mut chords = vec![
-                HintChord::new("^P", "Menu"),
-                HintChord::new("^X", "Cut"),
-                HintChord::new("^C", "Copy"),
-                HintChord::new("^V", "Paste"),
-                HintChord::new("^S", "Save"),
-                HintChord::new("^`", view_toggle_label),
-                HintChord::new("^Q", "Quit"),
-            ];
+            let mut chords = chords_from(
+                keymap,
+                &[
+                    (Action::ShowCommandPalette, "Menu"),
+                    (Action::Cut, "Cut"),
+                    (Action::Copy, "Copy"),
+                    (Action::Paste, "Paste"),
+                    (Action::Save, "Save"),
+                    (Action::ToggleRawMode, view_toggle_label),
+                    (Action::Quit, "Quit"),
+                ],
+            );
             // Insertion order here matters for the final layout:
             // the later insert pushes the earlier one back by one
             // slot.  Link first, then Toggle → when both are active
             // the final order is Link, Toggle, Menu, ...
             if cursor_on_task_item(state) {
-                chords.insert(0, HintChord::new("^Space", "Toggle"));
+                if let Some(c) = chord_for(keymap, &Action::ToggleCheckbox, "Toggle") {
+                    chords.insert(0, c);
+                }
             }
             if cursor_on_link(state) {
-                chords.insert(0, HintChord::new("^↵", "Open link"));
+                if let Some(c) = chord_for(keymap, &Action::FollowLinkUnderCursor, "Open link") {
+                    chords.insert(0, c);
+                }
             }
             HintSet {
                 prelude: None,
@@ -145,6 +156,119 @@ pub fn hint_line_for(state: &EditorState) -> HintSet {
             }
         }
     }
+}
+
+/// Look up the first key bound to `action` in `keymap` and pair it
+/// with `label`.  Returns `None` when the action is unbound — the
+/// caller drops unbound entries from the hint row entirely.
+fn chord_for(keymap: &KeyMap, action: &Action, label: &str) -> Option<HintChord> {
+    let ev = keymap.first_key_event_for(action)?;
+    Some(HintChord::new(format_key_compact(&ev), label.to_owned()))
+}
+
+/// Convenience — apply [`chord_for`] over a slice and collect the
+/// successful lookups in order.
+fn chords_from(keymap: &KeyMap, entries: &[(Action, &str)]) -> Vec<HintChord> {
+    entries
+        .iter()
+        .filter_map(|(action, label)| chord_for(keymap, action, label))
+        .collect()
+}
+
+/// Build the table-context hint row.  When the four arrow-driven
+/// actions of a bundle (`Move row/col`, `Insert row/col`) all share
+/// modifiers and arrow key codes, we collapse them into a single
+/// glyph (`⌥↑↓←→`) — the visually compact shape the user already
+/// learns from the default keymap.  When the user has rebound any of
+/// the four to a non-arrow chord, we fall back to listing the four
+/// chords joined by `/` so the badge still reflects what's actually
+/// bound.
+fn table_chords(keymap: &KeyMap) -> Vec<HintChord> {
+    let mut out: Vec<HintChord> = Vec::new();
+    // "Next cell" reuses InsertTab's chord because table next-cell is
+    // a context dispatch from InsertTab in `edit_ops`.  Looking up
+    // InsertTab keeps the displayed chord truthful even if the user
+    // rebinds Tab to something exotic.
+    if let Some(c) = chord_for(keymap, &Action::InsertTab, "Next cell") {
+        out.push(c);
+    }
+    if let Some(c) = chord_for(keymap, &Action::TablePrevCell, "Prev cell") {
+        out.push(c);
+    }
+    if let Some(badge) = arrow_bundle_chord(
+        keymap,
+        &Action::TableMoveRowUp,
+        &Action::TableMoveRowDown,
+        &Action::TableMoveColumnLeft,
+        &Action::TableMoveColumnRight,
+    ) {
+        out.push(HintChord::new(badge, "Move row/col"));
+    }
+    if let Some(badge) = arrow_bundle_chord(
+        keymap,
+        &Action::TableInsertRowAbove,
+        &Action::TableInsertRowBelow,
+        &Action::TableInsertColumnLeft,
+        &Action::TableInsertColumnRight,
+    ) {
+        out.push(HintChord::new(badge, "Insert row/col"));
+    }
+    if let Some(c) = chord_for(keymap, &Action::TableDeleteRow, "Del row") {
+        out.push(c);
+    }
+    if let Some(c) = chord_for(keymap, &Action::TableDeleteColumn, "Del col") {
+        out.push(c);
+    }
+    out
+}
+
+/// Compose a single chord glyph for an arrow-driven bundle (e.g.
+/// `⌥↑↓←→` for the four `TableMoveRow*` / `TableMoveColumn*`
+/// actions).  Returns the bundled glyph when all four chords share
+/// modifiers AND each maps to its expected arrow direction; falls
+/// back to a slash-joined list of compact chords otherwise.  Returns
+/// `None` only when none of the four actions is bound — there's
+/// nothing to display in that case.
+fn arrow_bundle_chord(
+    keymap: &KeyMap,
+    up: &Action,
+    down: &Action,
+    left: &Action,
+    right: &Action,
+) -> Option<String> {
+    let bound: Vec<KeyEvent> = [up, down, left, right]
+        .iter()
+        .filter_map(|a| keymap.first_key_event_for(a))
+        .collect();
+    if bound.is_empty() {
+        return None;
+    }
+    let modifiers_match = bound.iter().all(|e| e.modifiers == bound[0].modifiers);
+    let arrows_match = bound.len() == 4
+        && bound[0].code == KeyCode::Up
+        && bound[1].code == KeyCode::Down
+        && bound[2].code == KeyCode::Left
+        && bound[3].code == KeyCode::Right;
+    if modifiers_match && arrows_match {
+        let mut prefix = String::new();
+        if bound[0].modifiers.contains(KeyModifiers::CONTROL) {
+            prefix.push('^');
+        }
+        if bound[0].modifiers.contains(KeyModifiers::ALT) {
+            prefix.push('⌥');
+        }
+        if bound[0].modifiers.contains(KeyModifiers::SHIFT) {
+            prefix.push('⇧');
+        }
+        return Some(format!("{prefix}↑↓←→"));
+    }
+    Some(
+        bound
+            .iter()
+            .map(format_key_compact)
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
 }
 
 /// Lay out a chord list into spans.  Always renders every chord with
@@ -320,7 +444,7 @@ fn cursor_on_link(state: &EditorState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Theme;
+    use crate::config::{KeyBindingOverrides, Theme};
     use crate::document::Buffer;
     use crate::editor::{EditorState, Mode};
     use ratatui::{backend::TestBackend, Terminal};
@@ -333,12 +457,16 @@ mod tests {
         EditorState::new(Buffer::from_str(text), theme())
     }
 
+    fn keymap() -> KeyMap {
+        KeyMap::build(&KeyBindingOverrides::default()).unwrap()
+    }
+
     // ── hint_line_for ─────────────────────────────────────────────
 
     #[test]
     fn preview_hint_has_prelude_and_menu_first() {
         let st = state("hello");
-        let set = hint_line_for(&st);
+        let set = hint_line_for(&st, &keymap());
         assert_eq!(set.prelude.as_deref(), Some("Press any key to edit"));
         assert_eq!(set.chords[0].chord, "^P");
         assert_eq!(set.chords[0].label, "Menu");
@@ -349,7 +477,7 @@ mod tests {
     fn rendered_hint_has_save_and_copy_and_raw() {
         let mut st = state("hello");
         st.mode = Mode::Rendered;
-        let set = hint_line_for(&st);
+        let set = hint_line_for(&st, &keymap());
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(set.chords[0].chord, "^P", "Menu is always first");
         assert!(labels.contains(&"Cut"));
@@ -374,7 +502,7 @@ mod tests {
     fn raw_mode_flips_view_toggle_label_to_render() {
         let mut st = state("hello");
         st.mode = Mode::Raw;
-        let set = hint_line_for(&st);
+        let set = hint_line_for(&st, &keymap());
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(
             labels.contains(&"Render"),
@@ -389,14 +517,14 @@ mod tests {
         st.mode = Mode::Rendered;
         // Cursor in the "site" link text → on a link.
         st.cursor.offset = 5;
-        let on_link = hint_line_for(&st);
+        let on_link = hint_line_for(&st, &keymap());
         assert_eq!(
             on_link.chords[0].label, "Open link",
             "contextual link hint must lead the row"
         );
         // Cursor in the trailing plain-text tail → not on a link.
         st.cursor.offset = 32;
-        let off_link = hint_line_for(&st);
+        let off_link = hint_line_for(&st, &keymap());
         assert!(
             !off_link.chords.iter().any(|c| c.label == "Open link"),
             "Open link hint leaked outside the link span"
@@ -411,7 +539,7 @@ mod tests {
         let mut st = state("- [ ] see [docs](https://example.com)\n");
         st.mode = Mode::Rendered;
         st.cursor.offset = 14; // inside "docs"
-        let set = hint_line_for(&st);
+        let set = hint_line_for(&st, &keymap());
         assert_eq!(set.chords[0].label, "Open link");
         assert_eq!(set.chords[1].label, "Toggle");
         assert_eq!(
@@ -424,7 +552,7 @@ mod tests {
     fn cut_comes_before_copy_in_edit_hints() {
         let mut st = state("hello");
         st.mode = Mode::Rendered;
-        let set = hint_line_for(&st);
+        let set = hint_line_for(&st, &keymap());
         let cut_idx = set.chords.iter().position(|c| c.label == "Cut").unwrap();
         let copy_idx = set.chords.iter().position(|c| c.label == "Copy").unwrap();
         assert!(cut_idx < copy_idx, "Cut must be listed before Copy");
@@ -436,7 +564,7 @@ mod tests {
         let mut st = state("- a\n- b\n");
         st.mode = Mode::Rendered;
         st.cursor.offset = 2;
-        let set = hint_line_for(&st);
+        let set = hint_line_for(&st, &keymap());
         assert!(
             !set.chords.iter().any(|c| c.label == "Toggle"),
             "regular list items have no checkbox to toggle"
@@ -449,7 +577,7 @@ mod tests {
         let mut st = state("- [ ] todo\n");
         st.mode = Mode::Rendered;
         st.cursor.offset = 8;
-        let set = hint_line_for(&st);
+        let set = hint_line_for(&st, &keymap());
         assert_eq!(set.chords[0].chord, "^Space");
         assert_eq!(set.chords[0].label, "Toggle");
     }
@@ -460,7 +588,7 @@ mod tests {
         let mut st = state(source);
         st.mode = Mode::Raw;
         st.cursor.offset = 22;
-        let set = hint_line_for(&st);
+        let set = hint_line_for(&st, &keymap());
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(
             !labels.iter().any(|l| l.contains("cell")),
@@ -470,12 +598,95 @@ mod tests {
     }
 
     #[test]
+    fn rebinding_action_updates_chord_in_hint_line() {
+        // Move ShowCommandPalette off Ctrl-P onto F1 via the same
+        // `KeyMap::rebind` call the keybinds overlay uses — which
+        // (unlike the load-time merge in `KeyMap::build`) drops the
+        // prior key for the action.  The Menu chord must follow.
+        let mut km = keymap();
+        let mut overrides = KeyBindingOverrides::default();
+        km.rebind(&Action::ShowCommandPalette, "f1", &mut overrides)
+            .unwrap();
+        let mut st = state("hello");
+        st.mode = Mode::Rendered;
+        let set = hint_line_for(&st, &km);
+        let menu = set
+            .chords
+            .iter()
+            .find(|c| c.label == "Menu")
+            .expect("Menu hint must still appear after rebind");
+        assert_eq!(
+            menu.chord, "F1",
+            "hint chord must reflect the live binding, got: {menu:?}"
+        );
+        assert!(
+            !set.chords.iter().any(|c| c.chord == "^P"),
+            "stale ^P chord leaked into hint row: {:?}",
+            set.chords
+        );
+    }
+
+    #[test]
+    fn unbinding_an_action_drops_its_chord_from_the_row() {
+        // Steal Save's `Ctrl-S` slot by rebinding Quit onto it; the
+        // override hands Ctrl-S to Quit and leaves Save without a
+        // binding.  The Save chord must vanish from the hint row
+        // entirely (not render as a blank chord).
+        let mut overrides = KeyBindingOverrides::default();
+        overrides.0.insert("Quit".into(), "ctrl+s".into());
+        let km = KeyMap::build(&overrides).unwrap();
+        assert!(
+            km.first_key_event_for(&Action::Save).is_none(),
+            "test premise: Save must be orphaned by the rebind"
+        );
+        let mut st = state("hello");
+        st.mode = Mode::Rendered;
+        let set = hint_line_for(&st, &km);
+        let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
+        assert!(
+            !labels.contains(&"Save"),
+            "unbound Save must drop from the hint row, got: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn arrow_bundle_falls_back_to_slash_list_when_modifiers_diverge() {
+        // Rebind one of the four `Move row/col` arrow actions through
+        // the in-app rebind path so the prior arrow binding is
+        // dropped — the bundle can no longer collapse to `⌥↑↓←→`,
+        // and the badge must list the four bound chords joined by
+        // `/`.
+        let mut km = keymap();
+        let mut overrides = KeyBindingOverrides::default();
+        km.rebind(&Action::TableMoveRowUp, "ctrl+shift+u", &mut overrides)
+            .unwrap();
+        let source = "| a | b |\n| - | - |\n| c | d |\n";
+        let mut st = state(source);
+        st.mode = Mode::Rendered;
+        st.cursor.offset = 22;
+        let set = hint_line_for(&st, &km);
+        let move_chord = set
+            .chords
+            .iter()
+            .find(|c| c.label == "Move row/col")
+            .expect("Move row/col bundle must remain");
+        assert!(
+            move_chord.chord.contains('/'),
+            "fallback bundle must slash-join individual chords, got: {move_chord:?}"
+        );
+        assert!(
+            move_chord.chord.contains("^⇧U"),
+            "rebound chord must appear in the bundle, got: {move_chord:?}"
+        );
+    }
+
+    #[test]
     fn rendered_table_cursor_shows_table_chords() {
         let source = "| a | b |\n| - | - |\n| c | d |\n";
         let mut st = state(source);
         st.mode = Mode::Rendered;
         st.cursor.offset = 22;
-        let set = hint_line_for(&st);
+        let set = hint_line_for(&st, &keymap());
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.iter().any(|l| l.contains("cell")));
         assert!(labels.iter().any(|l| l.contains("row")));

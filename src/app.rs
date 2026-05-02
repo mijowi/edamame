@@ -704,7 +704,23 @@ impl App {
                 style,
             };
         }
-        HintContent::Chords(hint_line_for(&self.editor))
+        // Look up chord glyphs against the live KeyMap so any rebind
+        // applied via the keybinds overlay shows up in the hint line
+        // on the very next frame.  Falls back to the compiled-in
+        // defaults during the brief window between `App::new` and the
+        // first `KeyMap::build` in `run` — that path runs only when
+        // building the override-aware keymap fails for unrelated
+        // reasons, and the default keymap always builds.
+        let fallback;
+        let keymap = match self.keymap.as_ref() {
+            Some(km) => km,
+            None => {
+                fallback = KeyMap::build(&KeyBindingOverrides::default())
+                    .expect("default keymap always builds");
+                &fallback
+            }
+        };
+        HintContent::Chords(hint_line_for(&self.editor, keymap))
     }
 
     /// Record that the scroll position has just changed; used by the
