@@ -131,6 +131,8 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
                     (Action::Cut, "Cut"),
                     (Action::Copy, "Copy"),
                     (Action::Paste, "Paste"),
+                    (Action::Undo, "Undo"),
+                    (Action::Redo, "Redo"),
                     (Action::Save, "Save"),
                     (Action::ToggleRawMode, view_toggle_label),
                     (Action::Quit, "Quit"),

@@ -690,7 +690,7 @@ impl KeyMap {
 
         // History (Phase 1)
         bind!("ctrl+z", Action::Undo);
-        bind!("ctrl+y", Action::Redo);
+        bind!("ctrl+shift+z", Action::Redo);
 
         // Clipboard (Phase 1)
         // Ctrl-C → Copy (not Quit). The app intercepts Ctrl-C in crossterm
