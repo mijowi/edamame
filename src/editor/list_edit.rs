@@ -387,15 +387,23 @@ pub fn continue_item(info: &ListInfo, source: &str, cursor_byte: usize) -> Optio
     })
 }
 
-/// Build an `EditDelta` that exits the list by removing the empty item's
-/// marker prefix, leaving a blank line in its place.  The caller should
-/// invoke this when `Enter` is pressed on an item whose content is empty.
+/// Build an `EditDelta` that breaks the list at the cursor's empty item.
+/// The caller is expected to invoke this only after a blank line has
+/// already been positioned directly above the empty item — i.e. as the
+/// final step of the triple-`Enter` list-break sequence
+/// (`continue_item` → [`space_out_empty_item`] → `exit_list`).  When
+/// `blank_above` is `true` the function leaves the existing blank line
+/// in place and simply strips the empty marker; when called without a
+/// blank line above (e.g. from a direct unit test), it inserts a single
+/// newline so the surviving head and any trailing items end up
+/// separated by one blank line — which the parser's blank-line list
+/// split treats as a list-fragmenting boundary.
 ///
-/// When there are remaining items below the empty exit item AND the list is
-/// ordered, those trailing items are rewritten so their numbering restarts
-/// at 1 — combined with the parser's blank-line list split, this means
-/// `Enter`-twice on a list visually produces two distinct ordered lists.
-/// Bullet lists need no renumbering.
+/// When there are remaining items below the empty exit item AND the list
+/// is ordered, those trailing items are rewritten so their numbering
+/// restarts at 1.  Combined with the parser's blank-line list split, the
+/// trailing items render as a separate ordered list with their own
+/// numbering.  Bullet lists need no renumbering.
 pub fn exit_list(info: &ListInfo, source: &str, cursor_byte: usize) -> Option<ContinueResult> {
     let item_idx = cursor_item_idx(info, cursor_byte)?;
     let item = &info.items[item_idx];
@@ -404,14 +412,21 @@ pub fn exit_list(info: &ListInfo, source: &str, cursor_byte: usize) -> Option<Co
     }
 
     let trailing = &info.items[item_idx + 1..];
+    let blank_above = is_blank_line_above(source, item.start);
 
     if trailing.is_empty() {
-        // No items below — replace the empty item with a single `\n`.
-        // Cursor lands at item.start + 1 to preserve the established
-        // "land on the line below the blank" convention.
+        // No items below.  When a blank line already sits above the empty
+        // item, stripping the marker is enough — the existing blank plus
+        // the cursor's now-empty line produce the two-lines-below-the-list
+        // resting state.  Without that blank, we fall back to the older
+        // "replace the marker with a single newline" behaviour so direct
+        // callers (and edge-case unit tests) still get a sensible result.
         let removed = source[item.start..item.end].to_owned();
-        let inserted = "\n".to_owned();
-        let cursor_target = item.start + 1;
+        let (inserted, cursor_target) = if blank_above {
+            (String::new(), item.start)
+        } else {
+            ("\n".to_owned(), item.start + 1)
+        };
         return Some(ContinueResult {
             delta: EditDelta {
                 offset: item.start,
@@ -422,12 +437,18 @@ pub fn exit_list(info: &ListInfo, source: &str, cursor_byte: usize) -> Option<Co
         });
     }
 
-    // Items remain after the empty exit item.  Replace from item.start
-    // through info.end with a blank line followed by the trailing items.
-    // For ordered lists, renumber trailing items starting from 1 so the
-    // post-blank-line group renders as its own list under the parser's
-    // blank-line split.
-    let mut inserted = String::from("\n");
+    // Items remain after the empty exit item.  The post-pass splits
+    // lists at any blank line outside fenced code blocks, so a single
+    // blank line between the surviving head and the renumbered trailing
+    // items is enough to make the parser split them into two visually
+    // distinct lists.  When a blank line is already sitting above the
+    // empty item it can carry the gap by itself; otherwise we insert
+    // exactly one newline.
+    let mut inserted = if blank_above {
+        String::new()
+    } else {
+        String::from("\n")
+    };
     match info.kind {
         MarkerKind::Ordered(delim) => {
             for (k, trailing_item) in trailing.iter().enumerate() {
@@ -446,8 +467,17 @@ pub fn exit_list(info: &ListInfo, source: &str, cursor_byte: usize) -> Option<Co
     }
 
     let removed = source[item.start..info.end].to_owned();
-    // Cursor at item.start lands on the start of the new blank line.
-    let cursor_target = item.start;
+    // The cursor lands on the blank line that separates the surviving
+    // head from the renumbered trailing list.  With a pre-existing
+    // blank line above the empty item, that's the byte just before
+    // `item.start` (the `\n` that terminates the existing blank line);
+    // without one, the function inserted a newline at `item.start` and
+    // the cursor sits on it.
+    let cursor_target = if blank_above {
+        item.start.saturating_sub(1)
+    } else {
+        item.start
+    };
 
     Some(ContinueResult {
         delta: EditDelta {
@@ -457,6 +487,61 @@ pub fn exit_list(info: &ListInfo, source: &str, cursor_byte: usize) -> Option<Co
         },
         cursor_byte: cursor_target,
     })
+}
+
+/// Build an `EditDelta` that widens the gap above an already-empty list
+/// item by one blank line, keeping the empty item — and the cursor on it
+/// — in place.  This is the second step of the triple-`Enter`
+/// list-break sequence: the user has pressed `Enter` on a content-empty
+/// item, but a section break has not been requested yet, so the editor
+/// gives the user one more visual line of separation before committing
+/// to actually leaving the list on the next press.
+///
+/// Returns `None` if `cursor_byte` is not inside any item, or if the
+/// item at the cursor is not content-empty (callers should funnel
+/// non-empty items to [`continue_item`] instead).
+pub fn space_out_empty_item(
+    info: &ListInfo,
+    source: &str,
+    cursor_byte: usize,
+) -> Option<ContinueResult> {
+    let item_idx = cursor_item_idx(info, cursor_byte)?;
+    let item = &info.items[item_idx];
+    if !item.content_is_empty(source) {
+        return None;
+    }
+    Some(ContinueResult {
+        delta: EditDelta {
+            offset: item.start,
+            removed: String::new(),
+            inserted: "\n".to_owned(),
+        },
+        // Inserting one byte at `item.start` shifts every byte at or
+        // beyond it forward by one.  The cursor is by construction past
+        // the marker (i.e. >= item.start), so it shifts too.
+        cursor_byte: cursor_byte + 1,
+    })
+}
+
+/// True iff the line directly above `item_start` is empty (whitespace-only),
+/// or `item_start == 0`.  Treating "no line above" as blank means an empty
+/// list item that occupies the very first line of the buffer is exited
+/// immediately on `Enter` rather than spending a keystroke on a gap that
+/// has nowhere to go.
+pub fn is_blank_line_above(source: &str, item_start: usize) -> bool {
+    if item_start == 0 {
+        return true;
+    }
+    let bytes = source.as_bytes();
+    if item_start > bytes.len() || bytes[item_start - 1] != b'\n' {
+        return false;
+    }
+    let mut prev_line_start = item_start - 1;
+    while prev_line_start > 0 && bytes[prev_line_start - 1] != b'\n' {
+        prev_line_start -= 1;
+    }
+    let prev_line = &source[prev_line_start..item_start - 1];
+    prev_line.chars().all(char::is_whitespace)
 }
 
 /// Build an `EditDelta` that toggles the checkbox of the item at `cursor_byte`.
@@ -784,11 +869,12 @@ mod tests {
 
     #[test]
     fn exit_list_with_ordered_trailing_renumbers_from_one() {
-        // `1. a / 2. (empty cursor) / 3. b / 4. c` — pressing Enter should
-        // exit the empty item and renumber the trailing items starting at 1
-        // so the post-split renders as a fresh ordered list.
+        // `1. a / 2. (empty cursor) / 3. b / 4. c` — calling `exit_list`
+        // directly (no blank line above the empty item) inserts a
+        // single newline gap and renumbers the trailing items starting
+        // at 1.  The parser's blank-line list split then renders the
+        // tail as a fresh ordered list.
         let src = "1. a\n2. \n3. b\n4. c\n";
-        // cursor on the empty item line at byte 8 (just after `2. `).
         let info = info_at(src, 8);
         let res = exit_list(&info, src, 8).expect("exit");
         let mut out = src.to_owned();
@@ -797,6 +883,9 @@ mod tests {
             &res.delta.inserted,
         );
         assert_eq!(out, "1. a\n\n1. b\n2. c\n");
+        // Cursor lands on the inserted blank line that separates the
+        // surviving head from the renumbered trailing list.
+        assert_eq!(res.cursor_byte, 5);
     }
 
     #[test]
@@ -810,6 +899,86 @@ mod tests {
             &res.delta.inserted,
         );
         assert_eq!(out, "- a\n\n- b\n");
+        assert_eq!(res.cursor_byte, 4);
+    }
+
+    #[test]
+    fn exit_list_no_trailing_with_blank_above_strips_only_the_marker() {
+        // Triple-`Enter` end state from the dispatcher's perspective:
+        // `space_out_empty_item` has already inserted the blank line
+        // above the empty item, so `exit_list` only needs to strip the
+        // marker.  No extra newline is added — the blank above plus the
+        // cursor's now-empty line already provide the two-lines-below
+        // resting state.
+        let src = "- foo\n\n- ";
+        let info = info_at(src, 9);
+        let res = exit_list(&info, src, 9).expect("exit");
+        let mut out = src.to_owned();
+        out.replace_range(
+            res.delta.offset..res.delta.offset + res.delta.removed.len(),
+            &res.delta.inserted,
+        );
+        assert_eq!(out, "- foo\n\n");
+        assert_eq!(res.cursor_byte, 7);
+    }
+
+    #[test]
+    fn exit_list_with_blank_above_and_ordered_trailing_renumbers() {
+        // Mid-list triple-`Enter` end state for an ordered list: a blank
+        // line is already above the empty item, so `exit_list` simply
+        // strips the empty marker and renumbers the trailing items from
+        // 1.  The pre-existing blank line carries the parser's
+        // list-splitting gap between the surviving head and the
+        // renumbered tail; the cursor lands on it.
+        let src = "1. a\n2. b\n\n3. \n4. c\n";
+        let info = info_at(src, 12);
+        let res = exit_list(&info, src, 12).expect("exit");
+        let mut out = src.to_owned();
+        out.replace_range(
+            res.delta.offset..res.delta.offset + res.delta.removed.len(),
+            &res.delta.inserted,
+        );
+        assert_eq!(out, "1. a\n2. b\n\n1. c\n");
+        assert_eq!(res.cursor_byte, 10);
+    }
+
+    #[test]
+    fn space_out_empty_item_inserts_blank_line_above() {
+        // Second step of the triple-`Enter` sequence: `Enter` on an empty
+        // marker that has no blank line above pushes the marker (and the
+        // cursor on it) one line down, leaving the empty item itself in
+        // place ready for either real content or the third Enter.
+        let src = "- foo\n- ";
+        let info = info_at(src, 8);
+        let res = space_out_empty_item(&info, src, 8).expect("space");
+        let mut out = src.to_owned();
+        out.replace_range(
+            res.delta.offset..res.delta.offset + res.delta.removed.len(),
+            &res.delta.inserted,
+        );
+        assert_eq!(out, "- foo\n\n- ");
+        // Cursor moves down with the empty marker.
+        assert_eq!(res.cursor_byte, 9);
+    }
+
+    #[test]
+    fn space_out_empty_item_rejects_non_empty_item() {
+        // The dispatcher only routes empty items here, but be defensive:
+        // a non-empty item should fall through to `continue_item`.
+        let src = "- foo\n";
+        let info = info_at(src, 5);
+        assert!(space_out_empty_item(&info, src, 5).is_none());
+    }
+
+    #[test]
+    fn is_blank_line_above_recognises_blank_predecessor() {
+        // First-line items, items after a blank line, items at offsets
+        // that don't sit on a line boundary, and items preceded by
+        // non-blank content all need to be classified correctly.
+        assert!(is_blank_line_above("- foo", 0));
+        assert!(is_blank_line_above("- foo\n\n- bar", 7));
+        assert!(!is_blank_line_above("- foo\n- bar", 6));
+        assert!(!is_blank_line_above("text\n- foo", 5));
     }
 
     #[test]

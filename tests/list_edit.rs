@@ -7,7 +7,10 @@
 //! Coverage:
 //! - bullet list continuation (`-`, `*`, `+`)
 //! - numbered list continuation with correct next number
-//! - double-Enter exits the list (removes the empty marker; leaves a blank line)
+//! - triple-Enter list-break gesture: 1st Enter creates a new empty item,
+//!   2nd Enter widens the gap above it (single blank line between items
+//!   is allowed for readability), 3rd Enter strips the marker and breaks
+//!   the list, renumbering the trailing items of an ordered list from 1
 //! - inserting an item mid-list renumbers subsequent items
 //! - nested lists at multiple indentation levels
 //! - task list continuation (`- [ ] ` preserves the checkbox, new item is `[ ]`)
@@ -154,47 +157,125 @@ fn mid_item_split_in_ordered_list_renumbers() {
     assert_eq!(st.contents(), "1. alpha\n2. \n3. beta\n4. gamma\n");
 }
 
-// ─── Double-Enter exits the list ─────────────────────────────────────────────
+// ─── Triple-Enter breaks the list ────────────────────────────────────────────
 
 #[test]
-fn enter_on_empty_bullet_item_exits_the_list() {
-    // Two successive Enters: the first creates an empty "- " item, the second
-    // removes the marker and leaves a blank line separating the list from
-    // whatever follows.
+fn triple_enter_breaks_bullet_list_at_end() {
+    // 1st Enter: creates a new "- " on the next line.
+    // 2nd Enter: widens the gap above the empty marker by one blank line;
+    //            the marker (and the cursor on it) move down a line.
+    // 3rd Enter: strips the marker and parks the cursor on the blank
+    //            line two visual rows below the surviving "- foo".
     let src = "- foo\n";
     let mut st = editor_at_end_of_line(src, "- foo");
-    apply(&mut st, Action::Newline); // "- foo\n- "
-    apply(&mut st, Action::Newline); // should exit → "- foo\n\n"
+
+    apply(&mut st, Action::Newline);
+    assert_eq!(st.contents(), "- foo\n- \n");
+    assert_eq!(cursor_byte(&st), 8);
+
+    apply(&mut st, Action::Newline);
+    assert_eq!(st.contents(), "- foo\n\n- \n");
+    assert_eq!(cursor_byte(&st), 9);
+
+    apply(&mut st, Action::Newline);
     assert_eq!(st.contents(), "- foo\n\n");
-    // Cursor lands on the blank line (past the second \n).
-    let byte = cursor_byte(&st);
-    assert_eq!(byte, 7);
+    assert_eq!(cursor_byte(&st), 7);
 }
 
 #[test]
-fn enter_on_empty_ordered_item_exits_the_list() {
+fn triple_enter_breaks_ordered_list_at_end() {
+    // Same gesture for ordered lists: the empty `2. ` first appears, then
+    // is pushed down a line, then is stripped along with its trailing
+    // newline so the cursor settles two lines below "1. foo".
     let src = "1. foo\n";
     let mut st = editor_at_end_of_line(src, "1. foo");
-    apply(&mut st, Action::Newline); // "1. foo\n2. "
-    apply(&mut st, Action::Newline); // exit → "1. foo\n\n"
+
+    apply(&mut st, Action::Newline);
+    assert_eq!(st.contents(), "1. foo\n2. \n");
+
+    apply(&mut st, Action::Newline);
+    assert_eq!(st.contents(), "1. foo\n\n2. \n");
+
+    apply(&mut st, Action::Newline);
     assert_eq!(st.contents(), "1. foo\n\n");
 }
 
 #[test]
-fn enter_on_empty_middle_item_exits_leaving_blank_line() {
-    // `- foo\n- <cursor>\n- baz\n` → Enter should replace the empty `- ` with a
-    // blank line, leaving the cursor on it.
-    let src = "- foo\n- \n- baz\n";
-    let mut st = editor_at_end_of_line(src, "- ");
-    // editor_at_end_of_line points to end of first line. Move cursor to end of
-    // the empty-marker line instead.
-    let empty_line_start = src.find("\n- \n").unwrap() + 1; // start of "- \n"
-    let empty_line_end = empty_line_start + 2; // just past "- "
-    st.cursor.offset = st.buffer.rope().byte_to_char(empty_line_end);
+fn triple_enter_in_middle_of_bullet_list_breaks_into_two_lists() {
+    // Cursor at end of "- b" in a three-item list.  Three Enters split
+    // the list at that point with one blank line in between — the
+    // parser splits at any blank line outside fenced code, so a single
+    // gap is enough to render the head and tail as their own lists.
+    let src = "- a\n- b\n- c\n";
+    let mut st = editor_at_end_of_line(src, "- b");
+
+    apply(&mut st, Action::Newline);
+    assert_eq!(st.contents(), "- a\n- b\n- \n- c\n");
+
+    apply(&mut st, Action::Newline);
+    assert_eq!(st.contents(), "- a\n- b\n\n- \n- c\n");
+
+    apply(&mut st, Action::Newline);
+    assert_eq!(st.contents(), "- a\n- b\n\n- c\n");
+    // Cursor on the blank line that separates the two split lists.
+    assert_eq!(cursor_byte(&st), 8);
+}
+
+#[test]
+fn triple_enter_in_middle_of_ordered_list_renumbers_tail_from_one() {
+    // Cursor at end of "2. b".  After three Enters, the surviving head
+    // keeps its original numbering ("1. a", "2. b") and the trailing
+    // items restart at 1.  Single-blank-line list splitting at the
+    // parser then renders the result as two distinct ordered lists.
+    let src = "1. a\n2. b\n3. c\n";
+    let mut st = editor_at_end_of_line(src, "2. b");
+
+    apply(&mut st, Action::Newline);
+    assert_eq!(st.contents(), "1. a\n2. b\n3. \n4. c\n");
+
+    apply(&mut st, Action::Newline);
+    assert_eq!(st.contents(), "1. a\n2. b\n\n3. \n4. c\n");
+
+    apply(&mut st, Action::Newline);
+    assert_eq!(st.contents(), "1. a\n2. b\n\n1. c\n");
+    // Cursor on the blank line between the two split lists.
+    assert_eq!(cursor_byte(&st), 10);
+}
+
+#[test]
+fn second_enter_on_already_blank_separated_empty_item_breaks_immediately() {
+    // The user manually authored "- foo\n\n- " — the empty marker
+    // already has a blank line above it, so a single Enter (the third
+    // step of the gesture, with the first two having been "typed by
+    // hand") strips the marker and breaks the list straight away.
+    let src = "- foo\n\n- \n";
+    let mut st = editor_at_end_of_line(src, "- foo");
+    let cursor_byte_target = src.rfind("- ").unwrap() + 2; // end of the empty "- "
+    st.cursor.offset = st.buffer.rope().byte_to_char(cursor_byte_target);
     st.update_cursor_block();
 
     apply(&mut st, Action::Newline);
 
+    assert_eq!(st.contents(), "- foo\n\n");
+    assert_eq!(cursor_byte(&st), 7);
+}
+
+#[test]
+fn enter_on_empty_middle_item_with_no_blank_above_widens_the_gap() {
+    // `- foo / - <cursor> / - baz` — the empty item has no blank line
+    // above it yet, so the first Enter just inserts one.  A second
+    // Enter is needed to actually break the list.
+    let src = "- foo\n- \n- baz\n";
+    let mut st = editor_at_end_of_line(src, "- ");
+    let empty_line_start = src.find("\n- \n").unwrap() + 1;
+    let empty_line_end = empty_line_start + 2;
+    st.cursor.offset = st.buffer.rope().byte_to_char(empty_line_end);
+    st.update_cursor_block();
+
+    apply(&mut st, Action::Newline);
+    assert_eq!(st.contents(), "- foo\n\n- \n- baz\n");
+
+    apply(&mut st, Action::Newline);
     assert_eq!(st.contents(), "- foo\n\n- baz\n");
 }
 
@@ -218,11 +299,12 @@ fn task_list_enter_after_checked_inserts_unchecked_item() {
 }
 
 #[test]
-fn empty_task_item_exits_list_on_enter() {
+fn empty_task_item_exits_list_on_third_enter() {
     let src = "- [ ] foo\n";
     let mut st = editor_at_end_of_line(src, "- [ ] foo");
     apply(&mut st, Action::Newline); // "- [ ] foo\n- [ ] "
-    apply(&mut st, Action::Newline); // exit
+    apply(&mut st, Action::Newline); // widen gap → "- [ ] foo\n\n- [ ] "
+    apply(&mut st, Action::Newline); // exit → "- [ ] foo\n\n"
     assert_eq!(st.contents(), "- [ ] foo\n\n");
 }
 

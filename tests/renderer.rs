@@ -249,6 +249,88 @@ fn empty_task_item_in_middle_of_list_renders_checkbox() {
 }
 
 #[test]
+fn single_blank_between_list_items_is_rendered_as_a_blank_line() {
+    // After 2 Enters in the editor the buffer holds an empty list item
+    // separated from the previous content by a single blank line.  The
+    // blank line must appear as a visible blank row in the rendered
+    // output — without it the user can't see why pressing Enter twice
+    // had any effect.
+    use edamame::document::ParsedDoc;
+    let theme = Box::leak(Box::new(Theme::default())) as &'static Theme;
+    let pd = ParsedDoc::build("- a\n- b\n\n- \n- c\n", theme, true, 24);
+    let texts: Vec<String> = (0..pd.line_count())
+        .map(|i| {
+            pd.lines[i]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        })
+        .collect();
+    assert!(
+        texts.iter().any(|t| t.is_empty()),
+        "expected a blank rendered line for the single source blank, got: {texts:?}"
+    );
+}
+
+#[test]
+fn ordered_list_renumber_reset_at_blank_renders_as_two_lists() {
+    // After 3 Enters in the middle of an ordered list, the surviving
+    // head keeps its source numbering and the tail restarts at 1.  A
+    // single blank line carries the parser-level split, so the rendered
+    // output shows two ordered lists separated by one blank row — and
+    // critically, the tail's first item is rendered as `1.` (not the
+    // auto-incremented next number from the head).
+    use edamame::document::ParsedDoc;
+    let theme = Box::leak(Box::new(Theme::default())) as &'static Theme;
+    let pd = ParsedDoc::build("1. a\n2. b\n\n1. c\n", theme, true, 24);
+    let texts: Vec<String> = (0..pd.line_count())
+        .map(|i| {
+            pd.lines[i]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        })
+        .collect();
+    assert!(
+        texts.iter().any(|t| t.starts_with("1. c")),
+        "expected the tail list to restart at 1, got: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t.is_empty()),
+        "expected a blank line between the two split lists, got: {texts:?}"
+    );
+}
+
+#[test]
+fn list_item_with_code_block_containing_blank_line_renders_without_gap() {
+    // Regression: a blank line inside a fenced code block embedded in a
+    // list item used to trigger `split_lists_on_blank_lines`, fragmenting
+    // the surrounding list and leaving a visible gap before the next bullet.
+    // The fix is verified at two layers — at the AST layer the list stays
+    // intact (asserted in the parser's unit tests), and at the rendered
+    // layer the second bullet sits directly after the first item's last
+    // continuation paragraph with no synthesised separator row in between.
+    let md = "- intro\n  ```toml\n  [a]\n\n  [b]\n  ```\n  trailing\n- next item\n";
+    let lines = render(md);
+    let texts: Vec<String> = lines.iter().map(line_text).collect();
+    let trailing_idx = texts
+        .iter()
+        .position(|s| s.contains("trailing"))
+        .expect("trailing continuation line missing");
+    let next_idx = texts
+        .iter()
+        .position(|s| s.contains("next item"))
+        .expect("next item line missing");
+    assert_eq!(
+        next_idx,
+        trailing_idx + 1,
+        "next bullet should sit on the line immediately after the trailing continuation, got: {texts:?}"
+    );
+}
+
+#[test]
 fn snapshot_horizontal_rule() {
     let lines = render("---\n");
     let output: Vec<String> = lines.iter().map(line_text).collect();

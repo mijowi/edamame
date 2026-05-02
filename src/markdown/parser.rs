@@ -210,11 +210,20 @@ pub fn attach_trailing_tui_columns_comments(blocks: &mut Vec<Block>) {
 }
 
 /// Post-pass: split each top-level `Block::List` whose source contains a
-/// blank line between consecutive top-level items.  pulldown-cmark merges
-/// such lists per CommonMark spec — but for editor purposes we want the
-/// blank-line gap to mark the start of a new list (so two `1. ` ordered
-/// lists separated by a blank line render with their own numbering, and
-/// `Enter`-twice can split a list cleanly).
+/// blank line outside any fenced code block between consecutive top-level
+/// items.  pulldown-cmark per CommonMark merges blank-separated items
+/// into a single loose list, but for editor purposes we want every
+/// inter-item blank to be visible as its own line in the rendered output
+/// — so each blank-separated run of items becomes its own
+/// `Block::List`, and `parsed_doc` then emits the inter-block gap as a
+/// rendered blank line via the same path it uses for any other top-level
+/// gap.  For ordered lists, the post-split groups keep their source
+/// numbers as `start`, so a list like `1. a / 2. b / / 3. c` keeps its
+/// continuous numbering on screen, while a list like `1. a / 2. b / /
+/// 1. c` correctly restarts at 1 in the lower group.  Blank lines that
+/// fall inside a `` ``` ``/`~~~` fence inside an item are skipped — a
+/// code block embedded in a list item must not fragment its enclosing
+/// list, however many blank lines its content contains.
 ///
 /// Mutates both `blocks` and `ranges` so the 1:1 invariant relied on by
 /// `parsed_doc` is preserved.  For each split, the group's `start` is
@@ -235,13 +244,14 @@ pub fn split_lists_on_blank_lines(
         let list_src = &source[list_range.clone()];
         let item_offsets = top_level_item_offsets(list_src);
 
-        // Identify split points: indices `k > 0` where item k is preceded by
-        // a blank line in the source.
+        // Identify split points: indices `k > 0` where item k is preceded
+        // in the source by at least one blank line that isn't sitting
+        // inside a fenced code block.
         let mut split_indices: Vec<usize> = Vec::new();
         for k in 1..item_offsets.len() {
             let prev_line_end = line_end_in_str(list_src, item_offsets[k - 1]);
             let between_start = (prev_line_end + 1).min(item_offsets[k]);
-            if has_blank_line_in_range(list_src, between_start, item_offsets[k]) {
+            if has_blank_line_outside_code(list_src, between_start, item_offsets[k]) {
                 split_indices.push(k);
             }
         }
@@ -373,21 +383,70 @@ fn line_end_in_str(s: &str, start: usize) -> usize {
     p
 }
 
-fn has_blank_line_in_range(s: &str, start: usize, end: usize) -> bool {
+/// Detect whether the byte range `[start, end)` of `s` contains at least
+/// one blank line that is not inside a fenced code block.
+/// [`split_lists_on_blank_lines`] uses this to decide whether the gap
+/// between two list items contains user-visible whitespace — the
+/// post-pass then splits the parent list at that point so the gap shows
+/// up as a rendered blank line.  Blank lines that fall between an
+/// opening and closing `` ``` ``/`~~~` fence are ignored, so a code
+/// block embedded in a list item never fragments its enclosing list.
+fn has_blank_line_outside_code(s: &str, start: usize, end: usize) -> bool {
     let bytes = s.as_bytes();
     let mut pos = start;
+    let mut fence: Option<(char, usize)> = None;
     while pos < end {
         let mut le = pos;
         while le < end && bytes[le] != b'\n' {
             le += 1;
         }
         let line = &s[pos..le];
-        if line.chars().all(char::is_whitespace) {
+        if let Some((fence_char, min_count)) = fence {
+            if is_closing_fence(line, fence_char, min_count) {
+                fence = None;
+            }
+        } else if let Some((c, count)) = parse_opening_fence(line) {
+            fence = Some((c, count));
+        } else if line.chars().all(char::is_whitespace) {
             return true;
         }
         pos = if le < end { le + 1 } else { le };
     }
     false
+}
+
+/// Recognise an opening fenced-code-block marker.  Returns the fence
+/// character (`` ` `` or `~`) and its run length, or `None` if `line`
+/// isn't a fence opener.  Indentation up to any depth is permitted —
+/// inside a list item the fence is indented to the item's content
+/// column, and we only need to track the fence/no-fence state.
+fn parse_opening_fence(line: &str) -> Option<(char, usize)> {
+    let trimmed = line.trim_start();
+    let first = trimmed.chars().next()?;
+    if first != '`' && first != '~' {
+        return None;
+    }
+    let count = trimmed.chars().take_while(|&c| c == first).count();
+    if count < 3 {
+        return None;
+    }
+    // Backtick fences disallow backticks anywhere in the info string.
+    if first == '`' && trimmed[count..].contains('`') {
+        return None;
+    }
+    Some((first, count))
+}
+
+/// Recognise a closing fence for an open fence of `fence_char` × `min_count`.
+/// Per CommonMark, the closing run must use the same character, be at
+/// least as long, and have only whitespace after it.
+fn is_closing_fence(line: &str, fence_char: char, min_count: usize) -> bool {
+    let trimmed = line.trim_start();
+    let count = trimmed.chars().take_while(|&c| c == fence_char).count();
+    if count < min_count {
+        return false;
+    }
+    trimmed[count..].chars().all(char::is_whitespace)
 }
 
 /// Parse the marker prefix of `line` (a raw line without trailing `\n`).
@@ -1179,8 +1238,13 @@ mod tests {
     // ── Blank-line list splitting (Issue 3) ───────────────────────────────
 
     #[test]
-    fn ordered_lists_separated_by_blank_line_are_split_with_restart_numbering() {
-        let blocks = parse("1. a\n2. b\n\n1. c\n2. d\n");
+    fn ordered_lists_separated_by_blank_line_are_split_keeping_source_numbers() {
+        // Each blank-separated group becomes its own ordered list.  The
+        // groups keep the source's marker number as their `start`, so
+        // the renderer's auto-counter shows continuous numbering across
+        // a "loose" list (1, 2, 3, 4) and a restart for a list that
+        // starts over at 1 (1, 2, 1, 2).
+        let blocks = parse("1. a\n2. b\n\n3. c\n4. d\n");
         let lists: Vec<&Block> = blocks
             .iter()
             .filter(|b| matches!(b, Block::List { .. }))
@@ -1198,6 +1262,32 @@ mod tests {
         match lists[1] {
             Block::List {
                 ordered: true,
+                start: Some(3),
+                items,
+                ..
+            } => assert_eq!(items.len(), 2),
+            other => panic!("second list wrong: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ordered_lists_with_restart_numbering_split_at_blank_line() {
+        let blocks = parse("1. a\n2. b\n\n1. c\n2. d\n");
+        let lists: Vec<&Block> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::List { .. }))
+            .collect();
+        assert_eq!(lists.len(), 2, "expected 2 lists, got {blocks:?}");
+        match lists[0] {
+            Block::List {
+                start: Some(1),
+                items,
+                ..
+            } => assert_eq!(items.len(), 2),
+            other => panic!("first list wrong: {other:?}"),
+        }
+        match lists[1] {
+            Block::List {
                 start: Some(1),
                 items,
                 ..
@@ -1214,6 +1304,25 @@ mod tests {
             .filter(|b| matches!(b, Block::List { .. }))
             .collect();
         assert_eq!(lists.len(), 2, "got {blocks:?}");
+    }
+
+    #[test]
+    fn list_item_with_fenced_code_block_containing_blank_line_does_not_split() {
+        // A blank line inside a fenced code block embedded in a list item
+        // must not be treated as a list-splitting blank line — the code
+        // block is part of the item, and the next bullet belongs to the
+        // same list.
+        let src = "- intro\n  ```toml\n  [a]\n\n  [b]\n  ```\n  trailing\n- next item\n";
+        let blocks = parse(src);
+        let lists: Vec<&Block> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::List { .. }))
+            .collect();
+        assert_eq!(lists.len(), 1, "got {blocks:?}");
+        match lists[0] {
+            Block::List { items, .. } => assert_eq!(items.len(), 2),
+            other => panic!("expected single list with 2 items, got {other:?}"),
+        }
     }
 
     #[test]

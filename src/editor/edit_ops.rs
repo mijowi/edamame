@@ -1629,11 +1629,25 @@ fn table_delete_column(state: &mut EditorState, viewport_height: usize, viewport
 // list at the cursor, convert between byte and char offsets, and apply the
 // resulting `EditDelta`s through `apply_byte_delta`.
 
-/// If the cursor is inside a Markdown list, dispatch `Enter` to either
-/// `exit_list` (when the item is empty) or `continue_item` (otherwise), and
-/// return `true` to signal the caller that the newline has been handled.
-/// Returns `false` when the cursor is not in a list — the caller should fall
-/// through to a plain newline insert.
+/// If the cursor is inside a Markdown list, dispatch `Enter` to one of
+/// three list-aware handlers and return `true` to signal that the newline
+/// has been consumed.  The dispatch ladder implements the triple-`Enter`
+/// list-break gesture:
+///
+/// 1. **Item with content** → [`list_edit::continue_item`] inserts a new
+///    empty item directly below the cursor.
+/// 2. **Empty item with no blank line above it** →
+///    [`list_edit::space_out_empty_item`] pushes the empty marker (and
+///    the cursor on it) down one line, widening the gap above without
+///    yet ending the list.
+/// 3. **Empty item with a blank line above it** →
+///    [`list_edit::exit_list`] strips the empty marker and, in mid-list,
+///    inserts whatever is needed to complete a two-blank-line section
+///    break so the parser splits the surviving head and renumbered tail
+///    into two distinct lists.
+///
+/// Returns `false` when the cursor is not in a list — the caller should
+/// fall through to a plain newline insert.
 fn list_handle_newline(state: &mut EditorState) -> bool {
     let Some((source, info)) = current_list(state) else {
         return false;
@@ -1651,7 +1665,11 @@ fn list_handle_newline(state: &mut EditorState) -> bool {
     }
 
     let result = if item.content_is_empty(&source) {
-        list_edit::exit_list(&info, &source, byte)
+        if list_edit::is_blank_line_above(&source, item.start) {
+            list_edit::exit_list(&info, &source, byte)
+        } else {
+            list_edit::space_out_empty_item(&info, &source, byte)
+        }
     } else {
         list_edit::continue_item(&info, &source, byte)
     };
