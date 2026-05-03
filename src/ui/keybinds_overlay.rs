@@ -225,7 +225,11 @@ impl KeybindsState {
         while (0..len).contains(&idx) {
             if matches!(self.rows[idx as usize], Row::Binding { .. }) {
                 self.focused = idx as usize;
-                self.scroll_state.ensure_visible(self.focused as u16);
+                // ensure_visible operates on body-line coords (headers
+                // and blank separators inflate the body past the row
+                // count), so translate via focus_offsets.
+                let body_row = focus_offsets(self).get(self.focused).copied().unwrap_or(0) as u16;
+                self.scroll_state.ensure_visible(body_row);
                 return;
             }
             idx += delta;
@@ -255,7 +259,6 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
         // expanded line count is greater than `state.rows.len()` and
         // must be computed up-front for accurate scroll bookkeeping.
         let body_lines = build_body_lines(state, self.keymap, self.theme);
-        let scroll_offsets_per_row = focus_offsets(state);
 
         let content_width = keybinds_content_width(state, self.keymap);
         let pinned_bottom: u16 = if state.last_error.is_some() { 2 } else { 0 };
@@ -272,14 +275,11 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
         state
             .scroll_state
             .observe(body_lines.len() as u16, table_height);
-        // ensure_visible operates on the *body-line* coordinate, not
-        // the rows index: the focused binding row sits at
-        // `scroll_offsets_per_row[focused]` body lines down.
-        let focus_body_row = scroll_offsets_per_row
-            .get(state.focused)
-            .copied()
-            .unwrap_or(0) as u16;
-        state.scroll_state.ensure_visible(focus_body_row);
+        // NB: do NOT call ensure_visible here.  Doing so would snap
+        // scroll back to the focused row on every redraw, undoing
+        // wheel/PgUp/PgDn scrolls that intentionally moved the
+        // viewport without changing focus.  ensure_visible runs only
+        // when focus actually moves (see KeybindsState::move_focus).
 
         let inner = draw_frame(
             rect,
@@ -724,6 +724,26 @@ mod tests {
     }
 
     #[test]
+    fn keybinds_pgdown_scroll_survives_subsequent_render() {
+        // Regression: ensure_visible used to run on every render and
+        // would snap scroll back to the focused row, so PgDn / mouse
+        // wheel could not move the viewport past the focused binding.
+        let mut km = keymap();
+        let mut overrides = KeyBindingOverrides::default();
+        let mut state = KeybindsState::open(&km);
+        render(&mut state, &km, 80, 15);
+        state.handle_key(&key(KeyCode::PageDown), &mut km, &mut overrides);
+        let scroll_after_pgdn = state.scroll_state.scroll;
+        assert!(scroll_after_pgdn > 0, "PgDn must advance scroll");
+        // The next render must NOT undo the scroll.
+        render(&mut state, &km, 80, 15);
+        assert_eq!(
+            state.scroll_state.scroll, scroll_after_pgdn,
+            "render after PgDn must preserve scroll, not snap back to focused row",
+        );
+    }
+
+    #[test]
     fn keybinds_wheel_scrolls_list() {
         let km = keymap();
         let mut state = KeybindsState::open(&km);
@@ -732,6 +752,20 @@ mod tests {
         state.scroll_state.scroll_by(2);
         assert_eq!(state.scroll_state.scroll, 2);
         assert_eq!(state.focused, focused_before);
+    }
+
+    #[test]
+    fn keybinds_wheel_scroll_survives_subsequent_render() {
+        // Regression: same root cause as the PgDn test — wheel scroll
+        // must persist across renders.
+        let km = keymap();
+        let mut state = KeybindsState::open(&km);
+        render(&mut state, &km, 80, 15);
+        state.scroll_state.scroll_by(5);
+        let scroll_after_wheel = state.scroll_state.scroll;
+        assert!(scroll_after_wheel > 0);
+        render(&mut state, &km, 80, 15);
+        assert_eq!(state.scroll_state.scroll, scroll_after_wheel);
     }
 
     #[test]

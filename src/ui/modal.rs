@@ -162,10 +162,18 @@ impl<'a> StatefulWidget for ModalView<'a> {
         let body_width = self.body.iter().map(|l| l.width()).max().unwrap_or(0) as u16;
         let button_width = button_row_width(self.buttons);
         let content_width = body_width.max(button_width);
+        // The modal width is the content width plus 2 border + 2 padding cells,
+        // clamped to the available area.  Derive the body's inner wrap width
+        // from that so we can compute the *wrapped* body height before sizing
+        // the modal — otherwise a long line that wraps when the modal clamps
+        // to the terminal width leaves the modal too short for its content.
+        let prospective_modal_width = content_width.saturating_add(4).min(area.width);
+        let prospective_body_inner_w = prospective_modal_width.saturating_sub(4).max(1);
+        let wrapped_body_height = wrapped_rows(self.body, prospective_body_inner_w);
         // Pinned bottom: 1 spacer + 1 button row.
         let content = ContentSize {
             width: content_width,
-            height: self.body.len() as u16,
+            height: wrapped_body_height,
             pinned_top: 0,
             pinned_bottom: 2,
         };
@@ -461,5 +469,46 @@ mod tests {
             "expected scroll-down arrow in title, got: {contents}"
         );
         assert!(state.scroll_state.last_total >= state.scroll_state.last_visible);
+    }
+
+    #[test]
+    fn modal_height_grows_to_fit_wrapped_body_lines() {
+        // 40-col terminal forces a body-line longer than the inner wrap
+        // width to wrap onto two visual rows.  The modal must size itself
+        // for the wrapped row count, not the pre-wrap line count, so the
+        // user doesn't see a scroll arrow when the terminal has plenty of
+        // room.
+        let backend = TestBackend::new(40, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = ModalState::new();
+        // One long line (wraps to ~3 visual rows at width 36) + one short
+        // line.  Pre-wrap height = 2; wrapped height should be ~4.
+        let body = vec![
+            Line::raw(
+                "This is a fairly long body line that will definitely wrap inside a 40 column modal.",
+            ),
+            Line::raw("short tail"),
+        ];
+        let buttons = vec![ModalButton::new("Ok")];
+        terminal
+            .draw(|frame| {
+                let m = ModalView {
+                    title: "Wrap",
+                    body: &body,
+                    buttons: &buttons,
+                    theme: theme(),
+                };
+                frame.render_stateful_widget(m, frame.area(), &mut state);
+            })
+            .unwrap();
+        // Body fits — no scroll arrow expected.
+        assert_eq!(state.scroll_state.max_scroll(), 0);
+        // last_visible should be at least the wrapped row count.
+        assert!(
+            state.scroll_state.last_visible >= state.scroll_state.last_total,
+            "expected body to fit; last_total={}, last_visible={}",
+            state.scroll_state.last_total,
+            state.scroll_state.last_visible,
+        );
     }
 }
