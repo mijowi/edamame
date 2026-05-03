@@ -1,9 +1,97 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::config::Theme;
 use crate::document::{Buffer, Cursor, EditDelta, History, ParsedDoc, Selection, VisualSelection};
 use crate::editor::Mode;
 use crate::image::ImageCache;
+
+// ── Cursor blink ─────────────────────────────────────────────────────
+
+const BLINK_INTERVAL: Duration = Duration::from_millis(530);
+
+/// Tracks the on/off phase of a blinking cursor.
+///
+/// When `blinking` is true the cursor alternates between visible and hidden
+/// on a fixed cadence.  Any cursor movement resets the phase to visible so
+/// the cursor is always immediately apparent after a keypress.
+#[derive(Debug, Clone)]
+pub struct CursorBlink {
+    blinking: bool,
+    visible: bool,
+    last_toggle: Instant,
+}
+
+impl Default for CursorBlink {
+    fn default() -> Self {
+        Self {
+            blinking: true,
+            visible: true,
+            last_toggle: Instant::now(),
+        }
+    }
+}
+
+impl CursorBlink {
+    pub fn new(blinking: bool) -> Self {
+        Self {
+            blinking,
+            ..Self::default()
+        }
+    }
+
+    /// Whether the cursor should be painted this frame.
+    pub fn is_visible(&self) -> bool {
+        !self.blinking || self.visible
+    }
+
+    /// Enable or disable blinking.  When disabled the cursor is always
+    /// visible; when re-enabled the phase resets to visible.
+    pub fn set_blinking(&mut self, on: bool) {
+        self.blinking = on;
+        if !on {
+            self.visible = true;
+        } else {
+            self.visible = true;
+            self.last_toggle = Instant::now();
+        }
+    }
+
+    pub fn is_blinking(&self) -> bool {
+        self.blinking
+    }
+
+    /// Reset the blink cycle: cursor becomes visible and the timer restarts.
+    /// Call this whenever the cursor moves or an edit occurs.
+    pub fn reset(&mut self) {
+        self.visible = true;
+        self.last_toggle = Instant::now();
+    }
+
+    /// Advance the blink state.  Returns `true` if visibility changed
+    /// (i.e. a redraw is needed).
+    pub fn tick(&mut self) -> bool {
+        if !self.blinking {
+            return false;
+        }
+        if self.last_toggle.elapsed() >= BLINK_INTERVAL {
+            self.visible = !self.visible;
+            self.last_toggle = Instant::now();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The `Instant` at which the next toggle will fire, or `None` when
+    /// blinking is disabled.
+    pub fn next_toggle(&self) -> Option<Instant> {
+        if self.blinking {
+            Some(self.last_toggle + BLINK_INTERVAL)
+        } else {
+            None
+        }
+    }
+}
 
 /// All mutable state owned by the editor.
 ///
@@ -142,6 +230,13 @@ pub struct EditorState {
     /// from the live buffer without consulting the stale
     /// `source_map`.  `None` for empty documents / uninitialised state.
     pub cursor_block_line_range: Option<std::ops::Range<usize>>,
+    /// Blink state for the cursor.  The App ticks this before each
+    /// draw and threads `cursor_visible()` into the view layer.
+    pub cursor_blink: CursorBlink,
+    /// Set by the App before each draw: `true` when any modal overlay
+    /// is visible.  While set, the editor cursor is solid (ignores
+    /// blink) and the modal cursor follows `cursor_blink`.
+    pub modal_open: bool,
 }
 
 /// How long the cursor must rest on a block before it is shown in raw mode.
@@ -224,6 +319,8 @@ impl EditorState {
             pending_link_follow: None,
             parsed_dirty: false,
             cursor_block_line_range: None,
+            cursor_blink: CursorBlink::default(),
+            modal_open: false,
         };
         // Populate the cursor-block cache so the rendered view's
         // stale-map-tolerant path has correct line-range info on the
@@ -521,6 +618,7 @@ impl EditorState {
             // against a document whose cursor block has grown / shrunk.
             self.parsed_dirty = true;
             self.parsed_version = self.parsed_version.wrapping_add(1);
+            self.cursor_blink.reset();
         }
     }
 
@@ -567,6 +665,13 @@ impl EditorState {
             self.cursor_line_idx = Some(current_line);
             self.cursor_block_entered_at = Some(Instant::now());
         }
+        self.cursor_blink.reset();
+    }
+
+    /// Whether the cursor should be painted this frame.  Combines the
+    /// blink state with the current mode — Preview never shows a cursor.
+    pub fn cursor_visible(&self) -> bool {
+        self.mode != Mode::Preview && (self.modal_open || self.cursor_blink.is_visible())
     }
 
     /// Returns true when the raw view for the cursor block should be shown.

@@ -274,8 +274,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             //  Indented code blocks have no fences at all; their raw
             //  lines map 1:1.
             let trimmed = raw_block_source.trim_start();
-            let is_fenced =
-                trimmed.starts_with("```") || trimmed.starts_with("~~~");
+            let is_fenced = trimmed.starts_with("```") || trimmed.starts_with("~~~");
             let opening_fence_has_no_row = is_fenced && !is_fenced_code_with_lang;
             let shift = if opening_fence_has_no_row { 1 } else { 0 };
             cursor_raw_line
@@ -335,6 +334,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // Jitter suppression: if the cursor only recently moved to this line,
         // keep showing the block as rendered until the reveal delay has elapsed.
         let reveal_raw = editor.cursor_block_revealed();
+        let cursor_visible = editor.cursor_visible();
 
         let cursor_indicator_style = self.theme.cursor_rendered;
 
@@ -401,7 +401,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 });
                 let styled = make_raw_line_with_selection(
                     raw_text,
-                    if cursor_on_this {
+                    if cursor_on_this && cursor_visible {
                         Some(cursor_col)
                     } else {
                         None
@@ -447,7 +447,15 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         let end_col = overlay.raw_text[..hi - cell_byte_start].chars().count();
                         Some((start_col, end_col))
                     });
-                    overlay_raw_cell(buf, area, vis_y as u16, overlay, sel_in_cell, self.theme);
+                    overlay_raw_cell(
+                        buf,
+                        area,
+                        vis_y as u16,
+                        overlay,
+                        sel_in_cell,
+                        self.theme,
+                        cursor_visible,
+                    );
                 } else {
                     rows_used = 1;
                 }
@@ -500,7 +508,15 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         let end_col = overlay.raw_text[..hi - cell_byte_start].chars().count();
                         Some((start_col, end_col))
                     });
-                    overlay_raw_cell(buf, area, vis_y as u16, &overlay, sel_in_cell, self.theme);
+                    overlay_raw_cell(
+                        buf,
+                        area,
+                        vis_y as u16,
+                        &overlay,
+                        sel_in_cell,
+                        self.theme,
+                        cursor_visible,
+                    );
                 } else {
                     // Non-table block (or pipe-mismatched table line — e.g.
                     // mid-edit alignment row): full-line raw reveal.
@@ -521,7 +537,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     });
                     let styled = make_raw_line_with_selection(
                         raw_text,
-                        Some(cursor_col),
+                        if cursor_visible { Some(cursor_col) } else { None },
                         sel_cols,
                         self.theme,
                     );
@@ -579,7 +595,11 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         buf,
                         vis_y as u16,
                         wrap,
-                        Some((visual_col, cursor_indicator_style)),
+                        if cursor_visible {
+                            Some((visual_col, cursor_indicator_style))
+                        } else {
+                            None
+                        },
                         skip_rows,
                     ) as usize;
                 } else {
@@ -1295,6 +1315,7 @@ fn overlay_raw_cell(
     overlay: &CellOverlay,
     selection_cols: Option<(usize, usize)>,
     theme: &Theme,
+    cursor_visible: bool,
 ) {
     if visual_y >= area.height {
         return;
@@ -1324,7 +1345,7 @@ fn overlay_raw_cell(
         if matches!(selection_cols, Some((s, e)) if i >= s && i < e) {
             style = style.patch(theme.selection);
         }
-        if overlay.cursor_in_cell == Some(i) {
+        if cursor_visible && overlay.cursor_in_cell == Some(i) {
             style = cursor_style;
         }
         if let Some(cell) = buf.cell_mut((abs_x, abs_y)) {

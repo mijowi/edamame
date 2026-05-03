@@ -795,6 +795,22 @@ impl App {
         is_scrolling_within(self.last_scroll_at, SCROLL_QUIESCE)
     }
 
+    fn any_modal_open(&self) -> bool {
+        self.config_warning_modal.is_some()
+            || self.startup_notice.is_some()
+            || self.images_enabled_prompt.is_some()
+            || self.remote_image_prompt.is_some()
+            || self.dirty_guard.is_some()
+            || self.quit_confirm.is_some()
+            || self.markdown_cheat_sheet.is_some()
+            || self.settings_overlay.is_some()
+            || self.keybinds_overlay.is_some()
+            || self.insert_table_modal.is_some()
+            || self.save_copy_modal.is_some()
+            || self.command_palette.is_some()
+            || self.width_injection_warning.is_some()
+    }
+
     /// Earliest wall-clock instant at which the event loop must wake
     /// up to apply a time-driven state change, even if no external
     /// event arrives.  Returns `None` when the loop can block
@@ -833,6 +849,7 @@ impl App {
         // message so the hint reverts to chords even if the user
         // isn't typing.
         push(self.transient_deadline());
+        push(self.editor.cursor_blink.next_toggle());
         earliest
     }
 
@@ -924,6 +941,11 @@ impl App {
                 self.needs_draw = true;
             }
 
+            if self.editor.cursor_blink.tick() {
+                self.needs_draw = true;
+            }
+            self.editor.modal_open = self.any_modal_open();
+
             // Coalesce any `ImageReady`-driven cache mutations into a
             // single parse-and-render pass for this frame.  Without
             // this, a burst of N simultaneous decode completions would
@@ -976,6 +998,7 @@ impl App {
                 let show_handles = self.config.table.show_buttons;
                 let layout = self.config.editor.status_bar;
                 let hint = self.hint_content();
+                let modal_cursor_visible = self.editor.cursor_blink.is_visible();
                 let editor_ref = &mut self.editor;
                 let theme_ref = self.theme;
                 let capabilities_ref = &self.capabilities;
@@ -1205,6 +1228,7 @@ impl App {
                         let view = SettingsView {
                             theme: theme_ref,
                             config: config_ref,
+                            cursor_visible: modal_cursor_visible,
                         };
                         frame.render_stateful_widget(view, frame.area(), state);
                     } else if let Some(state) = keybinds_overlay_ref {
@@ -1212,17 +1236,27 @@ impl App {
                             let view = KeybindsView {
                                 theme: theme_ref,
                                 keymap: km,
+                                cursor_visible: modal_cursor_visible,
                             };
                             frame.render_stateful_widget(view, frame.area(), state);
                         }
                     } else if let Some(state) = insert_table_ref {
-                        let view = InsertTableView { theme: theme_ref };
+                        let view = InsertTableView {
+                            theme: theme_ref,
+                            cursor_visible: modal_cursor_visible,
+                        };
                         frame.render_stateful_widget(view, frame.area(), state);
                     } else if let Some(state) = save_copy_ref {
-                        let view = SaveCopyView { theme: theme_ref };
+                        let view = SaveCopyView {
+                            theme: theme_ref,
+                            cursor_visible: modal_cursor_visible,
+                        };
                         frame.render_stateful_widget(view, frame.area(), state);
                     } else if let Some(state) = palette_ref {
-                        let view = PaletteView { theme: theme_ref };
+                        let view = PaletteView {
+                            theme: theme_ref,
+                            cursor_visible: modal_cursor_visible,
+                        };
                         frame.render_stateful_widget(view, frame.area(), state);
                     } else if let Some(ww) = width_warning_ref {
                         let modal = ModalView {
@@ -1360,6 +1394,14 @@ impl App {
             // modal-absorption arms below don't each have to re-read
             // it.  The same value applies to in-editor scrolling.
             let wheel_step = self.config.editor.mouse_scroll_lines;
+
+            // Reset the cursor blink on any keypress while a modal is
+            // open so the `▏` cursor snaps to visible after typing.
+            if self.editor.modal_open {
+                if matches!(&event, Event::Key(k) if k.kind == KeyEventKind::Press) {
+                    self.editor.cursor_blink.reset();
+                }
+            }
 
             // Dirty-guard modal absorbs all input while it's visible.
             // Evaluated before the other modal checks so the guard (which

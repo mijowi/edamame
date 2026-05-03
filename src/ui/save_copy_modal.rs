@@ -255,6 +255,7 @@ pub fn default_copy_path(original: Option<&Path>) -> String {
 /// View-only widget that renders the modal over the editor.
 pub struct SaveCopyView<'a> {
     pub theme: &'a Theme,
+    pub cursor_visible: bool,
 }
 
 impl<'a> StatefulWidget for SaveCopyView<'a> {
@@ -293,6 +294,7 @@ impl<'a> StatefulWidget for SaveCopyView<'a> {
             state.cursor,
             state.focus == SaveCopyField::Path,
             self.theme,
+            self.cursor_visible,
         );
         row_y = row_y.saturating_add(1);
 
@@ -342,6 +344,7 @@ fn render_path_row(
     cursor: usize,
     focused: bool,
     theme: &Theme,
+    cursor_visible: bool,
 ) {
     let area = Rect {
         x: inner.x,
@@ -367,7 +370,9 @@ fn render_path_row(
         if !pre.is_empty() {
             spans.push(Span::styled(pre, value_style));
         }
-        spans.push(Span::styled("▏", theme.cursor));
+        if cursor_visible {
+            spans.push(Span::styled("▏", theme.cursor));
+        }
         if !post.is_empty() {
             spans.push(Span::styled(post, value_style));
         }
@@ -676,7 +681,10 @@ mod tests {
         let mut state = SaveCopyState::new("/tmp/notes copy.md".to_owned());
         terminal
             .draw(|frame| {
-                let m = SaveCopyView { theme: theme() };
+                let m = SaveCopyView {
+                    theme: theme(),
+                    cursor_visible: true,
+                };
                 frame.render_stateful_widget(m, frame.area(), &mut state);
             })
             .unwrap();

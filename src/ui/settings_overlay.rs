@@ -255,6 +255,7 @@ impl Default for SettingsState {
 pub struct SettingsView<'a> {
     pub theme: &'a Theme,
     pub config: &'a Config,
+    pub cursor_visible: bool,
 }
 
 impl<'a> StatefulWidget for SettingsView<'a> {
@@ -263,7 +264,7 @@ impl<'a> StatefulWidget for SettingsView<'a> {
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         // Build per-row spans (without the inline description) so we
         // can size the modal and figure out which rows fit on screen.
-        let row_lines = build_row_lines(state, self.config, self.theme);
+        let row_lines = build_row_lines(state, self.config, self.theme, self.cursor_visible);
         let content_width = settings_content_width(state, self.config);
 
         // Pinned-bottom region: 1 description row when the focused row
@@ -358,7 +359,12 @@ impl<'a> StatefulWidget for SettingsView<'a> {
 
 /// Build one display line per row.  The focused row's description is
 /// *not* included here — it's pinned into the modal's footer instead.
-fn build_row_lines<'a>(state: &SettingsState, config: &Config, theme: &'a Theme) -> Vec<Line<'a>> {
+fn build_row_lines<'a>(
+    state: &SettingsState,
+    config: &Config,
+    theme: &'a Theme,
+    cursor_visible: bool,
+) -> Vec<Line<'a>> {
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(state.rows.len());
     for (idx, row) in state.rows.iter().enumerate() {
         if !row.kind.focusable && row.label.is_empty() {
@@ -373,8 +379,10 @@ fn build_row_lines<'a>(state: &SettingsState, config: &Config, theme: &'a Theme)
         } else {
             theme.modal_item
         };
-        let value = if editing {
+        let value = if editing && cursor_visible {
             format!("{}▏", state.editing.as_deref().unwrap_or(""))
+        } else if editing {
+            state.editing.as_deref().unwrap_or("").to_owned()
         } else {
             (row.kind.read)(config, &state.theme_names)
         };
@@ -1019,6 +1027,7 @@ mod tests {
                     SettingsView {
                         theme: theme_ref(),
                         config,
+                        cursor_visible: true,
                     },
                     frame.area(),
                     state,

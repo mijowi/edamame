@@ -246,6 +246,7 @@ impl PaletteState {
 /// View-only widget that renders the palette over the editor.
 pub struct PaletteView<'a> {
     pub theme: &'a Theme,
+    pub cursor_visible: bool,
 }
 
 impl<'a> StatefulWidget for PaletteView<'a> {
@@ -313,12 +314,15 @@ impl<'a> StatefulWidget for PaletteView<'a> {
         // `bright_interactive` so the typing affordance still pops.
         let prompt = Span::styled("› ", self.theme.modal_item);
         let typed = Span::styled(state.query.clone(), self.theme.modal_item);
-        let cursor_style = ratatui::style::Style::default()
-            .fg(self.theme.palette.bright_interactive)
-            .bg(self.theme.palette.bright_surface)
-            .add_modifier(ratatui::style::Modifier::BOLD);
-        let cursor = Span::styled("▏", cursor_style);
-        Paragraph::new(Line::from(vec![prompt, typed, cursor]))
+        let mut spans = vec![prompt, typed];
+        if self.cursor_visible {
+            let cursor_style = ratatui::style::Style::default()
+                .fg(self.theme.palette.bright_interactive)
+                .bg(self.theme.palette.bright_surface)
+                .add_modifier(ratatui::style::Modifier::BOLD);
+            spans.push(Span::styled("▏", cursor_style));
+        }
+        Paragraph::new(Line::from(spans))
             .style(self.theme.modal_bg)
             .render(input_area, buf);
 
@@ -762,7 +766,14 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                frame.render_stateful_widget(PaletteView { theme: theme() }, frame.area(), state);
+                frame.render_stateful_widget(
+                    PaletteView {
+                        theme: theme(),
+                        cursor_visible: true,
+                    },
+                    frame.area(),
+                    state,
+                );
             })
             .unwrap();
         terminal

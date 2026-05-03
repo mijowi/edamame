@@ -248,6 +248,7 @@ impl KeybindsState {
 pub struct KeybindsView<'a> {
     pub theme: &'a Theme,
     pub keymap: &'a KeyMap,
+    pub cursor_visible: bool,
 }
 
 impl<'a> StatefulWidget for KeybindsView<'a> {
@@ -258,7 +259,7 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
         // separator above themselves (except at the top), so the
         // expanded line count is greater than `state.rows.len()` and
         // must be computed up-front for accurate scroll bookkeeping.
-        let body_lines = build_body_lines(state, self.keymap, self.theme);
+        let body_lines = build_body_lines(state, self.keymap, self.theme, self.cursor_visible);
 
         let content_width = keybinds_content_width(state, self.keymap);
         let pinned_bottom: u16 = if state.last_error.is_some() { 2 } else { 0 };
@@ -330,7 +331,12 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
 
 /// Build the full body line list, mirroring the renderer above so
 /// scroll bookkeeping uses identical line counts.
-fn build_body_lines<'a>(state: &KeybindsState, keymap: &KeyMap, theme: &'a Theme) -> Vec<Line<'a>> {
+fn build_body_lines<'a>(
+    state: &KeybindsState,
+    keymap: &KeyMap,
+    theme: &'a Theme,
+    cursor_visible: bool,
+) -> Vec<Line<'a>> {
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(state.rows.len() + 2);
     for (idx, row) in state.rows.iter().enumerate() {
         match row {
@@ -346,8 +352,10 @@ fn build_body_lines<'a>(state: &KeybindsState, keymap: &KeyMap, theme: &'a Theme
             Row::Binding { action, label } => {
                 let focused = idx == state.focused;
                 let editing = focused && state.editing.is_some();
-                let chord = if editing {
+                let chord = if editing && cursor_visible {
                     format!("{}▏", state.editing.as_deref().unwrap_or(""))
+                } else if editing {
+                    state.editing.as_deref().unwrap_or("").to_owned()
                 } else {
                     keymap.first_key_for(action).unwrap_or_default()
                 };
@@ -684,6 +692,7 @@ mod tests {
                     KeybindsView {
                         theme: theme_ref(),
                         keymap,
+                        cursor_visible: true,
                     },
                     frame.area(),
                     state,

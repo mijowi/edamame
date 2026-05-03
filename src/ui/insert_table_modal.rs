@@ -226,6 +226,7 @@ impl InsertTableState {
 /// View-only widget that renders the modal over the editor.
 pub struct InsertTableView<'a> {
     pub theme: &'a Theme,
+    pub cursor_visible: bool,
 }
 
 impl<'a> StatefulWidget for InsertTableView<'a> {
@@ -263,6 +264,7 @@ impl<'a> StatefulWidget for InsertTableView<'a> {
             &state.rows,
             state.focus == InsertTableField::Rows,
             self.theme,
+            self.cursor_visible,
         );
         row_y = row_y.saturating_add(1);
         if row_y >= inner.y + inner.height {
@@ -277,6 +279,7 @@ impl<'a> StatefulWidget for InsertTableView<'a> {
             &state.cols,
             state.focus == InsertTableField::Cols,
             self.theme,
+            self.cursor_visible,
         );
         row_y = row_y.saturating_add(1);
 
@@ -328,6 +331,7 @@ fn render_field_row(
     value: &str,
     focused: bool,
     theme: &Theme,
+    cursor_visible: bool,
 ) {
     let area = Rect {
         x: inner.x,
@@ -344,7 +348,7 @@ fn render_field_row(
     };
     // Show a trailing cursor glyph on the focused field so the user
     // sees where typing would land.
-    let value_display = if focused {
+    let value_display = if focused && cursor_visible {
         format!(" {value}▏")
     } else {
         format!(" {value} ")
@@ -551,7 +555,10 @@ mod tests {
         let mut state = InsertTableState::new();
         terminal
             .draw(|frame| {
-                let m = InsertTableView { theme: theme() };
+                let m = InsertTableView {
+                    theme: theme(),
+                    cursor_visible: true,
+                };
                 frame.render_stateful_widget(m, frame.area(), &mut state);
             })
             .unwrap();
