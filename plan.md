@@ -1472,42 +1472,34 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 ## Miscellaneous Issues / Features
 
-- Is `ScrollContainerState` themeable? It should have a theme that is shared across all modals, with per-modal overrides possible. We want common background, border, title, body text, header text, input, etc theming across all modals, again with per-modal overrides possible.
-
-- Add a background color to modal inputs when selected. Most modal views already do this, but the settings and keybindings do not. 
-
 - Press keys to set chord in keybinding modal instead of typing in e.g. `Ctrl-c`
-- Add next cell/prev cell to keybindings modal
+
+- Add next cell/prev cell to keybindings modal?
 
 - Heading table of contents 
+
 - Add support for footnotes. Add to Markdown cheat sheet.
-- Test keybindings and settings modals
+
 - Clean up source and tests
+
 - Table row/column deletion hover preview? Optional — when the pointer is over a delete glyph, paint the
   target row/column in a "danger" style (e.g., theme's selection-or-warning color)
   so the user sees what's about to go. Adds polish but more work.
-- Add a first-run config setup for images, remote images, mouse, etc based on inferred terminal capabilities.
-- Add "Esc to dismiss" to `MesageKind::Error` sticky hint line messages
 
-- If the cursor is on the `t` in `Cat` below, which is followed by a blank line containing only a space, and the user presses the right arrow key at the end of the line, the cursor does not move to the line below with the space. Instead, the cursor jumps back to the first column and replaces `Cat` with ` `. Pressing the left arrow key again returns to `Cat`.
-```
-Cat
- 
-```
+- Add a first-run config setup for images, remote images, mouse, etc based on inferred terminal capabilities.
+
+- Add "Esc to dismiss" to `MesageKind::Error` sticky hint line messages
 
 - Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
 
-- Config warnings modal is too short. Make it bigger.
-
-- Table buttons should be on by default
+- Add scroll bar to modal right padding area when content overflows
 
 - Implement a dedicated theme selection modal and remove the theme picker from the settings overlay. Add an action `Switch theme` to the command palette that opens the theme modal.
 
+- Color code modal titles (e.g. red for warning)
+
 - Images are padded with the `Reset` terminal background instead of the theme background.
-feat(scrolling): scroll by visual row across wrapped lines
-- treat editor scroll offsets as visual rows instead of logical/rendered line indices
-- update preview, rendered, raw, mouse, image, link, and table paths to map visual rows back to wrapped lines
-- add regression coverage for scrolling into the middle of wrapped lines
+
 ### Theme issues
 - Code blocks in Markdown cheat sheet have same bg as modal, so it looks like there's no bg
 - Nested block quote should be bright structural to match the level 1 block quote's dim structural
@@ -1518,9 +1510,7 @@ feat(scrolling): scroll by visual row across wrapped lines
 - Replace modal border with padding.
 - Dim background when modal is open (probably modern terminals only)
 - Keep modal title on left. Add dim `Esc` at top right to signal how to close. Both should be contained *within* the border padding.
-- List all commands in command palette with categories. Keep "Suggested" category at the top.
 - Add command to visit project home page
-- Blink cursor
 
 ---
 
