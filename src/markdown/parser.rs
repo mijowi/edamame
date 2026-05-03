@@ -966,7 +966,13 @@ mod tests {
         let blocks = parse("H2 text\n---\n");
         eprintln!("setext H2 blocks: {:?}", blocks);
         assert!(
-            matches!(&blocks[0], Block::Heading { level: HeadingLevel::H2, .. }),
+            matches!(
+                &blocks[0],
+                Block::Heading {
+                    level: HeadingLevel::H2,
+                    ..
+                }
+            ),
             "expected H2 heading, got: {:?}",
             blocks
         );
