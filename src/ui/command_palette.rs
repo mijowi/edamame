@@ -485,7 +485,7 @@ fn format_section_header(title: &str, theme: &Theme, width: u16) -> Line<'static
     let prefix_w = prefix.chars().count();
     let remaining = (width as usize).saturating_sub(prefix_w);
     let text = format!("{}{}", prefix, "─".repeat(remaining));
-    Line::from(Span::styled(text, theme.modal_item_hint))
+    Line::from(Span::styled(text, theme.modal_section_heading))
 }
 
 /// Curated "Suggested" entries shown when the palette opens with no

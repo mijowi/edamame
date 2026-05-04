@@ -118,11 +118,24 @@ pub struct PaletteFile {
     pub bright_muted: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dim_muted: Option<ColorField>,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bright_surface: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dim_surface: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub h1: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub h2: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub h3: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub h4: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub h5: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub h6: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<ColorField>,
 }
 
 impl PaletteFile {
@@ -155,6 +168,13 @@ impl PaletteFile {
             dim_muted: pick(self.dim_muted, d.dim_muted),
             bright_surface: pick(self.bright_surface, d.bright_surface),
             dim_surface: pick(self.dim_surface, d.dim_surface),
+            h1: pick(self.h1, d.h1),
+            h2: pick(self.h2, d.h2),
+            h3: pick(self.h3, d.h3),
+            h4: pick(self.h4, d.h4),
+            h5: pick(self.h5, d.h5),
+            h6: pick(self.h6, d.h6),
+            code: pick(self.code, d.code),
         }
     }
 }
@@ -182,6 +202,13 @@ impl From<&Palette> for PaletteFile {
             dim_muted: Some(p.dim_muted.into()),
             bright_surface: Some(p.bright_surface.into()),
             dim_surface: Some(p.dim_surface.into()),
+            h1: Some(p.h1.into()),
+            h2: Some(p.h1.into()),
+            h3: Some(p.h1.into()),
+            h4: Some(p.h1.into()),
+            h5: Some(p.h1.into()),
+            h6: Some(p.h1.into()),
+            code: Some(p.h1.into()),
         }
     }
 }

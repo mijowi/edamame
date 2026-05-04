@@ -247,6 +247,15 @@ pub struct Palette {
     pub dim_muted: Color,
     pub bright_surface: Color,
     pub dim_surface: Color,
+
+    pub h1: Color,
+    pub h2: Color,
+    pub h3: Color,
+    pub h4: Color,
+    pub h5: Color,
+    pub h6: Color,
+
+    pub code: Color,
 }
 
 impl Default for Palette {
@@ -257,47 +266,53 @@ impl Default for Palette {
         // tuned for ~30% lightness contrast so both variants read on a
         // dark surface.
         Self {
-            default_text: Color::Rgb(0xe6, 0xe6, 0xe6),
-            default_bg: Color::Rgb(0x12, 0x12, 0x16),
+            default_text: Color::Indexed(253),
+            default_bg: Color::Indexed(233),
 
             // Orange — brand identity, headings, mode chip.
-            bright_primary: Color::Rgb(0xff, 0x96, 0x3c),
-            dim_primary: Color::Rgb(0xb8, 0x68, 0x22),
+            bright_primary: Color::Indexed(208),
+            dim_primary: Color::Indexed(172),
 
-            // Yellow — emphasis / warnings / hints.
-            bright_emphasis: Color::Rgb(0xf5, 0xd2, 0x5a),
-            dim_emphasis: Color::Rgb(0xb8, 0x96, 0x3c),
+            // Blue — emphasis
+            bright_emphasis: Color::Indexed(117),
+            dim_emphasis: Color::Indexed(45),
 
             // Purple — structural chrome (frames, dividers, asides).
-            bright_structural: Color::Rgb(0xb6, 0x90, 0xe0),
-            dim_structural: Color::Rgb(0x78, 0x60, 0xa6),
+            bright_structural: Color::Indexed(136),
+            dim_structural: Color::Indexed(94),
 
             // Blue — links, focus, selection.
-            bright_interactive: Color::Rgb(0x73, 0xb4, 0xeb),
-            dim_interactive: Color::Rgb(0x3a, 0x6b, 0xb0),
+            bright_interactive: Color::Indexed(39),
+            dim_interactive: Color::Indexed(25),
 
             // Green — success, completed tasks, edamame.
-            bright_success: Color::Rgb(0x9a, 0xd2, 0x6e),
-            dim_success: Color::Rgb(0x5e, 0x90, 0x46),
+            bright_success: Color::Indexed(76),
+            dim_success: Color::Indexed(28),
 
-            // Warning — same as emphasis in this theme; themes can
-            // diverge by swapping the two.
-            bright_warning: Color::Rgb(0xf5, 0xd2, 0x5a),
-            dim_warning: Color::Rgb(0xb8, 0x96, 0x3c),
+            // Yellow — warnings.
+            bright_warning: Color::Indexed(220),
+            dim_warning: Color::Indexed(178),
 
             // Red — errors.
-            bright_error: Color::Rgb(0xeb, 0x73, 0x73),
-            dim_error: Color::Rgb(0xa8, 0x40, 0x40),
+            bright_error: Color::Indexed(196),
+            dim_error: Color::Indexed(124),
 
-            // Greys — muted text, borders, row striping.
-            bright_muted: Color::Rgb(0xb4, 0xb4, 0xba),
-            dim_muted: Color::Rgb(0x73, 0x73, 0x78),
+            // Greys — UI chrome, muted text, borders, row striping.
+            bright_muted: Color::Indexed(245),
+            dim_muted: Color::Indexed(235),
+            bright_surface: Color::Indexed(237),
+            dim_surface: Color::Indexed(236),
 
-            // Surfaces — chrome elevation tones, kept as 256-colour
-            // indices because terminals tend to render those greys
-            // more consistently than RGB equivalents.
-            bright_surface: Color::Indexed(236),
-            dim_surface: Color::Indexed(238),
+            // Headings — bright color 1/2/3, dim color 1/2/3
+            h1: Color::Indexed(220),
+            h2: Color::Indexed(208),
+            h3: Color::Indexed(135),
+            h4: Color::Indexed(136),
+            h5: Color::Indexed(172),
+            h6: Color::Indexed(140),
+
+            // Inline code and code block language line
+            code: Color::Indexed(140),
         }
     }
 }
@@ -316,16 +331,29 @@ impl Theme {
         Self {
             palette: p.clone(),
 
-            // Headings: bold + a per-level palette colour.  Salience
-            // climbs from h6 (muted) through h2 (brand) and lands on
-            // h1 (emphasis + setext rule) per theming.md.
-            h1: Style::default().fg(p.bright_emphasis).add_modifier(bold),
-            h1_rule: Style::default().fg(p.bright_emphasis),
-            h2: Style::default().fg(p.bright_primary).add_modifier(bold),
-            h3: Style::default().fg(p.bright_structural).add_modifier(bold),
-            h4: Style::default().fg(p.dim_primary).add_modifier(bold),
-            h5: Style::default().fg(p.dim_structural).add_modifier(bold),
-            h6: Style::default().fg(p.bright_muted).add_modifier(bold),
+            // Headings: bold + underline + a per-level palette colour.
+            h1: Style::default().fg(p.h1).add_modifier(bold),
+            h1_rule: Style::default().fg(p.h1), // H1 has a rule instead of an underline
+            h2: Style::default()
+                .fg(p.h2)
+                .add_modifier(bold)
+                .add_modifier(underline),
+            h3: Style::default()
+                .fg(p.h3)
+                .add_modifier(bold)
+                .add_modifier(underline),
+            h4: Style::default()
+                .fg(p.h4)
+                .add_modifier(bold)
+                .add_modifier(underline),
+            h5: Style::default()
+                .fg(p.h5)
+                .add_modifier(bold)
+                .add_modifier(underline),
+            h6: Style::default()
+                .fg(p.h6)
+                .add_modifier(bold)
+                .add_modifier(underline),
 
             // Inline
             bold: Style::default().add_modifier(bold),
@@ -333,26 +361,26 @@ impl Theme {
             strikethrough: Style::default()
                 .fg(p.bright_muted)
                 .add_modifier(Modifier::CROSSED_OUT),
-            highlight: Style::default().bg(p.dim_emphasis).fg(p.default_bg),
-            code_span: Style::default().fg(p.bright_emphasis).bg(p.bright_surface),
+            highlight: Style::default().bg(p.dim_warning).fg(p.default_bg),
+            code_span: Style::default().fg(p.code).bg(p.dim_surface),
             link_text: Style::default()
                 .fg(p.bright_interactive)
                 .add_modifier(underline),
             link_file: Style::default()
-                .fg(p.dim_interactive)
+                .fg(p.bright_interactive)
                 .add_modifier(underline),
-            link_heading: Style::default().fg(p.dim_interactive),
+            link_heading: Style::default().fg(p.bright_interactive),
             image_placeholder: Style::default().fg(p.dim_interactive).add_modifier(italic),
             footnote: Style::default().fg(p.dim_structural),
 
             // Code block — surface_bright background reads as a single
             // unit across border, language label, and body.
-            code_block_border: Style::default().fg(p.dim_muted).bg(p.bright_surface),
+            code_block_border: Style::default().fg(p.default_text).bg(p.dim_surface),
             code_block_lang: Style::default()
-                .fg(p.bright_structural)
+                .fg(p.code)
                 .bg(p.bright_surface)
                 .add_modifier(italic),
-            code_block_text: Style::default().fg(p.default_text).bg(p.bright_surface),
+            code_block_text: Style::default().fg(p.default_text).bg(p.dim_surface),
 
             // Blockquote
             blockquote_bar: Style::default().fg(p.dim_structural),
@@ -363,78 +391,77 @@ impl Theme {
 
             // List markers — bright_structural so bullets read as
             // chrome rather than content.
-            list_bullet: Style::default().fg(p.bright_structural),
-            list_number: Style::default().fg(p.bright_structural),
+            list_bullet: Style::default().fg(p.dim_emphasis),
+            list_number: Style::default().fg(p.bright_emphasis),
 
             // Task list
-            task_unchecked: Style::default().fg(p.bright_emphasis),
-            task_checked: Style::default().fg(p.bright_success),
+            task_unchecked: Style::default().fg(p.bright_warning),
+            task_checked: Style::default().fg(p.dim_success),
             task_complete_text: Style::default()
                 .fg(p.bright_muted)
                 .add_modifier(Modifier::CROSSED_OUT),
             task_strikethrough: true,
 
             // Table
-            table_border: Style::default().fg(p.dim_muted),
-            table_header: Style::default().add_modifier(bold),
-            table_header_border: Style::default().fg(p.dim_structural),
+            table_border: Style::default().fg(p.bright_surface),
+            table_header: Style::default().add_modifier(bold).fg(p.bright_emphasis),
+            table_header_border: Style::default().fg(p.bright_surface),
             table_cell: Style::default(),
             table_row_even: Style::default(),
-            table_row_odd: Style::default().bg(p.bright_surface),
-            table_drop_indicator: Style::default().fg(p.bright_emphasis),
-            table_drop_target: Style::default().fg(p.dim_emphasis),
+            table_row_odd: Style::default().bg(p.dim_muted),
+            table_drop_indicator: Style::default().fg(p.bright_interactive),
+            table_drop_target: Style::default().fg(p.dim_interactive),
 
-            // Status bar — surface_bright fill.  Mode chip swaps fg/bg
+            // Status bar — dim_surface fill.  Mode chip swaps fg/bg
             // depending on Mode so each mode reads at a glance.
-            status_bar: Style::default().bg(p.bright_surface).fg(p.default_text),
+            status_bar: Style::default().bg(p.dim_surface).fg(p.default_text),
             status_mode_preview: Style::default()
-                .bg(p.dim_muted)
-                .fg(p.bright_surface)
+                .bg(p.bright_muted)
+                .fg(p.dim_surface)
                 .add_modifier(bold),
             status_mode_rendered: Style::default()
                 .bg(p.bright_primary)
                 .fg(p.default_bg)
                 .add_modifier(bold),
             status_mode_raw: Style::default()
-                .bg(p.bright_emphasis)
+                .bg(p.bright_warning)
                 .fg(p.default_bg)
                 .add_modifier(bold),
-            status_filename: Style::default().fg(p.default_text).bg(p.bright_surface),
-            status_info: Style::default().fg(p.bright_primary).bg(p.bright_surface),
+            status_filename: Style::default().fg(p.default_text).bg(p.dim_surface),
+            status_info: Style::default().fg(p.bright_primary).bg(p.dim_surface),
             status_modified: Style::default()
-                .fg(p.bright_emphasis)
-                .bg(p.bright_surface)
+                .fg(p.bright_warning)
+                .bg(p.dim_surface)
                 .add_modifier(bold),
             status_selection: Style::default()
                 .fg(p.bright_interactive)
-                .bg(p.bright_surface)
-                .add_modifier(bold),
-
-            // Hint line — surface_dim background so it reads as one
-            // step elevated from the status bar.  Chord badges are
-            // bright_interactive on the hint surface for readability.
-            hint_bar: Style::default().bg(p.dim_surface).fg(p.default_text),
-            hint_chord: Style::default()
-                .fg(p.bright_interactive)
                 .bg(p.dim_surface)
                 .add_modifier(bold),
-            hint_label: Style::default().fg(p.default_text).bg(p.dim_surface),
+
+            // Hint line — bright_surface background. Chord badges are
+            // bright_interactive on the hint surface for readability.
+            hint_bar: Style::default().bg(p.bright_surface).fg(p.default_text),
+            hint_chord: Style::default()
+                .fg(p.bright_interactive)
+                .bg(p.bright_surface)
+                .add_modifier(bold),
+            hint_label: Style::default().fg(p.default_text).bg(p.bright_surface),
 
             // Transient messages — escalate in salience.  All sit on
             // the hint_bar surface so they layer cleanly over the
             // chord row.
-            transient_info: Style::default().fg(p.default_text).bg(p.dim_surface),
+            transient_info: Style::default().fg(p.default_text).bg(p.bright_surface),
             transient_success: Style::default()
                 .fg(p.bright_success)
-                .bg(p.dim_surface)
+                .bg(p.bright_surface)
                 .add_modifier(bold),
             transient_warning: Style::default()
                 .fg(p.bright_warning)
-                .bg(p.dim_surface)
+                .bg(p.bright_surface)
                 .add_modifier(bold),
             transient_error: Style::default()
                 .fg(p.bright_error)
-                .bg(p.dim_surface)
+                .bg(p.bright_surface)
                 .add_modifier(bold),
 
             // Modal popups
@@ -492,7 +519,7 @@ impl Theme {
             // stays legible.
             cursor_preview: Style::default().bg(p.dim_muted).fg(p.bright_surface),
             cursor_rendered: Style::default().bg(p.bright_primary).fg(p.default_bg),
-            cursor_raw: Style::default().bg(p.bright_emphasis).fg(p.default_bg),
+            cursor_raw: Style::default().bg(p.bright_warning).fg(p.default_bg),
             // Generic input cursor — REVERSED so the `▏` glyph inside
             // a modal text input inverts whatever's underneath without
             // needing to know the surrounding bg.
