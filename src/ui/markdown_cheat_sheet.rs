@@ -33,6 +33,11 @@ use crate::config::Theme;
 #[allow(clippy::vec_init_then_push)] // grouped pushes mirror the on-screen sections
 pub fn body_lines(theme: &Theme) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
+    // Indices of lines that belong to a fenced-code or Mermaid block.  They
+    // get a trailing-padding pass at the end so the surface background fills
+    // the modal's body width — mirroring the actual renderer, which pads
+    // each code-block row out to `viewport_width`.
+    let mut code_block_indices: Vec<usize> = Vec::new();
 
     // ── Headings ──────────────────────────────────────────────────────
     out.push(section(theme, "Headings"));
@@ -149,15 +154,18 @@ pub fn body_lines(theme: &Theme) -> Vec<Line<'static>> {
 
     // ── Code block ────────────────────────────────────────────────────
     out.push(section(theme, "Code block"));
+    code_block_indices.push(out.len());
     out.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("```", theme.code_block_border),
         Span::styled("rust", theme.code_block_lang),
     ]));
+    code_block_indices.push(out.len());
     out.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("fn main() {}", theme.code_block_text),
     ]));
+    code_block_indices.push(out.len());
     out.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("```", theme.code_block_border),
@@ -179,21 +187,52 @@ pub fn body_lines(theme: &Theme) -> Vec<Line<'static>> {
 
     // ── Diagrams (Mermaid) ────────────────────────────────────────────
     out.push(section(theme, "Diagrams (Mermaid)"));
+    code_block_indices.push(out.len());
     out.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("```", theme.code_block_border),
         Span::styled("mermaid", theme.code_block_lang),
     ]));
+    code_block_indices.push(out.len());
     out.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("graph TD; A-->B;", theme.code_block_text),
     ]));
+    code_block_indices.push(out.len());
     out.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("```", theme.code_block_border),
     ]));
 
+    pad_code_block_lines(&mut out, &code_block_indices, theme);
     out
+}
+
+/// Pad each code-block line with a trailing `code_block_text`-styled
+/// space run so the surface background fills the modal's body width,
+/// matching how `Renderer::render_code_block` pads to `viewport_width`.
+/// The target width is the widest non-code-block row; the modal sizes
+/// itself to that width, so post-padding the code-block lines exactly
+/// fill the body area without changing the modal's overall width.
+fn pad_code_block_lines(lines: &mut [Line<'static>], code_block_indices: &[usize], theme: &Theme) {
+    let target_width: usize = lines
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !code_block_indices.contains(i))
+        .map(|(_, l)| l.width())
+        .max()
+        .unwrap_or(0);
+
+    for &i in code_block_indices {
+        let line = &mut lines[i];
+        let cur = line.width();
+        if cur < target_width {
+            line.spans.push(Span::styled(
+                " ".repeat(target_width - cur),
+                theme.code_block_text,
+            ));
+        }
+    }
 }
 
 /// Empty row — uses `Line::raw` rather than a styled blank so the
@@ -321,23 +360,87 @@ mod tests {
 
     #[test]
     fn separator_spans_inherit_modal_background() {
-        // Indentation / separator spans must NOT carry a bg of their
-        // own — they need to inherit the modal's `status_bar` fill.
+        // Indentation / separator spans must NOT carry a fg / modifier of
+        // their own — they need to inherit the modal's `status_bar` fill.
         // `theme.normal` sets `bg(Color::Reset)`, which paints the
         // terminal default and lets the editor's dark fill bleed
         // through the modal; using `Span::raw` (style == default)
-        // keeps the modal background intact.
+        // keeps the modal background intact.  Whitespace spans MAY
+        // carry an explicit bg, however — that's how the code-block
+        // sections fill their surface colour out to the modal width.
         let theme = Theme::default();
         let lines = body_lines(&theme);
         for span in lines.iter().flat_map(|l| l.spans.iter()) {
             if span.content.chars().all(char::is_whitespace) {
-                assert_eq!(
-                    span.style,
-                    Style::default(),
-                    "whitespace span carried a non-default style: {:?}",
+                // The hazard guarded here is `theme.normal`'s
+                // `bg(Color::Reset)`, which would punch through the
+                // modal fill.  Either no bg at all (inherits the
+                // modal's `status_bar`) or an explicit theme bg is
+                // fine — fg / modifier on whitespace is invisible.
+                let bg_ok = match span.style.bg {
+                    None => true,
+                    Some(ratatui::style::Color::Reset) => false,
+                    Some(_) => true,
+                };
+                assert!(
+                    bg_ok,
+                    "whitespace span resets the bg, would bleed through modal: {:?}",
                     span,
                 );
             }
+        }
+    }
+
+    #[test]
+    fn code_block_lines_fill_to_body_width() {
+        // The Code block and Diagrams sections should pad each row out
+        // with `code_block_text` so the surface background fills the
+        // modal body — matching the actual renderer's behaviour.  All
+        // padded code-block rows must be the same width as the widest
+        // non-code-block row (the modal sizes itself to that width).
+        let theme = Theme::default();
+        let lines = body_lines(&theme);
+
+        // Find rows that have a span styled with code_block_border /
+        // code_block_lang / code_block_text — i.e. the code-block rows.
+        let is_code_block_line = |line: &Line<'_>| {
+            line.spans.iter().any(|s| {
+                s.style == theme.code_block_border
+                    || s.style == theme.code_block_lang
+                    || s.style == theme.code_block_text
+            })
+        };
+
+        let max_other = lines
+            .iter()
+            .filter(|l| !is_code_block_line(l))
+            .map(|l| l.width())
+            .max()
+            .unwrap();
+
+        let code_lines: Vec<&Line<'_>> = lines.iter().filter(|l| is_code_block_line(l)).collect();
+        assert!(!code_lines.is_empty(), "expected code-block rows present");
+        for line in &code_lines {
+            assert_eq!(
+                line.width(),
+                max_other,
+                "code-block row not padded to body width: {:?}",
+                line,
+            );
+            // The trailing span on each padded row should be the surface
+            // fill; otherwise the right-hand columns won't show the code
+            // background.
+            let last = line.spans.last().expect("non-empty code-block row");
+            assert!(
+                last.content.chars().all(char::is_whitespace),
+                "padded row should end in a whitespace fill span: {:?}",
+                line,
+            );
+            assert_eq!(
+                last.style, theme.code_block_text,
+                "trailing fill should use code_block_text: {:?}",
+                line,
+            );
         }
     }
 
