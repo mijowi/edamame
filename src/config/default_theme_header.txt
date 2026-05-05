@@ -41,10 +41,10 @@
 #                       Preview mode chip's bg, strikethrough text).
 #                       Grey.
 #   surface             Two chrome surfaces:
-#                         bright_surface — status bar, modal body,
+#                         surface_elevated — status bar, modal body,
 #                                          inline / fenced code bg,
 #                                          row-striping fill
-#                         dim_surface    — hint line and the
+#                         surface    — hint line and the
 #                                          transient-message strip
 #                                          that overlays it
 #

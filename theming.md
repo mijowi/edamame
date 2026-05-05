@@ -12,7 +12,7 @@ The assigned colors represent edamame's default theme. The palette is used by ev
 - `warning`: same as emphasis in this theme, but can be differentiated in future themes
 - `error`: red
 - `muted`: light grey — peripheral text (h6, strikethrough) and borders (table rules, separators)
-- `surface`: dark grey — base UI chrome (`bright_surface`: status line, modal body, inline / fenced code bg, table-stripe fill); slightly lighter grey — elevated UI chrome (`dim_surface`: hint line and the transient-message strip that overlays it)
+- `surface`: dark grey — base UI chrome (`surface_elevated`: status line, modal body, inline / fenced code bg, table-stripe fill); slightly lighter grey — elevated UI chrome (`surface`: hint line and the transient-message strip that overlays it)
 
 ## Palette Assignments
 
@@ -28,9 +28,9 @@ Active line highlight (not implemented): slightly lighter shade than default bg 
 - H3: `bright_structural` fg, bold
 - H4: `dim_primary` fg, bold
 - H5: `dim_structural` fg, bold
-- H6: `bright_muted`, bold
+- H6: `text_muted`, bold
 
-Strikethrough: `bright_muted` fg
+Strikethrough: `text_muted` fg
 
 Highlight: `dim_emphasis` bg, `default_bg` fg
 
@@ -50,36 +50,36 @@ Ordered list number marker (including `.`): `bright_structural` fg
 
 ### Task list
 - Incomplete item: `bright_emphasis` fg bullet and checkbox
-- Complete item: `bright_success` fg bullet and checkbox; `bright_muted` fg text with strikethrough
+- Complete item: `bright_success` fg bullet and checkbox; `text_muted` fg text with strikethrough
 
 Horizontal rule: `dim_structural` fg
 
 ### Table
 - Header row: bold, default fg
-- Borders: `dim_muted` fg (light `─` rules around and between cells)
+- Borders: `muted` fg (light `─` rules around and between cells)
 - Header bottom separator: `dim_structural` fg — the heavy `━` rule below the header row is themed independently of the regular borders so the header reads as a structural divider
-- Row striping (when `[table] row_striping = true`): odd data rows get `bright_surface` bg so the table chrome matches the inline-code surface
+- Row striping (when `[table] row_striping = true`): odd data rows get `surface_elevated` bg so the table chrome matches the inline-code surface
 
-Inline code: `bright_surface` bg, `bright_structural` fg
+Inline code: `surface_elevated` bg, `bright_structural` fg
 
 ### Code block
 - Language: `bright_structural` fg, italicized
-- Block: `bright_surface` bg
+- Block: `surface_elevated` bg
 - Text: `default_text` fg (syntax highlighting later)
 
 Footnote/reference marker (not implemented yet)
 - `dim_structural` fg
 
-### Status line: `bright_surface` bg
+### Status line: `surface_elevated` bg
 Mode chip (bold)
-  - Preview: `dim_muted` bg, `bright_surface` fg
+  - Preview: `muted` bg, `surface_elevated` fg
   - Rendered: `bright_primary` bg, `default_bg` fg
   - Raw: `bright_emphasis` bg, `default_bg` fg
 File name: `default_text` fg
 Dirty file marker (`*`): `bright_emphasis` fg, bold
 Cursor coordinates, line count, etc: `bright_primary` fg
 
-### Hint line: `dim_surface` bg
+### Hint line: `surface` bg
 Preview hint (`Press any key to edit`): `default_text` fg
 Hint chord: `bright_interactive` fg, bold
 Hint label: `default_text` fg
@@ -89,14 +89,14 @@ Transient message:
 - Error: `bright_error` fg
 
 Cursor (in editor): Each mode has its own cursor style mirroring the status-line mode chip. The renderer picks via `theme.cursor_style(mode)`:
-- Preview: `dim_muted` bg, `bright_surface` fg (matches the Preview mode chip)
+- Preview: `muted` bg, `surface_elevated` fg (matches the Preview mode chip)
 - Rendered: `bright_primary` bg, `default_bg` fg
 - Raw: `bright_emphasis` bg, `default_bg` fg
 
 Cursor (modal text inputs): `theme.cursor` — REVERSED only, so the `▏` glyph inverts whatever's underneath without needing to know the modal's surface colour. Kept distinct from the editor cursor because modal inputs aren't tied to editor mode.
 
 ### Modal windows
-Background: `bright_surface`
+Background: `surface_elevated`
 Title: `bright_primary` fg, bold
 Border: `dim_structural` fg
 Item: `default_text`
@@ -146,26 +146,17 @@ can return to them once the visual language settles.
   (dim_structural fg) but the renderer doesn't emit footnote markers
   yet. Once `pulldown-cmark`'s footnote inlines surface, hook the
   style up.
-- **Settings overlay layout.** Settings rows are styled but the
-  overall row layout (label width, value alignment) is informally
-  specified; the cookbook for adding a new row lives in
-  `src/ui/settings_overlay.rs::CATEGORIES`. Either codify here or
-  link into the design guide.
 - **Scrollbars.** Modals draw a textual `↑` / `↓` / `↑↓` indicator
   in the title; there's no narrow gutter scrollbar. Once we add one,
   it'll need a palette entry (probably `dim_structural` fg).
 - **Diff / merge markers.** No styling for diff view (added /
   removed / context lines) — deferred until the editor grows a
   diff feature.
-- **Image-placeholder underline.** The renderer adds `UNDERLINED`
-  to the image's display name span on top of `image_placeholder`'s
-  italic; theming.md only specifies italic. Decide whether the
-  underline is by design or a leftover.
 - **Surface naming.** The palette description in this file says
   "dark grey — UI surfaces (status line, modal, code block bg);
   slightly lighter grey — elevated UI surfaces (inputs, hint
-  line)", but the rule list above uses `bright_surface` for the
-  darker chrome (status / modal / code) and `dim_surface` for the
+  line)", but the rule list above uses `surface_elevated` for the
+  darker chrome (status / modal / code) and `surface` for the
   elevated surfaces (hint / inputs). The implementation follows the
   rule list. Consider renaming the variants — `surface_chrome` and
   `surface_elevated` would read more naturally — once we revisit.

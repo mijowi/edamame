@@ -158,7 +158,7 @@ pub struct Theme {
     pub modal_item_selected_hint: Style,
     /// Pinned-footer description for the focused row (e.g. the
     /// settings overlay's bottom line that explains the focused
-    /// setting).  Sits on the modal body's `bright_surface` rather
+    /// setting).  Sits on the modal body's `surface_elevated` rather
     /// than on the row's selection bg, so it gets its own field.
     pub modal_description: Style,
     /// Section heading inside a modal (e.g. `— Editor —` in the
@@ -218,10 +218,10 @@ pub struct Theme {
 /// `default_bg` fg), where `Color::Reset` would not produce the right
 /// contrast.
 ///
-/// `surface_bright` is the chrome surface (status bar, modal body,
+/// `surface_elevated` is the chrome surface (status bar, modal body,
 /// inline-code background); `surface_dim` is the elevated surface used
 /// for secondary chrome (hint line, unfocused text inputs) — by
-/// convention slightly *lighter* than `surface_bright`, so an input
+/// convention slightly *lighter* than `surface_elevated`, so an input
 /// reads as recessed against the modal but still distinct from the
 /// document area.
 #[derive(Debug, Clone)]
@@ -243,10 +243,10 @@ pub struct Palette {
     pub dim_warning: Color,
     pub bright_error: Color,
     pub dim_error: Color,
-    pub bright_muted: Color,
-    pub dim_muted: Color,
-    pub bright_surface: Color,
-    pub dim_surface: Color,
+    pub text_muted: Color,
+    pub muted: Color,
+    pub surface_elevated: Color,
+    pub surface: Color,
 
     pub h1: Color,
     pub h2: Color,
@@ -297,11 +297,11 @@ impl Default for Palette {
             bright_error: Color::Indexed(196),
             dim_error: Color::Indexed(124),
 
-            // Greys — UI chrome, muted text, borders, row striping.
-            bright_muted: Color::Indexed(245),
-            dim_muted: Color::Indexed(235),
-            bright_surface: Color::Indexed(237),
-            dim_surface: Color::Indexed(236),
+            // Greys — UI chrome and muted items
+            text_muted: Color::Indexed(245), // Muted text, e.g. strikethrough
+            muted: Color::Indexed(235),      // Muted background, e.g. table row stripes
+            surface_elevated: Color::Indexed(237), // Elevated surface, e.g. dialogs
+            surface: Color::Indexed(236),    // Surface, e.g. panels, dialogs
 
             // Headings — bright color 1/2/3, dim color 1/2/3
             h1: Color::Indexed(220),
@@ -359,10 +359,10 @@ impl Theme {
             bold: Style::default().add_modifier(bold),
             italic: Style::default().add_modifier(italic),
             strikethrough: Style::default()
-                .fg(p.bright_muted)
+                .fg(p.text_muted)
                 .add_modifier(Modifier::CROSSED_OUT),
             highlight: Style::default().bg(p.dim_warning).fg(p.default_bg),
-            code_span: Style::default().fg(p.code).bg(p.dim_surface),
+            code_span: Style::default().fg(p.code).bg(p.surface),
             link_text: Style::default()
                 .fg(p.bright_interactive)
                 .add_modifier(underline),
@@ -373,14 +373,14 @@ impl Theme {
             image_placeholder: Style::default().fg(p.dim_interactive).add_modifier(italic),
             footnote: Style::default().fg(p.dim_structural),
 
-            // Code block — surface_bright background reads as a single
+            // Code block — surface_elevated background reads as a single
             // unit across border, language label, and body.
-            code_block_border: Style::default().fg(p.default_text).bg(p.dim_surface),
+            code_block_border: Style::default().fg(p.default_text).bg(p.surface),
             code_block_lang: Style::default()
                 .fg(p.code)
-                .bg(p.bright_surface)
+                .bg(p.surface_elevated)
                 .add_modifier(italic),
-            code_block_text: Style::default().fg(p.default_text).bg(p.dim_surface),
+            code_block_text: Style::default().fg(p.default_text).bg(p.surface),
 
             // Blockquote
             blockquote_bar: Style::default().fg(p.dim_structural),
@@ -398,26 +398,26 @@ impl Theme {
             task_unchecked: Style::default().fg(p.bright_warning),
             task_checked: Style::default().fg(p.dim_success),
             task_complete_text: Style::default()
-                .fg(p.bright_muted)
+                .fg(p.text_muted)
                 .add_modifier(Modifier::CROSSED_OUT),
             task_strikethrough: true,
 
             // Table
-            table_border: Style::default().fg(p.bright_surface),
+            table_border: Style::default().fg(p.surface_elevated),
             table_header: Style::default().add_modifier(bold).fg(p.bright_emphasis),
-            table_header_border: Style::default().fg(p.bright_surface),
+            table_header_border: Style::default().fg(p.surface_elevated),
             table_cell: Style::default(),
             table_row_even: Style::default(),
-            table_row_odd: Style::default().bg(p.dim_muted),
+            table_row_odd: Style::default().bg(p.muted),
             table_drop_indicator: Style::default().fg(p.bright_interactive),
             table_drop_target: Style::default().fg(p.dim_interactive),
 
-            // Status bar — dim_surface fill.  Mode chip swaps fg/bg
+            // Status bar — surface fill.  Mode chip swaps fg/bg
             // depending on Mode so each mode reads at a glance.
-            status_bar: Style::default().bg(p.dim_surface).fg(p.default_text),
+            status_bar: Style::default().bg(p.surface).fg(p.default_text),
             status_mode_preview: Style::default()
-                .bg(p.bright_muted)
-                .fg(p.dim_surface)
+                .bg(p.text_muted)
+                .fg(p.surface)
                 .add_modifier(bold),
             status_mode_rendered: Style::default()
                 .bg(p.bright_primary)
@@ -427,63 +427,65 @@ impl Theme {
                 .bg(p.bright_warning)
                 .fg(p.default_bg)
                 .add_modifier(bold),
-            status_filename: Style::default().fg(p.default_text).bg(p.dim_surface),
-            status_info: Style::default().fg(p.bright_primary).bg(p.dim_surface),
+            status_filename: Style::default().fg(p.default_text).bg(p.surface),
+            status_info: Style::default().fg(p.bright_primary).bg(p.surface),
             status_modified: Style::default()
                 .fg(p.bright_warning)
-                .bg(p.dim_surface)
+                .bg(p.surface)
                 .add_modifier(bold),
             status_selection: Style::default()
                 .fg(p.bright_interactive)
-                .bg(p.dim_surface)
+                .bg(p.surface)
                 .add_modifier(bold),
 
-            // Hint line — bright_surface background. Chord badges are
+            // Hint line — surface_elevated background. Chord badges are
             // bright_interactive on the hint surface for readability.
-            hint_bar: Style::default().bg(p.bright_surface).fg(p.default_text),
+            hint_bar: Style::default().bg(p.surface_elevated).fg(p.default_text),
             hint_chord: Style::default()
                 .fg(p.bright_interactive)
-                .bg(p.bright_surface)
+                .bg(p.surface_elevated)
                 .add_modifier(bold),
-            hint_label: Style::default().fg(p.default_text).bg(p.bright_surface),
+            hint_label: Style::default().fg(p.default_text).bg(p.surface_elevated),
 
             // Transient messages — escalate in salience.  All sit on
             // the hint_bar surface so they layer cleanly over the
             // chord row.
-            transient_info: Style::default().fg(p.default_text).bg(p.bright_surface),
+            transient_info: Style::default().fg(p.default_text).bg(p.surface_elevated),
             transient_success: Style::default()
                 .fg(p.bright_success)
-                .bg(p.bright_surface)
+                .bg(p.surface_elevated)
                 .add_modifier(bold),
             transient_warning: Style::default()
                 .fg(p.bright_warning)
-                .bg(p.bright_surface)
+                .bg(p.surface_elevated)
                 .add_modifier(bold),
             transient_error: Style::default()
                 .fg(p.bright_error)
-                .bg(p.bright_surface)
+                .bg(p.surface_elevated)
                 .add_modifier(bold),
 
             // Modal popups
-            modal_bg: Style::default().bg(p.bright_surface).fg(p.default_text),
-            modal_border: Style::default().fg(p.dim_structural).bg(p.bright_surface),
+            modal_bg: Style::default().bg(p.surface_elevated).fg(p.default_text),
+            modal_border: Style::default().fg(p.dim_structural).bg(p.surface_elevated),
             modal_title: Style::default()
                 .fg(p.bright_primary)
-                .bg(p.bright_surface)
+                .bg(p.surface_elevated)
                 .add_modifier(bold),
-            modal_item: Style::default().fg(p.default_text).bg(p.bright_surface),
+            modal_item: Style::default().fg(p.default_text).bg(p.surface_elevated),
             modal_item_hint: Style::default()
                 .fg(p.bright_interactive)
-                .bg(p.bright_surface),
+                .bg(p.surface_elevated),
             modal_item_selected: Style::default()
                 .bg(p.dim_interactive)
                 .fg(p.default_text)
                 .add_modifier(bold),
             modal_item_selected_hint: Style::default().fg(p.bright_emphasis).bg(p.dim_interactive),
-            modal_description: Style::default().fg(p.bright_emphasis).bg(p.bright_surface),
+            modal_description: Style::default()
+                .fg(p.bright_emphasis)
+                .bg(p.surface_elevated),
             modal_section_heading: Style::default()
                 .fg(p.bright_structural)
-                .bg(p.bright_surface)
+                .bg(p.surface_elevated)
                 .add_modifier(bold),
             modal_input_unfocused: Style::default().fg(p.default_bg).bg(p.dim_interactive),
             modal_input_focused: Style::default().fg(p.default_bg).bg(p.bright_interactive),
@@ -517,7 +519,7 @@ impl Theme {
             // places (per theming.md).  Each variant pairs the chip's
             // bg with a contrasting fg so the underlying character
             // stays legible.
-            cursor_preview: Style::default().bg(p.dim_muted).fg(p.bright_surface),
+            cursor_preview: Style::default().bg(p.muted).fg(p.surface_elevated),
             cursor_rendered: Style::default().bg(p.bright_primary).fg(p.default_bg),
             cursor_raw: Style::default().bg(p.bright_warning).fg(p.default_bg),
             // Generic input cursor — REVERSED so the `▏` glyph inside

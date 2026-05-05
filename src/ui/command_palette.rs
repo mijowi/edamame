@@ -351,7 +351,7 @@ impl<'a> StatefulWidget for PaletteView<'a> {
         if self.cursor_visible {
             let cursor_style = ratatui::style::Style::default()
                 .fg(self.theme.palette.bright_interactive)
-                .bg(self.theme.palette.bright_surface)
+                .bg(self.theme.palette.surface_elevated)
                 .add_modifier(ratatui::style::Modifier::BOLD);
             spans.push(Span::styled("▏", cursor_style));
         }

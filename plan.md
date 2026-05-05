@@ -1403,7 +1403,14 @@ These features should be **architecturally anticipated** from Phase 0 but not im
 - Fall back to plain monospace rendering if the language is unrecognised
 - Cache highlighted blocks keyed by (language, content hash)
 
-### Theming
+### Heading visual hierarchy — `tui-big-text` variant
+Terminals use a fixed character-cell grid; the app cannot change font size at the cell level.  The zero-dep **framing/rules** approach has been folded into Phase 14 ("Visual Polish").  The larger step below stays deferred to the theming phase:
+
+- **`tui-big-text`** (one small dep): renders text with Unicode half-block characters (▀▄█) at 2×–3× visual height, works with ratatui's `TestBackend` and requires no terminal capability detection. H1 at ~3× and H2 at ~2× gives a genuine size hierarchy. Add as an opt-in `theme.headings.h1_big = true` flag. Implement alongside the rest of the theming work.
+
+---
+
+## Theming
 - The `Theme` struct is already wired in from Phase 0
 - Deferred work: document all theme keys, ship several built-in themes (dark, light, dracula, gruvbox, catppuccin, github dark/light)
 - Theme can be selected by name (`theme = "dracula"`) in `config.toml`; resolved first from `~/.config/edamame/themes/`, then from built-ins
@@ -1424,24 +1431,9 @@ These features should be **architecturally anticipated** from Phase 0 but not im
 - Implement a live theme preview mode in the settings overlay
 - Theme fetching from a remote source.
 
-### Heading visual hierarchy — `tui-big-text` variant
-Terminals use a fixed character-cell grid; the app cannot change font size at the cell level.  The zero-dep **framing/rules** approach has been folded into Phase 14 ("Visual Polish").  The larger step below stays deferred to the theming phase:
-
-- **`tui-big-text`** (one small dep): renders text with Unicode half-block characters (▀▄█) at 2×–3× visual height, works with ratatui's `TestBackend` and requires no terminal capability detection. H1 at ~3× and H2 at ~2× gives a genuine size hierarchy. Add as an opt-in `theme.headings.h1_big = true` flag. Implement alongside the rest of the theming work.
-
 ---
 
 ## Open Questions
-
-1. **Re-parse performance**: For large files (>10,000 lines), re-parsing the entire document on every keystroke may introduce latency. Consider:
-   - Debouncing the re-parse to ~50ms after the last keystroke
-   - Incremental parsing: `pulldown-cmark` does not natively support incremental parsing, but we can limit re-parsing to the changed block by identifying block boundaries around the edit and splicing the old and new rendered output
-   - Benchmark in Phase 1 with large files to determine if this optimisation is needed
-   
-2. **Table column width storage**: Storing column widths in an inline HTML comment is a pragmatic choice but slightly pollutes the Markdown file. An alternative is a sidecar file (`.filename.md.tui-meta`). The HTML comment approach is preferred because the file remains self-contained; document this behaviour clearly.
-
-3. **Scrolling in RenderedMode**: When the rendered document is taller than the raw source (e.g. due to table row expansion or long paragraphs wrapping), the visual scroll position and the rope cursor position can diverge. We need a clear mapping between "visual line on screen" and "rope offset". The `SourceMap` addresses this, but edge cases (images, collapsed/expanded blocks) need careful handling.
-
 4. **WSL clipboard**: On WSL, `arboard` may not have access to the Windows clipboard without additional configuration (`clip.exe` workaround or `win32yank`). Detect WSL via `$WSL_DISTRO_NAME` and fall back to `clip.exe` / `powershell.exe Get-Clipboard` as appropriate.
 
 6. ~~**Split `config.toml` into multiple files?**~~ **Done — 2026-04-22.**
@@ -1488,8 +1480,6 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 - Add a first-run config setup for images, remote images, mouse, etc based on inferred terminal capabilities.
 
-- Add "Esc to dismiss" to `MesageKind::Error` sticky hint line messages
-
 - Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
 
 - Add scroll bar to modal right padding area when content overflows
@@ -1505,6 +1495,8 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 - Nested block quote should be bright structural to match the level 1 block quote's dim structural
 - block quote text should be purple as well
 - Inline code in a struck through item should be dimmed
+- Color table buttons dim_interactive
+- BG of striped rows should be consistent in border columns
 
 ## Make the TUI prettier—more like OpenCode
 - Replace modal border with padding.

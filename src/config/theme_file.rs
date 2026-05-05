@@ -115,13 +115,13 @@ pub struct PaletteFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dim_error: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bright_muted: Option<ColorField>,
+    pub text_muted: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dim_muted: Option<ColorField>,
+    pub muted: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bright_surface: Option<ColorField>,
+    pub surface_elevated: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dim_surface: Option<ColorField>,
+    pub surface: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub h1: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -164,10 +164,10 @@ impl PaletteFile {
             dim_warning: pick(self.dim_warning, d.dim_warning),
             bright_error: pick(self.bright_error, d.bright_error),
             dim_error: pick(self.dim_error, d.dim_error),
-            bright_muted: pick(self.bright_muted, d.bright_muted),
-            dim_muted: pick(self.dim_muted, d.dim_muted),
-            bright_surface: pick(self.bright_surface, d.bright_surface),
-            dim_surface: pick(self.dim_surface, d.dim_surface),
+            text_muted: pick(self.text_muted, d.text_muted),
+            muted: pick(self.muted, d.muted),
+            surface_elevated: pick(self.surface_elevated, d.surface_elevated),
+            surface: pick(self.surface, d.surface),
             h1: pick(self.h1, d.h1),
             h2: pick(self.h2, d.h2),
             h3: pick(self.h3, d.h3),
@@ -198,10 +198,10 @@ impl From<&Palette> for PaletteFile {
             dim_warning: Some(p.dim_warning.into()),
             bright_error: Some(p.bright_error.into()),
             dim_error: Some(p.dim_error.into()),
-            bright_muted: Some(p.bright_muted.into()),
-            dim_muted: Some(p.dim_muted.into()),
-            bright_surface: Some(p.bright_surface.into()),
-            dim_surface: Some(p.dim_surface.into()),
+            text_muted: Some(p.text_muted.into()),
+            muted: Some(p.muted.into()),
+            surface_elevated: Some(p.surface_elevated.into()),
+            surface: Some(p.surface.into()),
             h1: Some(p.h1.into()),
             h2: Some(p.h1.into()),
             h3: Some(p.h1.into()),
@@ -1049,10 +1049,10 @@ bold = true
             "dim_warning",
             "bright_error",
             "dim_error",
-            "bright_muted",
-            "dim_muted",
-            "bright_surface",
-            "dim_surface",
+            "text_muted",
+            "muted",
+            "surface_elevated",
+            "surface",
         ] {
             let commented = format!("# {field} = ");
             assert!(
