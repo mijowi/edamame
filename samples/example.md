@@ -59,7 +59,7 @@ Block quote
 - [ ] Incomplete wrapped item aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa dddddda aaaaaaaaaaaaaaaa
   - [x] Checked item with empty list item below
   - [ ] 
-- [x] Completed item
+- [x] Completed item with `foo() {}` inline code
 
 Two horizontal rules
 

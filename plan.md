@@ -1474,10 +1474,6 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 - Clean up source and tests
 
-- Table row/column deletion hover preview? Optional — when the pointer is over a delete glyph, paint the
-  target row/column in a "danger" style (e.g., theme's selection-or-warning color)
-  so the user sees what's about to go. Adds polish but more work.
-
 - Add a first-run config setup for images, remote images, mouse, etc based on inferred terminal capabilities.
 
 - Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
@@ -1489,6 +1485,8 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 - Color code modal titles (e.g. red for warning)
 
 - Images are padded with the `Reset` terminal background instead of the theme background.
+
+- Update `themes/default.toml` header
 
 ### Theme issues
 - Code blocks in Markdown cheat sheet have same bg as modal, so it looks like there's no bg
