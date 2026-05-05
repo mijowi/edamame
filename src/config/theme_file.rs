@@ -373,6 +373,8 @@ pub struct ThemeFile {
     pub table_row_odd: StyleSpec,
     pub table_drop_indicator: StyleSpec,
     pub table_drop_target: StyleSpec,
+    pub table_handle: StyleSpec,
+    pub table_handle_delete: StyleSpec,
 
     // Status bar
     pub status_bar: StyleSpec,
@@ -488,6 +490,8 @@ impl From<&ThemeFile> for Theme {
         apply!(table_row_odd);
         apply!(table_drop_indicator);
         apply!(table_drop_target);
+        apply!(table_handle);
+        apply!(table_handle_delete);
 
         apply!(status_bar);
         apply!(status_mode_preview);
@@ -580,6 +584,8 @@ impl From<&Theme> for ThemeFile {
             table_row_odd: (&t.table_row_odd).into(),
             table_drop_indicator: (&t.table_drop_indicator).into(),
             table_drop_target: (&t.table_drop_target).into(),
+            table_handle: (&t.table_handle).into(),
+            table_handle_delete: (&t.table_handle_delete).into(),
 
             status_bar: (&t.status_bar).into(),
             status_mode_preview: (&t.status_mode_preview).into(),
@@ -740,6 +746,8 @@ mod tests {
         check!(table_row_odd);
         check!(table_drop_indicator);
         check!(table_drop_target);
+        check!(table_handle);
+        check!(table_handle_delete);
         check!(status_bar);
         check!(status_mode_preview);
         check!(status_mode_rendered);
@@ -987,6 +995,8 @@ bold = true
         check!(table_row_odd);
         check!(table_drop_indicator);
         check!(table_drop_target);
+        check!(table_handle);
+        check!(table_handle_delete);
         check!(status_bar);
         check!(status_mode_preview);
         check!(status_mode_rendered);
@@ -1131,6 +1141,8 @@ bold = true
         check!(table_row_odd);
         check!(table_drop_indicator);
         check!(table_drop_target);
+        check!(table_handle);
+        check!(table_handle_delete);
         check!(status_bar);
         check!(status_mode_preview);
         check!(status_mode_rendered);

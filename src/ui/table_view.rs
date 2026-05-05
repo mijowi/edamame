@@ -690,13 +690,14 @@ pub fn paint_handles(
     theme: &Theme,
     cursor_table_start: Option<usize>,
 ) {
-    // Handles inherit `theme.table_border` directly — same colour as
-    // the surrounding `│` / `─` so the affordance reads as part of
-    // the table chrome.  Visibility comes from the glyph swap (`⠿`
-    // / `⇔` instead of `│` / `─`) and from the cursor-in-table
-    // gating (`paint_handles_for_cursor_table`) only painting them
-    // on the active table.
-    let handle_style: Style = theme.table_border;
+    // Reorder (`⠿`) and resize (`⇔`) glyphs share `theme.table_handle`
+    // (interactive accent); delete (`✕`) glyphs use the louder
+    // `theme.table_handle_delete` so the destructive affordance stands
+    // out from its neighbours.  The cursor-in-table gating
+    // (`paint_handles_for_cursor_table`) keeps these from painting on
+    // every visible table.
+    let move_style: Style = theme.table_handle;
+    let delete_style: Style = theme.table_handle_delete;
     for snap in snapshots {
         if let Some(start) = cursor_table_start {
             if snap.table_byte_start != start {
@@ -720,7 +721,7 @@ pub fn paint_handles(
                     if y >= area.y && y < area.y + area.height {
                         if let Some(cell) = buf.cell_mut((col, y)) {
                             cell.set_char(REORDER_HANDLE_GLYPH);
-                            cell.set_style(handle_style);
+                            cell.set_style(move_style);
                         }
                     }
                 }
@@ -741,7 +742,7 @@ pub fn paint_handles(
                     if x < area.x + area.width {
                         if let Some(cell) = buf.cell_mut((x, y)) {
                             cell.set_char(REORDER_HANDLE_GLYPH);
-                            cell.set_style(handle_style);
+                            cell.set_style(move_style);
                         }
                     }
                 }
@@ -759,7 +760,7 @@ pub fn paint_handles(
                     if border_x < area.x + area.width {
                         if let Some(cell) = buf.cell_mut((border_x, y)) {
                             cell.set_char(COLUMN_RESIZE_GLYPH);
-                            cell.set_style(handle_style);
+                            cell.set_style(move_style);
                         }
                     }
                 }
@@ -779,7 +780,7 @@ pub fn paint_handles(
                     if y >= area.y && y < area.y + area.height {
                         if let Some(cell) = buf.cell_mut((col, y)) {
                             cell.set_char(DELETE_HANDLE_GLYPH);
-                            cell.set_style(handle_style);
+                            cell.set_style(delete_style);
                         }
                     }
                 }
@@ -801,7 +802,7 @@ pub fn paint_handles(
                     if x < area.x + area.width {
                         if let Some(cell) = buf.cell_mut((x, y)) {
                             cell.set_char(DELETE_HANDLE_GLYPH);
-                            cell.set_style(handle_style);
+                            cell.set_style(delete_style);
                         }
                     }
                 }

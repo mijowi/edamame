@@ -98,6 +98,15 @@ pub struct Theme {
     /// the active indicator so the affordance reads as a set of
     /// possibilities with one pointer-tracked highlight.
     pub table_drop_target: Style,
+    /// Style for the row/column reorder (`⠿`) and column-resize (`⇔`)
+    /// button glyphs painted on top of the table border.  Distinct from
+    /// `table_border` so the affordances read as interactive rather
+    /// than chrome.
+    pub table_handle: Style,
+    /// Style for the row/column delete (`✕`) button glyphs painted on
+    /// top of the table border.  Distinct from `table_handle` so the
+    /// destructive affordance reads as a warning.
+    pub table_handle_delete: Style,
 
     // ── Status bar ────────────────────────────────────────────────
     pub status_bar: Style,
@@ -411,6 +420,8 @@ impl Theme {
             table_row_odd: Style::default().bg(p.muted),
             table_drop_indicator: Style::default().fg(p.bright_interactive),
             table_drop_target: Style::default().fg(p.dim_interactive),
+            table_handle: Style::default().fg(p.dim_interactive),
+            table_handle_delete: Style::default().fg(p.dim_error),
 
             // Status bar — surface fill.  Mode chip swaps fg/bg
             // depending on Mode so each mode reads at a glance.
@@ -630,6 +641,8 @@ impl Theme {
             table_drop_indicator: Style::default()
                 .add_modifier(Modifier::REVERSED | Modifier::BOLD),
             table_drop_target: Style::default().add_modifier(Modifier::REVERSED),
+            table_handle: Style::default(),
+            table_handle_delete: Style::default().add_modifier(Modifier::BOLD),
 
             status_bar: Style::default().add_modifier(Modifier::REVERSED),
             status_mode_preview: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
