@@ -696,40 +696,7 @@ pub fn apply(
                 insert_text(state, "\n");
             }
         }
-
-        // ── Phase 8 — link navigation ───────────────────────────────
-        // These are App-level actions: the event loop intercepts them
-        // before calling `edit_ops::apply`, so reaching them here means
-        // the App isn't wired up (e.g. a unit test driving edit_ops
-        // directly).  No-op so tests don't panic.
-        Action::FollowLinkUnderCursor | Action::NavigateBack | Action::NavigateForward => {}
-
-        // ── Phase 9 — cheat-sheet popover ──────────────────────────
-        // App-level: opens the cheat-sheet overlay.  edit_ops knows
-        // nothing about UI widgets; reaching this arm means the App
-        // wasn't wired up, which is the normal situation in unit
-        // tests that drive edit_ops directly.
-        Action::ShowCheatSheet => {}
-
-        // ── Phase 10 — command palette + configuration overlays ───
-        // Same story as `ShowCheatSheet`: these all open UI overlays
-        // owned by the App (palette state, settings overlay, keybinds
-        // overlay, OS file open, HTML export, file reload).  They are
-        // intercepted in `App::handle_app_action` *before*
-        // `edit_ops::apply` is called; reaching one of these arms
-        // means a unit test is dispatching them directly with no App
-        // attached, so a no-op is the correct behaviour.
-        Action::ShowCommandPalette
-        | Action::ShowMarkdownCheatSheet
-        | Action::OpenSettings
-        | Action::OpenKeybinds
-        | Action::OpenConfigFolder
-        | Action::ExportHtml
-        | Action::ReloadFromDisk
-        | Action::OpenInExternalEditor
-        | Action::ToggleTableButtons
-        | Action::InsertTable
-        | Action::SaveCopy => {}
+        _ => {}
     }
 
     // After any action that mutated the buffer (detected by a change in length

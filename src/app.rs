@@ -173,7 +173,6 @@ struct WidthInjectionWarning {
     body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
     state: ModalState,
-    pending_table_start: usize,
 }
 
 /// Result of [`App::run_external_editor`].  Tells the caller whether
@@ -1905,6 +1904,11 @@ impl App {
                 }
                 true
             }
+            Action::OpenGitHub => {
+                const EDAMAME_GITHUB_URL: &str = "https://github.com/gorgonian/edamame";
+                self.spawn_open_worker(EDAMAME_GITHUB_URL.to_string());
+                true
+            }
             Action::NavigateBack => {
                 self.navigate_back(doc_height, doc_width);
                 true
@@ -2003,7 +2007,7 @@ impl App {
                 true
             }
             Action::InsertTable => {
-                // Phase 15 — pre-flight the blank-line guard before
+                // Pre-flight the blank-line guard before
                 // opening the modal so a non-blank cursor surfaces an
                 // immediate sticky error.  The same guard subsumes
                 // mid-paragraph, heading, list, code-block, and
@@ -2496,7 +2500,6 @@ impl App {
                 ModalButton::new("Cancel"),
             ],
             state: ModalState::new(),
-            pending_table_start,
         });
     }
 

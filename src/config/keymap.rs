@@ -21,7 +21,7 @@ pub enum Action {
     ScrollPageDown,
     ScrollToTop,
     ScrollToBottom,
-    // ── Cursor movement (Phase 1) ──────────────────────────────────
+    // ── Cursor movement ─────────────────────────────────────────────
     MoveLeft,
     MoveRight,
     MoveUp,
@@ -32,7 +32,7 @@ pub enum Action {
     MoveLineEnd,
     MoveDocStart,
     MoveDocEnd,
-    // ── Editing (Phase 1) ──────────────────────────────────────────
+    // ── Editing ────────────────────────────────────────────────────
     InsertChar(char),
     InsertTab,
     Newline,
@@ -41,17 +41,17 @@ pub enum Action {
     DeleteWordBack,
     DeleteWordForward,
     DeleteLine,
-    // ── Clipboard (Phase 1) ────────────────────────────────────────
+    // ── Clipboard ──────────────────────────────────────────────────
     Cut,
     Copy,
     Paste,
-    // ── Selection (Phase 1) ────────────────────────────────────────
+    // ── Selection ──────────────────────────────────────────────────
     SelectLeft,
     SelectRight,
     SelectUp,
     SelectDown,
     SelectAll,
-    // ── History (Phase 1) ──────────────────────────────────────────
+    // ── History ────────────────────────────────────────────────────
     Undo,
     Redo,
     // ── File operations ────────────────────────────────────────────
@@ -68,9 +68,9 @@ pub enum Action {
     ToggleRawMode,
     // ── App control ────────────────────────────────────────────────
     Quit,
-    // ── List editing (Phase 3) ─────────────────────────────────────
+    // ── List editing ───────────────────────────────────────────────
     ToggleCheckbox,
-    // ── Table editing (Phase 2) ────────────────────────────────────
+    // ── Table editing ──────────────────────────────────────────────
     // Cell navigation. Tab/Shift+Tab/Enter outside a table retain their
     // normal behaviour; edit_ops redirects them when the cursor is inside
     // a table (Phase 2 implementation).
@@ -109,14 +109,12 @@ pub enum Action {
     /// Mirror of [`Action::NavigateBack`] operating on the forward
     /// stack.
     NavigateForward,
-    // ── Phase 9 — cheat sheet ──────────────────────────────────────
     /// Open the cheat-sheet popover listing every keybinding grouped
     /// by category.  Intentionally unbound by default — the overlay
     /// is reached only via the command palette (Phase 10) so it
     /// doesn't consume a dedicated key that would collide with
     /// typing inside a cell / paragraph / list.
     ShowCheatSheet, // Configurable!
-    // ── Phase 10 — command palette and configuration overlays ─────
     /// Open the fuzzy-searchable command palette (Ctrl-P).  Lists
     /// every bound action and routes the chosen one through the
     /// normal `edit_ops::apply` path.
@@ -133,13 +131,10 @@ pub enum Action {
     /// Reveal the active config directory in the OS file manager / open
     /// it via `open::that`.
     OpenConfigFolder,
-    /// Phase 16 — palette entry for the built-in HTML exporter.  Wired
+    /// Palette entry for the built-in HTML exporter.  Wired
     /// up here so the palette's `Suggested` list can reference it.
     ExportHtml,
-    /// Phase 11 — palette entry that re-reads the file from disk,
-    /// discarding in-memory edits.  Surfaces only as a palette entry
-    /// for now; Phase 11 will also wire it from the file-watcher
-    /// prompt.
+    /// Re-reads the file from disk, discarding in-memory edits.
     ReloadFromDisk,
     /// Save the current buffer and open it in `$VISUAL` / `$EDITOR`
     /// (falling back to the OS handler).  Reuses the same suspend /
@@ -152,11 +147,13 @@ pub enum Action {
     /// flip handles for the current session without committing the
     /// change.
     ToggleTableButtons,
-    /// Phase 15 — open the rows/columns modal that inserts a fresh
+    /// Open the rows/columns modal that inserts a fresh
     /// GFM pipe table at the cursor.  Requires the cursor to be on
-    /// a blank line; the App-level handler flashes a sticky error
+    /// a blank line; the App-level handler flashes an error
     /// when that pre-flight fails.
     InsertTable,
+    /// Open the edamame GitHub repository.
+    OpenGitHub,
 }
 
 impl fmt::Display for Action {
@@ -220,6 +217,7 @@ impl fmt::Display for Action {
             Action::TableDeleteColumn => "TableDeleteColumn",
             Action::TableInsertBreak => "TableInsertBreak",
             Action::FollowLinkUnderCursor => "FollowLinkUnderCursor",
+            Action::OpenGitHub => "OpenGitHub",
             Action::NavigateBack => "NavigateBack",
             Action::NavigateForward => "NavigateForward",
             Action::ShowCheatSheet => "ShowCheatSheet",
@@ -313,6 +311,7 @@ impl FromStr for Action {
             "OpenInExternalEditor" => Ok(Action::OpenInExternalEditor),
             "ToggleTableButtons" => Ok(Action::ToggleTableButtons),
             "InsertTable" => Ok(Action::InsertTable),
+            "OpenGitHub" => Ok(Action::OpenGitHub),
             other => Err(KeyMapError::UnknownAction(other.to_owned())),
         }
     }
@@ -582,9 +581,6 @@ impl KeyMap {
 
     /// Iterate every `(KeyEvent, Action)` binding.  Exposed so the
     /// cheat-sheet can list all bindings when asked.
-    pub fn bindings(&self) -> impl Iterator<Item = (&KeyEvent, &Action)> {
-        self.bindings.iter()
-    }
 
     /// Rebind `action` to `new_key` (parsed from `parse_key`-style
     /// syntax).  If `new_key` is already bound to a *different*
@@ -679,7 +675,7 @@ impl KeyMap {
         bind!("home", Action::ScrollToTop);
         bind!("end", Action::ScrollToBottom);
 
-        // Editing (Phase 1)
+        // Editing
         bind!("enter", Action::Newline);
         bind!("tab", Action::InsertTab);
         bind!("backspace", Action::DeleteCharBack);
@@ -688,11 +684,11 @@ impl KeyMap {
         bind!("ctrl+delete", Action::DeleteWordForward);
         bind!("ctrl+d", Action::DeleteLine);
 
-        // History (Phase 1)
+        // History
         bind!("ctrl+z", Action::Undo);
         bind!("ctrl+shift+z", Action::Redo);
 
-        // Clipboard (Phase 1)
+        // Clipboard
         // Ctrl-C → Copy (not Quit). The app intercepts Ctrl-C in crossterm
         // raw mode before it can generate SIGINT, so this is safe.
         bind!("ctrl+c", Action::Copy);
@@ -707,14 +703,14 @@ impl KeyMap {
         bind!("escape", Action::ExitToPreview);
         bind!("ctrl+`", Action::ToggleRawMode);
 
-        // Selection (Phase 1) — Shift+Arrow extends the selection.
+        // Selection — Shift+Arrow extends the selection.
         bind!("shift+left", Action::SelectLeft);
         bind!("shift+right", Action::SelectRight);
         bind!("shift+up", Action::SelectUp);
         bind!("shift+down", Action::SelectDown);
         bind!("ctrl+shift+a", Action::SelectAll);
 
-        // List (Phase 3)
+        // List
         bind!("ctrl+space", Action::ToggleCheckbox);
 
         // Table editing (Phase 2) — org-mode-style Alt+Arrow scheme.

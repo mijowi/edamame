@@ -226,7 +226,7 @@ impl PaletteState {
                 .map(|(i, _)| i)
                 .collect();
             suggested.sort_by_key(|&i| {
-                SUGGESTED_ORDER
+                SUGGESTED_ACTIONS
                     .iter()
                     .position(|a| a == &self.entries[i].action)
                     .unwrap_or(usize::MAX)
@@ -495,7 +495,7 @@ fn format_section_header(title: &str, theme: &Theme, width: u16) -> Line<'static
 /// end.  `InsertTable` is intentionally surfaced even though its
 /// handler is still a stub — landing the palette entry now means
 /// muscle-memory stays stable when the real implementation arrives.
-const SUGGESTED_ORDER: &[Action] = &[
+const SUGGESTED_ACTIONS: &[Action] = &[
     Action::OpenSettings,
     Action::OpenKeybinds,
     Action::InsertTable,
@@ -504,11 +504,12 @@ const SUGGESTED_ORDER: &[Action] = &[
     Action::ExportHtml,
     Action::OpenInExternalEditor,
     Action::ShowMarkdownCheatSheet,
+    Action::OpenGitHub,
 ];
 
 /// True when `action` is part of the curated suggested list.
 fn is_suggested(action: &Action) -> bool {
-    SUGGESTED_ORDER.contains(action)
+    SUGGESTED_ACTIONS.contains(action)
 }
 
 /// Section ordering for the empty-state view.  Each action maps to
@@ -549,7 +550,8 @@ fn section_of(action: &Action) -> &'static str {
         Action::OpenSettings
         | Action::OpenKeybinds
         | Action::ShowMarkdownCheatSheet
-        | Action::OpenInExternalEditor => "Tools",
+        | Action::OpenInExternalEditor
+        | Action::OpenGitHub => "Tools",
         _ => "Other",
     }
 }
@@ -626,6 +628,7 @@ const ALL_ACTIONS: &[Action] = &[
     Action::ToggleCheckbox,
     // Navigation (link / nav stack).
     Action::FollowLinkUnderCursor,
+    Action::OpenGitHub,
     Action::NavigateBack,
     Action::NavigateForward,
     // Tables — surface only the structural ops.  Cell navigation
@@ -668,6 +671,7 @@ fn label_for(action: &Action) -> Option<&'static str> {
         Action::Quit => "Quit",
         Action::ToggleCheckbox => "Toggle checkbox",
         Action::FollowLinkUnderCursor => "Follow link under cursor",
+        Action::OpenGitHub => "View Edamame on GitHub",
         Action::NavigateBack => "Navigate back",
         Action::NavigateForward => "Navigate forward",
         Action::TableMoveRowUp => "Table: Move row up",
@@ -734,6 +738,7 @@ mod tests {
                 "Export HTML".to_owned(),
                 "Open current file in system editor".to_owned(),
                 "Show Markdown cheat sheet".to_owned(),
+                "View Edamame on GitHub".to_owned()
             ]
         );
     }
@@ -787,7 +792,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        for action in SUGGESTED_ORDER {
+        for action in SUGGESTED_ACTIONS {
             assert!(
                 category_actions.contains(action),
                 "suggested action {action} not duplicated in category section"

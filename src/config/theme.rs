@@ -555,14 +555,6 @@ impl Theme {
     /// Pick the Mode-specific editor cursor style.  Mirrors the
     /// status-bar mode chip's bg so the cursor reads as the same
     /// affordance in both places.
-    pub fn cursor_style(&self, mode: crate::editor::Mode) -> Style {
-        use crate::editor::Mode::*;
-        match mode {
-            Preview => self.cursor_preview,
-            Rendered => self.cursor_rendered,
-            Raw => self.cursor_raw,
-        }
-    }
 
     /// Build a `Theme` from a user-authored [`ThemeFile`].
     ///

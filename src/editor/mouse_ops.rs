@@ -1076,12 +1076,6 @@ pub fn visual_selection_to_rendered_text(sel: VisualSelection, lines: &[Line<'_>
 
 // ── Mode transitions ─────────────────────────────────────────────────────────
 
-fn enter_edit_from_preview(state: &mut EditorState) {
-    if state.mode == Mode::Preview {
-        state.mode = Mode::Rendered;
-    }
-}
-
 // ── Scrolling ────────────────────────────────────────────────────────────────
 
 /// Scroll by `delta` lines using the mouse-specific bound that allows the
@@ -2170,23 +2164,6 @@ fn toggle_checkbox_at(
 }
 
 /// Apply a byte-offset `EditDelta` to the editor (mirrors the helper in
-/// `edit_ops`; duplicated here because `apply_byte_delta` there is private to
-/// that module).
-fn apply_byte_delta(state: &mut EditorState, byte_delta: EditDelta, cursor_byte_target: usize) {
-    let offset_char = state.buffer.rope().byte_to_char(byte_delta.offset);
-    let delta = EditDelta {
-        offset: offset_char,
-        removed: byte_delta.removed,
-        inserted: byte_delta.inserted,
-    };
-    state.apply_delta(delta);
-    let source = state.buffer.contents();
-    let clamped_byte = cursor_byte_target.min(source.len());
-    let char_off = state.buffer.rope().byte_to_char(clamped_byte);
-    state.cursor.offset = char_off.min(state.buffer.len_chars());
-    state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
-    state.update_cursor_block();
-}
 
 #[cfg(test)]
 mod tests {

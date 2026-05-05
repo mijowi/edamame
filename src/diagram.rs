@@ -13,6 +13,4 @@
 
 pub mod mermaid;
 
-pub use mermaid::{
-    render_mermaid_svg, resolve_mermaid, synthetic_url, warm_fontdb, DiagramError, DiagramSource,
-};
+pub use mermaid::{render_mermaid_svg, resolve_mermaid, synthetic_url, warm_fontdb, DiagramSource};
