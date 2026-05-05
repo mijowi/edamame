@@ -1492,17 +1492,13 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 ### Theme issues
 - Code blocks in Markdown cheat sheet have same bg as modal, so it looks like there's no bg
-- Nested block quote should be bright structural to match the level 1 block quote's dim structural
-- block quote text should be purple as well
 - Inline code in a struck through item should be dimmed
-- Color table buttons dim_interactive
 - BG of striped rows should be consistent in border columns
 
 ## Make the TUI prettier—more like OpenCode
 - Replace modal border with padding.
 - Dim background when modal is open (probably modern terminals only)
 - Keep modal title on left. Add dim `Esc` at top right to signal how to close. Both should be contained *within* the border padding.
-- Add command to visit project home page
 
 ---
 

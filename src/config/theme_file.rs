@@ -87,33 +87,33 @@ pub struct PaletteFile {
     pub default_bg: Option<ColorField>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bright_primary: Option<ColorField>,
+    pub primary_bright: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dim_primary: Option<ColorField>,
+    pub primary_dim: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bright_emphasis: Option<ColorField>,
+    pub emphasis_bright: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dim_emphasis: Option<ColorField>,
+    pub emphasis_dim: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bright_structural: Option<ColorField>,
+    pub structural_bright: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dim_structural: Option<ColorField>,
+    pub structural_dim: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bright_interactive: Option<ColorField>,
+    pub interactive_bright: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dim_interactive: Option<ColorField>,
+    pub interactive_dim: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bright_success: Option<ColorField>,
+    pub success_bright: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dim_success: Option<ColorField>,
+    pub success_dim: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bright_warning: Option<ColorField>,
+    pub warning_bright: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dim_warning: Option<ColorField>,
+    pub warning_dim: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bright_error: Option<ColorField>,
+    pub error_bright: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dim_error: Option<ColorField>,
+    pub error_dim: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_muted: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -150,20 +150,20 @@ impl PaletteFile {
         Palette {
             default_text: pick(self.default_text, d.default_text),
             default_bg: pick(self.default_bg, d.default_bg),
-            bright_primary: pick(self.bright_primary, d.bright_primary),
-            dim_primary: pick(self.dim_primary, d.dim_primary),
-            bright_emphasis: pick(self.bright_emphasis, d.bright_emphasis),
-            dim_emphasis: pick(self.dim_emphasis, d.dim_emphasis),
-            bright_structural: pick(self.bright_structural, d.bright_structural),
-            dim_structural: pick(self.dim_structural, d.dim_structural),
-            bright_interactive: pick(self.bright_interactive, d.bright_interactive),
-            dim_interactive: pick(self.dim_interactive, d.dim_interactive),
-            bright_success: pick(self.bright_success, d.bright_success),
-            dim_success: pick(self.dim_success, d.dim_success),
-            bright_warning: pick(self.bright_warning, d.bright_warning),
-            dim_warning: pick(self.dim_warning, d.dim_warning),
-            bright_error: pick(self.bright_error, d.bright_error),
-            dim_error: pick(self.dim_error, d.dim_error),
+            primary_bright: pick(self.primary_bright, d.primary_bright),
+            primary_dim: pick(self.primary_dim, d.primary_dim),
+            emphasis_bright: pick(self.emphasis_bright, d.emphasis_bright),
+            emphasis_dim: pick(self.emphasis_dim, d.emphasis_dim),
+            structural_bright: pick(self.structural_bright, d.structural_bright),
+            structural_dim: pick(self.structural_dim, d.structural_dim),
+            interactive_bright: pick(self.interactive_bright, d.interactive_bright),
+            interactive_dim: pick(self.interactive_dim, d.interactive_dim),
+            success_bright: pick(self.success_bright, d.success_bright),
+            success_dim: pick(self.success_dim, d.success_dim),
+            warning_bright: pick(self.warning_bright, d.warning_bright),
+            warning_dim: pick(self.warning_dim, d.warning_dim),
+            error_bright: pick(self.error_bright, d.error_bright),
+            error_dim: pick(self.error_dim, d.error_dim),
             text_muted: pick(self.text_muted, d.text_muted),
             muted: pick(self.muted, d.muted),
             surface_elevated: pick(self.surface_elevated, d.surface_elevated),
@@ -184,20 +184,20 @@ impl From<&Palette> for PaletteFile {
         Self {
             default_text: Some(p.default_text.into()),
             default_bg: Some(p.default_bg.into()),
-            bright_primary: Some(p.bright_primary.into()),
-            dim_primary: Some(p.dim_primary.into()),
-            bright_emphasis: Some(p.bright_emphasis.into()),
-            dim_emphasis: Some(p.dim_emphasis.into()),
-            bright_structural: Some(p.bright_structural.into()),
-            dim_structural: Some(p.dim_structural.into()),
-            bright_interactive: Some(p.bright_interactive.into()),
-            dim_interactive: Some(p.dim_interactive.into()),
-            bright_success: Some(p.bright_success.into()),
-            dim_success: Some(p.dim_success.into()),
-            bright_warning: Some(p.bright_warning.into()),
-            dim_warning: Some(p.dim_warning.into()),
-            bright_error: Some(p.bright_error.into()),
-            dim_error: Some(p.dim_error.into()),
+            primary_bright: Some(p.primary_bright.into()),
+            primary_dim: Some(p.primary_dim.into()),
+            emphasis_bright: Some(p.emphasis_bright.into()),
+            emphasis_dim: Some(p.emphasis_dim.into()),
+            structural_bright: Some(p.structural_bright.into()),
+            structural_dim: Some(p.structural_dim.into()),
+            interactive_bright: Some(p.interactive_bright.into()),
+            interactive_dim: Some(p.interactive_dim.into()),
+            success_bright: Some(p.success_bright.into()),
+            success_dim: Some(p.success_dim.into()),
+            warning_bright: Some(p.warning_bright.into()),
+            warning_dim: Some(p.warning_dim.into()),
+            error_bright: Some(p.error_bright.into()),
+            error_dim: Some(p.error_dim.into()),
             text_muted: Some(p.text_muted.into()),
             muted: Some(p.muted.into()),
             surface_elevated: Some(p.surface_elevated.into()),
@@ -895,16 +895,16 @@ fg = "blue"
     #[test]
     fn palette_override_ripples_to_styles() {
         // Override only the palette; the H1 fg should pick up the new
-        // bright_emphasis colour because the merge re-derives styles
+        // emphasis_bright colour because the merge re-derives styles
         // from the file palette before applying overrides.
         let toml = r##"
 [palette]
-bright_emphasis = "#abcdef"
+emphasis_bright = "#abcdef"
 "##;
         let file: ThemeFile = toml::from_str(toml).unwrap();
         let theme: Theme = (&file).into();
         assert_eq!(theme.h1.fg, Some(Color::Indexed(220)));
-        // h1_rule shares the bright_emphasis colour and should follow.
+        // h1_rule shares the emphasis_bright colour and should follow.
         assert_eq!(theme.h1_rule.fg, Some(Color::Indexed(220)));
     }
 
@@ -914,7 +914,7 @@ bright_emphasis = "#abcdef"
         // override should win.
         let toml = r##"
 [palette]
-bright_emphasis = "#abcdef"
+emphasis_bright = "#abcdef"
 
 [h1]
 fg = "#112233"
@@ -1045,20 +1045,20 @@ bold = true
         for field in [
             "default_text",
             "default_bg",
-            "bright_primary",
-            "dim_primary",
-            "bright_emphasis",
-            "dim_emphasis",
-            "bright_structural",
-            "dim_structural",
-            "bright_interactive",
-            "dim_interactive",
-            "bright_success",
-            "dim_success",
-            "bright_warning",
-            "dim_warning",
-            "bright_error",
-            "dim_error",
+            "primary_bright",
+            "primary_dim",
+            "emphasis_bright",
+            "emphasis_dim",
+            "structural_bright",
+            "structural_dim",
+            "interactive_bright",
+            "interactive_dim",
+            "success_bright",
+            "success_dim",
+            "warning_bright",
+            "warning_dim",
+            "error_bright",
+            "error_dim",
             "text_muted",
             "muted",
             "surface_elevated",

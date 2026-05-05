@@ -344,13 +344,13 @@ impl<'a> StatefulWidget for PaletteView<'a> {
         // sits flush against the modal body — no coloured bg fill —
         // so the row reads as part of the modal rather than as a
         // sunken text-input chip.  The `▏` cursor glyph picks up
-        // `bright_interactive` so the typing affordance still pops.
+        // `interactive_bright` so the typing affordance still pops.
         let prompt = Span::styled("› ", self.theme.modal_item);
         let typed = Span::styled(state.query.clone(), self.theme.modal_item);
         let mut spans = vec![prompt, typed];
         if self.cursor_visible {
             let cursor_style = ratatui::style::Style::default()
-                .fg(self.theme.palette.bright_interactive)
+                .fg(self.theme.palette.interactive_bright)
                 .bg(self.theme.palette.surface_elevated)
                 .add_modifier(ratatui::style::Modifier::BOLD);
             spans.push(Span::styled("▏", cursor_style));
