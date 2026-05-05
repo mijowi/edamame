@@ -1515,12 +1515,12 @@ fn rendered_list_marker_char_width(line: &ratatui::text::Line<'_>) -> Option<usi
         }
     }?;
     // Tasks are decorated bullets — `• ` (or the ordered marker) is followed
-    // by a `[ ] ` / `[x] ` checkbox.  Include those four cells in the marker
+    // by a `[ ] ` / `[✓] ` checkbox.  Include those four cells in the marker
     // width so cursor / selection mapping covers the whole forbidden zone.
     if chars.get(after_bullet) == Some(&'[')
         && matches!(
             chars.get(after_bullet + 1),
-            Some(' ') | Some('x') | Some('X')
+            Some(' ') | Some('✓')
         )
         && chars.get(after_bullet + 2) == Some(&']')
         && chars.get(after_bullet + 3) == Some(&' ')
@@ -1578,6 +1578,17 @@ mod tests {
         let line = Line::from(vec![
             Span::styled("• ", Style::default()),
             Span::styled("[ ] ", Style::default()),
+            Span::raw("foo"),
+        ]);
+        assert_eq!(rendered_list_marker_char_width(&line), Some(6));
+    }
+
+    #[test]
+    fn rendered_marker_width_task_checked() {
+        // Checked rendered as `• [✓] foo` — same 6-cell marker.
+        let line = Line::from(vec![
+            Span::styled("• ", Style::default()),
+            Span::styled("[✓] ", Style::default()),
             Span::raw("foo"),
         ]);
         assert_eq!(rendered_list_marker_char_width(&line), Some(6));

@@ -687,7 +687,7 @@ impl<'t> Renderer<'t> {
             // Task list prefix (checkbox).
             let task_prefix: Option<Span<'static>> = item.task.map(|checked| {
                 if checked {
-                    Span::styled("[x] ", self.theme.task_checked)
+                    Span::styled("[✓] ", self.theme.task_checked)
                 } else {
                     Span::styled("[ ] ", self.theme.task_unchecked)
                 }
@@ -1411,7 +1411,7 @@ mod tests {
         let lines = render("- regular\n- [ ] task\n- [x] done\n");
         assert_eq!(line_text(&lines[0]), "• regular");
         assert_eq!(line_text(&lines[1]), "• [ ] task");
-        assert_eq!(line_text(&lines[2]), "• [x] done");
+        assert_eq!(line_text(&lines[2]), "• [✓] done");
     }
 
     /// Nested-checklist regression: an empty item Tab-indent produces a

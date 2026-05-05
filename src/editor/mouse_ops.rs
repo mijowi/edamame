@@ -163,7 +163,7 @@ pub fn hit_test_clickable(
     }
 
     // Checkbox: reuse the full click-to-offset translation, since the glyph is
-    // rendered as plain `[ ]` / `[x] ` text without a distinguishing style.
+    // rendered as plain `[ ]` / `[✓] ` text without a distinguishing style.
     // Hover hitbox matches the toggle hitbox in `toggle_checkbox_at` —
     // `item.start..task_box + 3` so the bullet itself shows the click cursor.
     if let Some(offset) = click_to_char_offset(state, c, r, viewport_width) {

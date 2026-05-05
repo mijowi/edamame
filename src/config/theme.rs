@@ -72,7 +72,7 @@ pub struct Theme {
 
     // ── Task list ─────────────────────────────────────────────────
     pub task_unchecked: Style,
-    /// Style applied to the `[x]` marker for checked items.
+    /// Style applied to the `[✓]` marker for checked items.
     pub task_checked: Style,
     /// Style applied to the *text* of completed tasks (the part after
     /// the checkbox).  Distinct from `task_checked` so the marker can
