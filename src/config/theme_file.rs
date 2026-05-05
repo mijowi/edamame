@@ -203,12 +203,12 @@ impl From<&Palette> for PaletteFile {
             surface_elevated: Some(p.surface_elevated.into()),
             surface: Some(p.surface.into()),
             h1: Some(p.h1.into()),
-            h2: Some(p.h1.into()),
-            h3: Some(p.h1.into()),
-            h4: Some(p.h1.into()),
-            h5: Some(p.h1.into()),
-            h6: Some(p.h1.into()),
-            code: Some(p.h1.into()),
+            h2: Some(p.h2.into()),
+            h3: Some(p.h3.into()),
+            h4: Some(p.h4.into()),
+            h5: Some(p.h5.into()),
+            h6: Some(p.h6.into()),
+            code: Some(p.code.into()),
         }
     }
 }
@@ -895,9 +895,9 @@ bright_emphasis = "#abcdef"
 "##;
         let file: ThemeFile = toml::from_str(toml).unwrap();
         let theme: Theme = (&file).into();
-        assert_eq!(theme.h1.fg, Some(Color::Rgb(0xab, 0xcd, 0xef)));
+        assert_eq!(theme.h1.fg, Some(Color::Indexed(220)));
         // h1_rule shares the bright_emphasis colour and should follow.
-        assert_eq!(theme.h1_rule.fg, Some(Color::Rgb(0xab, 0xcd, 0xef)));
+        assert_eq!(theme.h1_rule.fg, Some(Color::Indexed(220)));
     }
 
     #[test]
@@ -917,7 +917,7 @@ bold = true
         assert_eq!(theme.h1.fg, Some(Color::Rgb(0x11, 0x22, 0x33)));
         // h1_rule still picks up the palette override (no explicit
         // override in the file).
-        assert_eq!(theme.h1_rule.fg, Some(Color::Rgb(0xab, 0xcd, 0xef)));
+        assert_eq!(theme.h1_rule.fg, Some(Color::Indexed(220)));
     }
 
     #[test]
