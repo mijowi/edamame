@@ -38,6 +38,12 @@ pub struct Theme {
     pub strikethrough: Style,
     pub highlight: Style,
     pub code_span: Style,
+    /// Dim variant of [`Self::code_span`] used for inline code that
+    /// appears inside strikethrough text (e.g. inside a `Strikethrough`
+    /// inline or a checked task item's text).  Foreground falls back to
+    /// `Palette::code_dim` so the snippet reads as struck-through
+    /// without losing its code-span affordance.
+    pub code_span_dim: Style,
     /// Web link (`http://`, `https://`, `mailto:`, etc.) — bright
     /// foreground + underline so the URL reads as actionable.
     pub link_text: Style,
@@ -264,7 +270,8 @@ pub struct Palette {
     pub h5: Color,
     pub h6: Color,
 
-    pub code: Color,
+    pub code_bright: Color,
+    pub code_dim: Color,
 }
 
 impl Default for Palette {
@@ -321,7 +328,8 @@ impl Default for Palette {
             h6: Color::Indexed(140),
 
             // Inline code and code block language line
-            code: Color::Indexed(140),
+            code_bright: Color::Indexed(140),
+            code_dim: Color::Indexed(60),
         }
     }
 }
@@ -371,7 +379,8 @@ impl Theme {
                 .fg(p.text_muted)
                 .add_modifier(Modifier::CROSSED_OUT),
             highlight: Style::default().bg(p.warning_dim).fg(p.default_bg),
-            code_span: Style::default().fg(p.code).bg(p.surface),
+            code_span: Style::default().fg(p.code_bright).bg(p.surface),
+            code_span_dim: Style::default().fg(p.code_dim).bg(p.surface),
             link_text: Style::default()
                 .fg(p.interactive_bright)
                 .add_modifier(underline),
@@ -386,7 +395,7 @@ impl Theme {
             // unit across border, language label, and body.
             code_block_border: Style::default().fg(p.default_text).bg(p.surface),
             code_block_lang: Style::default()
-                .fg(p.code)
+                .fg(p.code_bright)
                 .bg(p.surface_elevated)
                 .add_modifier(italic),
             code_block_text: Style::default().fg(p.default_text).bg(p.surface),
@@ -611,6 +620,7 @@ impl Theme {
             strikethrough: strip(default.strikethrough),
             highlight: Style::default().add_modifier(Modifier::REVERSED),
             code_span: Style::default().add_modifier(Modifier::REVERSED),
+            code_span_dim: Style::default().add_modifier(Modifier::REVERSED | Modifier::DIM),
             link_text: Style::default().add_modifier(Modifier::UNDERLINED),
             link_file: Style::default().add_modifier(Modifier::UNDERLINED),
             link_heading: Style::default().add_modifier(Modifier::UNDERLINED),

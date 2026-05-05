@@ -1038,7 +1038,19 @@ impl<'t> Renderer<'t> {
             }
 
             Inline::Code(code) => {
-                vec![Span::styled(format!(" {} ", code), self.theme.code_span)]
+                // When the surrounding inline scope carries strikethrough
+                // (either an explicit `~~…~~` or a checked task item's
+                // muted text), pick the dim code-span style and preserve
+                // the CROSSED_OUT modifier so the snippet still reads as
+                // struck-through alongside the rest of the run.
+                let style = if base.add_modifier.contains(Modifier::CROSSED_OUT) {
+                    self.theme
+                        .code_span_dim
+                        .add_modifier(Modifier::CROSSED_OUT)
+                } else {
+                    self.theme.code_span
+                };
+                vec![Span::styled(format!(" {} ", code), style)]
             }
 
             Inline::Link { text, url, .. } => {
@@ -1214,6 +1226,49 @@ mod tests {
     fn image_without_alt_shows_filename_prefixed() {
         let lines = render("![](/home/mjw/Pictures/me.jpg)\n");
         assert_eq!(line_text(&lines[0]), "[Image: me.jpg]");
+    }
+
+    #[test]
+    fn inline_code_inside_strikethrough_uses_dim_code_style() {
+        let theme = Box::leak(Box::new(Theme::default()));
+        let r = Renderer::new(theme);
+        let blocks = parse("~~before `snippet` after~~\n");
+        let lines = r.render(&blocks);
+        let span = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.trim() == "snippet")
+            .expect("code-span span");
+        assert_eq!(span.style.fg, theme.code_span_dim.fg);
+        assert!(
+            span.style.add_modifier.contains(Modifier::CROSSED_OUT),
+            "code span inside strikethrough should still be struck through"
+        );
+        // And a plain (non-struck) code span keeps the bright variant.
+        let plain_lines = r.render(&parse("alpha `snippet` beta\n"));
+        let plain_span = plain_lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.trim() == "snippet")
+            .expect("code-span span");
+        assert_eq!(plain_span.style.fg, theme.code_span.fg);
+    }
+
+    #[test]
+    fn inline_code_inside_checked_task_item_uses_dim_code_style() {
+        // task_strikethrough is true by default, so checked items
+        // propagate CROSSED_OUT through `base` into the code span.
+        let theme = Box::leak(Box::new(Theme::default()));
+        let r = Renderer::new(theme);
+        let blocks = parse("- [x] do `thing` now\n");
+        let lines = r.render(&blocks);
+        let span = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.trim() == "thing")
+            .expect("code-span span");
+        assert_eq!(span.style.fg, theme.code_span_dim.fg);
+        assert!(span.style.add_modifier.contains(Modifier::CROSSED_OUT));
     }
 
     #[test]

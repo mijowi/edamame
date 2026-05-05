@@ -136,6 +136,8 @@ pub struct PaletteFile {
     pub h6: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code_dim: Option<ColorField>,
 }
 
 impl PaletteFile {
@@ -174,7 +176,8 @@ impl PaletteFile {
             h4: pick(self.h4, d.h4),
             h5: pick(self.h5, d.h5),
             h6: pick(self.h6, d.h6),
-            code: pick(self.code, d.code),
+            code_bright: pick(self.code, d.code_bright),
+            code_dim: pick(self.code_dim, d.code_dim),
         }
     }
 }
@@ -208,7 +211,8 @@ impl From<&Palette> for PaletteFile {
             h4: Some(p.h4.into()),
             h5: Some(p.h5.into()),
             h6: Some(p.h6.into()),
-            code: Some(p.code.into()),
+            code: Some(p.code_bright.into()),
+            code_dim: Some(p.code_dim.into()),
         }
     }
 }
@@ -339,6 +343,7 @@ pub struct ThemeFile {
     pub strikethrough: StyleSpec,
     pub highlight: StyleSpec,
     pub code_span: StyleSpec,
+    pub code_span_dim: StyleSpec,
     pub link_text: StyleSpec,
     pub link_file: StyleSpec,
     pub link_heading: StyleSpec,
@@ -460,6 +465,7 @@ impl From<&ThemeFile> for Theme {
         apply!(strikethrough);
         apply!(highlight);
         apply!(code_span);
+        apply!(code_span_dim);
         apply!(link_text);
         apply!(link_file);
         apply!(link_heading);
@@ -555,6 +561,7 @@ impl From<&Theme> for ThemeFile {
             strikethrough: (&t.strikethrough).into(),
             highlight: (&t.highlight).into(),
             code_span: (&t.code_span).into(),
+            code_span_dim: (&t.code_span_dim).into(),
             link_text: (&t.link_text).into(),
             link_file: (&t.link_file).into(),
             link_heading: (&t.link_heading).into(),
@@ -722,6 +729,7 @@ mod tests {
         check!(strikethrough);
         check!(highlight);
         check!(code_span);
+        check!(code_span_dim);
         check!(link_text);
         check!(link_file);
         check!(link_heading);
@@ -972,6 +980,7 @@ bold = true
         check!(strikethrough);
         check!(highlight);
         check!(code_span);
+        check!(code_span_dim);
         check!(link_text);
         check!(link_file);
         check!(link_heading);
@@ -1117,6 +1126,7 @@ bold = true
         check!(strikethrough);
         check!(highlight);
         check!(code_span);
+        check!(code_span_dim);
         check!(link_text);
         check!(link_file);
         check!(link_heading);
