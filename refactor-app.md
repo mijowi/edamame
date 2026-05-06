@@ -108,7 +108,7 @@ Rough projected sizes (every file < 1000 LOC, most < 400):
 The four steps are ordered so each one is independently shippable, reviewable, and testable. **Each step ends with a clean `cargo test` and `cargo clippy -- -D warnings` pass** before the next begins.
 
 1. **Modal stack abstraction** — ✅ **COMPLETE** (2026-05-06). Biggest leverage; deletes the most code; unblocks step 2 and step 3.
-2. **Subdomain extraction** — mostly mechanical relocation once step 1 has shrunk the file.
+2. **Subdomain extraction** — ✅ **COMPLETE** (2026-05-06). Mostly mechanical relocation once step 1 had shrunk the file.
 3. **Decompose `run()`** — natural after step 2, since `run` will now mostly call into the new subdomain modules.
 4. **Test relocation** — purely organisational; can land in the same PR as step 3 or separately.
 
@@ -136,6 +136,49 @@ Each step is a single PR. Total estimated LOC delta: **~–1500 net** from `src/
   `dispatch_modal_key` call.
 - 11 `handle_X_key` methods on `App` deleted (replaced by `Modal::handle_key`
   trait dispatch via the pop-and-replace pattern in `App::dispatch_modal_key`).
+
+### Step 2 actuals
+
+- `src/app.rs`: 3195 → 1624 LOC (**−1571**); non-test code shrank to
+  ~1044 LOC (~530 of which is the `run()` body that step 3 will tackle).
+- Seven new submodules under `src/app/`:
+  - `flash.rs` (178) — `MessageKind`, `TransientMessage`, `flash`,
+    `flash_for_action`, `expire_transient_if_due`, `transient_deadline`,
+    `dismiss_sticky_transient`, `hint_content`, `save_config_with_flash`.
+  - `frame_timer.rs` (134) — `SCROLL_QUIESCE` / `MIN_FRAME_INTERVAL` /
+    `RESIZE_QUIESCE`, `is_scrolling_within`, `mark_scrolling`,
+    `is_scrolling`, `next_deadline` (the aggregator), and the
+    `scroll_quiesce_tests` block.
+  - `pointer.rs` (18) — `update_pointer_shape`.
+  - `image_dispatch.rs` (351) — `infos_in_viewport_window`,
+    `VIEWPORT_DISPATCH_MARGIN`, `effective_images_enabled`,
+    `images_layout_enabled`, `dispatch_image_decodes`,
+    `dispatch_visible_image_decodes`, `dispatch_image_decodes_for`,
+    plus the `viewport_window_tests` block.
+  - `external_editor.rs` (312) — `ExternalEditorOutcome`,
+    `open_config_in_editor`, `open_current_file_in_editor`,
+    `run_external_editor`, `spawn_open_worker`.
+  - `nav.rs` (270) — `NavEntry`, `is_markdown_path`,
+    `resolve_link_at_cursor`, `follow_link`, `scroll_to_heading`,
+    `navigate_to_file`, `load_file_into_editor`, `current_nav_entry`,
+    `navigate_back`, `navigate_forward`, `navigate_to_entry`,
+    `open_dirty_guard`.
+  - `actions.rs` (413) — `cursor_in_table`, `modal_wheel_delta`,
+    `HandleEvent` trait + impl, `any_modal_open`, `handle_app_action`,
+    `dispatch_modal_key`, `open_quit_confirm`, the `open_X` overlay
+    helpers, `ensure_keymap_clone`, `dispatch_palette_action`,
+    `handle_pending_column_widths`, `apply_active_theme`.
+- App struct kept its ~30 fields; sub-state structs (NavStack,
+  FrameTimer, ImageDispatch, …) deferred per the plan's note that
+  step 2's goal is file-size reduction, not full encapsulation.
+  Each method's `&mut App` borrow stays whole, which means borrow
+  splits can come later without revisiting these moves.
+- All `pub` / `pub(crate)` surface preserved.  `MessageKind` re-exported
+  from `app.rs` (`pub use flash::MessageKind`) so existing
+  `crate::app::MessageKind` paths in `src/app/modal/` still resolve.
+- All 736 unit tests + 13 integration test binaries pass.
+- `cargo clippy --bins --tests` produces no new warnings (the 4
+  remaining warnings under `src/app/` are all pre-existing).
 
 ---
 
