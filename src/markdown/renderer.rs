@@ -1044,9 +1044,7 @@ impl<'t> Renderer<'t> {
                 // the CROSSED_OUT modifier so the snippet still reads as
                 // struck-through alongside the rest of the run.
                 let style = if base.add_modifier.contains(Modifier::CROSSED_OUT) {
-                    self.theme
-                        .code_span_dim
-                        .add_modifier(Modifier::CROSSED_OUT)
+                    self.theme.code_span_dim.add_modifier(Modifier::CROSSED_OUT)
                 } else {
                     self.theme.code_span
                 };

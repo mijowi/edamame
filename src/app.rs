@@ -1,3 +1,5 @@
+pub mod modal;
+
 use std::io::Stdout;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,7 +10,6 @@ use anyhow::Result;
 use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
-use ratatui::text::Line;
 use ratatui::Terminal;
 
 use crate::config::{
@@ -20,13 +21,9 @@ use crate::editor::{edit_ops, mouse_ops, EditorState, Mode, RAW_REVEAL_DELAY};
 use crate::input::modal::default::DefaultHandler;
 use crate::input::{ModalHandler, MouseDispatcher};
 use crate::terminal::{set_pointer_shape, Capabilities, ColourDepth, PointerShape};
-use crate::ui::{
-    default_copy_path, hint_line_for, markdown_cheat_sheet_body, EditorView, EditorViewState,
-    HintChord, HintContent, InsertTableResponse, InsertTableState, InsertTableView,
-    KeybindsResponse, KeybindsState, KeybindsView, ModalButton, ModalResponse, ModalState,
-    ModalView, PaletteResponse, PaletteState, PaletteView, SaveCopyResponse, SaveCopyState,
-    SaveCopyView, SettingsResponse, SettingsState, SettingsView,
-};
+use crate::ui::{hint_line_for, EditorView, EditorViewState, HintChord, HintContent};
+
+use self::modal::{ModalOutcome, ModalRenderCtx, ModalStack};
 
 /// Events that the main loop can receive.
 enum AppEvent {
@@ -61,62 +58,6 @@ struct NavEntry {
     mode: Mode,
 }
 
-/// Phase 8 three-button `Save / Discard / Cancel` prompt shown when
-/// following a link would navigate away from a dirty buffer.  Carries
-/// the pending target across the modal's lifetime so we can resume the
-/// navigation once the user picks a button.
-struct DirtyGuardPrompt {
-    body: Vec<Line<'static>>,
-    buttons: Vec<ModalButton>,
-    state: ModalState,
-    /// The destination that was about to be followed when the guard
-    /// fired.  Stored so we can re-dispatch after `Save` or `Discard`.
-    pending: PathBuf,
-}
-
-/// A modal popup currently shown on top of the editor.  We only model the
-/// startup capability-notice in Phase 4; the `ModalView` widget itself is
-/// generic enough to host other modals in later phases.
-struct StartupNotice {
-    body: Vec<Line<'static>>,
-    buttons: Vec<ModalButton>,
-    state: ModalState,
-}
-
-/// Surfaces non-fatal problems detected while reading `config.toml`,
-/// `keybindings.toml`, or the active theme file.  Built from
-/// `LoadedConfig::warnings` at startup and from the post-editor reload
-/// inside `open_config_in_editor`.  The body is composed once at
-/// construction and then rendered by the shared `ModalView` widget,
-/// which handles vertical scrolling for us when there are many
-/// warnings.
-struct ConfigWarningModal {
-    body: Vec<Line<'static>>,
-    buttons: Vec<ModalButton>,
-    state: ModalState,
-}
-
-/// Prompt shown when `config.images.enabled` is `Ask` and the open
-/// document contains at least one image.  Four buttons: `Yes` (render
-/// inline for this session), `No` (keep placeholders for this session),
-/// `Always` (persist config), `Never` (persist config).
-struct ImagesEnabledPrompt {
-    body: Vec<Line<'static>>,
-    buttons: Vec<ModalButton>,
-    state: ModalState,
-}
-
-/// Phase 7 remote-image prompt: shown when `config.images.remote_policy`
-/// is `Ask` and the open document references at least one `http(s)://`
-/// image.  Four buttons: `Yes` (in-memory allow for this session),
-/// `No` (dismiss without fetching), `Always` (persist config),
-/// `Never` (persist config).
-struct RemoteImagePrompt {
-    body: Vec<Line<'static>>,
-    buttons: Vec<ModalButton>,
-    state: ModalState,
-}
-
 /// Severity of a [`TransientMessage`].  Drives style selection and
 /// decides whether the message auto-expires.  `Error` is sticky:
 /// the user must dismiss with Escape or a subsequent `Error` replaces
@@ -137,42 +78,6 @@ struct TransientMessage {
     /// Wall-clock deadline after which non-error messages auto-expire.
     /// `None` for sticky errors.
     until: Option<Instant>,
-}
-
-/// Phase 9 quit-confirm dialog shown when the user tries to exit with
-/// unsaved changes.  Three buttons: `Save`, `Discard`, `Cancel`.
-struct QuitConfirm {
-    body: Vec<Line<'static>>,
-    buttons: Vec<ModalButton>,
-    state: ModalState,
-}
-
-/// Single-button popover that hosts a static body — used in Phase 10
-/// for the Markdown cheat sheet.  The Phase 9 keybinding cheat sheet
-/// has been merged into the editable [`crate::ui::KeybindsView`]
-/// overlay (one combined view + edit surface).
-struct CheatSheetModal {
-    body: Vec<Line<'static>>,
-    buttons: Vec<ModalButton>,
-    state: ModalState,
-}
-
-/// Phase 13 — width-injection warning shown the first time a user
-/// commits a column-border drag on a table without a `tui-columns`
-/// comment.  Buttons (in order):
-///   0 → `Continue` — write the comment for this table; ask again next time.
-///   1 → `Continue and don't ask again` — flip
-///       `config.table.warn_on_width_injection` to false and persist it.
-///   2 → `Cancel` — discard the live width preview without writing.
-///
-/// `pending_table_start` carries the `table_byte_start` from the released
-/// drag so the App can either complete or cancel via
-/// [`EditorState::commit_pending_column_widths`] /
-/// [`EditorState::cancel_pending_column_widths`] when the modal resolves.
-struct WidthInjectionWarning {
-    body: Vec<Line<'static>>,
-    buttons: Vec<ModalButton>,
-    state: ModalState,
 }
 
 /// Result of [`App::run_external_editor`].  Tells the caller whether
@@ -217,23 +122,6 @@ pub struct App {
     editor: EditorState,
     view_state: EditorViewState,
     should_quit: bool,
-    /// When `Some`, a config-warning modal is displayed and absorbs
-    /// key events.  Built from any `ConfigWarning`s returned by
-    /// [`crate::config::Config::load`] at startup and from the same
-    /// reload that runs after the user closes the external editor (see
-    /// `open_config_in_editor`).  Sits at the top of the modal priority
-    /// list so a parse error or unknown key is the first thing the user
-    /// sees — the editor still runs on defaults underneath.
-    config_warning_modal: Option<ConfigWarningModal>,
-    /// When `Some`, a startup notice modal is displayed and absorbs key
-    /// events.  Cleared to `None` once the user dismisses it.
-    startup_notice: Option<StartupNotice>,
-    /// Prompt for the master images-enabled switch.  Shown when
-    /// `config.images.enabled` is `Ask` and the initial document
-    /// contains images.  Stacks after the startup notice and before
-    /// the remote-image prompt so the user decides whether to render
-    /// images at all before being asked about remote fetches.
-    images_enabled_prompt: Option<ImagesEnabledPrompt>,
     /// Session-only override for the master images-enabled switch,
     /// set by `Yes` / `No` on the images-enabled prompt.  `Some(true)`
     /// renders images for the rest of this process; `Some(false)`
@@ -241,10 +129,6 @@ pub struct App {
     /// `Always` / `Never` persist the choice to config instead of
     /// setting this flag.
     session_images_enabled: Option<bool>,
-    /// Phase 7 remote-image prompt.  Shown only after the startup
-    /// notice is dismissed (they're stacked one-at-a-time so the user
-    /// doesn't see two modals at once).
-    remote_image_prompt: Option<RemoteImagePrompt>,
     /// Click-count tracking and drag state for mouse input.
     mouse: MouseDispatcher,
     /// Active drag target, set on mouse-down and read by each subsequent
@@ -319,11 +203,6 @@ pub struct App {
     /// Phase 8 forward-stack: `NavigateBack` pushes the current state
     /// here so `NavigateForward` can redo the navigation.
     nav_forward: Vec<NavEntry>,
-    /// Dirty-buffer guard shown before navigating away from an unsaved
-    /// document.  `Some(prompt)` means the modal is currently
-    /// displayed; click / key events are absorbed by the modal until
-    /// dismissed.
-    dirty_guard: Option<DirtyGuardPrompt>,
     /// Phase 8 — target of the link currently under the mouse
     /// pointer, updated on every `MouseEventKind::Moved` event.
     /// Phase 9 will render this (plus the link's `title`) on the hint
@@ -334,33 +213,6 @@ pub struct App {
     /// errors stick until dismissed.  Set by [`App::flash`] from any
     /// code path that wants a one-shot notification.
     transient: Option<TransientMessage>,
-    /// Phase 9 — quit confirmation modal.  `Some` while the dialog is
-    /// visible; absorbs input like the other modals.
-    quit_confirm: Option<QuitConfirm>,
-    /// Phase 10 — Markdown cheat-sheet popover.  Static-body modal
-    /// driven by [`crate::ui::markdown_cheat_sheet`].
-    markdown_cheat_sheet: Option<CheatSheetModal>,
-    /// Phase 10 — fuzzy-searchable command palette.  `Some` while open;
-    /// absorbs all input until a row is selected or Escape dismisses.
-    command_palette: Option<PaletteState>,
-    /// Phase 10 — settings overlay.  Edits `[editor] / [table] / …`
-    /// keys in `config.toml`; persists via `Config::save`.
-    settings_overlay: Option<SettingsState>,
-    /// Phase 10 — keybinds overlay.  Mutates the live `KeyMap` and
-    /// the [`KeyBindingOverrides`]; persists via
-    /// [`KeyBindingOverrides::save_to`].
-    keybinds_overlay: Option<KeybindsState>,
-    /// Phase 15 — Insert Table modal.  `Some` while the rows/columns
-    /// prompt is visible; absorbs all input until the user hits
-    /// Insert (which dispatches `editor::table_edit::insert_table`)
-    /// or cancels.
-    insert_table_modal: Option<InsertTableState>,
-    /// Save-a-copy modal: path-input prompt for `Action::SaveCopy`.
-    /// `Some` while the prompt is visible; absorbs all input until
-    /// the user hits Save (which writes the buffer to the entered
-    /// path via `Buffer::save_copy` — leaving the buffer's own path
-    /// untouched) or cancels.
-    save_copy_modal: Option<SaveCopyState>,
     /// Live keymap used for input dispatch.  Built once at startup
     /// from `keybindings`; mutated in place by the keybinds overlay
     /// so rebinds take effect immediately.
@@ -386,13 +238,17 @@ pub struct App {
     /// neovim was an OSC 11 background-color response).
     /// Initialised in [`Self::run`] alongside the read-thread spawn.
     read_paused: Option<Arc<AtomicBool>>,
-    /// Phase 13 — width-injection warning shown after the first
-    /// column-border drag on a table without an existing `tui-columns`
-    /// comment.  `Some` while the dialog is visible; absorbs input.
-    width_injection_warning: Option<WidthInjectionWarning>,
     /// Phase 9 — active hint-line prompt (first consumer is Phase 11).
     /// Renders in place of the default hint chords; Escape dismisses.
     hint_prompt: Option<HintPrompt>,
+    /// Step 1 of the app refactor (`refactor-app.md`): active stack of
+    /// trait-based modals.  As individual modals migrate off their
+    /// dedicated `Option<X>` fields, they get pushed onto this stack
+    /// and dispatched through the [`modal::Modal`] trait.  During
+    /// migration the stack coexists with the legacy fields above; both
+    /// the render cascade and the absorb-input ladder dispatch to the
+    /// stack only when no legacy modal is open.
+    modal_stack: ModalStack,
 }
 
 /// After the scroll position stops changing for this long, images
@@ -566,12 +422,32 @@ impl App {
         // hotspot on large preview-mode documents.
         let view_state = EditorViewState::new();
 
-        // Decide whether to show the capability-notice on startup.
-        let startup_notice = build_startup_notice(&capabilities, &config);
-        let config_warning_modal = build_config_warning_modal(&config_warnings);
-        let images_enabled_prompt = build_images_enabled_prompt(&editor, &config);
-        let remote_image_prompt = build_remote_image_prompt(&editor, &config);
+        // Build startup-time modals.  Each is optional — `None` when
+        // its precondition isn't satisfied (no warnings, capability
+        // notice suppressed, document has no images, etc.).
+        let config_warning_modal = modal::ConfigWarningModal::from_warnings(&config_warnings);
+        let startup_notice = modal::StartupNoticeModal::from_capabilities(&capabilities, &config);
+        let images_enabled_prompt = modal::ImagesEnabledPromptModal::from_state(&editor, &config);
+        let remote_image_prompt = modal::RemoteImagePromptModal::from_state(&editor, &config);
         let wheel_step = config.editor.mouse_scroll_lines;
+
+        // Push the queued startup-time modals onto the stack in
+        // reverse-priority order so the highest-priority one is on
+        // top.  Order shown to the user: config-warning → notice →
+        // images-enabled → remote-image → (any subsequent modals).
+        let mut modal_stack = ModalStack::new();
+        if let Some(m) = remote_image_prompt {
+            modal_stack.push(Box::new(m));
+        }
+        if let Some(m) = images_enabled_prompt {
+            modal_stack.push(Box::new(m));
+        }
+        if let Some(m) = startup_notice {
+            modal_stack.push(Box::new(m));
+        }
+        if let Some(m) = config_warning_modal {
+            modal_stack.push(Box::new(m));
+        }
 
         // Phase 17 — warm the diagram pipeline's font caches off the
         // critical path.  Two caches load fonts on first call:
@@ -600,11 +476,7 @@ impl App {
             editor,
             view_state,
             should_quit: false,
-            config_warning_modal,
-            startup_notice,
-            images_enabled_prompt,
             session_images_enabled: None,
-            remote_image_prompt,
             mouse: MouseDispatcher::with_wheel_step(wheel_step),
             drag_target: None,
             last_pointer_shape: PointerShape::Default,
@@ -619,22 +491,14 @@ impl App {
             pending_term_event: None,
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
-            dirty_guard: None,
             hovered_link: None,
             transient: None,
-            quit_confirm: None,
-            markdown_cheat_sheet: None,
-            command_palette: None,
-            settings_overlay: None,
-            keybinds_overlay: None,
-            insert_table_modal: None,
-            save_copy_modal: None,
             keymap: None,
             pending_open_config_in_editor: false,
             pending_open_file_in_editor: false,
             read_paused: None,
-            width_injection_warning: None,
             hint_prompt: None,
+            modal_stack,
         })
     }
 
@@ -795,19 +659,7 @@ impl App {
     }
 
     fn any_modal_open(&self) -> bool {
-        self.config_warning_modal.is_some()
-            || self.startup_notice.is_some()
-            || self.images_enabled_prompt.is_some()
-            || self.remote_image_prompt.is_some()
-            || self.dirty_guard.is_some()
-            || self.quit_confirm.is_some()
-            || self.markdown_cheat_sheet.is_some()
-            || self.settings_overlay.is_some()
-            || self.keybinds_overlay.is_some()
-            || self.insert_table_modal.is_some()
-            || self.save_copy_modal.is_some()
-            || self.command_palette.is_some()
-            || self.width_injection_warning.is_some()
+        !self.modal_stack.is_empty()
     }
 
     /// Earliest wall-clock instant at which the event loop must wake
@@ -1002,155 +854,7 @@ impl App {
                 let theme_ref = self.theme;
                 let capabilities_ref = &self.capabilities;
                 let view_state_ref = &mut self.view_state;
-                // Config-warning modal sits above every other modal so a
-                // parse error or unknown-key warning is the first thing
-                // the user sees on startup (or when they return from the
-                // external editor).
-                let config_warning_ref = self.config_warning_modal.as_mut();
-                let notice_ref = if config_warning_ref.is_none() {
-                    self.startup_notice.as_mut()
-                } else {
-                    None
-                };
-                // Images-enabled prompt stacks after the capability
-                // notice so the user sees them one at a time.
-                let images_enabled_ref = if config_warning_ref.is_none() && notice_ref.is_none() {
-                    self.images_enabled_prompt.as_mut()
-                } else {
-                    None
-                };
-                // Only show the remote prompt once the capability notice
-                // and images-enabled prompt have been dismissed so the
-                // user never sees two modals stacked.
-                let remote_prompt_ref = if notice_ref.is_none() && images_enabled_ref.is_none() {
-                    self.remote_image_prompt.as_mut()
-                } else {
-                    None
-                };
-                // Phase 8 dirty-guard takes priority over the remote
-                // prompt so the user's link-follow action isn't
-                // overshadowed by a startup-ish prompt.
-                let dirty_guard_ref = if notice_ref.is_none()
-                    && images_enabled_ref.is_none()
-                    && remote_prompt_ref.is_none()
-                {
-                    self.dirty_guard.as_mut()
-                } else {
-                    None
-                };
-                // Phase 9 modals (quit-confirm, cheat-sheet) layer on
-                // top of the editor.  `quit_confirm` takes priority so
-                // a user trying to exit sees it over any other popup.
-                let quit_confirm_ref = if notice_ref.is_none()
-                    && images_enabled_ref.is_none()
-                    && remote_prompt_ref.is_none()
-                    && dirty_guard_ref.is_none()
-                {
-                    self.quit_confirm.as_mut()
-                } else {
-                    None
-                };
-                // Phase 10 overlays.  Only one overlay can be open at
-                // a time — the keybinds overlay can't legally coexist
-                // with the settings overlay because they're opened
-                // from disjoint palette entries.  The render path
-                // still defends with the `is_none` chain so the
-                // priority order is explicit.
-                let markdown_sheet_ref = if notice_ref.is_none()
-                    && images_enabled_ref.is_none()
-                    && remote_prompt_ref.is_none()
-                    && dirty_guard_ref.is_none()
-                    && quit_confirm_ref.is_none()
-                {
-                    self.markdown_cheat_sheet.as_mut()
-                } else {
-                    None
-                };
-                let settings_overlay_ref = if markdown_sheet_ref.is_none()
-                    && notice_ref.is_none()
-                    && images_enabled_ref.is_none()
-                    && remote_prompt_ref.is_none()
-                    && dirty_guard_ref.is_none()
-                    && quit_confirm_ref.is_none()
-                {
-                    self.settings_overlay.as_mut()
-                } else {
-                    None
-                };
-                let keybinds_overlay_ref = if markdown_sheet_ref.is_none()
-                    && settings_overlay_ref.is_none()
-                    && notice_ref.is_none()
-                    && images_enabled_ref.is_none()
-                    && remote_prompt_ref.is_none()
-                    && dirty_guard_ref.is_none()
-                    && quit_confirm_ref.is_none()
-                {
-                    self.keybinds_overlay.as_mut()
-                } else {
-                    None
-                };
-                let insert_table_ref = if markdown_sheet_ref.is_none()
-                    && settings_overlay_ref.is_none()
-                    && keybinds_overlay_ref.is_none()
-                    && notice_ref.is_none()
-                    && images_enabled_ref.is_none()
-                    && remote_prompt_ref.is_none()
-                    && dirty_guard_ref.is_none()
-                    && quit_confirm_ref.is_none()
-                {
-                    self.insert_table_modal.as_mut()
-                } else {
-                    None
-                };
-                let save_copy_ref = if markdown_sheet_ref.is_none()
-                    && settings_overlay_ref.is_none()
-                    && keybinds_overlay_ref.is_none()
-                    && insert_table_ref.is_none()
-                    && notice_ref.is_none()
-                    && images_enabled_ref.is_none()
-                    && remote_prompt_ref.is_none()
-                    && dirty_guard_ref.is_none()
-                    && quit_confirm_ref.is_none()
-                {
-                    self.save_copy_modal.as_mut()
-                } else {
-                    None
-                };
-                let palette_ref = if markdown_sheet_ref.is_none()
-                    && settings_overlay_ref.is_none()
-                    && keybinds_overlay_ref.is_none()
-                    && insert_table_ref.is_none()
-                    && save_copy_ref.is_none()
-                    && notice_ref.is_none()
-                    && images_enabled_ref.is_none()
-                    && remote_prompt_ref.is_none()
-                    && dirty_guard_ref.is_none()
-                    && quit_confirm_ref.is_none()
-                {
-                    self.command_palette.as_mut()
-                } else {
-                    None
-                };
-                // Phase 13 — width-injection warning sits below the
-                // Phase 10 overlays / quit-confirm in priority since
-                // it's a local-edit confirmation, not a global UI
-                // state.
-                let width_warning_ref = if notice_ref.is_none()
-                    && images_enabled_ref.is_none()
-                    && remote_prompt_ref.is_none()
-                    && dirty_guard_ref.is_none()
-                    && quit_confirm_ref.is_none()
-                    && markdown_sheet_ref.is_none()
-                    && settings_overlay_ref.is_none()
-                    && keybinds_overlay_ref.is_none()
-                    && insert_table_ref.is_none()
-                    && save_copy_ref.is_none()
-                    && palette_ref.is_none()
-                {
-                    self.width_injection_warning.as_mut()
-                } else {
-                    None
-                };
+                let modal_stack_top = self.modal_stack.top_mut();
                 let config_ref: &Config = &self.config;
                 let keymap_for_render = self.keymap.clone();
                 let drop_indicator = drop_indicator_for(&self.drag_target);
@@ -1167,104 +871,14 @@ impl App {
                         hint,
                     };
                     frame.render_stateful_widget(view, frame.area(), view_state_ref);
-                    if let Some(warn) = config_warning_ref {
-                        let modal = ModalView {
-                            title: "Config warnings",
-                            body: &warn.body,
-                            buttons: &warn.buttons,
-                            theme: theme_ref,
-                        };
-                        frame.render_stateful_widget(modal, frame.area(), &mut warn.state);
-                    } else if let Some(notice) = notice_ref {
-                        let modal = ModalView {
-                            title: "Terminal capabilities",
-                            body: &notice.body,
-                            buttons: &notice.buttons,
-                            theme: theme_ref,
-                        };
-                        frame.render_stateful_widget(modal, frame.area(), &mut notice.state);
-                    } else if let Some(prompt) = images_enabled_ref {
-                        let modal = ModalView {
-                            title: "Images",
-                            body: &prompt.body,
-                            buttons: &prompt.buttons,
-                            theme: theme_ref,
-                        };
-                        frame.render_stateful_widget(modal, frame.area(), &mut prompt.state);
-                    } else if let Some(prompt) = remote_prompt_ref {
-                        let modal = ModalView {
-                            title: "Remote Images",
-                            body: &prompt.body,
-                            buttons: &prompt.buttons,
-                            theme: theme_ref,
-                        };
-                        frame.render_stateful_widget(modal, frame.area(), &mut prompt.state);
-                    } else if let Some(guard) = dirty_guard_ref {
-                        let modal = ModalView {
-                            title: "Unsaved changes",
-                            body: &guard.body,
-                            buttons: &guard.buttons,
-                            theme: theme_ref,
-                        };
-                        frame.render_stateful_widget(modal, frame.area(), &mut guard.state);
-                    } else if let Some(q) = quit_confirm_ref {
-                        let modal = ModalView {
-                            title: "Unsaved changes",
-                            body: &q.body,
-                            buttons: &q.buttons,
-                            theme: theme_ref,
-                        };
-                        frame.render_stateful_widget(modal, frame.area(), &mut q.state);
-                    } else if let Some(cs) = markdown_sheet_ref {
-                        let modal = ModalView {
-                            title: "Markdown Cheat Sheet",
-                            body: &cs.body,
-                            buttons: &cs.buttons,
-                            theme: theme_ref,
-                        };
-                        frame.render_stateful_widget(modal, frame.area(), &mut cs.state);
-                    } else if let Some(state) = settings_overlay_ref {
-                        let view = SettingsView {
+                    if let Some(top) = modal_stack_top {
+                        let render_ctx = ModalRenderCtx {
                             theme: theme_ref,
                             config: config_ref,
+                            keymap: keymap_for_render.as_ref(),
                             cursor_visible: modal_cursor_visible,
                         };
-                        frame.render_stateful_widget(view, frame.area(), state);
-                    } else if let Some(state) = keybinds_overlay_ref {
-                        if let Some(km) = keymap_for_render.as_ref() {
-                            let view = KeybindsView {
-                                theme: theme_ref,
-                                keymap: km,
-                                cursor_visible: modal_cursor_visible,
-                            };
-                            frame.render_stateful_widget(view, frame.area(), state);
-                        }
-                    } else if let Some(state) = insert_table_ref {
-                        let view = InsertTableView {
-                            theme: theme_ref,
-                            cursor_visible: modal_cursor_visible,
-                        };
-                        frame.render_stateful_widget(view, frame.area(), state);
-                    } else if let Some(state) = save_copy_ref {
-                        let view = SaveCopyView {
-                            theme: theme_ref,
-                            cursor_visible: modal_cursor_visible,
-                        };
-                        frame.render_stateful_widget(view, frame.area(), state);
-                    } else if let Some(state) = palette_ref {
-                        let view = PaletteView {
-                            theme: theme_ref,
-                            cursor_visible: modal_cursor_visible,
-                        };
-                        frame.render_stateful_widget(view, frame.area(), state);
-                    } else if let Some(ww) = width_warning_ref {
-                        let modal = ModalView {
-                            title: "Custom column widths",
-                            body: &ww.body,
-                            buttons: &ww.buttons,
-                            theme: theme_ref,
-                        };
-                        frame.render_stateful_widget(modal, frame.area(), &mut ww.state);
+                        top.render(frame, frame.area(), &render_ctx);
                     }
                 })?;
                 self.last_draw_at = Some(Instant::now());
@@ -1402,285 +1016,41 @@ impl App {
                 }
             }
 
-            // Dirty-guard modal absorbs all input while it's visible.
-            // Evaluated before the other modal checks so the guard (which
-            // is opened on user action, not startup) always takes
-            // precedence.
-            if self.dirty_guard.is_some() {
+            // Open modal absorbs all input.  Topmost modal on the
+            // stack receives the event and decides whether to stay open
+            // (`Continue`), close (`Close`), or close and run a
+            // follow-up callback (`CloseAnd`).  See [`Self::dispatch_modal_key`].
+            if !self.modal_stack.is_empty() {
+                let bottom_rows = crate::ui::BottomRegion::height(self.config.editor.status_bar);
+                let doc_h = (term_size.height as usize).saturating_sub(bottom_rows as usize);
+                let doc_w = term_size.width as usize;
                 match &event {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        let doc_w = term_size.width as usize;
-                        let doc_h = term_size.height.saturating_sub(1) as usize;
-                        self.handle_dirty_guard_key(*key, doc_h, doc_w);
+                        self.dispatch_modal_key(*key, doc_h, doc_w);
                         self.needs_draw = true;
                     }
                     Event::Mouse(me) => {
-                        if let Some(modal) = self.dirty_guard.as_mut() {
-                            modal.state.scroll_by(modal_wheel_delta(me, wheel_step));
+                        if let Some(top) = self.modal_stack.top_mut() {
+                            top.handle_wheel(modal_wheel_delta(me, wheel_step));
                             self.needs_draw = true;
                         }
                     }
                     _ => {}
                 }
-                continue;
-            }
-
-            // Config-warning modal absorbs all input while it's
-            // visible.  This block must come before every other
-            // auto-firing modal block (images / remote / startup
-            // notice) because the render path also gives the warning
-            // modal top priority — if we let a lower-priority modal
-            // absorb input here while the warning modal is what's on
-            // screen, the user would see their Enter / Space presses
-            // do nothing (they'd really be silently dismissing a
-            // hidden modal underneath).
-            if self.config_warning_modal.is_some() {
-                match &event {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        self.handle_config_warning_modal_key(*key);
-                        self.needs_draw = true;
-                    }
-                    Event::Mouse(me) => {
-                        if let Some(modal) = self.config_warning_modal.as_mut() {
-                            modal.state.scroll_by(modal_wheel_delta(me, wheel_step));
-                            self.needs_draw = true;
-                        }
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            // Images-enabled prompt absorbs all input while it's
-            // visible (and only when the startup notice has already
-            // been dismissed).  Stacks before the remote-image prompt.
-            if self.startup_notice.is_none() && self.images_enabled_prompt.is_some() {
-                match &event {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        self.handle_images_enabled_prompt_key(*key);
-                        self.needs_draw = true;
-                    }
-                    Event::Mouse(me) => {
-                        if let Some(modal) = self.images_enabled_prompt.as_mut() {
-                            modal.state.scroll_by(modal_wheel_delta(me, wheel_step));
-                            self.needs_draw = true;
-                        }
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            // Remote-image prompt absorbs all input while it's visible
-            // (after the startup notice and images-enabled prompt have
-            // been dismissed).
-            if self.startup_notice.is_none()
-                && self.images_enabled_prompt.is_none()
-                && self.remote_image_prompt.is_some()
-            {
-                match &event {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        self.handle_remote_image_prompt_key(*key);
-                        self.needs_draw = true;
-                    }
-                    Event::Mouse(me) => {
-                        if let Some(modal) = self.remote_image_prompt.as_mut() {
-                            modal.state.scroll_by(modal_wheel_delta(me, wheel_step));
-                            self.needs_draw = true;
-                        }
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            // Startup notice absorbs all input while it's visible.
-            if self.startup_notice.is_some() {
-                match &event {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        self.handle_startup_notice_key(*key);
-                        self.needs_draw = true;
-                    }
-                    Event::Mouse(me) => {
-                        if let Some(modal) = self.startup_notice.as_mut() {
-                            modal.state.scroll_by(modal_wheel_delta(me, wheel_step));
-                            self.needs_draw = true;
-                        }
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            // Phase 9 — quit-confirm modal absorbs all input while
-            // it's visible.  Ordered after the higher-priority modals
-            // because a quit request should never interrupt a startup
-            // notice / remote-image / dirty-guard flow.
-            if self.quit_confirm.is_some() {
-                match &event {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        self.handle_quit_confirm_key(*key);
-                        self.needs_draw = true;
-                    }
-                    Event::Mouse(me) => {
-                        if let Some(modal) = self.quit_confirm.as_mut() {
-                            modal.state.scroll_by(modal_wheel_delta(me, wheel_step));
-                            self.needs_draw = true;
-                        }
-                    }
-                    _ => {}
-                }
-                // Save / Discard terminate the session — exit immediately
-                // instead of requiring another keypress to reach the
-                // end-of-loop quit check.
-                if self.should_quit {
-                    break;
-                }
-                continue;
-            }
-
-            // Phase 10 — Markdown cheat-sheet popover absorbs input.
-            if self.markdown_cheat_sheet.is_some() {
-                match &event {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        self.handle_markdown_cheat_sheet_key(*key);
-                        self.needs_draw = true;
-                    }
-                    Event::Mouse(me) => {
-                        if let Some(modal) = self.markdown_cheat_sheet.as_mut() {
-                            modal.state.scroll_by(modal_wheel_delta(me, wheel_step));
-                            self.needs_draw = true;
-                        }
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            // Phase 10 — keybinds overlay absorbs input.
-            if self.keybinds_overlay.is_some() {
-                match &event {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        self.handle_keybinds_overlay_key(*key);
-                        self.needs_draw = true;
-                    }
-                    Event::Mouse(me) => {
-                        if let Some(state) = self.keybinds_overlay.as_mut() {
-                            state
-                                .scroll_state
-                                .scroll_by(modal_wheel_delta(me, wheel_step));
-                            self.needs_draw = true;
-                        }
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            // Phase 15 — Insert Table modal absorbs input.  Like the
-            // settings / palette overlays, dispatching the modal can
-            // trigger an `EditorState` mutation (the table insertion
-            // itself), so doc dimensions are needed for cursor scroll.
-            if self.insert_table_modal.is_some() {
-                match &event {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        let doc_w = term_size.width as usize;
-                        let doc_h =
-                            term_size
-                                .height
-                                .saturating_sub(crate::ui::BottomRegion::height(
-                                    self.config.editor.status_bar,
-                                )) as usize;
-                        self.handle_insert_table_modal_key(*key, doc_h, doc_w);
-                        self.needs_draw = true;
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            // Save-a-copy modal absorbs input.  Submitting writes the
-            // buffer to disk via `Buffer::save_copy`; no `EditorState`
-            // mutation, so no doc dimensions are needed.
-            if self.save_copy_modal.is_some() {
-                match &event {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        self.handle_save_copy_modal_key(*key);
-                        self.needs_draw = true;
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            // Phase 10 — settings overlay absorbs input.
-            if self.settings_overlay.is_some() {
-                match &event {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        self.handle_settings_overlay_key(*key);
-                        self.needs_draw = true;
-                    }
-                    Event::Mouse(me) => {
-                        if let Some(state) = self.settings_overlay.as_mut() {
-                            state
-                                .scroll_state
-                                .scroll_by(modal_wheel_delta(me, wheel_step));
-                            self.needs_draw = true;
-                        }
-                    }
-                    _ => {}
-                }
+                // External-editor flows defer to the run loop because
+                // the editor invocation needs `&mut Terminal` and `&rx`,
+                // which only this scope holds.  Same drains as the
+                // legacy command-palette / settings-overlay arms.
                 if self.pending_open_config_in_editor {
                     self.pending_open_config_in_editor = false;
                     self.open_config_in_editor(&mut terminal, &rx);
-                }
-                continue;
-            }
-
-            // Phase 10 — command palette absorbs input.  The doc area
-            // dimensions are needed because a palette-dispatched action
-            // (e.g. `Save`) may scroll, edit, or follow links.
-            if self.command_palette.is_some() {
-                match &event {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        let doc_w = term_size.width as usize;
-                        let doc_h =
-                            term_size
-                                .height
-                                .saturating_sub(crate::ui::BottomRegion::height(
-                                    self.config.editor.status_bar,
-                                )) as usize;
-                        self.handle_command_palette_key(*key, doc_h, doc_w);
-                        self.needs_draw = true;
-                    }
-                    Event::Mouse(me) => {
-                        if let Some(state) = self.command_palette.as_mut() {
-                            state
-                                .scroll_state
-                                .scroll_by(modal_wheel_delta(me, wheel_step));
-                            self.needs_draw = true;
-                        }
-                    }
-                    _ => {}
                 }
                 if self.pending_open_file_in_editor {
                     self.pending_open_file_in_editor = false;
                     self.open_current_file_in_editor(&mut terminal, &rx);
                 }
-                continue;
-            }
-
-            // Phase 13 — width-injection warning absorbs input until
-            // the user picks Continue / Continue and don't ask again /
-            // Cancel.  Sits below the cheat sheet so a `?` invocation
-            // mid-warning still reaches the cheat sheet first
-            // (matches the precedence used by every other prompt).
-            if self.width_injection_warning.is_some() {
-                if let Event::Key(key) = &event {
-                    if key.kind == KeyEventKind::Press {
-                        self.handle_width_injection_warning_key(*key);
-                        self.needs_draw = true;
-                    }
+                if self.should_quit {
+                    break;
                 }
                 continue;
             }
@@ -2076,6 +1446,29 @@ impl App {
         }
     }
 
+    /// Pop the topmost modal off the stack, dispatch the key to it,
+    /// and apply the resulting [`ModalOutcome`].  Pop-then-dispatch
+    /// lets the modal handler take `&mut App` without borrow conflicts
+    /// — the popped modal owns itself.  `Continue` re-pushes it,
+    /// `Close` drops it, `CloseAnd` drops it then runs the supplied
+    /// callback against the now-unborrowed `App`.
+    fn dispatch_modal_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+        doc_height: usize,
+        doc_width: usize,
+    ) {
+        let Some(mut top) = self.modal_stack.pop() else {
+            return;
+        };
+        let outcome = top.handle_key(key, self, doc_height, doc_width);
+        match outcome {
+            ModalOutcome::Continue => self.modal_stack.push(top),
+            ModalOutcome::Close => {}
+            ModalOutcome::CloseAnd(cb) => cb(self),
+        }
+    }
+
     /// Open the three-button `Save / Discard / Cancel` modal.  Called
     /// when the user requests `Quit` on a dirty buffer.
     fn open_quit_confirm(&mut self) {
@@ -2085,88 +1478,25 @@ impl App {
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Current buffer".to_owned());
-        let body = vec![
-            Line::raw(format!("{} has unsaved changes.", display)),
-            Line::raw(""),
-            Line::raw("What would you like to do?"),
-        ];
-        self.quit_confirm = Some(QuitConfirm {
-            body,
-            buttons: vec![
-                ModalButton::new("Save"),
-                ModalButton::new("Discard"),
-                ModalButton::new("Cancel"),
-            ],
-            state: ModalState::new(),
-        });
-    }
-
-    /// Handle a keypress while the quit-confirm modal is visible.
-    /// Save persists then exits; Save failure surfaces a sticky error
-    /// transient and aborts the quit.  Discard exits without saving.
-    /// Cancel / Escape dismisses the modal.
-    fn handle_quit_confirm_key(&mut self, key: crossterm::event::KeyEvent) {
-        let Some(q) = self.quit_confirm.as_mut() else {
-            return;
-        };
-        let num_buttons = q.buttons.len();
-        match q.state.handle_key(&key, num_buttons) {
-            ModalResponse::Continue => {}
-            ModalResponse::Cancelled => {
-                self.quit_confirm = None;
-            }
-            ModalResponse::ButtonPressed(idx) => {
-                self.quit_confirm = None;
-                match idx {
-                    0 => {
-                        // Save then exit.
-                        if self.editor.buffer.save_file().is_ok() {
-                            self.editor.dirty = false;
-                            self.should_quit = true;
-                        } else {
-                            self.flash("Save failed — quit aborted", MessageKind::Error);
-                        }
-                    }
-                    1 => {
-                        // Discard: exit without saving.
-                        self.should_quit = true;
-                    }
-                    _ => {}
-                }
-            }
-        }
+        self.modal_stack
+            .push(Box::new(modal::QuitConfirmModal::new(&display)));
     }
 
     // ── Phase 10 — command palette + configuration overlays ───────────────
 
-    /// Open the Markdown syntax cheat-sheet popover.  Shares the
-    /// `CheatSheetModal` host shape with the keybindings cheat sheet
-    /// so the dismiss semantics are identical (any button or Escape).
+    /// Open the Markdown syntax cheat-sheet popover.  Pushes a
+    /// trait-based modal onto the stack; dispatch is handled by the
+    /// generic [`Self::dispatch_modal_key`] / wheel routes.
     pub fn open_markdown_cheat_sheet(&mut self) {
-        self.markdown_cheat_sheet = Some(CheatSheetModal {
-            body: markdown_cheat_sheet_body(self.theme),
-            buttons: vec![ModalButton::new("OK")],
-            state: ModalState::new(),
-        });
-    }
-
-    fn handle_markdown_cheat_sheet_key(&mut self, key: crossterm::event::KeyEvent) {
-        let Some(cs) = self.markdown_cheat_sheet.as_mut() else {
-            return;
-        };
-        let num_buttons = cs.buttons.len();
-        match cs.state.handle_key(&key, num_buttons) {
-            ModalResponse::Continue => {}
-            ModalResponse::Cancelled | ModalResponse::ButtonPressed(_) => {
-                self.markdown_cheat_sheet = None;
-            }
-        }
+        self.modal_stack
+            .push(Box::new(modal::CheatSheetModal::new(self.theme)));
     }
 
     /// Open the fuzzy-searchable command palette.
     pub fn open_command_palette(&mut self) {
         let keymap = self.ensure_keymap_clone();
-        self.command_palette = Some(PaletteState::open(&keymap));
+        self.modal_stack
+            .push(Box::new(modal::CommandPaletteModal::new(&keymap)));
     }
 
     /// Build a fresh copy of the keymap, populating `self.keymap` if
@@ -2184,33 +1514,6 @@ impl App {
             }
         }
         self.keymap.as_ref().unwrap().clone()
-    }
-
-    /// Dispatch a keypress to the open command palette.  On selection,
-    /// the chosen [`Action`] is dispatched through the same
-    /// `handle_app_action` / `edit_ops::apply` path used by direct
-    /// keystrokes — so a palette-launched `Save` and a `Ctrl-S`
-    /// produce identical buffer state.
-    fn handle_command_palette_key(
-        &mut self,
-        key: crossterm::event::KeyEvent,
-        doc_height: usize,
-        doc_width: usize,
-    ) {
-        let response = match self.command_palette.as_mut() {
-            Some(state) => state.handle_key(&key),
-            None => return,
-        };
-        match response {
-            PaletteResponse::Continue => {}
-            PaletteResponse::Cancelled => {
-                self.command_palette = None;
-            }
-            PaletteResponse::Selected(action) => {
-                self.command_palette = None;
-                self.dispatch_palette_action(action, doc_height, doc_width);
-            }
-        }
     }
 
     /// Dispatch an `Action` chosen from the palette through the same
@@ -2241,120 +1544,16 @@ impl App {
 
     /// Open the settings overlay.
     pub fn open_settings_overlay(&mut self) {
-        self.settings_overlay = Some(SettingsState::new());
-    }
-
-    fn handle_settings_overlay_key(&mut self, key: crossterm::event::KeyEvent) {
-        let response = match self.settings_overlay.as_mut() {
-            Some(state) => state.handle_key(&key, &mut self.config),
-            None => return,
-        };
-        match response {
-            SettingsResponse::Continue => {}
-            SettingsResponse::Cancelled => {
-                self.settings_overlay = None;
-            }
-            SettingsResponse::OpenInExternalEditor => {
-                // The actual editor invocation needs the live
-                // `Terminal` handle (to suspend / resume the TUI
-                // around an interactive editor like vim or nano).
-                // The run loop owns that, so just record intent
-                // here and let the loop drain the flag at the end
-                // of this iteration.
-                self.pending_open_config_in_editor = true;
-                // Closing the overlay first means the user sees
-                // their editor immediately without an inert
-                // settings panel hovering over it.
-                self.settings_overlay = None;
-                self.needs_draw = true;
-            }
-            SettingsResponse::OpenConfigFolder => {
-                // OS file-manager opens via `xdg-open` etc. return
-                // immediately, so unlike the editor flow we don't
-                // need to suspend the TUI — just hand the path to
-                // a worker thread (mirrors `Action::OpenConfigFolder`
-                // in `handle_app_action`) and close the overlay so
-                // the user sees their file manager unobscured.
-                if let Some(dir) = Config::config_dir() {
-                    self.spawn_open_worker(dir.display().to_string());
-                } else {
-                    self.flash("No config directory available", MessageKind::Error);
-                }
-                self.settings_overlay = None;
-                self.needs_draw = true;
-            }
-            SettingsResponse::FieldChanged(label) => {
-                // Phase 9 already centralises the save-and-flash
-                // pattern.  Re-use it so the settings overlay produces
-                // the same `Configuration updated` flash any other
-                // config-mutating path produces.
-                self.save_config_with_flash("failed to persist settings overlay change");
-                if label == "Theme" {
-                    // Live-apply the new theme so the user sees the
-                    // change immediately without restarting.  Any
-                    // parse / unknown-key warnings on
-                    // `themes/<name>.toml` flow through the same
-                    // ConfigWarningModal startup uses; the modal
-                    // sits above the settings overlay in the render
-                    // priority so the user sees the warning first.
-                    self.apply_active_theme();
-                }
-            }
-        }
+        self.modal_stack
+            .push(Box::new(modal::SettingsOverlayModal::new()));
     }
 
     /// Open the keybinds overlay.  Builds a live `KeyMap` if one
     /// hasn't been kept around yet.
     pub fn open_keybinds_overlay(&mut self) {
         let keymap = self.ensure_keymap_clone();
-        self.keybinds_overlay = Some(KeybindsState::open(&keymap));
-    }
-
-    fn handle_keybinds_overlay_key(&mut self, key: crossterm::event::KeyEvent) {
-        // The overlay needs `&mut KeyMap` and `&mut KeyBindingOverrides`;
-        // ensure both exist on `self` first so the borrow stays simple.
-        if self.keymap.is_none() {
-            match KeyMap::build(&self.keybindings) {
-                Ok(km) => self.keymap = Some(km),
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to build KeyMap for keybinds overlay");
-                    self.keybinds_overlay = None;
-                    return;
-                }
-            }
-        }
-        let response = match (self.keybinds_overlay.as_mut(), self.keymap.as_mut()) {
-            (Some(state), Some(keymap)) => state.handle_key(&key, keymap, &mut self.keybindings),
-            _ => return,
-        };
-        match response {
-            KeybindsResponse::Continue => {}
-            KeybindsResponse::Cancelled => {
-                self.keybinds_overlay = None;
-            }
-            KeybindsResponse::Rebound { action, key } => {
-                if let Some(dir) = Config::config_dir() {
-                    let path = dir.join("keybindings.toml");
-                    if let Err(e) = self.keybindings.save_to(&path) {
-                        tracing::warn!(error = %e, "failed to write keybindings.toml");
-                        self.flash(format!("Save failed: {e}"), MessageKind::Error);
-                    } else {
-                        self.flash(format!("Bound {action} to {key}"), MessageKind::Success);
-                    }
-                } else {
-                    self.flash("No config directory available", MessageKind::Error);
-                }
-            }
-            KeybindsResponse::Conflict {
-                key,
-                existing_action,
-            } => {
-                self.flash(
-                    format!("'{key}' is already bound to {existing_action}"),
-                    MessageKind::Error,
-                );
-            }
-        }
+        self.modal_stack
+            .push(Box::new(modal::KeybindsOverlayModal::new(&keymap)));
     }
 
     // ── Phase 15 — Insert Table modal ────────────────────────────────────
@@ -2364,53 +1563,8 @@ impl App {
     /// [`editor::table_edit::cursor_line_is_blank`]; this method just
     /// seeds the modal state.
     pub fn open_insert_table_modal(&mut self) {
-        self.insert_table_modal = Some(InsertTableState::new());
-    }
-
-    /// Dispatch a keypress to the open Insert Table modal.  On
-    /// successful Insert, run [`edit_ops::insert_table_at_cursor`] —
-    /// the blank-line guard already passed at modal-open time, so a
-    /// re-check is unnecessary unless the user somehow moves the
-    /// cursor in the meantime.  We re-verify defensively because the
-    /// cost is one source string scan and the failure mode (corrupt
-    /// markdown) is severe.
-    fn handle_insert_table_modal_key(
-        &mut self,
-        key: crossterm::event::KeyEvent,
-        doc_height: usize,
-        doc_width: usize,
-    ) {
-        let response = match self.insert_table_modal.as_mut() {
-            Some(state) => state.handle_key(&key),
-            None => return,
-        };
-        match response {
-            InsertTableResponse::Continue => {}
-            InsertTableResponse::Cancelled => {
-                self.insert_table_modal = None;
-            }
-            InsertTableResponse::Insert { rows, cols } => {
-                self.insert_table_modal = None;
-                let source = self.editor.buffer.contents();
-                let cursor_byte = self
-                    .editor
-                    .buffer
-                    .rope()
-                    .char_to_byte(self.editor.cursor.offset);
-                if !crate::editor::table_edit::cursor_line_is_blank(&source, cursor_byte) {
-                    self.flash("Insert Table requires a blank line", MessageKind::Warning);
-                    return;
-                }
-                edit_ops::insert_table_at_cursor(
-                    &mut self.editor,
-                    rows,
-                    cols,
-                    doc_height,
-                    doc_width,
-                );
-                self.flash("Table inserted", MessageKind::Success);
-            }
-        }
+        self.modal_stack
+            .push(Box::new(modal::InsertTableModal::new()));
     }
 
     // ── Save-a-copy modal ────────────────────────────────────────────────
@@ -2419,42 +1573,10 @@ impl App {
     /// derived from the current buffer's filename (e.g. `notes.md`
     /// becomes `notes copy.md`).
     pub fn open_save_copy_modal(&mut self) {
-        let default = default_copy_path(self.editor.buffer.path());
-        self.save_copy_modal = Some(SaveCopyState::new(default));
-    }
-
-    /// Dispatch a keypress to the open Save Copy modal.  On Save,
-    /// write the buffer to the entered path via `Buffer::save_copy` —
-    /// the buffer's own path is intentionally NOT updated, so the next
-    /// `Save` still writes back to the original file.
-    fn handle_save_copy_modal_key(&mut self, key: crossterm::event::KeyEvent) {
-        let response = match self.save_copy_modal.as_mut() {
-            Some(state) => state.handle_key(&key),
-            None => return,
-        };
-        match response {
-            SaveCopyResponse::Continue => {}
-            SaveCopyResponse::Cancelled => {
-                self.save_copy_modal = None;
-            }
-            SaveCopyResponse::Save(path_str) => {
-                let path = Path::new(&path_str).to_owned();
-                match self.editor.buffer.save_copy(&path) {
-                    Ok(()) => {
-                        self.save_copy_modal = None;
-                        self.flash(format!("Copy saved to {path_str}"), MessageKind::Success);
-                    }
-                    Err(e) => {
-                        // Keep the modal open so the user can correct
-                        // the path; surface the underlying error in
-                        // the modal's error row.
-                        if let Some(state) = self.save_copy_modal.as_mut() {
-                            state.last_error = Some(format!("{e}"));
-                        }
-                    }
-                }
-            }
-        }
+        self.modal_stack
+            .push(Box::new(modal::SaveCopyModal::for_buffer_path(
+                self.editor.buffer.path(),
+            )));
     }
 
     // ── Phase 13 — column-width injection warning ────────────────────────
@@ -2477,71 +1599,8 @@ impl App {
             self.editor.commit_pending_column_widths();
             return;
         }
-        self.open_width_injection_warning(table_byte_start);
-    }
-
-    /// Stage the three-button warning explaining that committing the
-    /// drag will inject a `<!-- tui-columns: ... -->` comment into the
-    /// Markdown source.  Intentionally verbose body text since a
-    /// first-time user might not know what the comment is for.
-    fn open_width_injection_warning(&mut self, pending_table_start: usize) {
-        let body = vec![
-            Line::raw("Setting custom column widths adds a"),
-            Line::raw("<!-- tui-columns: [...] --> comment to the"),
-            Line::raw("Markdown source so the layout persists."),
-            Line::raw(""),
-            Line::raw("Continue?"),
-        ];
-        self.width_injection_warning = Some(WidthInjectionWarning {
-            body,
-            buttons: vec![
-                ModalButton::new("Continue"),
-                ModalButton::new("Continue and don't ask again"),
-                ModalButton::new("Cancel"),
-            ],
-            state: ModalState::new(),
-        });
-    }
-
-    /// Apply a keypress to the width-injection warning.  Buttons:
-    ///   * 0 `Continue` — commit the pending widths; no config change.
-    ///   * 1 `Continue and don't ask again` — flip
-    ///     `config.table.warn_on_width_injection` to false, persist via
-    ///     `Config::save()` (with the standard `Configuration updated`
-    ///     flash), then commit.
-    ///   * 2 `Cancel` — drop the live preview without writing.
-    /// Escape behaves like Cancel.
-    fn handle_width_injection_warning_key(&mut self, key: crossterm::event::KeyEvent) {
-        let Some(warn) = self.width_injection_warning.as_mut() else {
-            return;
-        };
-        let num_buttons = warn.buttons.len();
-        let response = warn.state.handle_key(&key, num_buttons);
-        match response {
-            ModalResponse::Continue => {}
-            ModalResponse::Cancelled => {
-                self.width_injection_warning = None;
-                self.editor.cancel_pending_column_widths();
-            }
-            ModalResponse::ButtonPressed(idx) => {
-                self.width_injection_warning = None;
-                match idx {
-                    0 => {
-                        self.editor.commit_pending_column_widths();
-                    }
-                    1 => {
-                        self.config.table.warn_on_width_injection = false;
-                        self.save_config_with_flash(
-                            "failed to persist table.warn_on_width_injection",
-                        );
-                        self.editor.commit_pending_column_widths();
-                    }
-                    _ => {
-                        self.editor.cancel_pending_column_widths();
-                    }
-                }
-            }
-        }
+        self.modal_stack
+            .push(Box::new(modal::WidthInjectionWarning::new()));
     }
 
     /// Resolve the link under the keyboard cursor by scanning the
@@ -2662,8 +1721,8 @@ impl App {
                     Box::leak(Box::new(Theme::from_file(&loaded.theme, monochrome)));
                 self.theme = new_theme;
                 self.editor.set_theme(new_theme);
-                if let Some(modal) = build_config_warning_modal(&loaded.warnings) {
-                    self.config_warning_modal = Some(modal);
+                if let Some(modal) = modal::ConfigWarningModal::from_warnings(&loaded.warnings) {
+                    self.modal_stack.push(Box::new(modal));
                     self.needs_draw = true;
                 }
             }
@@ -3027,114 +2086,11 @@ impl App {
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "current file".to_owned());
-        let body = vec![
-            Line::raw(format!("{} has unsaved changes.", display)),
-            Line::raw(""),
-            Line::raw(format!("Opening {} will abandon them.", pending.display())),
-            Line::raw(""),
-            Line::raw("What would you like to do?"),
-        ];
-        self.dirty_guard = Some(DirtyGuardPrompt {
-            body,
-            buttons: vec![
-                ModalButton::new("Save"),
-                ModalButton::new("Discard"),
-                ModalButton::new("Cancel"),
-            ],
-            state: ModalState::new(),
-            pending,
-        });
-    }
-
-    /// Apply a keypress to the dirty-guard modal.  The three buttons
-    /// map to: 0 = Save (persist, continue), 1 = Discard (continue
-    /// without saving), 2 = Cancel (abort).  Escape is Cancel.
-    fn handle_dirty_guard_key(
-        &mut self,
-        key: crossterm::event::KeyEvent,
-        doc_height: usize,
-        doc_width: usize,
-    ) {
-        let Some(guard) = self.dirty_guard.as_mut() else {
-            return;
-        };
-        let num_buttons = guard.buttons.len();
-        let response = guard.state.handle_key(&key, num_buttons);
-        match response {
-            ModalResponse::Continue => {}
-            ModalResponse::Cancelled => {
-                self.dirty_guard = None;
-            }
-            ModalResponse::ButtonPressed(idx) => {
-                let pending = guard.pending.clone();
-                self.dirty_guard = None;
-                match idx {
-                    0 => {
-                        if self.editor.buffer.save_file().is_ok() {
-                            self.editor.dirty = false;
-                            self.navigate_to_file(pending);
-                        } else {
-                            tracing::warn!(target: "link", "save-before-navigate failed");
-                        }
-                    }
-                    1 => {
-                        self.editor.dirty = false;
-                        self.navigate_to_file(pending);
-                    }
-                    _ => {}
-                }
-                // Whichever button ran, kick a redraw so the modal
-                // disappears.
-                self.editor.ensure_cursor_visible(doc_height, doc_width);
-            }
-        }
+        self.modal_stack
+            .push(Box::new(modal::DirtyGuardModal::new(&display, pending)));
     }
 
     // ── End Phase 8 navigation helpers ────────────────────────────────────
-
-    /// Apply a keypress targeted at the config-warning modal.  Any
-    /// button press (or Escape) dismisses it — the modal is purely
-    /// informational, so there's no action to dispatch on close.
-    fn handle_config_warning_modal_key(&mut self, key: crossterm::event::KeyEvent) {
-        let Some(modal) = self.config_warning_modal.as_mut() else {
-            return;
-        };
-        let num_buttons = modal.buttons.len();
-        let response = modal.state.handle_key(&key, num_buttons);
-        match response {
-            ModalResponse::Continue => {}
-            ModalResponse::Cancelled | ModalResponse::ButtonPressed(_) => {
-                self.config_warning_modal = None;
-            }
-        }
-    }
-
-    /// Apply a keypress targeted at the startup-notice modal.  On dismissal
-    /// clears the notice and, if the user chose "Don't show this again",
-    /// persists the preference.
-    fn handle_startup_notice_key(&mut self, key: crossterm::event::KeyEvent) {
-        let Some(notice) = self.startup_notice.as_mut() else {
-            return;
-        };
-        let num_buttons = notice.buttons.len();
-        let response = notice.state.handle_key(&key, num_buttons);
-        match response {
-            ModalResponse::Continue => {}
-            ModalResponse::Cancelled => {
-                self.startup_notice = None;
-            }
-            ModalResponse::ButtonPressed(idx) => {
-                // Button index 1 is "Don't show this again" (see
-                // `build_startup_notice`).  Any other button closes the
-                // modal without touching config.
-                if idx == 1 {
-                    self.config.editor.suppress_capability_warnings = true;
-                    self.save_config_with_flash("failed to persist capability-warning preference");
-                }
-                self.startup_notice = None;
-            }
-        }
-    }
 
     /// Reload the theme named by `self.config.theme` from disk, build
     /// a fresh `Theme`, leak it into `'static`, and swap it onto
@@ -3177,8 +2133,8 @@ impl App {
         self.theme = new_theme;
         self.editor.set_theme(new_theme);
         self.needs_draw = true;
-        if let Some(modal) = build_config_warning_modal(&warnings) {
-            self.config_warning_modal = Some(modal);
+        if let Some(modal) = modal::ConfigWarningModal::from_warnings(&warnings) {
+            self.modal_stack.push(Box::new(modal));
         }
     }
 
@@ -3195,142 +2151,6 @@ impl App {
             Err(e) => {
                 tracing::warn!(error = %e, "{}", err_context);
                 self.flash(format!("Config save failed: {e}"), MessageKind::Error);
-            }
-        }
-    }
-
-    /// Apply a keypress to the images-enabled prompt.  Buttons:
-    ///   * index 0 "Yes"    — render images for this session; config unchanged.
-    ///   * index 1 "No"     — keep placeholders for this session; config unchanged.
-    ///   * index 2 "Always" — persist `ImagesEnabled::Always`.
-    ///   * index 3 "Never"  — persist `ImagesEnabled::Never`.
-    ///
-    /// Selecting any "show" option immediately dispatches decodes so
-    /// visible images start loading without waiting for a keypress.
-    fn handle_images_enabled_prompt_key(&mut self, key: crossterm::event::KeyEvent) {
-        let Some(prompt) = self.images_enabled_prompt.as_mut() else {
-            return;
-        };
-        let num_buttons = prompt.buttons.len();
-        let response = prompt.state.handle_key(&key, num_buttons);
-        match response {
-            ModalResponse::Continue => {}
-            ModalResponse::Cancelled => {
-                // Escape → treat as "No": placeholders this session, config untouched.
-                self.session_images_enabled = Some(false);
-                self.images_enabled_prompt = None;
-                // No images this session means the queued remote-image
-                // prompt is moot — drop it so it doesn't surface next.
-                self.remote_image_prompt = None;
-                // Collapse image blocks to the one-line placeholder so
-                // no whitespace is reserved for images the user
-                // declined to render.
-                self.editor.images_enabled = false;
-                self.editor.refresh_parsed();
-            }
-            ModalResponse::ButtonPressed(idx) => {
-                // Button order defined in `build_images_enabled_prompt`:
-                //   0 → Yes    (session-only show, no config change)
-                //   1 → No     (session-only hide, no config change)
-                //   2 → Always (persist `ImagesEnabled::Always`)
-                //   3 → Never  (persist `ImagesEnabled::Never`)
-                let allow_now = match idx {
-                    0 => {
-                        self.session_images_enabled = Some(true);
-                        true
-                    }
-                    1 => {
-                        self.session_images_enabled = Some(false);
-                        false
-                    }
-                    2 => {
-                        self.config.images.enabled = crate::config::ImagesEnabled::Always;
-                        self.save_config_with_flash("failed to persist images.enabled=always");
-                        true
-                    }
-                    _ => {
-                        self.config.images.enabled = crate::config::ImagesEnabled::Never;
-                        self.save_config_with_flash("failed to persist images.enabled=never");
-                        false
-                    }
-                };
-                self.images_enabled_prompt = None;
-                if allow_now {
-                    // Kick off decodes for visible images immediately so
-                    // the user sees them right after dismissing the prompt.
-                    self.dispatch_image_decodes();
-                } else {
-                    // If the user has opted out of images, the remote-
-                    // image prompt that was queued at startup is moot —
-                    // no images will load regardless.  Drop it so it
-                    // doesn't surface next.
-                    self.remote_image_prompt = None;
-                    // Collapse image blocks to their one-line
-                    // placeholder so no whitespace is reserved for
-                    // images that will never render.
-                    self.editor.images_enabled = false;
-                    self.editor.refresh_parsed();
-                }
-            }
-        }
-    }
-
-    /// Apply a keypress to the remote-image prompt.  The four buttons
-    /// map to:
-    ///   * index 0 "Yes" — set `session_allow_remote = true` in-memory;
-    ///     config is unchanged (policy stays `Ask` for future sessions).
-    ///   * index 1 "No" — dismiss without fetching; policy unchanged.
-    ///   * index 2 "Always" — persist `RemoteImagePolicy::Always`, allow
-    ///     future sessions to fetch automatically.
-    ///   * index 3 "Never" — persist `RemoteImagePolicy::Never`, all
-    ///     remote images stay as placeholders.
-    ///
-    /// For "Yes"/"Always" we dispatch decode jobs immediately after so
-    /// newly-allowed URLs start loading without waiting for a keypress.
-    fn handle_remote_image_prompt_key(&mut self, key: crossterm::event::KeyEvent) {
-        let Some(prompt) = self.remote_image_prompt.as_mut() else {
-            return;
-        };
-        let num_buttons = prompt.buttons.len();
-        let response = prompt.state.handle_key(&key, num_buttons);
-        match response {
-            ModalResponse::Continue => {}
-            ModalResponse::Cancelled => {
-                // Escape → treat as "No" — just dismiss, no policy change.
-                // Remote decodes will continue to fail with `RemoteBlocked`.
-                self.remote_image_prompt = None;
-            }
-            ModalResponse::ButtonPressed(idx) => {
-                // Button order defined in `build_remote_image_prompt`:
-                //   0 → Yes    (session-only, no config change)
-                //   1 → No     (dismiss, no config change)
-                //   2 → Always (persist `RemoteImagePolicy::Always`)
-                //   3 → Never  (persist `RemoteImagePolicy::Never`)
-                let allow_now = match idx {
-                    0 => {
-                        self.session_allow_remote = true;
-                        true
-                    }
-                    1 => false,
-                    2 => {
-                        self.config.images.remote_policy = crate::config::RemoteImagePolicy::Always;
-                        self.save_config_with_flash("failed to persist remote_policy=Always");
-                        true
-                    }
-                    _ => {
-                        self.config.images.remote_policy = crate::config::RemoteImagePolicy::Never;
-                        self.save_config_with_flash("failed to persist remote_policy=Never");
-                        false
-                    }
-                };
-                self.remote_image_prompt = None;
-                if allow_now {
-                    // Newly-allowed URLs may have been recorded as failed
-                    // with `RemoteBlocked`; clear those entries so the
-                    // decode workers re-attempt them.
-                    self.editor.images.clear_failures_for_remote_reopening();
-                    self.dispatch_image_decodes();
-                }
             }
         }
     }
@@ -3553,160 +2373,6 @@ impl App {
             None => "[No file]".to_owned(),
         }
     }
-}
-
-/// Build the remote-image prompt when the document references at least
-/// one `http(s)://` image and the policy is `Ask`.  Returns `None` when
-/// there are no remote URLs, image rendering is off entirely
-/// (`images.enabled = "never"`), or the policy has been pinned to
-/// `Always` / `Never`.
-fn build_remote_image_prompt(editor: &EditorState, config: &Config) -> Option<RemoteImagePrompt> {
-    if matches!(config.images.enabled, crate::config::ImagesEnabled::Never) {
-        return None;
-    }
-    if config.images.remote_policy != crate::config::RemoteImagePolicy::Ask {
-        return None;
-    }
-    let has_remote = editor
-        .parsed
-        .image_blocks
-        .iter()
-        .any(|b| crate::image::loader::is_remote(&b.url));
-    if !has_remote {
-        return None;
-    }
-    let body = vec![
-        Line::raw("This document references one or more remote images."),
-        Line::raw("Fetching them sends HTTP requests from your machine."),
-        Line::raw(""),
-        Line::raw("Would you like edamame to fetch remote images?"),
-    ];
-    // Button order is intentional: the leftmost button is the default
-    // focus (`ModalState::new` sets `focused = 0`).  "Yes" allows the
-    // fetch for this session only and is the safe default if the user
-    // hammers Enter without reading.  "No" dismisses without fetching.
-    // The persistent choices ("Always", "Never") come after.
-    Some(RemoteImagePrompt {
-        body,
-        buttons: vec![
-            ModalButton::new("Yes"),
-            ModalButton::new("No"),
-            ModalButton::new("Always"),
-            ModalButton::new("Never"),
-        ],
-        state: ModalState::new(),
-    })
-}
-
-/// Build the images-enabled prompt when `config.images.enabled` is `Ask`
-/// and the open document contains at least one image.  Returns `None`
-/// when the policy has been pinned to `Always` / `Never`, or when the
-/// document has no image blocks to prompt about.
-fn build_images_enabled_prompt(
-    editor: &EditorState,
-    config: &Config,
-) -> Option<ImagesEnabledPrompt> {
-    if !matches!(config.images.enabled, crate::config::ImagesEnabled::Ask) {
-        return None;
-    }
-    if editor.parsed.image_blocks.is_empty() {
-        return None;
-    }
-    let body = vec![
-        Line::raw("This document contains images."),
-        Line::raw(""),
-        Line::raw("Would you like edamame to display images?"),
-    ];
-    // Button order mirrors the remote-image prompt: Yes/No decide for
-    // the session only; Always/Never persist the choice to config.
-    Some(ImagesEnabledPrompt {
-        body,
-        buttons: vec![
-            ModalButton::new("Yes"),
-            ModalButton::new("No"),
-            ModalButton::new("Always"),
-            ModalButton::new("Never"),
-        ],
-        state: ModalState::new(),
-    })
-}
-
-/// Build the config-warning modal from the parse warnings returned by
-/// [`crate::config::Config::load`].  Returns `None` when there are no
-/// warnings — the modal only appears when there's something to report.
-///
-/// Body lines are grouped by file: each group leads with the file path
-/// (header style), followed by indented detail lines describing what
-/// went wrong.  Multiple warnings against the same file get separate
-/// groups in load order so the user can scroll through them.
-fn build_config_warning_modal(warnings: &[ConfigWarning]) -> Option<ConfigWarningModal> {
-    if warnings.is_empty() {
-        return None;
-    }
-    let mut body: Vec<Line<'static>> = Vec::new();
-    body.push(Line::raw(
-        "Some configuration files had problems. Defaults were used for the affected entries.",
-    ));
-    body.push(Line::raw(""));
-    for (idx, warning) in warnings.iter().enumerate() {
-        if idx > 0 {
-            body.push(Line::raw(""));
-        }
-        body.push(Line::raw(format!("• {}", warning.path.display())));
-        match &warning.kind {
-            WarningKind::ParseError(msg) => {
-                body.push(Line::raw("  Parse error:"));
-                for line in msg.lines() {
-                    body.push(Line::raw(format!("    {line}")));
-                }
-            }
-            WarningKind::UnknownKeys(keys) => {
-                body.push(Line::raw("  Unrecognised keys (ignored):"));
-                for k in keys {
-                    body.push(Line::raw(format!("    {k}")));
-                }
-            }
-            WarningKind::InvalidKeybindings(errs) => {
-                body.push(Line::raw("  Invalid keybinding entries (skipped):"));
-                for e in errs {
-                    body.push(Line::raw(format!("    {e}")));
-                }
-            }
-        }
-    }
-    Some(ConfigWarningModal {
-        body,
-        buttons: vec![ModalButton::new("Ok")],
-        state: ModalState::new(),
-    })
-}
-
-/// Construct the startup-notice modal when there's something worth reporting
-/// and the user hasn't asked to suppress it.
-fn build_startup_notice(caps: &Capabilities, config: &Config) -> Option<StartupNotice> {
-    if config.editor.suppress_capability_warnings {
-        return None;
-    }
-    if !caps.has_missing_features() {
-        return None;
-    }
-    let mut body: Vec<Line<'static>> = caps
-        .missing_features_summary()
-        .into_iter()
-        .map(Line::raw)
-        .collect();
-    body.push(Line::raw(""));
-    body.push(Line::raw(
-        "Affected features will be disabled automatically.",
-    ));
-    Some(StartupNotice {
-        body,
-        buttons: vec![
-            ModalButton::new("Ok"),
-            ModalButton::new("Don't show this again"),
-        ],
-        state: ModalState::new(),
-    })
 }
 
 /// True when `path` ends in `.md` / `.markdown` (case-insensitive).
@@ -4079,11 +2745,11 @@ mod phase9_flash_tests {
     fn open_quit_confirm_seeds_three_button_modal() {
         let mut app = make_app();
         app.open_quit_confirm();
-        let q = app.quit_confirm.as_ref().expect("confirm modal exists");
-        assert_eq!(q.buttons.len(), 3);
-        assert_eq!(q.buttons[0].label, "Save");
-        assert_eq!(q.buttons[1].label, "Discard");
-        assert_eq!(q.buttons[2].label, "Cancel");
+        assert!(app
+            .modal_stack
+            .contains::<crate::app::modal::QuitConfirmModal>());
+        // Button-label invariants are covered by the QuitConfirmModal
+        // unit tests; here we just assert the modal is on the stack.
     }
 
     #[test]
@@ -4091,8 +2757,10 @@ mod phase9_flash_tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = make_app();
         app.open_quit_confirm();
-        app.handle_quit_confirm_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(app.quit_confirm.is_none());
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 40, 80);
+        assert!(!app
+            .modal_stack
+            .contains::<crate::app::modal::QuitConfirmModal>());
         assert!(!app.should_quit);
     }
 
@@ -4103,9 +2771,11 @@ mod phase9_flash_tests {
         app.editor.dirty = true;
         app.open_quit_confirm();
         // Tab onto the Discard button (index 1) and press Enter.
-        app.handle_quit_confirm_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        app.handle_quit_confirm_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(app.quit_confirm.is_none());
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), 40, 80);
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 40, 80);
+        assert!(!app
+            .modal_stack
+            .contains::<crate::app::modal::QuitConfirmModal>());
         assert!(app.should_quit);
     }
 
@@ -4119,7 +2789,9 @@ mod phase9_flash_tests {
         let mut app = make_app();
         let handled = app.handle_app_action(&Action::ShowCheatSheet, 40, 80);
         assert!(handled);
-        assert!(app.keybinds_overlay.is_some());
+        assert!(app
+            .modal_stack
+            .contains::<crate::app::modal::KeybindsOverlayModal>());
     }
 
     #[test]
@@ -4147,33 +2819,20 @@ mod phase9_flash_tests {
     fn open_command_palette_seeds_state() {
         let mut app = make_app();
         app.open_command_palette();
-        assert!(app.command_palette.is_some());
+        assert!(app
+            .modal_stack
+            .contains::<crate::app::modal::CommandPaletteModal>());
     }
 
     #[test]
-    fn open_markdown_cheat_sheet_uses_static_body() {
+    fn open_markdown_cheat_sheet_pushes_to_stack() {
         let mut app = make_app();
         app.open_markdown_cheat_sheet();
-        let cs = app
-            .markdown_cheat_sheet
-            .as_ref()
-            .expect("markdown cheat sheet open");
-        let joined = cs
-            .body
-            .iter()
-            .map(|l| l.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(joined.contains("Headings"));
-        assert!(joined.contains("Links"));
-        assert!(joined.contains("Images"));
-        assert!(joined.contains("==highlight=="));
-        assert!(joined.contains("Mermaid"));
-        // Tables and footnotes are intentionally absent — the
-        // dedicated table editor and the unimplemented footnote
-        // renderer make those examples misleading.
-        assert!(!joined.contains("Tables"));
-        assert!(!joined.contains("Footnotes"));
+        assert!(app
+            .modal_stack
+            .contains::<crate::app::modal::CheatSheetModal>());
+        // Body-content regression assertions live alongside
+        // `markdown_cheat_sheet_body` in `crate::ui::markdown_cheat_sheet`.
     }
 
     #[test]
@@ -4233,11 +2892,15 @@ mod phase9_flash_tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = make_app();
         app.open_settings_overlay();
-        assert!(app.settings_overlay.is_some());
-        app.handle_settings_overlay_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        app.handle_settings_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app
+            .modal_stack
+            .contains::<crate::app::modal::SettingsOverlayModal>());
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 40, 80);
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 40, 80);
         assert!(app.pending_open_config_in_editor);
-        assert!(app.settings_overlay.is_none());
+        assert!(!app
+            .modal_stack
+            .contains::<crate::app::modal::SettingsOverlayModal>());
     }
 
     #[test]
@@ -4250,11 +2913,13 @@ mod phase9_flash_tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = make_app();
         app.open_settings_overlay();
-        app.handle_settings_overlay_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        app.handle_settings_overlay_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        app.handle_settings_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 40, 80);
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 40, 80);
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 40, 80);
         assert!(!app.pending_open_config_in_editor);
-        assert!(app.settings_overlay.is_none());
+        assert!(!app
+            .modal_stack
+            .contains::<crate::app::modal::SettingsOverlayModal>());
     }
 
     #[test]
@@ -4313,16 +2978,21 @@ mod phase15_insert_table_tests {
         let handled = app.handle_app_action(&Action::InsertTable, 40, 80);
         assert!(handled, "InsertTable should be handled at the App layer");
         assert!(
-            app.insert_table_modal.is_some(),
+            app.modal_stack
+                .contains::<crate::app::modal::InsertTableModal>(),
             "the rows/columns modal must be open after the pre-flight passes"
         );
         // Defaults are rows=2, cols=3 — matching the spec.  Tab to the
         // Insert button and press Enter.
-        app.handle_insert_table_modal_key(key(KeyCode::Tab), 40, 80); // Rows → Cols
-        app.handle_insert_table_modal_key(key(KeyCode::Tab), 40, 80); // Cols → Insert
-        app.handle_insert_table_modal_key(key(KeyCode::Enter), 40, 80);
+        app.dispatch_modal_key(key(KeyCode::Tab), 40, 80); // Rows → Cols
+        app.dispatch_modal_key(key(KeyCode::Tab), 40, 80); // Cols → Insert
+        app.dispatch_modal_key(key(KeyCode::Enter), 40, 80);
 
-        assert!(app.insert_table_modal.is_none(), "modal closes on insert");
+        assert!(
+            !app.modal_stack
+                .contains::<crate::app::modal::InsertTableModal>(),
+            "modal closes on insert"
+        );
         let post = app.editor.buffer.contents();
         assert_eq!(
             post,
@@ -4370,7 +3040,8 @@ mod phase15_insert_table_tests {
         let handled = app.handle_app_action(&Action::InsertTable, 40, 80);
         assert!(handled);
         assert!(
-            app.insert_table_modal.is_none(),
+            !app.modal_stack
+                .contains::<crate::app::modal::InsertTableModal>(),
             "modal should NOT open on a non-blank line"
         );
         assert_eq!(app.editor.buffer.contents(), before, "buffer unchanged");
@@ -4388,7 +3059,9 @@ mod phase15_insert_table_tests {
         let src = "# Heading\n";
         let mut app = app_with_buffer(src, 4);
         app.handle_app_action(&Action::InsertTable, 40, 80);
-        assert!(app.insert_table_modal.is_none());
+        assert!(!app
+            .modal_stack
+            .contains::<crate::app::modal::InsertTableModal>());
         let msg = app.transient.as_ref().expect("warning flash");
         assert!(matches!(msg.kind, MessageKind::Warning));
     }
@@ -4398,7 +3071,9 @@ mod phase15_insert_table_tests {
         let src = "- one\n- two\n";
         let mut app = app_with_buffer(src, 2);
         app.handle_app_action(&Action::InsertTable, 40, 80);
-        assert!(app.insert_table_modal.is_none());
+        assert!(!app
+            .modal_stack
+            .contains::<crate::app::modal::InsertTableModal>());
         assert!(matches!(
             app.transient.as_ref().map(|t| t.kind),
             Some(MessageKind::Warning)
@@ -4410,7 +3085,9 @@ mod phase15_insert_table_tests {
         let src = "| a | b |\n|---|---|\n| 1 | 2 |\n";
         let mut app = app_with_buffer(src, 4); // mid-header
         app.handle_app_action(&Action::InsertTable, 40, 80);
-        assert!(app.insert_table_modal.is_none());
+        assert!(!app
+            .modal_stack
+            .contains::<crate::app::modal::InsertTableModal>());
         assert!(matches!(
             app.transient.as_ref().map(|t| t.kind),
             Some(MessageKind::Warning)
@@ -4426,7 +3103,8 @@ mod phase15_insert_table_tests {
         app.editor.mode = Mode::Rendered;
         app.handle_app_action(&Action::InsertTable, 40, 80);
         assert!(
-            app.insert_table_modal.is_none(),
+            !app.modal_stack
+                .contains::<crate::app::modal::InsertTableModal>(),
             "modal should NOT open at EOF on a non-blank final line"
         );
         let msg = app.transient.as_ref().expect("warning flash present");
@@ -4442,11 +3120,12 @@ mod phase15_insert_table_tests {
         edit_ops::apply(&mut app.editor, Action::Newline, 40, 80);
         app.handle_app_action(&Action::InsertTable, 40, 80);
         assert!(
-            app.insert_table_modal.is_some(),
+            app.modal_stack
+                .contains::<crate::app::modal::InsertTableModal>(),
             "modal should open after a newline made the cursor line blank"
         );
         // Press Enter immediately to confirm the defaults.
-        app.handle_insert_table_modal_key(key(KeyCode::Enter), 40, 80);
+        app.dispatch_modal_key(key(KeyCode::Enter), 40, 80);
         let post = app.editor.buffer.contents();
         assert!(
             post.contains("| --- | --- | --- |"),
@@ -4460,135 +3139,56 @@ mod phase15_insert_table_tests {
         let mut app = app_with_buffer(src, 9);
         let before = app.editor.buffer.contents();
         app.handle_app_action(&Action::InsertTable, 40, 80);
-        assert!(app.insert_table_modal.is_some());
+        assert!(app
+            .modal_stack
+            .contains::<crate::app::modal::InsertTableModal>());
         // Esc dismisses without inserting.
-        app.handle_insert_table_modal_key(key(KeyCode::Esc), 40, 80);
-        assert!(app.insert_table_modal.is_none());
+        app.dispatch_modal_key(key(KeyCode::Esc), 40, 80);
+        assert!(!app
+            .modal_stack
+            .contains::<crate::app::modal::InsertTableModal>());
         assert_eq!(app.editor.buffer.contents(), before);
     }
 }
 
 #[cfg(test)]
-mod config_warning_modal_tests {
-    //! `build_config_warning_modal` composes the body of the warning
-    //! popup from a slice of [`ConfigWarning`].  These tests exercise
-    //! the body shape directly so a regression in the formatting
-    //! shows up without rendering through ratatui.
+mod config_warning_app_tests {
+    //! Verify the App-level wiring: a `ConfigWarning` flowing through
+    //! `App::new` ends up on the modal stack, and dispatching Enter
+    //! pops it.  The body-content invariants are owned by the unit
+    //! tests in `crate::app::modal::config_warning`.
 
+    use super::phase9_flash_tests::make_app;
     use super::*;
+    use crate::app::modal::ConfigWarningModal;
     use std::path::PathBuf;
-
-    #[test]
-    fn empty_warnings_returns_none() {
-        assert!(build_config_warning_modal(&[]).is_none());
-    }
-
-    #[test]
-    fn parse_error_body_contains_path_and_message() {
-        let warnings = vec![ConfigWarning {
-            path: PathBuf::from("/home/u/.config/edamame/config.toml"),
-            kind: WarningKind::ParseError("expected integer, found string at line 3".into()),
-        }];
-        let modal = build_config_warning_modal(&warnings).expect("modal built");
-        let joined = modal
-            .body
-            .iter()
-            .map(|l| l.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(joined.contains("/home/u/.config/edamame/config.toml"));
-        assert!(joined.contains("Parse error"));
-        assert!(joined.contains("line 3"));
-        assert_eq!(modal.buttons.len(), 1);
-        assert_eq!(modal.buttons[0].label, "Ok");
-    }
-
-    #[test]
-    fn unknown_keys_body_lists_each_path() {
-        let warnings = vec![ConfigWarning {
-            path: PathBuf::from("config.toml"),
-            kind: WarningKind::UnknownKeys(vec!["editor.tab_widht".into(), "boguss".into()]),
-        }];
-        let modal = build_config_warning_modal(&warnings).expect("modal built");
-        let joined = modal
-            .body
-            .iter()
-            .map(|l| l.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(joined.contains("Unrecognised keys"));
-        assert!(joined.contains("editor.tab_widht"));
-        assert!(joined.contains("boguss"));
-    }
-
-    #[test]
-    fn invalid_keybindings_body_lists_each_error() {
-        let warnings = vec![ConfigWarning {
-            path: PathBuf::from("keybindings.toml"),
-            kind: WarningKind::InvalidKeybindings(vec![
-                "Quitt = \"ctrl+x\": unknown action name: 'Quitt'".into(),
-            ]),
-        }];
-        let modal = build_config_warning_modal(&warnings).expect("modal built");
-        let joined = modal
-            .body
-            .iter()
-            .map(|l| l.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(joined.contains("Invalid keybinding entries"));
-        assert!(joined.contains("Quitt"));
-    }
-
-    #[test]
-    fn multiple_warnings_separated_by_blank_lines() {
-        let warnings = vec![
-            ConfigWarning {
-                path: PathBuf::from("a.toml"),
-                kind: WarningKind::ParseError("oops".into()),
-            },
-            ConfigWarning {
-                path: PathBuf::from("b.toml"),
-                kind: WarningKind::UnknownKeys(vec!["x".into()]),
-            },
-        ];
-        let modal = build_config_warning_modal(&warnings).expect("modal built");
-        // The body must mention both files so the modal lets the user
-        // address each independently.
-        let joined = modal
-            .body
-            .iter()
-            .map(|l| l.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(joined.contains("a.toml"));
-        assert!(joined.contains("b.toml"));
-    }
 
     #[test]
     fn modal_dismissed_on_button_press() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let mut app = phase9_flash_tests::make_app();
+        let mut app = make_app();
         let warnings = vec![ConfigWarning {
             path: PathBuf::from("config.toml"),
             kind: WarningKind::ParseError("oops".into()),
         }];
-        app.config_warning_modal = build_config_warning_modal(&warnings);
-        assert!(app.config_warning_modal.is_some());
-        app.handle_config_warning_modal_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(app.config_warning_modal.is_none());
+        let modal = ConfigWarningModal::from_warnings(&warnings).expect("modal built");
+        app.modal_stack.push(Box::new(modal));
+        assert!(app.modal_stack.contains::<ConfigWarningModal>());
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 40, 80);
+        assert!(!app.modal_stack.contains::<ConfigWarningModal>());
     }
 
     #[test]
     fn modal_dismissed_on_escape() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let mut app = phase9_flash_tests::make_app();
+        let mut app = make_app();
         let warnings = vec![ConfigWarning {
             path: PathBuf::from("config.toml"),
             kind: WarningKind::UnknownKeys(vec!["bogus".into()]),
         }];
-        app.config_warning_modal = build_config_warning_modal(&warnings);
-        app.handle_config_warning_modal_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(app.config_warning_modal.is_none());
+        let modal = ConfigWarningModal::from_warnings(&warnings).expect("modal built");
+        app.modal_stack.push(Box::new(modal));
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 40, 80);
+        assert!(!app.modal_stack.contains::<ConfigWarningModal>());
     }
 }

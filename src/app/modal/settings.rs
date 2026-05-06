@@ -1,0 +1,96 @@
+//! Settings overlay.  Adapter wrapping
+//! [`crate::ui::SettingsState`].
+//!
+//! Field changes drive [`crate::app::App::save_config_with_flash`];
+//! the Theme row also drives [`crate::app::App::apply_active_theme`]
+//! so the colour palette updates live.  The "Open config.toml in
+//! external editor" row sets a deferred flag that the run loop
+//! drains — the editor invocation needs `&mut Terminal` which only
+//! the run loop owns.
+
+use std::any::Any;
+
+use crossterm::event::KeyEvent;
+use ratatui::layout::Rect;
+use ratatui::Frame;
+
+use super::types::{Modal, ModalOutcome, ModalRenderCtx};
+use crate::app::{App, MessageKind};
+use crate::config::Config;
+use crate::ui::{SettingsResponse, SettingsState, SettingsView};
+
+pub struct SettingsOverlayModal {
+    state: SettingsState,
+}
+
+impl SettingsOverlayModal {
+    pub fn new() -> Self {
+        Self {
+            state: SettingsState::new(),
+        }
+    }
+}
+
+impl Default for SettingsOverlayModal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Modal for SettingsOverlayModal {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
+        let view = SettingsView {
+            theme: ctx.theme,
+            config: ctx.config,
+            cursor_visible: ctx.cursor_visible,
+        };
+        frame.render_stateful_widget(view, area, &mut self.state);
+    }
+
+    fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        app: &mut App,
+        _doc_height: usize,
+        _doc_width: usize,
+    ) -> ModalOutcome {
+        let response = self.state.handle_key(&key, &mut app.config);
+        match response {
+            SettingsResponse::Continue => ModalOutcome::Continue,
+            SettingsResponse::Cancelled => ModalOutcome::Close,
+            SettingsResponse::OpenInExternalEditor => {
+                // The actual editor invocation needs the live
+                // `Terminal` handle, owned by the run loop.  Record
+                // intent here and let the loop drain the flag at the
+                // end of this iteration.
+                ModalOutcome::CloseAnd(Box::new(|app| {
+                    app.pending_open_config_in_editor = true;
+                    app.needs_draw = true;
+                }))
+            }
+            SettingsResponse::OpenConfigFolder => ModalOutcome::CloseAnd(Box::new(|app| {
+                if let Some(dir) = Config::config_dir() {
+                    app.spawn_open_worker(dir.display().to_string());
+                } else {
+                    app.flash("No config directory available", MessageKind::Error);
+                }
+                app.needs_draw = true;
+            })),
+            SettingsResponse::FieldChanged(label) => {
+                app.save_config_with_flash("failed to persist settings overlay change");
+                if label == "Theme" {
+                    app.apply_active_theme();
+                }
+                ModalOutcome::Continue
+            }
+        }
+    }
+
+    fn handle_wheel(&mut self, delta: i32) {
+        self.state.scroll_state.scroll_by(delta);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}

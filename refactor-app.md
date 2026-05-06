@@ -107,12 +107,35 @@ Rough projected sizes (every file < 1000 LOC, most < 400):
 
 The four steps are ordered so each one is independently shippable, reviewable, and testable. **Each step ends with a clean `cargo test` and `cargo clippy -- -D warnings` pass** before the next begins.
 
-1. **Modal stack abstraction** — biggest leverage; deletes the most code; unblocks step 2 and step 3.
+1. **Modal stack abstraction** — ✅ **COMPLETE** (2026-05-06). Biggest leverage; deletes the most code; unblocks step 2 and step 3.
 2. **Subdomain extraction** — mostly mechanical relocation once step 1 has shrunk the file.
 3. **Decompose `run()`** — natural after step 2, since `run` will now mostly call into the new subdomain modules.
 4. **Test relocation** — purely organisational; can land in the same PR as step 3 or separately.
 
 Each step is a single PR. Total estimated LOC delta: **~–1500 net** from `src/app.rs` (currently 4591 → ~300 facade), redistributed across `src/app/`.
+
+### Step 1 actuals
+
+- `src/app.rs`: 4591 → 3195 LOC (**−1396**).
+- 14 modal types extracted to per-file modules in `src/app/modal/`:
+  - `cheat_sheet.rs` (64), `command_palette.rs` (65), `config_warning.rs` (205),
+    `dirty_guard.rs` (103), `images_enabled.rs` (121), `insert_table.rs` (87),
+    `keybinds.rs` (105), `quit_confirm.rs` (88), `remote_image.rs` (124),
+    `save_copy.rs` (83), `settings.rs` (96), `startup_notice.rs` (91),
+    `width_injection.rs` (102).
+- Modal infrastructure: `types.rs` (76, `Modal` trait + `ModalRenderCtx` +
+  `ModalOutcome`), `stack.rs` (188 incl. tests, `ModalStack`), `modal.rs`
+  (41, facade).
+- All 736 binary unit tests + integration tests pass.
+- `cargo clippy --bins --tests` produces no new warnings.
+- Migration done bottom-up (lowest legacy priority first) so no migrated
+  modal ever lost render priority to a still-legacy modal.
+- Render cascade (~145 LOC of nested `is_none()` chains) collapsed to a
+  single `top.render(...)` call.
+- Absorb-input ladder (~280 LOC across 13 arms) collapsed to a single
+  `dispatch_modal_key` call.
+- 11 `handle_X_key` methods on `App` deleted (replaced by `Modal::handle_key`
+  trait dispatch via the pop-and-replace pattern in `App::dispatch_modal_key`).
 
 ---
 

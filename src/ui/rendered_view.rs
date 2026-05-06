@@ -537,7 +537,11 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     });
                     let styled = make_raw_line_with_selection(
                         raw_text,
-                        if cursor_visible { Some(cursor_col) } else { None },
+                        if cursor_visible {
+                            Some(cursor_col)
+                        } else {
+                            None
+                        },
                         sel_cols,
                         self.theme,
                     );
@@ -1518,10 +1522,7 @@ fn rendered_list_marker_char_width(line: &ratatui::text::Line<'_>) -> Option<usi
     // by a `[ ] ` / `[✓] ` checkbox.  Include those four cells in the marker
     // width so cursor / selection mapping covers the whole forbidden zone.
     if chars.get(after_bullet) == Some(&'[')
-        && matches!(
-            chars.get(after_bullet + 1),
-            Some(' ') | Some('✓')
-        )
+        && matches!(chars.get(after_bullet + 1), Some(' ') | Some('✓'))
         && chars.get(after_bullet + 2) == Some(&']')
         && chars.get(after_bullet + 3) == Some(&' ')
     {
