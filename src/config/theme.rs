@@ -379,7 +379,7 @@ impl Theme {
                 .fg(p.text_muted)
                 .add_modifier(Modifier::CROSSED_OUT),
             highlight: Style::default().bg(p.warning_dim).fg(p.default_bg),
-            code_span: Style::default().fg(p.code_bright).bg(p.surface),
+            code_span: Style::default().fg(p.code_bright).bg(p.muted),
             code_span_dim: Style::default().fg(p.code_dim).bg(p.surface),
             link_text: Style::default()
                 .fg(p.interactive_bright)
@@ -396,9 +396,9 @@ impl Theme {
             code_block_border: Style::default().fg(p.default_text).bg(p.surface),
             code_block_lang: Style::default()
                 .fg(p.code_bright)
-                .bg(p.surface_elevated)
+                .bg(p.surface)
                 .add_modifier(italic),
-            code_block_text: Style::default().fg(p.default_text).bg(p.surface),
+            code_block_text: Style::default().fg(p.default_text).bg(p.muted),
 
             // Blockquote
             blockquote_bar: Style::default().fg(p.structural_dim),

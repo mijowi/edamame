@@ -1488,6 +1488,8 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 - Update `themes/default.toml` header
 
+- White space in code blocks in Markdown cheat sheet don't have same bg as text
+
 ### Theme issues
 - Code blocks in Markdown cheat sheet have same bg as modal, so it looks like there's no bg
 - Inline code in a struck through item should be dimmed
