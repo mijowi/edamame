@@ -109,7 +109,7 @@ The four steps are ordered so each one is independently shippable, reviewable, a
 
 1. **Modal stack abstraction** — ✅ **COMPLETE** (2026-05-06). Biggest leverage; deletes the most code; unblocks step 2 and step 3.
 2. **Subdomain extraction** — ✅ **COMPLETE** (2026-05-06). Mostly mechanical relocation once step 1 had shrunk the file.
-3. **Decompose `run()`** — natural after step 2, since `run` will now mostly call into the new subdomain modules.
+3. **Decompose `run()`** — ✅ **COMPLETE** (2026-05-06). Natural after step 2, since `run` already delegated most work to the new subdomain modules.
 4. **Test relocation** — purely organisational; can land in the same PR as step 3 or separately.
 
 Each step is a single PR. Total estimated LOC delta: **~–1500 net** from `src/app.rs` (currently 4591 → ~300 facade), redistributed across `src/app/`.
@@ -179,6 +179,57 @@ Each step is a single PR. Total estimated LOC delta: **~–1500 net** from `src/
 - All 736 unit tests + 13 integration test binaries pass.
 - `cargo clippy --bins --tests` produces no new warnings (the 4
   remaining warnings under `src/app/` are all pre-existing).
+
+### Step 3 actuals
+
+- `src/app.rs`: 1624 → 1112 LOC (**−512**).  Non-test code shrank to
+  ~527 LOC; the test modules account for the remaining ~585 LOC and
+  are scheduled for relocation in step 4.
+- New `src/app/event_loop.rs` (669 LOC) housing the run-loop
+  decomposition.  All methods on `App` (per the established `impl App`
+  pattern), plus the [`DocDims`] frame-dimensions struct and the
+  `drop_indicator_for` free helper migrated out of `app.rs`.
+- Methods extracted (all `pub(super)` on `App`):
+  - **Setup:** `startup_pointer_hint`, `spawn_event_threads`,
+    `build_keymap_if_needed`.
+  - **Per-iter prep:** `tick_timers` (resize-quiesce, transient expiry,
+    cursor blink, modal_open flag); `coalesce_image_updates`;
+    `compute_doc_dims` (pure → `DocDims`); `prepare_viewport` (sets
+    `last_area_width`, `editor.set_viewport_width`, kicks off image
+    decodes); `should_draw`; `draw_frame`.
+  - **Event acquisition:** `next_event` returning `Option<Event>` —
+    `Some` is a real terminal event, `None` means a background event
+    was processed internally / the channel disconnected (sets
+    `should_quit`) / a timer deadline elapsed.
+  - **Event dispatch:** `on_resize`; `dispatch_modal_event`;
+    `dispatch_mouse_event`; `dispatch_paste`; `dispatch_key_event`.
+- The new `run()` body is **57 lines** (target was 60), reading as a
+  flat sequence: tick, prep, draw, fetch event, route to one of resize
+  / modal / mouse / paste / key.  Setup outside the loop is three
+  named calls.
+- Deviations from the plan:
+  - The plan named separate `event_loop.rs` and `draw.rs` files; in
+    practice the draw closure is small enough that a single file is
+    cleaner.  All draw / event-loop concerns live in
+    `src/app/event_loop.rs`; if the file grows past ~700 LOC in a
+    future phase it can be split then.
+  - `compute_doc_dims` returns a `DocDims` struct rather than the
+    plan's tuple (`scroll`, `height`); this lets every dispatch arm
+    consume the same prebuilt `Rect` for hit-testing without
+    recomputing it.
+  - `spawn_event_threads` returns just the `Receiver` instead of the
+    plan's `(tx, rx)` tuple — the run loop never re-uses the sender
+    (background workers clone from `self.app_tx` instead).
+  - The plan's pseudo-code suggested a `self.images.dispatch_visible(...)`
+    call; in this codebase the call is `self.dispatch_visible_image_decodes(...)`
+    on `App` (image dispatch lives on `App` per the step 2 deferral
+    of sub-state structs).  Wrapped inside the new
+    `prepare_viewport(&dims)` helper.
+- All 736 binary unit tests + every integration-test binary pass.
+- `cargo clippy --bins --tests` reports 134 warnings, one **fewer**
+  than the step 2 baseline of 135 (the unused `bottom_rows` field on
+  `DocDims` was dropped before introducing the helper).  No new
+  warnings introduced under `src/app/`.
 
 ---
 

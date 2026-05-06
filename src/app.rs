@@ -1,6 +1,7 @@
 pub mod modal;
 
 mod actions;
+mod event_loop;
 mod external_editor;
 mod flash;
 mod frame_timer;
@@ -10,33 +11,27 @@ mod pointer;
 
 use std::io::Stdout;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{mpsc, Arc};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::Result;
-use crossterm::event::{Event, KeyEventKind, MouseEventKind};
+use crossterm::event::Event;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::Rect;
 use ratatui::Terminal;
 
-use crate::config::{
-    Action, Config, ConfigWarning, KeyBindingOverrides, KeyMap, Theme, ThemeFile,
-};
+use crate::config::{Config, ConfigWarning, KeyBindingOverrides, KeyMap, Theme, ThemeFile};
 use crate::document::Buffer;
 use crate::editor::link::LinkTarget;
-use crate::editor::{edit_ops, mouse_ops, EditorState};
-use crate::input::modal::default::DefaultHandler;
+use crate::editor::{mouse_ops, EditorState};
 use crate::input::MouseDispatcher;
 use crate::terminal::{Capabilities, ColourDepth, PointerShape};
-use crate::ui::{EditorView, EditorViewState, HintChord};
+use crate::ui::{EditorViewState, HintChord};
 
 pub use flash::MessageKind;
 
-use self::actions::{modal_wheel_delta, HandleEvent};
 use self::flash::TransientMessage;
-use self::frame_timer::{MIN_FRAME_INTERVAL, RESIZE_QUIESCE};
-use self::modal::{ModalRenderCtx, ModalStack};
+use self::modal::ModalStack;
 use self::nav::NavEntry;
 
 /// Events that the main loop can receive.
@@ -453,543 +448,64 @@ impl App {
     }
 
     /// Run the event loop until the user quits.
+    ///
+    /// The body of this method is intentionally minimal: every step is
+    /// a named call into [`event_loop`].  Background threads, frame
+    /// preparation, drawing, and event dispatch each live in their own
+    /// method on `App`; this loop reads as a flat sequence of those
+    /// steps so the control flow is legible at a glance.
     pub fn run(&mut self, mut terminal: Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
-        // Hint the terminal to show an I-beam pointer over the TUI area by
-        // default.  Terminals that don't implement OSC 22 silently ignore this.
-        if self.capabilities.mouse {
-            self.update_pointer_shape(PointerShape::Text);
-        }
-        let (tx, rx) = mpsc::channel::<AppEvent>();
-        self.app_tx = Some(tx.clone());
-
-        // Spawn a thread to forward crossterm events.  The thread
-        // uses `poll`+`read` (instead of a bare `read`) so a pause
-        // flag can take effect without having to interrupt a
-        // blocked syscall.  When the App shells out to an external
-        // editor via the settings overlay, it flips the flag so the
-        // child process gets uncontested access to stdin.  Without
-        // this, both processes would race to read terminal bytes
-        // and the editor would see a corrupted input stream.
-        let read_paused = Arc::new(AtomicBool::new(false));
-        self.read_paused = Some(read_paused.clone());
-        let tx_clone = tx.clone();
-        std::thread::spawn(move || loop {
-            if read_paused.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(20));
-                continue;
-            }
-            match crossterm::event::poll(Duration::from_millis(100)) {
-                Ok(true) => match crossterm::event::read() {
-                    Ok(event) => {
-                        if tx_clone.send(AppEvent::Term(event)).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                },
-                Ok(false) => {} // poll timed out — re-check pause flag.
-                Err(_) => break,
-            }
-        });
-
-        // Spawn the encoder worker.  Every resize-encode for every
-        // visible image funnels through this single thread: encoding is
-        // CPU-bound, so serial execution preserves cache locality and
-        // avoids contention on the terminal's graphics state.  The UI
-        // thread NEVER encodes — it only enqueues `ResizeRequest`s and
-        // paints the pre-encoded bytes once the worker responds.
-        let (resize_tx, resize_rx) = mpsc::channel::<ratatui_image::thread::ResizeRequest>();
-        self.editor.images.attach_resize_sender(resize_tx);
-        let tx_encoder = tx.clone();
-        std::thread::spawn(move || {
-            while let Ok(req) = resize_rx.recv() {
-                let result = req.resize_encode();
-                if tx_encoder.send(AppEvent::ProtocolReady(result)).is_err() {
-                    break;
-                }
-            }
-        });
-
-        // Build the keymap once and keep it alive for the event loop.
-        // Stored on `self` so the keybinds overlay can mutate it in
-        // place; we read by clone at each dispatch site so we never
-        // hold an `&self` borrow across an action handler.
-        if self.keymap.is_none() {
-            self.keymap = Some(KeyMap::build(&self.keybindings)?);
-        }
+        self.startup_pointer_hint();
+        let rx = self.spawn_event_threads();
+        self.build_keymap_if_needed()?;
 
         loop {
-            // Resize-quiesce: once the burst of Resize events from a
-            // terminal-drag has settled, clear the suppression flag
-            // and request a single redraw at the final dimensions.
-            if self.resize_quiesce_at.is_some_and(|t| t <= Instant::now()) {
-                self.resize_quiesce_at = None;
-                self.needs_draw = true;
-            }
+            self.tick_timers();
+            self.coalesce_image_updates();
 
-            // Phase 9: retire expired transient hint-line messages
-            // before the draw gate so the hint reverts to chords even
-            // when no input is flowing.
-            if self.expire_transient_if_due() {
-                self.needs_draw = true;
-            }
-
-            if self.editor.cursor_blink.tick() {
-                self.needs_draw = true;
-            }
-            self.editor.modal_open = self.any_modal_open();
-
-            // Coalesce any `ImageReady`-driven cache mutations into a
-            // single parse-and-render pass for this frame.  Without
-            // this, a burst of N simultaneous decode completions would
-            // trigger N reparses on the main thread and stall pending
-            // scroll / key events between each one.
-            if self.images_dirty {
-                self.editor.refresh_parsed();
-                self.images_dirty = false;
-                self.needs_draw = true;
-            }
-
-            // Kick off decodes for images within the near-viewport
-            // window (visible rows plus one viewport-height of
-            // prefetch).  Re-running this every frame is cheap:
-            // `ImageCache::request` returns false for URLs already
-            // Pending / Ready / Failed so we only spawn threads for
-            // URLs that just entered the window on the most recent
-            // scroll / edit.  An image-heavy document therefore never
-            // kicks off more concurrent decodes than the window
-            // contains — bounded, not proportional to doc size.
             let term_size = terminal.size()?;
-            let bottom_rows_for_decode =
-                crate::ui::BottomRegion::height(self.config.editor.status_bar) as usize;
-            let doc_height_lines =
-                (term_size.height as usize).saturating_sub(bottom_rows_for_decode);
-            self.last_area_width = term_size.width;
-            // Phase 13 — feed the live document-area width into the editor
-            // so the table-column min-max algorithm adapts to the user's
-            // terminal.  Cheap: `set_viewport_width` short-circuits when the
-            // cached width already matches, so this only triggers a
-            // refresh_parsed on the rare frame after a resize quiesce.
-            self.editor.set_viewport_width(term_size.width as usize);
-            self.dispatch_visible_image_decodes(self.editor.scroll, doc_height_lines);
+            let dims = self.compute_doc_dims(term_size);
+            self.prepare_viewport(&dims);
 
-            // ── Draw ──────────────────────────────────────────────
-            // Event-driven draws: only paint when `needs_draw` is set
-            // AND the 16 ms frame-rate throttle is satisfied AND no
-            // resize burst is in flight.  The throttle coalesces rapid
-            // event bursts (wheel-tick spam, held keys) to ~60 fps;
-            // `needs_draw` prevents idle redraws so the process can go
-            // fully quiescent between user actions; `resize_quiesce_at`
-            // suppresses mid-drag paints that would otherwise flicker.
             let since_draw = self.last_draw_at.map(|t| t.elapsed());
-            let throttle_ok = since_draw.is_none_or(|d| d >= MIN_FRAME_INTERVAL);
-            let resize_pending = self.resize_quiesce_at.is_some();
-            let should_draw = self.needs_draw && throttle_ok && !resize_pending;
-            if should_draw {
-                let filename = self.display_filename();
-                let is_scrolling = self.is_scrolling();
-                let show_handles = self.config.table.show_buttons;
-                let layout = self.config.editor.status_bar;
-                let hint = self.hint_content();
-                let modal_cursor_visible = self.editor.cursor_blink.is_visible();
-                let editor_ref = &mut self.editor;
-                let theme_ref = self.theme;
-                let capabilities_ref = &self.capabilities;
-                let view_state_ref = &mut self.view_state;
-                let modal_stack_top = self.modal_stack.top_mut();
-                let config_ref: &Config = &self.config;
-                let keymap_for_render = self.keymap.clone();
-                let drop_indicator = drop_indicator_for(&self.drag_target);
-                terminal.draw(|frame| {
-                    let view = EditorView {
-                        state: editor_ref,
-                        theme: theme_ref,
-                        filename: &filename,
-                        show_table_buttons: show_handles,
-                        table_drop_indicator: drop_indicator,
-                        capabilities: capabilities_ref,
-                        is_scrolling,
-                        status_bar_layout: layout,
-                        hint,
-                    };
-                    frame.render_stateful_widget(view, frame.area(), view_state_ref);
-                    if let Some(top) = modal_stack_top {
-                        let render_ctx = ModalRenderCtx {
-                            theme: theme_ref,
-                            config: config_ref,
-                            keymap: keymap_for_render.as_ref(),
-                            cursor_visible: modal_cursor_visible,
-                        };
-                        top.render(frame, frame.area(), &render_ctx);
-                    }
-                })?;
-                self.last_draw_at = Some(Instant::now());
-                self.needs_draw = false;
+            if self.should_draw(since_draw) {
+                self.draw_frame(&mut terminal)?;
             }
 
-            // ── Wait for event (blocking unless a timer is pending) ──
-            // Compute the shortest pending deadline:
-            // - RAW_REVEAL_DELAY and SCROLL_QUIESCE (via `next_deadline`)
-            //   drive time-based visual updates.
-            // - When `needs_draw` was set but the 16 ms frame throttle
-            //   blocked the draw, also wake at the remaining throttle
-            //   budget so the deferred draw fires promptly.
-            // With no pending deadline and nothing to draw, fall back
-            // to `rx.recv()` which blocks until an event arrives —
-            // the app idles with 0 % CPU.
-            let now = Instant::now();
-            let mut wait: Option<Duration> = None;
-            let mut push_wait = |w: Duration| {
-                wait = Some(wait.map_or(w, |existing| existing.min(w)));
-            };
-            if let Some(deadline) = self.next_deadline(now) {
-                push_wait(deadline.saturating_duration_since(now));
-            }
-            if self.needs_draw {
-                match since_draw {
-                    Some(elapsed) if elapsed < MIN_FRAME_INTERVAL => {
-                        push_wait(MIN_FRAME_INTERVAL - elapsed);
+            let event = match self.next_event(&rx, since_draw) {
+                Some(e) => e,
+                None => {
+                    if self.should_quit {
+                        break;
                     }
-                    _ => push_wait(Duration::ZERO),
-                }
-            }
-            // If a Term event was stashed by `drain_pending_image_ready`
-            // on the previous iteration, process it first so channel
-            // order is preserved.
-            let event = if let Some(e) = self.pending_term_event.take() {
-                e
-            } else {
-                let recv_result = match wait {
-                    Some(d) => rx.recv_timeout(d),
-                    None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
-                };
-                match recv_result {
-                    Ok(AppEvent::Term(e)) => e,
-                    Ok(AppEvent::ImageReady(Ok(loaded))) => {
-                        self.editor.images.set_decoded_with_prebuilt(
-                            &loaded.url,
-                            loaded.image,
-                            loaded.scratch,
-                        );
-                        self.images_dirty = true;
-                        self.needs_draw = true;
-                        self.drain_pending_image_ready(&rx);
-                        continue;
-                    }
-                    Ok(AppEvent::ImageReady(Err((url, message)))) => {
-                        tracing::debug!(target: "image", %url, %message, "image decode failed");
-                        self.editor.images.set_failed(&url, message);
-                        // A failure collapses the block's reserved rows
-                        // to 1 (see `ImageCache::reserved_rows`), so the
-                        // parsed doc must be rebuilt to drop the blank
-                        // rows under the placeholder.
-                        self.images_dirty = true;
-                        self.needs_draw = true;
-                        // Failures may come in bursts — drain so we
-                        // don't iterate the loop once per failure.
-                        self.drain_pending_image_ready(&rx);
-                        continue;
-                    }
-                    Ok(AppEvent::ProtocolReady(Ok(resp))) => {
-                        self.editor.images.apply_resize_response(resp);
-                        self.needs_draw = true;
-                        self.drain_pending_image_ready(&rx);
-                        continue;
-                    }
-                    Ok(AppEvent::ProtocolReady(Err(err))) => {
-                        tracing::debug!(target: "image", %err, "encoder request failed");
-                        self.editor.images.drop_pending_front();
-                        self.drain_pending_image_ready(&rx);
-                        continue;
-                    }
-                    Ok(AppEvent::LinkOpenResult(result)) => {
-                        if let Err(msg) = result {
-                            tracing::warn!(target: "link", error = %msg, "link open failed");
-                            self.flash(format!("Link open failed: {msg}"), MessageKind::Error);
-                        }
-                        continue;
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        // A pending deadline (reveal / scroll quiesce
-                        // / throttle) elapsed without an external
-                        // event.  Redraw once to apply it; the loop
-                        // will then go back to blocking on `recv()`
-                        // because the deadline is no longer in the
-                        // future.
-                        self.needs_draw = true;
-                        continue;
-                    }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    continue;
                 }
             };
 
-            // ── Terminal resize ──────────────────────────────────────
-            // Dragging the window edge fires a burst of `Resize`
-            // events (one per pixel).  Instead of trying to redraw
-            // every one — which both pins CPU and paints partial
-            // frames — arm a quiesce deadline that the draw gate
-            // above respects.  Width-dependent snapshot caches
-            // (image, link, table) are invalidated so the settled-size
-            // redraw rebuilds them at the new dimensions, and
-            // `last_scroll_at` is cleared so images resume at the
-            // native protocol immediately rather than passing
-            // through the halfblocks transition.
             if matches!(event, Event::Resize(_, _)) {
-                self.resize_quiesce_at = Some(Instant::now() + RESIZE_QUIESCE);
-                self.view_state.rendered.image_snapshots_key = None;
-                self.view_state.rendered.link_snapshots_key = None;
-                self.view_state.rendered.table_snapshots_key = None;
-                self.view_state.preview.image_snapshots_key = None;
-                self.view_state.preview.link_snapshots_key = None;
-                self.last_scroll_at = None;
+                self.on_resize();
                 continue;
             }
 
-            // Pre-compute the per-event mouse-wheel step once so the
-            // modal-absorption arms below don't each have to re-read
-            // it.  The same value applies to in-editor scrolling.
-            let wheel_step = self.config.editor.mouse_scroll_lines;
-
-            // Reset the cursor blink on any keypress while a modal is
-            // open so the `▏` cursor snaps to visible after typing.
-            if self.editor.modal_open {
-                if matches!(&event, Event::Key(k) if k.kind == KeyEventKind::Press) {
-                    self.editor.cursor_blink.reset();
-                }
-            }
-
-            // Open modal absorbs all input.  Topmost modal on the
-            // stack receives the event and decides whether to stay open
-            // (`Continue`), close (`Close`), or close and run a
-            // follow-up callback (`CloseAnd`).  See [`Self::dispatch_modal_key`].
             if !self.modal_stack.is_empty() {
-                let bottom_rows = crate::ui::BottomRegion::height(self.config.editor.status_bar);
-                let doc_h = (term_size.height as usize).saturating_sub(bottom_rows as usize);
-                let doc_w = term_size.width as usize;
-                match &event {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        self.dispatch_modal_key(*key, doc_h, doc_w);
-                        self.needs_draw = true;
-                    }
-                    Event::Mouse(me) => {
-                        if let Some(top) = self.modal_stack.top_mut() {
-                            top.handle_wheel(modal_wheel_delta(me, wheel_step));
-                            self.needs_draw = true;
-                        }
-                    }
-                    _ => {}
-                }
-                // External-editor flows defer to the run loop because
-                // the editor invocation needs `&mut Terminal` and `&rx`,
-                // which only this scope holds.  Same drains as the
-                // legacy command-palette / settings-overlay arms.
-                if self.pending_open_config_in_editor {
-                    self.pending_open_config_in_editor = false;
-                    self.open_config_in_editor(&mut terminal, &rx);
-                }
-                if self.pending_open_file_in_editor {
-                    self.pending_open_file_in_editor = false;
-                    self.open_current_file_in_editor(&mut terminal, &rx);
-                }
+                self.dispatch_modal_event(&event, &dims, &mut terminal, &rx);
                 if self.should_quit {
                     break;
                 }
                 continue;
             }
 
-            // `term_size` was already fetched at the top of the loop
-            // (for `dispatch_visible_image_decodes`); reuse here.
-            let viewport_height = term_size.height as usize;
-            let bottom_rows = crate::ui::BottomRegion::height(self.config.editor.status_bar);
-            let doc_height = viewport_height.saturating_sub(bottom_rows as usize);
-            let doc_width = term_size.width as usize;
-            let doc_area = Rect {
-                x: 0,
-                y: 0,
-                width: term_size.width,
-                height: term_size.height.saturating_sub(bottom_rows),
-            };
-
-            // ── Dispatch mouse events ─────────────────────────────
-            // Mouse events come through before key events get a chance so a
-            // mid-click key press doesn't erase an in-progress drag.
             if let Event::Mouse(mouse_event) = event {
-                // Mouse clicks hit-test against `parsed.source_map`
-                // byte ranges — a stale map from a deferred re-parse
-                // would map the click to the wrong block or line.
-                // Flush synchronously here; a click ends the typing
-                // burst naturally, so the latency cost is invisible.
-                if self.editor.flush_parsed_if_dirty() {
-                    self.needs_draw = true;
-                }
-                if self.capabilities.mouse {
-                    // Pointer-shape feedback: over a clickable element, ask the
-                    // terminal for a pointing-hand cursor; otherwise I-beam.
-                    // Event column/row are in terminal coords — translate to
-                    // doc-relative before hit-testing.
-                    let in_doc = mouse_event.column >= doc_area.x
-                        && mouse_event.column < doc_area.x + doc_area.width
-                        && mouse_event.row >= doc_area.y
-                        && mouse_event.row < doc_area.y + doc_area.height;
-                    let desired = if in_doc {
-                        let rel_col = mouse_event.column - doc_area.x;
-                        let rel_row = mouse_event.row - doc_area.y;
-                        // Phase 8: also record the hovered link target
-                        // (or clear it) for the hint-line tooltip that
-                        // Phase 9 will surface.  Keeping this update in
-                        // the pointer-shape path means it fires on
-                        // every mouse-move, tracking the hover in real
-                        // time without an extra scan.
-                        self.hovered_link = mouse_ops::hovered_link_target(
-                            &self.editor,
-                            rel_col,
-                            rel_row,
-                            doc_width,
-                        );
-                        if mouse_ops::hit_test_clickable(
-                            &self.editor,
-                            rel_col,
-                            rel_row,
-                            doc_width,
-                            &self.view_state.rendered.table_snapshots,
-                        ) {
-                            PointerShape::Hand
-                        } else {
-                            PointerShape::Text
-                        }
-                    } else {
-                        self.hovered_link = None;
-                        PointerShape::Default
-                    };
-                    self.update_pointer_shape(desired);
-
-                    // Moved-only events don't drive editor state; they're used
-                    // purely for pointer-shape tracking above.  Skip dispatch
-                    // to avoid emitting spurious actions.
-                    if matches!(mouse_event.kind, MouseEventKind::Moved) {
-                        continue;
-                    }
-
-                    if let Some(mouse_action) = self.mouse.dispatch(mouse_event, doc_area) {
-                        let snapshots = self.view_state.rendered.table_snapshots.clone();
-                        let scroll_before = self.editor.scroll;
-                        mouse_ops::apply(
-                            &mut self.editor,
-                            mouse_action,
-                            &mut self.drag_target,
-                            &snapshots,
-                            doc_height,
-                            doc_width,
-                        );
-                        if self.editor.scroll != scroll_before {
-                            self.mark_scrolling();
-                        }
-                        // Phase 8: mouse click may have requested a link
-                        // follow.  Consume it before the preview-state
-                        // sync below so the navigation runs first.
-                        if let Some(target) = self.editor.pending_link_follow.take() {
-                            self.follow_link(target, doc_height, doc_width);
-                        }
-                        // Phase 13: a column-border drag release sets
-                        // `pending_column_widths_commit`; either commit
-                        // straight through or open the warning modal
-                        // depending on config + table state.
-                        self.handle_pending_column_widths();
-                        self.needs_draw = true;
-                    }
-                }
-                // Preview-mode mirror writes (scroll, selection) now
-                // happen once per frame inside `EditorView::render`,
-                // since the widget reads `editor.parsed.lines` by
-                // borrow.  Nothing to do here.
+                self.dispatch_mouse_event(mouse_event, &dims);
                 continue;
             }
 
-            // ── Bracketed paste (terminal-level clipboard) ────────
-            // When the terminal emulator pastes into the TUI (Ctrl-Shift-V,
-            // middle-click, ⌘V on macOS Terminal, right-click-paste, etc.)
-            // it delivers the full paste as a single `Event::Paste(String)`.
-            // Route straight into the buffer so pasting from external apps
-            // always works, regardless of whether arboard can reach the OS
-            // clipboard from inside this process.
             if let Event::Paste(text) = event {
-                edit_ops::paste_text(&mut self.editor, &text, doc_height, doc_width);
-                self.needs_draw = true;
+                self.dispatch_paste(text, &dims);
                 continue;
             }
 
-            // ── Dispatch event → Action ───────────────────────────
-            // Clone the live keymap for this iteration so the borrow
-            // stays cheap and doesn't conflict with `&mut self` inside
-            // action handlers.
-            let keymap = self
-                .keymap
-                .as_ref()
-                .cloned()
-                .unwrap_or_else(|| KeyMap::build(&KeyBindingOverrides::default()).unwrap());
-            let mut handler = DefaultHandler::new(&keymap);
-            if let Some(action) = handler.handle_event(event, &self.editor) {
-                // Phase 9: if a sticky error is showing, Escape
-                // dismisses it and swallows the key press so it
-                // doesn't double as ExitToPreview.  Non-sticky
-                // transients let Escape fall through.
-                if matches!(action, Action::ExitToPreview) && self.dismiss_sticky_transient() {
-                    self.needs_draw = true;
-                    continue;
-                }
-                // Phase 8 — App-level actions intercepted BEFORE the
-                // generic `edit_ops::apply` dispatch.  Link navigation
-                // mutates App state (nav stack, file load) that
-                // `EditorState` doesn't own, so these paths stay here.
-                let handled = self.handle_app_action(&action, doc_height, doc_width);
-                if !handled {
-                    // Phase 9 — Quit on a dirty buffer opens the
-                    // three-button confirm modal instead of
-                    // terminating.  On a clean buffer we fall through
-                    // to `edit_ops::apply` which returns `true`.
-                    if matches!(action, Action::Quit) && self.editor.dirty {
-                        self.open_quit_confirm();
-                        self.needs_draw = true;
-                        continue;
-                    }
-                    // Phase 9 — observe the effects of certain
-                    // actions so we can flash a transient message.
-                    // Save: we need to detect failure and raise a
-                    // sticky error instead of leaving the user guessing.
-                    let save_before_dirty = self.editor.dirty;
-                    let scroll_before = self.editor.scroll;
-                    let quit =
-                        edit_ops::apply(&mut self.editor, action.clone(), doc_height, doc_width);
-                    if quit {
-                        self.should_quit = true;
-                    }
-                    if self.editor.scroll != scroll_before {
-                        self.mark_scrolling();
-                    }
-                    self.flash_for_action(&action, save_before_dirty);
-                    // Edit actions may have set `pending_link_follow`
-                    // (FollowLinkUnderCursor doesn't hit `handle_app_action`
-                    // path only when the action ISN'T App-level).
-                    if let Some(target) = self.editor.pending_link_follow.take() {
-                        self.follow_link(target, doc_height, doc_width);
-                    }
-                }
-                self.needs_draw = true;
-                // Phase 10 — `OpenInExternalEditor` defers to the run
-                // loop the same way the settings overlay defers
-                // `OpenConfigFolder` (we own `terminal` / `rx` here,
-                // not in `handle_app_action`).
-                if self.pending_open_file_in_editor {
-                    self.pending_open_file_in_editor = false;
-                    self.open_current_file_in_editor(&mut terminal, &rx);
-                }
-                // New decodes (e.g. from an edit that added an image
-                // inside the viewport, or a scroll that brought one
-                // into the prefetch window) are picked up by
-                // `dispatch_visible_image_decodes` at the top of the
-                // next loop iteration — no eager call needed here.
-            }
-
+            self.dispatch_key_event(event, &dims, &mut terminal, &rx);
             if self.should_quit {
                 break;
             }
@@ -1009,39 +525,6 @@ impl App {
     }
 }
 
-/// Translate the App's `drag_target` into a UI-layer `DropIndicator` for
-/// the renderer's post-pass.  Returns `None` when no relevant drag is in
-/// progress (text-selection drags don't paint a table indicator); the
-/// painter is then a no-op.  Column-border resize drags currently return
-/// `None` because the live-preview re-render is itself the affordance —
-/// adding a vertical guideline on top would be redundant noise.
-fn drop_indicator_for(
-    drag_target: &Option<mouse_ops::DragTarget>,
-) -> Option<crate::ui::DropIndicator> {
-    match drag_target.as_ref()? {
-        mouse_ops::DragTarget::TableRow {
-            table_byte_start,
-            row_idx,
-            hover_row_idx,
-        } => Some(crate::ui::DropIndicator::Row {
-            table_byte_start: *table_byte_start,
-            src_row_idx: *row_idx,
-            hover_row_idx: *hover_row_idx,
-        }),
-        mouse_ops::DragTarget::TableColumnHeader {
-            table_byte_start,
-            col_idx,
-            hover_col_idx,
-        } => Some(crate::ui::DropIndicator::Column {
-            table_byte_start: *table_byte_start,
-            src_col_idx: *col_idx,
-            hover_col_idx: *hover_col_idx,
-        }),
-        mouse_ops::DragTarget::TableColumnBorder { .. }
-        | mouse_ops::DragTarget::TextSelection { .. } => None,
-    }
-}
-
 #[cfg(test)]
 mod phase9_flash_tests {
     //! Phase 9 — exercise the transient-message mechanics directly
@@ -1049,7 +532,11 @@ mod phase9_flash_tests {
     //! use `Capabilities::default()` and default config; no terminal
     //! is ever acquired.
 
+    use std::time::Duration;
+
+    use super::actions::modal_wheel_delta;
     use super::*;
+    use crate::config::Action;
     use crate::ui::HintContent;
 
     pub(super) fn make_app() -> App {
@@ -1373,7 +860,8 @@ mod phase15_insert_table_tests {
 
     use super::phase9_flash_tests::make_app;
     use super::*;
-    use crate::editor::Mode;
+    use crate::config::Action;
+    use crate::editor::{edit_ops, Mode};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     /// Build an App seeded with `text` and the cursor at byte
