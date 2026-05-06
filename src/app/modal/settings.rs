@@ -94,3 +94,44 @@ impl Modal for SettingsOverlayModal {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Settings overlay App-level wiring.  The "Open config.toml in
+    //! default editor" row defers the actual editor invocation to the
+    //! run loop so it can drive the terminal suspend/resume.
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::*;
+    use crate::app::test_utils::make_app;
+
+    #[test]
+    fn settings_overlay_open_external_sets_pending_flag_and_closes_overlay() {
+        let mut app = make_app();
+        app.open_settings_overlay();
+        assert!(app.modal_stack.contains::<SettingsOverlayModal>());
+        // Default focus is "Theme"; one Up skips the divider and lands
+        // on the editor row.
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 40, 80);
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 40, 80);
+        assert!(app.pending_open_config_in_editor);
+        assert!(!app.modal_stack.contains::<SettingsOverlayModal>());
+    }
+
+    #[test]
+    fn settings_overlay_open_config_folder_closes_overlay() {
+        // The top-row "Open config folder" entry hands the path to the
+        // OS file manager via `spawn_open_worker` and closes the
+        // overlay.  No `pending_open_config_in_editor` flag is set —
+        // that path is editor-only.  Default focus is "Theme"; two Up
+        // presses (skipping the divider) reach the folder row.
+        let mut app = make_app();
+        app.open_settings_overlay();
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 40, 80);
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 40, 80);
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 40, 80);
+        assert!(!app.pending_open_config_in_editor);
+        assert!(!app.modal_stack.contains::<SettingsOverlayModal>());
+    }
+}

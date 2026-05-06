@@ -411,3 +411,39 @@ impl App {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{
+        KeyModifiers as CtKeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+
+    use super::modal_wheel_delta;
+
+    #[test]
+    fn modal_wheel_delta_translates_scroll_direction() {
+        // Build minimal `MouseEvent`s with the kinds we care about;
+        // crossterm requires explicit modifier + column/row fields.
+        let scroll_up = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: CtKeyModifiers::NONE,
+        };
+        let scroll_down = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            ..scroll_up
+        };
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            ..scroll_up
+        };
+        assert_eq!(modal_wheel_delta(&scroll_up, 1), -1);
+        assert_eq!(modal_wheel_delta(&scroll_down, 1), 1);
+        // Coarser wheel honoured.
+        assert_eq!(modal_wheel_delta(&scroll_down, 4), 4);
+        // Wheel-step floor is 1, even when config asks for 0.
+        assert_eq!(modal_wheel_delta(&scroll_up, 0), -1);
+        // Non-wheel events return 0 so callers can blindly forward.
+        assert_eq!(modal_wheel_delta(&click, 1), 0);
+    }
+}

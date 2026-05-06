@@ -86,3 +86,46 @@ impl Modal for QuitConfirmModal {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Phase 9 — App-level wiring for the quit-confirm modal.  Driving
+    //! `App::open_quit_confirm` and `App::dispatch_modal_key` directly
+    //! exercises both the push and the per-button outcome without
+    //! standing up the event loop.
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::*;
+    use crate::app::test_utils::make_app;
+
+    #[test]
+    fn open_quit_confirm_seeds_three_button_modal() {
+        let mut app = make_app();
+        app.open_quit_confirm();
+        assert!(app.modal_stack.contains::<QuitConfirmModal>());
+        // Button-label invariants are covered by the QuitConfirmModal
+        // constructor; here we just assert the modal is on the stack.
+    }
+
+    #[test]
+    fn quit_confirm_cancel_dismisses_without_quit() {
+        let mut app = make_app();
+        app.open_quit_confirm();
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 40, 80);
+        assert!(!app.modal_stack.contains::<QuitConfirmModal>());
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn quit_confirm_discard_sets_should_quit() {
+        let mut app = make_app();
+        app.editor.dirty = true;
+        app.open_quit_confirm();
+        // Tab onto the Discard button (index 1) and press Enter.
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), 40, 80);
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 40, 80);
+        assert!(!app.modal_stack.contains::<QuitConfirmModal>());
+        assert!(app.should_quit);
+    }
+}

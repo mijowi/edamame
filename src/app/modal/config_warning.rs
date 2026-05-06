@@ -202,4 +202,41 @@ mod tests {
         assert!(joined.contains("a.toml"));
         assert!(joined.contains("b.toml"));
     }
+
+    // ── App-level wiring ─────────────────────────────────────────────
+    //
+    // A warning that flows through `App::new` (or is pushed onto the
+    // stack later) ends up on the modal stack, and dispatching Enter or
+    // Escape pops it.  The body-content invariants are owned by the
+    // builder tests above.
+
+    use crate::app::test_utils::make_app;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn modal_dismissed_on_button_press() {
+        let mut app = make_app();
+        let warnings = vec![ConfigWarning {
+            path: PathBuf::from("config.toml"),
+            kind: WarningKind::ParseError("oops".into()),
+        }];
+        let modal = ConfigWarningModal::from_warnings(&warnings).expect("modal built");
+        app.modal_stack.push(Box::new(modal));
+        assert!(app.modal_stack.contains::<ConfigWarningModal>());
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 40, 80);
+        assert!(!app.modal_stack.contains::<ConfigWarningModal>());
+    }
+
+    #[test]
+    fn modal_dismissed_on_escape() {
+        let mut app = make_app();
+        let warnings = vec![ConfigWarning {
+            path: PathBuf::from("config.toml"),
+            kind: WarningKind::UnknownKeys(vec!["bogus".into()]),
+        }];
+        let modal = ConfigWarningModal::from_warnings(&warnings).expect("modal built");
+        app.modal_stack.push(Box::new(modal));
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 40, 80);
+        assert!(!app.modal_stack.contains::<ConfigWarningModal>());
+    }
 }

@@ -110,7 +110,7 @@ The four steps are ordered so each one is independently shippable, reviewable, a
 1. **Modal stack abstraction** — ✅ **COMPLETE** (2026-05-06). Biggest leverage; deletes the most code; unblocks step 2 and step 3.
 2. **Subdomain extraction** — ✅ **COMPLETE** (2026-05-06). Mostly mechanical relocation once step 1 had shrunk the file.
 3. **Decompose `run()`** — ✅ **COMPLETE** (2026-05-06). Natural after step 2, since `run` already delegated most work to the new subdomain modules.
-4. **Test relocation** — purely organisational; can land in the same PR as step 3 or separately.
+4. **Test relocation** — ✅ **COMPLETE** (2026-05-06). Purely organisational; co-located with the modules they exercise.
 
 Each step is a single PR. Total estimated LOC delta: **~–1500 net** from `src/app.rs` (currently 4591 → ~300 facade), redistributed across `src/app/`.
 
@@ -230,6 +230,71 @@ Each step is a single PR. Total estimated LOC delta: **~–1500 net** from `src/
   than the step 2 baseline of 135 (the unused `bottom_rows` field on
   `DocDims` was dropped before introducing the helper).  No new
   warnings introduced under `src/app/`.
+
+### Step 4 actuals
+
+- `src/app.rs`: 1112 → 529 LOC (**−583**).  Non-test code is unchanged
+  (~527 LOC); the entire delta comes from the three test modules
+  (`phase9_flash_tests`, `phase15_insert_table_tests`,
+  `config_warning_app_tests`) that previously lived inline.
+- New `src/app/test_utils.rs` (49 LOC) holds the two shared fixtures —
+  `make_app()` and `app_with_buffer(text, cursor_byte)` — gated behind
+  `#[cfg(test)]` so they don't ship in release builds.  Sibling test
+  blocks reference them as `crate::app::test_utils::*`.
+- App-behaviour tests were co-located next to the modules they
+  exercise rather than moved to `tests/`:
+  - `src/app/flash.rs` (134 → 325) — flash mechanics + `hint_content`
+    + `save_config_with_flash` (12 tests).
+  - `src/app/modal/quit_confirm.rs` (88 → 131) — open / cancel /
+    discard lifecycle (3 tests).
+  - `src/app/modal/keybinds.rs` (104 → 124) — `ShowCheatSheet` action
+    aliasing (1 test).
+  - `src/app/modal/command_palette.rs` (63 → 91) — palette open + the
+    `dispatch_palette_action` round-trip (2 tests).
+  - `src/app/modal/cheat_sheet.rs` (64 → 79) — `open_markdown_cheat_sheet`
+    push (1 test).
+  - `src/app/modal/settings.rs` (96 → 137) — open-external-editor flag
+    + open-config-folder flow (2 tests).
+  - `src/app/modal/insert_table.rs` (86 → 271) — full Phase-15 flow
+    (7 tests).
+  - `src/app/modal/config_warning.rs` (205 → 242) — the App-level
+    dismiss tests joined the existing builder tests (2 added).
+  - `src/app/actions.rs` (413 → 449) — `modal_wheel_delta` test
+    co-located with the helper (1 test).
+- Pure-helper tests already co-located in step 2 (`is_scrolling_within`
+  in `frame_timer.rs`, `infos_in_viewport_window` in `image_dispatch.rs`,
+  modal-stack tests in `modal/stack.rs`) were not touched.
+- Deviation from the plan: the plan called for moving
+  `phase9_flash_tests` and `phase15_insert_table_tests` to `tests/` as
+  integration tests.  This would have required exposing `pub mod app`
+  from `lib.rs` and promoting ~25 `pub(super)` items on `App`
+  (`transient`, `editor`, `modal_stack`, `should_quit`,
+  `pending_open_config_in_editor`, `flash`, `expire_transient_if_due`,
+  `dismiss_sticky_transient`, `flash_for_action`, `dispatch_modal_key`,
+  `handle_app_action`, `open_quit_confirm`, `open_settings_overlay`,
+  `save_config_with_flash`, `hint_content`, …) plus
+  `TransientMessage` and its fields to plain `pub`.  The tests
+  inspect internal state (transient flag transitions, modal-stack
+  membership, `should_quit` flips), not a stable external API
+  contract — these are unit-test concerns, not integration-test
+  concerns.  Promoting them to `pub` would invert Rust's standard
+  unit-vs-integration boundary and contradict the plan's own risk-
+  register guidance ("Mark all sub-state structs and their methods
+  `pub(crate)` (or `pub(super)` where possible).  Nothing in this
+  refactor needs to be `pub`.").  Co-locating as `#[cfg(test)] mod
+  tests` blocks under `src/app/` achieves the same organisational
+  goal — slim `app.rs`, tests next to the code they exercise — at
+  zero API-surface cost.  The pattern matches what
+  `frame_timer.rs`, `image_dispatch.rs`, and `modal/stack.rs`
+  already do (and what `config_warning.rs` already did for its
+  builder tests).
+- Deviation from the plan: `tests/common/mod.rs` was not created.
+  `app_with_buffer` lives in `src/app/test_utils.rs` instead, used
+  by the binary-test side only.  No integration test in `tests/`
+  needs it.
+- All 736 binary unit tests + every integration-test binary pass.
+- `cargo clippy --bins --tests` reports 134 warnings, identical to
+  the step 3 baseline.  No new warnings introduced.
 
 ---
 

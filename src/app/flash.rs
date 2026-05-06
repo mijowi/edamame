@@ -176,3 +176,150 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Phase 9 — exercise the transient-message mechanics directly
+    //! against an `App` instance, bypassing the event loop.  Builds use
+    //! [`Capabilities::default`] and the default config; no terminal is
+    //! ever acquired.
+
+    use std::time::Duration;
+
+    use super::*;
+    use crate::app::test_utils::make_app;
+    use crate::config::Action;
+    use crate::ui::HintContent;
+
+    #[test]
+    fn flash_records_transient_info() {
+        let mut app = make_app();
+        assert!(app.transient.is_none());
+        app.flash("Copied", MessageKind::Info);
+        let msg = app.transient.as_ref().unwrap();
+        assert_eq!(msg.text, "Copied");
+        assert!(matches!(msg.kind, MessageKind::Info));
+        assert!(msg.until.is_some(), "non-error messages auto-expire");
+    }
+
+    #[test]
+    fn flash_error_is_sticky() {
+        let mut app = make_app();
+        app.flash("Save failed", MessageKind::Error);
+        let msg = app.transient.as_ref().unwrap();
+        assert!(msg.until.is_none(), "errors have no expiry deadline");
+    }
+
+    #[test]
+    fn expire_transient_clears_only_after_deadline() {
+        let mut app = make_app();
+        app.flash("Saved", MessageKind::Success);
+        // Force the deadline into the past.
+        if let Some(msg) = app.transient.as_mut() {
+            msg.until = Some(Instant::now() - Duration::from_millis(1));
+        }
+        assert!(app.expire_transient_if_due());
+        assert!(app.transient.is_none());
+    }
+
+    #[test]
+    fn expire_leaves_stick_errors() {
+        let mut app = make_app();
+        app.flash("Boom", MessageKind::Error);
+        assert!(!app.expire_transient_if_due());
+        assert!(app.transient.is_some());
+    }
+
+    #[test]
+    fn dismiss_sticky_transient_on_escape() {
+        let mut app = make_app();
+        app.flash("Boom", MessageKind::Error);
+        assert!(app.dismiss_sticky_transient());
+        assert!(app.transient.is_none());
+    }
+
+    #[test]
+    fn dismiss_sticky_ignores_non_error() {
+        let mut app = make_app();
+        app.flash("Saved", MessageKind::Success);
+        assert!(!app.dismiss_sticky_transient());
+        assert!(
+            app.transient.is_some(),
+            "non-errors must not clear on escape"
+        );
+    }
+
+    #[test]
+    fn flash_for_action_save_success_emits_saved_flash() {
+        let mut app = make_app();
+        // Simulate a successful save: dirty was true before and the
+        // editor-state dirty flag has just flipped to false.
+        app.editor.dirty = false;
+        app.flash_for_action(&Action::Save, /*dirty_before=*/ true);
+        let msg = app.transient.as_ref().expect("flash recorded");
+        assert_eq!(msg.text, "Saved");
+        assert!(matches!(msg.kind, MessageKind::Success));
+    }
+
+    #[test]
+    fn flash_for_action_save_failure_emits_error() {
+        let mut app = make_app();
+        // Failure: dirty was true and remains true after "save".
+        app.editor.dirty = true;
+        app.flash_for_action(&Action::Save, /*dirty_before=*/ true);
+        let msg = app.transient.as_ref().expect("flash recorded");
+        assert!(matches!(msg.kind, MessageKind::Error));
+    }
+
+    #[test]
+    fn flash_for_action_copy_emits_copied() {
+        let mut app = make_app();
+        app.flash_for_action(&Action::Copy, /*dirty_before=*/ false);
+        let msg = app.transient.as_ref().expect("flash recorded");
+        assert_eq!(msg.text, "Copied");
+    }
+
+    #[test]
+    fn flash_for_action_cut_emits_copied() {
+        let mut app = make_app();
+        app.flash_for_action(&Action::Cut, /*dirty_before=*/ false);
+        let msg = app.transient.as_ref().expect("flash recorded");
+        assert_eq!(msg.text, "Copied");
+    }
+
+    #[test]
+    fn flash_for_action_paste_is_silent() {
+        let mut app = make_app();
+        app.flash_for_action(&Action::Paste, /*dirty_before=*/ false);
+        assert!(app.transient.is_none());
+    }
+
+    #[test]
+    fn hint_content_defaults_to_chords() {
+        let app = make_app();
+        match app.hint_content() {
+            HintContent::Chords(_) => {}
+            other => panic!("expected Chords, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hint_content_prefers_transient_over_chords() {
+        let mut app = make_app();
+        app.flash("Copied", MessageKind::Info);
+        match app.hint_content() {
+            HintContent::Transient { text, .. } => assert_eq!(text, "Copied"),
+            other => panic!("expected Transient, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn save_config_with_flash_emits_transient() {
+        // `Config::save` *might* fail when no config dir is available in
+        // the test environment.  Either branch produces a flash; we just
+        // assert *some* transient is set so the user gets feedback.
+        let mut app = make_app();
+        app.save_config_with_flash("test");
+        assert!(app.transient.is_some());
+    }
+}

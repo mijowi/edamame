@@ -62,3 +62,18 @@ impl Modal for CheatSheetModal {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::test_utils::make_app;
+
+    #[test]
+    fn open_markdown_cheat_sheet_pushes_to_stack() {
+        let mut app = make_app();
+        app.open_markdown_cheat_sheet();
+        assert!(app.modal_stack.contains::<CheatSheetModal>());
+        // Body-content regression assertions live alongside
+        // `markdown_cheat_sheet_body` in `crate::ui::markdown_cheat_sheet`.
+    }
+}
