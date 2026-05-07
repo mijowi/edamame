@@ -120,3 +120,11 @@ insta = { version = "1", features = ["ron"] }
 proptest = "1"
 # Note: `tempfile` is a runtime dep (used by export/custom.rs); no separate
 # dev-dependency entry is needed — dev code can import it the same way.
+
+[profile.dev]
+incremental = false
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
