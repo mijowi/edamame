@@ -21,7 +21,10 @@ use ratatui::{
 };
 
 use crate::config::Theme;
+use crate::ui::button_row::{button_row_width, render_button_row};
 use crate::ui::scroll_container::{centered_rect_for_content, draw_frame, ContentSize};
+
+const BUTTON_LABELS: &[&str] = &["Insert", "Cancel"];
 
 /// One of the four focus targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,7 +243,7 @@ impl<'a> StatefulWidget for InsertTableView<'a> {
         let label_w = "Columns".chars().count() as u16;
         let field_w = 6u16; // "[ NNNN ]" → 8, content 6 inside the box
         let gap = 2u16;
-        let buttons_w = button_row_width();
+        let buttons_w = button_row_width(BUTTON_LABELS);
         let content_width = (label_w + gap + field_w).max(buttons_w);
         let content = ContentSize {
             width: content_width,
@@ -366,29 +369,12 @@ fn render_field_row(
 /// Render `[ Insert ]  [ Cancel ]` centred horizontally with the
 /// focused button drawn in `modal_button_focused` style.
 fn render_buttons(area: Rect, buf: &mut Buffer, focus: InsertTableField, theme: &Theme) {
-    let mut spans: Vec<Span<'_>> = Vec::with_capacity(3);
-    let insert_style = if focus == InsertTableField::Insert {
-        theme.modal_button_focused
-    } else {
-        theme.modal_item
+    let focused_idx = match focus {
+        InsertTableField::Insert => 0,
+        InsertTableField::Cancel => 1,
+        _ => usize::MAX, // no button focused while editing a field
     };
-    let cancel_style = if focus == InsertTableField::Cancel {
-        theme.modal_button_focused
-    } else {
-        theme.modal_item
-    };
-    spans.push(Span::styled("[ Insert ]", insert_style));
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled("[ Cancel ]", cancel_style));
-    Paragraph::new(Line::from(spans))
-        .alignment(Alignment::Center)
-        .style(theme.modal_bg)
-        .render(area, buf);
-}
-
-/// Width of `[ Insert ]  [ Cancel ]`.
-fn button_row_width() -> u16 {
-    ("[ Insert ]".chars().count() + 2 + "[ Cancel ]".chars().count()) as u16
+    render_button_row(area, buf, BUTTON_LABELS, focused_idx, theme);
 }
 
 #[cfg(test)]

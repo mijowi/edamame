@@ -234,39 +234,61 @@ where
     Ok((value, unknown))
 }
 
-/// Read `config.toml`.  Missing → defaults; parse error → defaults +
-/// `ParseError` warning; unknown keys → parsed value + `UnknownKeys`
-/// warning.  IO errors other than NotFound also produce a `ParseError`
-/// warning so the user always sees the failure path.
-fn read_main_config(path: &Path, warnings: &mut Vec<ConfigWarning>) -> Config {
-    match std::fs::read_to_string(path) {
-        Ok(raw) => match deserialize_with_unknown_keys::<Config>(&raw) {
-            Ok((config, unknown)) => {
-                if !unknown.is_empty() {
-                    warnings.push(ConfigWarning {
-                        path: path.to_path_buf(),
-                        kind: WarningKind::UnknownKeys(unknown),
-                    });
-                }
-                config
-            }
-            Err(e) => {
-                warnings.push(ConfigWarning {
-                    path: path.to_path_buf(),
-                    kind: WarningKind::ParseError(e.to_string()),
-                });
-                Config::default()
-            }
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
+/// Read `path`, deserialize into `T`, and emit any warnings into
+/// `warnings`.  Missing → `on_missing()` (no warning); IO failure →
+/// `on_parse_failure()` + `ParseError` warning; toml parse error →
+/// `on_parse_failure()` + `ParseError` warning; unknown keys →
+/// parsed value + `UnknownKeys` warning.  The two fallbacks are
+/// separate so callers like `read_theme_named` can attach a
+/// `tracing::warn!` to the missing-file path only.
+fn read_and_warn<T, M, F>(
+    path: &Path,
+    warnings: &mut Vec<ConfigWarning>,
+    on_missing: M,
+    on_parse_failure: F,
+) -> T
+where
+    T: serde::de::DeserializeOwned,
+    M: FnOnce() -> T,
+    F: FnOnce() -> T,
+{
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return on_missing(),
         Err(e) => {
             warnings.push(ConfigWarning {
                 path: path.to_path_buf(),
                 kind: WarningKind::ParseError(format!("Failed to read file: {e}")),
             });
-            Config::default()
+            return on_parse_failure();
+        }
+    };
+    match deserialize_with_unknown_keys::<T>(&raw) {
+        Ok((value, unknown)) => {
+            if !unknown.is_empty() {
+                warnings.push(ConfigWarning {
+                    path: path.to_path_buf(),
+                    kind: WarningKind::UnknownKeys(unknown),
+                });
+            }
+            value
+        }
+        Err(e) => {
+            warnings.push(ConfigWarning {
+                path: path.to_path_buf(),
+                kind: WarningKind::ParseError(e.to_string()),
+            });
+            on_parse_failure()
         }
     }
+}
+
+/// Read `config.toml`.  Missing → defaults; parse error → defaults +
+/// `ParseError` warning; unknown keys → parsed value + `UnknownKeys`
+/// warning.  IO errors other than NotFound also produce a `ParseError`
+/// warning so the user always sees the failure path.
+fn read_main_config(path: &Path, warnings: &mut Vec<ConfigWarning>) -> Config {
+    read_and_warn(path, warnings, Config::default, Config::default)
 }
 
 /// Read `keybindings.toml`.  In addition to the usual parse-error /
@@ -275,40 +297,12 @@ fn read_main_config(path: &Path, warnings: &mut Vec<ConfigWarning>) -> Config {
 /// single `InvalidKeybindings` warning so the live keymap only contains
 /// usable bindings.
 fn read_keybindings(path: &Path, warnings: &mut Vec<ConfigWarning>) -> KeyBindingOverrides {
-    let raw = match std::fs::read_to_string(path) {
-        Ok(raw) => raw,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return KeyBindingOverrides::default()
-        }
-        Err(e) => {
-            warnings.push(ConfigWarning {
-                path: path.to_path_buf(),
-                kind: WarningKind::ParseError(format!("Failed to read file: {e}")),
-            });
-            return KeyBindingOverrides::default();
-        }
-    };
-    let (mut overrides, unknown) = match deserialize_with_unknown_keys::<KeyBindingOverrides>(&raw)
-    {
-        Ok(v) => v,
-        Err(e) => {
-            warnings.push(ConfigWarning {
-                path: path.to_path_buf(),
-                kind: WarningKind::ParseError(e.to_string()),
-            });
-            return KeyBindingOverrides::default();
-        }
-    };
-    // KeyBindingOverrides is a `#[serde(transparent)]` HashMap so the
-    // deserializer never reports unknown keys for it — every entry is a
-    // value, not a field — but we keep this branch in case the wrapping
-    // ever changes.  The cost when `unknown.is_empty()` is zero.
-    if !unknown.is_empty() {
-        warnings.push(ConfigWarning {
-            path: path.to_path_buf(),
-            kind: WarningKind::UnknownKeys(unknown),
-        });
-    }
+    let mut overrides: KeyBindingOverrides = read_and_warn(
+        path,
+        warnings,
+        KeyBindingOverrides::default,
+        KeyBindingOverrides::default,
+    );
     let mut errors = Vec::new();
     overrides.0.retain(|action_str, key_str| {
         if let Err(e) = Action::from_str(action_str) {
@@ -336,55 +330,26 @@ fn read_keybindings(path: &Path, warnings: &mut Vec<ConfigWarning>) -> KeyBindin
 /// keys flow through the warning vector the same way as `config.toml`.
 fn read_theme_named(config_dir: &Path, name: &str, warnings: &mut Vec<ConfigWarning>) -> ThemeFile {
     let path = config_dir.join("themes").join(format!("{name}.toml"));
-    match std::fs::read_to_string(&path) {
-        Ok(raw) => match deserialize_with_unknown_keys::<ThemeFile>(&raw) {
-            Ok((theme, unknown)) => {
-                if !unknown.is_empty() {
-                    warnings.push(ConfigWarning {
-                        path: path.clone(),
-                        kind: WarningKind::UnknownKeys(unknown),
-                    });
-                }
-                theme
-            }
-            Err(e) => {
-                warnings.push(ConfigWarning {
-                    path: path.clone(),
-                    kind: WarningKind::ParseError(e.to_string()),
-                });
-                (&Theme::default()).into()
-            }
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // A missing `default` is normal on first run (before
-            // `ensure_default_files` has had a chance to write the shipped
-            // theme).  A missing *named* theme (user asked for
-            // `theme = "custom"` but didn't ship the file) is worth noting,
-            // though still non-fatal.
-            //
-            // In both cases we return the ThemeFile equivalent of
-            // `Theme::default()` — NOT `ThemeFile::default()`, which is an
-            // all-empty style table that would render unthemed output.
-            // Distinguishing "file absent" from "file present but empty" is
-            // what lets a blank theme file opt in to no styling while a
-            // missing file falls back to the compiled palette.
-            if name != "default" {
-                tracing::warn!(
-                    theme = name,
-                    path = %path.display(),
-                    "theme file not found; falling back to compiled defaults"
-                );
-            }
-            (&Theme::default()).into()
+    // ThemeFile fallback differs from `ThemeFile::default()`: a blank
+    // file is a valid opt-out of styling, but a *missing* file means
+    // we should render with the compiled palette.
+    let theme_default = || (&Theme::default()).into();
+    let on_missing = || {
+        // A missing `default` is normal on first run (before
+        // `ensure_default_files` has had a chance to write the shipped
+        // theme).  A missing *named* theme (user asked for
+        // `theme = "custom"` but didn't ship the file) is worth noting,
+        // though still non-fatal.
+        if name != "default" {
+            tracing::warn!(
+                theme = name,
+                path = %path.display(),
+                "theme file not found; falling back to compiled defaults"
+            );
         }
-        Err(e) => {
-            warnings.push(ConfigWarning {
-                path: path.clone(),
-                kind: WarningKind::ParseError(format!("Failed to read file: {e}")),
-            });
-            (&Theme::default()).into()
-        }
-    }
+        theme_default()
+    };
+    read_and_warn(&path, warnings, on_missing, theme_default)
 }
 
 /// Testable core of [`Config::ensure_default_files`]: given the config

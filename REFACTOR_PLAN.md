@@ -218,59 +218,112 @@ other hand-rolled `Default` that matched the derived form.
 
 ---
 
-## Phase B — Shared helpers (cross-file deduplication)
+## Phase B — Shared helpers (cross-file deduplication) ✅ DONE
 
-Each step extracts a helper used by multiple files. Net LOC reduction; new files are small.
+Status: **all seven sub-steps shipped**. Build, clippy (`-D warnings`),
+fmt, and the full test suite stay clean (715 lib + 746 bin + 10
+doc-test-related + integration suites all pass). Four small modules
+landed under `src/ui/`; `config/config.rs` and `config/keymap.rs` lost
+substantial repetition.
 
-### B1. `src/ui/modal_row.rs` — shared focused-row formatter
+### B1. `src/ui/modal_row.rs` — shared focused-row formatter ✅
 
-`format_row` in `command_palette.rs`, `settings_overlay.rs`, and `keybinds_overlay.rs` all build the same shape: focus marker (`"› "` / `"  "`), padded label, value/chord styling, theme colours.
+Added `format_modal_row(label, value, focused, editing, theme, layout)`
+returning a styled `Line`.  `RowLayout::FixedPad(usize)` covers the
+settings/keybinds shape (label padded to a fixed width, value follows);
+`RowLayout::RightAlign(u16)` covers the palette shape (value pushed to
+the right edge with at least one space of slack).  The `editing` flag
+overrides the value style to `theme.modal_input_focused` so settings
+and keybinds share their inline-edit affordance.
 
-Create `src/ui/modal_row.rs` exposing `format_modal_row(label, value, focused, theme, width) -> Line`. Delete the three local copies.
+**Deviation from plan:** the three call sites weren't byte-for-byte
+identical (palette is right-aligned to the area width; settings/keybinds
+use fixed padding + an editing state), so the helper takes a `RowLayout`
+enum and an `editing: bool` rather than just `(label, value, focused,
+theme, width)`.  This keeps the three sites converging on the same
+styling rules while preserving their distinct geometry.
 
-**Files added:** `src/ui/modal_row.rs`.
-**Files modified:** `src/ui/command_palette.rs`, `src/ui/settings_overlay.rs`, `src/ui/keybinds_overlay.rs`, `src/ui.rs`.
-**Net LOC:** ~‑40.
+### B2. `src/ui/button_row.rs` — shared button-row renderer ✅
 
-### B2. `src/ui/button_row.rs` — shared button-row renderer
+`render_button_row(area, buf, labels: &[&str], focused_idx, theme)`
+plus a `button_row_width(labels)` companion.  Three former copies are
+now thin wrappers:
 
-`render_buttons` in `src/ui/modal.rs`, `src/ui/save_copy_modal.rs`, and similar shapes in `command_palette.rs` repeat the same loop. Extract `render_button_row(buttons: &[&str], focused_idx: usize, theme: &Theme) -> Line` plus a `button_row_width` companion.
+- `modal::ModalView::render` builds a `Vec<&str>` from
+  `self.buttons` and calls `render_button_row` directly.
+- `insert_table_modal::render_buttons` maps `InsertTableField` to a
+  button index (`Insert → 0`, `Cancel → 1`, field focus → `usize::MAX`
+  meaning "no button focused") and forwards.
+- `save_copy_modal::render_buttons` does the same for `SaveCopyField`.
 
-**Net LOC:** ~‑40.
+Local `button_row_width()` shims in the latter two files were deleted;
+their callers pass the file-local `BUTTON_LABELS` constant directly.
 
-### B3. `src/ui/overlay_nav.rs` — shared focus-skip-headers helper
+### B3. `src/ui/overlay_nav.rs` — shared focus-skip helper ✅
 
-The "advance focus, skipping headers / non-focusable rows" loop appears identically in `settings_overlay.rs` (lines 226–240) and `keybinds_overlay.rs` (lines 219–237). Extract `next_focusable(rows, current, dir) -> usize`.
+`next_focusable(rows, current, delta, is_focusable) -> Option<usize>`
+walks rows from `current` in direction `delta`, skipping rows for
+which the predicate returns false.  Returns `None` when no focusable
+row exists in that direction (non-wrapping by design — wrap makes
+overlay nav feel jumpy).  Replaces the open-coded `while
+(0..len).contains(&idx)` loops in `settings_overlay::move_focus` and
+`keybinds_overlay::move_focus`.
 
-**Net LOC:** ~‑15.
+### B4. `src/ui/content_width.rs` — shared content-width helper ✅
 
-### B4. `src/ui/content_width.rs` — shared content-width helper
+Two tiny helpers:
 
-`palette_content_width`, `keybinds_content_width`, and `settings_content_width` all do `rows.iter().map(...).max()`. Replace with a single generic helper.
+- `max_row_width(rows, |r| width)` — `rows.iter().map(...).max()
+  .unwrap_or(0) as u16`, used by every overlay's
+  `*_content_width` function.
+- `optional_text_width(Some(s), prefix_len)` — `prefix_len +
+  s.chars().count()` or 0 when `None`, replacing the `last_error`
+  width branches.
 
-**Net LOC:** ~‑20.
+Net LOC change is small but the three call sites read a lot more
+clearly.
 
-### B5. Generic `cycle_enum` for settings overlay
+### B5. Generic `cycle_enum` for settings overlay ✅
 
-`cycle_images_enabled`, `cycle_remote_policy` (and any future `cycle_*`) are byte-for-byte identical except for the value list. Introduce `cycle_enum<T: PartialEq + Copy>(current: T, order: &[T], delta: i32) -> T` and a small `parse_enum` companion. Apply to `src/ui/settings_overlay.rs`.
+`cycle_enum<T: PartialEq + Copy>(current: T, order: &[T], delta: i32)
+-> T` plus two `const &[T]` order tables (`IMAGES_ENABLED_ORDER`,
+`REMOTE_POLICY_ORDER`).  `cycle_images_enabled` /
+`cycle_remote_policy` deleted.  No `parse_enum` companion was needed —
+the existing `parse_images_enabled` / `parse_remote_policy` are each a
+short inline match and didn't share enough structure to factor out
+without adding indirection.
 
-**Net LOC:** ~‑40.
+### B6. Generic config reader to DRY the three loaders ✅
 
-### B6. Generic config reader to DRY the three loaders
+Added `read_and_warn<T: DeserializeOwned, M, F>(path, warnings,
+on_missing, on_parse_failure) -> T`.  The two fallback closures are
+separate so `read_theme_named` can attach a `tracing::warn!` to the
+missing-file path only (named themes that can't be found should log;
+falling back from a parse error shouldn't).  The three loaders shrink
+to:
 
-`read_main_config`, `read_keybindings`, and `read_theme_named` (`src/config/config.rs:241–388`) share the read → deserialize → emit warning → fall-back-to-default flow. Extract a generic `read_and_warn<T: DeserializeOwned + Default>(path, kind) -> (T, Vec<ConfigWarning>)`. Each named loader becomes a few lines.
+- `read_main_config` — one line: `read_and_warn(path, warnings,
+  Config::default, Config::default)`.
+- `read_keybindings` — one `read_and_warn` call followed by the
+  Action/parse_key validation pass.
+- `read_theme_named` — one `read_and_warn` call with a custom
+  `on_missing` that logs a `tracing::warn!` for non-default theme
+  names before returning the compiled-default-derived `ThemeFile`.
 
-**Files modified:** `src/config/config.rs`.
-**Net LOC:** ~‑80.
-**Risk:** Medium — touches startup path. Existing config tests cover most cases; add one regression test if a gap is found.
+`config.rs` drops from 1049 → 1014 LOC.
 
-### B7. `Action` ↔ string mapping driven by a single table
+### B7. `Action` ↔ string mapping driven by a single table ✅
 
-`Display for Action` and `FromStr for Action` (`src/config/keymap.rs:159–318`) and the `bind!` macro all enumerate every variant. Introduce `const ACTION_NAMES: &[(Action, &str)]` and derive both impls from it (or a small declarative macro that defines the slice plus impls in one place).
+Introduced an `action_variants! { ... }` macro that takes a list of
+unit-variant idents and emits both `impl fmt::Display for Action`
+and `impl FromStr for Action`.  `Action::InsertChar(_)` is special-
+cased inside the macro for `Display` only (FromStr can't reconstruct
+the payload).  The `bind!` macro mentioned in the plan turned out
+*not* to enumerate variants — it's a 5-line `parse_key` shorthand —
+so it's unchanged.
 
-**Files modified:** `src/config/keymap.rs`.
-**Net LOC:** ~‑80.
-**Risk:** Medium — but `Action::FromStr` round-trip tests catch any divergence.
+`keymap.rs` drops from 873 → 770 LOC; the two impls go from 158
+hand-listed match arms to ~28 lines total (macro + variant list).
 
 ---
 

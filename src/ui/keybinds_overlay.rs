@@ -21,6 +21,9 @@ use ratatui::{
 };
 
 use crate::config::{Action, KeyBindingOverrides, KeyMap, KeyMapError, Theme};
+use crate::ui::content_width::{max_row_width, optional_text_width};
+use crate::ui::modal_row::{format_modal_row, RowLayout};
+use crate::ui::overlay_nav::next_focusable;
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, ContentSize, ScrollContainerState,
 };
@@ -219,24 +222,16 @@ impl KeybindsState {
     /// Stops at the first/last binding rather than wrapping — wrapping
     /// makes overlay navigation feel jumpy.
     fn move_focus(&mut self, delta: i32) {
-        if self.rows.is_empty() {
-            return;
+        if let Some(idx) = next_focusable(&self.rows, self.focused, delta, |r| {
+            matches!(r, Row::Binding { .. })
+        }) {
+            self.focused = idx;
+            // ensure_visible operates on body-line coords (headers
+            // and blank separators inflate the body past the row
+            // count), so translate via focus_offsets.
+            let body_row = focus_offsets(self).get(self.focused).copied().unwrap_or(0) as u16;
+            self.scroll_state.ensure_visible(body_row);
         }
-        let len = self.rows.len() as i32;
-        let mut idx = self.focused as i32 + delta;
-        while (0..len).contains(&idx) {
-            if matches!(self.rows[idx as usize], Row::Binding { .. }) {
-                self.focused = idx as usize;
-                // ensure_visible operates on body-line coords (headers
-                // and blank separators inflate the body past the row
-                // count), so translate via focus_offsets.
-                let body_row = focus_offsets(self).get(self.focused).copied().unwrap_or(0) as u16;
-                self.scroll_state.ensure_visible(body_row);
-                return;
-            }
-            idx += delta;
-        }
-        // No further binding row in that direction — leave focus where it was.
     }
 
     fn first_binding_index(&self) -> Option<usize> {
@@ -361,23 +356,14 @@ fn build_body_lines<'a>(
                 } else {
                     keymap.first_key_for(action).unwrap_or_default()
                 };
-                let marker = if focused { "› " } else { "  " };
-                let label_style = if focused {
-                    theme.modal_item_selected
-                } else {
-                    theme.modal_item
-                };
-                let chord_style = if editing {
-                    theme.modal_input_focused
-                } else if focused {
-                    theme.modal_item_selected_hint
-                } else {
-                    theme.modal_item_hint
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{marker}{:<22}", label), label_style),
-                    Span::styled(chord, chord_style),
-                ]));
+                lines.push(format_modal_row(
+                    label,
+                    &chord,
+                    focused,
+                    editing,
+                    theme,
+                    RowLayout::FixedPad(22),
+                ));
             }
         }
     }
@@ -416,27 +402,18 @@ fn focus_offsets(state: &KeybindsState) -> Vec<usize> {
 /// error so neither gets clipped.  Sized over the whole row set so
 /// width doesn't jiggle as focus moves.
 fn keybinds_content_width(state: &KeybindsState, keymap: &KeyMap) -> u16 {
-    let row_max = state
-        .rows
-        .iter()
-        .map(|r| match r {
-            Row::Header(t) => t.chars().count() + 4, // "— x —"
-            Row::Binding { action, .. } => {
-                let chord_w = keymap
-                    .first_key_for(action)
-                    .map(|s| s.chars().count())
-                    .unwrap_or(0);
-                2 + 22 + chord_w
-            }
-        })
-        .max()
-        .unwrap_or(0);
-    let err_max = state
-        .last_error
-        .as_deref()
-        .map(|e| 2 + e.chars().count())
-        .unwrap_or(0);
-    row_max.max(err_max) as u16
+    let row_max = max_row_width(&state.rows, |r| match r {
+        Row::Header(t) => t.chars().count() + 4, // "— x —"
+        Row::Binding { action, .. } => {
+            let chord_w = keymap
+                .first_key_for(action)
+                .map(|s| s.chars().count())
+                .unwrap_or(0);
+            2 + 22 + chord_w
+        }
+    });
+    let err_max = optional_text_width(state.last_error.as_deref(), 2);
+    row_max.max(err_max)
 }
 
 /// Build the row list from the static category table.  Headers and

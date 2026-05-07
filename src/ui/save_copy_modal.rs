@@ -25,7 +25,10 @@ use ratatui::{
 };
 
 use crate::config::Theme;
+use crate::ui::button_row::{button_row_width, render_button_row};
 use crate::ui::scroll_container::{centered_rect_for_content, draw_frame, ContentSize};
+
+const BUTTON_LABELS: &[&str] = &["Save", "Cancel"];
 
 /// One of the three focus targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,7 +273,7 @@ impl<'a> StatefulWidget for SaveCopyView<'a> {
         // clamps to the terminal width on its own.
         let label_w = "Path".chars().count() as u16;
         let path_w = (state.path.chars().count() as u16 + 4).max(40);
-        let buttons_w = button_row_width();
+        let buttons_w = button_row_width(BUTTON_LABELS);
         let content_width = (label_w + 2 + path_w).max(buttons_w);
         let content = ContentSize {
             width: content_width,
@@ -400,28 +403,12 @@ fn split_at_char(s: &str, cursor: usize) -> (String, String) {
 }
 
 fn render_buttons(area: Rect, buf: &mut Buffer, focus: SaveCopyField, theme: &Theme) {
-    let mut spans: Vec<Span<'_>> = Vec::with_capacity(3);
-    let save_style = if focus == SaveCopyField::Save {
-        theme.modal_button_focused
-    } else {
-        theme.modal_item
+    let focused_idx = match focus {
+        SaveCopyField::Save => 0,
+        SaveCopyField::Cancel => 1,
+        SaveCopyField::Path => usize::MAX,
     };
-    let cancel_style = if focus == SaveCopyField::Cancel {
-        theme.modal_button_focused
-    } else {
-        theme.modal_item
-    };
-    spans.push(Span::styled("[ Save ]", save_style));
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled("[ Cancel ]", cancel_style));
-    Paragraph::new(Line::from(spans))
-        .alignment(Alignment::Center)
-        .style(theme.modal_bg)
-        .render(area, buf);
-}
-
-fn button_row_width() -> u16 {
-    ("[ Save ]".chars().count() + 2 + "[ Cancel ]".chars().count()) as u16
+    render_button_row(area, buf, BUTTON_LABELS, focused_idx, theme);
 }
 
 #[cfg(test)]

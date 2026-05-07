@@ -43,6 +43,9 @@ use ratatui::{
 };
 
 use crate::config::{Config, ImagesEnabled, RemoteImagePolicy, StatusBarLayout, Theme};
+use crate::ui::content_width::{max_row_width, optional_text_width};
+use crate::ui::modal_row::{format_modal_row, RowLayout};
+use crate::ui::overlay_nav::next_focusable;
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, ContentSize, ScrollContainerState,
 };
@@ -224,18 +227,9 @@ impl SettingsState {
     }
 
     fn move_focus(&mut self, delta: i32) {
-        if self.rows.is_empty() {
-            return;
-        }
-        let len = self.rows.len() as i32;
-        let mut idx = self.focused as i32 + delta;
-        while (0..len).contains(&idx) {
-            if self.rows[idx as usize].kind.focusable {
-                self.focused = idx as usize;
-                self.scroll_state.ensure_visible(self.focused as u16);
-                return;
-            }
-            idx += delta;
+        if let Some(idx) = next_focusable(&self.rows, self.focused, delta, |r| r.kind.focusable) {
+            self.focused = idx;
+            self.scroll_state.ensure_visible(self.focused as u16);
         }
     }
 
@@ -373,12 +367,6 @@ fn build_row_lines<'a>(
         }
         let focused = idx == state.focused;
         let editing = focused && state.editing.is_some();
-        let marker = if focused { "› " } else { "  " };
-        let label_style = if focused {
-            theme.modal_item_selected
-        } else {
-            theme.modal_item
-        };
         let value = if editing && cursor_visible {
             format!("{}▏", state.editing.as_deref().unwrap_or(""))
         } else if editing {
@@ -386,18 +374,14 @@ fn build_row_lines<'a>(
         } else {
             (row.kind.read)(config, &state.theme_names)
         };
-        let value_style = if editing {
-            theme.modal_input_focused
-        } else if focused {
-            theme.modal_item_selected_hint
-        } else {
-            theme.modal_item_hint
-        };
-        let label_padded = format!("{marker}{:<28}", row.label);
-        lines.push(Line::from(vec![
-            Span::styled(label_padded, label_style),
-            Span::styled(value, value_style),
-        ]));
+        lines.push(format_modal_row(
+            row.label,
+            &value,
+            focused,
+            editing,
+            theme,
+            RowLayout::FixedPad(28),
+        ));
     }
     lines
 }
@@ -407,29 +391,17 @@ fn build_row_lines<'a>(
 /// doesn't get clipped.  Sizes against the *whole* row set so the
 /// modal width doesn't jiggle as focus moves.
 fn settings_content_width(state: &SettingsState, config: &Config) -> u16 {
-    let row_max = state
-        .rows
-        .iter()
-        .map(|r| {
-            let value_w = (r.kind.read)(config, &state.theme_names).chars().count();
-            // 2 marker + 28 label padding + value width
-            2 + 28 + value_w
-        })
-        .max()
-        .unwrap_or(0);
-    let desc_max = state
-        .rows
-        .iter()
-        .filter_map(|r| r.description)
-        .map(|d| 4 + d.chars().count()) // 4 = "    " indent
-        .max()
-        .unwrap_or(0);
-    let err_max = state
-        .last_error
-        .as_deref()
-        .map(|e| 2 + e.chars().count())
-        .unwrap_or(0);
-    row_max.max(desc_max).max(err_max) as u16
+    let row_max = max_row_width(&state.rows, |r| {
+        let value_w = (r.kind.read)(config, &state.theme_names).chars().count();
+        // 2 marker + 28 label padding + value width
+        2 + 28 + value_w
+    });
+    // 4 = "    " description indent
+    let desc_max = max_row_width(&state.rows, |r| {
+        r.description.map(|d| 4 + d.chars().count()).unwrap_or(0)
+    });
+    let err_max = optional_text_width(state.last_error.as_deref(), 2);
+    row_max.max(desc_max).max(err_max)
 }
 
 // ─── Row catalogue ─────────────────────────────────────────────────────────
@@ -486,29 +458,31 @@ fn parse_usize(s: &str) -> Result<usize, String> {
         .map_err(|e| format!("invalid number: {e}"))
 }
 
-/// Cycle helper for `Ask` → `Always` → `Never` → `Ask`.  `delta`
-/// chooses direction.
-fn cycle_images_enabled(value: ImagesEnabled, delta: i32) -> ImagesEnabled {
-    let order = [
-        ImagesEnabled::Ask,
-        ImagesEnabled::Always,
-        ImagesEnabled::Never,
-    ];
-    let i = order.iter().position(|v| *v == value).unwrap_or(0) as i32;
+/// Cycle through `order` by `delta` (signed step), wrapping at both
+/// ends.  Returns the value at `current`'s index plus delta, modulo
+/// the order length.  Falls back to the first element when `current`
+/// isn't in the order.  Empty `order` is a programmer error and
+/// returns `current` unchanged.
+fn cycle_enum<T: PartialEq + Copy>(current: T, order: &[T], delta: i32) -> T {
+    if order.is_empty() {
+        return current;
+    }
+    let i = order.iter().position(|v| *v == current).unwrap_or(0) as i32;
     let n = order.len() as i32;
     order[((i + delta).rem_euclid(n)) as usize]
 }
 
-fn cycle_remote_policy(value: RemoteImagePolicy, delta: i32) -> RemoteImagePolicy {
-    let order = [
-        RemoteImagePolicy::Ask,
-        RemoteImagePolicy::Always,
-        RemoteImagePolicy::Never,
-    ];
-    let i = order.iter().position(|v| *v == value).unwrap_or(0) as i32;
-    let n = order.len() as i32;
-    order[((i + delta).rem_euclid(n)) as usize]
-}
+const IMAGES_ENABLED_ORDER: &[ImagesEnabled] = &[
+    ImagesEnabled::Ask,
+    ImagesEnabled::Always,
+    ImagesEnabled::Never,
+];
+
+const REMOTE_POLICY_ORDER: &[RemoteImagePolicy] = &[
+    RemoteImagePolicy::Ask,
+    RemoteImagePolicy::Always,
+    RemoteImagePolicy::Never,
+];
 
 fn images_enabled_label(v: ImagesEnabled) -> &'static str {
     match v {
@@ -724,7 +698,7 @@ fn build_rows() -> Vec<RowDef> {
                     Ok(())
                 },
                 cycle: Some(|c, delta, _| {
-                    c.images.enabled = cycle_images_enabled(c.images.enabled, delta);
+                    c.images.enabled = cycle_enum(c.images.enabled, IMAGES_ENABLED_ORDER, delta);
                     true
                 }),
             },
@@ -741,7 +715,8 @@ fn build_rows() -> Vec<RowDef> {
                     Ok(())
                 },
                 cycle: Some(|c, delta, _| {
-                    c.images.remote_policy = cycle_remote_policy(c.images.remote_policy, delta);
+                    c.images.remote_policy =
+                        cycle_enum(c.images.remote_policy, REMOTE_POLICY_ORDER, delta);
                     true
                 }),
             },

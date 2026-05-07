@@ -25,12 +25,13 @@
 
 use ratatui::{
     buffer::Buffer,
-    layout::{Alignment, Rect},
-    text::{Line, Span},
+    layout::Rect,
+    text::Line,
     widgets::{Paragraph, StatefulWidget, Widget, Wrap},
 };
 
 use crate::config::Theme;
+use crate::ui::button_row::{button_row_width, render_button_row};
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, wrapped_rows, ContentSize, ScrollContainerState,
 };
@@ -160,7 +161,8 @@ impl<'a> StatefulWidget for ModalView<'a> {
             return;
         }
         let body_width = self.body.iter().map(|l| l.width()).max().unwrap_or(0) as u16;
-        let button_width = button_row_width(self.buttons);
+        let button_labels: Vec<&str> = self.buttons.iter().map(|b| b.label.as_str()).collect();
+        let button_width = button_row_width(&button_labels);
         let content_width = body_width.max(button_width);
         // The modal width is the content width plus 2 border + 2 padding cells,
         // clamped to the available area.  Derive the body's inner wrap width
@@ -221,44 +223,8 @@ impl<'a> StatefulWidget for ModalView<'a> {
         body_paragraph
             .scroll((state.scroll_state.scroll, 0))
             .render(body_area, buf);
-        render_buttons(button_area, buf, self.buttons, state.focused, self.theme);
+        render_button_row(button_area, buf, &button_labels, state.focused, self.theme);
     }
-}
-
-/// Width in columns of the rendered button row: each button is `[ label ]`
-/// (label + 4 frame chars), separated by 2-space gaps.
-fn button_row_width(buttons: &[ModalButton]) -> u16 {
-    let labels: usize = buttons.iter().map(|b| b.label.chars().count() + 4).sum();
-    let gaps = buttons.len().saturating_sub(1) * 2;
-    (labels + gaps) as u16
-}
-
-/// Render the button row, horizontally centred, with the focused button
-/// drawn in reverse video.
-fn render_buttons(
-    area: Rect,
-    buf: &mut Buffer,
-    buttons: &[ModalButton],
-    focused: usize,
-    theme: &Theme,
-) {
-    let mut spans: Vec<Span<'_>> = Vec::with_capacity(buttons.len() * 2 + 1);
-    for (i, b) in buttons.iter().enumerate() {
-        let label = format!(" {} ", b.label);
-        let style = if i == focused {
-            theme.modal_button_focused
-        } else {
-            theme.modal_item
-        };
-        spans.push(Span::styled(format!("[{label}]"), style));
-        if i + 1 < buttons.len() {
-            spans.push(Span::raw("  "));
-        }
-    }
-    Paragraph::new(Line::from(spans))
-        .alignment(Alignment::Center)
-        .style(theme.modal_bg)
-        .render(area, buf);
 }
 
 #[cfg(test)]

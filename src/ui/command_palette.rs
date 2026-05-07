@@ -22,6 +22,8 @@ use ratatui::{
 };
 
 use crate::config::{Action, KeyMap, Theme};
+use crate::ui::content_width::max_row_width;
+use crate::ui::modal_row::{format_modal_row, RowLayout};
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, ContentSize, ScrollContainerState,
 };
@@ -424,51 +426,27 @@ const MAX_LIST_ROWS: u16 = 20;
 /// entry list rather than the current `display_rows` set so the modal
 /// doesn't jiggle in width as the user types.
 fn palette_content_width(state: &PaletteState) -> u16 {
-    state
-        .entries
-        .iter()
-        .map(|e| {
-            let label_w = e.label.chars().count();
-            let chord_w = e.chord.as_deref().map(|c| c.chars().count()).unwrap_or(0);
-            // 2 marker + label + 1 gap + chord
-            2 + label_w + 1 + chord_w
-        })
-        .max()
-        .unwrap_or(0) as u16
+    max_row_width(&state.entries, |e| {
+        let label_w = e.label.chars().count();
+        let chord_w = e.chord.as_deref().map(|c| c.chars().count()).unwrap_or(0);
+        // 2 marker + label + 1 gap + chord
+        2 + label_w + 1 + chord_w
+    })
 }
 
 /// Format one palette row: focused rows fill with `modal_item_selected`
 /// (interactive bg + default_bg fg) and render the chord with the
 /// hint colour; unfocused rows use `modal_item` and a dim chord.
 fn format_row(entry: &PaletteEntry, focused: bool, theme: &Theme, width: u16) -> Line<'static> {
-    let marker = if focused { "› " } else { "  " };
-    let label_style = if focused {
-        theme.modal_item_selected
-    } else {
-        theme.modal_item
-    };
-    let label = format!("{}{}", marker, entry.label);
-    let chord = entry.chord.clone().unwrap_or_default();
-    let label_w = label.chars().count();
-    let chord_w = chord.chars().count();
-    let total = label_w + chord_w + 1;
-    let pad = (width as usize).saturating_sub(total);
-    let pad_str = " ".repeat(pad.max(1));
-    let pad_style = if focused {
-        theme.modal_item_selected
-    } else {
-        theme.modal_item
-    };
-    let chord_style = if focused {
-        theme.modal_item_selected_hint
-    } else {
-        theme.modal_item_hint
-    };
-    Line::from(vec![
-        Span::styled(label, label_style),
-        Span::styled(pad_str, pad_style),
-        Span::styled(chord, chord_style),
-    ])
+    let chord = entry.chord.as_deref().unwrap_or("");
+    format_modal_row(
+        &entry.label,
+        chord,
+        focused,
+        false,
+        theme,
+        RowLayout::RightAlign(width),
+    )
 }
 
 /// Format a section header as a thin separator: `─ Title ───────`.

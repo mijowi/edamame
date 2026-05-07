@@ -156,165 +156,62 @@ pub enum Action {
     OpenGitHub,
 }
 
-impl fmt::Display for Action {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            Action::ScrollUp => "ScrollUp",
-            Action::ScrollDown => "ScrollDown",
-            Action::ScrollPageUp => "ScrollPageUp",
-            Action::ScrollPageDown => "ScrollPageDown",
-            Action::ScrollToTop => "ScrollToTop",
-            Action::ScrollToBottom => "ScrollToBottom",
-            Action::MoveLeft => "MoveLeft",
-            Action::MoveRight => "MoveRight",
-            Action::MoveUp => "MoveUp",
-            Action::MoveDown => "MoveDown",
-            Action::MoveWordLeft => "MoveWordLeft",
-            Action::MoveWordRight => "MoveWordRight",
-            Action::MoveLineStart => "MoveLineStart",
-            Action::MoveLineEnd => "MoveLineEnd",
-            Action::MoveDocStart => "MoveDocStart",
-            Action::MoveDocEnd => "MoveDocEnd",
-            Action::InsertChar(_) => "InsertChar",
-            Action::InsertTab => "InsertTab",
-            Action::Newline => "Newline",
-            Action::DeleteCharBack => "DeleteCharBack",
-            Action::DeleteCharForward => "DeleteCharForward",
-            Action::DeleteWordBack => "DeleteWordBack",
-            Action::DeleteWordForward => "DeleteWordForward",
-            Action::DeleteLine => "DeleteLine",
-            Action::Cut => "Cut",
-            Action::Copy => "Copy",
-            Action::Paste => "Paste",
-            Action::SelectLeft => "SelectLeft",
-            Action::SelectRight => "SelectRight",
-            Action::SelectUp => "SelectUp",
-            Action::SelectDown => "SelectDown",
-            Action::SelectAll => "SelectAll",
-            Action::Undo => "Undo",
-            Action::Redo => "Redo",
-            Action::Save => "Save",
-            Action::SaveCopy => "SaveCopy",
-            Action::Open => "Open",
-            Action::EnterEditMode => "EnterEditMode",
-            Action::ExitToPreview => "ExitToPreview",
-            Action::ToggleRawMode => "ToggleRawMode",
-            Action::Quit => "Quit",
-            Action::ToggleCheckbox => "ToggleCheckbox",
-            Action::TableNextCell => "TableNextCell",
-            Action::TablePrevCell => "TablePrevCell",
-            Action::TableNextRow => "TableNextRow",
-            Action::TablePrevRow => "TablePrevRow",
-            Action::TableMoveRowUp => "TableMoveRowUp",
-            Action::TableMoveRowDown => "TableMoveRowDown",
-            Action::TableMoveColumnLeft => "TableMoveColumnLeft",
-            Action::TableMoveColumnRight => "TableMoveColumnRight",
-            Action::TableInsertRowAbove => "TableInsertRowAbove",
-            Action::TableInsertRowBelow => "TableInsertRowBelow",
-            Action::TableInsertColumnLeft => "TableInsertColumnLeft",
-            Action::TableInsertColumnRight => "TableInsertColumnRight",
-            Action::TableDeleteRow => "TableDeleteRow",
-            Action::TableDeleteColumn => "TableDeleteColumn",
-            Action::TableInsertBreak => "TableInsertBreak",
-            Action::FollowLinkUnderCursor => "FollowLinkUnderCursor",
-            Action::OpenGitHub => "OpenGitHub",
-            Action::NavigateBack => "NavigateBack",
-            Action::NavigateForward => "NavigateForward",
-            Action::ShowCheatSheet => "ShowCheatSheet",
-            Action::ShowCommandPalette => "ShowCommandPalette",
-            Action::ShowMarkdownCheatSheet => "ShowMarkdownCheatSheet",
-            Action::OpenSettings => "OpenSettings",
-            Action::OpenKeybinds => "OpenKeybinds",
-            Action::OpenConfigFolder => "OpenConfigFolder",
-            Action::ExportHtml => "ExportHtml",
-            Action::ReloadFromDisk => "ReloadFromDisk",
-            Action::OpenInExternalEditor => "OpenInExternalEditor",
-            Action::ToggleTableButtons => "ToggleTableButtons",
-            Action::InsertTable => "InsertTable",
-        };
-        f.write_str(s)
-    }
+/// Drive `Display for Action` and `FromStr for Action` from a single
+/// list of unit variant names.  Every payload-bearing variant has to
+/// be named explicitly outside the macro: those go into the `Display`
+/// `match` only (FromStr can't reconstruct them without their
+/// payload).
+macro_rules! action_variants {
+    ($( $variant:ident ),* $(,)?) => {
+        impl fmt::Display for Action {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let s: &str = match self {
+                    $( Action::$variant => stringify!($variant), )*
+                    Action::InsertChar(_) => "InsertChar",
+                };
+                f.write_str(s)
+            }
+        }
+
+        impl FromStr for Action {
+            type Err = KeyMapError;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s {
+                    $( stringify!($variant) => Ok(Action::$variant), )*
+                    other => Err(KeyMapError::UnknownAction(other.to_owned())),
+                }
+            }
+        }
+    };
 }
 
-impl FromStr for Action {
-    type Err = KeyMapError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "ScrollUp" => Ok(Action::ScrollUp),
-            "ScrollDown" => Ok(Action::ScrollDown),
-            "ScrollPageUp" => Ok(Action::ScrollPageUp),
-            "ScrollPageDown" => Ok(Action::ScrollPageDown),
-            "ScrollToTop" => Ok(Action::ScrollToTop),
-            "ScrollToBottom" => Ok(Action::ScrollToBottom),
-            "MoveLeft" => Ok(Action::MoveLeft),
-            "MoveRight" => Ok(Action::MoveRight),
-            "MoveUp" => Ok(Action::MoveUp),
-            "MoveDown" => Ok(Action::MoveDown),
-            "MoveWordLeft" => Ok(Action::MoveWordLeft),
-            "MoveWordRight" => Ok(Action::MoveWordRight),
-            "MoveLineStart" => Ok(Action::MoveLineStart),
-            "MoveLineEnd" => Ok(Action::MoveLineEnd),
-            "MoveDocStart" => Ok(Action::MoveDocStart),
-            "MoveDocEnd" => Ok(Action::MoveDocEnd),
-            "InsertTab" => Ok(Action::InsertTab),
-            "Newline" => Ok(Action::Newline),
-            "DeleteCharBack" => Ok(Action::DeleteCharBack),
-            "DeleteCharForward" => Ok(Action::DeleteCharForward),
-            "DeleteWordBack" => Ok(Action::DeleteWordBack),
-            "DeleteWordForward" => Ok(Action::DeleteWordForward),
-            "DeleteLine" => Ok(Action::DeleteLine),
-            "Cut" => Ok(Action::Cut),
-            "Copy" => Ok(Action::Copy),
-            "Paste" => Ok(Action::Paste),
-            "SelectLeft" => Ok(Action::SelectLeft),
-            "SelectRight" => Ok(Action::SelectRight),
-            "SelectUp" => Ok(Action::SelectUp),
-            "SelectDown" => Ok(Action::SelectDown),
-            "SelectAll" => Ok(Action::SelectAll),
-            "Undo" => Ok(Action::Undo),
-            "Redo" => Ok(Action::Redo),
-            "Save" => Ok(Action::Save),
-            "SaveCopy" => Ok(Action::SaveCopy),
-            "Open" => Ok(Action::Open),
-            "EnterEditMode" => Ok(Action::EnterEditMode),
-            "ExitToPreview" => Ok(Action::ExitToPreview),
-            "ToggleRawMode" => Ok(Action::ToggleRawMode),
-            "Quit" => Ok(Action::Quit),
-            "ToggleCheckbox" => Ok(Action::ToggleCheckbox),
-            "TableNextCell" => Ok(Action::TableNextCell),
-            "TablePrevCell" => Ok(Action::TablePrevCell),
-            "TableNextRow" => Ok(Action::TableNextRow),
-            "TablePrevRow" => Ok(Action::TablePrevRow),
-            "TableMoveRowUp" => Ok(Action::TableMoveRowUp),
-            "TableMoveRowDown" => Ok(Action::TableMoveRowDown),
-            "TableMoveColumnLeft" => Ok(Action::TableMoveColumnLeft),
-            "TableMoveColumnRight" => Ok(Action::TableMoveColumnRight),
-            "TableInsertRowAbove" => Ok(Action::TableInsertRowAbove),
-            "TableInsertRowBelow" => Ok(Action::TableInsertRowBelow),
-            "TableInsertColumnLeft" => Ok(Action::TableInsertColumnLeft),
-            "TableInsertColumnRight" => Ok(Action::TableInsertColumnRight),
-            "TableDeleteRow" => Ok(Action::TableDeleteRow),
-            "TableDeleteColumn" => Ok(Action::TableDeleteColumn),
-            "TableInsertBreak" => Ok(Action::TableInsertBreak),
-            "FollowLinkUnderCursor" => Ok(Action::FollowLinkUnderCursor),
-            "NavigateBack" => Ok(Action::NavigateBack),
-            "NavigateForward" => Ok(Action::NavigateForward),
-            "ShowCheatSheet" => Ok(Action::ShowCheatSheet),
-            "ShowCommandPalette" => Ok(Action::ShowCommandPalette),
-            "ShowMarkdownCheatSheet" => Ok(Action::ShowMarkdownCheatSheet),
-            "OpenSettings" => Ok(Action::OpenSettings),
-            "OpenKeybinds" => Ok(Action::OpenKeybinds),
-            "OpenConfigFolder" => Ok(Action::OpenConfigFolder),
-            "ExportHtml" => Ok(Action::ExportHtml),
-            "ReloadFromDisk" => Ok(Action::ReloadFromDisk),
-            "OpenInExternalEditor" => Ok(Action::OpenInExternalEditor),
-            "ToggleTableButtons" => Ok(Action::ToggleTableButtons),
-            "InsertTable" => Ok(Action::InsertTable),
-            "OpenGitHub" => Ok(Action::OpenGitHub),
-            other => Err(KeyMapError::UnknownAction(other.to_owned())),
-        }
-    }
+action_variants! {
+    ScrollUp, ScrollDown, ScrollPageUp, ScrollPageDown, ScrollToTop, ScrollToBottom,
+    MoveLeft, MoveRight, MoveUp, MoveDown,
+    MoveWordLeft, MoveWordRight,
+    MoveLineStart, MoveLineEnd,
+    MoveDocStart, MoveDocEnd,
+    InsertTab, Newline,
+    DeleteCharBack, DeleteCharForward, DeleteWordBack, DeleteWordForward, DeleteLine,
+    Cut, Copy, Paste,
+    SelectLeft, SelectRight, SelectUp, SelectDown, SelectAll,
+    Undo, Redo,
+    Save, SaveCopy, Open,
+    EnterEditMode, ExitToPreview, ToggleRawMode, Quit,
+    ToggleCheckbox,
+    TableNextCell, TablePrevCell, TableNextRow, TablePrevRow,
+    TableMoveRowUp, TableMoveRowDown, TableMoveColumnLeft, TableMoveColumnRight,
+    TableInsertRowAbove, TableInsertRowBelow,
+    TableInsertColumnLeft, TableInsertColumnRight,
+    TableDeleteRow, TableDeleteColumn,
+    TableInsertBreak,
+    FollowLinkUnderCursor, OpenGitHub,
+    NavigateBack, NavigateForward,
+    ShowCheatSheet, ShowCommandPalette, ShowMarkdownCheatSheet,
+    OpenSettings, OpenKeybinds, OpenConfigFolder,
+    ExportHtml, ReloadFromDisk, OpenInExternalEditor,
+    ToggleTableButtons, InsertTable,
 }
 
 // ─── Key parsing ─────────────────────────────────────────────────────────────

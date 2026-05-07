@@ -1,5 +1,7 @@
 pub mod bottom_region;
+pub mod button_row;
 pub mod command_palette;
+pub mod content_width;
 pub mod editor_view;
 pub mod image_view;
 pub mod insert_table_modal;
@@ -8,6 +10,8 @@ pub mod line_render;
 pub mod link_view;
 pub mod markdown_cheat_sheet;
 pub mod modal;
+pub mod modal_row;
+pub mod overlay_nav;
 pub mod preview;
 pub mod raw_view;
 pub mod rendered_view;
