@@ -68,125 +68,41 @@ where
         match events.peek() {
             None | Some(Event::End(_)) => break,
 
-            // ── Paragraph ────────────────────────────────────────────
             Some(Event::Start(Tag::Paragraph)) => {
-                events.next();
-                let inlines = parse_inlines(events);
-                consume_end(events);
-                if !inlines.is_empty() {
-                    blocks.push(Block::Paragraph { inlines });
+                if let Some(b) = parse_paragraph_block(events) {
+                    blocks.push(b);
                 }
             }
-
-            // ── Headings ─────────────────────────────────────────────
-            Some(Event::Start(Tag::Heading { .. })) => {
-                let level = match events.next() {
-                    Some(Event::Start(Tag::Heading { level, .. })) => level,
-                    _ => break,
-                };
-                let inlines = parse_inlines(events);
-                consume_end(events);
-                blocks.push(Block::Heading { level, inlines });
-            }
-
-            // ── Block quote ──────────────────────────────────────────
+            Some(Event::Start(Tag::Heading { .. })) => match parse_heading_block(events) {
+                Some(b) => blocks.push(b),
+                None => break,
+            },
             Some(Event::Start(Tag::BlockQuote(_))) => {
-                events.next();
-                let inner = parse_blocks(events);
-                consume_end(events);
-                blocks.push(Block::BlockQuote { blocks: inner });
+                blocks.push(parse_blockquote_block(events));
             }
-
-            // ── Fenced / indented code block ─────────────────────────
             Some(Event::Start(Tag::CodeBlock(_))) => {
-                let language = match events.next() {
-                    Some(Event::Start(Tag::CodeBlock(kind))) => match kind {
-                        CodeBlockKind::Fenced(lang) => {
-                            let s = lang.as_ref().trim().to_owned();
-                            if s.is_empty() {
-                                None
-                            } else {
-                                Some(s)
-                            }
-                        }
-                        CodeBlockKind::Indented => None,
-                    },
-                    _ => None,
-                };
-                let content = collect_text_until_end(events);
-                blocks.push(Block::CodeBlock { language, content });
+                blocks.push(parse_code_block(events));
             }
-
-            // ── List ─────────────────────────────────────────────────
             Some(Event::Start(Tag::List(_))) => {
-                let start = match events.next() {
-                    Some(Event::Start(Tag::List(s))) => s,
-                    _ => None,
-                };
-                let items = parse_list_items(events);
-                consume_end(events);
-                blocks.push(Block::List {
-                    ordered: start.is_some(),
-                    start,
-                    items,
-                });
+                blocks.push(parse_list_block(events));
             }
-
-            // ── GFM table ────────────────────────────────────────────
             Some(Event::Start(Tag::Table(_))) => {
-                events.next();
-                let (headers, rows, col_count) = parse_table(events);
-                consume_end(events);
-                blocks.push(Block::Table {
-                    col_count,
-                    headers,
-                    rows,
-                    user_widths: None,
-                });
+                blocks.push(parse_table_block(events));
             }
-
-            // ── Horizontal rule ──────────────────────────────────────
             Some(Event::Rule) => {
                 events.next();
                 blocks.push(Block::HorizontalRule);
             }
-
-            // ── Raw HTML block ───────────────────────────────────────
-            // pulldown-cmark 0.11+ wraps HTML blocks in Start(HtmlBlock) /
-            // End(HtmlBlock) around one-or-more Html(...) events.  Consume
-            // the wrapper so the outer loop's `End(_) => break` doesn't
-            // swallow the rest of the document when content follows an HTML
-            // block (e.g. a persisted `<!-- tui-columns: ... -->` comment
-            // between a table and subsequent paragraphs).
             Some(Event::Start(Tag::HtmlBlock)) => {
-                events.next();
-                let mut body = String::new();
-                loop {
-                    match events.peek() {
-                        None => break,
-                        Some(Event::End(TagEnd::HtmlBlock)) => {
-                            events.next();
-                            break;
-                        }
-                        _ => match events.next() {
-                            Some(Event::Html(h)) => body.push_str(&h),
-                            Some(Event::Text(t)) => body.push_str(&t),
-                            Some(_) | None => {}
-                        },
-                    }
-                }
-                blocks.push(Block::Html(body));
+                blocks.push(parse_html_block(events));
             }
-
-            // Bare HTML event (pulldown-cmark < 0.11 compatibility path).
             Some(Event::Html(_)) => {
                 if let Some(Event::Html(html)) = events.next() {
                     blocks.push(Block::Html(html.into_string()));
                 }
             }
 
-            // ── Inline content at block level ────────────────────────
-            // This happens in tight lists: pulldown-cmark emits Text/Code
+            // Inline content at block level: tight lists emit Text/Code
             // directly inside Item without a Paragraph wrapper.
             Some(Event::Text(_))
             | Some(Event::Code(_))
@@ -211,6 +127,130 @@ where
     }
 
     blocks
+}
+
+/// Consume `Start(Paragraph) … End(Paragraph)` and return the resulting
+/// `Block::Paragraph`.  Empty paragraphs (only soft breaks etc.) collapse
+/// to `None` so `parse_blocks` doesn't push a noise entry.
+fn parse_paragraph_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Option<Block>
+where
+    I: Iterator<Item = Event<'a>>,
+{
+    events.next();
+    let inlines = parse_inlines(events);
+    consume_end(events);
+    if inlines.is_empty() {
+        None
+    } else {
+        Some(Block::Paragraph { inlines })
+    }
+}
+
+/// Consume `Start(Heading { level, .. }) … End(Heading)`.  Returns `None`
+/// only when the peeked event was lying about being a heading (defensive
+/// — should never happen against a well-formed pulldown-cmark stream).
+fn parse_heading_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Option<Block>
+where
+    I: Iterator<Item = Event<'a>>,
+{
+    let level = match events.next()? {
+        Event::Start(Tag::Heading { level, .. }) => level,
+        _ => return None,
+    };
+    let inlines = parse_inlines(events);
+    consume_end(events);
+    Some(Block::Heading { level, inlines })
+}
+
+fn parse_blockquote_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block
+where
+    I: Iterator<Item = Event<'a>>,
+{
+    events.next();
+    let inner = parse_blocks(events);
+    consume_end(events);
+    Block::BlockQuote { blocks: inner }
+}
+
+fn parse_code_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block
+where
+    I: Iterator<Item = Event<'a>>,
+{
+    let language = match events.next() {
+        Some(Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang)))) => {
+            let s = lang.as_ref().trim().to_owned();
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        }
+        Some(Event::Start(Tag::CodeBlock(CodeBlockKind::Indented))) => None,
+        _ => None,
+    };
+    let content = collect_text_until_end(events);
+    Block::CodeBlock { language, content }
+}
+
+fn parse_list_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block
+where
+    I: Iterator<Item = Event<'a>>,
+{
+    let start = match events.next() {
+        Some(Event::Start(Tag::List(s))) => s,
+        _ => None,
+    };
+    let items = parse_list_items(events);
+    consume_end(events);
+    Block::List {
+        ordered: start.is_some(),
+        start,
+        items,
+    }
+}
+
+fn parse_table_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block
+where
+    I: Iterator<Item = Event<'a>>,
+{
+    events.next();
+    let (headers, rows, col_count) = parse_table(events);
+    consume_end(events);
+    Block::Table {
+        col_count,
+        headers,
+        rows,
+        user_widths: None,
+    }
+}
+
+/// pulldown-cmark 0.11+ wraps HTML blocks in `Start(HtmlBlock)` /
+/// `End(HtmlBlock)` around one-or-more `Html(...)` events.  Consume the
+/// wrapper so the outer loop's `End(_) => break` doesn't swallow the rest
+/// of the document when content follows an HTML block (e.g. a persisted
+/// `<!-- tui-columns: ... -->` comment between a table and subsequent
+/// paragraphs).
+fn parse_html_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block
+where
+    I: Iterator<Item = Event<'a>>,
+{
+    events.next();
+    let mut body = String::new();
+    loop {
+        match events.peek() {
+            None => break,
+            Some(Event::End(TagEnd::HtmlBlock)) => {
+                events.next();
+                break;
+            }
+            _ => match events.next() {
+                Some(Event::Html(h)) => body.push_str(&h),
+                Some(Event::Text(t)) => body.push_str(&t),
+                Some(_) | None => {}
+            },
+        }
+    }
+    Block::Html(body)
 }
 
 // ─── List parsing ─────────────────────────────────────────────────────────────

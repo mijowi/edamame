@@ -4,6 +4,7 @@ use crate::editor::table_edit;
 use crate::editor::{EditorState, Mode};
 use crate::markdown::table_layout;
 use crate::ui::line_render;
+use crate::ui::table_view::HEADER_ROWS;
 
 /// Look up the rendered `Line` and the visual column within it that
 /// correspond to document-area row `row`.  Accounts for scroll and wrap; the
@@ -188,190 +189,217 @@ pub fn rendered_sub_line_to_offset(
 ) -> usize {
     let buffer_len = state.buffer.len_chars();
     let source = state.buffer.contents();
-    let Some(block_start_byte) = state
-        .parsed
-        .source_map
-        .original_byte_for_rendered_line(rendered_line_idx)
-    else {
+    let Some(block) = locate_block(state, rendered_line_idx) else {
         return buffer_len;
     };
-    let Some(block_range) = state
-        .parsed
-        .source_map
-        .original_range_for_byte(block_start_byte)
-    else {
-        return buffer_len;
-    };
-    let block_end = block_range.end.min(source.len());
-    // Tolerate stale source-map ranges that land mid-grapheme: when a
-    // pending in-line edit has shifted byte offsets after the cursor,
-    // direct slicing would panic at the char-boundary check.  Mouse
-    // dispatch flushes the parse before reaching here so the empty-
-    // string fallback is defence-in-depth, not the routine path.
-    let block_text = source.get(block_range.start..block_end).unwrap_or("");
+    let block_text = source
+        .get(block.range.start..block.range.end.min(source.len()))
+        .unwrap_or("");
 
-    // How deep into the block's rendered lines did we click?
-    let rendered_span = state
-        .parsed
-        .source_map
-        .rendered_lines_for_byte(block_start_byte);
-    let sub_idx_in_block = rendered_line_idx.saturating_sub(rendered_span.start);
-
-    // Table click → raw-row index.  Phase 13: classify the rendered
-    // sub-line by leading box-drawing glyph instead of relying on a
-    // fixed alternating-line pattern, since data rows may now span
-    // multiple rendered lines after cell-wrap.
     let is_table = table_edit::is_table_block(block_text);
     let raw_line_idx = if is_table {
-        let block_lines = state
-            .parsed
-            .lines
-            .get(rendered_span.start..rendered_span.end.min(state.parsed.lines.len()))
-            .unwrap_or(&[]);
-        let kinds = crate::ui::table_view::classify_table_sub_lines(block_lines);
-        match kinds.get(sub_idx_in_block) {
-            Some(crate::ui::table_view::TableSubLineKind::TopBorder)
-            | Some(crate::ui::table_view::TableSubLineKind::Header { .. }) => 0, // header line
-            Some(crate::ui::table_view::TableSubLineKind::ThickSeparator) => 2, // alignment-row → first data row
-            Some(crate::ui::table_view::TableSubLineKind::DataRow { row, .. }) => row + 2,
-            Some(crate::ui::table_view::TableSubLineKind::ThinSeparator) => {
-                // A separator click snaps to the data row immediately
-                // preceding it.  Walk back through `kinds` to find it.
-                let mut row = 0usize;
-                for k in &kinds[..sub_idx_in_block] {
-                    if let crate::ui::table_view::TableSubLineKind::DataRow { row: r, .. } = k {
-                        row = *r;
-                    }
-                }
-                row + 2
-            }
-            Some(crate::ui::table_view::TableSubLineKind::BottomBorder) | None => {
-                // Bottom border or out-of-range — snap to the last data
-                // row.  Total data rows = info.rows.len() - 2 (header +
-                // alignment).  Tables always have at least one data row
-                // for `is_table_block` to be true.
-                let last_data = block_text.split('\n').count().saturating_sub(2);
-                last_data.max(2)
-            }
-        }
+        table_raw_line_idx(state, &block, block_text)
     } else {
-        sub_idx_in_block
+        block.sub_idx
     };
 
     // Blank-line "virtual blocks" have no content.  The renderer produces
     // a single empty line for them; place the cursor at block start.
     if block_text.is_empty() {
-        return state.buffer.rope().byte_to_char(block_range.start);
+        return state.buffer.rope().byte_to_char(block.range.start);
     }
 
-    // Walk raw source lines to find the byte start of the target raw line.
+    let (line_byte_start, line_byte_end) = raw_line_byte_range(block_text, raw_line_idx);
+    let line_text = &block_text[line_byte_start..line_byte_end];
+    let rendered_line = &state.parsed.lines[rendered_line_idx];
+
+    let raw_col = if is_table && rendered_line.spans.iter().any(|s| s.content.contains('│')) {
+        // Tables: rendered cells are padded to layout width, so a simple col
+        // → char mapping lands clicks on the wrong cell whenever the
+        // rendered cell is wider than its raw counterpart.  Map through the
+        // pipe positions instead so the click stays inside the cell the
+        // user clicked on.
+        let row_width = line_row_width(rendered_line, sub_row_within_line);
+        let clamped_col = col.min(row_width);
+        table_click_to_raw_col(line_text, rendered_line, clamped_col).unwrap_or(clamped_col)
+    } else {
+        non_table_click_to_raw_col(
+            rendered_line,
+            line_text,
+            col,
+            sub_row_within_line,
+            viewport_width,
+        )
+    };
+
+    raw_col_to_buffer_char(state, &block, line_byte_start, line_text, raw_col)
+}
+
+/// Resolved location of the block that produced a rendered line: byte
+/// range in the source, the rendered-line range the block occupies, and
+/// the click's offset within those rendered lines.
+struct BlockLocation {
+    range: std::ops::Range<usize>,
+    rendered_span: std::ops::Range<usize>,
+    sub_idx: usize,
+}
+
+/// Look up the source block that owns `rendered_line_idx`.  Returns `None`
+/// when the rendered line is past the document's source map (off-by-one
+/// during a pending edit, etc.).
+fn locate_block(state: &EditorState, rendered_line_idx: usize) -> Option<BlockLocation> {
+    let block_start_byte = state
+        .parsed
+        .source_map
+        .original_byte_for_rendered_line(rendered_line_idx)?;
+    let range = state
+        .parsed
+        .source_map
+        .original_range_for_byte(block_start_byte)?;
+    let rendered_span = state
+        .parsed
+        .source_map
+        .rendered_lines_for_byte(block_start_byte);
+    let sub_idx = rendered_line_idx.saturating_sub(rendered_span.start);
+    Some(BlockLocation {
+        range,
+        rendered_span,
+        sub_idx,
+    })
+}
+
+/// Translate a click on a table block's rendered sub-line to the raw
+/// `info.rows[..]` row index.  Classifies the rendered line by its
+/// leading box-drawing glyph rather than the alternating-line pattern,
+/// because data rows may span multiple rendered lines after cell-wrap.
+fn table_raw_line_idx(state: &EditorState, block: &BlockLocation, block_text: &str) -> usize {
+    use crate::ui::table_view::TableSubLineKind;
+    let block_lines = state
+        .parsed
+        .lines
+        .get(block.rendered_span.start..block.rendered_span.end.min(state.parsed.lines.len()))
+        .unwrap_or(&[]);
+    let kinds = crate::ui::table_view::classify_table_sub_lines(block_lines);
+    match kinds.get(block.sub_idx) {
+        Some(TableSubLineKind::TopBorder) | Some(TableSubLineKind::Header { .. }) => 0,
+        Some(TableSubLineKind::ThickSeparator) => HEADER_ROWS,
+        Some(TableSubLineKind::DataRow { row, .. }) => row + HEADER_ROWS,
+        Some(TableSubLineKind::ThinSeparator) => {
+            // A separator click snaps to the data row immediately
+            // preceding it.  Walk back through `kinds` to find it.
+            let row = kinds[..block.sub_idx]
+                .iter()
+                .rev()
+                .find_map(|k| {
+                    if let TableSubLineKind::DataRow { row, .. } = k {
+                        Some(*row)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
+            row + HEADER_ROWS
+        }
+        Some(TableSubLineKind::BottomBorder) | None => {
+            // Bottom border or out-of-range — snap to the last data
+            // row.  Total data rows = info.rows.len() - HEADER_ROWS
+            // (header + alignment).  Tables always have at least one
+            // data row for `is_table_block` to be true.
+            let last_data = block_text.split('\n').count().saturating_sub(HEADER_ROWS);
+            last_data.max(HEADER_ROWS)
+        }
+    }
+}
+
+/// Byte range `[start..end)` within `block_text` of raw line `raw_line_idx`,
+/// clamped to the block's last line if `raw_line_idx` exceeds the block.
+fn raw_line_byte_range(block_text: &str, raw_line_idx: usize) -> (usize, usize) {
     let mut byte_cursor = 0usize;
-    let mut line_byte_start = 0usize;
-    let mut line_byte_end = block_text.len();
-    let mut found_idx = 0usize;
     for (i, line) in block_text.split('\n').enumerate() {
         if i == raw_line_idx {
-            line_byte_start = byte_cursor;
-            line_byte_end = byte_cursor + line.len();
-            found_idx = i;
-            break;
+            return (byte_cursor, byte_cursor + line.len());
         }
         byte_cursor += line.len() + 1;
         if byte_cursor >= block_text.len() {
             // Clamp when raw_line_idx points past the block's last line.
-            line_byte_start = byte_cursor.saturating_sub(line.len() + 1);
-            line_byte_end = block_text.len();
-            found_idx = i;
-            break;
+            return (byte_cursor.saturating_sub(line.len() + 1), block_text.len());
         }
     }
-    let line_text = &block_text[line_byte_start..line_byte_end];
-    let rendered_line = &state.parsed.lines[rendered_line_idx];
+    (0, block_text.len())
+}
 
-    // Tables: rendered cells are padded to layout width, so a simple col →
-    // char mapping lands clicks on the wrong cell whenever the rendered cell
-    // is wider than its raw counterpart.  Map through the pipe positions
-    // instead so the click stays inside the cell the user clicked on.
-    let raw_col = if is_table && rendered_line.spans.iter().any(|s| s.content.contains('│')) {
-        let row_width = line_row_width(rendered_line, sub_row_within_line);
-        let clamped_col = col.min(row_width);
-        if let Some(c) = table_click_to_raw_col(line_text, rendered_line, clamped_col) {
-            c
-        } else {
-            clamped_col
-        }
+/// Non-table click: walk the rendered line's wrap layout to find which
+/// sub-row the click landed on, translate the click's cell column into a
+/// char position using the cell-aware mapping (wide-char snap-past,
+/// hanging-indent forbidden zone), then map that rendered char back to a
+/// raw char column on `line_text`.  Falls back to the 1:1 column mapping
+/// when the rendered→raw map's length doesn't match the line's actual
+/// rendered char count (headings/lists/blockquotes have prefix glyphs the
+/// map doesn't model).
+fn non_table_click_to_raw_col(
+    rendered_line: &Line<'_>,
+    line_text: &str,
+    col: usize,
+    sub_row_within_line: usize,
+    viewport_width: usize,
+) -> usize {
+    let indent = line_render::compute_hanging_indent(rendered_line);
+    let rendered_chars: Vec<(char, ratatui::style::Style)> = rendered_line
+        .spans
+        .iter()
+        .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
+        .collect();
+    let viewport = viewport_width.max(1);
+    let rows = line_render::visual_rows_of_chars(&rendered_chars, viewport, indent);
+    let sub = sub_row_within_line.min(rows.len().saturating_sub(1));
+    let (start, end, next_start) = rows.get(sub).copied().unwrap_or((0, 0, 0));
+    let row_indent = if sub == 0 { 0 } else { indent };
+    let is_last_row = sub + 1 == rows.len();
+    let max_in_row = if is_last_row {
+        end
     } else {
-        // Non-table click: walk the rendered line's wrap layout to find
-        // which sub-row the click landed on, then translate the click's
-        // cell column into a char position using the cell-aware mapping
-        // (wide-char snap-past, hanging-indent forbidden zone).  Falls
-        // back to row 0 if the rendered line had fewer wrap rows than the
-        // sub_row_within_line we were told.
-        let indent = line_render::compute_hanging_indent(rendered_line);
-        let rendered_chars: Vec<(char, ratatui::style::Style)> = rendered_line
-            .spans
-            .iter()
-            .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
-            .collect();
-        let viewport = viewport_width.max(1);
-        let rows = line_render::visual_rows_of_chars(&rendered_chars, viewport, indent);
-        let sub = sub_row_within_line.min(rows.len().saturating_sub(1));
-        let (start, end, next_start) = rows.get(sub).copied().unwrap_or((0, 0, 0));
-        let row_indent = if sub == 0 { 0 } else { indent };
-        let is_last_row = sub + 1 == rows.len();
-        let max_in_row = if is_last_row {
-            end
-        } else {
-            next_start.saturating_sub(1).max(start)
-        };
-        let row_chars = rendered_chars
-            .iter()
-            .skip(start)
-            .take(end - start)
-            .map(|(c, _)| *c);
-        let in_row = line_render::char_idx_at_cell_col(row_chars, col, row_indent);
-        let rendered_idx = (start + in_row).min(max_in_row);
-
-        // Translate the rendered char index back to a raw char column on
-        // `line_text`.  For lines whose rendered form drops or transforms
-        // syntax characters (links, code spans), the rendered→raw map
-        // makes the cursor land where the user clicked rather than at the
-        // matching rendered char's *position* in the raw text.  When the
-        // map's rendered length doesn't match the line's actual rendered
-        // length (headings/lists/blockquotes have prefix glyphs the map
-        // doesn't model) we fall back to the 1:1 column mapping that's
-        // been in use since Phase 5.
-        let actual_rendered_count = rendered_chars.len();
-        let map = rendered_to_raw_char_map(line_text);
-        if map.len().saturating_sub(1) == actual_rendered_count {
-            map.get(rendered_idx)
-                .copied()
-                .unwrap_or_else(|| line_text.chars().count())
-        } else {
-            rendered_idx
-        }
+        next_start.saturating_sub(1).max(start)
     };
+    let row_chars = rendered_chars
+        .iter()
+        .skip(start)
+        .take(end - start)
+        .map(|(c, _)| *c);
+    let in_row = line_render::char_idx_at_cell_col(row_chars, col, row_indent);
+    let rendered_idx = (start + in_row).min(max_in_row);
 
-    // Advance `raw_col` chars into the raw line.
+    let actual_rendered_count = rendered_chars.len();
+    let map = rendered_to_raw_char_map(line_text);
+    if map.len().saturating_sub(1) == actual_rendered_count {
+        map.get(rendered_idx)
+            .copied()
+            .unwrap_or_else(|| line_text.chars().count())
+    } else {
+        rendered_idx
+    }
+}
+
+/// Convert `raw_col` (a char column on `line_text`) to a buffer-wide char
+/// offset, clamped to the buffer length.
+fn raw_col_to_buffer_char(
+    state: &EditorState,
+    block: &BlockLocation,
+    line_byte_start: usize,
+    line_text: &str,
+    raw_col: usize,
+) -> usize {
     let line_char_count = line_text.chars().count();
     let raw_col = raw_col.min(line_char_count);
-    let mut byte_offset_in_line = 0usize;
-    for (char_idx, ch) in line_text.chars().enumerate() {
-        if char_idx == raw_col {
-            break;
-        }
-        byte_offset_in_line += ch.len_utf8();
-    }
-    let max_byte_in_line = line_text.len();
-    let byte_in_block = line_byte_start + byte_offset_in_line.min(max_byte_in_line);
-    let absolute_byte = block_range.start + byte_in_block.min(block_text.len());
-
-    let _ = found_idx;
+    let byte_offset_in_line: usize = line_text.chars().take(raw_col).map(char::len_utf8).sum();
+    let byte_in_block = line_byte_start + byte_offset_in_line.min(line_text.len());
+    let block_text_len = block.range.end.saturating_sub(block.range.start);
+    let absolute_byte = block.range.start + byte_in_block.min(block_text_len);
+    let source_len = state.buffer.contents().len();
     state
         .buffer
         .rope()
-        .byte_to_char(absolute_byte.min(source.len()))
-        .min(buffer_len)
+        .byte_to_char(absolute_byte.min(source_len))
+        .min(state.buffer.len_chars())
 }
 
 /// Cell-aware mapping from a rendered column to a raw column for table rows.
@@ -530,88 +558,22 @@ pub fn paragraph_raw_col_to_rendered_col(
 pub(super) fn rendered_to_raw_char_map(raw_line: &str) -> Vec<usize> {
     use pulldown_cmark::{Event, Options, Parser};
 
-    // Build a byte→char index lookup so events can report their offsets
-    // in raw bytes (pulldown-cmark's native unit) and we can translate
-    // those back to char indices that our caller and `line_text` work
-    // in.  The trailing `byte_to_char[raw_line.len()] = total_chars`
-    // entry covers the past-end sentinel.
-    let mut byte_to_char = vec![0usize; raw_line.len() + 1];
-    let mut char_idx = 0usize;
-    for (byte_idx, _) in raw_line.char_indices() {
-        byte_to_char[byte_idx] = char_idx;
-        char_idx += 1;
-    }
-    byte_to_char[raw_line.len()] = char_idx;
-    let total_chars = char_idx;
-
+    let mut walk = CharMapWalk::new(raw_line);
     let opts = Options::ENABLE_TABLES
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_SMART_PUNCTUATION;
-
-    let mut map: Vec<usize> = Vec::new();
-
     for (event, range) in Parser::new_ext(raw_line, opts).into_offset_iter() {
-        let lookup = |byte: usize| {
-            byte_to_char
-                .get(byte.min(byte_to_char.len().saturating_sub(1)))
-                .copied()
-                .unwrap_or(total_chars)
-        };
-
         match event {
-            Event::Text(_s) => {
-                let slice_end = range.end.min(raw_line.len());
-                let raw_slice = &raw_line[range.start..slice_end];
-                let mut byte_cursor = range.start;
-                let mut rest = raw_slice;
-                loop {
-                    match rest.find("==") {
-                        None => break,
-                        Some(start) => {
-                            let after_open = &rest[start + 2..];
-                            match after_open.find("==") {
-                                None => break,
-                                Some(rel_end) => {
-                                    for c in rest[..start].chars() {
-                                        map.push(lookup(byte_cursor));
-                                        byte_cursor += c.len_utf8();
-                                    }
-                                    byte_cursor += 2; // skip opening ==
-                                    for c in after_open[..rel_end].chars() {
-                                        map.push(lookup(byte_cursor));
-                                        byte_cursor += c.len_utf8();
-                                    }
-                                    byte_cursor += 2; // skip closing ==
-                                    rest = &after_open[rel_end + 2..];
-                                }
-                            }
-                        }
-                    }
-                }
-                for c in rest.chars() {
-                    map.push(lookup(byte_cursor));
-                    byte_cursor += c.len_utf8();
-                }
-            }
+            Event::Text(_) => walk.push_text(raw_line, range),
             // Code spans render as `" <inner> "` — the opening and closing
             // backticks become surrounding spaces.  Map the leading space
             // to the opening backtick, the inner text 1:1, and the
             // trailing space to the closing backtick.
-            Event::Code(s) => {
-                map.push(lookup(range.start));
-                let mut byte = range.start + 1;
-                for c in s.chars() {
-                    map.push(lookup(byte));
-                    byte += c.len_utf8();
-                }
-                map.push(lookup(range.end.saturating_sub(1)));
-            }
+            Event::Code(s) => walk.push_code(&s, range),
             // Soft- and hard-breaks render as a single space character.
-            Event::SoftBreak | Event::HardBreak => {
-                map.push(lookup(range.start));
-            }
+            Event::SoftBreak | Event::HardBreak => walk.push_break(range.start),
             // Inline tags (`Strong`, `Emphasis`, `Strikethrough`, `Link`)
             // are handled implicitly: their inner `Text` events walk the
             // content, while the marker bytes (`**`, `*`, `~~`, `[`,
@@ -620,7 +582,93 @@ pub(super) fn rendered_to_raw_char_map(raw_line: &str) -> Vec<usize> {
             _ => {}
         }
     }
+    walk.finish()
+}
 
-    map.push(total_chars);
-    map
+/// Helper that accumulates the rendered→raw char map by translating raw
+/// byte offsets (pulldown-cmark's native unit) back into char indices on
+/// `raw_line`.  Encapsulates the byte→char lookup table and the running
+/// rendered-char counter so the per-event walk in
+/// `rendered_to_raw_char_map` reads as a sequence of named steps.
+struct CharMapWalk {
+    /// `byte_to_char[i]` is the char index that begins at byte `i`.
+    /// `byte_to_char[raw_line.len()] = total_chars` is the past-end
+    /// sentinel so a click past the rendered end maps to the line's raw
+    /// end.
+    byte_to_char: Vec<usize>,
+    total_chars: usize,
+    map: Vec<usize>,
+}
+
+impl CharMapWalk {
+    fn new(raw_line: &str) -> Self {
+        let mut byte_to_char = vec![0usize; raw_line.len() + 1];
+        let mut char_idx = 0usize;
+        for (byte_idx, _) in raw_line.char_indices() {
+            byte_to_char[byte_idx] = char_idx;
+            char_idx += 1;
+        }
+        byte_to_char[raw_line.len()] = char_idx;
+        Self {
+            byte_to_char,
+            total_chars: char_idx,
+            map: Vec::new(),
+        }
+    }
+
+    fn lookup(&self, byte: usize) -> usize {
+        self.byte_to_char
+            .get(byte.min(self.byte_to_char.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or(self.total_chars)
+    }
+
+    /// Push every char of `text` (each spanning `len_utf8` bytes), starting
+    /// at raw byte `byte`.  Returns the byte offset just past the slice.
+    fn push_chars(&mut self, text: &str, mut byte: usize) -> usize {
+        for c in text.chars() {
+            self.map.push(self.lookup(byte));
+            byte += c.len_utf8();
+        }
+        byte
+    }
+
+    /// Push a `Text` event's chars into the map.  pulldown-cmark doesn't
+    /// know about `==highlight==` spans, so split them out manually:
+    /// content outside `==…==` and inside `==…==` both map 1:1, while the
+    /// `==` markers themselves are skipped (they sit in the gaps that
+    /// rendered chars don't cover).
+    fn push_text(&mut self, raw_line: &str, range: std::ops::Range<usize>) {
+        let slice_end = range.end.min(raw_line.len());
+        let raw_slice = &raw_line[range.start..slice_end];
+        let mut byte = range.start;
+        let mut rest = raw_slice;
+        while let Some(start) = rest.find("==") {
+            let after_open = &rest[start + 2..];
+            let Some(rel_end) = after_open.find("==") else {
+                break;
+            };
+            byte = self.push_chars(&rest[..start], byte);
+            byte += 2; // skip opening ==
+            byte = self.push_chars(&after_open[..rel_end], byte);
+            byte += 2; // skip closing ==
+            rest = &after_open[rel_end + 2..];
+        }
+        self.push_chars(rest, byte);
+    }
+
+    fn push_code(&mut self, inner: &str, range: std::ops::Range<usize>) {
+        self.map.push(self.lookup(range.start));
+        self.push_chars(inner, range.start + 1);
+        self.map.push(self.lookup(range.end.saturating_sub(1)));
+    }
+
+    fn push_break(&mut self, byte: usize) {
+        self.map.push(self.lookup(byte));
+    }
+
+    fn finish(mut self) -> Vec<usize> {
+        self.map.push(self.total_chars);
+        self.map
+    }
 }

@@ -21,22 +21,11 @@ pub(super) struct StyledChar {
     pub(super) style: Style,
 }
 
-/// Wrap a sequence of styled chars into rows of width ≤ `width`,
-/// breaking on whitespace where possible.  A token whose width
-/// exceeds `width` is hard-split at character boundaries.  Mirrors
-/// the algorithm in `table_layout::wrap_cell` but operates on
-/// `StyledChar` so per-char styles are preserved across breaks.
-///
-/// Returns at least one (possibly empty) row.
-pub(super) fn wrap_styled_chars(chars: &[StyledChar], width: usize) -> Vec<Vec<StyledChar>> {
-    if width == 0 {
-        return vec![chars.to_vec()];
-    }
-    if chars.is_empty() {
-        return vec![Vec::new()];
-    }
-
-    // Tokenize into runs of whitespace+word, mirroring `split_soft`.
+/// Tokenize a styled char sequence into runs of leading-whitespace +
+/// non-whitespace, mirroring `split_soft`.  A token always begins with
+/// any whitespace that preceded its non-whitespace tail; chained
+/// whitespace continues the same token until the next word boundary.
+fn tokenize_styled(chars: &[StyledChar]) -> Vec<Vec<StyledChar>> {
     let mut tokens: Vec<Vec<StyledChar>> = Vec::new();
     let mut tok: Vec<StyledChar> = Vec::new();
     let mut in_ws = true;
@@ -55,6 +44,25 @@ pub(super) fn wrap_styled_chars(chars: &[StyledChar], width: usize) -> Vec<Vec<S
     if !tok.is_empty() {
         tokens.push(tok);
     }
+    tokens
+}
+
+/// Wrap a sequence of styled chars into rows of width ≤ `width`,
+/// breaking on whitespace where possible.  A token whose width
+/// exceeds `width` is hard-split at character boundaries.  Mirrors
+/// the algorithm in `table_layout::wrap_cell` but operates on
+/// `StyledChar` so per-char styles are preserved across breaks.
+///
+/// Returns at least one (possibly empty) row.
+pub(super) fn wrap_styled_chars(chars: &[StyledChar], width: usize) -> Vec<Vec<StyledChar>> {
+    if width == 0 {
+        return vec![chars.to_vec()];
+    }
+    if chars.is_empty() {
+        return vec![Vec::new()];
+    }
+
+    let tokens = tokenize_styled(chars);
 
     let mut rows: Vec<Vec<StyledChar>> = Vec::new();
     let mut current: Vec<StyledChar> = Vec::new();

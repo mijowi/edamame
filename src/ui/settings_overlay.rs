@@ -48,6 +48,12 @@ use crate::config::{Config, Theme};
 use crate::ui::content_width::{max_row_width, optional_text_width};
 use crate::ui::modal_row::{format_modal_row, RowLayout};
 use crate::ui::overlay_nav::next_focusable;
+
+/// Width of the label column in the settings overlay (column count of the
+/// padded `{label:<LABEL_PAD$}` slot before the value column begins).
+/// Wide enough to fit the longest setting label without clipping; narrow
+/// enough to leave room for the value on terminals around 80 columns.
+const LABEL_PAD: usize = 28;
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, ContentSize, ScrollContainerState,
 };
@@ -384,21 +390,21 @@ fn build_row_lines<'a>(
             focused,
             editing,
             theme,
-            RowLayout::FixedPad(28),
+            RowLayout::FixedPad(LABEL_PAD),
         ));
     }
     lines
 }
 
-/// Content-aware width: max over rows of `marker(2) + label_pad(28) +
+/// Content-aware width: max over rows of `marker(2) + label_pad +
 /// value_w`, plus the longest description so the pinned-footer copy
 /// doesn't get clipped.  Sizes against the *whole* row set so the
 /// modal width doesn't jiggle as focus moves.
 fn settings_content_width(state: &SettingsState, config: &Config) -> u16 {
+    const FOCUS_MARKER_WIDTH: usize = 2;
     let row_max = max_row_width(&state.rows, |r| {
         let value_w = (r.kind.read)(config, &state.theme_names).chars().count();
-        // 2 marker + 28 label padding + value width
-        2 + 28 + value_w
+        FOCUS_MARKER_WIDTH + LABEL_PAD + value_w
     });
     // 4 = "    " description indent
     let desc_max = max_row_width(&state.rows, |r| {

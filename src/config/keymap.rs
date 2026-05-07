@@ -310,6 +310,71 @@ pub fn parse_key(s: &str) -> Result<KeyEvent, KeyMapError> {
     Ok(KeyEvent::new(code, modifiers))
 }
 
+/// Glyph-style label for a non-character `KeyCode` (compact form used in
+/// the bottom-region hint line).  Returns `None` for `KeyCode::Char` —
+/// callers handle character keys directly.
+fn keycode_glyph(code: KeyCode) -> Option<&'static str> {
+    Some(match code {
+        KeyCode::Up => "↑",
+        KeyCode::Down => "↓",
+        KeyCode::Left => "←",
+        KeyCode::Right => "→",
+        KeyCode::Enter => "↵",
+        // BackTab is the terminal's representation of Shift+Tab — collapse
+        // to the canonical `⇧⇥` glyph so it reads the same regardless of
+        // which form the source `KeyEvent` used.
+        KeyCode::Tab | KeyCode::BackTab => "⇥",
+        KeyCode::Backspace => "⌫",
+        KeyCode::Delete => "Del",
+        KeyCode::Esc => "Esc",
+        KeyCode::Home => "Home",
+        KeyCode::End => "End",
+        KeyCode::PageUp => "PgUp",
+        KeyCode::PageDown => "PgDn",
+        KeyCode::Insert => "Ins",
+        _ => return None,
+    })
+}
+
+/// Word-style label for a non-character `KeyCode` (long form used in the
+/// keybinds overlay and cheat sheet).
+fn keycode_word(code: KeyCode) -> Option<&'static str> {
+    Some(match code {
+        KeyCode::Up => "Up",
+        KeyCode::Down => "Down",
+        KeyCode::Left => "Left",
+        KeyCode::Right => "Right",
+        KeyCode::Home => "Home",
+        KeyCode::End => "End",
+        KeyCode::PageUp => "PgUp",
+        KeyCode::PageDown => "PgDn",
+        KeyCode::Enter => "Enter",
+        KeyCode::Backspace => "Backspace",
+        KeyCode::Delete => "Delete",
+        KeyCode::Esc => "Esc",
+        KeyCode::Tab => "Tab",
+        KeyCode::BackTab => "Shift-Tab",
+        KeyCode::Insert => "Insert",
+        _ => return None,
+    })
+}
+
+/// Render the key-code portion of a chord using `lookup` for the named
+/// (non-Char) keys.  `KeyCode::Char` always renders as its uppercase form
+/// for ASCII letters or as itself otherwise, with `' '` shown as `Space`.
+fn format_keycode(code: KeyCode, lookup: fn(KeyCode) -> Option<&'static str>) -> String {
+    if let Some(s) = lookup(code) {
+        return s.to_owned();
+    }
+    match code {
+        KeyCode::Char(' ') => "Space".to_owned(),
+        KeyCode::Char(c) if c.is_ascii_alphabetic() => c.to_ascii_uppercase().to_string(),
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::F(n) => format!("F{n}"),
+        other => format!("{:?}", other),
+    }
+}
+
 /// Render `ev` as a compact glyph-based chord string suitable for the
 /// bottom-region hint line, where horizontal space is at a premium.
 /// Modifiers collapse to single characters (`^` / `⌥` / `⇧`) and
@@ -327,41 +392,11 @@ pub fn format_key_compact(ev: &KeyEvent) -> String {
     if ev.modifiers.contains(KeyModifiers::ALT) {
         out.push('⌥');
     }
-    let suffix = match ev.code {
-        KeyCode::Char(' ') => "Space".to_owned(),
-        KeyCode::Char(c) => {
-            if c.is_ascii_alphabetic() {
-                c.to_ascii_uppercase().to_string()
-            } else {
-                c.to_string()
-            }
-        }
-        KeyCode::Up => "↑".to_owned(),
-        KeyCode::Down => "↓".to_owned(),
-        KeyCode::Left => "←".to_owned(),
-        KeyCode::Right => "→".to_owned(),
-        KeyCode::Enter => "↵".to_owned(),
-        KeyCode::Tab => "⇥".to_owned(),
-        // BackTab is the terminal's representation of Shift+Tab — collapse
-        // to the canonical `⇧⇥` glyph so it reads the same regardless of
-        // which form the source `KeyEvent` used.
-        KeyCode::BackTab => "⇥".to_owned(),
-        KeyCode::Backspace => "⌫".to_owned(),
-        KeyCode::Delete => "Del".to_owned(),
-        KeyCode::Esc => "Esc".to_owned(),
-        KeyCode::Home => "Home".to_owned(),
-        KeyCode::End => "End".to_owned(),
-        KeyCode::PageUp => "PgUp".to_owned(),
-        KeyCode::PageDown => "PgDn".to_owned(),
-        KeyCode::Insert => "Ins".to_owned(),
-        KeyCode::F(n) => format!("F{n}"),
-        other => format!("{:?}", other),
-    };
     let shift = ev.modifiers.contains(KeyModifiers::SHIFT) || ev.code == KeyCode::BackTab;
     if shift {
         out.push('⇧');
     }
-    out.push_str(&suffix);
+    out.push_str(&format_keycode(ev.code, keycode_glyph));
     out
 }
 
@@ -381,35 +416,7 @@ pub fn format_key(ev: &KeyEvent) -> String {
     if ev.modifiers.contains(KeyModifiers::SHIFT) {
         parts.push("Shift".into());
     }
-    let code = match ev.code {
-        KeyCode::Char(' ') => "Space".into(),
-        KeyCode::Char(c) => {
-            let s: String = c.to_string();
-            if c.is_ascii_alphabetic() {
-                s.to_ascii_uppercase()
-            } else {
-                s
-            }
-        }
-        KeyCode::Up => "Up".into(),
-        KeyCode::Down => "Down".into(),
-        KeyCode::Left => "Left".into(),
-        KeyCode::Right => "Right".into(),
-        KeyCode::Home => "Home".into(),
-        KeyCode::End => "End".into(),
-        KeyCode::PageUp => "PgUp".into(),
-        KeyCode::PageDown => "PgDn".into(),
-        KeyCode::Enter => "Enter".into(),
-        KeyCode::Backspace => "Backspace".into(),
-        KeyCode::Delete => "Delete".into(),
-        KeyCode::Esc => "Esc".into(),
-        KeyCode::Tab => "Tab".into(),
-        KeyCode::BackTab => "Shift-Tab".into(),
-        KeyCode::Insert => "Insert".into(),
-        KeyCode::F(n) => format!("F{n}"),
-        other => format!("{:?}", other),
-    };
-    parts.push(code);
+    parts.push(format_keycode(ev.code, keycode_word));
     parts.join("-")
 }
 

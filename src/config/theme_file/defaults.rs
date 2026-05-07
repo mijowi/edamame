@@ -30,24 +30,24 @@ pub fn default_theme_toml() -> String {
     };
     let body = toml::to_string_pretty(&file).expect("serialize default ThemeFile");
 
+    // A blank line or the next `[...]` header ends the palette block;
+    // anything else within the block is a palette entry we comment out so
+    // it documents the default without overriding it.
     let mut out = String::new();
-    let mut in_palette = false;
-    for line in body.lines() {
-        if in_palette {
-            // A blank line or the next `[...]` header ends the palette
-            // block.  Anything else is a palette entry that we comment
-            // out so it documents the default without overriding it.
-            if line.is_empty() || line.starts_with('[') {
-                in_palette = false;
-            } else {
-                out.push_str("# ");
-                out.push_str(line);
-                out.push('\n');
-                continue;
-            }
+    let lines = body.lines().scan(false, |in_palette, line| {
+        let was_in_palette = *in_palette;
+        if was_in_palette && (line.is_empty() || line.starts_with('[')) {
+            *in_palette = false;
         }
+        let comment = was_in_palette && !line.is_empty() && !line.starts_with('[');
         if line == "[palette]" {
-            in_palette = true;
+            *in_palette = true;
+        }
+        Some((line, comment))
+    });
+    for (line, comment) in lines {
+        if comment {
+            out.push_str("# ");
         }
         out.push_str(line);
         out.push('\n');

@@ -58,6 +58,11 @@ pub const COLUMN_RESIZE_GLYPH: char = '⇔';
 /// handles.
 pub const DELETE_HANDLE_GLYPH: char = '✕';
 
+/// Number of leading rows in a `TableInfo`'s row table that come before the
+/// first data row: row 0 is the header, row 1 is the alignment row, so data
+/// row `i` lives at `HEADER_ROWS + i`.
+pub const HEADER_ROWS: usize = 2;
+
 /// Per-frame snapshot of one visible table's layout.
 ///
 /// Screen coordinates (`col_ranges`, `row_ranges`, `row_handle_col`,
@@ -114,7 +119,7 @@ pub struct TableLayoutSnapshot {
 /// What a `(col, row)` click lands on inside a table.
 ///
 /// `Cell::row_idx` and `RowHandle::row_idx` are **TableInfo row indices**
-/// (i.e. `2 + data_index` — the header is row 0 and alignment is row 1).
+/// (i.e. `HEADER_ROWS + data_index` — header is row 0, alignment is row 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableHit {
     /// Click inside a data cell's content area.
@@ -167,7 +172,9 @@ impl TableLayoutSnapshot {
             if col == handle_col {
                 for (i, y_range) in self.row_ranges.iter().enumerate() {
                     if row >= y_range.start && row < y_range.end {
-                        return Some(TableHit::DeleteRowHandle { row_idx: 2 + i });
+                        return Some(TableHit::DeleteRowHandle {
+                            row_idx: HEADER_ROWS + i,
+                        });
                     }
                 }
             }
@@ -192,7 +199,9 @@ impl TableLayoutSnapshot {
             if col == handle_col {
                 for (i, y_range) in self.row_ranges.iter().enumerate() {
                     if row >= y_range.start && row < y_range.end {
-                        return Some(TableHit::RowHandle { row_idx: 2 + i });
+                        return Some(TableHit::RowHandle {
+                            row_idx: HEADER_ROWS + i,
+                        });
                     }
                 }
             }
@@ -240,7 +249,7 @@ impl TableLayoutSnapshot {
                 for (c, x_range) in self.col_ranges.iter().enumerate() {
                     if col >= x_range.start && col < x_range.end {
                         return Some(TableHit::Cell {
-                            row_idx: 2 + i,
+                            row_idx: HEADER_ROWS + i,
                             col_idx: c,
                         });
                     }
@@ -1066,7 +1075,7 @@ mod tests {
             table_byte_start: 0,
             table_byte_end: 100,
             col_count: col_ranges.len(),
-            row_count: 2 + row_ranges.len(),
+            row_count: HEADER_ROWS + row_ranges.len(),
             col_ranges,
             row_ranges,
             row_handle_col: None,

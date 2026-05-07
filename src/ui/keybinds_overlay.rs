@@ -32,6 +32,11 @@ use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, ContentSize, ScrollContainerState,
 };
 
+/// Width of the action-label column in the keybinds overlay (column count
+/// of the padded slot before the chord begins).  Sized to fit the longest
+/// action name without clipping; chords sit in the remaining width.
+const LABEL_PAD: usize = 22;
+
 /// Outcome of dispatching a key event to the keybinds overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeybindsResponse {
@@ -372,7 +377,7 @@ fn build_body_lines<'a>(
                     focused,
                     editing,
                     theme,
-                    RowLayout::FixedPad(22),
+                    RowLayout::FixedPad(LABEL_PAD),
                 ));
             }
         }
@@ -407,11 +412,12 @@ fn compute_focus_offsets(rows: &[Row]) -> Vec<usize> {
     offsets
 }
 
-/// Content-aware width: max over rows of `marker(2) + label_pad(22) +
+/// Content-aware width: max over rows of `marker(2) + label_pad +
 /// chord_w`, plus the longest header (`— Title —`) and the longest
 /// error so neither gets clipped.  Sized over the whole row set so
 /// width doesn't jiggle as focus moves.
 fn keybinds_content_width(state: &KeybindsState, keymap: &KeyMap) -> u16 {
+    const FOCUS_MARKER_WIDTH: usize = 2;
     let row_max = max_row_width(&state.rows, |r| match r {
         Row::Header(t) => t.chars().count() + 4, // "— x —"
         Row::Binding { action, .. } => {
@@ -419,7 +425,7 @@ fn keybinds_content_width(state: &KeybindsState, keymap: &KeyMap) -> u16 {
                 .first_key_for(action)
                 .map(|s| s.chars().count())
                 .unwrap_or(0);
-            2 + 22 + chord_w
+            FOCUS_MARKER_WIDTH + LABEL_PAD + chord_w
         }
     });
     let err_max = optional_text_width(state.last_error.as_deref(), 2);

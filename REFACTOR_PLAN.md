@@ -482,35 +482,129 @@ For each:
 
 ---
 
-## Phase D — Internal cleanups inside the now-smaller files
+## Phase D — Internal cleanups inside the now-smaller files ✅ DONE
 
-Smaller, in-file improvements that benefit from being applied after the splits land — they would be hard to review while files are massive.
+Smaller, in-file improvements that benefit from being applied after the
+splits land.  Status: **all four sub-steps shipped as one bundle**.
+Build, clippy `-D warnings`, fmt, and the full test suite stay clean.
 
-### D1. Decompose long functions
+### D1. Decompose long functions ✅
 
-Targets, all >80 LOC after the splits land:
-- `mouse_ops::rendered_sub_line_to_offset` — break into named helpers per case.
-- `mouse_ops::rendered_to_raw_char_map` — extract a small state struct for the pulldown-cmark walk.
-- `parser::parse_blocks` — likely still long after C6; review and extract per-block-kind parsers.
-- `renderer::wrap_styled_chars` — currently 80 LOC; only split if a clearer factoring emerges.
+- `mouse_ops::coord::rendered_sub_line_to_offset` — split into
+  `locate_block`, `table_raw_line_idx`, `raw_line_byte_range`,
+  `non_table_click_to_raw_col`, `raw_col_to_buffer_char`.  Top-level
+  function is now ~50 LOC of named-step orchestration.  A new
+  `BlockLocation` struct carries `(range, rendered_span, sub_idx)`
+  through the helpers so signatures stay tight.
+- `mouse_ops::coord::rendered_to_raw_char_map` — extracted a
+  `CharMapWalk` state struct that owns the byte→char lookup table and
+  the running `map`.  The per-event walk (`Text` / `Code` / break) is
+  now a sequence of named method calls; the `==highlight==` slicing
+  inside `Text` collapses from a triple-nested `match` into a `while
+  let Some(_) = rest.find("==")` loop.
+- `parser::parse_blocks` — extracted six per-block-kind helpers
+  (`parse_paragraph_block`, `parse_heading_block`,
+  `parse_blockquote_block`, `parse_code_block`, `parse_list_block`,
+  `parse_table_block`, `parse_html_block`).  Top-level dispatch
+  shrinks to one match arm per block kind.
+- `renderer::util::wrap_styled_chars` — extracted the leading
+  whitespace+word tokenizer as `tokenize_styled`.  Body now reads as
+  "tokenize, then wrap tokens onto rows".
 
-### D2. Replace remaining manual loops with iterator combinators
+### D2. Iterator combinators ✅
 
-Spot list — apply only where it improves clarity, not as a blanket policy:
-- `mouse_ops::preview_pos` — `lines.iter().enumerate().skip(scroll).find_map(...)`.
-- `editor/list_edit/parse::parse_line_start` — `chars().take_while(|c| c.is_whitespace())`.
-- `theme_file::default_theme_toml` — `lines().scan(...)` instead of an `in_palette` flag.
-- `keymap::format_key` / `format_key_compact` — share their key-code match arms via a single helper that returns `&'static str`.
+- `editor/list_edit/parse::parse_line_start` — replaced the byte
+  iteration with `chars().take_while(|c| c == ' ' || c == '\t')` and
+  `take_while(char::is_ascii_digit)`.  Body now reads in `char`s
+  throughout.
+- `theme_file::default_theme_toml` — replaced the `in_palette` mutable
+  flag with `body.lines().scan(false, …)` so the per-line decision
+  ("comment this out?") flows through one iterator pipeline.
+- `keymap::format_key` / `format_key_compact` — extracted the
+  per-`KeyCode` mapping into two `&'static str`-returning helpers
+  (`keycode_glyph` for the compact form, `keycode_word` for the long
+  form) plus a shared `format_keycode(code, lookup)` that handles
+  `Char`, `F(n)`, and the catch-all `{:?}` branch.  Both formatters
+  now read as "build modifier prefix; append `format_keycode(...)`".
+- `mouse_ops::preview_pos` — left as-is.  The plan's suggested
+  `find_map` shape would need `scan` to carry the cumulative `y`
+  accumulator; the trade isn't an improvement at this scale.  The
+  function already uses `.iter().enumerate().skip(state.scroll)`.
 
-### D3. Replace magic numbers with named constants
+### D3. Magic numbers → named constants ✅
 
-- Header rows offset (`2 + i`) in `rendered_view.rs` → `const HEADER_ROWS: usize = 2`.
-- Label padding widths (`{:<28}`, `{:<22}`) in overlay files → `const LABEL_PAD_*`.
-- `MAX_LIST_ROWS = 20` in `command_palette.rs` is already named — keep.
+- `ui::table_view::HEADER_ROWS = 2` — replaces every `2 + i` and
+  `2 + row_ranges.len()` in `table_view.rs`.  `mouse_ops::coord`
+  imports it for the `row + 2` and `saturating_sub(2)` cases in the
+  table-classification arm.
+- `ui::settings_overlay::LABEL_PAD = 28` and
+  `ui::keybinds_overlay::LABEL_PAD = 22` — replace the literal `28` /
+  `22` arguments to `RowLayout::FixedPad(...)` and the matching
+  `2 + 28 + value_w` / `2 + 22 + chord_w` width calculations.  The
+  width formulas grew a `FOCUS_MARKER_WIDTH = 2` local constant so
+  the meaning of the leading `2` is no longer cryptic.
+- `command_palette::MAX_LIST_ROWS = 20` — already named, kept.
 
-### D4. Tidy `parse_line_start` and friends
+### D4. Tidy `parse_line_start` ✅
 
-Replace byte iteration with `str::chars().take_while`. Use char literals instead of byte literals where it improves readability.
+Subsumed by D2.  `parse_line_start` now uses `chars().take_while` for
+indent + digits, and char literals (`' '`, `\t`, `-`, `*`, `+`, `.`,
+`)`) replace the prior byte literals.
+
+---
+
+## Phase E — Tighten the clippy gate to `--all-targets`
+
+The CI command in `CLAUDE.md` is `cargo clippy -- -D warnings`, which
+checks the lib + bin only.  Running with `--all-targets` (lib + bin +
+tests + examples + integration) surfaces ~41 lint warnings that have
+accumulated in the test suite — they don't block the build today, but
+they're the kind of stale lint that grows over time and obscures real
+regressions.  Fixing them once and adding `--all-targets` to the gate
+makes the test code participate in the same quality bar as the
+production code.
+
+The breakdown (counts from `cargo clippy --all-targets` after Phase D):
+
+- **24× `single_range_in_vec_init`** — `vec![3..4]` patterns in
+  `tests/mouse.rs` snapshot helpers.  Either rewrite to `vec![3..4u16]`
+  (which clippy doesn't flag because it disambiguates the type) or
+  switch the helpers to `&[Range<u16>]` so the literal can be a plain
+  array.
+- **3× `field_reassign_with_default`** — `let mut x =
+  Default::default(); x.field = …;` in `src/ui/table_view.rs::tests`,
+  `src/ui/settings_overlay.rs::tests`, `src/ui/preview.rs::tests`.
+  Switch to struct-update syntax.
+- **2× `needless_range_loop`** — `for rendered_col in 0..forward.len()
+  { … forward[rendered_col] … }` in `src/editor/mouse_ops.rs::tests`.
+  Use `forward.iter().enumerate()`.
+- **2× `dead_code` (`field … is never read`)** — the inner field of a
+  test-only newtype.  Either drop the field or annotate `#[allow]` with
+  a comment naming the asserted-via-Debug usage.
+- **1× `too_many_arguments`** — `tests/mouse.rs::fake_snapshot` 8/7.
+  Bundle args into a `FakeSnapshotSpec` struct.
+- **1× `tests_outside_test_module`** — `src/ui/preview.rs::tests` has
+  items defined after the `#[cfg(test)] mod tests`.  Move them inside.
+- **1× unused variable**, **1× `dead_code`**, **1× `iter_any`**,
+  **1× `should_implement_trait`** — single-site fixes per warning.
+
+### E1. Test-code lint cleanup
+
+Walk the warning list above and resolve each, with per-site
+`#[allow(...)]` reserved for cases where the lint clearly hides intent
+(e.g. `Buffer::from_str` is named for symmetry with `Rope::from_str`
+and already carries an allow).  No production behaviour changes.
+
+### E2. Tighten the CI command
+
+Update the `CLAUDE.md` Lint section so the enforced command is
+`cargo clippy --all-targets -- -D warnings`.  Mention the change in
+the project's CI script if one is added later.
+
+### Acceptance criteria for Phase E
+
+- `cargo clippy --all-targets -- -D warnings` is clean.
+- All other Phase A–D acceptance criteria continue to hold.
 
 ---
 
@@ -523,10 +617,10 @@ A reasonable order, optimised so each PR is small and independent:
 2. **Phase B as separate PRs**, in order: B1, B2, B3, B4, B5, B6, B7.
    Each is small and reviewable.
 3. ~~**Phase C as separate PRs**~~ — all 12 sub-steps shipped (C1–C12).
-4. **Phase D** as 2–3 follow-up PRs, scoped per file.
-
-Phase D remains.  If reviewer bandwidth is the constraint, D can be
-combined into 1–2 larger PRs.
+4. ~~**Phase D**~~ — shipped as one bundle (D1+D2+D3+D4).
+5. **Phase E** as a single PR: E1 (test-code lint cleanup) + E2 (CI
+   command tightening) land together so the gate flips on the same
+   commit that makes it pass.
 
 ## Baseline
 

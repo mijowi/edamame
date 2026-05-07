@@ -155,27 +155,27 @@ pub fn find_list_at(source: &str, cursor_byte: usize) -> Option<ListInfo> {
 /// `\n`).  Returns `(indent, kind, number)` where `number` is `Some` for
 /// ordered items.
 pub(super) fn parse_line_start(line: &str) -> Option<(String, MarkerKind, Option<u64>)> {
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
-        i += 1;
-    }
-    let indent = line[..i].to_owned();
-    let rest = &line[i..];
-    let rb = rest.as_bytes();
+    let indent_len: usize = line
+        .chars()
+        .take_while(|&c| c == ' ' || c == '\t')
+        .map(char::len_utf8)
+        .sum();
+    let indent = line[..indent_len].to_owned();
+    let rest = &line[indent_len..];
+    let mut chars = rest.chars();
 
-    if let Some(&c) = rb.first() {
-        if (c == b'-' || c == b'*' || c == b'+') && rb.get(1) == Some(&b' ') {
-            return Some((indent, MarkerKind::Bullet(c as char), None));
-        }
+    let first = chars.next()?;
+    if matches!(first, '-' | '*' | '+') && chars.next() == Some(' ') {
+        return Some((indent, MarkerKind::Bullet(first), None));
     }
 
-    let digits_len = rb.iter().take_while(|b| b.is_ascii_digit()).count();
+    let digits_len: usize = rest.chars().take_while(char::is_ascii_digit).count();
     if digits_len > 0 {
         let num: u64 = rest[..digits_len].parse().ok()?;
-        let delim = *rb.get(digits_len)?;
-        if (delim == b'.' || delim == b')') && rb.get(digits_len + 1) == Some(&b' ') {
-            return Some((indent, MarkerKind::Ordered(delim as char), Some(num)));
+        let mut after = rest[digits_len..].chars();
+        let delim = after.next()?;
+        if matches!(delim, '.' | ')') && after.next() == Some(' ') {
+            return Some((indent, MarkerKind::Ordered(delim), Some(num)));
         }
     }
 
