@@ -1,0 +1,221 @@
+use ratatui::text::Line;
+
+use crate::document::{Selection, VisualSelection};
+use crate::editor::table_edit;
+use crate::editor::EditorState;
+
+/// If the raw bytes immediately before `sel.start` and immediately after
+/// `sel.end` form a matching pair of inline formatting markers (`*…*`,
+/// `**…**`, `_…_`, `__…__`, `` `…` ``, `~~…~~`), expand the selection to
+/// include both markers so the highlight matches what the user sees when
+/// the element de-renders after the click-and-drag completes.
+///
+/// Only expands when the selection is entirely on a single source line —
+/// inline formatting doesn't span newlines in CommonMark.
+pub(super) fn expand_selection_to_inline_markers(
+    buffer: &crate::document::Buffer,
+    sel: Selection,
+) -> Selection {
+    let (start_char, end_char) = sel.range();
+    if end_char <= start_char {
+        return sel;
+    }
+    let rope = buffer.rope();
+    let start_byte = rope.char_to_byte(start_char);
+    let end_byte = rope.char_to_byte(end_char);
+    let source = buffer.contents();
+    if end_byte > source.len() {
+        return sel;
+    }
+
+    // Same-line constraint.
+    if source[start_byte..end_byte].contains('\n') {
+        return sel;
+    }
+
+    // Try double-char markers first so `**foo**` doesn't get reduced to `*foo*`.
+    const DOUBLE_MARKERS: &[&str] = &["**", "__", "~~"];
+    const SINGLE_MARKERS: &[&str] = &["*", "_", "`"];
+
+    for m in DOUBLE_MARKERS.iter().chain(SINGLE_MARKERS.iter()) {
+        let len = m.len();
+        if start_byte < len || end_byte + len > source.len() {
+            continue;
+        }
+        let before = &source[start_byte - len..start_byte];
+        let after = &source[end_byte..end_byte + len];
+        if before == *m && after == *m {
+            // Don't cross a line boundary when expanding — redundant given
+            // the check above but cheap to verify.
+            if before.contains('\n') || after.contains('\n') {
+                continue;
+            }
+            let new_start_byte = start_byte - len;
+            let new_end_byte = end_byte + len;
+            let new_start = rope.byte_to_char(new_start_byte);
+            let new_end = rope.byte_to_char(new_end_byte);
+            // Preserve anchor/active direction.
+            let (anchor, active) = if sel.anchor <= sel.active {
+                (new_start, new_end)
+            } else {
+                (new_end, new_start)
+            };
+            return Selection { anchor, active };
+        }
+    }
+    sel
+}
+
+/// Expand the selection to the word under the cursor (double-click).
+pub(super) fn select_word_at_cursor(state: &mut EditorState) {
+    let buf = &state.buffer;
+    let len = buf.len_chars();
+    let rope = buf.rope();
+    let offset = state.cursor.offset.min(len);
+
+    if len == 0 {
+        state.selection = None;
+        return;
+    }
+
+    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+
+    // If the cursor is on whitespace, fall back to selecting the run of
+    // whitespace instead of an empty selection.
+    let mut start = offset;
+    while start > 0 && is_word_char(rope.char(start - 1)) {
+        start -= 1;
+    }
+    let mut end = offset;
+    while end < len && is_word_char(rope.char(end)) {
+        end += 1;
+    }
+    if start == end {
+        // Not on a word — try expanding across non-alphanumeric chars (e.g.
+        // punctuation).  If there's no such run either, leave unchanged.
+        let mut s2 = offset;
+        while s2 > 0 {
+            let c = rope.char(s2 - 1);
+            if c.is_whitespace() || is_word_char(c) {
+                break;
+            }
+            s2 -= 1;
+        }
+        let mut e2 = offset;
+        while e2 < len {
+            let c = rope.char(e2);
+            if c.is_whitespace() || is_word_char(c) {
+                break;
+            }
+            e2 += 1;
+        }
+        if s2 != e2 {
+            state.selection = Some(Selection {
+                anchor: s2,
+                active: e2,
+            });
+            state.cursor.offset = e2;
+            return;
+        }
+        state.selection = None;
+        return;
+    }
+    state.selection = Some(Selection {
+        anchor: start,
+        active: end,
+    });
+    state.cursor.offset = end;
+    state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
+}
+
+/// Expand the selection to the whole line (triple-click).
+///
+/// Inside a table the whole buffer line is `| cell | cell | cell |` — selecting
+/// that pulls in the borders and neighbouring cells, which almost never matches
+/// what the user wants.  When the cursor is in a table cell, select just the
+/// trimmed content of that cell instead.
+pub(super) fn select_line_at_cursor(state: &mut EditorState) {
+    let source = state.buffer.contents();
+    let cursor_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
+    if let Some(info) = table_edit::find_table_at(&source, cursor_byte) {
+        if let Some((row_idx, col_idx)) = table_edit::cursor_cell(&info, cursor_byte) {
+            if let Some(row) = info.rows.get(row_idx) {
+                if let Some(cell) = row.cells.get(col_idx) {
+                    let raw_bytes = cell.raw.as_bytes();
+                    let leading = raw_bytes
+                        .iter()
+                        .take_while(|b| matches!(**b, b' ' | b'\t'))
+                        .count();
+                    let trailing = raw_bytes
+                        .iter()
+                        .rev()
+                        .take_while(|b| matches!(**b, b' ' | b'\t'))
+                        .count();
+                    let content_len = cell.raw.len().saturating_sub(leading + trailing);
+                    let start_byte = row.start + cell.content_start + leading;
+                    let end_byte = start_byte + content_len;
+                    let rope = state.buffer.rope();
+                    let anchor = rope.byte_to_char(start_byte);
+                    let active = rope.byte_to_char(end_byte);
+                    state.selection = Some(Selection { anchor, active });
+                    state.cursor.offset = active;
+                    state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
+                    return;
+                }
+            }
+        }
+    }
+
+    let (line, _) = state.cursor.line_col(&state.buffer);
+    let start = state.buffer.line_to_char(line);
+    let end = if line + 1 < state.buffer.line_count() {
+        state.buffer.line_to_char(line + 1)
+    } else {
+        state.buffer.len_chars()
+    };
+    state.selection = Some(Selection {
+        anchor: start,
+        active: end,
+    });
+    state.cursor.offset = end;
+    state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
+}
+
+/// Extract the rendered text covered by `sel` from `lines`.  Lines between
+/// the anchor and active endpoints are fully included; the first and last
+/// lines are clipped to the selection's char columns.  A newline separates
+/// each rendered line so multi-line copies preserve structure.
+pub fn visual_selection_to_rendered_text(sel: VisualSelection, lines: &[Line<'_>]) -> String {
+    let (start, end) = sel.range();
+    let (start_line, start_col) = start;
+    let (end_line, end_col) = end;
+    if lines.is_empty() || start_line >= lines.len() {
+        return String::new();
+    }
+    let end_line = end_line.min(lines.len() - 1);
+
+    let mut out = String::new();
+    // Iterate by index because the body needs to compare `idx` against
+    // both `start_line` and `end_line`; an `enumerate().skip(...)` shape
+    // is less direct.
+    #[allow(clippy::needless_range_loop)]
+    for idx in start_line..=end_line {
+        let line = &lines[idx];
+        let chars: Vec<char> = line.spans.iter().flat_map(|s| s.content.chars()).collect();
+        let lo = if idx == start_line { start_col } else { 0 };
+        let hi = if idx == end_line {
+            end_col
+        } else {
+            chars.len()
+        };
+        let lo = lo.min(chars.len());
+        let hi = hi.min(chars.len());
+        if lo < hi {
+            out.extend(chars[lo..hi].iter());
+        }
+        if idx < end_line {
+            out.push('\n');
+        }
+    }
+    out
+}

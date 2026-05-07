@@ -327,14 +327,12 @@ hand-listed match arms to ~28 lines total (macro + variant list).
 
 ---
 
-## Phase C — File splits
+## Phase C — File splits ✅ DONE
 
 Each step splits one large file into several smaller modules behind the existing facade. Public API is preserved via `pub use` re-exports — call-site imports stay unchanged.
 
-**Status: 10 of 12 sub-steps shipped (C2, C3, C5, C6, C7, C8, C9, C10, C11,
-C12).  C1 and C4 deferred — biggest files, densest interdependencies, kept
-for separate PRs.**  Build / clippy `-D warnings` / 1743 tests all pass at
-each step.
+**Status: all 12 sub-steps shipped.**  Build, clippy `-D warnings`, fmt, and
+the full 1743-test suite stay clean throughout.
 
 | Step | Status | Headline LOC change |
 |---|---|---|
@@ -344,12 +342,12 @@ each step.
 | C10 (visual_cache extract) | ✅ | parsed_doc.rs 1096 → 978; +visual_cache 129 |
 | C6 (parser post_pass) | ✅ | parser.rs 1417 → 989; +post_pass 446 |
 | C5 (renderer split) | ✅ | renderer.rs 1527 → 961; +util 201 / +list 137 / +table 255 |
-| C8 (config split) | ✅ partial | config.rs 1014 → 808; +readers 157 / +init 44 / +warnings 36.  `sections.rs` not split (tightly coupled with `Config` struct). |
-| C7 (theme_file split) | ⚠️ skipped | Types are tightly coupled (PaletteFile→ColorField, ThemeFile→PaletteFile+StyleSpec); declarative-macro work in the plan would land alongside, not before, the file split.  Defer with C1/C4. |
+| C8 (config split) | ✅ | config.rs 1014 → ~450; +readers 157 / +init 44 / +warnings 36 / +sections 264 |
+| C7 (theme_file split) | ✅ | theme_file.rs 1193 → 751; +color 33 / +palette 150 / +style_spec 93 / +defaults 58.  `style_fields!` macro collapses the parallel `From<&ThemeFile> for Theme` / `From<&Theme> for ThemeFile` field-by-field maps to one identifier list. |
 | C11 (settings_overlay) | ✅ | settings_overlay.rs 1095 → 738; +rows 369 |
-| C12 (palette+keybinds) | ✅ partial | command_palette.rs 1070 → 971 (+actions 109); keybinds_overlay.rs 783 → 724 (+categories 69).  Pre-compute focus offsets deferred to Phase D. |
-| C4 (rendered_view) | ⏸ deferred | Densest interdependencies; warrants its own PR. |
-| C1 (mouse_ops) | ⏸ deferred | Biggest file (1788); warrants its own PR. |
+| C12 (palette+keybinds) | ✅ | command_palette.rs 1070 → 971 (+actions 109); keybinds_overlay.rs 783 → 727 (+categories 69); focus offsets pre-computed at construction, no longer rebuilt per render. |
+| C4 (rendered_view) | ✅ | rendered_view.rs 1685 → 762; +cell_overlay 282 / +list_marker 200 / +paint 381 / +raw_text 104. |
+| C1 (mouse_ops) | ✅ | mouse_ops.rs 2472 → 833; +coord 626 / +table_drag 492 / +links 256 / +selection 221 / +checkbox 75. |
 
 ### C1. Split `src/editor/mouse_ops.rs` (1787)
 
@@ -524,23 +522,11 @@ A reasonable order, optimised so each PR is small and independent:
    commit** covering all clippy/build cleanup plus the small extractions.
 2. **Phase B as separate PRs**, in order: B1, B2, B3, B4, B5, B6, B7.
    Each is small and reviewable.
-3. **Phase C as separate PRs**, ideally in this order to minimise rebase pain:
-   - ~~C2 (table edit ops)~~ — shipped.
-   - ~~C3 (state.rs split)~~ — shipped (constructor consolidation deferred).
-   - ~~C9 (list_edit split)~~ — shipped.
-   - ~~C10 (visual cache extract)~~ — shipped.
-   - ~~C6 (parser post_pass)~~ — shipped.
-   - ~~C5 (renderer split)~~ — shipped.
-   - ~~C8 (config.rs split)~~ — partial (warnings/readers/init done; sections deferred).
-   - C7 (theme_file split) — deferred; tightly coupled types.
-   - ~~C11 (settings_overlay split)~~ — shipped.
-   - ~~C12 (command_palette + keybinds split)~~ — partial (data tables done; focus-offset pre-compute deferred).
-   - C4 (rendered_view split) — leave for last; densest interdependencies.
-   - C1 (mouse_ops split) — biggest, leave for last.
+3. ~~**Phase C as separate PRs**~~ — all 12 sub-steps shipped (C1–C12).
 4. **Phase D** as 2–3 follow-up PRs, scoped per file.
 
-Total remaining: roughly 22–25 PRs. If reviewer bandwidth is the
-constraint, B can be combined into 2–3 larger PRs without much risk.
+Phase D remains.  If reviewer bandwidth is the constraint, D can be
+combined into 1–2 larger PRs.
 
 ## Baseline
 

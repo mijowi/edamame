@@ -6,6 +6,7 @@ pub mod config;
 pub mod init;
 pub mod keymap;
 pub mod readers;
+pub mod sections;
 pub mod theme;
 pub mod theme_file;
 pub mod warnings;

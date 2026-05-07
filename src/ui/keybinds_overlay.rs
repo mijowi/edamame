@@ -81,6 +81,10 @@ pub struct KeybindsState {
     /// construction time from the static `CATEGORIES` table; cheap to
     /// clone for tests.
     rows: Vec<Row>,
+    /// For each `rows[i]`, the body-line index where that row renders.
+    /// Pre-computed at construction time — the row list is static once
+    /// the overlay is open, so the offsets never change.
+    focus_offsets: Vec<usize>,
 }
 
 impl KeybindsState {
@@ -89,12 +93,14 @@ impl KeybindsState {
     /// phases want to dynamically include only bound actions.
     pub fn open(_keymap: &KeyMap) -> Self {
         let rows = build_rows();
+        let focus_offsets = compute_focus_offsets(&rows);
         let mut state = Self {
             focused: 0,
             editing: None,
             last_error: None,
             scroll_state: ScrollContainerState::default(),
             rows,
+            focus_offsets,
         };
         state.focused = state.first_binding_index().unwrap_or(0);
         state
@@ -232,8 +238,8 @@ impl KeybindsState {
             self.focused = idx;
             // ensure_visible operates on body-line coords (headers
             // and blank separators inflate the body past the row
-            // count), so translate via focus_offsets.
-            let body_row = focus_offsets(self).get(self.focused).copied().unwrap_or(0) as u16;
+            // count), so translate via the pre-computed focus_offsets.
+            let body_row = self.focus_offsets.get(self.focused).copied().unwrap_or(0) as u16;
             self.scroll_state.ensure_visible(body_row);
         }
     }
@@ -374,14 +380,14 @@ fn build_body_lines<'a>(
     lines
 }
 
-/// For each `state.rows[i]`, the body-line index where that row
-/// renders.  Used by `ensure_visible` to translate focused-row index
-/// into the body coords the scroll state operates in.
-fn focus_offsets(state: &KeybindsState) -> Vec<usize> {
-    let mut offsets = Vec::with_capacity(state.rows.len());
+/// For each `rows[i]`, the body-line index where that row renders.
+/// Computed once at construction; used by `ensure_visible` to translate
+/// focused-row index into the body coords the scroll state operates in.
+fn compute_focus_offsets(rows: &[Row]) -> Vec<usize> {
+    let mut offsets = Vec::with_capacity(rows.len());
     let mut line: usize = 0;
     let mut started = false;
-    for row in &state.rows {
+    for row in rows {
         match row {
             Row::Header(_) => {
                 if started {
