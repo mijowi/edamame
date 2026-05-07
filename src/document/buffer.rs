@@ -53,6 +53,16 @@ impl Buffer {
         })
     }
 
+    /// Empty buffer associated with `path`, used when the user names a
+    /// file that does not yet exist.  Saving will create the file.
+    pub fn for_new_file(path: &Path) -> Self {
+        Self {
+            rope: Rope::new(),
+            path: Some(path.to_owned()),
+            version: 0,
+        }
+    }
+
     /// Write the buffer contents to disk at the associated path.
     ///
     /// Returns an error if no path is set.
