@@ -77,6 +77,8 @@ impl LinkTarget {
 
     /// True when this target points at a Markdown file that edamame can
     /// open in-editor.  Case-insensitive check on `.md`/`.markdown`.
+    /// Used by tests in this module.
+    #[allow(dead_code)]
     pub fn is_markdown_file(&self) -> bool {
         match self {
             LinkTarget::LocalFile(path) => path
@@ -97,7 +99,7 @@ impl LinkTarget {
 /// rejected so absolute Windows paths keep their `LocalFile`
 /// classification.
 fn has_url_scheme(url: &str) -> bool {
-    let Some((scheme, rest)) = url.split_once(':') else {
+    let Some((scheme, _rest)) = url.split_once(':') else {
         return false;
     };
     if scheme.len() < 2 {
@@ -111,7 +113,6 @@ fn has_url_scheme(url: &str) -> bool {
         .chars()
         .skip(1)
         .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.');
-    let _ = rest;
     valid_first && valid_rest
 }
 

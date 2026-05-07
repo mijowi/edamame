@@ -17,27 +17,20 @@ pub mod settings_overlay;
 pub mod status_bar;
 pub mod table_view;
 
-pub use bottom_region::{hint_line_for, BottomRegion, HintChord, HintContent, HintSet};
-pub use command_palette::{PaletteEntry, PaletteResponse, PaletteState, PaletteView};
+pub use bottom_region::{hint_line_for, BottomRegion, HintChord, HintContent};
+pub use command_palette::{PaletteResponse, PaletteState, PaletteView};
 pub use editor_view::{EditorView, EditorViewState};
-pub use image_view::{ImageHit, ImageLayoutSnapshot};
+pub use image_view::ImageLayoutSnapshot;
 pub use insert_table_modal::{InsertTableResponse, InsertTableState, InsertTableView};
 pub use keybinds_overlay::KeybindsResponse;
 pub use keybinds_overlay::{KeybindsState, KeybindsView};
 pub use link_view::LinkLayoutSnapshot;
 pub use markdown_cheat_sheet::body_lines as markdown_cheat_sheet_body;
 pub use modal::{ModalButton, ModalResponse, ModalState, ModalView};
-pub use preview::{PreviewState, PreviewView};
-pub use raw_view::{RawView, RawViewState};
+// Used by integration tests in tests/ui.rs.
+#[allow(unused_imports)]
 pub use rendered_view::{RenderedView, RenderedViewState};
-pub use save_copy_modal::{
-    default_copy_path, SaveCopyField, SaveCopyResponse, SaveCopyState, SaveCopyView,
-};
-pub use scroll_container::{
-    centered_rect_for_content, draw_frame, format_title, wrapped_rows, ContentSize,
-    ScrollContainerState,
-};
+pub use save_copy_modal::{default_copy_path, SaveCopyResponse, SaveCopyState, SaveCopyView};
 pub use settings_overlay::SettingsResponse;
 pub use settings_overlay::{SettingsState, SettingsView};
-pub use status_bar::{StatusBar, StatusBarState};
-pub use table_view::{DropIndicator, TableHit, TableLayoutSnapshot};
+pub use table_view::DropIndicator;

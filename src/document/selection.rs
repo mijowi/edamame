@@ -44,7 +44,9 @@ impl VisualSelection {
 }
 
 impl Selection {
-    /// Create a selection starting at `anchor` with zero width.
+    /// Create a selection starting at `anchor` with zero width. Used by
+    /// integration tests in `tests/` and unit tests in this module.
+    #[allow(dead_code)]
     pub fn new(anchor: usize) -> Self {
         Self {
             anchor,

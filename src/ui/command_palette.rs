@@ -40,16 +40,6 @@ pub struct PaletteEntry {
     pub chord: Option<String>,
 }
 
-impl PaletteEntry {
-    pub fn new(action: Action, label: impl Into<String>) -> Self {
-        Self {
-            action,
-            label: label.into(),
-            chord: None,
-        }
-    }
-}
-
 /// A row in the palette's display list: either a non-selectable section
 /// header or a selectable entry.
 #[derive(Debug, Clone)]
@@ -179,9 +169,9 @@ impl PaletteState {
         }
     }
 
-    /// The visible row count for the current query.  Useful in tests
-    /// that want to assert "this query yielded N matches" without
-    /// poking at private fields.
+    /// The visible row count for the current query.  Used by tests in
+    /// this module that want to assert "this query yielded N matches".
+    #[allow(dead_code)]
     pub fn match_count(&mut self) -> usize {
         self.refresh_display();
         self.display_rows
@@ -191,7 +181,9 @@ impl PaletteState {
     }
 
     /// The action currently focused, after applying the query.  Returns
-    /// `None` when the visible list is empty.
+    /// `None` when the visible list is empty.  Used by tests in this
+    /// module.
+    #[allow(dead_code)]
     pub fn focused_action(&mut self) -> Option<Action> {
         self.refresh_display();
         match self.display_rows.get(self.focused)? {

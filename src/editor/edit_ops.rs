@@ -129,10 +129,9 @@ pub fn apply(
             // Raw mode: every character is a valid cursor position — including
             // table borders and the alignment row.  The user owns the risk of
             // breaking formatting by editing the raw source directly.
-            if state.mode == Mode::Raw {
-                state.cursor.move_left(&state.buffer);
-            } else if !table_move_horizontal(state, /*forward=*/ false)
-                && !list_move_horizontal(state, /*forward=*/ false)
+            if state.mode == Mode::Raw
+                || (!table_move_horizontal(state, /*forward=*/ false)
+                    && !list_move_horizontal(state, /*forward=*/ false))
             {
                 state.cursor.move_left(&state.buffer);
             }
@@ -143,10 +142,9 @@ pub fn apply(
         Action::MoveRight => {
             enter_edit_if_preview(state, viewport_height);
             state.selection = None;
-            if state.mode == Mode::Raw {
-                state.cursor.move_right(&state.buffer);
-            } else if !table_move_horizontal(state, /*forward=*/ true)
-                && !list_move_horizontal(state, /*forward=*/ true)
+            if state.mode == Mode::Raw
+                || (!table_move_horizontal(state, /*forward=*/ true)
+                    && !list_move_horizontal(state, /*forward=*/ true))
             {
                 state.cursor.move_right(&state.buffer);
             }

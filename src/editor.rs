@@ -6,6 +6,5 @@ pub mod mouse_ops;
 pub mod state;
 pub mod table_edit;
 
-pub use link::LinkTarget;
 pub use mode::Mode;
-pub use state::{CursorBlink, EditorState, RAW_REVEAL_DELAY};
+pub use state::{EditorState, RAW_REVEAL_DELAY};

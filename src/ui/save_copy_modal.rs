@@ -336,6 +336,7 @@ impl<'a> StatefulWidget for SaveCopyView<'a> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_path_row(
     buf: &mut Buffer,
     inner: Rect,

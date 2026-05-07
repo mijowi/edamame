@@ -572,10 +572,6 @@ impl Theme {
         }
     }
 
-    /// Pick the Mode-specific editor cursor style.  Mirrors the
-    /// status-bar mode chip's bg so the cursor reads as the same
-    /// affordance in both places.
-
     /// Build a `Theme` from a user-authored [`ThemeFile`].
     ///
     /// When `monochrome` is true the file is ignored and the compiled-in

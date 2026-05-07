@@ -123,6 +123,7 @@ pub enum TableHit {
     /// - `0` is the outer left `│`
     /// - `col_count` is the outer right `│`
     /// - `1..col_count` are the interior borders (resize targets).
+    ///
     /// Only interior borders drive resize; the outer borders are exposed so
     /// callers can still classify the click precisely.
     ColumnBorder { col_idx: usize },
@@ -288,7 +289,10 @@ pub enum DropIndicator {
     },
     /// Column-border resize in progress; show a faint vertical guideline
     /// at the pointer's current X to indicate where the release will
-    /// commit the new width.
+    /// commit the new width. Currently driven only by integration tests
+    /// in `tests/ui.rs`; the live column-border drag uses a different
+    /// painting path.
+    #[allow(dead_code)]
     ColumnBorder { table_byte_start: usize, x: u16 },
 }
 

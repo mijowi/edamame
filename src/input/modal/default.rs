@@ -68,10 +68,6 @@ impl<'k> ModalHandler for DefaultHandler<'k> {
 
         None
     }
-
-    fn name(&self) -> &'static str {
-        "default"
-    }
 }
 
 /// Actions that are allowed to run in Preview mode when triggered by a

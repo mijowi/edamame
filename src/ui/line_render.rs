@@ -106,6 +106,9 @@ fn chars_within_cell_budget(chars: &[(char, Style)], start: usize, cell_budget: 
 /// `style` (used to show a cursor indicator during the jitter-suppression
 /// delay in hybrid rendered mode).  The style applies only to the first cell
 /// of a wide char — terminals can't independently style the right half.
+/// Used by tests in this module; production code uses
+/// `render_line_from_visual` to support sub-row scrolling.
+#[allow(dead_code)]
 pub fn render_line(
     line: &Line<'static>,
     area: Rect,
@@ -127,6 +130,8 @@ pub fn render_line_from_visual(
     render_line_with_cursor_from_visual(line, area, buf, visual_y, wrap, None, skip_rows)
 }
 
+/// Used by tests in this module.
+#[allow(dead_code)]
 pub fn render_line_with_cursor(
     line: &Line<'static>,
     area: Rect,

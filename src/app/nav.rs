@@ -94,12 +94,7 @@ impl App {
     /// No-op if the slug isn't in the current document's anchor table.
     /// In editing modes (Rendered / Raw) also moves the cursor onto
     /// the heading so subsequent navigation feels anchored.
-    pub(super) fn scroll_to_heading(
-        &mut self,
-        slug: &str,
-        doc_height: usize,
-        doc_width: usize,
-    ) {
+    pub(super) fn scroll_to_heading(&mut self, slug: &str, doc_height: usize, doc_width: usize) {
         let Some(&line_idx) = self.editor.parsed.heading_anchors.get(slug) else {
             return;
         };

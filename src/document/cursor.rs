@@ -153,9 +153,9 @@ impl Cursor {
         self.preferred_col = self.cell_col(buf);
     }
 
-    // ── Utilities ─────────────────────────────────────────────────
-
-    /// Clamp the cursor so it never exceeds buffer bounds.
+    /// Clamp the cursor so it never exceeds buffer bounds. Used by
+    /// tests in this crate.
+    #[allow(dead_code)]
     pub fn clamp(&mut self, buf: &Buffer) {
         let len = buf.len_chars();
         if self.offset > len {

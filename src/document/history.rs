@@ -66,14 +66,7 @@ impl History {
     /// stack is empty.
     pub fn undo(&mut self, buf: &mut Buffer) -> Option<usize> {
         let delta = self.undo_stack.pop()?;
-        // Apply the inverse: remove `inserted`, put back `removed`.
-        let end = delta.offset + delta.inserted.chars().count();
-        if !delta.inserted.is_empty() {
-            buf.remove(delta.offset, end.min(buf.len_chars()));
-        }
-        if !delta.removed.is_empty() {
-            buf.insert(delta.offset, &delta.removed);
-        }
+        apply_delta(buf, delta.offset, &delta.inserted, &delta.removed);
         let cursor = delta.undo_cursor();
         self.redo_stack.push(delta);
         Some(cursor)
@@ -84,25 +77,20 @@ impl History {
     /// stack is empty.
     pub fn redo(&mut self, buf: &mut Buffer) -> Option<usize> {
         let delta = self.redo_stack.pop()?;
-        // Re-apply: remove `removed`, put back `inserted`.
-        let end = delta.offset + delta.removed.chars().count();
-        if !delta.removed.is_empty() {
-            buf.remove(delta.offset, end.min(buf.len_chars()));
-        }
-        if !delta.inserted.is_empty() {
-            buf.insert(delta.offset, &delta.inserted);
-        }
+        apply_delta(buf, delta.offset, &delta.removed, &delta.inserted);
         let cursor = delta.redo_cursor();
         self.undo_stack.push(delta);
         Some(cursor)
     }
 
-    /// Whether the undo stack is empty.
+    /// Whether the undo stack is empty. Used by tests in this module.
+    #[allow(dead_code)]
     pub fn can_undo(&self) -> bool {
         !self.undo_stack.is_empty()
     }
 
-    /// Whether the redo stack is empty.
+    /// Whether the redo stack is empty. Used by tests in this module.
+    #[allow(dead_code)]
     pub fn can_redo(&self) -> bool {
         !self.redo_stack.is_empty()
     }
@@ -110,6 +98,21 @@ impl History {
     /// Number of entries on the undo stack.
     pub fn undo_depth(&self) -> usize {
         self.undo_stack.len()
+    }
+}
+
+/// Apply a buffer mutation that removes `remove_text` (in chars) at
+/// `offset` and inserts `insert_text` in its place.  Either string may
+/// be empty.  Used by both `undo` (passing `inserted`, `removed`) and
+/// `redo` (passing `removed`, `inserted`) — the symmetry that justifies
+/// the helper.
+fn apply_delta(buf: &mut Buffer, offset: usize, remove_text: &str, insert_text: &str) {
+    if !remove_text.is_empty() {
+        let end = offset + remove_text.chars().count();
+        buf.remove(offset, end.min(buf.len_chars()));
+    }
+    if !insert_text.is_empty() {
+        buf.insert(offset, insert_text);
     }
 }
 

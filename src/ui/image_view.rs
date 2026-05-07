@@ -33,7 +33,9 @@ pub struct ImageLayoutSnapshot {
     /// Virtual-block index in the current `ParsedDoc::source_map`.
     pub block_idx: usize,
     /// Alt text, used for the fallback placeholder when the image can't
-    /// be rendered.
+    /// be rendered. Currently consumed only by tests; the live placeholder
+    /// path is in `ui::rendered_view`.
+    #[allow(dead_code)]
     pub alt: String,
     /// URL as it appears in the Markdown source.  The key into
     /// `EditorState::images`.
@@ -54,9 +56,10 @@ pub struct ImageLayoutSnapshot {
 
 /// What a `(col, row)` click falls on inside an image block.
 ///
-/// Phase 7 only distinguishes "click landed on an image" from "click
-/// landed elsewhere"; Phase 8+ may grow variants for expand / open /
-/// copy affordances.
+/// Used by tests in this module; production code uses other hit-test
+/// routines.  Kept as a concrete type so the surface is stable for when
+/// click-on-image affordances land.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageHit {
     Body { block_idx: usize },
@@ -64,8 +67,8 @@ pub enum ImageHit {
 
 impl ImageLayoutSnapshot {
     /// Return the visible byte range of the image block's source (the
-    /// `![alt](url)` line).  Useful for selection / copy routines that
-    /// need to know what source span this block represents.
+    /// `![alt](url)` line).  Used by tests in this module.
+    #[allow(dead_code)]
     pub fn source_range(&self, state: &EditorState) -> Option<Range<usize>> {
         state
             .parsed
@@ -73,6 +76,8 @@ impl ImageLayoutSnapshot {
             .original_range_for_block(self.block_idx)
     }
 
+    /// Used by tests in this module.
+    #[allow(dead_code)]
     pub fn hit_test(&self, col: u16, row: u16) -> Option<ImageHit> {
         if col >= self.rect.x
             && col < self.rect.x + self.rect.width

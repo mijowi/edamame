@@ -629,6 +629,9 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             if let Some((sa, sb)) = selection_bytes {
                 let setext_revealed = reveal_raw && is_setext && in_cursor_block;
                 let wrapped_revealed = reveal_raw && wrapped_sub_idx_opt.is_some();
+                // Reads as three separate suppression cases; clippy's
+                // collapse hides which condition gates which.
+                #[allow(clippy::nonminimal_bool)]
                 if !(reveal_raw && virtual_idx == cursor_rendered_line && code_block_allows_reveal)
                     && !setext_revealed
                     && !wrapped_revealed
@@ -1093,6 +1096,7 @@ fn raw_line_byte_start(block_source: &str, line_idx: usize) -> usize {
 /// selection byte range, and highlights only the rendered cols that
 /// correspond to selected bytes.  Falls back to "whole line" highlight for
 /// blocks where the per-line mapping can't be determined cleanly.
+#[allow(clippy::too_many_arguments)]
 fn paint_selection_overlay(
     editor: &EditorState,
     buf: &mut TuiBuf,
@@ -1245,6 +1249,7 @@ fn paint_selection_overlay(
 
 /// Paint `sel_bg` onto the rendered cells for rendered char cols in
 /// `[start_col, end_col)`, walking each visual row of the wrapped line.
+#[allow(clippy::too_many_arguments)]
 fn paint_cols_on_line(
     line: &Line<'_>,
     buf: &mut TuiBuf,
@@ -1425,7 +1430,7 @@ fn cursor_position_in_block(
 
     // Cursor is at or past the end.
     let last_line_idx = raw_source.split('\n').count().saturating_sub(1);
-    let last_line = raw_source.split('\n').last().unwrap_or("");
+    let last_line = raw_source.split('\n').next_back().unwrap_or("");
     (last_line_idx, last_line.chars().count())
 }
 
@@ -1494,10 +1499,10 @@ fn raw_list_marker_char_width(raw_text: &str) -> Option<usize> {
     Some(indent_chars + marker_len + task_len)
 }
 
-/// Width (in chars) of the rendered list-item marker — leading whitespace
-/// + `• ` / padded digits + `. ` plus an optional trailing `[ ] ` task
-/// prefix.  Returns `None` when the rendered line doesn't start with a
-/// recognizable list marker.
+/// Width (in chars) of the rendered list-item marker: leading whitespace,
+/// then `• ` or padded digits with `. `, plus an optional trailing
+/// `[ ] ` task prefix.  Returns `None` when the rendered line doesn't
+/// start with a recognizable list marker.
 fn rendered_list_marker_char_width(line: &ratatui::text::Line<'_>) -> Option<usize> {
     let text: String = line.spans.iter().flat_map(|s| s.content.chars()).collect();
     let chars: Vec<char> = text.chars().collect();

@@ -218,12 +218,13 @@ pub fn attach_trailing_tui_columns_comments(blocks: &mut Vec<Block>) {
 /// `Block::List`, and `parsed_doc` then emits the inter-block gap as a
 /// rendered blank line via the same path it uses for any other top-level
 /// gap.  For ordered lists, the post-split groups keep their source
-/// numbers as `start`, so a list like `1. a / 2. b / / 3. c` keeps its
-/// continuous numbering on screen, while a list like `1. a / 2. b / /
-/// 1. c` correctly restarts at 1 in the lower group.  Blank lines that
-/// fall inside a `` ``` ``/`~~~` fence inside an item are skipped — a
-/// code block embedded in a list item must not fragment its enclosing
-/// list, however many blank lines its content contains.
+/// numbers as `start`, so a list whose source items number `1. a, 2. b`
+/// then (after a blank) `3. c` keeps its continuous numbering on screen,
+/// while a list whose source restarts at `1. c` after the blank
+/// correctly restarts at 1 in the lower group.  Blank lines that fall
+/// inside a `` ``` ``/`~~~` fence inside an item are skipped: a code
+/// block embedded in a list item must not fragment its enclosing list,
+/// however many blank lines its content contains.
 ///
 /// Mutates both `blocks` and `ranges` so the 1:1 invariant relied on by
 /// `parsed_doc` is preserved.  For each split, the group's `start` is
@@ -710,9 +711,11 @@ where
 
 // ─── Table parsing ────────────────────────────────────────────────────────────
 
-fn parse_table<'a, I>(
-    events: &mut std::iter::Peekable<I>,
-) -> (Vec<Vec<Inline>>, Vec<Vec<Vec<Inline>>>, usize)
+/// Output of [`parse_table`]: `(headers, rows, col_count)` where each
+/// header / row cell is a `Vec<Inline>`.
+type ParsedTable = (Vec<Vec<Inline>>, Vec<Vec<Vec<Inline>>>, usize);
+
+fn parse_table<'a, I>(events: &mut std::iter::Peekable<I>) -> ParsedTable
 where
     I: Iterator<Item = Event<'a>>,
 {

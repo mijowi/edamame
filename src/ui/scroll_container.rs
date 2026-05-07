@@ -61,6 +61,7 @@ pub struct ScrollContainerState {
 }
 
 impl ScrollContainerState {
+    #[allow(dead_code)] // used by tests in this module
     pub fn new() -> Self {
         Self::default()
     }
@@ -232,6 +233,7 @@ pub fn centered_rect_for_content(content: ContentSize, area: Rect) -> Rect {
 /// The anchor sits at one-eighth of the area height (capped at 4 rows
 /// from the top to keep the offset small on tall terminals), then is
 /// clamped so the modal still fits inside `area`.
+#[allow(dead_code)] // used by tests in this module
 pub fn top_anchored_rect_for_content(content: ContentSize, area: Rect) -> Rect {
     let (modal_width, modal_height) = modal_dimensions_for(content, area);
     let x = area.x + (area.width.saturating_sub(modal_width)) / 2;

@@ -75,8 +75,10 @@ pub enum DecodeStatus {
     Ready(Arc<DynamicImage>),
     /// Decode failed (IO, remote-blocked, corrupt bytes).  Never retried
     /// automatically — the user has to reopen the document or move a
-    /// file into place for the cache to be invalidated.
-    Failed(String),
+    /// file into place for the cache to be invalidated.  The message is
+    /// captured for future surfacing (e.g. status-bar diagnostics) but
+    /// has no live consumer yet.
+    Failed(#[allow(dead_code)] String),
 }
 
 /// Metadata for a resize-encode request that is currently being worked on
@@ -191,9 +193,11 @@ impl ImageCache {
         true
     }
 
-    /// Record a successful decode.  Called on `AppEvent::ImageReady`.
-    /// Drops any stale protocol entries for this URL so the next
-    /// `get_protocol` call rebuilds from the new pixels.
+    /// Record a successful decode.  Called on `AppEvent::ImageReady` from
+    /// integration tests in `tests/`.  Production code uses
+    /// `set_decoded_with_prebuilt` so the halfblocks scratch is also
+    /// captured.
+    #[allow(dead_code)]
     pub fn set_decoded(&mut self, url: &str, image: DynamicImage) {
         self.set_decoded_with_prebuilt(url, image, None);
     }
@@ -229,7 +233,9 @@ impl ImageCache {
         self.prebuilt_scratches.retain(|(u, _, _), _| u != url);
     }
 
-    /// Look up the decode status for `url`.
+    /// Look up the decode status for `url`.  Used by integration tests in
+    /// `tests/`.
+    #[allow(dead_code)]
     pub fn status(&self, url: &str) -> Option<&DecodeStatus> {
         self.decoded.get(url)
     }
@@ -370,7 +376,9 @@ impl ImageCache {
     /// Drop every protocol entry, e.g. on terminal resize.  Pending
     /// requests remain in the queue (the worker will still produce
     /// responses for them); those responses become orphan pops and are
-    /// silently discarded by `apply_resize_response`.
+    /// silently discarded by `apply_resize_response`.  Used by tests in
+    /// this crate.
+    #[allow(dead_code)]
     pub fn invalidate_protocols(&mut self) {
         self.protocols.clear();
         // Prebuilt scratches are keyed by the old `(width, height)` too,
@@ -383,14 +391,8 @@ impl ImageCache {
     /// when scaled to fit within `max_width_cells × max_height_cells`
     /// cells with `font_size` pixels per cell (width, height), preserving
     /// aspect ratio.  Returns `None` when the image hasn't been decoded
-    /// yet — callers should fall back to the configured
-    /// `image_max_height` in that case so `per_block_own` stays stable
-    /// until real dimensions are known.
-    ///
-    /// Wide images (w >> h) produce a result less than
-    /// `max_height_cells`; that's the whole point of this helper — let
-    /// `render_image_block` emit a shorter block so the user doesn't
-    /// see extra bottom padding below a wide image.
+    /// yet.  Used by tests in this crate.
+    #[allow(dead_code)]
     pub fn aspect_rows(
         &self,
         url: &str,

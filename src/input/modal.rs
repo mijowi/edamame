@@ -12,5 +12,4 @@ pub mod default;
 /// implementation is a deferred feature.
 pub trait ModalHandler {
     fn handle(&mut self, event: KeyEvent, state: &EditorState) -> Option<Action>;
-    fn name(&self) -> &'static str;
 }

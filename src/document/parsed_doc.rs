@@ -176,8 +176,9 @@ impl ParsedDoc {
     }
 
     /// Sum of visual rows occupied by rendered lines `[first..=last]`
-    /// at `width`.  O(1) after the cache is populated.  Used by
-    /// `EditorState::visual_rows_between`.
+    /// at `width`.  O(1) after the cache is populated.  Used by tests
+    /// in this crate.
+    #[allow(dead_code)]
     pub fn visual_rows_between(&self, first: usize, last: usize, width: usize) -> usize {
         if first > last || self.lines.is_empty() {
             return 0;
@@ -286,6 +287,10 @@ impl ParsedDoc {
     /// to reserve exactly the rows each decoded image will occupy
     /// (aspect-aware).  When the callback returns `None` for a URL (or is
     /// itself `None`), the renderer falls back to `image_max_height`.
+    // Argument count is high because the parsed-doc build needs every
+    // input the renderer cares about; bundling them into a struct is a
+    // Phase-C task, not a Phase-A cleanup.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_with_overrides(
         source: &str,
         theme: &Theme,
@@ -664,6 +669,7 @@ fn content_end_of_block(source: &str, block: &Range<usize>) -> usize {
 fn build_extended_ranges(original: &[Range<usize>], total_bytes: usize) -> Vec<Range<usize>> {
     if original.is_empty() {
         if total_bytes > 0 {
+            #[allow(clippy::single_range_in_vec_init)]
             return vec![0..total_bytes];
         }
         return Vec::new();

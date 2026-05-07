@@ -57,7 +57,8 @@ impl LinkLayoutSnapshot {
     /// rect.  Callers typically walk a `&[LinkLayoutSnapshot]` with
     /// `iter().find_map(|s| s.hit_test(col, row))` to get the active
     /// link, since multiple snapshots can exist for wrapped / stacked
-    /// links.
+    /// links. Used by tests in this module.
+    #[allow(dead_code)]
     pub fn hit_test(&self, col: u16, row: u16) -> Option<&Self> {
         if col >= self.rect.x
             && col < self.rect.x + self.rect.width

@@ -6,7 +6,7 @@ pub mod table_layout;
 
 pub use ast::{inlines_to_plain, Block, Inline};
 pub use parser::{
-    attach_trailing_tui_columns_comments, parse, parse_raw, promote_diagram_code_blocks,
-    promote_html_comments, promote_image_paragraphs, split_lists_on_blank_lines,
+    parse, parse_raw, promote_diagram_code_blocks, promote_html_comments, promote_image_paragraphs,
+    split_lists_on_blank_lines,
 };
 pub use renderer::{ImageRowOverride, Renderer};

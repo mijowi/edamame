@@ -93,9 +93,10 @@ impl KeybindsState {
         state
     }
 
-    /// The action of the currently focused row, if any.  Used by
-    /// tests so the row layout can be queried without exposing the
-    /// internal `Row` enum.
+    /// The action of the currently focused row, if any.  Used by tests
+    /// in this module so the row layout can be queried without exposing
+    /// the internal `Row` enum.
+    #[allow(dead_code)]
     pub fn focused_action(&self) -> Option<Action> {
         match self.rows.get(self.focused) {
             Some(Row::Binding { action, .. }) => Some(action.clone()),
@@ -104,8 +105,9 @@ impl KeybindsState {
     }
 
     /// Move `focused` to the row whose `Binding.action == target`.
-    /// Returns true on success.  Used by tests + by the
-    /// `dispatch_palette_action` smoke test.
+    /// Returns true on success.  Used by tests in this module and by
+    /// integration tests in `tests/palette.rs`.
+    #[allow(dead_code)]
     pub fn focus_action(&mut self, target: &Action) -> bool {
         for (idx, row) in self.rows.iter().enumerate() {
             if let Row::Binding { action, .. } = row {

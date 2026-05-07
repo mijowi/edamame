@@ -54,50 +54,6 @@ pub fn top_level_block_ranges(source: &str) -> Vec<Range<usize>> {
     ranges
 }
 
-/// Build a covering partition of `0..total_bytes` from `block_ranges`.
-///
-/// Gaps between blocks (blank lines, leading/trailing whitespace) are merged
-/// into the adjacent block's range:
-/// - Leading gap → first block
-/// - Gap between blocks → previous block (its range is extended forward)
-/// - Trailing gap → last block
-///
-/// Returns one extended `Range<usize>` per block, non-overlapping, covering
-/// `0..total_bytes` completely. If `block_ranges` is empty and `total_bytes > 0`,
-/// returns a single range `0..total_bytes`.
-pub fn covering_ranges(block_ranges: &[Range<usize>], total_bytes: usize) -> Vec<Range<usize>> {
-    if total_bytes == 0 {
-        return Vec::new();
-    }
-    if block_ranges.is_empty() {
-        return vec![0..total_bytes];
-    }
-
-    let n = block_ranges.len();
-    let mut result = Vec::with_capacity(n);
-
-    for i in 0..n {
-        // Extended start: the first block starts at 0 (covering any leading
-        // whitespace); subsequent blocks start at their own original start.
-        let start = if i == 0 { 0 } else { block_ranges[i].start };
-
-        // Extended end: stretch to the start of the next block (absorbing any
-        // gap between this block and the next). The last block stretches to
-        // total_bytes.
-        let end = if i + 1 < n {
-            block_ranges[i + 1].start
-        } else {
-            total_bytes.max(block_ranges[i].end)
-        };
-
-        // Sanity: never allow an inverted range (shouldn't happen for valid input).
-        let start = start.min(end);
-        result.push(start..end);
-    }
-
-    result
-}
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn is_block_tag(tag: &Tag<'_>) -> bool {
@@ -176,69 +132,5 @@ mod tests {
         let src = "---\n";
         let ranges = top_level_block_ranges(src);
         assert_eq!(ranges.len(), 1);
-    }
-
-    #[test]
-    fn covering_ranges_no_gaps() {
-        // Block ranges already abut perfectly.
-        let blocks = vec![0..5, 5..10];
-        let covered = covering_ranges(&blocks, 10);
-        assert_eq!(covered, vec![0..5, 5..10]);
-    }
-
-    #[test]
-    fn covering_ranges_with_gaps() {
-        // Gap between blocks: byte 8 (between 0..8 and 9..15).
-        let blocks = vec![0..8, 9..15];
-        let covered = covering_ranges(&blocks, 15);
-        // Gap byte 8 is absorbed into block 0's extended range (its end stretches
-        // to the start of block 1).
-        assert_eq!(covered[0], 0..9);
-        assert_eq!(covered[1], 9..15);
-    }
-
-    #[test]
-    fn covering_ranges_leading_gap() {
-        // Document starts with a blank line (byte 0 is '\n'), first block at byte 1.
-        let blocks = vec![1..8];
-        let covered = covering_ranges(&blocks, 8);
-        assert_eq!(covered[0], 0..8); // starts at 0
-    }
-
-    #[test]
-    fn covering_ranges_trailing_gap() {
-        let blocks = vec![0..8];
-        let covered = covering_ranges(&blocks, 10); // 2 bytes after the block
-        assert_eq!(covered[0], 0..10);
-    }
-
-    #[test]
-    fn covering_ranges_empty_blocks() {
-        let covered = covering_ranges(&[], 5);
-        assert_eq!(covered, vec![0..5]);
-    }
-
-    #[test]
-    fn covering_ranges_zero_bytes() {
-        let covered = covering_ranges(&[], 0);
-        assert!(covered.is_empty());
-    }
-
-    #[test]
-    fn covering_covers_all_bytes() {
-        let src = "# Hello\n\nWorld\n\n---\n";
-        let ranges = top_level_block_ranges(src);
-        let covered = covering_ranges(&ranges, src.len());
-        // Every byte 0..src.len() must be in exactly one range.
-        let mut seen = vec![false; src.len()];
-        for r in &covered {
-            for b in r.clone() {
-                assert!(!seen[b], "byte {} covered twice", b);
-                seen[b] = true;
-            }
-        }
-        for (i, s) in seen.iter().enumerate() {
-            assert!(s, "byte {} not covered", i);
-        }
     }
 }

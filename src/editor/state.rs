@@ -32,32 +32,9 @@ impl Default for CursorBlink {
 }
 
 impl CursorBlink {
-    pub fn new(blinking: bool) -> Self {
-        Self {
-            blinking,
-            ..Self::default()
-        }
-    }
-
     /// Whether the cursor should be painted this frame.
     pub fn is_visible(&self) -> bool {
         !self.blinking || self.visible
-    }
-
-    /// Enable or disable blinking.  When disabled the cursor is always
-    /// visible; when re-enabled the phase resets to visible.
-    pub fn set_blinking(&mut self, on: bool) {
-        self.blinking = on;
-        if !on {
-            self.visible = true;
-        } else {
-            self.visible = true;
-            self.last_toggle = Instant::now();
-        }
-    }
-
-    pub fn is_blinking(&self) -> bool {
-        self.blinking
     }
 
     /// Reset the blink cycle: cursor becomes visible and the timer restarts.
@@ -243,17 +220,22 @@ pub struct EditorState {
 pub const RAW_REVEAL_DELAY: std::time::Duration = std::time::Duration::from_millis(120);
 
 impl EditorState {
-    /// Create an `EditorState` from a `Buffer` and a theme.
+    /// Create an `EditorState` from a `Buffer` and a theme.  Used by
+    /// integration tests in `tests/`; production callers go through
+    /// `new_with_image_config` so the image layout uses real terminal data.
     ///
     /// # Panics
     ///
     /// Panics if the theme reference has an insufficiently long lifetime.
     /// Callers typically pass `Box::leak(Box::new(Theme::default()))` or a
     /// static reference.
+    #[allow(dead_code)]
     pub fn new(buffer: Buffer, theme: &'static Theme) -> Self {
         Self::new_with_config(buffer, theme, true, true, 24)
     }
 
+    /// Used by integration tests in `tests/` and by `ui::image_view` tests.
+    #[allow(dead_code)]
     pub fn new_with_config(
         buffer: Buffer,
         theme: &'static Theme,
@@ -344,6 +326,8 @@ impl EditorState {
 
     // ── Buffer access ─────────────────────────────────────────────
 
+    /// Used by tests in this crate.
+    #[allow(dead_code)]
     pub fn contents(&self) -> String {
         self.buffer.contents()
     }
@@ -480,7 +464,9 @@ impl EditorState {
     }
 
     /// True if a column-border drag has just released and the App still
-    /// needs to decide whether to commit (or open the warning modal).
+    /// needs to decide whether to commit (or open the warning modal). Used
+    /// by integration tests in `tests/`.
+    #[allow(dead_code)]
     pub fn has_pending_column_widths(&self) -> bool {
         self.pending_column_widths_commit.is_some()
     }
@@ -568,12 +554,6 @@ impl EditorState {
         } else {
             false
         }
-    }
-
-    /// Set the cursor offset and clamp it to buffer bounds.
-    pub(crate) fn set_cursor(&mut self, offset: usize) {
-        self.cursor.offset = offset;
-        self.cursor.clamp(&self.buffer);
     }
 
     /// Apply an edit delta to the buffer, record it in history, mark dirty,
@@ -808,9 +788,9 @@ impl EditorState {
     }
 
     /// Sum of visual rows for rendered lines `first..=last`, wrapped at
-    /// `width`.  O(1) after `ParsedDoc`'s per-frame visual-row cache is
-    /// populated; the historical loop here ran the wrap algorithm
-    /// inline on every call.
+    /// `width`.  Delegates to the per-frame visual-row cache.  Used by
+    /// tests in this crate.
+    #[allow(dead_code)]
     fn visual_rows_between(&self, first: usize, last: usize, width: usize) -> usize {
         self.parsed.visual_rows_between(first, last, width)
     }

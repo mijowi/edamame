@@ -159,16 +159,7 @@ fn longest_word_chars(text: &str) -> usize {
 /// trailing border we fall back to plain text and append a `…` to signal
 /// the truncation.
 fn truncate_to_width(text: &str, width: usize) -> String {
-    let mut out = String::with_capacity(width);
-    let mut count = 0usize;
-    for ch in text.chars() {
-        if count >= width {
-            break;
-        }
-        out.push(ch);
-        count += 1;
-    }
-    out
+    text.chars().take(width).collect()
 }
 
 /// Callback used by the renderer to look up the aspect-aware row count
@@ -252,6 +243,8 @@ impl<'t> Renderer<'t> {
         self
     }
 
+    /// Used by tests in this module and `ui::preview`.
+    #[allow(dead_code)]
     pub fn with_code_wrap(mut self, wrap: bool) -> Self {
         self.code_wrap = wrap;
         self
@@ -278,7 +271,10 @@ impl<'t> Renderer<'t> {
         self
     }
 
-    /// Render a list of top-level blocks to styled lines.
+    /// Render a list of top-level blocks to styled lines. Used by tests
+    /// in this module and `ui::preview`; production code uses
+    /// `render_with_counts` so it also gets per-block line counts.
+    #[allow(dead_code)]
     pub fn render(&self, blocks: &[Block]) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         for block in blocks {
@@ -471,6 +467,9 @@ impl<'t> Renderer<'t> {
             }
         }
 
+        // Reads more clearly as "non-empty and not just a single whitespace span";
+        // collapsing into a single negation hides the intent.
+        #[allow(clippy::nonminimal_bool)]
         if !current_spans.is_empty()
             && !(current_spans.len() == 1 && current_spans[0].content.trim().is_empty())
         {
@@ -961,6 +960,9 @@ impl<'t> Renderer<'t> {
         for sub in 0..row_height {
             let mut spans: Vec<Span<'static>> = Vec::with_capacity(col_count * 4 + 1);
             spans.push(Span::styled("│", border_style));
+            // The body indexes both `widths` and `cell_rows` per `i`, so
+            // `enumerate()` doesn't simplify it.
+            #[allow(clippy::needless_range_loop)]
             for i in 0..col_count {
                 let width = widths.get(i).copied().unwrap_or(MIN_COL_WIDTH);
                 let row: &[StyledChar] = cell_rows[i].get(sub).map(|v| v.as_slice()).unwrap_or(&[]);

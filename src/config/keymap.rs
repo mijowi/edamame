@@ -329,34 +329,20 @@ pub enum KeyMapError {
     ConflictingBinding { key: String, action: String },
 }
 
-/// Parse a human-readable key string such as `"ctrl+q"`, `"up"`, `"page_up"`,
-/// `"ctrl+shift+z"` into a crossterm `KeyEvent`.
-pub fn parse_key(s: &str) -> Result<KeyEvent, KeyMapError> {
-    let lower = s.to_lowercase();
-    let parts: Vec<&str> = lower.split('+').collect();
-
-    let mut modifiers = KeyModifiers::NONE;
-    let mut key_part = "";
-
-    for (i, part) in parts.iter().enumerate() {
-        match *part {
-            "ctrl" => modifiers |= KeyModifiers::CONTROL,
-            "alt" => modifiers |= KeyModifiers::ALT,
-            "shift" => modifiers |= KeyModifiers::SHIFT,
-            _ => {
-                if i == parts.len() - 1 {
-                    key_part = part;
-                } else {
-                    return Err(KeyMapError::UnparseableKey(s.to_owned()));
-                }
-            }
-        }
+/// Parse a single token as a `KeyModifiers` flag, or return `None` if it
+/// is not a modifier name.
+fn parse_modifier(part: &str) -> Option<KeyModifiers> {
+    match part {
+        "ctrl" => Some(KeyModifiers::CONTROL),
+        "alt" => Some(KeyModifiers::ALT),
+        "shift" => Some(KeyModifiers::SHIFT),
+        _ => None,
     }
+}
 
-    if key_part.is_empty() {
-        return Err(KeyMapError::UnparseableKey(s.to_owned()));
-    }
-
+/// Parse a `key_part` token (everything after the modifiers) into a
+/// `KeyCode`, or return `None` if the token is not a recognised key.
+fn parse_key_code(key_part: &str) -> Option<KeyCode> {
     let code = match key_part {
         "up" => KeyCode::Up,
         "down" => KeyCode::Down,
@@ -386,14 +372,44 @@ pub fn parse_key(s: &str) -> Result<KeyEvent, KeyMapError> {
         "f10" => KeyCode::F(10),
         "f11" => KeyCode::F(11),
         "f12" => KeyCode::F(12),
-        // Single character
-        c if c.chars().count() == 1 => {
-            let ch = c.chars().next().unwrap();
-            KeyCode::Char(ch)
+        _ => {
+            // Single Unicode scalar value — anything else is unparseable.
+            let mut chars = key_part.chars();
+            let first = chars.next()?;
+            if chars.next().is_some() {
+                return None;
+            }
+            KeyCode::Char(first)
         }
-        _ => return Err(KeyMapError::UnparseableKey(s.to_owned())),
     };
+    Some(code)
+}
 
+/// Parse a human-readable key string such as `"ctrl+q"`, `"up"`, `"page_up"`,
+/// `"ctrl+shift+z"` into a crossterm `KeyEvent`.
+pub fn parse_key(s: &str) -> Result<KeyEvent, KeyMapError> {
+    let lower = s.to_lowercase();
+    let parts: Vec<&str> = lower.split('+').collect();
+
+    let mut modifiers = KeyModifiers::NONE;
+    let mut key_part = "";
+
+    let last_idx = parts.len().saturating_sub(1);
+    for (i, part) in parts.iter().enumerate() {
+        if let Some(m) = parse_modifier(part) {
+            modifiers |= m;
+        } else if i == last_idx {
+            key_part = part;
+        } else {
+            return Err(KeyMapError::UnparseableKey(s.to_owned()));
+        }
+    }
+
+    if key_part.is_empty() {
+        return Err(KeyMapError::UnparseableKey(s.to_owned()));
+    }
+
+    let code = parse_key_code(key_part).ok_or_else(|| KeyMapError::UnparseableKey(s.to_owned()))?;
     Ok(KeyEvent::new(code, modifiers))
 }
 
@@ -578,9 +594,6 @@ impl KeyMap {
             .find(|(_, a)| *a == action)
             .map(|(k, _)| *k)
     }
-
-    /// Iterate every `(KeyEvent, Action)` binding.  Exposed so the
-    /// cheat-sheet can list all bindings when asked.
 
     /// Rebind `action` to `new_key` (parsed from `parse_key`-style
     /// syntax).  If `new_key` is already bound to a *different*

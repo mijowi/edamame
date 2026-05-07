@@ -323,6 +323,7 @@ impl<'a> StatefulWidget for InsertTableView<'a> {
 
 /// Render `label    [ value ]` where the field value is highlighted
 /// when the row is focused.  Caller supplies the row's y position.
+#[allow(clippy::too_many_arguments)]
 fn render_field_row(
     buf: &mut Buffer,
     inner: Rect,

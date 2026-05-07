@@ -466,19 +466,14 @@ pub struct EditorConfig {
 }
 
 /// How the bottom status region is laid out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StatusBarLayout {
     /// Two rows: hint line above, persistent status below.  Default.
+    #[default]
     TwoLine,
     /// One row: persistent status only; hints via the `?` popover.
     Compact,
-}
-
-impl Default for StatusBarLayout {
-    fn default() -> Self {
-        Self::TwoLine
-    }
 }
 
 impl Default for EditorConfig {
@@ -553,10 +548,11 @@ impl Default for TableConfig {
 }
 
 /// Policy for fetching images referenced by `http(s)://` URLs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RemoteImagePolicy {
     /// Prompt the user the first time a document with remote images is opened.
+    #[default]
     Ask,
     /// Always fetch remote images without prompting.
     Always,
@@ -564,30 +560,19 @@ pub enum RemoteImagePolicy {
     Never,
 }
 
-impl Default for RemoteImagePolicy {
-    fn default() -> Self {
-        Self::Ask
-    }
-}
-
 /// Master switch for inline image rendering.  `Ask` prompts the user the
 /// first time a document with images is opened; `Always` renders without
 /// prompting; `Never` keeps the `[Image: alt]` placeholder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ImagesEnabled {
     /// Prompt the user the first time a document with images is opened.
+    #[default]
     Ask,
     /// Always render images inline.
     Always,
     /// Never render images — always fall back to the `[Image: alt]` placeholder.
     Never,
-}
-
-impl Default for ImagesEnabled {
-    fn default() -> Self {
-        Self::Ask
-    }
 }
 
 /// Image-rendering configuration.
@@ -675,10 +660,10 @@ impl Default for HtmlExportConfig {
 /// command palette as "Export <name>".  `command` is run verbatim with
 /// two placeholders substituted:
 ///
-///   * `{html}` — path to the just-generated HTML file (temp file owned
-///                by the exporter; deleted after the command exits).
-///   * `{out}`  — path to the final output file (source-stem with the
-///                configured `extension` appended).
+/// * `{html}` — path to the just-generated HTML file (temp file owned
+///   by the exporter; deleted after the command exits).
+/// * `{out}` — path to the final output file (source-stem with the
+///   configured `extension` appended).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomExportEntry {
     /// Human-readable label — appears as "Export <name>" in the palette.

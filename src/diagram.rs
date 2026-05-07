@@ -13,4 +13,8 @@
 
 pub mod mermaid;
 
+// `render_mermaid_svg` is consumed via `crate::diagram::` from `src/export/`,
+// but rustc misreports it as unused on this re-export. See similar note in
+// `src/config.rs`.
+#[allow(unused_imports)]
 pub use mermaid::{render_mermaid_svg, resolve_mermaid, synthetic_url, warm_fontdb, DiagramSource};

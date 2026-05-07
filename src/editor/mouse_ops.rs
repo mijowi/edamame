@@ -1053,6 +1053,10 @@ pub fn visual_selection_to_rendered_text(sel: VisualSelection, lines: &[Line<'_>
     let end_line = end_line.min(lines.len() - 1);
 
     let mut out = String::new();
+    // Iterate by index because the body needs to compare `idx` against
+    // both `start_line` and `end_line`; an `enumerate().skip(...)` shape
+    // is less direct.
+    #[allow(clippy::needless_range_loop)]
     for idx in start_line..=end_line {
         let line = &lines[idx];
         let chars: Vec<char> = line.spans.iter().flat_map(|s| s.content.chars()).collect();

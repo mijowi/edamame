@@ -46,6 +46,7 @@ impl ModalStack {
         self.inner.is_empty()
     }
 
+    #[allow(dead_code)] // used by tests in this module
     pub fn len(&self) -> usize {
         self.inner.len()
     }
@@ -64,6 +65,8 @@ impl ModalStack {
     }
 
     /// True if any modal of type `T` is currently on the stack.
+    /// Used by tests in this module.
+    #[allow(dead_code)]
     pub fn contains<T: Modal + 'static>(&self) -> bool {
         self.inner.iter().any(|m| m.as_any().is::<T>())
     }

@@ -10,8 +10,9 @@ pub mod cache;
 pub mod loader;
 pub mod render;
 
-pub use cache::{
-    aspect_rows_of, render_halfblocks_scratch, DecodeStatus, ImageCache, ProtocolPair,
-};
-pub use loader::{resolve, ImageLoadError, LoadedImage};
+// `DecodeStatus` is used by integration tests in tests/editing.rs.
+#[allow(unused_imports)]
+pub use cache::DecodeStatus;
+pub use cache::{aspect_rows_of, render_halfblocks_scratch, ImageCache};
+pub use loader::{resolve, LoadedImage};
 pub use render::paint_halfblocks_partial;

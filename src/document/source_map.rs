@@ -43,7 +43,8 @@ pub struct SourceMap {
     /// uncached version used.
     block_to_rendered_range: Vec<Range<usize>>,
 
-    /// Total source bytes (for proptest assertions).
+    /// Total source bytes (for proptest assertions in `tests/source_map.rs`).
+    #[allow(dead_code)]
     pub total_bytes: usize,
 }
 
@@ -118,11 +119,15 @@ impl SourceMap {
     }
 
     /// Total number of rendered lines tracked by this map.
+    /// Used by integration tests in `tests/source_map.rs`.
+    #[allow(dead_code)]
     pub fn rendered_line_count(&self) -> usize {
         self.rendered_to_block.len()
     }
 
-    /// Total number of blocks.
+    /// Total number of blocks. Used by integration tests in
+    /// `tests/source_map.rs`.
+    #[allow(dead_code)]
     pub fn block_count(&self) -> usize {
         self.extended_ranges.len()
     }

@@ -24,7 +24,8 @@ impl Buffer {
     }
 
     /// Create a buffer pre-filled with `text` and no associated file.
-    /// Useful for tests and programmatic document creation.
+    /// Used by integration tests in `tests/`.
+    #[allow(dead_code, clippy::should_implement_trait)]
     pub fn from_str(text: &str) -> Self {
         Self {
             rope: Rope::from_str(text),
@@ -57,6 +58,8 @@ impl Buffer {
     }
 
     /// Save to an explicit path and update the buffer's associated path.
+    /// Used by integration tests in `tests/`.
+    #[allow(dead_code)]
     pub fn save_as(&mut self, path: &Path) -> Result<()> {
         let content = self.rope.to_string();
         std::fs::write(path, &content)
@@ -131,6 +134,8 @@ impl Buffer {
     }
 
     /// Insert a single char at char offset `char_idx`.
+    /// Used by tests in this crate.
+    #[allow(dead_code)]
     pub fn insert_char(&mut self, char_idx: usize, ch: char) {
         self.rope.insert_char(char_idx, ch);
     }
@@ -141,6 +146,8 @@ impl Buffer {
     }
 
     /// Remove a single char at `char_idx` (if in bounds).
+    /// Used by tests in this crate.
+    #[allow(dead_code)]
     pub fn remove_char(&mut self, char_idx: usize) {
         if char_idx < self.rope.len_chars() {
             self.rope.remove(char_idx..char_idx + 1);

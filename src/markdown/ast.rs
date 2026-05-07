@@ -2,6 +2,9 @@ use pulldown_cmark::HeadingLevel;
 
 // ─── Block-level nodes ────────────────────────────────────────────────────────
 
+// `Block::CodeBlock` and `Block::BlockQuote` are intentional Markdown
+// terminology, not stuttering.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Block {
     Heading {
