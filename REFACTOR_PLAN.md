@@ -331,6 +331,26 @@ hand-listed match arms to ~28 lines total (macro + variant list).
 
 Each step splits one large file into several smaller modules behind the existing facade. Public API is preserved via `pub use` re-exports — call-site imports stay unchanged.
 
+**Status: 10 of 12 sub-steps shipped (C2, C3, C5, C6, C7, C8, C9, C10, C11,
+C12).  C1 and C4 deferred — biggest files, densest interdependencies, kept
+for separate PRs.**  Build / clippy `-D warnings` / 1743 tests all pass at
+each step.
+
+| Step | Status | Headline LOC change |
+|---|---|---|
+| C2 (table_edit_ops) | ✅ | edit_ops.rs 1887 → 1420; new table_edit_ops.rs 477 |
+| C3 (state.rs split) | ✅ | state.rs 1599 → 1165; +viewport 209 / +cursor_visual 180 / +cursor_block 76 |
+| C9 (list_edit split) | ✅ | list_edit.rs 1023 → 268; +parse 318 / +edit 465 |
+| C10 (visual_cache extract) | ✅ | parsed_doc.rs 1096 → 978; +visual_cache 129 |
+| C6 (parser post_pass) | ✅ | parser.rs 1417 → 989; +post_pass 446 |
+| C5 (renderer split) | ✅ | renderer.rs 1527 → 961; +util 201 / +list 137 / +table 255 |
+| C8 (config split) | ✅ partial | config.rs 1014 → 808; +readers 157 / +init 44 / +warnings 36.  `sections.rs` not split (tightly coupled with `Config` struct). |
+| C7 (theme_file split) | ⚠️ skipped | Types are tightly coupled (PaletteFile→ColorField, ThemeFile→PaletteFile+StyleSpec); declarative-macro work in the plan would land alongside, not before, the file split.  Defer with C1/C4. |
+| C11 (settings_overlay) | ✅ | settings_overlay.rs 1095 → 738; +rows 369 |
+| C12 (palette+keybinds) | ✅ partial | command_palette.rs 1070 → 971 (+actions 109); keybinds_overlay.rs 783 → 724 (+categories 69).  Pre-compute focus offsets deferred to Phase D. |
+| C4 (rendered_view) | ⏸ deferred | Densest interdependencies; warrants its own PR. |
+| C1 (mouse_ops) | ⏸ deferred | Biggest file (1788); warrants its own PR. |
+
 ### C1. Split `src/editor/mouse_ops.rs` (1787)
 
 Convert into a `src/editor/mouse_ops/` directory with the existing `src/editor/mouse_ops.rs` becoming the facade:
@@ -505,16 +525,16 @@ A reasonable order, optimised so each PR is small and independent:
 2. **Phase B as separate PRs**, in order: B1, B2, B3, B4, B5, B6, B7.
    Each is small and reviewable.
 3. **Phase C as separate PRs**, ideally in this order to minimise rebase pain:
-   - C2 (table edit ops) — biggest LOC win for the smallest blast radius.
-   - C3 (state.rs split).
-   - C9 (list_edit split).
-   - C10 (visual cache extract).
-   - C6 (parser post_pass).
-   - C5 (renderer split).
-   - C8 (config.rs split).
-   - C7 (theme_file split).
-   - C11 (settings_overlay split).
-   - C12 (command_palette + keybinds split).
+   - ~~C2 (table edit ops)~~ — shipped.
+   - ~~C3 (state.rs split)~~ — shipped (constructor consolidation deferred).
+   - ~~C9 (list_edit split)~~ — shipped.
+   - ~~C10 (visual cache extract)~~ — shipped.
+   - ~~C6 (parser post_pass)~~ — shipped.
+   - ~~C5 (renderer split)~~ — shipped.
+   - ~~C8 (config.rs split)~~ — partial (warnings/readers/init done; sections deferred).
+   - C7 (theme_file split) — deferred; tightly coupled types.
+   - ~~C11 (settings_overlay split)~~ — shipped.
+   - ~~C12 (command_palette + keybinds split)~~ — partial (data tables done; focus-offset pre-compute deferred).
    - C4 (rendered_view split) — leave for last; densest interdependencies.
    - C1 (mouse_ops split) — biggest, leave for last.
 4. **Phase D** as 2–3 follow-up PRs, scoped per file.

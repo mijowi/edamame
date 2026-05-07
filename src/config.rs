@@ -3,9 +3,12 @@
 // `crate::config::config::Config`.  See CLAUDE.md "Module Facade Pattern".
 #[allow(clippy::module_inception)]
 pub mod config;
+pub mod init;
 pub mod keymap;
+pub mod readers;
 pub mod theme;
 pub mod theme_file;
+pub mod warnings;
 
 // `pub use` re-exports through the facade. Rustc reports `CustomExportEntry`
 // as "unused" because the inner `pub mod config` shadows the parent name in

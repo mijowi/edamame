@@ -5,6 +5,7 @@ pub mod history;
 pub mod parsed_doc;
 pub mod selection;
 pub mod source_map;
+pub mod visual_cache;
 
 pub use buffer::Buffer;
 pub use cursor::Cursor;
