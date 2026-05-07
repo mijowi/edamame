@@ -59,13 +59,10 @@ pub(crate) enum AppEvent {
     LinkOpenResult(std::result::Result<(), String>),
 }
 
-/// Phase 9 generic modal prompt hosted on the hint line.  Phase 11
-/// (file-change detection) is the first consumer; landing the
-/// scaffolding here means later phases only need to populate the
-/// struct and wire the response back.  The `handler` fn is the single
-/// callback invoked when one of the chord keys is pressed — it
-/// receives the triggering `KeyCode` so the same prompt type can host
-/// multi-button flows.
+/// Generic modal prompt hosted on the hint line.
+/// The `handler` fn is the single callback invoked when one of the chord keys
+/// is pressed — it receives the triggering `KeyCode` so the same prompt type
+/// can host multiple-button flows.
 #[allow(dead_code)] // first consumer lands in Phase 11
 pub struct HintPrompt {
     pub prompt: String,
