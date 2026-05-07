@@ -4,6 +4,8 @@
 //! against a real `EditorState` and the `mouse_ops::apply` entry point used
 //! by the main app loop.
 
+#![allow(clippy::single_range_in_vec_init)]
+
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use edamame::config::Theme;
 use edamame::document::Buffer;
@@ -678,7 +680,7 @@ use edamame::ui::table_view::TableLayoutSnapshot;
 /// through a full render, because the headless `TestBackend` renderer isn't
 /// wired up in these mouse tests and the drag-flow logic is exercised
 /// entirely through the snapshot.
-fn fake_snapshot(
+struct FakeSnapshotSpec {
     table_byte_start: usize,
     table_byte_end: usize,
     col_count: usize,
@@ -687,16 +689,18 @@ fn fake_snapshot(
     row_ranges: Vec<std::ops::Range<u16>>,
     row_handle_col: Option<u16>,
     top_border_row: Option<u16>,
-) -> TableLayoutSnapshot {
+}
+
+fn fake_snapshot(spec: FakeSnapshotSpec) -> TableLayoutSnapshot {
     TableLayoutSnapshot {
-        table_byte_start,
-        table_byte_end,
-        col_count,
-        row_count,
-        col_ranges,
-        row_ranges,
-        row_handle_col,
-        top_border_row,
+        table_byte_start: spec.table_byte_start,
+        table_byte_end: spec.table_byte_end,
+        col_count: spec.col_count,
+        row_count: spec.row_count,
+        col_ranges: spec.col_ranges,
+        row_ranges: spec.row_ranges,
+        row_handle_col: spec.row_handle_col,
+        top_border_row: spec.top_border_row,
         header_row: None,
         delete_row_handle_col: None,
         bottom_border_row: None,
@@ -711,16 +715,16 @@ fn row_handle_drag_swaps_rows_in_buffer() {
 
     // Fabricate a snapshot whose row handle sits at x=0 and whose two data
     // rows occupy y=3 and y=5.  The column content spans x=2..5 and x=6..9.
-    let snap = fake_snapshot(
-        0,                // table_byte_start
-        src.len(),        // table_byte_end
-        2,                // col_count
-        4,                // row_count
-        vec![2..5, 6..9], // col_ranges
-        vec![3..4, 5..6], // row_ranges (data rows only)
-        Some(0),          // row_handle_col
-        Some(0),          // top_border_row
-    );
+    let snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: 0,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 4,
+        col_ranges: vec![2..5, 6..9],
+        row_ranges: vec![3..4, 5..6], // data rows only
+        row_handle_col: Some(0),
+        top_border_row: Some(0),
+    });
     let snapshots = [snap];
     let mut target: Option<mouse_ops::DragTarget> = None;
 
@@ -770,16 +774,16 @@ fn column_border_drag_writes_tui_columns_comment() {
 
     // Column content: col 0 at x=2..12, col 1 at x=13..23.  The interior
     // border sits at x=12 (col_ranges[0].end).
-    let snap = fake_snapshot(
-        0,
-        src.len(),
-        2,
-        3,
-        vec![2..12, 13..23],
-        vec![3..4],
-        None,
-        None,
-    );
+    let snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: 0,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 3,
+        col_ranges: vec![2..12, 13..23],
+        row_ranges: vec![3..4],
+        row_handle_col: None,
+        top_border_row: None,
+    });
     let snapshots = [snap];
     let mut target: Option<mouse_ops::DragTarget> = None;
 
@@ -837,16 +841,16 @@ fn column_border_drag_widens_table_and_leaves_neighbour_auto() {
 
     // Rendered layout: col 0 content area spans x = 1..6 (pipe + ' abc ' +
     // pipe), col 1 spans x = 7..15.  The interior border sits at x = 6.
-    let snap = fake_snapshot(
-        0,
-        src.len(),
-        2,
-        3,
-        vec![1..6, 7..15],
-        vec![3..4],
-        None,
-        None,
-    );
+    let snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: 0,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 3,
+        col_ranges: vec![1..6, 7..15],
+        row_ranges: vec![3..4],
+        row_handle_col: None,
+        top_border_row: None,
+    });
     let snapshots = [snap];
     let mut target: Option<mouse_ops::DragTarget> = None;
 
@@ -886,16 +890,16 @@ fn right_outer_border_drag_resizes_last_column() {
 
     // Rendered layout (natural widths): col 0 at x = 1..6, col 1 at x = 7..15.
     // The right outer border sits at x = 15.
-    let snap = fake_snapshot(
-        0,
-        src.len(),
-        2,
-        3,
-        vec![1..6, 7..15],
-        vec![3..4],
-        None,
-        None,
-    );
+    let snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: 0,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 3,
+        col_ranges: vec![1..6, 7..15],
+        row_ranges: vec![3..4],
+        row_handle_col: None,
+        top_border_row: None,
+    });
     let snapshots = [snap];
     let mut target: Option<mouse_ops::DragTarget> = None;
 
@@ -940,16 +944,16 @@ fn column_handle_drag_swaps_columns_in_buffer() {
     st.mode = Mode::Rendered;
 
     // top_border_row at y=0, cols at x=2..5 and x=6..9.
-    let snap = fake_snapshot(
-        0,
-        src.len(),
-        2,
-        3,
-        vec![2..5, 6..9],
-        vec![3..4],
-        None,
-        Some(0),
-    );
+    let snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: 0,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 3,
+        col_ranges: vec![2..5, 6..9],
+        row_ranges: vec![3..4],
+        row_handle_col: None,
+        top_border_row: Some(0),
+    });
     let snapshots = [snap];
     let mut target: Option<mouse_ops::DragTarget> = None;
 
@@ -998,16 +1002,16 @@ fn column_reorder_leaves_cursor_off_persisted_comment_line() {
     let mut st = state(src);
     st.mode = Mode::Rendered;
 
-    let snap = fake_snapshot(
-        0,
-        src.len(),
-        2,
-        3,
-        vec![1..4, 5..8],
-        vec![3..4],
-        None,
-        Some(0),
-    );
+    let snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: 0,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 3,
+        col_ranges: vec![1..4, 5..8],
+        row_ranges: vec![3..4],
+        row_handle_col: None,
+        top_border_row: Some(0),
+    });
     let snapshots = [snap];
     let mut target: Option<mouse_ops::DragTarget> = None;
 
@@ -1046,16 +1050,16 @@ fn row_reorder_leaves_cursor_off_persisted_comment_line() {
     let mut st = state(src);
     st.mode = Mode::Rendered;
 
-    let snap = fake_snapshot(
-        0,
-        src.len(),
-        2,
-        4,
-        vec![2..5, 6..9],
-        vec![3..4, 5..6],
-        Some(0),
-        None,
-    );
+    let snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: 0,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 4,
+        col_ranges: vec![2..5, 6..9],
+        row_ranges: vec![3..4, 5..6],
+        row_handle_col: Some(0),
+        top_border_row: None,
+    });
     let snapshots = [snap];
     let mut target: Option<mouse_ops::DragTarget> = None;
 
@@ -1280,16 +1284,16 @@ fn column_border_drag_release_defers_commit_when_no_existing_comment() {
     let mut st = state(src);
     st.mode = Mode::Rendered;
 
-    let snap = fake_snapshot(
-        0,
-        src.len(),
-        2,
-        3,
-        vec![1..6, 7..15],
-        vec![3..4],
-        None,
-        None,
-    );
+    let snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: 0,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 3,
+        col_ranges: vec![1..6, 7..15],
+        row_ranges: vec![3..4],
+        row_handle_col: None,
+        top_border_row: None,
+    });
     let snapshots = [snap];
     let mut target: Option<mouse_ops::DragTarget> = None;
 

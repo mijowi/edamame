@@ -23,8 +23,8 @@ cargo check              # fast type/borrow check (no codegen)
 ```bash
 cargo fmt                # format all code with rustfmt
 cargo fmt -- --check     # check formatting without modifying files (CI)
-cargo clippy             # run the Clippy linter
-cargo clippy -- -D warnings   # treat warnings as errors (CI enforcement)
+cargo clippy                                # run the Clippy linter
+cargo clippy --all-targets -- -D warnings   # treat warnings as errors (CI enforcement; covers lib + bin + tests + examples)
 ```
 
 No custom `rustfmt.toml` or `.clippy.toml` exists; standard Rust defaults apply.

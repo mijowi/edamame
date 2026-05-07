@@ -331,12 +331,6 @@ impl EditorState {
         state
     }
 
-    /// Convenience constructor for tests: creates an in-memory buffer from `text`.
-    #[cfg(test)]
-    pub fn from_str(text: &str, theme: &'static Theme) -> Self {
-        Self::new(Buffer::from_str(text), theme)
-    }
-
     // ── Buffer access ─────────────────────────────────────────────
 
     /// Used by tests in this crate.

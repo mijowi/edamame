@@ -56,6 +56,134 @@ pub struct PreviewView<'a> {
     pub scroll: usize,
 }
 
+impl<'a> StatefulWidget for PreviewView<'a> {
+    type State = PreviewState;
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        if area.height == 0 {
+            return;
+        }
+
+        // Render each visible line ourselves (rather than using `Paragraph`)
+        // so that styled blocks like code blocks extend their background to
+        // the full viewport width — both on their last (wrapped) visual row
+        // and on short lines within a wider terminal.
+        let sel_range = state.selection.map(|s| s.range());
+        let sel_style = state.selection_style;
+        let width = area.width as usize;
+        let (mut line_idx, mut first_sub_row) = line_at_visual_row(self.lines, self.scroll, width);
+        let mut vis_y: u16 = 0;
+        while vis_y < area.height {
+            let Some(line) = self.lines.get(line_idx) else {
+                break;
+            };
+            let skip_rows = first_sub_row;
+            let rows_used = render_line_from_visual(line, area, buf, vis_y, true, skip_rows);
+            if rows_used == 0 {
+                break;
+            }
+
+            // Selection overlay: if this rendered line falls inside the
+            // selection's line range, paint the theme's selection background
+            // over the covered columns.  Uses the same word-wrap algorithm
+            // as `render_line` to determine where visible content ends on
+            // each sub-row so trailing padding isn't highlighted.
+            if let Some(((s_line, s_col), (e_line, e_col))) = sel_range {
+                if line_idx >= s_line && line_idx <= e_line {
+                    let start_col = if line_idx == s_line { s_col } else { 0 };
+                    let end_col = if line_idx == e_line {
+                        e_col
+                    } else {
+                        line.spans.iter().map(|s| s.content.chars().count()).sum()
+                    };
+                    paint_preview_selection(
+                        line, buf, area, vis_y, rows_used, width, skip_rows, start_col, end_col,
+                        sel_style,
+                    );
+                }
+            }
+
+            vis_y = vis_y.saturating_add(rows_used.max(1));
+            line_idx += 1;
+            first_sub_row = 0;
+        }
+    }
+}
+
+fn line_at_visual_row(lines: &[Line<'static>], visual_row: usize, width: usize) -> (usize, usize) {
+    let mut acc = 0usize;
+    for (idx, line) in lines.iter().enumerate() {
+        let rows = super::line_render::visual_rows_for_line(line, width).max(1);
+        if visual_row < acc + rows {
+            return (idx, visual_row - acc);
+        }
+        acc += rows;
+    }
+    (lines.len(), 0)
+}
+
+/// Paint `sel_style` as a background over the rendered cells on the visual
+/// rows produced by wrapping `line` at `width`, clipped to `[start_col,
+/// end_col)` in char columns.  Mirrors `paint_selection_overlay` in
+/// `rendered_view` but for a single line's wrap layout.
+#[allow(clippy::too_many_arguments)]
+fn paint_preview_selection(
+    line: &Line<'_>,
+    buf: &mut Buffer,
+    area: Rect,
+    y_first: u16,
+    rows_used: u16,
+    width: usize,
+    skip_rows: usize,
+    start_col: usize,
+    end_col: usize,
+    sel_style: Style,
+) {
+    if width == 0 || end_col <= start_col {
+        return;
+    }
+    let chars: Vec<(char, Style)> = line
+        .spans
+        .iter()
+        .flat_map(|span| {
+            let style = span.style;
+            span.content.chars().map(move |c| (c, style))
+        })
+        .collect();
+    let indent = super::line_render::compute_hanging_indent(line);
+    let rows = visual_rows_of_chars(&chars, width, indent);
+    for (painted_off, (row_off, &(row_start, row_end, _))) in
+        rows.iter().enumerate().skip(skip_rows).enumerate()
+    {
+        if painted_off as u16 >= rows_used {
+            break;
+        }
+        let y = y_first + painted_off as u16;
+        if y >= area.y + area.height {
+            break;
+        }
+        // Intersect the selection's char range with this row's char span.
+        let row_sel_start = start_col.max(row_start);
+        let row_sel_end = end_col.min(row_end);
+        if row_sel_start >= row_sel_end {
+            continue;
+        }
+        // Continuation rows are pre-padded with `indent` blank cells; the
+        // selection background must shift by the same amount.
+        let row_indent = if row_off == 0 { 0 } else { indent };
+        for i in row_sel_start..row_sel_end {
+            let x_off = row_indent + (i - row_start);
+            let x = area.x + x_off as u16;
+            if x >= area.x + area.width {
+                break;
+            }
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_style(cell.style().patch(sel_style));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,133 +445,5 @@ mod tests {
             })
             .collect();
         assert_eq!(row, "klmnopqrst");
-    }
-}
-
-impl<'a> StatefulWidget for PreviewView<'a> {
-    type State = PreviewState;
-
-    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        if area.height == 0 {
-            return;
-        }
-
-        // Render each visible line ourselves (rather than using `Paragraph`)
-        // so that styled blocks like code blocks extend their background to
-        // the full viewport width — both on their last (wrapped) visual row
-        // and on short lines within a wider terminal.
-        let sel_range = state.selection.map(|s| s.range());
-        let sel_style = state.selection_style;
-        let width = area.width as usize;
-        let (mut line_idx, mut first_sub_row) = line_at_visual_row(self.lines, self.scroll, width);
-        let mut vis_y: u16 = 0;
-        while vis_y < area.height {
-            let Some(line) = self.lines.get(line_idx) else {
-                break;
-            };
-            let skip_rows = first_sub_row;
-            let rows_used = render_line_from_visual(line, area, buf, vis_y, true, skip_rows);
-            if rows_used == 0 {
-                break;
-            }
-
-            // Selection overlay: if this rendered line falls inside the
-            // selection's line range, paint the theme's selection background
-            // over the covered columns.  Uses the same word-wrap algorithm
-            // as `render_line` to determine where visible content ends on
-            // each sub-row so trailing padding isn't highlighted.
-            if let Some(((s_line, s_col), (e_line, e_col))) = sel_range {
-                if line_idx >= s_line && line_idx <= e_line {
-                    let start_col = if line_idx == s_line { s_col } else { 0 };
-                    let end_col = if line_idx == e_line {
-                        e_col
-                    } else {
-                        line.spans.iter().map(|s| s.content.chars().count()).sum()
-                    };
-                    paint_preview_selection(
-                        line, buf, area, vis_y, rows_used, width, skip_rows, start_col, end_col,
-                        sel_style,
-                    );
-                }
-            }
-
-            vis_y = vis_y.saturating_add(rows_used.max(1));
-            line_idx += 1;
-            first_sub_row = 0;
-        }
-    }
-}
-
-fn line_at_visual_row(lines: &[Line<'static>], visual_row: usize, width: usize) -> (usize, usize) {
-    let mut acc = 0usize;
-    for (idx, line) in lines.iter().enumerate() {
-        let rows = super::line_render::visual_rows_for_line(line, width).max(1);
-        if visual_row < acc + rows {
-            return (idx, visual_row - acc);
-        }
-        acc += rows;
-    }
-    (lines.len(), 0)
-}
-
-/// Paint `sel_style` as a background over the rendered cells on the visual
-/// rows produced by wrapping `line` at `width`, clipped to `[start_col,
-/// end_col)` in char columns.  Mirrors `paint_selection_overlay` in
-/// `rendered_view` but for a single line's wrap layout.
-#[allow(clippy::too_many_arguments)]
-fn paint_preview_selection(
-    line: &Line<'_>,
-    buf: &mut Buffer,
-    area: Rect,
-    y_first: u16,
-    rows_used: u16,
-    width: usize,
-    skip_rows: usize,
-    start_col: usize,
-    end_col: usize,
-    sel_style: Style,
-) {
-    if width == 0 || end_col <= start_col {
-        return;
-    }
-    let chars: Vec<(char, Style)> = line
-        .spans
-        .iter()
-        .flat_map(|span| {
-            let style = span.style;
-            span.content.chars().map(move |c| (c, style))
-        })
-        .collect();
-    let indent = super::line_render::compute_hanging_indent(line);
-    let rows = visual_rows_of_chars(&chars, width, indent);
-    for (painted_off, (row_off, &(row_start, row_end, _))) in
-        rows.iter().enumerate().skip(skip_rows).enumerate()
-    {
-        if painted_off as u16 >= rows_used {
-            break;
-        }
-        let y = y_first + painted_off as u16;
-        if y >= area.y + area.height {
-            break;
-        }
-        // Intersect the selection's char range with this row's char span.
-        let row_sel_start = start_col.max(row_start);
-        let row_sel_end = end_col.min(row_end);
-        if row_sel_start >= row_sel_end {
-            continue;
-        }
-        // Continuation rows are pre-padded with `indent` blank cells; the
-        // selection background must shift by the same amount.
-        let row_indent = if row_off == 0 { 0 } else { indent };
-        for i in row_sel_start..row_sel_end {
-            let x_off = row_indent + (i - row_start);
-            let x = area.x + x_off as u16;
-            if x >= area.x + area.width {
-                break;
-            }
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_style(cell.style().patch(sel_style));
-            }
-        }
     }
 }

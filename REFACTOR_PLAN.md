@@ -553,7 +553,12 @@ indent + digits, and char literals (`' '`, `\t`, `-`, `*`, `+`, `.`,
 
 ---
 
-## Phase E — Tighten the clippy gate to `--all-targets`
+## Phase E — Tighten the clippy gate to `--all-targets` ✅ DONE
+
+Status: **shipped as one bundle** (E1 + E2).  `cargo clippy --all-targets
+-- -D warnings` is now clean; `cargo build` / `cargo build --release` /
+`cargo fmt -- --check` / the full test suite stay green.  The CI command
+in `CLAUDE.md` was tightened to include `--all-targets`.
 
 The CI command in `CLAUDE.md` is `cargo clippy -- -D warnings`, which
 checks the lib + bin only.  Running with `--all-targets` (lib + bin +
@@ -588,23 +593,60 @@ The breakdown (counts from `cargo clippy --all-targets` after Phase D):
 - **1× unused variable**, **1× `dead_code`**, **1× `iter_any`**,
   **1× `should_implement_trait`** — single-site fixes per warning.
 
-### E1. Test-code lint cleanup
+### E1. Test-code lint cleanup ✅
 
-Walk the warning list above and resolve each, with per-site
-`#[allow(...)]` reserved for cases where the lint clearly hides intent
-(e.g. `Buffer::from_str` is named for symmetry with `Rope::from_str`
-and already carries an allow).  No production behaviour changes.
+Walked the warning list and resolved each.  What landed:
 
-### E2. Tighten the CI command
+- **24× `single_range_in_vec_init`**: addressed at the test-module level
+  with `#[allow(clippy::single_range_in_vec_init)]` — `src/document/
+  source_map.rs::tests`, `src/ui/table_view.rs::tests`, and the whole
+  `tests/mouse.rs` integration file (top-level `#![allow(...)]`).  The
+  literal `vec![3..4]` patterns are intentional test data and the
+  allow keeps each call site readable; rewriting to slice-of-array
+  would have churned every site without making them clearer.
+- **3× `field_reassign_with_default`** in `tests/ui.rs`: rewritten to
+  struct-update syntax (`Theme { table_row_even: …, table_row_odd: …,
+  ..Theme::default() }`).
+- **2× `needless_range_loop`** in `src/editor/mouse_ops.rs::tests`:
+  switched to `forward.iter().enumerate().take(...)` so the index and
+  value come from the same pipeline.
+- **2× `dead_code` (test newtype field)** in `src/app/modal/stack.rs`:
+  `ModalA(usize)` / `ModalB(usize)` collapsed to unit structs since
+  no test asserts the inner value.
+- **1× `dead_code` (associated function `from_str`)** in `src/editor/
+  state.rs`: deleted — no users in `src/` or `tests/`.
+- **1× `dead_code` (method `decoded_count`)** in `src/image/cache.rs`:
+  deleted — no users.
+- **1× `too_many_arguments`** for `tests/mouse.rs::fake_snapshot`:
+  bundled into a `FakeSnapshotSpec` struct; all 9 call sites updated
+  to struct-literal form.
+- **1× `tests_outside_test_module`** in `src/ui/preview.rs`: the
+  `#[cfg(test)] mod tests` block sat in the middle of the file with
+  `impl StatefulWidget` / two free helpers below it.  Moved the test
+  module to the end of the file.
+- **1× unused variable `b`** in `src/document/cursor.rs::move_doc_start`:
+  deleted the `let b = buf("hello\nworld");` line — `move_doc_start`
+  takes no buffer.
+- **1× `iter_any` (`contains` is more efficient)** in
+  `src/ui/settings_overlay.rs::dropped_legacy_rows_are_absent`:
+  rewrote `labels.iter().any(|l| *l == stale)` as
+  `labels.contains(&stale)`.
 
-Update the `CLAUDE.md` Lint section so the enforced command is
-`cargo clippy --all-targets -- -D warnings`.  Mention the change in
-the project's CI script if one is added later.
+No production behaviour changes; all changes are test-only or dead-code
+deletions.
+
+### E2. Tighten the CI command ✅
+
+`CLAUDE.md` (via the `AGENTS.md` symlink target) now lists
+`cargo clippy --all-targets -- -D warnings` as the enforced lint
+command.  No CI script lives in the repo to update.
 
 ### Acceptance criteria for Phase E
 
-- `cargo clippy --all-targets -- -D warnings` is clean.
-- All other Phase A–D acceptance criteria continue to hold.
+- `cargo clippy --all-targets -- -D warnings` is clean. ✅
+- All other Phase A–D acceptance criteria continue to hold. ✅
+  (`cargo build`, `cargo build --release`, `cargo fmt -- --check`,
+  full test suite all clean.)
 
 ---
 
@@ -618,9 +660,9 @@ A reasonable order, optimised so each PR is small and independent:
    Each is small and reviewable.
 3. ~~**Phase C as separate PRs**~~ — all 12 sub-steps shipped (C1–C12).
 4. ~~**Phase D**~~ — shipped as one bundle (D1+D2+D3+D4).
-5. **Phase E** as a single PR: E1 (test-code lint cleanup) + E2 (CI
-   command tightening) land together so the gate flips on the same
-   commit that makes it pass.
+5. ~~**Phase E**~~ — shipped as one bundle (E1 test-code lint cleanup
+   + E2 CI command tightening).  The gate flipped on the same commit
+   that made it pass.
 
 ## Baseline
 

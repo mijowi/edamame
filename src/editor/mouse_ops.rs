@@ -747,8 +747,7 @@ mod tests {
         // `i`-th entry is the raw byte that `paragraph_raw_col_to_rendered_col`
         // should round-trip back to `i`.
         let forward = coord::rendered_to_raw_char_map(raw);
-        for rendered_col in 0..=9 {
-            let raw_col = forward[rendered_col];
+        for (rendered_col, &raw_col) in forward.iter().enumerate().take(10) {
             let round_tripped = paragraph_raw_col_to_rendered_col(raw, rendered, raw_col);
             assert_eq!(
                 round_tripped,
@@ -821,8 +820,8 @@ mod tests {
         let rendered = &lines[0];
 
         let forward = coord::rendered_to_raw_char_map(raw);
-        for rendered_col in 0..forward.len().saturating_sub(1) {
-            let raw_col = forward[rendered_col];
+        let limit = forward.len().saturating_sub(1);
+        for (rendered_col, &raw_col) in forward.iter().enumerate().take(limit) {
             let round_tripped = paragraph_raw_col_to_rendered_col(raw, rendered, raw_col);
             assert_eq!(
                 round_tripped,

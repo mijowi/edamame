@@ -380,7 +380,6 @@ mod tests {
 
     #[test]
     fn move_doc_start() {
-        let b = buf("hello\nworld");
         let mut c = cur(8);
         c.move_doc_start();
         assert_eq!(c.offset, 0);

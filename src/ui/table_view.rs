@@ -1067,6 +1067,7 @@ fn paint_vertical_drop(buf: &mut TuiBuf, y_top: u16, y_bot: u16, y_max: u16, x: 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::single_range_in_vec_init)]
 mod tests {
     use super::*;
 

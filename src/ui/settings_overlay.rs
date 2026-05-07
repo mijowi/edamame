@@ -628,7 +628,7 @@ mod tests {
             "dev.logging",
         ] {
             assert!(
-                !labels.iter().any(|l| *l == stale),
+                !labels.contains(&stale),
                 "stale row '{stale}' is still in the schema"
             );
         }

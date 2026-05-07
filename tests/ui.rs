@@ -989,9 +989,11 @@ fn table_row_striping_alternates_bg_per_data_row() {
 
     // Build a custom theme whose row striping styles are visibly
     // different so the assertion has a clear signal to check.
-    let mut theme_owned = Theme::default();
-    theme_owned.table_row_even = Style::default().bg(Color::Indexed(238));
-    theme_owned.table_row_odd = Style::default().bg(Color::Indexed(237));
+    let theme_owned = Theme {
+        table_row_even: Style::default().bg(Color::Indexed(238)),
+        table_row_odd: Style::default().bg(Color::Indexed(237)),
+        ..Theme::default()
+    };
     let theme: &'static Theme = Box::leak(Box::new(theme_owned));
 
     let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
@@ -1043,9 +1045,11 @@ fn table_row_striping_replaces_thin_rule_with_blank_separator() {
     use edamame::ui::{RenderedView, RenderedViewState};
     use ratatui::style::{Color, Style};
 
-    let mut theme_owned = Theme::default();
-    theme_owned.table_row_even = Style::default().bg(Color::Indexed(238));
-    theme_owned.table_row_odd = Style::default().bg(Color::Indexed(237));
+    let theme_owned = Theme {
+        table_row_even: Style::default().bg(Color::Indexed(238)),
+        table_row_odd: Style::default().bg(Color::Indexed(237)),
+        ..Theme::default()
+    };
     let theme: &'static Theme = Box::leak(Box::new(theme_owned));
 
     let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
@@ -1110,9 +1114,11 @@ fn table_row_striping_off_leaves_default_bg() {
     use edamame::ui::{RenderedView, RenderedViewState};
     use ratatui::style::{Color, Style};
 
-    let mut theme_owned = Theme::default();
-    theme_owned.table_row_even = Style::default().bg(Color::Indexed(238));
-    theme_owned.table_row_odd = Style::default().bg(Color::Indexed(237));
+    let theme_owned = Theme {
+        table_row_even: Style::default().bg(Color::Indexed(238)),
+        table_row_odd: Style::default().bg(Color::Indexed(237)),
+        ..Theme::default()
+    };
     let theme: &'static Theme = Box::leak(Box::new(theme_owned));
 
     let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";

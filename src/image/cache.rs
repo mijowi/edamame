@@ -463,11 +463,6 @@ impl ImageCache {
     }
 
     #[cfg(test)]
-    pub fn decoded_count(&self) -> usize {
-        self.decoded.len()
-    }
-
-    #[cfg(test)]
     pub fn protocol_count(&self) -> usize {
         self.protocols.len()
     }

@@ -81,8 +81,8 @@ mod tests {
     use ratatui::Frame;
     use std::any::Any;
 
-    struct ModalA(usize);
-    struct ModalB(usize);
+    struct ModalA;
+    struct ModalB;
 
     impl Modal for ModalA {
         fn render(&mut self, _f: &mut Frame<'_>, _a: Rect, _c: &ModalRenderCtx<'_>) {}
@@ -119,8 +119,8 @@ mod tests {
     #[test]
     fn push_and_pop_preserve_order() {
         let mut stack = ModalStack::new();
-        stack.push(Box::new(ModalA(1)));
-        stack.push(Box::new(ModalB(2)));
+        stack.push(Box::new(ModalA));
+        stack.push(Box::new(ModalB));
         assert_eq!(stack.len(), 2);
 
         let top = stack.pop().unwrap();
@@ -135,8 +135,8 @@ mod tests {
     #[test]
     fn contains_detects_present_type() {
         let mut stack = ModalStack::new();
-        stack.push(Box::new(ModalA(1)));
-        stack.push(Box::new(ModalB(2)));
+        stack.push(Box::new(ModalA));
+        stack.push(Box::new(ModalB));
         assert!(stack.contains::<ModalA>());
         assert!(stack.contains::<ModalB>());
     }
@@ -144,15 +144,15 @@ mod tests {
     #[test]
     fn contains_returns_false_when_absent() {
         let mut stack = ModalStack::new();
-        stack.push(Box::new(ModalA(1)));
+        stack.push(Box::new(ModalA));
         assert!(!stack.contains::<ModalB>());
     }
 
     #[test]
     fn remove_first_drops_queued_modal_below_top() {
         let mut stack = ModalStack::new();
-        stack.push(Box::new(ModalB(1))); // bottom
-        stack.push(Box::new(ModalA(2))); // top
+        stack.push(Box::new(ModalB)); // bottom
+        stack.push(Box::new(ModalA)); // top
         assert!(stack.remove_first::<ModalB>());
         assert_eq!(stack.len(), 1);
         // ModalA stays on top
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn remove_first_returns_false_when_no_match() {
         let mut stack = ModalStack::new();
-        stack.push(Box::new(ModalA(1)));
+        stack.push(Box::new(ModalA));
         assert!(!stack.remove_first::<ModalB>());
         assert_eq!(stack.len(), 1);
     }
@@ -171,8 +171,8 @@ mod tests {
     #[test]
     fn top_mut_returns_topmost_only() {
         let mut stack = ModalStack::new();
-        stack.push(Box::new(ModalA(1)));
-        stack.push(Box::new(ModalB(2)));
+        stack.push(Box::new(ModalA));
+        stack.push(Box::new(ModalB));
         let top = stack.top_mut().unwrap();
         assert!(top.as_any().is::<ModalB>());
     }
