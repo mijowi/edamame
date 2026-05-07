@@ -207,6 +207,10 @@ pub struct App {
     /// `modal_stack.push(Box::new(...))` call; render priority and
     /// input absorption are stack-order driven.
     modal_stack: ModalStack,
+    /// True when the user named a file that did not exist on disk;
+    /// `App::run` flashes "[New File]" once at startup so the user
+    /// understands the buffer is empty and saving will create the file.
+    started_with_new_file: bool,
 }
 
 impl App {
@@ -257,8 +261,17 @@ impl App {
             config.table.show_buttons = false;
         }
 
+        // Treat a non-existent path the same way `vim` / `nano` do:
+        // open an empty buffer associated with the path so the first
+        // save creates the file.  A "[New File]" flash is queued for
+        // the run loop so the user is told what happened.
+        let mut started_with_new_file = false;
         let buffer = match &file_path {
-            Some(path) => Buffer::load_file(path)?,
+            Some(path) if path.exists() => Buffer::load_file(path)?,
+            Some(path) => {
+                started_with_new_file = true;
+                Buffer::for_new_file(path)
+            }
             None => Buffer::new(),
         };
 
@@ -378,6 +391,7 @@ impl App {
             read_paused: None,
             hint_prompt: None,
             modal_stack,
+            started_with_new_file,
         })
     }
 
@@ -458,6 +472,9 @@ impl App {
         self.startup_pointer_hint();
         let rx = self.spawn_event_threads();
         self.build_keymap_if_needed()?;
+        if self.started_with_new_file {
+            self.flash("[New File]", MessageKind::Info);
+        }
 
         loop {
             self.tick_timers();
