@@ -6,8 +6,23 @@
 //! transparent to callers: pass viewport width and let the implementation
 //! pick the right ruler.
 
+use crate::document::visual_cache::VisualRowCache;
 use crate::editor::state::{line_text_trimmed, raw_cursor_visual_row, rendered_cursor_visual_row};
 use crate::editor::{EditorState, Mode};
+
+/// Raw-mode visual-row cache entry.  Pairs a [`VisualRowCache`] with the
+/// `Buffer::version()` it was built from so a cheap `u64` comparison
+/// detects edits that have invalidated the cached prefix sum.
+///
+/// Width-mismatch invalidation is handled by [`VisualRowCache`] itself —
+/// only the buffer-version key is unique to raw mode.
+#[derive(Debug, Clone)]
+pub(crate) struct RawVisualRowCache {
+    /// `Buffer::version()` snapshot at the time the cache was built.
+    buffer_version: u64,
+    /// The actual prefix-sum table.
+    inner: VisualRowCache,
+}
 
 impl EditorState {
     pub fn scroll_up(&mut self, n: usize) {
@@ -139,34 +154,43 @@ impl EditorState {
     }
 
     pub fn raw_line_at_visual_row(&self, visual_row: usize, width: usize) -> (usize, usize) {
-        let width = width.max(1);
-        let mut acc = 0usize;
-        for line_idx in 0..self.buffer.line_count() {
-            let rows = self.raw_visual_rows_for_line(line_idx, width);
-            if visual_row < acc + rows {
-                return (line_idx, visual_row - acc);
-            }
-            acc += rows;
-        }
-        (self.buffer.line_count(), 0)
+        self.with_raw_visual_cache(width, |c| c.find_visual_row(visual_row))
     }
 
     pub fn visual_rows_before_raw_line(&self, line_idx: usize, width: usize) -> usize {
-        let width = width.max(1);
-        (0..line_idx.min(self.buffer.line_count()))
-            .map(|i| self.raw_visual_rows_for_line(i, width))
-            .sum()
+        self.with_raw_visual_cache(width, |c| c.before(line_idx))
     }
 
     pub(crate) fn raw_total_visual_rows(&self, width: usize) -> usize {
-        self.visual_rows_before_raw_line(self.buffer.line_count(), width)
+        self.with_raw_visual_cache(width, |c| c.total())
     }
 
-    pub(crate) fn raw_visual_rows_for_line(&self, line_idx: usize, width: usize) -> usize {
-        let text = line_text_trimmed(&self.buffer, line_idx);
-        crate::ui::line_render::visual_rows_of_str(&text, width)
-            .len()
-            .max(1)
+    /// Run `f` against the raw-mode visual-row cache, rebuilding it first
+    /// if either the buffer version or the width has changed since the
+    /// last build.  Two-phase borrow keeps the immutable check separate
+    /// from the `borrow_mut` so we don't alias the `RefCell`.
+    fn with_raw_visual_cache<R>(&self, width: usize, f: impl FnOnce(&VisualRowCache) -> R) -> R {
+        let width = width.max(1);
+        let buffer_version = self.buffer.version();
+        let needs_rebuild = match self.raw_visual_rows.borrow().as_ref() {
+            Some(entry) => entry.buffer_version != buffer_version || entry.inner.width() != width,
+            None => true,
+        };
+        if needs_rebuild {
+            let inner = VisualRowCache::build(self.buffer.line_count(), width, |i| {
+                let text = line_text_trimmed(&self.buffer, i);
+                crate::ui::line_render::visual_rows_of_str(&text, width).len()
+            });
+            *self.raw_visual_rows.borrow_mut() = Some(RawVisualRowCache {
+                buffer_version,
+                inner,
+            });
+        }
+        let borrow = self.raw_visual_rows.borrow();
+        f(&borrow
+            .as_ref()
+            .expect("raw visual cache populated above")
+            .inner)
     }
 
     pub(crate) fn cursor_visual_row(&self, width: usize) -> usize {

@@ -12,6 +12,13 @@ pub struct Buffer {
     rope: Rope,
     /// The file this buffer was loaded from or last saved to.
     path: Option<PathBuf>,
+    /// Monotonically-increasing counter bumped on every content mutation.
+    /// Consumers that cache buffer-derived data (e.g. the raw-mode visual
+    /// row cache in `EditorState`) compare this against their stored
+    /// version to invalidate stale entries without rebuilding eagerly.
+    /// Wraps on overflow — wrap-equality is fine because adjacent edits
+    /// always differ, and wrap-around requires 2^64 mutations.
+    version: u64,
 }
 
 impl Buffer {
@@ -20,6 +27,7 @@ impl Buffer {
         Self {
             rope: Rope::new(),
             path: None,
+            version: 0,
         }
     }
 
@@ -30,6 +38,7 @@ impl Buffer {
         Self {
             rope: Rope::from_str(text),
             path: None,
+            version: 0,
         }
     }
 
@@ -40,6 +49,7 @@ impl Buffer {
         Ok(Self {
             rope: Rope::from_str(&content),
             path: Some(path.to_owned()),
+            version: 0,
         })
     }
 
@@ -126,11 +136,19 @@ impl Buffer {
         self.rope.char_to_line(char_idx)
     }
 
+    /// Monotonic version counter — increments on every content mutation.
+    /// Consumers cache derived state keyed by `(version, ...)` so
+    /// invalidation is a cheap `u64` comparison.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
     // ── Edit ──────────────────────────────────────────────────────
 
     /// Insert `text` at char offset `char_idx`.
     pub fn insert(&mut self, char_idx: usize, text: &str) {
         self.rope.insert(char_idx, text);
+        self.version = self.version.wrapping_add(1);
     }
 
     /// Insert a single char at char offset `char_idx`.
@@ -138,11 +156,13 @@ impl Buffer {
     #[allow(dead_code)]
     pub fn insert_char(&mut self, char_idx: usize, ch: char) {
         self.rope.insert_char(char_idx, ch);
+        self.version = self.version.wrapping_add(1);
     }
 
     /// Remove chars in the range `start..end` (char offsets).
     pub fn remove(&mut self, start: usize, end: usize) {
         self.rope.remove(start..end);
+        self.version = self.version.wrapping_add(1);
     }
 
     /// Remove a single char at `char_idx` (if in bounds).
@@ -151,6 +171,7 @@ impl Buffer {
     pub fn remove_char(&mut self, char_idx: usize) {
         if char_idx < self.rope.len_chars() {
             self.rope.remove(char_idx..char_idx + 1);
+            self.version = self.version.wrapping_add(1);
         }
     }
 
@@ -175,6 +196,7 @@ mod tests {
         Buffer {
             rope: Rope::from_str(text),
             path: None,
+            version: 0,
         }
     }
 

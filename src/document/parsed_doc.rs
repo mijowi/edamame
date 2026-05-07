@@ -419,6 +419,86 @@ impl ParsedDoc {
     pub fn block_own_line_count(&self, block_idx: usize) -> usize {
         self.per_block_own.get(block_idx).copied().unwrap_or(0)
     }
+
+    // ── Visual-row cache (rendered) ───────────────────────────────────────
+    //
+    // Thin lazy wrappers over `VisualRowCache`.  The cache lives in a
+    // `RefCell<Option<_>>` so `&ParsedDoc` callers get shared access, and
+    // is populated on first query at a given width — terminal resizes
+    // (rare; debounced by App) trigger a single rebuild.
+
+    /// Visual rows occupied by rendered line `idx` at `width`.  O(1) after
+    /// the cache is populated; first call at a given width is O(lines).
+    pub fn visual_rows_for_line_at(&self, idx: usize, width: usize) -> usize {
+        self.ensure_visual_rows(width);
+        self.visual_rows
+            .borrow()
+            .as_ref()
+            .map(|c| c.for_line(idx))
+            .unwrap_or(1)
+    }
+
+    /// Sum of visual rows occupied by rendered lines `[0..idx)` at `width`.
+    pub fn visual_rows_before(&self, idx: usize, width: usize) -> usize {
+        self.ensure_visual_rows(width);
+        self.visual_rows
+            .borrow()
+            .as_ref()
+            .map(|c| c.before(idx))
+            .unwrap_or(0)
+    }
+
+    /// Sum of visual rows occupied by rendered lines `[first..=last]`
+    /// at `width`.  Used by tests in this crate.
+    #[allow(dead_code)]
+    pub fn visual_rows_between(&self, first: usize, last: usize, width: usize) -> usize {
+        self.ensure_visual_rows(width);
+        self.visual_rows
+            .borrow()
+            .as_ref()
+            .map(|c| c.between(first, last))
+            .unwrap_or(0)
+    }
+
+    /// Total visual rows occupied by the rendered document at `width`.
+    pub fn total_visual_rows(&self, width: usize) -> usize {
+        self.ensure_visual_rows(width);
+        self.visual_rows
+            .borrow()
+            .as_ref()
+            .map(|c| c.total())
+            .unwrap_or(0)
+    }
+
+    /// `(rendered_line_idx, sub_row)` for a document-level visual row.
+    pub fn line_at_visual_row(&self, visual_row: usize, width: usize) -> (usize, usize) {
+        self.ensure_visual_rows(width);
+        self.visual_rows
+            .borrow()
+            .as_ref()
+            .map(|c| c.find_visual_row(visual_row))
+            .unwrap_or((0, 0))
+    }
+
+    /// Populate or refresh the visual-row cache for `width`.  Cheap when
+    /// the cached width already matches; otherwise rebuilds via the canonical
+    /// wrap algorithm in `line_render::visual_rows_for_line`.  Two-phase
+    /// borrow: the immutable check releases before the `borrow_mut` so we
+    /// don't alias the `RefCell`.
+    fn ensure_visual_rows(&self, width: usize) {
+        {
+            let borrow = self.visual_rows.borrow();
+            if let Some(c) = borrow.as_ref() {
+                if c.width() == width {
+                    return;
+                }
+            }
+        }
+        let cache = VisualRowCache::build(self.lines.len(), width, |i| {
+            crate::ui::line_render::visual_rows_for_line(&self.lines[i], width)
+        });
+        *self.visual_rows.borrow_mut() = Some(cache);
+    }
 }
 
 /// Produce a GitHub Flavored Markdown slug for `text`.

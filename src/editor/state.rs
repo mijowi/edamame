@@ -1,7 +1,9 @@
+use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 use crate::config::Theme;
 use crate::document::{Buffer, Cursor, EditDelta, History, ParsedDoc, Selection, VisualSelection};
+use crate::editor::state_viewport::RawVisualRowCache;
 use crate::editor::Mode;
 use crate::image::ImageCache;
 
@@ -214,6 +216,16 @@ pub struct EditorState {
     /// is visible.  While set, the editor cursor is solid (ignores
     /// blink) and the modal cursor follows `cursor_blink`.
     pub modal_open: bool,
+    /// Lazy per-(buffer-version, viewport-width) cache of wrapped row
+    /// counts for the raw view.  Mirrors `ParsedDoc::visual_rows` for
+    /// rendered mode but lives on `EditorState` because raw mode reads
+    /// directly from the buffer.  Without it, every scroll event in raw
+    /// mode runs the wrap algorithm over every line of the document
+    /// twice (`raw_total_visual_rows` plus `raw_line_at_visual_row`),
+    /// which saturates a CPU core on long files when many trackpad-wheel
+    /// events queue up.  `RefCell` because `&EditorState` callers in the
+    /// view layer need shared access; `EditorState` is single-threaded.
+    pub(crate) raw_visual_rows: RefCell<Option<RawVisualRowCache>>,
 }
 
 /// How long the cursor must rest on a block before it is shown in raw mode.
@@ -303,6 +315,7 @@ impl EditorState {
             cursor_block_line_range: None,
             cursor_blink: CursorBlink::default(),
             modal_open: false,
+            raw_visual_rows: RefCell::new(None),
         };
         // Populate the cursor-block cache so the rendered view's
         // stale-map-tolerant path has correct line-range info on the
