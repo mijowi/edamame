@@ -1478,7 +1478,7 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 - Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
 
-- Add scroll bar to modal right padding area when content overflows
+- Add a scroll bar to the editor view to show place in document. Also add a scroll bar to modal right padding area when content overflows. Scroll bar structure should be reused from the editor view.
 
 - Implement a dedicated theme selection modal and remove the theme picker from the settings overlay. Add an action `Switch theme` to the command palette that opens the theme modal.
 
@@ -1489,6 +1489,10 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 - Update `themes/default.toml` header
 
 - White space in code blocks in Markdown cheat sheet don't have same bg as text
+
+- Add option to limit max-width for readability (ex. 80 chars)
+
+- Refactor tests
 
 ### Theme issues
 - Code blocks in Markdown cheat sheet have same bg as modal, so it looks like there's no bg
