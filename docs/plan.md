@@ -1482,27 +1482,18 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 - Implement a dedicated theme selection modal and remove the theme picker from the settings overlay. Add an action `Switch theme` to the command palette that opens the theme modal.
 
-- Color code modal titles (e.g. red for warning)
-
-- Images are padded with the `Reset` terminal background instead of the theme background.
-
-- Update `themes/default.toml` header
-
-- White space in code blocks in Markdown cheat sheet don't have same bg as text
-
-- Add option to limit max-width for readability (ex. 80 chars)
+- Add a new feature for limiting editor max-width for readability (ex. 80 chars). This should be configurable in the settings modal and config file (off by default). Updating it in settings should update the editor immediately. Question: Should we left-align or center the text when there is extra space? Is centering practical? 
 
 - Refactor tests
 
 ### Theme issues
-- Code blocks in Markdown cheat sheet have same bg as modal, so it looks like there's no bg
-- Inline code in a struck through item should be dimmed
 - BG of striped rows should be consistent in border columns
 
 ## Make the TUI prettier—more like OpenCode
 - Replace modal border with padding.
 - Dim background when modal is open (probably modern terminals only)
 - Keep modal title on left. Add dim `Esc` at top right to signal how to close. Both should be contained *within* the border padding.
+- Color code modal titles (e.g. red for warning)
 
 ---
 
