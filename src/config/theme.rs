@@ -516,7 +516,7 @@ impl Theme {
                 .add_modifier(Modifier::CROSSED_OUT),
             highlight: Style::default().bg(p.warning_dim).fg(p.default_bg),
             code_span: Style::default().fg(p.code_bright).bg(p.muted),
-            code_span_dim: Style::default().fg(p.code_dim).bg(p.surface),
+            code_span_dim: Style::default().fg(p.code_dim).bg(p.muted),
             link_text: Style::default()
                 .fg(p.interactive_bright)
                 .add_modifier(underline),
@@ -529,7 +529,7 @@ impl Theme {
 
             // Code block — surface_elevated background reads as a single
             // unit across border, language label, and body.
-            code_block_border: Style::default().fg(p.default_text).bg(p.surface),
+            code_block_border: Style::default().fg(p.default_text).bg(p.muted),
             code_block_lang: Style::default()
                 .fg(p.code_bright)
                 .bg(p.surface)
