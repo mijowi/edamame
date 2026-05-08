@@ -193,6 +193,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                 native_protocol: self.capabilities.image_protocol,
                 is_scrolling: self.is_scrolling,
                 suppress_block_idx: suppress,
+                bg: self.theme.normal.bg.unwrap_or(ratatui::style::Color::Reset),
             };
             image_view::paint_images(snapshots, ctx);
         }
