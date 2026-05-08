@@ -168,20 +168,6 @@ impl ScrollContainerState {
         }
     }
 
-    /// Returns the scroll-indicator arrow for the title bar, or `None`
-    /// when the body fits in the viewport.
-    pub fn arrow(&self) -> Option<&'static str> {
-        let max = self.max_scroll();
-        if max == 0 {
-            return None;
-        }
-        Some(match self.scroll {
-            0 => "↓",
-            s if s >= max => "↑",
-            _ => "↑↓",
-        })
-    }
-
     /// Update `last_total` / `last_visible` and clamp `scroll`.  Call
     /// once per render after the layout is known.
     pub fn observe(&mut self, total: u16, visible: u16) {
@@ -194,14 +180,10 @@ impl ScrollContainerState {
     }
 }
 
-/// Build the title string, optionally suffixed with a scroll-indicator
-/// arrow.  Pure so it's easy to unit-test the indicator logic without
-/// rendering.
-pub fn format_title(title: &str, arrow: Option<&str>) -> String {
-    match arrow {
-        Some(a) => format!(" {title} {a} "),
-        None => format!(" {title} "),
-    }
+/// Build the title string with a single space of padding on each side
+/// so the frame's border characters don't kiss the title text.
+pub fn format_title(title: &str) -> String {
+    format!(" {title} ")
 }
 
 /// Centred rectangle sized to fit `content`, clamped to `area`.
@@ -267,15 +249,9 @@ fn modal_dimensions_for(content: ContentSize, area: Rect) -> (u16, u16) {
 /// Render the Clear + bordered Block with a scroll-aware title.
 /// Returns the inner rect (the area available for body + pinned
 /// regions, in caller-defined order).
-pub fn draw_frame(
-    area: Rect,
-    buf: &mut Buffer,
-    title: &str,
-    arrow: Option<&str>,
-    theme: &Theme,
-) -> Rect {
+pub fn draw_frame(area: Rect, buf: &mut Buffer, title: &str, theme: &Theme) -> Rect {
     Clear.render(area, buf);
-    let title_str = format_title(title, arrow);
+    let title_str = format_title(title);
     // Border style overrides the surrounding modal_bg fill on the
     // frame characters only — body fill stays modal_bg.
     let block = Block::default()
@@ -318,58 +294,11 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    // ── arrow indicator ──────────────────────────────────────────────────
-
-    #[test]
-    fn arrow_omits_when_body_fits() {
-        let s = ScrollContainerState {
-            scroll: 0,
-            last_total: 5,
-            last_visible: 10,
-        };
-        assert_eq!(s.arrow(), None);
-    }
-
-    #[test]
-    fn arrow_shows_down_at_top() {
-        let s = ScrollContainerState {
-            scroll: 0,
-            last_total: 20,
-            last_visible: 5,
-        };
-        assert_eq!(s.arrow(), Some("↓"));
-    }
-
-    #[test]
-    fn arrow_shows_up_at_bottom() {
-        let s = ScrollContainerState {
-            scroll: 15,
-            last_total: 20,
-            last_visible: 5,
-        };
-        assert_eq!(s.arrow(), Some("↑"));
-    }
-
-    #[test]
-    fn arrow_shows_both_in_middle() {
-        let s = ScrollContainerState {
-            scroll: 5,
-            last_total: 20,
-            last_visible: 5,
-        };
-        assert_eq!(s.arrow(), Some("↑↓"));
-    }
-
     // ── format_title ─────────────────────────────────────────────────────
 
     #[test]
-    fn format_title_omits_arrow_when_none() {
-        assert_eq!(format_title("Help", None), " Help ");
-    }
-
-    #[test]
-    fn format_title_appends_arrow_when_some() {
-        assert_eq!(format_title("Help", Some("↓")), " Help ↓ ");
+    fn format_title_pads_with_single_space() {
+        assert_eq!(format_title("Help"), " Help ");
     }
 
     // ── scroll_by ────────────────────────────────────────────────────────

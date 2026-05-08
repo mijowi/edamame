@@ -162,6 +162,11 @@ pub struct ThemeFile {
     pub cursor_rendered: StyleSpec,
     pub cursor_raw: StyleSpec,
     pub cursor: StyleSpec,
+
+    // Scrollbar
+    pub scrollbar_track: StyleSpec,
+    pub scrollbar_thumb: StyleSpec,
+    pub scrollbar_thumb_active: StyleSpec,
 }
 
 /// All theme-style fields, listed once.  Both `From<&ThemeFile> for Theme`
@@ -196,7 +201,8 @@ macro_rules! style_fields {
             modal_description, modal_section_heading,
             modal_input_unfocused, modal_input_focused, modal_button_focused,
             normal, selection, search_highlight, active_line,
-            cursor_preview, cursor_rendered, cursor_raw, cursor
+            cursor_preview, cursor_rendered, cursor_raw, cursor,
+            scrollbar_track, scrollbar_thumb, scrollbar_thumb_active
         }
     };
 }
@@ -349,6 +355,9 @@ mod tests {
         check!(cursor_rendered);
         check!(cursor_raw);
         check!(cursor);
+        check!(scrollbar_track);
+        check!(scrollbar_thumb);
+        check!(scrollbar_thumb_active);
         assert_eq!(
             original.task_strikethrough, round_tripped.task_strikethrough,
             "task_strikethrough did not round-trip"
@@ -598,6 +607,9 @@ bold = true
         check!(cursor_rendered);
         check!(cursor_raw);
         check!(cursor);
+        check!(scrollbar_track);
+        check!(scrollbar_thumb);
+        check!(scrollbar_thumb_active);
         // `table_cell` and `active_line` are intentionally
         // `Style::default()` in the compiled default and round-trip
         // identically through both branches of the merge.
@@ -746,6 +758,9 @@ bold = true
         check!(cursor_rendered);
         check!(cursor_raw);
         check!(cursor);
+        check!(scrollbar_track);
+        check!(scrollbar_thumb);
+        check!(scrollbar_thumb_active);
         assert_eq!(expected.task_strikethrough, theme.task_strikethrough);
     }
 }

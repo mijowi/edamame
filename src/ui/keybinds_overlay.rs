@@ -294,13 +294,7 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
         // viewport without changing focus.  ensure_visible runs only
         // when focus actually moves (see KeybindsState::move_focus).
 
-        let inner = draw_frame(
-            rect,
-            buf,
-            "Keybindings",
-            state.scroll_state.arrow(),
-            self.theme,
-        );
+        let inner = draw_frame(rect, buf, "Keybindings", self.theme);
         if inner.height < 2 || inner.width == 0 {
             return;
         }
@@ -308,12 +302,14 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
         let scroll = state.scroll_state.scroll as usize;
         let visible_rows = table_height as usize;
 
-        let table_area = Rect {
+        let table_outer = Rect {
             x: inner.x,
             y: inner.y,
             width: inner.width,
             height: table_height,
         };
+        let (table_area, scrollbar_area) =
+            crate::ui::scrollbar::split_for_scroll_state(table_outer, &state.scroll_state);
         let visible: Vec<Line<'_>> = body_lines
             .into_iter()
             .skip(scroll)
@@ -322,6 +318,14 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
         Paragraph::new(visible)
             .style(self.theme.modal_bg)
             .render(table_area, buf);
+        if let Some(bar_area) = scrollbar_area {
+            crate::ui::scrollbar::render_for_scroll_state(
+                bar_area,
+                &state.scroll_state,
+                self.theme,
+                buf,
+            );
+        }
 
         if let Some(err) = state.last_error.as_ref() {
             // Blank spacer row, then the error.
@@ -641,14 +645,14 @@ mod tests {
     }
 
     #[test]
-    fn keybinds_renders_scroll_arrow_when_more_rows_than_visible_height() {
+    fn keybinds_renders_scrollbar_when_more_rows_than_visible_height() {
         let km = keymap();
         let mut state = KeybindsState::open(&km);
         // 80 cols × 8 rows: only ~5 row slots; keybinds has many more.
         let contents = render(&mut state, &km, 80, 8);
         assert!(
-            contents.contains("Keybindings ↓") || contents.contains("Keybindings ↑↓"),
-            "expected scroll arrow in title, got: {contents}"
+            contents.contains('█'),
+            "expected scrollbar thumb glyph, got: {contents}"
         );
     }
 

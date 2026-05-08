@@ -15,6 +15,7 @@ use super::{
     preview::{PreviewState, PreviewView},
     raw_view::{RawView, RawViewState},
     rendered_view::{RenderedView, RenderedViewState},
+    scrollbar::{Scrollbar, ScrollbarMetrics},
     status_bar::StatusBarState,
 };
 
@@ -58,6 +59,48 @@ pub struct EditorView<'a> {
     /// `MAX_WIDTH_COLS_MIN` and clamped to the available width by
     /// `clamp_doc_area_to_max_width`.
     pub max_width_cols: usize,
+    /// True while the user is hovering the scrollbar gutter or dragging
+    /// the thumb.  Switches the rendered thumb to the bright variant.
+    pub scrollbar_active: bool,
+}
+
+/// Lay out the document area and (when needed) a scrollbar gutter
+/// inside `full`.  The gutter, when present, lives at `full`'s right
+/// edge — *outside* any horizontal max-width clamp so the scrollbar
+/// always rides the terminal boundary.
+///
+/// `total_for_width` is invoked with the candidate doc width to obtain
+/// the total wrapped row count.  Wrap is width-dependent, so the
+/// overflow decision must be made at the post-clamp width: a narrower
+/// doc wraps to MORE rows than a wider one, so a "fits at full width"
+/// answer doesn't imply "fits after the max-width clamp narrows it."
+/// When overflow is detected the gutter is reserved at `full`'s right
+/// edge and the doc is re-clamped against `full.width - 1` so the doc
+/// never overlaps the gutter.
+pub fn layout_doc_with_scrollbar(
+    full: Rect,
+    max_width_enabled: bool,
+    max_width_cols: usize,
+    total_for_width: impl Fn(u16) -> usize,
+) -> (Rect, Option<Rect>) {
+    let doc_no_bar = clamp_doc_area_to_max_width(full, max_width_enabled, max_width_cols);
+    let total = total_for_width(doc_no_bar.width);
+    let needs_bar = total > full.height as usize && full.width >= 1 && full.height >= 1;
+    if !needs_bar {
+        return (doc_no_bar, None);
+    }
+    let bar = Rect {
+        x: full.x + full.width - 1,
+        y: full.y,
+        width: 1,
+        height: full.height,
+    };
+    let reduced = Rect {
+        width: full.width - 1,
+        ..full
+    };
+    let doc = clamp_doc_area_to_max_width(reduced, max_width_enabled, max_width_cols);
+    (doc, Some(bar))
 }
 
 /// Centre `area` horizontally within itself, capping its width at
@@ -88,6 +131,10 @@ pub struct EditorViewState {
     pub preview: PreviewState,
     pub rendered: RenderedViewState,
     pub raw: RawViewState,
+    /// Layout published by the most recent render so the App's mouse
+    /// layer can hit-test the scrollbar gutter without re-deriving the
+    /// trio.  `None` when content fits the viewport (no gutter drawn).
+    pub scrollbar: Option<ScrollbarMetrics>,
 }
 
 impl EditorViewState {
@@ -128,8 +175,17 @@ impl<'a> StatefulWidget for EditorView<'a> {
             .style(self.theme.normal)
             .render(full_doc_area, buf);
 
-        let doc_area =
-            clamp_doc_area_to_max_width(full_doc_area, self.max_width_enabled, self.max_width_cols);
+        // Lay out doc area + optional scrollbar gutter.  The overflow
+        // decision is made at the post-clamp doc width because narrower
+        // widths wrap to MORE rows; deciding at the pre-clamp width
+        // would miss overflow that only appears once the max-width
+        // clamp narrows the doc.
+        let (doc_area, scrollbar_area) = layout_doc_with_scrollbar(
+            full_doc_area,
+            self.max_width_enabled,
+            self.max_width_cols,
+            |w| self.state.total_visual_rows_for_mode(w as usize),
+        );
 
         // ── Document area ─────────────────────────────────────────
         let mode = self.state.mode;
@@ -229,6 +285,43 @@ impl<'a> StatefulWidget for EditorView<'a> {
             };
             image_view::paint_images(snapshots, ctx);
         }
+
+        // ── Scrollbar gutter ──────────────────────────────────────
+        // Painted last over the document so its glyphs win cleanly on
+        // the gutter cells.  Published on `state.scrollbar` so the
+        // App's mouse handler can hit-test the gutter on subsequent
+        // events.
+        state.scrollbar = if let Some(area) = scrollbar_area {
+            // Recompute total at the (possibly narrower) post-clamp
+            // doc width so the thumb position lines up with the
+            // wrapped content the user actually sees.  Clamp the
+            // displayed scroll to `[0, total - visible]` so mouse
+            // overshoot doesn't push the thumb past the track end.
+            let total_post = self
+                .state
+                .total_visual_rows_for_mode(doc_area.width as usize);
+            let visible = doc_area.height;
+            let total = u16::try_from(total_post).unwrap_or(u16::MAX);
+            let max_scroll = total.saturating_sub(visible);
+            let position = u16::try_from(self.state.scroll)
+                .unwrap_or(u16::MAX)
+                .min(max_scroll);
+            let metrics = ScrollbarMetrics {
+                area,
+                total,
+                visible,
+                position,
+            };
+            Scrollbar {
+                metrics,
+                theme: self.theme,
+                active: self.scrollbar_active,
+            }
+            .render(area, buf);
+            Some(metrics)
+        } else {
+            None
+        };
 
         // ── Bottom region (hint line + status line) ───────────────
         let (cursor_line, cursor_col) = self.state.cursor.line_col(&self.state.buffer);

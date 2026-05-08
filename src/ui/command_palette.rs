@@ -318,13 +318,7 @@ impl<'a> StatefulWidget for PaletteView<'a> {
             .scroll_state
             .observe(state.display_rows.len() as u16, list_height);
 
-        let inner = draw_frame(
-            modal_area,
-            buf,
-            "Command Palette",
-            state.scroll_state.arrow(),
-            self.theme,
-        );
+        let inner = draw_frame(modal_area, buf, "Command Palette", self.theme);
         if inner.height < 2 || inner.width == 0 {
             return;
         }
@@ -365,12 +359,14 @@ impl<'a> StatefulWidget for PaletteView<'a> {
                 .set_style(self.theme.modal_border);
         }
 
-        let list_area = Rect {
+        let list_outer = Rect {
             x: inner.x,
             y: inner.y + pinned_top,
             width: inner.width,
             height: list_height,
         };
+        let (list_area, scrollbar_area) =
+            crate::ui::scrollbar::split_for_scroll_state(list_outer, &state.scroll_state);
         if list_area.height == 0 {
             return;
         }
@@ -413,6 +409,15 @@ impl<'a> StatefulWidget for PaletteView<'a> {
         Paragraph::new(lines)
             .style(self.theme.modal_bg)
             .render(list_area, buf);
+
+        if let Some(bar_area) = scrollbar_area {
+            crate::ui::scrollbar::render_for_scroll_state(
+                bar_area,
+                &state.scroll_state,
+                self.theme,
+                buf,
+            );
+        }
     }
 }
 
@@ -801,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn palette_renders_scroll_arrow_when_more_rows_than_visible_height() {
+    fn palette_renders_scrollbar_when_more_rows_than_visible_height() {
         let mut state = PaletteState::open(&keymap());
         // Empty-state sectioned view already exceeds the list height
         // in a small terminal; typing a char is no longer necessary
@@ -811,8 +816,8 @@ mod tests {
         // divider, and frame chrome — guaranteed overflow.
         let contents = render(&mut state, 80, 6);
         assert!(
-            contents.contains("Command Palette ↓"),
-            "expected ↓ arrow, got: {contents}"
+            contents.contains('█'),
+            "expected scrollbar thumb glyph, got: {contents}"
         );
     }
 

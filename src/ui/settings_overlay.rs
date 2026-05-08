@@ -295,13 +295,7 @@ impl<'a> StatefulWidget for SettingsView<'a> {
             .observe(row_lines.len() as u16, table_height);
         state.scroll_state.ensure_visible(state.focused as u16);
 
-        let inner = draw_frame(
-            rect,
-            buf,
-            "Settings",
-            state.scroll_state.arrow(),
-            self.theme,
-        );
+        let inner = draw_frame(rect, buf, "Settings", self.theme);
         if inner.height < 2 || inner.width == 0 {
             return;
         }
@@ -309,12 +303,14 @@ impl<'a> StatefulWidget for SettingsView<'a> {
         let scroll = state.scroll_state.scroll as usize;
         let visible_rows = table_height as usize;
 
-        let table_area = Rect {
+        let table_outer = Rect {
             x: inner.x,
             y: inner.y,
             width: inner.width,
             height: table_height,
         };
+        let (table_area, scrollbar_area) =
+            crate::ui::scrollbar::split_for_scroll_state(table_outer, &state.scroll_state);
         let visible: Vec<Line<'_>> = row_lines
             .into_iter()
             .skip(scroll)
@@ -323,6 +319,14 @@ impl<'a> StatefulWidget for SettingsView<'a> {
         Paragraph::new(visible)
             .style(self.theme.modal_bg)
             .render(table_area, buf);
+        if let Some(bar_area) = scrollbar_area {
+            crate::ui::scrollbar::render_for_scroll_state(
+                bar_area,
+                &state.scroll_state,
+                self.theme,
+                buf,
+            );
+        }
 
         // Pinned footer: description (when present) followed by error.
         let mut footer_y = inner.y + table_height;
@@ -670,15 +674,15 @@ mod tests {
     }
 
     #[test]
-    fn settings_renders_scroll_arrow_when_more_rows_than_visible_height() {
+    fn settings_renders_scrollbar_when_more_rows_than_visible_height() {
         let config = Config::default();
         let mut state = SettingsState::new();
         // 80 cols × 8 rows: only ~5 row slots after frame + footer.
         // Settings has 13 rows.
         let contents = render(&mut state, &config, 80, 8);
         assert!(
-            contents.contains("Settings ↓") || contents.contains("Settings ↑↓"),
-            "expected scroll arrow in title, got: {contents}"
+            contents.contains('█'),
+            "expected scrollbar thumb glyph, got: {contents}"
         );
     }
 

@@ -282,7 +282,7 @@ impl<'a> StatefulWidget for SaveCopyView<'a> {
             pinned_bottom: 0,
         };
         let modal_area = centered_rect_for_content(content, area);
-        let inner = draw_frame(modal_area, buf, "Save a Copy", None, self.theme);
+        let inner = draw_frame(modal_area, buf, "Save a Copy", self.theme);
         if inner.height == 0 || inner.width == 0 {
             return;
         }
