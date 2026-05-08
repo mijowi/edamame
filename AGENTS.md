@@ -104,12 +104,12 @@ src/
                     #          selection, checkbox toggle, link hit-test)
     state.rs        # EditorState: owns Buffer, Cursor, History, Mode, ParsedDoc
     table_edit.rs   # Table detection, row/col structure edits
-  input.rs          # facade — re-exports InputDispatcher, ModalHandler,
+  input.rs          # facade — re-exports InputDispatcher, ModeHandler,
                     #          MouseAction, MouseDispatcher
   input/
     dispatcher.rs   # InputDispatcher: crossterm Event → Action
-    modal.rs        # facade — declares `default` submodule; ModalHandler trait
-    modal/
+    mode_handler.rs # facade — declares `default` submodule; ModeHandler trait
+    mode_handler/
       default.rs    # DefaultHandler: non-modal keybinding implementation
     mouse.rs        # MouseDispatcher: click-count + drag state machine that
                     #          converts crossterm MouseEvents into MouseActions
@@ -161,7 +161,7 @@ write picks up the new defaults.
 **Architectural layers** (higher depends only on lower):
 1. `main` / `App` — event loop, terminal lifecycle
 2. `ui` — ratatui widgets; `EditorView` dispatches to `PreviewView`, `RenderedView`, `RawView`
-3. `input` — `InputDispatcher`; `ModalHandler` trait + `DefaultHandler` implementation
+3. `input` — `InputDispatcher`; `ModeHandler` trait + `DefaultHandler` implementation
 4. `editor` — `EditorState`; owns `Buffer`, `Cursor`, `History`, `Mode`, `ParsedDoc`
 5. `config` — `Config`, `KeyMap`, `Theme` (loaded once at startup)
 6. `document` — `Buffer`, `Cursor`, `History`, `ParsedDoc`, `Selection`, `SourceMap`
@@ -302,7 +302,7 @@ they exist:
   raw mode + transient features (mirroring `setup` minus the `Terminal`
   construction), and `Config::load()` is re-run so any edits the user made
   take effect immediately.
-- **Preview-mode Ctrl-key allowlist.** `input::modal::default::preview_safe_action`
+- **Preview-mode Ctrl-key allowlist.** `input::mode_handler::default::preview_safe_action`
   decides which Ctrl-* chords fire in Preview mode.  Read-only overlay
   openers (`ShowCommandPalette`, `OpenSettings`, `OpenKeybinds`,
   `OpenConfigFolder`, `ShowMarkdownCheatSheet`, `ShowCheatSheet`) belong on
@@ -346,7 +346,7 @@ use crate::document::Buffer;
 | Variables | `snake_case` | `file_path`, `col_count` |
 | Types / structs / enums | `PascalCase` | `Buffer`, `EditorView` |
 | Enum variants | `PascalCase` | `ScrollPageUp`, `CodeBlock` |
-| Traits | `PascalCase` | `ModalHandler` |
+| Traits | `PascalCase` | `ModeHandler` |
 | Constructors | `new()` / `load()` / `build()` | `Config::load()`, `KeyMap::build()` |
 | Boolean predicates | standard Rust | `is_empty()`, `is_some()` |
 
