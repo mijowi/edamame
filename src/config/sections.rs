@@ -38,7 +38,23 @@ pub struct EditorConfig {
     /// overlays the hint line before auto-expiring.  Errors ignore this
     /// and remain visible until the user dismisses them with Escape.
     pub transient_ms: u64,
+    /// When true, the editor content area is capped to `max_width_cols`
+    /// columns and centred horizontally inside the terminal, with the
+    /// surrounding gutters painted in `theme.normal`.  Off by default —
+    /// the editor uses the full terminal width.  When the terminal is
+    /// narrower than the cap the cap has no effect; the full terminal
+    /// width is used.  The bottom status / hint region always spans the
+    /// full terminal width regardless of this setting.
+    pub max_width_enabled: bool,
+    /// Maximum content width in columns when `max_width_enabled` is
+    /// true.  Clamped to a floor of 20 at use sites to prevent
+    /// pathological narrow values that would break layout.  Default: 100.
+    pub max_width_cols: usize,
 }
+
+/// Floor applied to `EditorConfig::max_width_cols` at every use site so a
+/// stray `0` or single-digit value can't break layout.
+pub const MAX_WIDTH_COLS_MIN: usize = 20;
 
 /// How the bottom status region is laid out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -63,6 +79,8 @@ impl Default for EditorConfig {
             mouse_scroll_lines: 1,
             status_bar: StatusBarLayout::default(),
             transient_ms: 1500,
+            max_width_enabled: false,
+            max_width_cols: 100,
         }
     }
 }
@@ -175,7 +193,7 @@ impl Default for ImagesConfig {
     fn default() -> Self {
         Self {
             enabled: ImagesEnabled::Ask,
-            max_width: 80,
+            max_width: 100,
             max_height: 24,
             remote_policy: RemoteImagePolicy::Ask,
         }

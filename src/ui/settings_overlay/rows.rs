@@ -6,6 +6,7 @@
 //! `settings_overlay.rs` keeps the parent file focused on widget
 //! plumbing — adding a new setting only touches this file.
 
+use crate::config::sections::MAX_WIDTH_COLS_MIN;
 use crate::config::{Config, ImagesEnabled, RemoteImagePolicy, StatusBarLayout};
 
 #[derive(Debug)]
@@ -255,6 +256,38 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 read: |c, _| c.editor.transient_ms.to_string(),
                 write_string: |c, v| {
                     c.editor.transient_ms = parse_u64(v)?;
+                    Ok(())
+                },
+                cycle: None,
+            },
+        },
+        RowDef {
+            label: "Limit editor width",
+            description: Some("Cap the editor content to a fixed width and centre it"),
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Cycle,
+                read: |c, _| c.editor.max_width_enabled.to_string(),
+                write_string: no_write,
+                cycle: Some(|c, _, _| {
+                    c.editor.max_width_enabled = !c.editor.max_width_enabled;
+                    true
+                }),
+            },
+        },
+        RowDef {
+            label: "Editor max width",
+            description: Some("Maximum content width in columns when limit is on"),
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Edit,
+                read: |c, _| c.editor.max_width_cols.to_string(),
+                write_string: |c, v| {
+                    let n = parse_usize(v)?;
+                    if n < MAX_WIDTH_COLS_MIN {
+                        return Err(format!("must be at least {MAX_WIDTH_COLS_MIN}"));
+                    }
+                    c.editor.max_width_cols = n;
                     Ok(())
                 },
                 cycle: None,
