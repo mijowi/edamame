@@ -153,6 +153,11 @@ pub struct App {
     /// dimensions the UI thread will request on first paint — eliminates
     /// the ~5-20 ms sync encode that `get_protocol_pair`'s cold path
     /// previously did on the UI thread.  `0` until the first iteration.
+    ///
+    /// This is the *clamped* doc-area width (after
+    /// `editor.max_width_enabled` is applied), not the raw terminal
+    /// width — images render inside the doc area, so the scratch must
+    /// match the doc width or the first paint resizes anyway.
     last_area_width: u16,
     /// A `Term` event pulled off the channel by `drain_pending_image_ready`
     /// (which uses `try_recv` and can't put the event back).  Processed

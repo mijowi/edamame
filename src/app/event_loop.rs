@@ -46,13 +46,14 @@ use super::{App, AppEvent};
 /// size and the configured status-bar layout.  Computed once per loop
 /// iteration so every dispatch arm sees the same numbers.
 pub(super) struct DocDims {
-    /// Terminal size as reported by `terminal.size()`.
-    pub term_size: Size,
     /// Document-area height in rows (`term_size.height - bottom_rows`).
     pub doc_height: usize,
-    /// Document-area width in columns (`term_size.width`).
+    /// Document-area width in columns.  Equals the terminal width minus
+    /// any horizontal clamp imposed by `editor.max_width_enabled`.
     pub doc_width: usize,
-    /// Document-area rectangle used for mouse hit-testing.
+    /// Document-area rectangle used for mouse hit-testing.  When the
+    /// max-width clamp is active, `doc_area.x` is non-zero and reflects
+    /// the centred offset.
     pub doc_area: Rect,
 }
 
@@ -179,15 +180,22 @@ impl App {
     pub(super) fn compute_doc_dims(&self, term_size: Size) -> DocDims {
         let bottom_rows = crate::ui::BottomRegion::height(self.config.editor.status_bar);
         let doc_height = (term_size.height as usize).saturating_sub(bottom_rows as usize);
-        let doc_width = term_size.width as usize;
-        let doc_area = Rect {
+        let full_doc_area = Rect {
             x: 0,
             y: 0,
             width: term_size.width,
             height: term_size.height.saturating_sub(bottom_rows),
         };
+        // Apply the same horizontal clamp as `EditorView::render` so
+        // `viewport_width`, mouse hit-testing, and per-line wrap all
+        // agree with the painted content area.
+        let doc_area = crate::ui::editor_view::clamp_doc_area_to_max_width(
+            full_doc_area,
+            self.config.editor.max_width_enabled,
+            self.config.editor.max_width_cols,
+        );
+        let doc_width = doc_area.width as usize;
         DocDims {
-            term_size,
             doc_height,
             doc_width,
             doc_area,
@@ -203,7 +211,7 @@ impl App {
     /// non-Idle state, so we only spawn threads for URLs that just
     /// entered the window.
     pub(super) fn prepare_viewport(&mut self, dims: &DocDims) {
-        self.last_area_width = dims.term_size.width;
+        self.last_area_width = dims.doc_area.width;
         self.editor.set_viewport_width(dims.doc_width);
         self.dispatch_visible_image_decodes(self.editor.scroll, dims.doc_height);
     }
@@ -232,6 +240,8 @@ impl App {
         let is_scrolling = self.is_scrolling();
         let show_handles = self.config.table.show_buttons;
         let layout = self.config.editor.status_bar;
+        let max_width_enabled = self.config.editor.max_width_enabled;
+        let max_width_cols = self.config.editor.max_width_cols;
         let hint = self.hint_content();
         let modal_cursor_visible = self.editor.cursor_blink.is_visible();
         let theme_ref = self.theme;
@@ -253,6 +263,8 @@ impl App {
                 is_scrolling,
                 status_bar_layout: layout,
                 hint,
+                max_width_enabled,
+                max_width_cols,
             };
             frame.render_stateful_widget(view, frame.area(), view_state_ref);
             if let Some(top) = modal_stack_top {

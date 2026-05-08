@@ -598,6 +598,8 @@ mod tests {
                 "Theme",
                 "Use hint line",
                 "Hint duration",
+                "Limit editor width",
+                "Editor max width",
                 "Use visual line navigation",
                 "Scroll speed",
                 "Show images",

@@ -4,6 +4,7 @@ use ratatui::{
     widgets::{Block, StatefulWidget, Widget},
 };
 
+use crate::config::sections::MAX_WIDTH_COLS_MIN;
 use crate::config::{StatusBarLayout, Theme};
 use crate::editor::{EditorState, Mode};
 use crate::terminal::Capabilities;
@@ -50,6 +51,34 @@ pub struct EditorView<'a> {
     /// Phase 9 — what the hint line should display for this frame.
     /// Ignored in compact mode.
     pub hint: HintContent,
+    /// When true, the document area is capped to `max_width_cols` and
+    /// centred horizontally; the gutters are filled with `theme.normal`.
+    pub max_width_enabled: bool,
+    /// Cap in columns when `max_width_enabled` is true.  Floored at
+    /// `MAX_WIDTH_COLS_MIN` and clamped to the available width by
+    /// `clamp_doc_area_to_max_width`.
+    pub max_width_cols: usize,
+}
+
+/// Centre `area` horizontally within itself, capping its width at
+/// `max(cols, MAX_WIDTH_COLS_MIN)` when `enabled`.  When disabled, or
+/// when the cap is at least `area.width`, returns `area` unchanged.  The
+/// result has the same `y` and `height`; only `x` and `width` move.
+pub fn clamp_doc_area_to_max_width(area: Rect, enabled: bool, cols: usize) -> Rect {
+    if !enabled {
+        return area;
+    }
+    let cap = cols.max(MAX_WIDTH_COLS_MIN) as u16;
+    if cap >= area.width {
+        return area;
+    }
+    let x_off = area.x + (area.width - cap) / 2;
+    Rect {
+        x: x_off,
+        y: area.y,
+        width: cap,
+        height: area.height,
+    }
 }
 
 /// State for the `EditorView`.
@@ -83,10 +112,8 @@ impl<'a> StatefulWidget for EditorView<'a> {
             .constraints([Constraint::Min(0), Constraint::Length(bottom_h)])
             .split(area);
 
-        let doc_area = chunks[0];
+        let full_doc_area = chunks[0];
         let bar_area = chunks[1];
-
-        let _viewport_height = doc_area.height as usize;
 
         // Paint the document area's "blank page" background first.
         // Without this, cells that the per-mode views never write to
@@ -95,9 +122,14 @@ impl<'a> StatefulWidget for EditorView<'a> {
         // a concrete `default_text` / `default_bg`.  Subsequent line
         // and span renders patch onto these cells, so coloured spans
         // (h1, code blocks, etc.) still win on the cells they touch.
+        // The fill spans `full_doc_area` so the left/right gutters
+        // exposed by `clamp_doc_area_to_max_width` carry the theme bg.
         Block::default()
             .style(self.theme.normal)
-            .render(doc_area, buf);
+            .render(full_doc_area, buf);
+
+        let doc_area =
+            clamp_doc_area_to_max_width(full_doc_area, self.max_width_enabled, self.max_width_cols);
 
         // ── Document area ─────────────────────────────────────────
         let mode = self.state.mode;
@@ -225,5 +257,62 @@ impl<'a> StatefulWidget for EditorView<'a> {
             theme: self.theme,
         };
         Widget::render(region, bar_area, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: u16, y: u16, w: u16, h: u16) -> Rect {
+        Rect {
+            x,
+            y,
+            width: w,
+            height: h,
+        }
+    }
+
+    #[test]
+    fn disabled_returns_input_unchanged() {
+        let area = rect(0, 0, 200, 40);
+        assert_eq!(clamp_doc_area_to_max_width(area, false, 80), area);
+    }
+
+    #[test]
+    fn enabled_centres_when_term_wider_than_cap() {
+        let area = rect(0, 0, 200, 40);
+        let out = clamp_doc_area_to_max_width(area, true, 80);
+        assert_eq!(out, rect(60, 0, 80, 40));
+    }
+
+    #[test]
+    fn enabled_returns_input_when_term_narrower_than_cap() {
+        let area = rect(0, 0, 60, 40);
+        assert_eq!(clamp_doc_area_to_max_width(area, true, 80), area);
+    }
+
+    #[test]
+    fn cap_is_floored_at_min() {
+        let area = rect(0, 0, 200, 40);
+        let out = clamp_doc_area_to_max_width(area, true, 5);
+        assert_eq!(out.width, MAX_WIDTH_COLS_MIN as u16);
+    }
+
+    #[test]
+    fn odd_remainder_biases_left() {
+        // 100 - 81 = 19; left gutter = 9, right = 10.
+        let area = rect(0, 0, 100, 10);
+        let out = clamp_doc_area_to_max_width(area, true, 81);
+        assert_eq!(out.x, 9);
+        assert_eq!(out.width, 81);
+    }
+
+    #[test]
+    fn preserves_y_and_height() {
+        let area = rect(0, 5, 200, 30);
+        let out = clamp_doc_area_to_max_width(area, true, 80);
+        assert_eq!(out.y, 5);
+        assert_eq!(out.height, 30);
     }
 }
