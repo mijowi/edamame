@@ -18,6 +18,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 
 /// Copy a pre-rendered halfblocks `scratch` buffer into `buf`, clipped
 /// to the visible `dst_rect` and offset vertically by `src_y_offset`
@@ -39,6 +40,14 @@ use ratatui::layout::Rect;
 ///   `None` on out-of-bounds positions).
 /// * `buf` — the destination `Buffer` (the frame buffer supplied to
 ///   every `render` call).
+/// * `bg` — theme background colour used wherever the scratch cell has
+///   `Color::Reset` for its background.  ratatui_image's halfblocks
+///   renderer leaves `Reset` for letter-box cells around an
+///   aspect-mismatched image and for fully transparent input pixels;
+///   without this substitution those cells would punch through to the
+///   terminal's own background instead of the document's themed
+///   background — visible as dark bands while scrolling and around any
+///   partially-visible image.
 ///
 /// This function does **not** bounds-check `src_y_offset` against
 /// `full_rect.height`; passing an offset that leaves fewer rows than
@@ -51,6 +60,7 @@ pub fn paint_halfblocks_partial(
     src_y_offset: u16,
     dst_rect: Rect,
     buf: &mut Buffer,
+    bg: Color,
 ) {
     if full_rect.width == 0 || full_rect.height == 0 || dst_rect.width == 0 || dst_rect.height == 0
     {
@@ -73,9 +83,17 @@ pub fn paint_halfblocks_partial(
             let Some(src_cell) = scratch.cell((dx, src_y)) else {
                 continue;
             };
-            let src_cell = src_cell.clone();
+            let mut copied = src_cell.clone();
+            // Substitute the theme bg wherever the scratch cell carries
+            // `Reset` (letter-box, transparent pixels, the lower half of
+            // an `▀` cell whose bottom pixel was transparent).  The fg is
+            // left alone — the halfblocks glyph's `▀` colour is the image's
+            // top-pixel colour and must be preserved.
+            if copied.bg == Color::Reset {
+                copied.bg = bg;
+            }
             if let Some(dst_cell) = buf.cell_mut((dst_rect.x + dx, dst_rect.y + dy)) {
-                *dst_cell = src_cell;
+                *dst_cell = copied;
             }
         }
     }
@@ -121,7 +139,14 @@ mod tests {
         let scratch = halfblocks_scratch(full);
 
         let mut dst_buf = Buffer::empty(Rect::new(0, 0, 8, 3));
-        paint_halfblocks_partial(&scratch, full, 2, Rect::new(0, 0, 8, 3), &mut dst_buf);
+        paint_halfblocks_partial(
+            &scratch,
+            full,
+            2,
+            Rect::new(0, 0, 8, 3),
+            &mut dst_buf,
+            Color::Reset,
+        );
         for dy in 0..3u16 {
             for dx in 0..8u16 {
                 let dst_cell = dst_buf.cell((dx, dy)).unwrap();
@@ -142,7 +167,14 @@ mod tests {
         // A 4×2 destination buffer with a 6×3 write rect at origin — the
         // extra 2 cols + 1 row must not panic.
         let mut buf = Buffer::empty(Rect::new(0, 0, 4, 2));
-        paint_halfblocks_partial(&scratch, full, 0, Rect::new(0, 0, 6, 3), &mut buf);
+        paint_halfblocks_partial(
+            &scratch,
+            full,
+            0,
+            Rect::new(0, 0, 6, 3),
+            &mut buf,
+            Color::Reset,
+        );
     }
 
     /// When `src_y_offset` leaves fewer image rows than the destination
@@ -152,7 +184,14 @@ mod tests {
         let full = Rect::new(0, 0, 8, 4);
         let scratch = halfblocks_scratch(full);
         let mut buf = Buffer::empty(Rect::new(0, 0, 8, 6));
-        paint_halfblocks_partial(&scratch, full, 5, Rect::new(0, 0, 8, 6), &mut buf);
+        paint_halfblocks_partial(
+            &scratch,
+            full,
+            5,
+            Rect::new(0, 0, 8, 6),
+            &mut buf,
+            Color::Reset,
+        );
         // src_y_offset 5 > full.height 4 → nothing should have been
         // written; every cell stays default.
         for y in 0..6u16 {
@@ -174,6 +213,7 @@ mod tests {
             0,
             Rect::new(0, 0, 4, 4),
             &mut buf,
+            Color::Reset,
         );
         paint_halfblocks_partial(
             &scratch,
@@ -181,6 +221,7 @@ mod tests {
             0,
             Rect::new(0, 0, 0, 4),
             &mut buf,
+            Color::Reset,
         );
         // No panic, buf still default.
         for y in 0..4u16 {

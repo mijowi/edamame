@@ -19,6 +19,7 @@ use std::ops::Range;
 
 use ratatui::buffer::{Buffer as TuiBuf, Cell};
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 use ratatui_image::{Resize, ResizeEncodeRender};
 
 use crate::editor::EditorState;
@@ -213,6 +214,13 @@ pub struct PaintContext<'a> {
     pub is_scrolling: bool,
     /// Block index to skip (cursor's block during raw-reveal).
     pub suppress_block_idx: Option<usize>,
+    /// Theme background colour used (a) to clear the reserved rect
+    /// before the protocol paints over it and (b) to substitute for
+    /// `Color::Reset` cells produced by the halfblocks renderer.
+    /// Without (b), letter-box cells in the scratch buffer would punch
+    /// through to the terminal's own background — visible as `Reset`
+    /// bands while scrolling and around any partially-visible image.
+    pub bg: Color,
 }
 
 /// Render each image onto its reserved rect, overlaying the `[Image: alt]`
@@ -284,7 +292,7 @@ pub fn paint_images(snapshots: &[ImageLayoutSnapshot], ctx: PaintContext) {
         // placeholder text visible behind the image — a "label
         // peeking out from behind the image" bug.  The clear is a
         // no-op for rows already blank.
-        clear_visible_reserved_rect(snap, &ctx.area, ctx.buf);
+        clear_visible_reserved_rect(snap, &ctx.area, ctx.buf, ctx.bg);
 
         // During active scroll, ALL protocols fall back to halfblocks.
         // Earlier revisions exempted Kitty here on the theory that its
@@ -299,9 +307,9 @@ pub fn paint_images(snapshots: &[ImageLayoutSnapshot], ctx: PaintContext) {
         let use_native = fully_visible && !ctx.is_scrolling;
 
         if use_native {
-            paint_native(ctx.images, snap, ctx.buf);
+            paint_native(ctx.images, snap, ctx.buf, ctx.bg);
         } else {
-            paint_scratch_partial(ctx.images, snap, &ctx.area, ctx.buf);
+            paint_scratch_partial(ctx.images, snap, &ctx.area, ctx.buf, ctx.bg);
         }
     }
 }
@@ -320,7 +328,12 @@ pub fn paint_images(snapshots: &[ImageLayoutSnapshot], ctx: PaintContext) {
 ///   belong to other widgets (status bar, hint line) and must be left
 ///   alone.  The vertical intersection matters because a snap whose top
 ///   is scrolled off-screen has `natural_top < area.y`.
-fn clear_visible_reserved_rect(snap: &ImageLayoutSnapshot, area: &Rect, buf: &mut TuiBuf) {
+fn clear_visible_reserved_rect(
+    snap: &ImageLayoutSnapshot,
+    area: &Rect,
+    buf: &mut TuiBuf,
+    bg: Color,
+) {
     let viewport_top = area.y as isize;
     let viewport_bottom = viewport_top + area.height as isize;
     let top = snap.natural_top.max(viewport_top);
@@ -336,6 +349,7 @@ fn clear_visible_reserved_rect(snap: &ImageLayoutSnapshot, area: &Rect, buf: &mu
         for x in x_start..x_end {
             if let Some(cell) = buf.cell_mut((x, y)) {
                 *cell = Cell::default();
+                cell.set_bg(bg);
             }
         }
     }
@@ -346,7 +360,7 @@ fn clear_visible_reserved_rect(snap: &ImageLayoutSnapshot, area: &Rect, buf: &mu
 /// on the cache's pending FIFO.  If the native protocol isn't yet
 /// encoded (`native_ready == false`), falls back to the halfblocks
 /// scratch so the user never sees a placeholder flash.
-fn paint_native(images: &mut ImageCache, snap: &ImageLayoutSnapshot, buf: &mut TuiBuf) {
+fn paint_native(images: &mut ImageCache, snap: &ImageLayoutSnapshot, buf: &mut TuiBuf, bg: Color) {
     let resize = Resize::Fit(None);
     let needs_encode = {
         let pair = match images.protocol_pair_mut(&snap.url, snap.rect.width, snap.rect.height) {
@@ -359,7 +373,7 @@ fn paint_native(images: &mut ImageCache, snap: &ImageLayoutSnapshot, buf: &mut T
         // scratch IS the rendering.
         let Some(native) = pair.native.as_mut() else {
             if let Some(scratch) = pair.halfblocks_scratch.as_ref() {
-                paint_halfblocks_partial(scratch, full_rect, 0, snap.rect, buf);
+                paint_halfblocks_partial(scratch, full_rect, 0, snap.rect, buf, bg);
             }
             return;
         };
@@ -375,7 +389,7 @@ fn paint_native(images: &mut ImageCache, snap: &ImageLayoutSnapshot, buf: &mut T
         if pair.native_ready {
             native.render(snap.rect, buf);
         } else if let Some(scratch) = pair.halfblocks_scratch.as_ref() {
-            paint_halfblocks_partial(scratch, full_rect, 0, snap.rect, buf);
+            paint_halfblocks_partial(scratch, full_rect, 0, snap.rect, buf, bg);
         }
         needs
     };
@@ -393,6 +407,7 @@ fn paint_scratch_partial(
     snap: &ImageLayoutSnapshot,
     area: &Rect,
     buf: &mut TuiBuf,
+    bg: Color,
 ) {
     let pair = match images.protocol_pair_mut(&snap.url, snap.rect.width, snap.rect.height) {
         Some(p) => p,
@@ -424,7 +439,7 @@ fn paint_scratch_partial(
         snap.rect.width,
         visible_height,
     );
-    paint_halfblocks_partial(scratch, full_rect, clip_top, dst_rect, buf);
+    paint_halfblocks_partial(scratch, full_rect, clip_top, dst_rect, buf, bg);
 }
 
 #[cfg(test)]
@@ -569,7 +584,7 @@ mod tests {
         let area = Rect::new(0, 0, 30, 20);
         let mut buf = pre_populate_buf(area, 'X');
         let snap = snap_with_top(2, 30, 4);
-        clear_visible_reserved_rect(&snap, &area, &mut buf);
+        clear_visible_reserved_rect(&snap, &area, &mut buf, Color::Reset);
         for y in 0..20u16 {
             for x in 0..30u16 {
                 let expected = if (2..6).contains(&y) { ' ' } else { 'X' };
@@ -594,7 +609,7 @@ mod tests {
         // snap top at row 3 (two above area.y=5); reserved height 6 →
         // visible rows 5..9.
         let snap = snap_with_top(3, 30, 6);
-        clear_visible_reserved_rect(&snap, &area, &mut buf);
+        clear_visible_reserved_rect(&snap, &area, &mut buf, Color::Reset);
         for y in 5..15u16 {
             for x in 0..30u16 {
                 let expected = if (5..9).contains(&y) { ' ' } else { 'X' };
@@ -614,7 +629,7 @@ mod tests {
         let area = Rect::new(0, 0, 10, 5);
         let mut buf = pre_populate_buf(area, 'X');
         let snap = snap_with_top(-10, 10, 4);
-        clear_visible_reserved_rect(&snap, &area, &mut buf);
+        clear_visible_reserved_rect(&snap, &area, &mut buf, Color::Reset);
         for y in 0..5u16 {
             for x in 0..10u16 {
                 assert_eq!(buf.cell((x, y)).unwrap().symbol(), "X", "cell ({x},{y})");
