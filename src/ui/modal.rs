@@ -35,6 +35,7 @@ use crate::ui::button_row::{button_row_width, render_button_row};
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, wrapped_rows, ContentSize, ScrollContainerState,
 };
+use crate::ui::scrollbar;
 
 /// The outcome of a key event handed to the modal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,13 +193,7 @@ impl<'a> StatefulWidget for ModalView<'a> {
         let total = wrapped_rows(self.body, body_inner_w.max(1));
         state.scroll_state.observe(total, body_height);
 
-        let inner = draw_frame(
-            modal_area,
-            buf,
-            self.title,
-            state.scroll_state.arrow(),
-            self.theme,
-        );
+        let inner = draw_frame(modal_area, buf, self.title, self.theme);
         if inner.height == 0 || inner.width == 0 {
             return;
         }
@@ -207,12 +202,22 @@ impl<'a> StatefulWidget for ModalView<'a> {
             .wrap(Wrap { trim: false })
             .style(self.theme.modal_bg);
 
-        let body_area = Rect {
+        let body_outer = Rect {
             x: inner.x + 1,
             y: inner.y,
             width: inner.width.saturating_sub(2),
             height: body_height,
         };
+        // Reserve a scrollbar gutter inside the body when overflowing.
+        // Modal scrollbars are visual-only for now: keyboard scroll
+        // keys and mouse-wheel ticks already drive
+        // `scroll_state.scroll_by` via the existing pipeline; click-
+        // and-drag on the modal gutter would require routing mouse
+        // events into the `Modal` trait the same way the editor's
+        // `view_state.scrollbar` is consulted in
+        // `handle_scrollbar_event`.
+        let (body_area, scrollbar_area) =
+            scrollbar::split_for_scroll_state(body_outer, &state.scroll_state);
         let button_area = Rect {
             x: inner.x,
             y: inner.y + inner.height - button_row_height,
@@ -223,6 +228,9 @@ impl<'a> StatefulWidget for ModalView<'a> {
         body_paragraph
             .scroll((state.scroll_state.scroll, 0))
             .render(body_area, buf);
+        if let Some(bar_area) = scrollbar_area {
+            scrollbar::render_for_scroll_state(bar_area, &state.scroll_state, self.theme, buf);
+        }
         render_button_row(button_area, buf, &button_labels, state.focused, self.theme);
     }
 }
@@ -403,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn render_writes_scroll_indicator_when_body_overflows() {
+    fn render_paints_scrollbar_when_body_overflows() {
         // 60×6 terminal → after borders/buttons there are only 2 body
         // rows.  Render an 8-line body so 6 rows are below the fold.
         let backend = TestBackend::new(60, 6);
@@ -431,10 +439,10 @@ mod tests {
             .map(|c| c.symbol().chars().next().unwrap_or(' '))
             .collect();
         assert!(
-            contents.contains("Tall ↓"),
-            "expected scroll-down arrow in title, got: {contents}"
+            contents.contains('█'),
+            "expected scrollbar thumb glyph, got: {contents}"
         );
-        assert!(state.scroll_state.last_total >= state.scroll_state.last_visible);
+        assert!(state.scroll_state.last_total > state.scroll_state.last_visible);
     }
 
     #[test]

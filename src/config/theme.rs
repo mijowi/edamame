@@ -219,6 +219,15 @@ pub struct Theme {
     /// whatever's underneath — kept distinct from the editor cursor
     /// because modal inputs aren't tied to editor mode.
     pub cursor: Style,
+
+    /// Scrollbar track (the `│` glyph drawn down the gutter behind the
+    /// thumb).  The track is only painted when the content overflows.
+    pub scrollbar_track: Style,
+    /// Scrollbar thumb (the `█` glyph that indicates current position).
+    pub scrollbar_thumb: Style,
+    /// Scrollbar thumb while the user is hovering the gutter or
+    /// dragging the thumb.  Defaults to `primary_bright`.
+    pub scrollbar_thumb_active: Style,
 }
 
 /// Edamame's brand-colour palette.  Every theme is built from these
@@ -682,6 +691,12 @@ impl Theme {
             // a modal text input inverts whatever's underneath without
             // needing to know the surrounding bg.
             cursor: Style::default().add_modifier(Modifier::REVERSED),
+
+            // Scrollbar — track in muted text grey, thumb in primary
+            // dim normally and primary bright when interacted with.
+            scrollbar_track: Style::default().fg(p.muted),
+            scrollbar_thumb: Style::default().fg(p.primary_dim),
+            scrollbar_thumb_active: Style::default().fg(p.primary_bright),
         }
     }
 
@@ -828,6 +843,12 @@ impl Theme {
             cursor_rendered: Style::default().add_modifier(Modifier::REVERSED),
             cursor_raw: Style::default().add_modifier(Modifier::REVERSED),
             cursor: Style::default().add_modifier(Modifier::REVERSED),
+
+            // Scrollbar — glyphs alone disambiguate track from thumb;
+            // active state inverts so monochrome users still see it.
+            scrollbar_track: Style::default(),
+            scrollbar_thumb: Style::default(),
+            scrollbar_thumb_active: Style::default().add_modifier(Modifier::REVERSED),
         }
     }
 }

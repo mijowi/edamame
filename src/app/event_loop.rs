@@ -34,7 +34,8 @@ use crate::config::{Action, Config, KeyBindingOverrides, KeyMap};
 use crate::editor::{edit_ops, mouse_ops};
 use crate::input::mode_handler::default::DefaultHandler;
 use crate::terminal::PointerShape;
-use crate::ui::EditorView;
+use crate::ui::editor_view::layout_doc_with_scrollbar;
+use crate::ui::{position_for_click, position_for_drag, thumb_range, EditorView};
 
 use super::actions::{modal_wheel_delta, HandleEvent};
 use super::flash::MessageKind;
@@ -186,13 +187,16 @@ impl App {
             width: term_size.width,
             height: term_size.height.saturating_sub(bottom_rows),
         };
-        // Apply the same horizontal clamp as `EditorView::render` so
-        // `viewport_width`, mouse hit-testing, and per-line wrap all
-        // agree with the painted content area.
-        let doc_area = crate::ui::editor_view::clamp_doc_area_to_max_width(
+        // Mirror `EditorView::render`'s scrollbar-gutter + max-width
+        // layout so `viewport_width`, mouse hit-testing, and per-line
+        // wrap all agree with the painted content area.  The shared
+        // helper measures total rows at the post-clamp width, which is
+        // the only width that lines up with what the user sees.
+        let (doc_area, _bar) = layout_doc_with_scrollbar(
             full_doc_area,
             self.config.editor.max_width_enabled,
             self.config.editor.max_width_cols,
+            |w| self.editor.total_visual_rows_for_mode(w as usize),
         );
         let doc_width = doc_area.width as usize;
         DocDims {
@@ -247,6 +251,11 @@ impl App {
         let theme_ref = self.theme;
         let keymap_for_render = self.keymap.clone();
         let drop_indicator = drop_indicator_for(&self.drag_target);
+        let scrollbar_active = self.scrollbar_hover
+            || matches!(
+                self.drag_target,
+                Some(mouse_ops::DragTarget::Scrollbar { .. })
+            );
         let capabilities_ref = &self.capabilities;
         let config_ref: &Config = &self.config;
         let editor_ref = &mut self.editor;
@@ -265,6 +274,7 @@ impl App {
                 hint,
                 max_width_enabled,
                 max_width_cols,
+                scrollbar_active,
             };
             frame.render_stateful_widget(view, frame.area(), view_state_ref);
             if let Some(top) = modal_stack_top {
@@ -461,6 +471,133 @@ impl App {
         }
     }
 
+    /// Pre-empt scrollbar interactions before normal mouse dispatch.
+    /// Returns `true` when the event was fully consumed by the
+    /// scrollbar (drag in flight, click in gutter, or hover update on
+    /// the gutter); the caller should not pass it to `MouseDispatcher`.
+    /// Returns `false` for events outside the gutter when no drag is
+    /// in flight — normal dispatch continues.
+    fn handle_scrollbar_event(&mut self, mouse_event: &MouseEvent, dims: &DocDims) -> bool {
+        let dragging = matches!(
+            self.drag_target,
+            Some(mouse_ops::DragTarget::Scrollbar { .. })
+        );
+        let metrics = match self.view_state.scrollbar {
+            Some(m) => m,
+            None => {
+                // Scrollbar disappeared (content shrank, mode change,
+                // resize) — clear lingering hover/drag state and let
+                // the event dispatch normally.
+                if dragging {
+                    self.drag_target = None;
+                    self.editor.drag_in_progress = false;
+                }
+                if self.scrollbar_hover {
+                    self.scrollbar_hover = false;
+                    self.needs_draw = true;
+                }
+                return false;
+            }
+        };
+        let in_gutter = mouse_event.column >= metrics.area.x
+            && mouse_event.column < metrics.area.x + metrics.area.width
+            && mouse_event.row >= metrics.area.y
+            && mouse_event.row < metrics.area.y + metrics.area.height;
+
+        match mouse_event.kind {
+            MouseEventKind::Moved => {
+                let new_hover = in_gutter;
+                if self.scrollbar_hover != new_hover {
+                    self.scrollbar_hover = new_hover;
+                    self.needs_draw = true;
+                }
+                if in_gutter {
+                    self.update_pointer_shape(PointerShape::Default);
+                    return true;
+                }
+                return false;
+            }
+            MouseEventKind::Down(crossterm::event::MouseButton::Left) if in_gutter => {
+                let track = metrics.area.height;
+                let click_row = mouse_event.row.saturating_sub(metrics.area.y);
+                let (thumb_top, thumb_h) =
+                    match thumb_range(metrics.total, metrics.visible, metrics.position, track) {
+                        Some(t) => t,
+                        None => return true, // body fits — gutter shouldn't even be rendered
+                    };
+                let on_thumb =
+                    click_row >= thumb_top && click_row < thumb_top.saturating_add(thumb_h);
+                let (new_position, grab_offset) = if on_thumb {
+                    (metrics.position, click_row - thumb_top)
+                } else {
+                    let pos = position_for_click(metrics.total, metrics.visible, track, click_row);
+                    (pos, thumb_h / 2)
+                };
+                let scroll_before = self.editor.scroll;
+                mouse_ops::set_scroll_absolute(
+                    &mut self.editor,
+                    new_position as usize,
+                    dims.doc_width,
+                    dims.doc_height,
+                );
+                if self.editor.scroll != scroll_before {
+                    self.mark_scrolling();
+                }
+                self.drag_target = Some(mouse_ops::DragTarget::Scrollbar { grab_offset });
+                self.editor.drag_in_progress = true;
+                return true;
+            }
+            MouseEventKind::Drag(crossterm::event::MouseButton::Left) if dragging => {
+                let grab_offset = match self.drag_target {
+                    Some(mouse_ops::DragTarget::Scrollbar { grab_offset }) => grab_offset,
+                    _ => return false,
+                };
+                let track = metrics.area.height;
+                // Pointer rows above the gutter top map to the start of
+                // the track; rows below clamp to track-1.  Saturating
+                // arithmetic on u16 handles both extremes.
+                let pointer_row = mouse_event
+                    .row
+                    .saturating_sub(metrics.area.y)
+                    .min(track.saturating_sub(1));
+                let new_position = position_for_drag(
+                    metrics.total,
+                    metrics.visible,
+                    track,
+                    pointer_row,
+                    grab_offset,
+                );
+                let scroll_before = self.editor.scroll;
+                mouse_ops::set_scroll_absolute(
+                    &mut self.editor,
+                    new_position as usize,
+                    dims.doc_width,
+                    dims.doc_height,
+                );
+                if self.editor.scroll != scroll_before {
+                    self.mark_scrolling();
+                }
+                return true;
+            }
+            MouseEventKind::Up(crossterm::event::MouseButton::Left) if dragging => {
+                self.drag_target = None;
+                self.editor.drag_in_progress = false;
+                return true;
+            }
+            _ => {}
+        }
+
+        // Wheel ticks landing in the gutter scroll the document the
+        // same way they would over the body — fall through.
+        if dragging {
+            // Any other event arriving while a scrollbar drag is in
+            // flight is irrelevant to the drag and shouldn't drive
+            // text selection underneath.  Absorb silently.
+            return true;
+        }
+        false
+    }
+
     /// Handle a mouse event when no modal is open: refresh the
     /// pointer-shape feedback, hover-link tracking, and (for non-Moved
     /// events) hand the event to `MouseDispatcher` and `mouse_ops::apply`
@@ -475,6 +612,17 @@ impl App {
             self.needs_draw = true;
         }
         if !self.capabilities.mouse {
+            return;
+        }
+
+        // Scrollbar interception runs before every other dispatch:
+        // hover updates the active-thumb tint; mouse-down on the
+        // gutter starts a drag (and jumps the thumb under the
+        // pointer); subsequent drags update the scroll position; the
+        // pointer-shape feedback below uses the doc Rect, not the
+        // gutter, so the I-beam disappears over the scrollbar.
+        if self.handle_scrollbar_event(&mouse_event, dims) {
+            self.needs_draw = true;
             return;
         }
 
@@ -674,6 +822,7 @@ fn drop_indicator_for(
             hover_col_idx: *hover_col_idx,
         }),
         mouse_ops::DragTarget::TableColumnBorder { .. }
-        | mouse_ops::DragTarget::TextSelection { .. } => None,
+        | mouse_ops::DragTarget::TextSelection { .. }
+        | mouse_ops::DragTarget::Scrollbar { .. } => None,
     }
 }

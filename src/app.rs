@@ -99,6 +99,11 @@ pub struct App {
     /// Phase 6's table-specific row / column / border drags.  Cleared on
     /// `Release`.
     drag_target: Option<mouse_ops::DragTarget>,
+    /// True when the most recent mouse-move landed inside the editor's
+    /// scrollbar gutter.  Used to render the thumb in its bright
+    /// "active" style on hover.  Reset whenever the pointer leaves the
+    /// gutter or the scrollbar disappears.
+    scrollbar_hover: bool,
     /// Last pointer shape we asked the terminal for.  Used to avoid writing
     /// an OSC 22 escape on every mouse-move event when the shape hasn't
     /// actually changed — keeps the output stream quiet on terminals that do
@@ -376,6 +381,7 @@ impl App {
             session_images_enabled: None,
             mouse: MouseDispatcher::with_wheel_step(wheel_step),
             drag_target: None,
+            scrollbar_hover: false,
             last_pointer_shape: PointerShape::Default,
             session_allow_remote: false,
             app_tx: None,

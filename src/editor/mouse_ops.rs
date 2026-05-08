@@ -85,6 +85,10 @@ pub enum DragTarget {
         col_idx: usize,
         hover_col_idx: usize,
     },
+    /// Scrollbar thumb drag.  `grab_offset` is the row offset from the
+    /// thumb's top edge to the initial mouse-down row, so the thumb
+    /// stays anchored under the pointer for the duration of the drag.
+    Scrollbar { grab_offset: u16 },
 }
 
 /// Number of lines a wheel tick scrolls beyond the last document line.
@@ -464,6 +468,11 @@ pub fn apply(
                     }
                 }
             }
+            // Scrollbar drags are driven by the App layer (which sees
+            // the gutter Rect in absolute terminal coords); ignore the
+            // dispatcher's doc-relative drag stream while one is in
+            // flight.
+            Some(DragTarget::Scrollbar { .. }) => {}
             None => {}
         },
         MouseAction::Release => {
@@ -498,6 +507,7 @@ pub fn apply(
                 }) => {
                     commit_column_drag(state, table_byte_start, col_idx, hover_col_idx);
                 }
+                Some(DragTarget::Scrollbar { .. }) => {}
                 None => {}
             }
             state.drag_in_progress = false;
@@ -506,6 +516,25 @@ pub fn apply(
             scroll_by_mouse(state, delta, viewport_width);
         }
     }
+}
+
+/// Set the scroll position absolutely from a scrollbar interaction.
+/// Clamped to `total - visible` so the thumb's bottom-most rendered
+/// position corresponds to the bottom-most reachable scroll value —
+/// matches the bound `position_for_click` / `position_for_drag` use,
+/// avoiding a one-frame drift between "clicked at gutter bottom" and
+/// "thumb is at gutter bottom".  Distinct from [`scroll_by_mouse`]
+/// which uses the looser `total - 1 + OVERSHOOT` bound for wheel
+/// kinetic feel.  Does not disturb the cursor.
+pub fn set_scroll_absolute(
+    state: &mut EditorState,
+    position: usize,
+    viewport_width: usize,
+    viewport_height: usize,
+) {
+    let total = state.total_visual_rows_for_mode(viewport_width);
+    let max_scroll = total.saturating_sub(viewport_height);
+    state.scroll = position.min(max_scroll);
 }
 
 /// Scroll by `delta` lines using the mouse-specific bound that allows the

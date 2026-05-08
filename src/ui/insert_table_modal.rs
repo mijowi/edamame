@@ -252,7 +252,7 @@ impl<'a> StatefulWidget for InsertTableView<'a> {
             pinned_bottom: 0,
         };
         let modal_area = centered_rect_for_content(content, area);
-        let inner = draw_frame(modal_area, buf, "Insert Table", None, self.theme);
+        let inner = draw_frame(modal_area, buf, "Insert Table", self.theme);
         if inner.height == 0 || inner.width == 0 {
             return;
         }
