@@ -33,11 +33,13 @@ use crate::config::Theme;
 #[allow(clippy::vec_init_then_push)] // grouped pushes mirror the on-screen sections
 pub fn body_lines(theme: &Theme) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
-    // Indices of lines that belong to a fenced-code or Mermaid block.  They
-    // get a trailing-padding pass at the end so the surface background fills
-    // the modal's body width — mirroring the actual renderer, which pads
-    // each code-block row out to `viewport_width`.
-    let mut code_block_indices: Vec<usize> = Vec::new();
+    // Indices of lines that belong to a fenced-code or Mermaid block, paired
+    // with the fill style their trailing pad should use.  The language row
+    // uses `code_block_lang` (lighter `surface` bg); body and closing-fence
+    // rows use `code_block_text` (darker `muted` bg) — mirroring the actual
+    // renderer, which paints the lang label on a lighter surface than the
+    // body.  A trailing-padding pass at the end fills the modal body width.
+    let mut code_block_pad: Vec<(usize, Style)> = Vec::new();
 
     // ── Headings ──────────────────────────────────────────────────────
     out.push(section(theme, "Headings"));
@@ -154,21 +156,21 @@ pub fn body_lines(theme: &Theme) -> Vec<Line<'static>> {
 
     // ── Code block ────────────────────────────────────────────────────
     out.push(section(theme, "Code block"));
-    code_block_indices.push(out.len());
+    code_block_pad.push((out.len(), theme.code_block_lang));
     out.push(Line::from(vec![
         Span::raw("  "),
-        Span::styled("```", theme.code_block_border),
+        Span::styled("```", theme.code_block_lang),
         Span::styled("rust", theme.code_block_lang),
     ]));
-    code_block_indices.push(out.len());
+    code_block_pad.push((out.len(), theme.code_block_text));
     out.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("fn main() {}", theme.code_block_text),
     ]));
-    code_block_indices.push(out.len());
+    code_block_pad.push((out.len(), theme.code_block_text));
     out.push(Line::from(vec![
         Span::raw("  "),
-        Span::styled("```", theme.code_block_border),
+        Span::styled("```", theme.code_block_text),
     ]));
     out.push(blank());
 
@@ -187,50 +189,56 @@ pub fn body_lines(theme: &Theme) -> Vec<Line<'static>> {
 
     // ── Diagrams (Mermaid) ────────────────────────────────────────────
     out.push(section(theme, "Diagrams (Mermaid)"));
-    code_block_indices.push(out.len());
+    code_block_pad.push((out.len(), theme.code_block_lang));
     out.push(Line::from(vec![
         Span::raw("  "),
-        Span::styled("```", theme.code_block_border),
+        Span::styled("```", theme.code_block_lang),
         Span::styled("mermaid", theme.code_block_lang),
     ]));
-    code_block_indices.push(out.len());
+    code_block_pad.push((out.len(), theme.code_block_text));
     out.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("graph TD; A-->B;", theme.code_block_text),
     ]));
-    code_block_indices.push(out.len());
+    code_block_pad.push((out.len(), theme.code_block_text));
     out.push(Line::from(vec![
         Span::raw("  "),
-        Span::styled("```", theme.code_block_border),
+        Span::styled("```", theme.code_block_text),
     ]));
 
-    pad_code_block_lines(&mut out, &code_block_indices, theme);
+    pad_code_block_lines(&mut out, &code_block_pad, theme);
     out
 }
 
-/// Pad each code-block line with a trailing `code_block_text`-styled
-/// space run so the surface background fills the modal's body width,
-/// matching how `Renderer::render_code_block` pads to `viewport_width`.
-/// The target width is the widest non-code-block row; the modal sizes
-/// itself to that width, so post-padding the code-block lines exactly
-/// fill the body area without changing the modal's overall width.
-fn pad_code_block_lines(lines: &mut [Line<'static>], code_block_indices: &[usize], theme: &Theme) {
+/// Pad each code-block line with a trailing space run so the surface
+/// background fills the modal's body width, matching how
+/// `Renderer::render_code_block` pads to `viewport_width`.  Each entry
+/// pairs a row index with the fill style for that row's pad — the
+/// language row uses `code_block_lang` (lighter), body/fence rows use
+/// `code_block_text` (darker).  The target width is the widest non-
+/// code-block row; the modal sizes itself to that width, so
+/// post-padding the code-block lines exactly fill the body area without
+/// changing the modal's overall width.
+fn pad_code_block_lines(
+    lines: &mut [Line<'static>],
+    code_block_pad: &[(usize, Style)],
+    _theme: &Theme,
+) {
+    let code_indices: Vec<usize> = code_block_pad.iter().map(|(i, _)| *i).collect();
     let target_width: usize = lines
         .iter()
         .enumerate()
-        .filter(|(i, _)| !code_block_indices.contains(i))
+        .filter(|(i, _)| !code_indices.contains(i))
         .map(|(_, l)| l.width())
         .max()
         .unwrap_or(0);
 
-    for &i in code_block_indices {
+    for &(i, fill_style) in code_block_pad {
         let line = &mut lines[i];
         let cur = line.width();
         if cur < target_width {
-            line.spans.push(Span::styled(
-                " ".repeat(target_width - cur),
-                theme.code_block_text,
-            ));
+            line.spans
+                .push(Span::styled(" ".repeat(target_width - cur), fill_style));
         }
     }
 }
@@ -436,9 +444,9 @@ mod tests {
                 "padded row should end in a whitespace fill span: {:?}",
                 line,
             );
-            assert_eq!(
-                last.style, theme.code_block_text,
-                "trailing fill should use code_block_text: {:?}",
+            assert!(
+                last.style == theme.code_block_text || last.style == theme.code_block_lang,
+                "trailing fill should use a code-block surface style: {:?}",
                 line,
             );
         }
