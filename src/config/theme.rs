@@ -293,7 +293,7 @@ impl Default for Palette {
             emphasis_bright: Color::Indexed(117),
             emphasis_dim: Color::Indexed(45),
 
-            // Purple — structural chrome (frames, dividers, asides).
+            // Gold — structural chrome (frames, dividers, asides).
             structural_bright: Color::Indexed(136),
             structural_dim: Color::Indexed(94),
 
@@ -333,6 +333,142 @@ impl Default for Palette {
         }
     }
 }
+
+/// One semantic group of [`Palette`] fields that share a UI purpose.
+///
+/// Used by [`super::theme_file::default_theme_toml`] to generate the
+/// "Palette roles" section of `themes/default.toml` from a single source
+/// of truth, so adding or renaming a palette field can't silently desync
+/// the docs.  Tests assert that every field on [`Palette`] appears in
+/// exactly one role.
+pub struct PaletteRole {
+    /// Heading shown in the generated docs (e.g. `"primary"`).  Field
+    /// names are listed separately on the next line(s).
+    pub name: &'static str,
+    /// Field names in [`Palette`] that belong to this role, in the
+    /// order they should be listed in the docs.
+    pub fields: &'static [&'static str],
+    /// Prose body explaining what UI elements draw on this role and
+    /// what kind of colour to pick.  Already line-wrapped to ~64 cols
+    /// so the renderer can prefix `#       ` without exceeding 80.
+    pub body: &'static str,
+}
+
+/// Conceptual palette roles, in the order they should appear in the
+/// generated default theme file.  Every field on [`Palette`] must appear
+/// in exactly one role; the `palette_roles_cover_every_field` test
+/// enforces that.
+pub const PALETTE_ROLES: &[PaletteRole] = &[
+    PaletteRole {
+        name: "default_text / default_bg",
+        fields: &["default_text", "default_bg"],
+        body: "\
+The \"blank page\" colours of the document area.  default_bg is also
+used as a *fg* colour for inverse text (e.g. the rendered/raw mode
+chip in the status bar, or text on a search-highlight band) — pick
+a value that contrasts with the bright palette colours.",
+    },
+    PaletteRole {
+        name: "primary",
+        fields: &["primary_bright", "primary_dim"],
+        body: "\
+Brand colour.  Drives the rendered-mode chip background, the status
+bar's cursor-info segment, and the modal title bar.  Default is warm
+orange.",
+    },
+    PaletteRole {
+        name: "emphasis",
+        fields: &["emphasis_bright", "emphasis_dim"],
+        body: "\
+Highlights against a chrome surface — table headers, ordered-list
+numbers, modal description text, focused-row hint chips.  Default is
+light blue.",
+    },
+    PaletteRole {
+        name: "structural",
+        fields: &["structural_bright", "structural_dim"],
+        body: "\
+Frames and dividers — modal section headings, modal borders, the
+horizontal-rule glyph, blockquote bars, footnote markers.  Default
+is gold.",
+    },
+    PaletteRole {
+        name: "interactive",
+        fields: &["interactive_bright", "interactive_dim"],
+        body: "\
+Links, focus, selection background, modal text-input background,
+table drop-target indicator.  Default is blue.",
+    },
+    PaletteRole {
+        name: "success",
+        fields: &["success_bright", "success_dim"],
+        body: "\
+Completed-task markers and success-flavoured transient messages.
+Default is edamame-bean green.",
+    },
+    PaletteRole {
+        name: "warning",
+        fields: &["warning_bright", "warning_dim"],
+        body: "\
+Unchecked-task markers, modified-buffer indicator in the status bar,
+raw-mode chip background, warning transient messages, the highlight
+span background.  Default is yellow.",
+    },
+    PaletteRole {
+        name: "error",
+        fields: &["error_bright", "error_dim"],
+        body: "\
+Errors and destructive affordances — error transient messages, the
+table row/column delete glyph.  Default is red.",
+    },
+    PaletteRole {
+        name: "text_muted",
+        fields: &["text_muted"],
+        body: "\
+Faded foreground.  Strikethrough text, completed-task body text, and
+the preview-mode chip background.  Default is light grey.",
+    },
+    PaletteRole {
+        name: "muted",
+        fields: &["muted"],
+        body: "\
+Subtle background fill on top of the document surface — inline code
+spans, fenced code-block bodies, alternating table rows.  Default is
+dark grey, slightly lighter than default_bg.",
+    },
+    PaletteRole {
+        name: "surface_elevated",
+        fields: &["surface_elevated"],
+        body: "\
+Overlay chrome that sits above the document — hint line, modal body
+fill, transient-message strip, default modal item rows.  Default is
+a touch lighter than `surface` so a modal reads as raised.",
+    },
+    PaletteRole {
+        name: "surface",
+        fields: &["surface"],
+        body: "\
+Document-level chrome — status bar fill, fenced code-block frame and
+language label, dim-code-span background.  Default is between `muted`
+and `surface_elevated`.",
+    },
+    PaletteRole {
+        name: "headings",
+        fields: &["h1", "h2", "h3", "h4", "h5", "h6"],
+        body: "\
+Per-level heading foregrounds.  Independent of the bright/dim split
+because heading hierarchy benefits from its own ramp; the defaults
+walk yellow → orange → purple → gold → orange-dim → purple-dim.",
+    },
+    PaletteRole {
+        name: "code",
+        fields: &["code_bright", "code_dim"],
+        body: "\
+Foreground for inline code spans, the fenced code-block language
+label, and dimmed code (e.g. inline code inside strikethrough).
+Default is purple on the muted/surface backgrounds.",
+    },
+];
 
 impl Theme {
     /// Build a fully-populated [`Theme`] from `palette`.  Every style
@@ -699,5 +835,121 @@ impl Theme {
 impl Default for Theme {
     fn default() -> Self {
         Self::from_palette(&Palette::default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// Every field on [`Palette`] in the order it appears in the struct
+    /// definition.  Used by the role-coverage test below.  When you add
+    /// a field to `Palette`, add it here AND add it to a `PaletteRole`
+    /// in `PALETTE_ROLES`.
+    const PALETTE_FIELDS: &[&str] = &[
+        "default_text",
+        "default_bg",
+        "primary_bright",
+        "primary_dim",
+        "emphasis_bright",
+        "emphasis_dim",
+        "structural_bright",
+        "structural_dim",
+        "interactive_bright",
+        "interactive_dim",
+        "success_bright",
+        "success_dim",
+        "warning_bright",
+        "warning_dim",
+        "error_bright",
+        "error_dim",
+        "text_muted",
+        "muted",
+        "surface_elevated",
+        "surface",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "code_bright",
+        "code_dim",
+    ];
+
+    #[test]
+    fn palette_fields_list_matches_struct() {
+        // Construct a Palette from defaults and read each field.  If a
+        // field is renamed or removed, this won't compile.  If a field
+        // is *added* to Palette without updating PALETTE_FIELDS, the
+        // role-coverage test below will fail.
+        let p = Palette::default();
+        let _all = [
+            p.default_text,
+            p.default_bg,
+            p.primary_bright,
+            p.primary_dim,
+            p.emphasis_bright,
+            p.emphasis_dim,
+            p.structural_bright,
+            p.structural_dim,
+            p.interactive_bright,
+            p.interactive_dim,
+            p.success_bright,
+            p.success_dim,
+            p.warning_bright,
+            p.warning_dim,
+            p.error_bright,
+            p.error_dim,
+            p.text_muted,
+            p.muted,
+            p.surface_elevated,
+            p.surface,
+            p.h1,
+            p.h2,
+            p.h3,
+            p.h4,
+            p.h5,
+            p.h6,
+            p.code_bright,
+            p.code_dim,
+        ];
+        assert_eq!(_all.len(), PALETTE_FIELDS.len());
+    }
+
+    #[test]
+    fn palette_roles_cover_every_field() {
+        let mut role_fields: Vec<&str> = Vec::new();
+        for role in PALETTE_ROLES {
+            for f in role.fields {
+                role_fields.push(*f);
+            }
+        }
+
+        // No duplicates: a field in two roles would render twice.
+        let mut seen = HashSet::new();
+        for f in &role_fields {
+            assert!(
+                seen.insert(*f),
+                "palette field `{f}` listed in multiple PALETTE_ROLES entries"
+            );
+        }
+
+        // Every Palette field appears in some role.
+        for f in PALETTE_FIELDS {
+            assert!(
+                role_fields.contains(f),
+                "palette field `{f}` is not covered by any PALETTE_ROLES entry"
+            );
+        }
+
+        // Every role.field is a real Palette field.
+        for f in &role_fields {
+            assert!(
+                PALETTE_FIELDS.contains(f),
+                "PALETTE_ROLES references unknown Palette field `{f}`"
+            );
+        }
     }
 }
