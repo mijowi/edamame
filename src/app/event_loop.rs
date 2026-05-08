@@ -32,7 +32,7 @@ use ratatui::Terminal;
 
 use crate::config::{Action, Config, KeyBindingOverrides, KeyMap};
 use crate::editor::{edit_ops, mouse_ops};
-use crate::input::modal::default::DefaultHandler;
+use crate::input::mode_handler::default::DefaultHandler;
 use crate::terminal::PointerShape;
 use crate::ui::EditorView;
 

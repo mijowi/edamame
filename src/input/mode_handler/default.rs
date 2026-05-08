@@ -3,7 +3,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::config::{Action, KeyMap};
 use crate::editor::{EditorState, Mode};
 
-use super::ModalHandler;
+use super::ModeHandler;
 
 /// The default (non-modal) keybinding handler.
 ///
@@ -23,7 +23,7 @@ impl<'k> DefaultHandler<'k> {
     }
 }
 
-impl<'k> ModalHandler for DefaultHandler<'k> {
+impl<'k> ModeHandler for DefaultHandler<'k> {
     fn handle(&mut self, event: KeyEvent, state: &EditorState) -> Option<Action> {
         // 1. Check the keymap first (explicit bindings take priority).
         if let Some(action) = self.keymap.action_for(&event) {

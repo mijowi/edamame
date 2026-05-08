@@ -18,8 +18,8 @@ use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
 use crate::app::modal;
 use crate::config::{Action, Config, KeyBindingOverrides, KeyMap, Theme};
 use crate::editor::{edit_ops, EditorState};
-use crate::input::modal::default::DefaultHandler;
-use crate::input::ModalHandler;
+use crate::input::mode_handler::default::DefaultHandler;
+use crate::input::ModeHandler;
 use crate::terminal::ColourDepth;
 
 use super::flash::MessageKind;
@@ -50,7 +50,7 @@ pub(super) fn modal_wheel_delta(event: &MouseEvent, wheel_step: usize) -> i32 {
 }
 
 /// Private extension trait so `DefaultHandler` can process raw crossterm events
-/// (filtering for KeyPress) without exposing this logic in the `ModalHandler`
+/// (filtering for KeyPress) without exposing this logic in the `ModeHandler`
 /// trait (which operates on already-filtered `KeyEvent`s).
 pub(super) trait HandleEvent {
     fn handle_event(&mut self, event: Event, state: &EditorState) -> Option<crate::config::Action>;
