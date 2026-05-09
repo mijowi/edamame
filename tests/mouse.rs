@@ -1692,6 +1692,47 @@ fn click_on_mermaid_row_lands_on_clicked_column() {
 }
 
 #[test]
+fn click_on_wrapped_mermaid_line_lands_on_continuation() {
+    // Long mermaid lines wrap visually inside the reveal-painted
+    // region.  The click loop must use the raw line's wrap count, not
+    // the cached placeholder count, otherwise clicks on the wrap
+    // continuation row are attributed to the next raw line.
+    let long = "A".repeat(100); // 100 chars; wraps once at VW=80.
+    let src = format!("```mermaid\n{long}\nB-->C\n```\n");
+    let mut st = state(&src);
+    st.mode = Mode::Rendered;
+    st.cursor.offset = src.find(&long[..]).unwrap();
+    st.update_cursor_block();
+    st.cursor_block_entered_at = None;
+
+    // Visual row 0 = "```mermaid"
+    // Visual row 1 = first 80 chars of `long`
+    // Visual row 2 = wrap continuation (next 20 chars of `long`)
+    // Visual row 3 = "B-->C"
+    // Click col 5, row 2 → should land on char (80 + 5) = 85 of `long`,
+    // which is still 'A'.  More importantly, it must NOT land on
+    // "B-->C" or its surroundings.
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    mouse_ops::apply(&mut st, click(5, 2), &mut anchor, &[], VP, VW);
+
+    let long_start = src.find(&long[..]).unwrap();
+    let target = long_start + 85;
+    assert_eq!(
+        st.cursor.offset, target,
+        "click on wrap continuation at col 5 must land at char 85 of the long mermaid line",
+    );
+
+    // Click on row 3 col 0 should land at the start of "B-->C".
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    mouse_ops::apply(&mut st, click(0, 3), &mut anchor, &[], VP, VW);
+    let b_start = src.find("B-->C").unwrap();
+    assert_eq!(
+        st.cursor.offset, b_start,
+        "click on row 3 col 0 must land at start of 'B-->C', not somewhere on the long line",
+    );
+}
+
+#[test]
 fn intra_mermaid_line_move_does_not_rearm_reveal_timer() {
     // `update_cursor_block` re-arms `cursor_block_entered_at` on every
     // buffer-line change so tables (and other multi-line blocks) get a
