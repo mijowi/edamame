@@ -213,6 +213,37 @@ pub fn rendered_sub_line_to_offset(
     let line_text = &block_text[line_byte_start..line_byte_end];
     let rendered_line = &state.parsed.lines[rendered_line_idx];
 
+    // Mermaid diagram blocks render as an image placeholder + blank
+    // reserved rows, but `RenderedView` overlays the raw mermaid source
+    // 1:1 on those rows when the cursor is inside the block.  The
+    // rendered `Line`s therefore don't reflect what the user clicks
+    // on — walk the raw line's own wrap layout and map `col` directly
+    // against it.
+    if state.parsed.is_mermaid_block(block.idx) {
+        let raw_chars: Vec<(char, ratatui::style::Style)> = line_text
+            .chars()
+            .map(|c| (c, ratatui::style::Style::default()))
+            .collect();
+        let viewport = viewport_width.max(1);
+        let rows = line_render::visual_rows_of_chars(&raw_chars, viewport, 0);
+        let sub = sub_row_within_line.min(rows.len().saturating_sub(1));
+        let (start, end, next_start) = rows.get(sub).copied().unwrap_or((0, 0, 0));
+        let is_last_row = sub + 1 == rows.len();
+        let max_in_row = if is_last_row {
+            end
+        } else {
+            next_start.saturating_sub(1).max(start)
+        };
+        let row_chars = raw_chars
+            .iter()
+            .skip(start)
+            .take(end - start)
+            .map(|(c, _)| *c);
+        let in_row = line_render::char_idx_at_cell_col(row_chars, col, 0);
+        let raw_col = (start + in_row).min(max_in_row);
+        return raw_col_to_buffer_char(state, &block, line_byte_start, line_text, raw_col);
+    }
+
     let raw_col = if is_table && rendered_line.spans.iter().any(|s| s.content.contains('│')) {
         // Tables: rendered cells are padded to layout width, so a simple col
         // → char mapping lands clicks on the wrong cell whenever the
@@ -239,6 +270,7 @@ pub fn rendered_sub_line_to_offset(
 /// range in the source, the rendered-line range the block occupies, and
 /// the click's offset within those rendered lines.
 struct BlockLocation {
+    idx: usize,
     range: std::ops::Range<usize>,
     rendered_span: std::ops::Range<usize>,
     sub_idx: usize,
@@ -252,6 +284,7 @@ fn locate_block(state: &EditorState, rendered_line_idx: usize) -> Option<BlockLo
         .parsed
         .source_map
         .original_byte_for_rendered_line(rendered_line_idx)?;
+    let idx = state.parsed.source_map.block_for_byte(block_start_byte)?;
     let range = state
         .parsed
         .source_map
@@ -262,6 +295,7 @@ fn locate_block(state: &EditorState, rendered_line_idx: usize) -> Option<BlockLo
         .rendered_lines_for_byte(block_start_byte);
     let sub_idx = rendered_line_idx.saturating_sub(rendered_span.start);
     Some(BlockLocation {
+        idx,
         range,
         rendered_span,
         sub_idx,

@@ -17,6 +17,7 @@ impl EditorState {
     /// of whether the block is a single-line paragraph or a fifty-line table.
     pub fn update_cursor_block(&mut self) {
         let cursor_byte = self.buffer.rope().char_to_byte(self.cursor.offset);
+        let previous_block_idx = self.cursor_block_idx;
         // Always keep cursor_block_idx up-to-date (used by rendered_view for
         // extracting the raw source of the current block).
         self.cursor_block_idx = self.parsed.source_map.block_for_byte(cursor_byte);
@@ -45,10 +46,22 @@ impl EditorState {
         // Reset the reveal timer only when the cursor moves to a different
         // logical buffer line — this makes scrolling through a large table feel
         // uniform: each row gets the same delay, not the whole table at once.
+        //
+        // Exception: a mermaid diagram block reveals as a single unit (every
+        // rendered row swaps to raw source), so re-arming the timer on every
+        // intra-block line move would flash the image placeholder back in
+        // between line moves.  Keep the existing reveal time once the cursor
+        // is inside a mermaid block until it leaves.
         let (current_line, _) = self.cursor.line_col(&self.buffer);
         if Some(current_line) != self.cursor_line_idx {
+            let staying_in_mermaid = previous_block_idx == self.cursor_block_idx
+                && self
+                    .cursor_block_idx
+                    .is_some_and(|idx| self.parsed.is_mermaid_block(idx));
             self.cursor_line_idx = Some(current_line);
-            self.cursor_block_entered_at = Some(Instant::now());
+            if !staying_in_mermaid {
+                self.cursor_block_entered_at = Some(Instant::now());
+            }
         }
         self.cursor_blink.reset();
     }

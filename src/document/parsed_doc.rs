@@ -420,6 +420,17 @@ impl ParsedDoc {
         self.per_block_own.get(block_idx).copied().unwrap_or(0)
     }
 
+    /// True when `block_idx` is a synthetic `Block::ImageBlock` produced
+    /// from a mermaid fenced code block.  Mermaid blocks share the
+    /// "reveal the entire raw source on cursor entry" affordance with
+    /// fenced code blocks, so several call sites need to special-case
+    /// them; this keeps the rule in one place.
+    pub fn is_mermaid_block(&self, block_idx: usize) -> bool {
+        self.image_blocks.iter().any(|info| {
+            info.block_idx == block_idx && matches!(info.source, Some(DiagramSource::Mermaid(_)))
+        })
+    }
+
     // ── Visual-row cache (rendered) ───────────────────────────────────────
     //
     // Thin lazy wrappers over `VisualRowCache`.  The cache lives in a

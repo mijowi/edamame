@@ -336,7 +336,19 @@ pub fn apply(
                         table_edit::is_table_block(&source[range.start..end])
                     })
                     .unwrap_or(false);
-                let suppress_drag_flag = same_logical_line && !cursor_block_is_table;
+                // Mermaid blocks reveal as a single unit — every line of
+                // the block already shows raw source — so a click that
+                // lands on another line inside the same mermaid block
+                // shouldn't drop drag suppression and let the image
+                // flash back in for the click-to-mouseup window.
+                let new_block_idx = state
+                    .parsed
+                    .source_map
+                    .block_for_byte(state.buffer.rope().char_to_byte(new_offset));
+                let same_mermaid_block = new_block_idx == state.cursor_block_idx
+                    && new_block_idx.is_some_and(|idx| state.parsed.is_mermaid_block(idx));
+                let suppress_drag_flag =
+                    (same_logical_line && !cursor_block_is_table) || same_mermaid_block;
 
                 state.cursor.offset = new_offset;
                 // Click target is a screen position — `preferred_col` must

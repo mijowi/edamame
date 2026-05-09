@@ -1448,3 +1448,89 @@ fn rendered_view_bare_code_fence_never_de_renders() {
         row_text(0)
     );
 }
+
+#[test]
+fn mermaid_block_reveals_full_raw_source_on_cursor_entry() {
+    // When the cursor enters a `\`\`\`mermaid` fenced block, the entire
+    // image-reservation region must paint the raw mermaid source — not
+    // just the cursor's single line.  Regression guard for the "only
+    // one line de-renders" bug.
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // Small image_max_height so the reserved region stays bounded.  The
+    // mermaid source is 5 raw lines (fence, 3 content, fence), which
+    // fits in 6 rows.
+    let src = "```mermaid\nflowchart TD\nA-->B\nB-->C\n```\n";
+    let mut state =
+        EditorState::new_with_config(Buffer::from_str(src), theme, true, true, 6);
+    state.mode = Mode::Rendered;
+    // Cursor on the first content line "flowchart TD".
+    state.cursor.offset = src.find("flowchart").unwrap();
+    state.update_cursor_block();
+    // Skip the reveal delay so raw paint runs this frame.
+    state.cursor_block_entered_at = None;
+
+    let backend = TestBackend::new(20, 7);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |y: u16| -> String {
+        (0..20u16)
+            .map(|x| {
+                buf.cell((x, y))
+                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+            })
+            .collect()
+    };
+    // Every raw source line must appear on its corresponding rendered
+    // row — not the `[Image: …]` placeholder.
+    assert!(
+        row_text(0).starts_with("```mermaid"),
+        "row 0 must show opening fence, got: {:?}",
+        row_text(0)
+    );
+    assert!(
+        row_text(1).starts_with("flowchart TD"),
+        "row 1 must show first body line, got: {:?}",
+        row_text(1)
+    );
+    assert!(
+        row_text(2).starts_with("A-->B"),
+        "row 2 must show second body line, got: {:?}",
+        row_text(2)
+    );
+    assert!(
+        row_text(3).starts_with("B-->C"),
+        "row 3 must show third body line, got: {:?}",
+        row_text(3)
+    );
+    assert!(
+        row_text(4).starts_with("```"),
+        "row 4 must show closing fence, got: {:?}",
+        row_text(4)
+    );
+    // The placeholder text the renderer would otherwise emit on row 0
+    // must not be visible anywhere in the reserved region.
+    for y in 0..5u16 {
+        assert!(
+            !row_text(y).contains("[Image"),
+            "row {y} must not show image placeholder, got: {:?}",
+            row_text(y)
+        );
+    }
+}
