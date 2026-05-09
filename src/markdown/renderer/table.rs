@@ -159,13 +159,18 @@ impl<'t> Renderer<'t> {
         col_count: usize,
         cell_style: Style,
     ) -> Line<'static> {
-        let border_style = self.theme.table_border;
+        let outer_border = self.theme.table_border;
+        let inner_border = match cell_style.bg {
+            Some(bg) => self.theme.table_border.bg(bg),
+            None => self.theme.table_border,
+        };
         let mut spans: Vec<Span<'static>> = Vec::with_capacity(col_count * 2 + 1);
-        spans.push(Span::styled("│", border_style));
+        spans.push(Span::styled("│", outer_border));
         for i in 0..col_count {
             let width = widths.get(i).copied().unwrap_or(MIN_COL_WIDTH);
             spans.push(Span::styled("\u{00A0}".repeat(width + 2), cell_style));
-            spans.push(Span::styled("│", border_style));
+            let is_last = i + 1 == col_count;
+            spans.push(Span::styled("│", if is_last { outer_border } else { inner_border }));
         }
         Line::from(spans)
     }
@@ -188,7 +193,11 @@ impl<'t> Renderer<'t> {
         default_style: Style,
         out: &mut Vec<Line<'static>>,
     ) {
-        let border_style = self.theme.table_border;
+        let outer_border = self.theme.table_border;
+        let inner_border = match default_style.bg {
+            Some(bg) => self.theme.table_border.bg(bg),
+            None => self.theme.table_border,
+        };
 
         // Flatten each cell into a per-char (char, style) sequence and
         // wrap to its column width.  `cell_rows[c]` is `Vec<row>`; each
@@ -206,7 +215,7 @@ impl<'t> Renderer<'t> {
 
         for sub in 0..row_height {
             let mut spans: Vec<Span<'static>> = Vec::with_capacity(col_count * 4 + 1);
-            spans.push(Span::styled("│", border_style));
+            spans.push(Span::styled("│", outer_border));
             // The body indexes both `widths` and `cell_rows` per `i`, so
             // `enumerate()` doesn't simplify it.
             #[allow(clippy::needless_range_loop)]
@@ -231,7 +240,8 @@ impl<'t> Renderer<'t> {
                     spans.push(Span::styled(format!("{truncated}…"), default_style));
                     spans.push(Span::styled(" ", default_style));
                 }
-                spans.push(Span::styled("│", border_style));
+                let is_last = i + 1 == col_count;
+                spans.push(Span::styled("│", if is_last { outer_border } else { inner_border }));
             }
             out.push(Line::from(spans));
         }
