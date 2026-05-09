@@ -45,6 +45,12 @@ suppress_capability_warnings = false
 # Floored at 20 to keep layout sane. Default: 80.
 # max_width_cols = 80
 
+# Render H1 headings as 4-row "big text" using Quadrant block characters
+# (▘▝▖▗▀▄▌▐█), via the `tui-big-text` widget. Falls back to the regular
+# one-line styled rendering when the title would exceed the viewport width
+# or contains non-ASCII characters. Default: true.
+# big_h1 = true
+
 # ── Modal ─────────────────────────────────────────────────────────────────────
 # Which modal handler processes key events. Currently only "default" is
 # supported (the non-modal chord/shortcut keymap); this section exists as a

@@ -222,6 +222,19 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // line so the user can see and edit the mermaid source — same
         // affordance as a fenced code block.
         let is_mermaid_block = editor.parsed.is_mermaid_block(cursor_block_idx);
+        // Big-text H1: `Renderer::try_render_h1_big` emits 4 big-text rows
+        // plus the `─` rule (5 own lines), versus the plain 2-line H1.
+        // While the cursor is inside the block we collapse the big-text
+        // region back to the raw `# Title` line and leave the bottom rule
+        // line rendered so the user edits a stable single line — matches
+        // the user's "collapse to raw while editing" preference.
+        let is_big_h1_block = matches!(
+            cursor_block_ast,
+            Some(crate::markdown::Block::Heading {
+                level: pulldown_cmark::HeadingLevel::H1,
+                ..
+            })
+        ) && cursor_block_own > 2;
         // True when the cursor's current line is allowed to de-render: any
         // non-code-block line, or the opening-fence line of a fenced code
         // block with a language tag.
@@ -393,7 +406,45 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     None
                 }
             });
-            if reveal_raw && (is_mermaid_block || is_setext) && in_cursor_block {
+            if reveal_raw && is_big_h1_block && in_cursor_block {
+                // Big-H1 collapse: the cursor's raw line (`# Title`) goes on
+                // the FIRST sub-line of the block; the remaining big-text
+                // rows blank out so we don't see half of a glyph above /
+                // below the editable text; the final sub-line keeps the
+                // rendered rule (`─` × viewport) so the H1 separator stays
+                // visible while editing.
+                let sub = virtual_idx - cursor_block_lines.start;
+                let last_sub = cursor_block_own.saturating_sub(1);
+                if sub == last_sub {
+                    if let Some(line) = editor.parsed.lines.get(virtual_idx) {
+                        rows_used =
+                            render_line_from_visual(line, area, buf, vis_y as u16, wrap, skip_rows)
+                                as usize;
+                    } else {
+                        rows_used = 1;
+                    }
+                } else {
+                    let raw_text = if sub == 0 {
+                        raw_lines.first().copied().unwrap_or("")
+                    } else {
+                        ""
+                    };
+                    let cursor_on_this = sub == 0 && cursor_raw_line == 0;
+                    let styled = make_raw_line_with_selection(
+                        raw_text,
+                        if cursor_on_this && cursor_visible {
+                            Some(cursor_col)
+                        } else {
+                            None
+                        },
+                        None,
+                        self.theme,
+                    );
+                    rows_used =
+                        render_line_from_visual(&styled, area, buf, vis_y as u16, wrap, skip_rows)
+                            as usize;
+                }
+            } else if reveal_raw && (is_mermaid_block || is_setext) && in_cursor_block {
                 // Both setext headings and mermaid blocks reveal every
                 // rendered row of the block to its matching raw-source
                 // line in one pass.  For mermaid blocks, rows past the

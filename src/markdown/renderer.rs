@@ -2,8 +2,12 @@ pub mod list;
 pub mod table;
 pub mod util;
 
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use ratatui::widgets::Widget;
+use tui_big_text::{BigText, PixelSize};
 
 use crate::config::Theme;
 
@@ -37,6 +41,12 @@ pub struct Renderer<'t> {
     /// with `Theme::table_row_even` / `Theme::table_row_odd`.  Off by
     /// default; opt-in via `config.table.row_striping`.
     pub(super) row_striping: bool,
+    /// When true, H1 headings render as 4 rows of "big text" via the
+    /// `tui-big-text` widget (Quadrant pixel size).  Falls back to the
+    /// regular one-line rendering when the title is too wide for the
+    /// viewport or contains non-ASCII characters.  Wired to
+    /// `config.editor.big_h1`.
+    big_h1: bool,
 }
 
 impl<'t> Renderer<'t> {
@@ -48,6 +58,7 @@ impl<'t> Renderer<'t> {
             image_max_height: 24,
             image_row_override: None,
             row_striping: false,
+            big_h1: false,
         }
     }
 
@@ -81,6 +92,13 @@ impl<'t> Renderer<'t> {
     /// Wired to `config.table.row_striping`.
     pub fn with_row_striping(mut self, on: bool) -> Self {
         self.row_striping = on;
+        self
+    }
+
+    /// Enable big-text rendering for H1 headings.  Wired to
+    /// `config.editor.big_h1`.
+    pub fn with_big_h1(mut self, on: bool) -> Self {
+        self.big_h1 = on;
         self
     }
 
@@ -231,6 +249,10 @@ impl<'t> Renderer<'t> {
     ) {
         use pulldown_cmark::HeadingLevel::*;
 
+        if level == H1 && self.big_h1 && self.try_render_h1_big(inlines, out) {
+            return;
+        }
+
         let prefix = match level {
             H1 => " ",
             H2 => "  ",
@@ -253,6 +275,62 @@ impl<'t> Renderer<'t> {
                 self.theme.h1_rule,
             ));
         }
+    }
+
+    // ── Big H1 ────────────────────────────────────────────────────
+    //
+    // Render an H1's inline text as 2 rows of "big text" using
+    // `tui_big_text::BigText` with `PixelSize::Octant` — the smallest
+    // variant in tui-big-text 0.8 — where each glyph occupies 4 cells ×
+    // 2 cells.  The title is centred across the full viewport width via
+    // the BigText widget's `.centered()` alignment.  The H1 rule line
+    // (`─` × viewport_width) is appended after the big text — total
+    // emission is 3 rendered lines (2 glyph + 1 rule).
+    //
+    // The temporary buffer is pre-filled with `palette.default_bg` so
+    // both the cells the BigText widget paints AND the surrounding
+    // empty cells carry the real editor background — `Color::Reset`
+    // would render as terminal-default (typically the wrong shade)
+    // when the editor is themed.
+    //
+    // Returns `false` and emits nothing when:
+    //   * the title contains a non-ASCII character (font8x8 only covers
+    //     ASCII and would render the rest as blank squares), or
+    //   * the rendered glyph width would exceed the viewport.
+    // The caller falls back to the regular one-line styled rendering.
+    fn try_render_h1_big(&self, inlines: &[Inline], out: &mut Vec<Line<'static>>) -> bool {
+        let plain = inlines_to_plain(inlines);
+        let trimmed = plain.trim();
+        if trimmed.is_empty() || !trimmed.is_ascii() {
+            return false;
+        }
+        let glyph_w = trimmed.len() * 4;
+        let glyph_h: u16 = 2;
+        let viewport = self.viewport_width.max(1);
+        if glyph_w == 0 || glyph_w > viewport {
+            return false;
+        }
+        let bg_style = Style::default().bg(self.theme.palette.default_bg);
+        let text_style = self
+            .theme
+            .h1
+            .remove_modifier(Modifier::UNDERLINED)
+            .bg(self.theme.palette.default_bg);
+        let area = Rect::new(0, 0, viewport as u16, glyph_h);
+        let mut buf = Buffer::empty(area);
+        buf.set_style(area, bg_style);
+        let big = BigText::builder()
+            .pixel_size(PixelSize::Octant)
+            .style(text_style)
+            .centered()
+            .lines(vec![Line::from(trimmed.to_string())])
+            .build();
+        big.render(area, &mut buf);
+        for y in 0..glyph_h {
+            out.push(buffer_row_to_line(&buf, y));
+        }
+        out.push(Line::styled("─".repeat(viewport), self.theme.h1_rule));
+        true
     }
 
     // ── Paragraph ─────────────────────────────────────────────────
@@ -534,6 +612,39 @@ impl<'t> Renderer<'t> {
     }
 }
 
+/// Convert one row of a freshly-painted ratatui `Buffer` into a styled
+/// `Line<'static>`, coalescing consecutive cells with identical styles
+/// into a single `Span`.  Used to lift the output of in-memory widget
+/// rendering (e.g. `tui_big_text::BigText`) back into the
+/// `Vec<Line<'static>>` model the rest of the renderer pipeline expects.
+fn buffer_row_to_line(buf: &Buffer, y: u16) -> Line<'static> {
+    let width = buf.area.width;
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut current = String::new();
+    let mut current_style: Option<Style> = None;
+    for x in 0..width {
+        let cell = &buf[(x, y)];
+        let style = Style::default()
+            .fg(cell.fg)
+            .bg(cell.bg)
+            .add_modifier(cell.modifier);
+        match current_style {
+            Some(prev) if prev == style => current.push_str(cell.symbol()),
+            _ => {
+                if let Some(prev) = current_style.take() {
+                    spans.push(Span::styled(std::mem::take(&mut current), prev));
+                }
+                current.push_str(cell.symbol());
+                current_style = Some(style);
+            }
+        }
+    }
+    if let Some(prev) = current_style {
+        spans.push(Span::styled(current, prev));
+    }
+    Line::from(spans)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,6 +668,63 @@ mod tests {
         assert!(!lines.is_empty());
         let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("Hello"));
+    }
+
+    #[test]
+    fn big_h1_emits_two_glyph_rows_plus_rule() {
+        // Octant pixel-size: 4 cells per glyph horizontally, 2 rows tall.
+        let theme = Box::leak(Box::new(Theme::default()));
+        let r = Renderer::new(theme).with_big_h1(true);
+        let lines = r.render(&parse("# Hi\n"));
+        // 2 glyph rows + 1 rule line.
+        assert_eq!(
+            lines.len(),
+            3,
+            "expected 2 glyph rows + rule, got {}",
+            lines.len()
+        );
+        // The first 2 rows should each contain at least one block glyph.
+        for (i, line) in lines.iter().take(2).enumerate() {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                text.chars().any(|c| !c.is_ascii() && c != ' '),
+                "row {i} had no block glyph: {text:?}"
+            );
+        }
+        // Last row is the H1 rule.
+        let rule: String = lines[2].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            rule.contains('─'),
+            "expected rule glyph in last line, got {rule:?}"
+        );
+    }
+
+    #[test]
+    fn big_h1_falls_back_for_non_ascii_title() {
+        let theme = Box::leak(Box::new(Theme::default()));
+        let r = Renderer::new(theme).with_big_h1(true);
+        // Non-ASCII title — font8x8 doesn't cover it, so we fall back.
+        let lines = r.render(&parse("# Héllo\n"));
+        assert_eq!(lines.len(), 2, "expected plain 2-line H1 fallback");
+    }
+
+    #[test]
+    fn big_h1_falls_back_when_too_wide_for_viewport() {
+        let theme = Box::leak(Box::new(Theme::default()));
+        // 21 chars × 4 = 84 cells — exceeds the 80-col viewport.
+        let r = Renderer::new(theme)
+            .with_big_h1(true)
+            .with_viewport_width(80);
+        let lines = r.render(&parse("# AAAAAAAAAAAAAAAAAAAAA\n"));
+        assert_eq!(lines.len(), 2, "expected plain 2-line H1 fallback");
+    }
+
+    #[test]
+    fn big_h1_off_by_default() {
+        let theme = Box::leak(Box::new(Theme::default()));
+        let r = Renderer::new(theme);
+        let lines = r.render(&parse("# Hi\n"));
+        assert_eq!(lines.len(), 2, "default Renderer should not produce big H1");
     }
 
     #[test]

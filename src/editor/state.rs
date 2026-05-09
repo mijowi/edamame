@@ -169,6 +169,11 @@ pub struct EditorState {
     /// `Theme::table_row_even` / `Theme::table_row_odd`.  Set by the App
     /// at construction time and re-read on every `refresh_parsed`.
     pub row_striping: bool,
+    /// Propagated from `config.editor.big_h1`.  Controls whether H1
+    /// headings render as 4-row "big text" via `tui-big-text` (Quadrant
+    /// pixel size).  Set by the App at construction time and re-read on
+    /// every `refresh_parsed`.
+    pub big_h1: bool,
     /// Phase 13 — most-recently observed terminal column width, fed
     /// into `Renderer::with_viewport_width` on every `refresh_parsed`
     /// so the min-max proportional column-width algorithm adapts to
@@ -308,6 +313,7 @@ impl EditorState {
             parsed_version: 0,
             live_table_widths: None,
             row_striping: false,
+            big_h1: false,
             viewport_width: 80,
             pending_column_widths_commit: None,
             pending_link_follow: None,
@@ -410,6 +416,17 @@ impl EditorState {
             return;
         }
         self.row_striping = on;
+        self.refresh_parsed();
+    }
+
+    /// Toggle big-text H1 rendering and re-render so the change is
+    /// visible on the next frame.  Wired to `config.editor.big_h1` at
+    /// App startup and after a live config reload.
+    pub fn set_big_h1(&mut self, on: bool) {
+        if self.big_h1 == on {
+            return;
+        }
+        self.big_h1 = on;
         self.refresh_parsed();
     }
 
@@ -531,6 +548,7 @@ impl EditorState {
             Some(&override_fn),
             self.row_striping,
             self.viewport_width,
+            self.big_h1,
         );
         self.parsed_version = self.parsed_version.wrapping_add(1);
         self.parsed_dirty = false;

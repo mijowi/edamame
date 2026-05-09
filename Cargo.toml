@@ -109,6 +109,11 @@ usvg = "0.46"
 # diagrams when a keystroke elsewhere in the document triggers a reparse.
 sha2 = "0.10"
 
+# Big-text rendering for H1 headings.  Tracks the ratatui 0.30 line via
+# tui-big-text 0.8+; uses `font8x8` glyphs painted via Octant block
+# characters (4 cells wide × 2 cells tall per glyph).
+tui-big-text = "0.8"
+
 [features]
 default = ["clipboard"]
 clipboard = ["arboard"]
