@@ -1620,3 +1620,114 @@ fn click_on_wrapped_row_handles_wide_char_in_row() {
     mouse_ops::apply(&mut st, action, &mut anchor, &[], VP, viewport_w);
     assert_eq!(st.contents().chars().nth(st.cursor.offset), Some('a'));
 }
+
+// ── Mermaid block reveal interaction ────────────────────────────────────────
+
+#[test]
+fn same_mermaid_block_click_does_not_set_drag_in_progress() {
+    // Mermaid blocks reveal as a single unit: every reserved row paints
+    // raw source while the cursor is inside.  A click on a different
+    // line within the same mermaid block must NOT set
+    // `drag_in_progress`, otherwise the entire image flashes back in
+    // for the click-to-mouseup window.
+    let src = "```mermaid\nflowchart TD\nA-->B\nB-->C\n```\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    // Seed cursor on the first content line; reveal already active.
+    st.cursor.offset = src.find("flowchart").unwrap();
+    st.update_cursor_block();
+    st.cursor_block_entered_at = None;
+    assert!(st.cursor_block_revealed());
+    let original_block = st.cursor_block_idx;
+
+    // Click on row 2 of the rendered output (raw line "A-->B" within
+    // the same mermaid block).
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    mouse_ops::apply(&mut st, click(0, 2), &mut anchor, &[], VP, VW);
+
+    assert_eq!(
+        st.cursor_block_idx, original_block,
+        "click stayed inside the same mermaid block",
+    );
+    assert!(
+        !st.drag_in_progress,
+        "intra-mermaid click must not flip drag-in-progress on",
+    );
+    assert!(
+        st.cursor_block_revealed(),
+        "intra-mermaid click must keep raw reveal active",
+    );
+}
+
+#[test]
+fn click_on_mermaid_row_lands_on_clicked_column() {
+    // The `[Image: …]` placeholder + blank reserved rows have no
+    // useful per-character content for the standard rendered→raw
+    // column map.  `rendered_sub_line_to_offset` must short-circuit
+    // to a direct cell-aware lookup against the raw mermaid source so
+    // mouse clicks land on the character under the pointer.
+    let src = "```mermaid\nflowchart TD\nA-->B\n```\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    // Seed cursor inside the mermaid block so reveal is active.
+    st.cursor.offset = src.find("flowchart").unwrap();
+    st.update_cursor_block();
+    st.cursor_block_entered_at = None;
+
+    // Click col 5, row 2 → 6th char of "A-->B" line.  But "A-->B" has
+    // only 5 chars, so the click should clamp to its last column.  Use
+    // col 2 on row 2 instead — should land on the third char ('-') of
+    // "A-->B".
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    mouse_ops::apply(&mut st, click(2, 2), &mut anchor, &[], VP, VW);
+
+    let chars: Vec<char> = st.contents().chars().collect();
+    assert_eq!(
+        chars.get(st.cursor.offset),
+        Some(&'-'),
+        "click on col 2 of 'A-->B' must land on third char, landed at {} = {:?}",
+        st.cursor.offset,
+        chars.get(st.cursor.offset),
+    );
+}
+
+#[test]
+fn intra_mermaid_line_move_does_not_rearm_reveal_timer() {
+    // `update_cursor_block` re-arms `cursor_block_entered_at` on every
+    // buffer-line change so tables (and other multi-line blocks) get a
+    // uniform per-cell reveal delay.  Mermaid is exempt: re-arming on
+    // each line move would flash the image placeholder back in for
+    // ~120ms after every keystroke.  Verify the timer holds steady
+    // while the cursor stays inside the same mermaid block.
+    let src = "Intro paragraph.\n\n```mermaid\nflowchart TD\nA-->B\nB-->C\n```\n\nTrailer.\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    // Seed cursor on the intro paragraph so the next move actually
+    // crosses a block boundary (and arms the timer).
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    st.cursor_block_entered_at = None;
+
+    // Enter the mermaid block — block boundary crossed, timer arms.
+    st.cursor.offset = src.find("flowchart").unwrap();
+    st.update_cursor_block();
+    let entered_at = st.cursor_block_entered_at;
+    assert!(entered_at.is_some(), "entering mermaid arms the reveal timer");
+
+    // Move to the next content line within the same mermaid block.
+    st.cursor.offset = src.find("A-->B").unwrap();
+    st.update_cursor_block();
+    assert_eq!(
+        st.cursor_block_entered_at, entered_at,
+        "intra-mermaid line move must not re-arm the reveal timer",
+    );
+
+    // Moving back to the intro paragraph (a different block) must
+    // re-arm the timer.
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    assert_ne!(
+        st.cursor_block_entered_at, entered_at,
+        "leaving the mermaid block re-arms the reveal timer",
+    );
+}

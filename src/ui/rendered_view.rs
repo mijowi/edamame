@@ -215,6 +215,13 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 ..
             })
         );
+        // Mermaid code blocks are post-processed into synthetic
+        // `Block::ImageBlock`s.  When the cursor enters one, every
+        // rendered row of the block (where the image placeholder
+        // otherwise sits) is replaced with the corresponding raw-source
+        // line so the user can see and edit the mermaid source — same
+        // affordance as a fenced code block.
+        let is_mermaid_block = editor.parsed.is_mermaid_block(cursor_block_idx);
         // True when the cursor's current line is allowed to de-render: any
         // non-code-block line, or the opening-fence line of a fenced code
         // block with a language tag.
@@ -259,6 +266,10 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 }
             };
             sub.min(last_replaceable)
+        } else if is_mermaid_block {
+            // Mermaid blocks reserve `image_max_height` rendered rows;
+            // map raw → rendered 1:1, clamped to the reserved row count.
+            cursor_raw_line.min(cursor_block_own.saturating_sub(1))
         } else if is_code_block {
             // Code blocks render every body line — including blank ones,
             // which are emitted as NBSP-padded rows.  Counting non-blank
@@ -382,7 +393,13 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     None
                 }
             });
-            if reveal_raw && is_setext && in_cursor_block {
+            if reveal_raw && (is_mermaid_block || is_setext) && in_cursor_block {
+                // Both setext headings and mermaid blocks reveal every
+                // rendered row of the block to its matching raw-source
+                // line in one pass.  For mermaid blocks, rows past the
+                // end of the source render as blank (mirroring how a
+                // code block's reserved area looks when its source is
+                // short).
                 let sub = virtual_idx - cursor_block_lines.start;
                 let raw_text = raw_lines.get(sub).copied().unwrap_or("");
                 let cursor_on_this = cursor_raw_line == sub;
@@ -413,7 +430,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 rows_used =
                     render_line_from_visual(&styled, area, buf, vis_y as u16, wrap, skip_rows)
                         as usize;
-            } else if reveal_raw && wrapped_sub_idx_opt.is_some() {
+            } else if let (true, Some(sub_idx)) = (reveal_raw, wrapped_sub_idx_opt) {
                 // Multi-sub wrapped-cell overlay: paint the rendered row
                 // first (so neighbouring cells and borders stay), then
                 // overlay the appropriate raw wrap chunk into the
@@ -423,7 +440,6 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 let w = wrapped_cell
                     .as_ref()
                     .expect("wrapped_sub_idx implies wrapped_cell");
-                let sub_idx = wrapped_sub_idx_opt.unwrap();
                 let overlay = &w.subs[sub_idx];
                 if let Some(line) = editor.parsed.lines.get(virtual_idx) {
                     rows_used =
@@ -629,12 +645,14 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             // selection highlighting per chunk).
             if let Some((sa, sb)) = selection_bytes {
                 let setext_revealed = reveal_raw && is_setext && in_cursor_block;
+                let mermaid_revealed = reveal_raw && is_mermaid_block && in_cursor_block;
                 let wrapped_revealed = reveal_raw && wrapped_sub_idx_opt.is_some();
                 // Reads as three separate suppression cases; clippy's
                 // collapse hides which condition gates which.
                 #[allow(clippy::nonminimal_bool)]
                 if !(reveal_raw && virtual_idx == cursor_rendered_line && code_block_allows_reveal)
                     && !setext_revealed
+                    && !mermaid_revealed
                     && !wrapped_revealed
                 {
                     paint_selection_overlay(
