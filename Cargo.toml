@@ -16,7 +16,7 @@ path = "src/lib.rs"
 # TUI framework and terminal backend.  The `serde` feature is enabled so
 # `ratatui::style::Color` deserializes from strings ("red", "#ff00aa", "42")
 # directly inside our `ThemeFile` TOML layer.
-ratatui = { version = "0.29", features = ["serde", "unstable-rendered-line-info"] }
+ratatui = { version = "0.30", features = ["serde", "crossterm_0_28", "unstable-rendered-line-info"] }
 crossterm = "0.28"
 
 # Markdown parsing
@@ -59,7 +59,7 @@ arboard = { version = "3", optional = true, features = ["wayland-data-control"] 
 # Terminal image-protocol probing (Picker::from_query_stdio).
 # `chafa-dyn` is skipped to avoid a system-library dependency on libchafa —
 # we only use the Picker for detection, not for actual halfblock rendering.
-ratatui-image = { version = "9", default-features = false, features = ["crossterm", "image-defaults"] }
+ratatui-image = { version = "10", default-features = false, features = ["crossterm", "image-defaults"] }
 
 # Image format decoding — transitively pulled by ratatui-image, listed
 # explicitly so `DynamicImage` and `ImageError` are reachable from our own
