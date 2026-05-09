@@ -123,11 +123,18 @@ pub struct ParsedDoc {
     /// scroll-only frames so the snapshot builders (`link_view`,
     /// `image_view`, `table_view`) and scroll arithmetic
     /// (`EditorState::scroll_for_last_visible`, `visual_rows_between`)
-    /// don't re-walk and re-allocate per call.  Width-keyed: a terminal
-    /// resize triggers a single rebuild (resize is debounced in `App`,
-    /// so this is rare).  `RefCell` because `&EditorState` callers
-    /// need shared access; `ParsedDoc` is single-threaded.
-    pub(super) visual_rows: RefCell<Option<VisualRowCache>>,
+    /// don't re-walk and re-allocate per call.  Width-keyed.
+    ///
+    /// A small LRU (most-recent-first) rather than a single slot because
+    /// each frame queries at two widths in lockstep: the editor view
+    /// computes total rows at the full doc-area width to decide whether
+    /// a scrollbar gutter is needed, and again at the post-gutter width
+    /// for the scrollbar's own metrics.  A single-slot cache would
+    /// rebuild twice per frame on long documents — visible as scroll
+    /// lag — so we keep both widths warm.  `RefCell` because
+    /// `&EditorState` callers need shared access; `ParsedDoc` is
+    /// single-threaded.
+    pub(super) visual_rows: RefCell<Vec<VisualRowCache>>,
 }
 
 impl ParsedDoc {
@@ -405,7 +412,7 @@ impl ParsedDoc {
             per_block_own: all_per_block_own,
             image_blocks,
             heading_anchors,
-            visual_rows: RefCell::new(None),
+            visual_rows: RefCell::new(Vec::new()),
         }
     }
 
@@ -441,74 +448,77 @@ impl ParsedDoc {
     /// Visual rows occupied by rendered line `idx` at `width`.  O(1) after
     /// the cache is populated; first call at a given width is O(lines).
     pub fn visual_rows_for_line_at(&self, idx: usize, width: usize) -> usize {
-        self.ensure_visual_rows(width);
-        self.visual_rows
-            .borrow()
-            .as_ref()
-            .map(|c| c.for_line(idx))
-            .unwrap_or(1)
+        self.with_visual_rows(width, |c| c.for_line(idx))
     }
 
     /// Sum of visual rows occupied by rendered lines `[0..idx)` at `width`.
     pub fn visual_rows_before(&self, idx: usize, width: usize) -> usize {
-        self.ensure_visual_rows(width);
-        self.visual_rows
-            .borrow()
-            .as_ref()
-            .map(|c| c.before(idx))
-            .unwrap_or(0)
+        self.with_visual_rows(width, |c| c.before(idx))
     }
 
     /// Sum of visual rows occupied by rendered lines `[first..=last]`
     /// at `width`.  Used by tests in this crate.
     #[allow(dead_code)]
     pub fn visual_rows_between(&self, first: usize, last: usize, width: usize) -> usize {
-        self.ensure_visual_rows(width);
-        self.visual_rows
-            .borrow()
-            .as_ref()
-            .map(|c| c.between(first, last))
-            .unwrap_or(0)
+        self.with_visual_rows(width, |c| c.between(first, last))
     }
 
     /// Total visual rows occupied by the rendered document at `width`.
     pub fn total_visual_rows(&self, width: usize) -> usize {
-        self.ensure_visual_rows(width);
-        self.visual_rows
-            .borrow()
-            .as_ref()
-            .map(|c| c.total())
-            .unwrap_or(0)
+        self.with_visual_rows(width, |c| c.total())
     }
 
     /// `(rendered_line_idx, sub_row)` for a document-level visual row.
     pub fn line_at_visual_row(&self, visual_row: usize, width: usize) -> (usize, usize) {
-        self.ensure_visual_rows(width);
-        self.visual_rows
-            .borrow()
-            .as_ref()
-            .map(|c| c.find_visual_row(visual_row))
-            .unwrap_or((0, 0))
+        self.with_visual_rows(width, |c| c.find_visual_row(visual_row))
     }
 
-    /// Populate or refresh the visual-row cache for `width`.  Cheap when
-    /// the cached width already matches; otherwise rebuilds via the canonical
-    /// wrap algorithm in `line_render::visual_rows_for_line`.  Two-phase
-    /// borrow: the immutable check releases before the `borrow_mut` so we
-    /// don't alias the `RefCell`.
+    /// Run `f` against the visual-row cache for `width`, building it
+    /// first if no entry for that width is currently warm.
+    fn with_visual_rows<R>(&self, width: usize, f: impl FnOnce(&VisualRowCache) -> R) -> R {
+        self.ensure_visual_rows(width);
+        let borrow = self.visual_rows.borrow();
+        let cache = borrow
+            .iter()
+            .find(|c| c.width() == width)
+            .expect("visual-row cache populated above");
+        f(cache)
+    }
+
+    /// Populate or refresh the visual-row cache for `width`.  When an
+    /// entry for `width` is already warm, promote it to the front and
+    /// return.  Otherwise build a fresh cache and prepend, evicting any
+    /// entries beyond the LRU capacity.  Two-phase borrow: the
+    /// immutable check releases before the `borrow_mut` so we don't
+    /// alias the `RefCell`.
     fn ensure_visual_rows(&self, width: usize) {
+        /// Number of distinct widths we keep warm.  Must be at least 2
+        /// to absorb the editor view's per-frame "decide bar / display
+        /// bar" two-width query pattern without thrashing.
+        const LRU_CAP: usize = 2;
         {
             let borrow = self.visual_rows.borrow();
-            if let Some(c) = borrow.as_ref() {
-                if c.width() == width {
-                    return;
-                }
+            if borrow.first().map(|c| c.width()) == Some(width) {
+                return;
             }
+        }
+        let warm_pos = self
+            .visual_rows
+            .borrow()
+            .iter()
+            .position(|c| c.width() == width);
+        if let Some(pos) = warm_pos {
+            let mut entries = self.visual_rows.borrow_mut();
+            let entry = entries.remove(pos);
+            entries.insert(0, entry);
+            return;
         }
         let cache = VisualRowCache::build(self.lines.len(), width, |i| {
             crate::ui::line_render::visual_rows_for_line(&self.lines[i], width)
         });
-        *self.visual_rows.borrow_mut() = Some(cache);
+        let mut entries = self.visual_rows.borrow_mut();
+        entries.insert(0, cache);
+        entries.truncate(LRU_CAP);
     }
 }
 

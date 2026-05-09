@@ -167,28 +167,55 @@ impl EditorState {
 
     /// Run `f` against the raw-mode visual-row cache, rebuilding it first
     /// if either the buffer version or the width has changed since the
-    /// last build.  Two-phase borrow keeps the immutable check separate
-    /// from the `borrow_mut` so we don't alias the `RefCell`.
+    /// last build.  Keeps a small LRU of recent (width) entries — the
+    /// editor-view layout queries at two distinct widths per frame
+    /// (the full doc-area width to decide on a scrollbar gutter, and
+    /// the post-gutter width for scrollbar metrics + `viewport_width`),
+    /// so a single-slot cache thrashes on every frame.  Two-phase borrow
+    /// keeps the immutable check separate from the `borrow_mut` so we
+    /// don't alias the `RefCell`.
     fn with_raw_visual_cache<R>(&self, width: usize, f: impl FnOnce(&VisualRowCache) -> R) -> R {
+        /// Distinct widths kept warm — must be ≥ 2 so the per-frame
+        /// "decide bar / display bar" two-width pattern doesn't churn.
+        const LRU_CAP: usize = 2;
         let width = width.max(1);
         let buffer_version = self.buffer.version();
-        let needs_rebuild = match self.raw_visual_rows.borrow().as_ref() {
-            Some(entry) => entry.buffer_version != buffer_version || entry.inner.width() != width,
-            None => true,
-        };
-        if needs_rebuild {
+        // Promote-or-build pass.  If a warm entry matches both the
+        // buffer version and width, move it to the front of the LRU.
+        // Otherwise build a fresh entry and prepend, evicting beyond
+        // LRU_CAP.  A buffer-version mismatch invalidates the entire
+        // cache because every entry is keyed off the same buffer.
+        let mut entries = self.raw_visual_rows.borrow_mut();
+        if entries
+            .first()
+            .is_some_and(|e| e.buffer_version != buffer_version)
+        {
+            entries.clear();
+        }
+        if let Some(pos) = entries
+            .iter()
+            .position(|e| e.buffer_version == buffer_version && e.inner.width() == width)
+        {
+            let entry = entries.remove(pos);
+            entries.insert(0, entry);
+        } else {
             let inner = VisualRowCache::build(self.buffer.line_count(), width, |i| {
                 let text = line_text_trimmed(&self.buffer, i);
                 crate::ui::line_render::visual_rows_of_str(&text, width).len()
             });
-            *self.raw_visual_rows.borrow_mut() = Some(RawVisualRowCache {
-                buffer_version,
-                inner,
-            });
+            entries.insert(
+                0,
+                RawVisualRowCache {
+                    buffer_version,
+                    inner,
+                },
+            );
+            entries.truncate(LRU_CAP);
         }
+        drop(entries);
         let borrow = self.raw_visual_rows.borrow();
         f(&borrow
-            .as_ref()
+            .first()
             .expect("raw visual cache populated above")
             .inner)
     }
