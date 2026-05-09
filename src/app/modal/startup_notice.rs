@@ -75,7 +75,10 @@ impl Modal for StartupNoticeModal {
         _doc_height: usize,
         _doc_width: usize,
     ) -> ModalOutcome {
-        match self.state.handle_key(&key, self.buttons.len(), self.dismissable) {
+        match self
+            .state
+            .handle_key(&key, self.buttons.len(), self.dismissable)
+        {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled => ModalOutcome::Close,
             // Button index 1 is "Don't show this again".
