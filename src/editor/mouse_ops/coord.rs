@@ -149,9 +149,15 @@ fn rendered_click_to_offset(
         // Per-line lookup against `ParsedDoc`'s O(1) visual-row cache —
         // historically this called `visual_rows_for_line` directly, which
         // adds up on rapid mouse-move events over a long document.
-        let rows_used = state
-            .parsed
-            .visual_rows_for_line_at(idx, viewport_width)
+        //
+        // Mermaid reveal exception: when the painter swaps the image
+        // placeholder for raw mermaid source, a long source line can
+        // wrap across multiple visual rows even though the cached
+        // placeholder always reports one.  Use the raw line's actual
+        // wrap count so `(idx, sub_row)` accumulation matches what's on
+        // screen.
+        let rows_used = revealed_mermaid_row_count(state, idx, viewport_width)
+            .unwrap_or_else(|| state.parsed.visual_rows_for_line_at(idx, viewport_width))
             .max(1);
         let used = rows_used.saturating_sub(first_sub_row).max(1);
         if row < y + used {
@@ -343,6 +349,52 @@ fn table_raw_line_idx(state: &EditorState, block: &BlockLocation, block_text: &s
             last_data.max(HEADER_ROWS)
         }
     }
+}
+
+/// When `rendered_line_idx` lies inside the cursor's mermaid block AND the
+/// reveal is active, returns the wrap count of the raw mermaid source line
+/// the painter actually paints onto that rendered row.  Returns `None`
+/// otherwise — callers fall back to the regular per-line cache.
+///
+/// Why this exists: `RenderedView` reserves `image_max_height` placeholder
+/// rendered lines per mermaid block; each one normally wraps to 1 row.
+/// During reveal the painter overlays each rendered row with one raw
+/// source line, which may itself wrap.  Click hit-testing must agree with
+/// what's painted, not with the cached placeholder wrap count.
+fn revealed_mermaid_row_count(
+    state: &EditorState,
+    rendered_line_idx: usize,
+    viewport_width: usize,
+) -> Option<usize> {
+    if !state.cursor_block_revealed() {
+        return None;
+    }
+    let cursor_block_idx = state.cursor_block_idx?;
+    if !state.parsed.is_mermaid_block(cursor_block_idx) {
+        return None;
+    }
+    let block_lines = state
+        .parsed
+        .source_map
+        .rendered_lines_for_block(cursor_block_idx);
+    if !block_lines.contains(&rendered_line_idx) {
+        return None;
+    }
+    let sub = rendered_line_idx - block_lines.start;
+    let block_start_byte = state
+        .parsed
+        .source_map
+        .original_byte_for_rendered_line(block_lines.start)?;
+    let block_range = state
+        .parsed
+        .source_map
+        .original_range_for_byte(block_start_byte)?;
+    let source = state.buffer.contents();
+    let block_text = source
+        .get(block_range.start..block_range.end.min(source.len()))
+        .unwrap_or("");
+    let raw_line = block_text.split('\n').nth(sub).unwrap_or("");
+    Some(line_render::visual_rows_of_str(raw_line, viewport_width.max(1)).len().max(1))
 }
 
 /// Byte range `[start..end)` within `block_text` of raw line `raw_line_idx`,
