@@ -1478,16 +1478,11 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 - Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
 
-- Add a scroll bar to the editor view to show place in document. Also add a scroll bar to modal right padding area when content overflows. Scroll bar structure should be reused from the editor view.
-
 - Implement a dedicated theme selection modal and remove the theme picker from the settings overlay. Add an action `Switch theme` to the command palette that opens the theme modal.
 
-- Add a new feature for limiting editor max-width for readability (ex. 80 chars). This should be configurable in the settings modal and config file (off by default). Updating it in settings should update the editor immediately. Question: Should we left-align or center the text when there is extra space? Is centering practical? 
+- When an image is displayed fully rendered, and a modal is opened over it, then subsequently closed, the modal remains drawn over the portion of the image it overlapped with. When the user scrolls, the image is re-rendered and the modal artifact disappears.
 
 - Refactor tests
-
-### Theme issues
-- BG of striped rows should be consistent in border columns
 
 ## Make the TUI prettier—more like OpenCode
 - Replace modal border with padding.
