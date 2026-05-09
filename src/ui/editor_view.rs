@@ -280,6 +280,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                 halfblocks_picker: self.capabilities.halfblocks_picker.as_ref(),
                 native_protocol: self.capabilities.image_protocol,
                 is_scrolling: self.is_scrolling,
+                modal_open: self.state.modal_open,
                 suppress_block_idx: suppress,
                 bg: self.theme.normal.bg.unwrap_or(ratatui::style::Color::Reset),
             };

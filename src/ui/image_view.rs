@@ -212,6 +212,13 @@ pub struct PaintContext<'a> {
     /// protocols fall back to halfblocks even when the image is fully
     /// visible — avoids per-frame re-encode flicker on scroll.
     pub is_scrolling: bool,
+    /// True while a modal is open over the editor.  Forces every image
+    /// to render via halfblocks so the buffer-based dim sweep
+    /// (`ui::dim::dim_area`) actually recesses the image alongside the
+    /// rest of the document — native graphics protocols (Sixel / Kitty
+    /// / iTerm2) write past the ratatui cell buffer and would otherwise
+    /// stay at full brightness behind the modal.
+    pub modal_open: bool,
     /// Block index to skip (cursor's block during raw-reveal).
     pub suppress_block_idx: Option<usize>,
     /// Theme background colour used (a) to clear the reserved rect
@@ -304,7 +311,7 @@ pub fn paint_images(snapshots: &[ImageLayoutSnapshot], ctx: PaintContext) {
         // diff emits only the changed cells, and the terminal treats them
         // like any other text.  The native protocol re-engages once
         // `SCROLL_QUIESCE` elapses (150 ms of no scroll input).
-        let use_native = fully_visible && !ctx.is_scrolling;
+        let use_native = fully_visible && !ctx.is_scrolling && !ctx.modal_open;
 
         if use_native {
             paint_native(ctx.images, snap, ctx.buf, ctx.bg);
