@@ -50,6 +50,12 @@ pub struct EditorConfig {
     /// true.  Clamped to a floor of 20 at use sites to prevent
     /// pathological narrow values that would break layout.  Default: 100.
     pub max_width_cols: usize,
+    /// When true, H1 headings render as 4-row "big text" via the
+    /// `tui-big-text` widget (Quadrant pixel size — uses ▀▄▌▐ block
+    /// glyphs).  Falls back to the regular one-line styled rendering
+    /// when the title would exceed the viewport width or contains
+    /// non-ASCII characters (font8x8 only covers ASCII).  Default: true.
+    pub big_h1: bool,
 }
 
 /// Floor applied to `EditorConfig::max_width_cols` at every use site so a
@@ -81,6 +87,7 @@ impl Default for EditorConfig {
             transient_ms: 1500,
             max_width_enabled: false,
             max_width_cols: 100,
+            big_h1: true,
         }
     }
 }

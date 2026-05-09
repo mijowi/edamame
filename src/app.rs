@@ -313,9 +313,11 @@ impl App {
         if matches!(config.images.enabled, crate::config::ImagesEnabled::Never) {
             editor.images_enabled = false;
             editor.set_row_striping(config.table.row_striping);
+            editor.set_big_h1(config.editor.big_h1);
             editor.refresh_parsed();
         } else {
             editor.set_row_striping(config.table.row_striping);
+            editor.set_big_h1(config.editor.big_h1);
         }
 
         // PreviewView borrows `editor.parsed.lines` at render time, so

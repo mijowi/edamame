@@ -164,6 +164,7 @@ impl ParsedDoc {
             None,
             false,
             80,
+            false,
         )
     }
 
@@ -189,6 +190,7 @@ impl ParsedDoc {
         image_row_override: Option<ImageRowOverride>,
         row_striping: bool,
         viewport_width: usize,
+        big_h1: bool,
     ) -> Self {
         // 1. Extract top-level block byte ranges.
         let mut real_ranges = parse_offsets::top_level_block_ranges(source);
@@ -234,7 +236,8 @@ impl ParsedDoc {
         let mut renderer = Renderer::new(theme)
             .with_viewport_width(viewport_width.max(1))
             .with_image_max_height(image_max_height)
-            .with_row_striping(row_striping);
+            .with_row_striping(row_striping)
+            .with_big_h1(big_h1);
         if let Some(override_fn) = image_row_override {
             renderer = renderer.with_image_row_override(override_fn);
         }
@@ -826,8 +829,17 @@ mod tests {
     fn live_widths_preview_still_hides_trailing_tui_columns_comment() {
         let src = "| a | b |\n|---|---|\n| 1 | 2 |\n<!-- tui-columns: [5, 6] -->\n";
         let live = (0usize, vec![Some(7), None]);
-        let doc =
-            ParsedDoc::build_with_overrides(src, theme(), true, 24, Some(&live), None, false, 80);
+        let doc = ParsedDoc::build_with_overrides(
+            src,
+            theme(),
+            true,
+            24,
+            Some(&live),
+            None,
+            false,
+            80,
+            false,
+        );
         for line in &doc.lines {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert!(

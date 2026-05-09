@@ -158,9 +158,11 @@ impl App {
         if !self.images_layout_enabled() {
             new_editor.images_enabled = false;
             new_editor.set_row_striping(self.config.table.row_striping);
+            new_editor.set_big_h1(self.config.editor.big_h1);
             new_editor.refresh_parsed();
         } else {
             new_editor.set_row_striping(self.config.table.row_striping);
+            new_editor.set_big_h1(self.config.editor.big_h1);
         }
         self.editor = new_editor;
         // Image cache is owned by `EditorState`, so swapping to a new
