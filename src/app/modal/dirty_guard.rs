@@ -71,7 +71,10 @@ impl Modal for DirtyGuardModal {
         doc_height: usize,
         doc_width: usize,
     ) -> ModalOutcome {
-        match self.state.handle_key(&key, self.buttons.len(), self.dismissable) {
+        match self
+            .state
+            .handle_key(&key, self.buttons.len(), self.dismissable)
+        {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled => ModalOutcome::Close,
             ModalResponse::ButtonPressed(idx) => {

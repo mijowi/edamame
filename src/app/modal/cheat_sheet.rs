@@ -54,7 +54,10 @@ impl Modal for CheatSheetModal {
         _doc_height: usize,
         _doc_width: usize,
     ) -> ModalOutcome {
-        match self.state.handle_key(&key, self.buttons.len(), self.dismissable) {
+        match self
+            .state
+            .handle_key(&key, self.buttons.len(), self.dismissable)
+        {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled | ModalResponse::ButtonPressed(_) => ModalOutcome::Close,
         }

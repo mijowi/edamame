@@ -79,7 +79,10 @@ impl Modal for WidthInjectionWarning {
         _doc_height: usize,
         _doc_width: usize,
     ) -> ModalOutcome {
-        match self.state.handle_key(&key, self.buttons.len(), self.dismissable) {
+        match self
+            .state
+            .handle_key(&key, self.buttons.len(), self.dismissable)
+        {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled => ModalOutcome::CloseAnd(Box::new(|app| {
                 app.editor.cancel_pending_column_widths();
