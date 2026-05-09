@@ -9,7 +9,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::Frame;
 
-use super::types::{Modal, ModalOutcome, ModalRenderCtx};
+use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
 use crate::config::Config;
 use crate::terminal::Capabilities;
@@ -19,6 +19,8 @@ pub struct StartupNoticeModal {
     body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
     state: ModalState,
+    kind: ModalKind,
+    dismissable: bool,
 }
 
 impl StartupNoticeModal {
@@ -47,6 +49,8 @@ impl StartupNoticeModal {
                 ModalButton::new("Don't show this again"),
             ],
             state: ModalState::new(),
+            kind: ModalKind::Normal,
+            dismissable: true,
         })
     }
 }
@@ -58,6 +62,8 @@ impl Modal for StartupNoticeModal {
             body: &self.body,
             buttons: &self.buttons,
             theme: ctx.theme,
+            kind: self.kind,
+            dismissable: self.dismissable,
         };
         frame.render_stateful_widget(view, area, &mut self.state);
     }
@@ -69,7 +75,7 @@ impl Modal for StartupNoticeModal {
         _doc_height: usize,
         _doc_width: usize,
     ) -> ModalOutcome {
-        match self.state.handle_key(&key, self.buttons.len()) {
+        match self.state.handle_key(&key, self.buttons.len(), self.dismissable) {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled => ModalOutcome::Close,
             // Button index 1 is "Don't show this again".
@@ -83,6 +89,18 @@ impl Modal for StartupNoticeModal {
 
     fn handle_wheel(&mut self, delta: i32) {
         self.state.scroll_by(delta);
+    }
+
+    fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
+        super::types::close_if_esc_clicked(self.state.esc_button_rect, col, row)
+    }
+
+    fn kind(&self) -> ModalKind {
+        self.kind
+    }
+
+    fn dismissable(&self) -> bool {
+        self.dismissable
     }
 
     fn as_any(&self) -> &dyn Any {

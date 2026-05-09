@@ -1753,7 +1753,10 @@ fn intra_mermaid_line_move_does_not_rearm_reveal_timer() {
     st.cursor.offset = src.find("flowchart").unwrap();
     st.update_cursor_block();
     let entered_at = st.cursor_block_entered_at;
-    assert!(entered_at.is_some(), "entering mermaid arms the reveal timer");
+    assert!(
+        entered_at.is_some(),
+        "entering mermaid arms the reveal timer"
+    );
 
     // Move to the next content line within the same mermaid block.
     st.cursor.offset = src.find("A-->B").unwrap();

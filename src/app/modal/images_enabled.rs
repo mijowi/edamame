@@ -10,7 +10,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::Frame;
 
-use super::types::{Modal, ModalOutcome, ModalRenderCtx};
+use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use super::RemoteImagePromptModal;
 use crate::app::App;
 use crate::config::Config;
@@ -21,6 +21,8 @@ pub struct ImagesEnabledPromptModal {
     body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
     state: ModalState,
+    kind: ModalKind,
+    dismissable: bool,
 }
 
 impl ImagesEnabledPromptModal {
@@ -47,6 +49,8 @@ impl ImagesEnabledPromptModal {
                 ModalButton::new("Never"),
             ],
             state: ModalState::new(),
+            kind: ModalKind::Warning,
+            dismissable: false,
         })
     }
 }
@@ -58,6 +62,8 @@ impl Modal for ImagesEnabledPromptModal {
             body: &self.body,
             buttons: &self.buttons,
             theme: ctx.theme,
+            kind: self.kind,
+            dismissable: self.dismissable,
         };
         frame.render_stateful_widget(view, area, &mut self.state);
     }
@@ -69,9 +75,8 @@ impl Modal for ImagesEnabledPromptModal {
         _doc_height: usize,
         _doc_width: usize,
     ) -> ModalOutcome {
-        match self.state.handle_key(&key, self.buttons.len()) {
+        match self.state.handle_key(&key, self.buttons.len(), self.dismissable) {
             ModalResponse::Continue => ModalOutcome::Continue,
-            // Esc → treat as "No": placeholders this session, config untouched.
             ModalResponse::Cancelled => ModalOutcome::CloseAnd(Box::new(decline_for_session)),
             ModalResponse::ButtonPressed(idx) => {
                 // Button order:
@@ -102,6 +107,18 @@ impl Modal for ImagesEnabledPromptModal {
 
     fn handle_wheel(&mut self, delta: i32) {
         self.state.scroll_by(delta);
+    }
+
+    fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
+        super::types::close_if_esc_clicked(self.state.esc_button_rect, col, row)
+    }
+
+    fn kind(&self) -> ModalKind {
+        self.kind
+    }
+
+    fn dismissable(&self) -> bool {
+        self.dismissable
     }
 
     fn as_any(&self) -> &dyn Any {

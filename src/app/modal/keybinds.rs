@@ -98,6 +98,10 @@ impl Modal for KeybindsOverlayModal {
         self.state.scroll_state.scroll_by(delta);
     }
 
+    fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
+        super::types::close_if_esc_clicked(self.state.esc_button_rect, col, row)
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }

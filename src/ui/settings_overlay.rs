@@ -55,7 +55,8 @@ use crate::ui::overlay_nav::next_focusable;
 /// enough to leave room for the value on terminals around 80 columns.
 const LABEL_PAD: usize = 28;
 use crate::ui::scroll_container::{
-    centered_rect_for_content, draw_frame, ContentSize, ScrollContainerState,
+    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind, ScrollContainerState,
+    VERTICAL_CHROME_ROWS,
 };
 
 use self::rows::{build_rows, list_theme_names, RowAction, RowDef};
@@ -107,6 +108,8 @@ pub struct SettingsState {
     /// and the mouse wheel drive `scroll_state.scroll` directly without
     /// touching focus.
     pub scroll_state: ScrollContainerState,
+    /// Absolute terminal rect of the rendered `esc` close hint.
+    pub esc_button_rect: Option<Rect>,
     rows: Vec<RowDef>,
 }
 
@@ -119,6 +122,7 @@ impl SettingsState {
             last_error: None,
             theme_names,
             scroll_state: ScrollContainerState::default(),
+            esc_button_rect: None,
             rows: build_rows(),
         };
         // Default focus to the first editable setting ("Theme") rather
@@ -287,15 +291,29 @@ impl<'a> StatefulWidget for SettingsView<'a> {
         let rect = centered_rect_for_content(content, area);
 
         // Pre-compute layout so the title's arrow indicator reflects
-        // the post-observe scroll bounds.
-        let inner_h = rect.height.saturating_sub(2);
+        // the post-observe scroll bounds.  Vertical chrome is fixed by
+        // `draw_frame`; the body area below it holds the scroll list +
+        // pinned footer.
+        let inner_h = rect.height.saturating_sub(VERTICAL_CHROME_ROWS);
         let table_height = inner_h.saturating_sub(pinned_bottom);
         state
             .scroll_state
             .observe(row_lines.len() as u16, table_height);
         state.scroll_state.ensure_visible(state.focused as u16);
 
-        let inner = draw_frame(rect, buf, "Settings", self.theme);
+        let layout = draw_frame(
+            rect,
+            buf,
+            FrameOpts {
+                title: "Settings",
+                kind: ModalKind::Normal,
+                show_close_hint: true,
+                content_width,
+                theme: self.theme,
+            },
+        );
+        state.esc_button_rect = layout.esc_hit_rect;
+        let inner = layout.body;
         if inner.height < 2 || inner.width == 0 {
             return;
         }
@@ -303,14 +321,12 @@ impl<'a> StatefulWidget for SettingsView<'a> {
         let scroll = state.scroll_state.scroll as usize;
         let visible_rows = table_height as usize;
 
-        let table_outer = Rect {
+        let table_area = Rect {
             x: inner.x,
             y: inner.y,
             width: inner.width,
             height: table_height,
         };
-        let (table_area, scrollbar_area) =
-            crate::ui::scrollbar::split_for_scroll_state(table_outer, &state.scroll_state);
         let visible: Vec<Line<'_>> = row_lines
             .into_iter()
             .skip(scroll)
@@ -319,7 +335,13 @@ impl<'a> StatefulWidget for SettingsView<'a> {
         Paragraph::new(visible)
             .style(self.theme.modal_bg)
             .render(table_area, buf);
-        if let Some(bar_area) = scrollbar_area {
+        if state.scroll_state.max_scroll() > 0 {
+            let bar_area = Rect {
+                x: layout.scrollbar_col,
+                y: table_area.y,
+                width: 1,
+                height: table_area.height,
+            };
             crate::ui::scrollbar::render_for_scroll_state(
                 bar_area,
                 &state.scroll_state,
@@ -679,7 +701,7 @@ mod tests {
         let mut state = SettingsState::new();
         // 80 cols × 8 rows: only ~5 row slots after frame + footer.
         // Settings has 13 rows.
-        let contents = render(&mut state, &config, 80, 8);
+        let contents = render(&mut state, &config, 80, 12);
         assert!(
             contents.contains('█'),
             "expected scrollbar thumb glyph, got: {contents}"
@@ -690,7 +712,7 @@ mod tests {
     fn settings_pgdown_advances_scroll_without_moving_focus() {
         let config = Config::default();
         let mut state = SettingsState::new();
-        render(&mut state, &config, 80, 8);
+        render(&mut state, &config, 80, 12);
         let focused_before = state.focused;
         state.handle_key(&key(KeyCode::PageDown), &mut Config::default());
         assert_eq!(state.focused, focused_before, "PgDn must not move focus");
@@ -701,7 +723,7 @@ mod tests {
     fn settings_wheel_scrolls_list() {
         let config = Config::default();
         let mut state = SettingsState::new();
-        render(&mut state, &config, 80, 8);
+        render(&mut state, &config, 80, 12);
         let focused_before = state.focused;
         state.scroll_state.scroll_by(2);
         assert_eq!(state.scroll_state.scroll, 2);

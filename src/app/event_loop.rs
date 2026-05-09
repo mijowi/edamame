@@ -278,6 +278,14 @@ impl App {
             };
             frame.render_stateful_widget(view, frame.area(), view_state_ref);
             if let Some(top) = modal_stack_top {
+                // Dim the editor (status + hint included) before
+                // painting the modal.  The modal's own `Clear` + bg
+                // fill overwrites its rect cleanly, so this sweep can
+                // cover the whole terminal area without computing a
+                // complement.  Strategy depends on terminal colour
+                // depth — see `crate::ui::dim`.
+                let area = frame.area();
+                crate::ui::dim::dim_area(frame.buffer_mut(), area, capabilities_ref, theme_ref);
                 let render_ctx = ModalRenderCtx {
                     theme: theme_ref,
                     config: config_ref,
@@ -450,9 +458,18 @@ impl App {
                 self.needs_draw = true;
             }
             Event::Mouse(me) => {
-                if let Some(top) = self.modal_stack.top_mut() {
-                    top.handle_wheel(modal_wheel_delta(me, wheel_step));
-                    self.needs_draw = true;
+                use crossterm::event::MouseButton;
+                match me.kind {
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        self.dispatch_modal_click(me.column, me.row);
+                        self.needs_draw = true;
+                    }
+                    _ => {
+                        if let Some(top) = self.modal_stack.top_mut() {
+                            top.handle_wheel(modal_wheel_delta(me, wheel_step));
+                            self.needs_draw = true;
+                        }
+                    }
                 }
             }
             _ => {}

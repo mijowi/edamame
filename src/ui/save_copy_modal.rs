@@ -26,7 +26,9 @@ use ratatui::{
 
 use crate::config::Theme;
 use crate::ui::button_row::{button_row_width, render_button_row};
-use crate::ui::scroll_container::{centered_rect_for_content, draw_frame, ContentSize};
+use crate::ui::scroll_container::{
+    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind,
+};
 
 const BUTTON_LABELS: &[&str] = &["Save", "Cancel"];
 
@@ -91,6 +93,8 @@ pub struct SaveCopyState {
     /// Last validation message, e.g. "Path required".  Cleared when the
     /// user mutates the field.
     pub last_error: Option<String>,
+    /// Absolute terminal rect of the rendered `esc` close hint.
+    pub esc_button_rect: Option<Rect>,
 }
 
 impl SaveCopyState {
@@ -101,6 +105,7 @@ impl SaveCopyState {
             cursor,
             focus: SaveCopyField::Path,
             last_error: None,
+            esc_button_rect: None,
         }
     }
 
@@ -282,7 +287,19 @@ impl<'a> StatefulWidget for SaveCopyView<'a> {
             pinned_bottom: 0,
         };
         let modal_area = centered_rect_for_content(content, area);
-        let inner = draw_frame(modal_area, buf, "Save a Copy", self.theme);
+        let layout = draw_frame(
+            modal_area,
+            buf,
+            FrameOpts {
+                title: "Save a Copy",
+                kind: ModalKind::Normal,
+                show_close_hint: true,
+                content_width,
+                theme: self.theme,
+            },
+        );
+        state.esc_button_rect = layout.esc_hit_rect;
+        let inner = layout.body;
         if inner.height == 0 || inner.width == 0 {
             return;
         }

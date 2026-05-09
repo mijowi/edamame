@@ -105,29 +105,6 @@ pub fn position_for_drag(
     ((target_top as u32 * max_pos + (max_top as u32 / 2)) / max_top as u32) as u16
 }
 
-/// Reserve the rightmost column of `area` for a scrollbar gutter when
-/// the supplied scroll state reports any overflow.  Returns the
-/// shrunken body rect plus the gutter rect (or `None` when the body
-/// fits the viewport).  Used by overlays that drive a
-/// [`ScrollContainerState`] — the editor has its own variant that
-/// keys off `total > height` directly.
-pub fn split_for_scroll_state(area: Rect, state: &ScrollContainerState) -> (Rect, Option<Rect>) {
-    if state.max_scroll() == 0 || area.width < 2 || area.height == 0 {
-        return (area, None);
-    }
-    let bar = Rect {
-        x: area.x + area.width - 1,
-        y: area.y,
-        width: 1,
-        height: area.height,
-    };
-    let body = Rect {
-        width: area.width - 1,
-        ..area
-    };
-    (body, Some(bar))
-}
-
 /// Render the [`Scrollbar`] widget at `bar_area` driven by a
 /// [`ScrollContainerState`].  The state's `last_total` / `last_visible`
 /// must already reflect the post-observe layout — the typical caller

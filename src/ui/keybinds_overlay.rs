@@ -29,7 +29,8 @@ use crate::ui::content_width::{max_row_width, optional_text_width};
 use crate::ui::modal_row::{format_modal_row, RowLayout};
 use crate::ui::overlay_nav::next_focusable;
 use crate::ui::scroll_container::{
-    centered_rect_for_content, draw_frame, ContentSize, ScrollContainerState,
+    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind, ScrollContainerState,
+    VERTICAL_CHROME_ROWS,
 };
 
 /// Width of the action-label column in the keybinds overlay (column count
@@ -82,6 +83,8 @@ pub struct KeybindsState {
     /// and the mouse wheel drive `scroll_state.scroll` directly without
     /// touching focus.
     pub scroll_state: ScrollContainerState,
+    /// Absolute terminal rect of the rendered `esc` close hint.
+    pub esc_button_rect: Option<Rect>,
     /// All rows, including category headers.  Built once at
     /// construction time from the static `CATEGORIES` table; cheap to
     /// clone for tests.
@@ -104,6 +107,7 @@ impl KeybindsState {
             editing: None,
             last_error: None,
             scroll_state: ScrollContainerState::default(),
+            esc_button_rect: None,
             rows,
             focus_offsets,
         };
@@ -283,7 +287,7 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
         };
         let rect = centered_rect_for_content(content, area);
 
-        let inner_h = rect.height.saturating_sub(2);
+        let inner_h = rect.height.saturating_sub(VERTICAL_CHROME_ROWS);
         let table_height = inner_h.saturating_sub(pinned_bottom);
         state
             .scroll_state
@@ -294,7 +298,19 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
         // viewport without changing focus.  ensure_visible runs only
         // when focus actually moves (see KeybindsState::move_focus).
 
-        let inner = draw_frame(rect, buf, "Keybindings", self.theme);
+        let layout = draw_frame(
+            rect,
+            buf,
+            FrameOpts {
+                title: "Keybindings",
+                kind: ModalKind::Normal,
+                show_close_hint: true,
+                content_width,
+                theme: self.theme,
+            },
+        );
+        state.esc_button_rect = layout.esc_hit_rect;
+        let inner = layout.body;
         if inner.height < 2 || inner.width == 0 {
             return;
         }
@@ -302,14 +318,12 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
         let scroll = state.scroll_state.scroll as usize;
         let visible_rows = table_height as usize;
 
-        let table_outer = Rect {
+        let table_area = Rect {
             x: inner.x,
             y: inner.y,
             width: inner.width,
             height: table_height,
         };
-        let (table_area, scrollbar_area) =
-            crate::ui::scrollbar::split_for_scroll_state(table_outer, &state.scroll_state);
         let visible: Vec<Line<'_>> = body_lines
             .into_iter()
             .skip(scroll)
@@ -318,7 +332,13 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
         Paragraph::new(visible)
             .style(self.theme.modal_bg)
             .render(table_area, buf);
-        if let Some(bar_area) = scrollbar_area {
+        if state.scroll_state.max_scroll() > 0 {
+            let bar_area = Rect {
+                x: layout.scrollbar_col,
+                y: table_area.y,
+                width: 1,
+                height: table_area.height,
+            };
             crate::ui::scrollbar::render_for_scroll_state(
                 bar_area,
                 &state.scroll_state,

@@ -246,6 +246,21 @@ impl App {
         }
     }
 
+    /// Route a left-button click at terminal coords `(col, row)` to the
+    /// topmost modal.  Mirrors [`Self::dispatch_modal_key`]'s
+    /// pop-dispatch-push pattern so handlers can take `&mut App`.
+    pub(super) fn dispatch_modal_click(&mut self, col: u16, row: u16) {
+        let Some(mut top) = self.modal_stack.pop() else {
+            return;
+        };
+        let outcome = top.handle_click(col, row);
+        match outcome {
+            ModalOutcome::Continue => self.modal_stack.push(top),
+            ModalOutcome::Close => {}
+            ModalOutcome::CloseAnd(cb) => cb(self),
+        }
+    }
+
     /// Open the three-button `Save / Discard / Cancel` modal.  Called
     /// when the user requests `Quit` on a dirty buffer.
     pub(super) fn open_quit_confirm(&mut self) {

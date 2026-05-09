@@ -170,7 +170,10 @@ impl<'t> Renderer<'t> {
             let width = widths.get(i).copied().unwrap_or(MIN_COL_WIDTH);
             spans.push(Span::styled("\u{00A0}".repeat(width + 2), cell_style));
             let is_last = i + 1 == col_count;
-            spans.push(Span::styled("│", if is_last { outer_border } else { inner_border }));
+            spans.push(Span::styled(
+                "│",
+                if is_last { outer_border } else { inner_border },
+            ));
         }
         Line::from(spans)
     }
@@ -241,7 +244,10 @@ impl<'t> Renderer<'t> {
                     spans.push(Span::styled(" ", default_style));
                 }
                 let is_last = i + 1 == col_count;
-                spans.push(Span::styled("│", if is_last { outer_border } else { inner_border }));
+                spans.push(Span::styled(
+                    "│",
+                    if is_last { outer_border } else { inner_border },
+                ));
             }
             out.push(Line::from(spans));
         }
