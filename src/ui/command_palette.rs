@@ -29,7 +29,8 @@ use crate::config::{Action, KeyMap, Theme};
 use crate::ui::content_width::max_row_width;
 use crate::ui::modal_row::{format_modal_row, RowLayout};
 use crate::ui::scroll_container::{
-    centered_rect_for_content, draw_frame, ContentSize, ScrollContainerState,
+    draw_frame, top_anchored_rect_for_content, ContentSize, FrameOpts, ModalKind,
+    ScrollContainerState,
 };
 
 /// One palette row: an action plus its display label.
@@ -92,6 +93,10 @@ pub struct PaletteState {
     /// Cached query string the `display_rows` list was computed for.
     /// When the live `query` differs we recompute.
     matched_for_query: Option<String>,
+    /// Absolute terminal rect of the rendered `esc` close hint.
+    /// Populated each render; used by the App layer for click
+    /// hit-testing.
+    pub esc_button_rect: Option<Rect>,
 }
 
 impl PaletteState {
@@ -106,6 +111,7 @@ impl PaletteState {
             scroll_state: ScrollContainerState::default(),
             display_rows: Vec::new(),
             matched_for_query: None,
+            esc_button_rect: None,
         }
     }
 
@@ -307,18 +313,36 @@ impl<'a> StatefulWidget for PaletteView<'a> {
             pinned_top: 2, // input row + divider
             pinned_bottom: 0,
         };
-        let modal_area = centered_rect_for_content(content, area);
+        // Top-anchored so the input row stays put as the match list grows
+        // and shrinks per keystroke; a centred palette would jump up and
+        // down by half the height delta on every character typed.
+        let modal_area = top_anchored_rect_for_content(content, area);
 
         // Pre-compute layout so the title's arrow indicator reflects
-        // the post-observe scroll bounds.
-        let inner_h = modal_area.height.saturating_sub(2);
+        // the post-observe scroll bounds.  Body height excludes the
+        // fixed vertical chrome budget.
+        let inner_h = modal_area
+            .height
+            .saturating_sub(crate::ui::scroll_container::VERTICAL_CHROME_ROWS);
         let pinned_top: u16 = 2;
         let list_height = inner_h.saturating_sub(pinned_top);
         state
             .scroll_state
             .observe(state.display_rows.len() as u16, list_height);
 
-        let inner = draw_frame(modal_area, buf, "Command Palette", self.theme);
+        let layout = draw_frame(
+            modal_area,
+            buf,
+            FrameOpts {
+                title: "Command Palette",
+                kind: ModalKind::Normal,
+                show_close_hint: true,
+                content_width,
+                theme: self.theme,
+            },
+        );
+        state.esc_button_rect = layout.esc_hit_rect;
+        let inner = layout.body;
         if inner.height < 2 || inner.width == 0 {
             return;
         }
@@ -351,22 +375,26 @@ impl<'a> StatefulWidget for PaletteView<'a> {
             .style(self.theme.modal_bg)
             .render(input_area, buf);
 
-        // Divider between input and result list.
+        // Divider between input and result list.  Same fg as the
+        // structural dim border the old chrome used; surface_elevated
+        // bg so it sits flush against the modal body.
+        let divider_style = ratatui::style::Style::default()
+            .fg(self.theme.palette.structural_dim)
+            .bg(self.theme.palette.surface_elevated);
         let divider_y = inner.y + 1;
         for x in inner.x..(inner.x + inner.width) {
-            buf[(x, divider_y)]
-                .set_symbol("─")
-                .set_style(self.theme.modal_border);
+            buf[(x, divider_y)].set_symbol("─").set_style(divider_style);
         }
 
-        let list_outer = Rect {
+        // List paints into the body area below the input + divider.
+        // The scrollbar paints into the rightmost padding column
+        // returned by the frame layout — no internal gutter split.
+        let list_area = Rect {
             x: inner.x,
             y: inner.y + pinned_top,
             width: inner.width,
             height: list_height,
         };
-        let (list_area, scrollbar_area) =
-            crate::ui::scrollbar::split_for_scroll_state(list_outer, &state.scroll_state);
         if list_area.height == 0 {
             return;
         }
@@ -410,7 +438,13 @@ impl<'a> StatefulWidget for PaletteView<'a> {
             .style(self.theme.modal_bg)
             .render(list_area, buf);
 
-        if let Some(bar_area) = scrollbar_area {
+        if state.scroll_state.max_scroll() > 0 {
+            let bar_area = Rect {
+                x: layout.scrollbar_col,
+                y: list_area.y,
+                width: 1,
+                height: list_area.height,
+            };
             crate::ui::scrollbar::render_for_scroll_state(
                 bar_area,
                 &state.scroll_state,
@@ -814,7 +848,7 @@ mod tests {
         state.handle_key(&key(KeyCode::Char('e')));
         // 80 cols × 6 rows leaves only ~2 list rows after the input,
         // divider, and frame chrome — guaranteed overflow.
-        let contents = render(&mut state, 80, 6);
+        let contents = render(&mut state, 80, 10);
         assert!(
             contents.contains('█'),
             "expected scrollbar thumb glyph, got: {contents}"
@@ -826,7 +860,7 @@ mod tests {
         let mut state = PaletteState::open(&keymap());
         state.handle_key(&key(KeyCode::Char('e')));
         // Render once so scroll_state.last_visible is populated.
-        render(&mut state, 80, 6);
+        render(&mut state, 80, 10);
         let focused_before = state.focused;
         state.handle_key(&key(KeyCode::PageDown));
         assert_eq!(state.focused, focused_before, "PgDn must not move focus");
@@ -841,7 +875,7 @@ mod tests {
     fn palette_wheel_scrolls_list() {
         let mut state = PaletteState::open(&keymap());
         state.handle_key(&key(KeyCode::Char('e')));
-        render(&mut state, 80, 6);
+        render(&mut state, 80, 10);
         let focused_before = state.focused;
         state.scroll_state.scroll_by(2);
         assert_eq!(state.scroll_state.scroll, 2);
@@ -852,7 +886,7 @@ mod tests {
     fn palette_down_arrow_pulls_viewport_back_to_focus_after_wheel_off_top() {
         let mut state = PaletteState::open(&keymap());
         state.handle_key(&key(KeyCode::Char('e')));
-        render(&mut state, 80, 6);
+        render(&mut state, 80, 10);
         // Wheel scrolls past the focused row.
         state.scroll_state.scroll_by(5);
         // Down arrow must move focus AND pull the viewport with it.

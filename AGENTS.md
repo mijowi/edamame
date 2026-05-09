@@ -302,6 +302,22 @@ they exist:
   raw mode + transient features (mirroring `setup` minus the `Terminal`
   construction), and `Config::load()` is re-run so any edits the user made
   take effect immediately.
+- **`Modal::kind` and `Modal::dismissable` are stored as struct fields, not
+  hard-coded.** Every modal that uses `ModalView` carries `kind: ModalKind`
+  and `dismissable: bool` fields set once in `new()`/`from_*()`.  The
+  `ModalView` literal (`kind: self.kind, dismissable: self.dismissable`),
+  the `state.handle_key(.., self.dismissable)` call, AND the trait methods
+  `fn kind()` / `fn dismissable()` all read from those fields — single
+  source of truth per modal.  Do NOT pass literals (`true`/`false`,
+  `ModalKind::Warning`) at any of those three sites; they will drift.
+  The `dismissable` field controls three things together: the rendered
+  `esc` close-hint, the cached `esc_button_rect` for click hit-testing,
+  AND whether `Esc`/`n`/`N` actually fire `ModalResponse::Cancelled`.
+  These were historically wired separately and disagreed for some
+  warning modals — keep them unified through `self.dismissable`.
+  Modals that don't use `ModalView` (palette, settings, keybinds,
+  save_copy, insert_table) inherit the trait defaults
+  (`Normal` / `true`); don't add no-op overrides.
 - **Preview-mode Ctrl-key allowlist.** `input::mode_handler::default::preview_safe_action`
   decides which Ctrl-* chords fire in Preview mode.  Read-only overlay
   openers (`ShowCommandPalette`, `OpenSettings`, `OpenKeybinds`,

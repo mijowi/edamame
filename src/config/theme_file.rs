@@ -141,8 +141,10 @@ pub struct ThemeFile {
 
     // Modal popups
     pub modal_bg: StyleSpec,
-    pub modal_border: StyleSpec,
-    pub modal_title: StyleSpec,
+    pub modal_title_normal: StyleSpec,
+    pub modal_title_warning: StyleSpec,
+    pub modal_title_error: StyleSpec,
+    pub modal_close_hint: StyleSpec,
     pub modal_item: StyleSpec,
     pub modal_item_hint: StyleSpec,
     pub modal_item_selected: StyleSpec,
@@ -195,7 +197,9 @@ macro_rules! style_fields {
             status_filename, status_info, status_modified, status_selection,
             hint_bar, hint_chord, hint_label,
             transient_info, transient_success, transient_warning, transient_error,
-            modal_bg, modal_border, modal_title,
+            modal_bg,
+            modal_title_normal, modal_title_warning, modal_title_error,
+            modal_close_hint,
             modal_item, modal_item_hint,
             modal_item_selected, modal_item_selected_hint,
             modal_description, modal_section_heading,
@@ -336,8 +340,10 @@ mod tests {
         check!(transient_warning);
         check!(transient_error);
         check!(modal_bg);
-        check!(modal_border);
-        check!(modal_title);
+        check!(modal_title_normal);
+        check!(modal_title_warning);
+        check!(modal_title_error);
+        check!(modal_close_hint);
         check!(modal_item);
         check!(modal_item_hint);
         check!(modal_item_selected);
@@ -589,8 +595,10 @@ bold = true
         check!(transient_warning);
         check!(transient_error);
         check!(modal_bg);
-        check!(modal_border);
-        check!(modal_title);
+        check!(modal_title_normal);
+        check!(modal_title_warning);
+        check!(modal_title_error);
+        check!(modal_close_hint);
         check!(modal_item);
         check!(modal_item_hint);
         check!(modal_item_selected);
@@ -739,8 +747,10 @@ bold = true
         check!(transient_warning);
         check!(transient_error);
         check!(modal_bg);
-        check!(modal_border);
-        check!(modal_title);
+        check!(modal_title_normal);
+        check!(modal_title_warning);
+        check!(modal_title_error);
+        check!(modal_close_hint);
         check!(modal_item);
         check!(modal_item_hint);
         check!(modal_item_selected);

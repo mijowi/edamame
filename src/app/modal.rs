@@ -24,6 +24,8 @@ pub mod startup_notice;
 pub mod width_injection;
 
 pub use stack::ModalStack;
+#[allow(unused_imports)]
+pub use types::ModalKind;
 pub use types::{Modal, ModalOutcome, ModalRenderCtx};
 
 pub use cheat_sheet::CheatSheetModal;

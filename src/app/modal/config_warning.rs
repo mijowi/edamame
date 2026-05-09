@@ -11,7 +11,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::Frame;
 
-use super::types::{Modal, ModalOutcome, ModalRenderCtx};
+use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
 use crate::config::{ConfigWarning, WarningKind};
 use crate::ui::{ModalButton, ModalResponse, ModalState, ModalView};
@@ -20,6 +20,8 @@ pub struct ConfigWarningModal {
     pub(crate) body: Vec<Line<'static>>,
     pub(crate) buttons: Vec<ModalButton>,
     pub(crate) state: ModalState,
+    kind: ModalKind,
+    dismissable: bool,
 }
 
 impl ConfigWarningModal {
@@ -71,6 +73,8 @@ impl ConfigWarningModal {
             body,
             buttons: vec![ModalButton::new("Ok")],
             state: ModalState::new(),
+            kind: ModalKind::Warning,
+            dismissable: false,
         })
     }
 }
@@ -82,6 +86,8 @@ impl Modal for ConfigWarningModal {
             body: &self.body,
             buttons: &self.buttons,
             theme: ctx.theme,
+            kind: self.kind,
+            dismissable: self.dismissable,
         };
         frame.render_stateful_widget(view, area, &mut self.state);
     }
@@ -93,7 +99,7 @@ impl Modal for ConfigWarningModal {
         _doc_height: usize,
         _doc_width: usize,
     ) -> ModalOutcome {
-        match self.state.handle_key(&key, self.buttons.len()) {
+        match self.state.handle_key(&key, self.buttons.len(), self.dismissable) {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled | ModalResponse::ButtonPressed(_) => ModalOutcome::Close,
         }
@@ -101,6 +107,18 @@ impl Modal for ConfigWarningModal {
 
     fn handle_wheel(&mut self, delta: i32) {
         self.state.scroll_by(delta);
+    }
+
+    fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
+        super::types::close_if_esc_clicked(self.state.esc_button_rect, col, row)
+    }
+
+    fn kind(&self) -> ModalKind {
+        self.kind
+    }
+
+    fn dismissable(&self) -> bool {
+        self.dismissable
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -228,7 +246,9 @@ mod tests {
     }
 
     #[test]
-    fn modal_dismissed_on_escape() {
+    fn escape_does_not_dismiss_gated_warning() {
+        // ConfigWarning is non-dismissable: the user must press Ok to
+        // acknowledge.  Esc must not close the modal.
         let mut app = make_app();
         let warnings = vec![ConfigWarning {
             path: PathBuf::from("config.toml"),
@@ -237,6 +257,6 @@ mod tests {
         let modal = ConfigWarningModal::from_warnings(&warnings).expect("modal built");
         app.modal_stack.push(Box::new(modal));
         app.dispatch_modal_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 40, 80);
-        assert!(!app.modal_stack.contains::<ConfigWarningModal>());
+        assert!(app.modal_stack.contains::<ConfigWarningModal>());
     }
 }

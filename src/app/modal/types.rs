@@ -13,6 +13,24 @@ use ratatui::Frame;
 use crate::app::App;
 use crate::config::{Config, KeyMap, Theme};
 
+pub use crate::ui::ModalKind;
+
+/// Helper: close a modal when `(col, row)` lands inside `esc_rect`,
+/// otherwise keep it open.  Concrete `Modal` impls call this from
+/// their `handle_click` after delegating to the state's hit-test.
+pub fn close_if_esc_clicked(
+    esc_rect: Option<ratatui::layout::Rect>,
+    col: u16,
+    row: u16,
+) -> ModalOutcome {
+    if let Some(r) = esc_rect {
+        if col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height {
+            return ModalOutcome::Close;
+        }
+    }
+    ModalOutcome::Continue
+}
+
 /// Read-only context handed to [`Modal::render`].  Centralises the
 /// references every modal needs at draw time so individual modal
 /// implementations don't have to pull them off `App` themselves.
@@ -64,6 +82,37 @@ pub trait Modal {
     /// Apply a mouse-wheel delta.  Default: no-op (modals without a
     /// scrollable body ignore wheel events).
     fn handle_wheel(&mut self, _delta: i32) {}
+
+    /// Apply a left-button mouse click at terminal coordinates
+    /// `(col, row)`.  Default: no-op.  Modals that draw an `esc` close
+    /// button in their title bar override this to dismiss when the
+    /// click lands inside the cached hit-rect.
+    fn handle_click(&mut self, _col: u16, _row: u16) -> ModalOutcome {
+        ModalOutcome::Continue
+    }
+
+    /// The modal's visual urgency — drives title colour.  Default
+    /// [`ModalKind::Normal`].  Concrete modals store this as a field on
+    /// their struct and have this method, the `ModalView { kind }`
+    /// literal, and the constructor all read from `self.kind` so the
+    /// value can't drift between rendering and introspection.
+    #[allow(dead_code)]
+    fn kind(&self) -> ModalKind {
+        ModalKind::Normal
+    }
+
+    /// Whether `Esc` (and the `esc` close button) may dismiss this
+    /// modal.  Returning `false` gates the modal: the user must
+    /// activate one of the explicit footer buttons.  Default `true`.
+    /// Concrete modals store this as a field and route it to all three
+    /// consumers — `ModalView { dismissable }`, the
+    /// `state.handle_key(.., self.dismissable)` call, and this trait
+    /// method — so the rendered close hint, click hit-test, and Esc
+    /// behaviour stay in sync.
+    #[allow(dead_code)]
+    fn dismissable(&self) -> bool {
+        true
+    }
 
     /// Type-erased self-reference, used by [`super::ModalStack`] for
     /// type-aware operations (`remove_first<T>`, `contains<T>`).  Every

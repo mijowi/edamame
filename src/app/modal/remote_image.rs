@@ -11,7 +11,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::Frame;
 
-use super::types::{Modal, ModalOutcome, ModalRenderCtx};
+use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
 use crate::config::Config;
 use crate::editor::EditorState;
@@ -21,6 +21,8 @@ pub struct RemoteImagePromptModal {
     body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
     state: ModalState,
+    kind: ModalKind,
+    dismissable: bool,
 }
 
 impl RemoteImagePromptModal {
@@ -60,6 +62,8 @@ impl RemoteImagePromptModal {
                 ModalButton::new("Never"),
             ],
             state: ModalState::new(),
+            kind: ModalKind::Warning,
+            dismissable: false,
         })
     }
 }
@@ -71,6 +75,8 @@ impl Modal for RemoteImagePromptModal {
             body: &self.body,
             buttons: &self.buttons,
             theme: ctx.theme,
+            kind: self.kind,
+            dismissable: self.dismissable,
         };
         frame.render_stateful_widget(view, area, &mut self.state);
     }
@@ -82,9 +88,8 @@ impl Modal for RemoteImagePromptModal {
         _doc_height: usize,
         _doc_width: usize,
     ) -> ModalOutcome {
-        match self.state.handle_key(&key, self.buttons.len()) {
+        match self.state.handle_key(&key, self.buttons.len(), self.dismissable) {
             ModalResponse::Continue => ModalOutcome::Continue,
-            // Esc → treat as "No": dismiss without policy change.
             ModalResponse::Cancelled => ModalOutcome::Close,
             ModalResponse::ButtonPressed(idx) => {
                 // Button order:
@@ -116,6 +121,18 @@ impl Modal for RemoteImagePromptModal {
 
     fn handle_wheel(&mut self, delta: i32) {
         self.state.scroll_by(delta);
+    }
+
+    fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
+        super::types::close_if_esc_clicked(self.state.esc_button_rect, col, row)
+    }
+
+    fn kind(&self) -> ModalKind {
+        self.kind
+    }
+
+    fn dismissable(&self) -> bool {
+        self.dismissable
     }
 
     fn as_any(&self) -> &dyn Any {

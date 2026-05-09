@@ -2,6 +2,7 @@ pub mod bottom_region;
 pub mod button_row;
 pub mod command_palette;
 pub mod content_width;
+pub mod dim;
 pub mod editor_view;
 pub mod image_view;
 pub mod insert_table_modal;
@@ -32,6 +33,7 @@ pub use keybinds_overlay::{KeybindsState, KeybindsView};
 pub use link_view::LinkLayoutSnapshot;
 pub use markdown_cheat_sheet::body_lines as markdown_cheat_sheet_body;
 pub use modal::{ModalButton, ModalResponse, ModalState, ModalView};
+pub use scroll_container::ModalKind;
 // Used by integration tests in tests/ui.rs.
 #[allow(unused_imports)]
 pub use rendered_view::{RenderedView, RenderedViewState};

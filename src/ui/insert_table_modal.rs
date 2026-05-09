@@ -22,7 +22,9 @@ use ratatui::{
 
 use crate::config::Theme;
 use crate::ui::button_row::{button_row_width, render_button_row};
-use crate::ui::scroll_container::{centered_rect_for_content, draw_frame, ContentSize};
+use crate::ui::scroll_container::{
+    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind,
+};
 
 const BUTTON_LABELS: &[&str] = &["Insert", "Cancel"];
 
@@ -86,6 +88,9 @@ pub struct InsertTableState {
     /// Last validation message, e.g. "Columns must be at least 1".
     /// Cleared on every successful keystroke that mutates a field.
     pub last_error: Option<String>,
+    /// Absolute terminal rect of the rendered `esc` close hint.
+    /// Populated each render; consulted for click hit-testing.
+    pub esc_button_rect: Option<Rect>,
 }
 
 impl Default for InsertTableState {
@@ -101,6 +106,7 @@ impl InsertTableState {
             cols: "3".to_owned(),
             focus: InsertTableField::Rows,
             last_error: None,
+            esc_button_rect: None,
         }
     }
 
@@ -252,7 +258,19 @@ impl<'a> StatefulWidget for InsertTableView<'a> {
             pinned_bottom: 0,
         };
         let modal_area = centered_rect_for_content(content, area);
-        let inner = draw_frame(modal_area, buf, "Insert Table", self.theme);
+        let layout = draw_frame(
+            modal_area,
+            buf,
+            FrameOpts {
+                title: "Insert Table",
+                kind: ModalKind::Normal,
+                show_close_hint: true,
+                content_width,
+                theme: self.theme,
+            },
+        );
+        state.esc_button_rect = layout.esc_hit_rect;
+        let inner = layout.body;
         if inner.height == 0 || inner.width == 0 {
             return;
         }

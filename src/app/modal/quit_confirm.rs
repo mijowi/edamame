@@ -1,4 +1,4 @@
-//! Phase 9 quit-confirm modal.  Three buttons: Save / Discard / Cancel.
+//! Three buttons: Save / Discard / Cancel.
 //! Save persists the buffer then exits; failure surfaces a sticky
 //! error transient and aborts the quit.  Discard exits without
 //! saving; Cancel / Escape dismisses.
@@ -10,7 +10,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::Frame;
 
-use super::types::{Modal, ModalOutcome, ModalRenderCtx};
+use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::{App, MessageKind};
 use crate::ui::{ModalButton, ModalResponse, ModalState, ModalView};
 
@@ -18,6 +18,8 @@ pub struct QuitConfirmModal {
     body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
     state: ModalState,
+    kind: ModalKind,
+    dismissable: bool,
 }
 
 impl QuitConfirmModal {
@@ -38,6 +40,8 @@ impl QuitConfirmModal {
                 ModalButton::new("Cancel"),
             ],
             state: ModalState::new(),
+            kind: ModalKind::Warning,
+            dismissable: true,
         }
     }
 }
@@ -49,6 +53,8 @@ impl Modal for QuitConfirmModal {
             body: &self.body,
             buttons: &self.buttons,
             theme: ctx.theme,
+            kind: self.kind,
+            dismissable: self.dismissable,
         };
         frame.render_stateful_widget(view, area, &mut self.state);
     }
@@ -60,7 +66,7 @@ impl Modal for QuitConfirmModal {
         _doc_height: usize,
         _doc_width: usize,
     ) -> ModalOutcome {
-        match self.state.handle_key(&key, self.buttons.len()) {
+        match self.state.handle_key(&key, self.buttons.len(), self.dismissable) {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled => ModalOutcome::Close,
             ModalResponse::ButtonPressed(0) => ModalOutcome::CloseAnd(Box::new(|app| {
@@ -80,6 +86,18 @@ impl Modal for QuitConfirmModal {
 
     fn handle_wheel(&mut self, delta: i32) {
         self.state.scroll_by(delta);
+    }
+
+    fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
+        super::types::close_if_esc_clicked(self.state.esc_button_rect, col, row)
+    }
+
+    fn kind(&self) -> ModalKind {
+        self.kind
+    }
+
+    fn dismissable(&self) -> bool {
+        self.dismissable
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -112,9 +130,70 @@ mod tests {
     fn quit_confirm_cancel_dismisses_without_quit() {
         let mut app = make_app();
         app.open_quit_confirm();
+        // Cancel is button index 2; default focus is 0 (Save).
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), 40, 80);
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), 40, 80);
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 40, 80);
+        assert!(!app.modal_stack.contains::<QuitConfirmModal>());
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn quit_confirm_escape_dismisses_without_quit() {
+        let mut app = make_app();
+        app.open_quit_confirm();
         app.dispatch_modal_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 40, 80);
         assert!(!app.modal_stack.contains::<QuitConfirmModal>());
         assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn click_on_esc_hint_dismisses_modal() {
+        // Exercises `App::dispatch_modal_click` end-to-end: render the
+        // modal once to populate `state.esc_button_rect`, then click
+        // inside that rect.  The modal must close via the same
+        // pop-dispatch-push pipeline used by real mouse events.
+        use crate::app::modal::types::ModalRenderCtx;
+        use crate::config::{Config, Theme};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = make_app();
+        app.open_quit_confirm();
+
+        let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
+        let config = Config::default();
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                let ctx = ModalRenderCtx {
+                    theme,
+                    config: &config,
+                    keymap: None,
+                    cursor_visible: false,
+                };
+                let area = frame.area();
+                if let Some(top) = app.modal_stack.top_mut() {
+                    top.render(frame, area, &ctx);
+                }
+            })
+            .unwrap();
+
+        let rect = app
+            .modal_stack
+            .top_mut()
+            .and_then(|m| m.as_any().downcast_ref::<QuitConfirmModal>())
+            .and_then(|m| m.state.esc_button_rect)
+            .expect("esc rect populated after render");
+
+        // Click outside the rect first — modal stays open.
+        app.dispatch_modal_click(0, 0);
+        assert!(app.modal_stack.contains::<QuitConfirmModal>());
+
+        // Click inside the rect — modal closes via the click router.
+        app.dispatch_modal_click(rect.x, rect.y);
+        assert!(!app.modal_stack.contains::<QuitConfirmModal>());
+        assert!(!app.should_quit, "esc-click must not trigger Save/Discard");
     }
 
     #[test]

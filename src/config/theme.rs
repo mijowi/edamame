@@ -154,9 +154,18 @@ pub struct Theme {
     /// modals a different surface from the status bar even when the
     /// default palette uses the same shade for both.
     pub modal_bg: Style,
-    /// Border / chrome of modal frames.
-    pub modal_border: Style,
-    pub modal_title: Style,
+    /// Title text style for `ModalKind::Normal` — neutral / informational
+    /// modals.  `primary_bright` on the modal surface.
+    pub modal_title_normal: Style,
+    /// Title text style for `ModalKind::Warning` — yellow on the modal
+    /// surface.  Used by config / image / quit / dirty-guard prompts.
+    pub modal_title_warning: Style,
+    /// Title text style for `ModalKind::Error` — red on the modal surface.
+    pub modal_title_error: Style,
+    /// `text_muted` close-hint label rendered as `esc` on the right edge
+    /// of the title row of dismissable modals.  Doubles as the visible
+    /// affordance for the clickable close button.
+    pub modal_close_hint: Style,
     /// Default style for an unfocused row in a list-style modal.
     pub modal_item: Style,
     /// Right-aligned hint / sub-label on an *unfocused* row (e.g. the
@@ -631,11 +640,19 @@ impl Theme {
 
             // Modal popups
             modal_bg: Style::default().bg(p.surface_elevated).fg(p.default_text),
-            modal_border: Style::default().fg(p.structural_dim).bg(p.surface_elevated),
-            modal_title: Style::default()
+            modal_title_normal: Style::default()
                 .fg(p.primary_bright)
                 .bg(p.surface_elevated)
                 .add_modifier(bold),
+            modal_title_warning: Style::default()
+                .fg(p.warning_bright)
+                .bg(p.surface_elevated)
+                .add_modifier(bold),
+            modal_title_error: Style::default()
+                .fg(p.error_bright)
+                .bg(p.surface_elevated)
+                .add_modifier(bold),
+            modal_close_hint: Style::default().fg(p.text_muted).bg(p.surface_elevated),
             modal_item: Style::default().fg(p.default_text).bg(p.surface_elevated),
             modal_item_hint: Style::default()
                 .fg(p.interactive_bright)
@@ -698,6 +715,19 @@ impl Theme {
             scrollbar_thumb: Style::default().fg(p.primary_dim),
             scrollbar_thumb_active: Style::default().fg(p.primary_bright),
         }
+    }
+
+    /// The "blank page" background colour — exposed so UI code that
+    /// blends or composites against the document surface (e.g. the
+    /// modal-dim pass) doesn't have to reach into `palette` directly.
+    pub fn default_bg(&self) -> Color {
+        self.palette.default_bg
+    }
+
+    /// Foreground colour for muted text — used as the Ansi256 fallback
+    /// foreground for the modal-dim sweep.
+    pub fn text_muted(&self) -> Color {
+        self.palette.text_muted
     }
 
     /// Return the appropriate heading style for a heading level (1–6).
@@ -821,8 +851,15 @@ impl Theme {
             transient_error: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
 
             modal_bg: Style::default().add_modifier(Modifier::REVERSED),
-            modal_border: Style::default().add_modifier(Modifier::REVERSED),
-            modal_title: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            modal_title_normal: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            // Monochrome can't colour-code urgency; warning/error fall
+            // back to BOLD + REVERSED + DIM so the title still reads as
+            // distinct chrome on dim-aware terminals.
+            modal_title_warning: Style::default()
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED | Modifier::DIM),
+            modal_title_error: Style::default()
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED | Modifier::DIM),
+            modal_close_hint: Style::default().add_modifier(Modifier::REVERSED | Modifier::DIM),
             modal_item: Style::default().add_modifier(Modifier::REVERSED),
             modal_item_hint: Style::default().add_modifier(Modifier::REVERSED),
             modal_item_selected: Style::default().add_modifier(Modifier::BOLD),

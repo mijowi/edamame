@@ -394,7 +394,11 @@ fn revealed_mermaid_row_count(
         .get(block_range.start..block_range.end.min(source.len()))
         .unwrap_or("");
     let raw_line = block_text.split('\n').nth(sub).unwrap_or("");
-    Some(line_render::visual_rows_of_str(raw_line, viewport_width.max(1)).len().max(1))
+    Some(
+        line_render::visual_rows_of_str(raw_line, viewport_width.max(1))
+            .len()
+            .max(1),
+    )
 }
 
 /// Byte range `[start..end)` within `block_text` of raw line `raw_line_idx`,

@@ -1464,8 +1464,7 @@ fn mermaid_block_reveals_full_raw_source_on_cursor_entry() {
     // mermaid source is 5 raw lines (fence, 3 content, fence), which
     // fits in 6 rows.
     let src = "```mermaid\nflowchart TD\nA-->B\nB-->C\n```\n";
-    let mut state =
-        EditorState::new_with_config(Buffer::from_str(src), theme, true, true, 6);
+    let mut state = EditorState::new_with_config(Buffer::from_str(src), theme, true, true, 6);
     state.mode = Mode::Rendered;
     // Cursor on the first content line "flowchart TD".
     state.cursor.offset = src.find("flowchart").unwrap();
