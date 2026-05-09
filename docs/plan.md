@@ -1031,6 +1031,7 @@ Tabs, multi-file CLI, and the file picker were originally bundled here but are d
 
 **Post-merge hardening:**
 - **Modal scrolling.** `ModalView` bodies (cheat sheet, prompts, etc.) scroll vertically: Up/Down/PgUp/PgDn/Home/End on the keyboard and mouse wheel from any open modal-arm in `App::run`.  Title bar shows `↑` / `↓` / `↑↓` indicators when the body overflows.  Custom Phase 10 overlays (palette, settings, keybinds) do *not* scroll yet — bodies are short enough today that it isn't urgent.  Tracked in `MEMORY.md`.
+- **Click routing in Phase 10 overlays.** `App::dispatch_modal_click` reaches every modal's `handle_click`, but the palette/settings/keybinds overlays only hit-test the `esc` close hint — clicks on a palette match row, a settings field, or a keybind row are no-ops.  Mouse selection inside these overlays is deferred; the keyboard remains the primary driver until a use case forces the issue.
 - **External-editor integration for `Open config.toml in default editor`.**  Settings overlay sets `App::pending_open_config_in_editor`; the run loop drains it via `App::open_config_in_editor`, which prefers `$VISUAL` over `$EDITOR` and falls back to `open::that` when neither is set.  Suspending the TUI alone is *not* sufficient — the crossterm read thread would race the editor for stdin (visible as the OSC 11 reply `1;rgb:...` leaking into neovim's buffer plus dropped keystrokes).  The thread is now poll-based with a `read_paused: Arc<AtomicBool>` flag; the editor flow flips the flag, drains the channel, restores the terminal, exec's, re-enters, drains again, and resumes.  Config is reloaded from disk after the editor exits so any saved edits take effect immediately.
 
 ---
@@ -1474,21 +1475,51 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 - Clean up source and tests
 
-- Add a first-run config setup for images, remote images, mouse, etc based on inferred terminal capabilities.
-
 - Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
 
 - Implement a dedicated theme selection modal and remove the theme picker from the settings overlay. Add an action `Switch theme` to the command palette that opens the theme modal.
 
-- When an image is displayed fully rendered, and a modal is opened over it, then subsequently closed, the modal remains drawn over the portion of the image it overlapped with. When the user scrolls, the image is re-rendered and the modal artifact disappears.
+- When an image is displayed fully rendered, and a modal is opened the image is not dimmed along with the rest of the UI.
 
 - Refactor tests
 
+- Extra large H1 in halfblocks
+
+- Make insert table blank line warning a modal instead of hint line flash
+
+- Add a modal that mirrors the "display images" modal, but for diagrams.
+
+- Add a first-run config setup for images, diagrams, remote images, mouse, etc based on inferred terminal capabilities.
+
 ## Make the TUI prettier—more like OpenCode
-- Replace modal border with padding.
-- Dim background when modal is open (probably modern terminals only)
-- Keep modal title on left. Add dim `Esc` at top right to signal how to close. Both should be contained *within* the border padding.
-- Color code modal titles (e.g. red for warning)
+We want to revamp the appearance and behavior of modals
+in edamame. Proposed changes:
+- Replace the line border with padding. At present there is a thin line with the
+foreground color `Palette::structural_dim`. Remove the line and replace it with
+padding that is the same color as the modal background. The padding should be max 4
+ columns on each horizontal side and exactly 1 row on each vertical side. The
+horizontal padding should shrink to 1 column minimum when space is constrained by
+the terminal size or the width of the content. For modals with a scroll bar, the
+rightmost column of the right padding should contain the scroll bar. Don't add
+another column just for the scroll bar.
+- The row below the top padding should contain the title, aligned to the left
+within the padding, and a close button, aligned to the right within the padding. A
+blank line should follow the title line, then the modal content should follow.
+- The close button should appear as `esc` in `Palette::interactive_muted` to signal
+ the modal can be closed with the `Escape` key or by clicking the button. Clicking
+this button or pressing `Escape` should do nothing other than close the modal, i.e.
+ make no changes to settings, etc.
+- Introduce typed modals. The idea is that we want different modal behavior for
+different situations. When a modal surfaces an error or something that requires the
+ user to make a choice then and there, the modal should not be dismissable without
+the user choosing. In this case the `Escape` key should NOT close the modal and the
+ `esc` button should NOT appear. We can also color code the modal title based on
+the modal type, e.g. `Palette::error_bright` for errors, `Palette::warning_bright`
+for warnings, and the standard `Palette::primary_bright` for normal modals. Propose
+ what modal types we should add and propose type assignments for existing modals. I
+ want to hear any suggestions you have regarding this feature.
+- Dim the editor (behind the modal) when a modal is open. Think about how we can
+implement this. Should we dim the hint/status bars as well or no?
 
 ---
 
