@@ -7,6 +7,7 @@
 //! plumbing — adding a new setting only touches this file.
 
 use crate::config::sections::MAX_WIDTH_COLS_MIN;
+use crate::config::theme::BUILTIN_THEMES;
 use crate::config::{Config, ImagesEnabled, RemoteImagePolicy, StatusBarLayout};
 
 #[derive(Debug)]
@@ -121,28 +122,41 @@ fn parse_remote_policy(s: &str) -> Result<RemoteImagePolicy, String> {
     }
 }
 
-/// Read all `.toml` file stems from `<config_dir>/themes/`.  Sorted
-/// for stable cycle order.  Falls back to `["default"]` so the cycle
-/// never hangs on an unreadable directory.
+/// List every theme available in the cycle: the compiled-in
+/// [`BUILTIN_THEMES`] (in their declared order) followed by any
+/// user-authored `.toml` stems from `<config_dir>/themes/` whose name
+/// doesn't shadow a built-in.  Built-ins are always present so the
+/// cycle works even when the user has no custom themes installed.
 pub(super) fn list_theme_names() -> Vec<String> {
-    let mut out = Vec::new();
+    let mut out: Vec<String> = BUILTIN_THEMES
+        .iter()
+        .map(|(n, _)| (*n).to_owned())
+        .collect();
+
     if let Some(dir) = Config::config_dir() {
         let themes = dir.join("themes");
         if let Ok(read) = std::fs::read_dir(&themes) {
-            for entry in read.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("toml") {
-                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        out.push(stem.to_owned());
+            let mut user: Vec<String> = read
+                .flatten()
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                        return None;
                     }
-                }
-            }
+                    let stem = path.file_stem().and_then(|s| s.to_str())?.to_owned();
+                    if out.contains(&stem) {
+                        // Built-in shadows the user file at load time;
+                        // hide it from the cycle so the listed name
+                        // matches what the user will actually see.
+                        return None;
+                    }
+                    Some(stem)
+                })
+                .collect();
+            user.sort();
+            user.dedup();
+            out.extend(user);
         }
-    }
-    out.sort();
-    out.dedup();
-    if out.is_empty() {
-        out.push("default".to_owned());
     }
     out
 }
@@ -291,6 +305,20 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     Ok(())
                 },
                 cycle: None,
+            },
+        },
+        RowDef {
+            label: "Big H1 headings",
+            description: Some("Render H1 titles as large block-character text"),
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Cycle,
+                read: |c, _| c.editor.big_h1.to_string(),
+                write_string: no_write,
+                cycle: Some(|c, _, _| {
+                    c.editor.big_h1 = !c.editor.big_h1;
+                    true
+                }),
             },
         },
         RowDef {

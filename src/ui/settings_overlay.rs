@@ -626,6 +626,7 @@ mod tests {
                 "Hint duration",
                 "Limit editor width",
                 "Editor max width",
+                "Big H1 headings",
                 "Use visual line navigation",
                 "Scroll speed",
                 "Show images",
