@@ -34,8 +34,8 @@ pub fn palette() -> Palette {
         // `fg = default_bg`.  On a light page that fg is near-white,
         // so the bg has to be saturated/dark enough for the text to
         // read.
-        interactive_bright: Color::Indexed(27),
-        interactive_dim: Color::Indexed(18),
+        interactive_bright: Color::Indexed(33),
+        interactive_dim: Color::Indexed(27),
         // Selection bg is split from `interactive_dim` on the light
         // theme: a pale tint lets the near-black `default_text` read
         // through the highlight, the way selection traditionally
