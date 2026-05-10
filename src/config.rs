@@ -9,6 +9,7 @@ pub mod readers;
 pub mod sections;
 pub mod theme;
 pub mod theme_file;
+pub mod themes;
 pub mod warnings;
 
 // `pub use` re-exports through the facade. Rustc reports `CustomExportEntry`
