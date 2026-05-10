@@ -304,7 +304,7 @@ pub struct Palette {
 
 impl Default for Palette {
     fn default() -> Self {
-        super::themes::default_dark::palette()
+        super::themes::dark_256::palette()
     }
 }
 
@@ -320,8 +320,8 @@ pub type PaletteCtor = fn() -> Palette;
 /// Each constructor lives in its own file under `src/config/themes/`
 /// so adding a theme is a single new file plus an entry here.
 pub const BUILTIN_THEMES: &[(&str, PaletteCtor)] = &[
-    ("default", super::themes::default_dark::palette),
-    ("light", super::themes::default_light::palette),
+    ("256 Dark", super::themes::dark_256::palette),
+    ("256 Light", super::themes::light_256::palette),
 ];
 
 impl Palette {
@@ -335,7 +335,6 @@ impl Palette {
             .map(|(_, ctor)| ctor())
     }
 }
-
 
 impl Theme {
     /// Build a fully-populated [`Theme`] from `palette`.  Every style
@@ -832,10 +831,10 @@ mod tests {
         // Sanity check that the light built-in is actually distinct
         // from the dark default — otherwise we shipped two themes
         // with the same colour table.
-        use super::super::themes::{default_dark, default_light};
+        use super::super::themes::{dark_256, light_256};
         assert_ne!(
-            default_dark::palette().default_bg,
-            default_light::palette().default_bg
+            dark_256::palette().default_bg,
+            light_256::palette().default_bg
         );
     }
 
