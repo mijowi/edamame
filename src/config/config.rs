@@ -344,12 +344,12 @@ mod tests {
     fn read_theme_resolves_light_builtin() {
         // The companion light palette resolves from the built-in
         // registry without any disk file.
-        use super::super::themes::default_light;
+        use super::super::themes::light_256;
         let dir = tempfile::tempdir().unwrap();
         let mut warnings = Vec::new();
         let theme = read_theme_named(dir.path(), "light", &mut warnings);
         let theme_out: Theme = (&theme).into();
-        let expected = Theme::from_palette(&default_light::palette());
+        let expected = Theme::from_palette(&light_256::palette());
         assert_eq!(theme_out.h1, expected.h1);
         assert_eq!(theme_out.normal, expected.normal);
         assert!(warnings.is_empty());

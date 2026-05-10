@@ -12,5 +12,5 @@
 //!    Palette { … }`.
 //! 3. Add an entry to `BUILTIN_THEMES` in `theme.rs`.
 
-pub mod default_dark;
-pub mod default_light;
+pub mod dark_256;
+pub mod light_256;

@@ -1411,29 +1411,6 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 ---
 
-## Theming
-- The `Theme` struct is already wired in from Phase 0
-- Deferred work: document all theme keys, ship several built-in themes (dark, light, dracula, gruvbox, catppuccin, github dark/light)
-- Theme can be selected by name (`theme = "dracula"`) in `config.toml`; resolved first from `~/.config/edamame/themes/`, then from built-ins
-- Custom themes are standalone TOML files in `~/.config/edamame/themes/<name>.toml`, mapping semantic keys to hex colour values:
-  ```toml
-  [ui]
-  background = "#1e1e2e"
-  foreground = "#cdd6f4"
-  cursor     = "#f5e0dc"
-
-  [markdown]
-  heading  = "#cba6f7"
-  bold     = "#f9e2af"
-  code_span = "#a6e3a1"
-  link     = "#89b4fa"
-  ```
-  Unknown keys are a hard error; missing keys fall back to the default theme
-- Implement a live theme preview mode in the settings overlay
-- Theme fetching from a remote source.
-
----
-
 ## Open Questions
 4. **WSL clipboard**: On WSL, `arboard` may not have access to the Windows clipboard without additional configuration (`clip.exe` workaround or `win32yank`). Detect WSL via `$WSL_DISTRO_NAME` and fall back to `clip.exe` / `powershell.exe Get-Clipboard` as appropriate.
 
@@ -1479,11 +1456,11 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 - Implement a dedicated theme selection modal and remove the theme picker from the settings overlay. Add an action `Switch theme` to the command palette that opens the theme modal.
 
-- When an image is displayed fully rendered, and a modal is opened the image is not dimmed along with the rest of the UI.
+- Clicking anywhere in an image, while in hybrid edit mode, should de-render the image and place the cursor at the end of the image link line.
 
 - Refactor tests
 
-- Extra large H1 in halfblocks
+- Add a few more character substitutions to `normalize_for_big_text` so we can show big titles more often
 
 - Make insert table blank line warning a modal instead of hint line flash
 
@@ -1491,35 +1468,11 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 - Add a first-run config setup for images, diagrams, remote images, mouse, etc based on inferred terminal capabilities.
 
-## Make the TUI prettier—more like OpenCode
-We want to revamp the appearance and behavior of modals
-in edamame. Proposed changes:
-- Replace the line border with padding. At present there is a thin line with the
-foreground color `Palette::structural_dim`. Remove the line and replace it with
-padding that is the same color as the modal background. The padding should be max 4
- columns on each horizontal side and exactly 1 row on each vertical side. The
-horizontal padding should shrink to 1 column minimum when space is constrained by
-the terminal size or the width of the content. For modals with a scroll bar, the
-rightmost column of the right padding should contain the scroll bar. Don't add
-another column just for the scroll bar.
-- The row below the top padding should contain the title, aligned to the left
-within the padding, and a close button, aligned to the right within the padding. A
-blank line should follow the title line, then the modal content should follow.
-- The close button should appear as `esc` in `Palette::interactive_muted` to signal
- the modal can be closed with the `Escape` key or by clicking the button. Clicking
-this button or pressing `Escape` should do nothing other than close the modal, i.e.
- make no changes to settings, etc.
-- Introduce typed modals. The idea is that we want different modal behavior for
-different situations. When a modal surfaces an error or something that requires the
- user to make a choice then and there, the modal should not be dismissable without
-the user choosing. In this case the `Escape` key should NOT close the modal and the
- `esc` button should NOT appear. We can also color code the modal title based on
-the modal type, e.g. `Palette::error_bright` for errors, `Palette::warning_bright`
-for warnings, and the standard `Palette::primary_bright` for normal modals. Propose
- what modal types we should add and propose type assignments for existing modals. I
- want to hear any suggestions you have regarding this feature.
-- Dim the editor (behind the modal) when a modal is open. Think about how we can
-implement this. Should we dim the hint/status bars as well or no?
+- Light theme needs to set fg color to white for selected item in modals
+
+- Ship several built-in themes (dark, light, dracula, gruvbox, catppuccin, github dark/light)
+
+- Add a command palette action that generates a `.toml` file for a custom theme based on a default theme, with a new name. Set to current theme by default. Creating the file sets the theme to the new custom theme. Remove the existing behavior that copies a commented-out theme file to the user's config directory.
 
 ---
 
