@@ -279,55 +279,103 @@ impl<'t> Renderer<'t> {
 
     // ── Big H1 ────────────────────────────────────────────────────
     //
-    // Render an H1's inline text as 2 rows of "big text" using
-    // `tui_big_text::BigText` with `PixelSize::Octant` — the smallest
-    // variant in tui-big-text 0.8 — where each glyph occupies 4 cells ×
-    // 2 cells.  The title is centred across the full viewport width via
-    // the BigText widget's `.centered()` alignment.  The H1 rule line
-    // (`─` × viewport_width) is appended after the big text — total
-    // emission is 3 rendered lines (2 glyph + 1 rule).
+    // Render an H1's inline text as one or two rows of "big text"
+    // using `tui_big_text::BigText` with `PixelSize::Octant` (each
+    // glyph 4 cells × 2 cells).  Long titles word-wrap onto a second
+    // big-text line if they don't fit in the viewport at full size;
+    // titles that need a third or more wrapped lines fall back to the
+    // regular one-line styled rendering — past two big-text lines the
+    // H1 starts dominating the viewport like a poster instead of a
+    // heading.
     //
-    // The temporary buffer is pre-filled with `palette.default_bg` so
-    // both the cells the BigText widget paints AND the surrounding
+    // Each wrapped chunk is rendered into its own 2-row buffer with
+    // `.centered()` alignment so each line centres independently in
+    // the viewport.  A subtle `palette.muted` shadow is painted under
+    // each word's bottom glyph row, breaking at inter-word spaces.
+    //
+    // The temporary buffers are pre-filled with `palette.default_bg`
+    // so both the cells the BigText widget paints AND the surrounding
     // empty cells carry the real editor background — `Color::Reset`
-    // would render as terminal-default (typically the wrong shade)
-    // when the editor is themed.
+    // would render as terminal-default (typically the wrong shade).
+    //
+    // Total emission: `2 * chunks.len() + 1` rendered lines (2 glyph
+    // rows per chunk + 1 rule line).
     //
     // Returns `false` and emits nothing when:
     //   * the title contains a non-ASCII character (font8x8 only covers
-    //     ASCII and would render the rest as blank squares), or
-    //   * the rendered glyph width would exceed the viewport.
+    //     ASCII and would render the rest as blank squares),
+    //   * a single word is wider than the viewport (would need
+    //     mid-word breaking that looks worse than the plain fallback),
+    //   * or the title needs 3+ wrapped lines to fit.
     // The caller falls back to the regular one-line styled rendering.
     fn try_render_h1_big(&self, inlines: &[Inline], out: &mut Vec<Line<'static>>) -> bool {
+        const GLYPH_W_PER_CHAR: usize = 4;
+        const GLYPH_H: u16 = 2;
+        const MAX_WRAPPED_LINES: usize = 2;
+
         let plain = inlines_to_plain(inlines);
-        let trimmed = plain.trim();
-        if trimmed.is_empty() || !trimmed.is_ascii() {
+        // Transliterate common Unicode typography to ASCII equivalents
+        // (em/en dash, ellipsis, curly quotes, nbsp).  font8x8's
+        // basic_latin glyph set only covers ASCII; anything else would
+        // render as a blank square.  After substitution, anything still
+        // non-ASCII (accented letters, arrows, emoji, math symbols) is
+        // a hard fall back to the regular one-line render.
+        let normalised = normalise_for_big_text(plain.trim());
+        if normalised.is_empty() || !normalised.is_ascii() {
             return false;
         }
-        let glyph_w = trimmed.len() * 4;
-        let glyph_h: u16 = 2;
         let viewport = self.viewport_width.max(1);
-        if glyph_w == 0 || glyph_w > viewport {
+        let max_chars = viewport / GLYPH_W_PER_CHAR;
+        if max_chars == 0 {
             return false;
         }
+        let chunks = match word_wrap_for_big_text(&normalised, max_chars) {
+            Some(c) if c.len() <= MAX_WRAPPED_LINES => c,
+            _ => return false,
+        };
+
         let bg_style = Style::default().bg(self.theme.palette.default_bg);
         let text_style = self
             .theme
             .h1
             .remove_modifier(Modifier::UNDERLINED)
             .bg(self.theme.palette.default_bg);
-        let area = Rect::new(0, 0, viewport as u16, glyph_h);
-        let mut buf = Buffer::empty(area);
-        buf.set_style(area, bg_style);
-        let big = BigText::builder()
-            .pixel_size(PixelSize::Octant)
-            .style(text_style)
-            .centered()
-            .lines(vec![Line::from(trimmed.to_string())])
-            .build();
-        big.render(area, &mut buf);
-        for y in 0..glyph_h {
-            out.push(buffer_row_to_line(&buf, y));
+        let muted = self.theme.palette.muted;
+        let blank_spacer = Line::styled(" ".repeat(viewport), bg_style);
+
+        for (chunk_idx, chunk) in chunks.iter().enumerate() {
+            // Blank spacer row between wrapped chunks so the two big-
+            // text lines have a clear gap and don't visually merge into
+            // a 4-row block.
+            if chunk_idx > 0 {
+                out.push(blank_spacer.clone());
+            }
+            let chunk_glyph_w = chunk.len() * GLYPH_W_PER_CHAR;
+            let area = Rect::new(0, 0, viewport as u16, GLYPH_H);
+            let mut buf = Buffer::empty(area);
+            buf.set_style(area, bg_style);
+            let big = BigText::builder()
+                .pixel_size(PixelSize::Octant)
+                .style(text_style)
+                .centered()
+                .lines(vec![Line::from(chunk.clone())])
+                .build();
+            big.render(area, &mut buf);
+            // Per-word shadow on the bottom glyph row of THIS chunk.
+            let bottom = GLYPH_H - 1;
+            let glyph_start_x = (viewport.saturating_sub(chunk_glyph_w)) / 2;
+            for (i, ch) in chunk.chars().enumerate() {
+                if ch == ' ' {
+                    continue;
+                }
+                let cell_start = glyph_start_x + i * GLYPH_W_PER_CHAR;
+                for x in cell_start..cell_start + GLYPH_W_PER_CHAR {
+                    buf[(x as u16, bottom)].set_bg(muted);
+                }
+            }
+            for y in 0..GLYPH_H {
+                out.push(buffer_row_to_line(&buf, y));
+            }
         }
         out.push(Line::styled("─".repeat(viewport), self.theme.h1_rule));
         true
@@ -617,6 +665,67 @@ impl<'t> Renderer<'t> {
 /// into a single `Span`.  Used to lift the output of in-memory widget
 /// rendering (e.g. `tui_big_text::BigText`) back into the
 /// `Vec<Line<'static>>` model the rest of the renderer pipeline expects.
+/// Substitute common Unicode typography characters with their ASCII
+/// equivalents so the big-H1 renderer can show them.  font8x8's
+/// `basic_latin` glyph table — the only set tui-big-text consults by
+/// default — covers exactly U+0020..=U+007E; anything outside that
+/// range renders as a blank square.  Substituting `—` → `-`, `…` →
+/// `...`, curly quotes → straight, etc. preserves the visual intent
+/// of the title without changing what text we're rendering at the
+/// document level (the substitution is rendering-only).
+fn normalise_for_big_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\u{2014}' | '\u{2013}' => out.push('-'), // em dash, en dash
+            '\u{2026}' => out.push_str("..."),        // ellipsis
+            '\u{2018}' | '\u{2019}' => out.push('\''), // curly single quotes
+            '\u{201C}' | '\u{201D}' => out.push('"'), // curly double quotes
+            '\u{00A0}' => out.push(' '),              // non-breaking space
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Greedy word-wrap for the big-H1 renderer.  Splits `text` on
+/// whitespace and packs words into lines no wider than `max_chars`.
+/// Returns `None` if any single word exceeds `max_chars` — in that
+/// case the caller falls back to the regular one-line render rather
+/// than emitting a hard-broken word that would look worse than no
+/// big-text at all.
+fn word_wrap_for_big_text(text: &str, max_chars: usize) -> Option<Vec<String>> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if word.chars().count() > max_chars {
+            return None;
+        }
+        let needed = if current.is_empty() {
+            word.chars().count()
+        } else {
+            current.chars().count() + 1 + word.chars().count()
+        };
+        if needed <= max_chars {
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(word);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines)
+    }
+}
+
 fn buffer_row_to_line(buf: &Buffer, y: u16) -> Line<'static> {
     let width = buf.area.width;
     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -709,14 +818,98 @@ mod tests {
     }
 
     #[test]
-    fn big_h1_falls_back_when_too_wide_for_viewport() {
+    fn big_h1_falls_back_for_unbreakable_word_wider_than_viewport() {
         let theme = Box::leak(Box::new(Theme::default()));
-        // 21 chars × 4 = 84 cells — exceeds the 80-col viewport.
+        // 21 chars × 4 = 84 cells — exceeds the 80-col viewport AND is
+        // a single unbreakable word, so word-wrap can't help.
         let r = Renderer::new(theme)
             .with_big_h1(true)
             .with_viewport_width(80);
         let lines = r.render(&parse("# AAAAAAAAAAAAAAAAAAAAA\n"));
         assert_eq!(lines.len(), 2, "expected plain 2-line H1 fallback");
+    }
+
+    #[test]
+    fn big_h1_falls_back_when_more_than_two_wrapped_lines_needed() {
+        let theme = Box::leak(Box::new(Theme::default()));
+        // viewport=40 → max 10 chars per big-text line.  Three 9-char
+        // words need 3 lines to wrap, which exceeds the 2-line cap.
+        let r = Renderer::new(theme)
+            .with_big_h1(true)
+            .with_viewport_width(40);
+        let lines = r.render(&parse("# alphabet beanbags carriers\n"));
+        assert_eq!(
+            lines.len(),
+            2,
+            "expected plain fallback for 3-line wrap, got {}",
+            lines.len()
+        );
+    }
+
+    #[test]
+    fn big_h1_word_wraps_to_two_big_lines_with_blank_spacer() {
+        let theme = Box::leak(Box::new(Theme::default()));
+        // viewport=40 → max 10 chars per line.  "hello world!" wraps
+        // into ["hello", "world!"].  Emission: chunk1 (2 rows) + blank
+        // spacer (1 row) + chunk2 (2 rows) + rule (1 row) = 6 lines.
+        let r = Renderer::new(theme)
+            .with_big_h1(true)
+            .with_viewport_width(40);
+        let lines = r.render(&parse("# hello world!\n"));
+        assert_eq!(
+            lines.len(),
+            6,
+            "expected 2 chunks × 2 glyphs + spacer + rule, got {}",
+            lines.len()
+        );
+        // Rows 0,1 = chunk 1 glyphs; row 2 = spacer; rows 3,4 = chunk 2
+        // glyphs; row 5 = rule.  Spacer row should have NO block glyph
+        // characters; chunk rows should each have at least one.
+        for &i in &[0usize, 1, 3, 4] {
+            let text: String = lines[i].spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                text.chars().any(|c| !c.is_ascii() && c != ' '),
+                "glyph row {i} had no block glyph: {text:?}"
+            );
+        }
+        let spacer: String = lines[2].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            !spacer.chars().any(|c| !c.is_ascii() && c != ' '),
+            "spacer row should be blank, got {spacer:?}"
+        );
+        let rule: String = lines[5].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(rule.contains('─'), "expected rule on last line");
+    }
+
+    #[test]
+    fn big_h1_renders_em_dash_via_ascii_substitution() {
+        let theme = Box::leak(Box::new(Theme::default()));
+        let r = Renderer::new(theme).with_big_h1(true);
+        // Em dash would normally fail the ASCII check; the renderer
+        // substitutes it with a hyphen so the title still renders big.
+        let lines = r.render(&parse("# A — B\n"));
+        // 1 chunk × 2 glyph rows + rule = 3 lines, NOT the 2-line plain
+        // fallback.  (5 chars × 4 cells = 20, fits in 80.)
+        assert_eq!(
+            lines.len(),
+            3,
+            "em dash should transliterate; got plain fallback ({} lines)",
+            lines.len()
+        );
+    }
+
+    #[test]
+    fn normalise_substitutes_common_typography() {
+        assert_eq!(normalise_for_big_text("hello — world"), "hello - world");
+        assert_eq!(normalise_for_big_text("a–b"), "a-b");
+        assert_eq!(normalise_for_big_text("yes…"), "yes...");
+        assert_eq!(normalise_for_big_text("‘x’"), "'x'");
+        assert_eq!(normalise_for_big_text("“x”"), "\"x\"");
+        assert_eq!(normalise_for_big_text("a\u{00A0}b"), "a b");
+        // Anything not in the substitution table stays put — accented
+        // letters fall through to the ASCII check at the call site,
+        // which then triggers the plain-render fallback.
+        assert_eq!(normalise_for_big_text("café"), "café");
     }
 
     #[test]

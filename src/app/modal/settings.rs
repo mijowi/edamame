@@ -80,6 +80,12 @@ impl Modal for SettingsOverlayModal {
                 app.save_config_with_flash("failed to persist settings overlay change");
                 if label == "Theme" {
                     app.apply_active_theme();
+                } else if label == "Big H1 headings" {
+                    // Mirror the App-startup wiring: live-toggle the
+                    // editor's big_h1 flag so the change takes effect
+                    // on the next frame instead of waiting for a file
+                    // reload.
+                    app.editor.set_big_h1(app.config.editor.big_h1);
                 }
                 ModalOutcome::Continue
             }
