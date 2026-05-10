@@ -304,7 +304,7 @@ pub struct Palette {
 
 impl Default for Palette {
     fn default() -> Self {
-        Self::default_dark()
+        super::themes::default_dark::palette()
     }
 }
 
@@ -316,9 +316,12 @@ pub type PaletteCtor = fn() -> Palette;
 /// here are reserved: a user file `themes/<name>.toml` with one of
 /// these names is ignored at load time so the built-in always wins.
 /// Order is the user-facing cycle order in the settings overlay.
+///
+/// Each constructor lives in its own file under `src/config/themes/`
+/// so adding a theme is a single new file plus an entry here.
 pub const BUILTIN_THEMES: &[(&str, PaletteCtor)] = &[
-    ("default", Palette::default_dark),
-    ("light", Palette::default_light),
+    ("default", super::themes::default_dark::palette),
+    ("light", super::themes::default_light::palette),
 ];
 
 impl Palette {
@@ -331,148 +334,8 @@ impl Palette {
             .find(|(n, _)| *n == name)
             .map(|(_, ctor)| ctor())
     }
-
-    /// Edamame's default palette: warm orange brand on a near-black
-    /// background, with a fresh edamame-bean green for success and a
-    /// complementary lavender for chrome.  Bright/dim pairs are tuned
-    /// for ~30% lightness contrast so both variants read on a dark
-    /// surface.
-    pub fn default_dark() -> Self {
-        Self {
-            default_text: Color::Indexed(253),
-            default_bg: Color::Indexed(233),
-
-            // Orange — brand identity, headings, mode chip.
-            primary_bright: Color::Indexed(208),
-            primary_dim: Color::Indexed(172),
-
-            // Blue — emphasis
-            emphasis_bright: Color::Indexed(117),
-            emphasis_dim: Color::Indexed(45),
-
-            // Gold — structural chrome (frames, dividers, asides).
-            structural_bright: Color::Indexed(136),
-            structural_dim: Color::Indexed(94),
-
-            // Blue — links, focus.
-            interactive_bright: Color::Indexed(39),
-            interactive_dim: Color::Indexed(25),
-            // Selection bg coincides with interactive_dim on the dark
-            // theme: dark blue carries both light text (inverse-text
-            // sites) and the near-white default_text well.
-            selection_bg: Color::Indexed(25),
-
-            // Green — success, completed tasks, edamame.
-            success_bright: Color::Indexed(76),
-            success_dim: Color::Indexed(28),
-
-            // Yellow — warnings.
-            warning_bright: Color::Indexed(220),
-            warning_dim: Color::Indexed(178),
-
-            // Red — errors.
-            error_bright: Color::Indexed(196),
-            error_dim: Color::Indexed(124),
-
-            // Greys — UI chrome and muted items
-            text_muted: Color::Indexed(245), // Muted text, e.g. strikethrough
-            muted: Color::Indexed(235),      // Muted background, e.g. table row stripes
-            surface_elevated: Color::Indexed(237), // Elevated surface, e.g. dialogs
-            surface: Color::Indexed(236),    // Surface, e.g. panels, dialogs
-
-            // Headings — bright color 1/2/3, dim color 1/2/3
-            h1: Color::Indexed(220),
-            h2: Color::Indexed(208),
-            h3: Color::Indexed(135),
-            h4: Color::Indexed(136),
-            h5: Color::Indexed(172),
-            h6: Color::Indexed(140),
-
-            // Inline code and code block language line
-            code_bright: Color::Indexed(140),
-            code_dim: Color::Indexed(60),
-        }
-    }
-
-    /// Companion light palette to [`Palette::default_dark`].  Same
-    /// colour families (warm orange brand, edamame-green success,
-    /// gold chrome) re-tuned for a near-white page: brights are darker
-    /// and more saturated so they pop against the light surface, dims
-    /// are lighter so they recede.  Inverse-text uses (`fg =
-    /// default_bg`) on any saturated brand colour rely on those colours
-    /// being dark enough to contrast with near-white — yellows are
-    /// shifted to amber/orange-gold for that reason.
-    pub fn default_light() -> Self {
-        Self {
-            default_text: Color::Indexed(234),
-            default_bg: Color::Indexed(254),
-
-            // Orange — brand identity.
-            primary_bright: Color::Indexed(166),
-            primary_dim: Color::Indexed(173),
-
-            // Cyan — emphasis.
-            emphasis_bright: Color::Indexed(31),
-            emphasis_dim: Color::Indexed(38),
-
-            // Gold — structural chrome.
-            structural_bright: Color::Indexed(136),
-            structural_dim: Color::Indexed(94),
-
-            // Blue — links, focus.  `interactive_dim` is pulled
-            // darker than its dark-theme counterpart because
-            // `from_palette` uses it as the bg for inverse-text sites
-            // (`modal_input_unfocused`, `modal_item_selected`) that
-            // paint `fg = default_bg`.  On a light page that fg is
-            // near-white, so the bg has to be saturated/dark enough
-            // for the text to read.
-            interactive_bright: Color::Indexed(27),
-            interactive_dim: Color::Indexed(18),
-            // Selection bg is split from `interactive_dim` on the
-            // light theme: a pale tint lets the near-black
-            // `default_text` read through the highlight, the way
-            // selection traditionally looks on a light page.
-            selection_bg: Color::Indexed(153),
-
-            // Green — success.
-            success_bright: Color::Indexed(28),
-            success_dim: Color::Indexed(70),
-
-            // Amber — warnings.  Shifted darker than the dark palette's
-            // yellow so inverse-text sites (highlight, raw-mode chip,
-            // task_unchecked text colour) stay legible against a
-            // near-white page.
-            warning_bright: Color::Indexed(172),
-            warning_dim: Color::Indexed(130),
-
-            // Red — errors.
-            error_bright: Color::Indexed(124),
-            error_dim: Color::Indexed(167),
-
-            // Greys — chrome.  Surfaces step *darker* than the page
-            // because lifting a card off a light background reads as
-            // "more grey", mirroring the dark palette's "lift = lighter".
-            text_muted: Color::Indexed(244),
-            muted: Color::Indexed(252),
-            surface: Color::Indexed(251),
-            surface_elevated: Color::Indexed(250),
-
-            // Headings — same yellow → orange → purple → gold ramp as
-            // the dark palette, with each shade pushed darker so it
-            // reads on a light page.
-            h1: Color::Indexed(178),
-            h2: Color::Indexed(166),
-            h3: Color::Indexed(91),
-            h4: Color::Indexed(130),
-            h5: Color::Indexed(172),
-            h6: Color::Indexed(97),
-
-            // Inline code — purple foreground on the muted light grey.
-            code_bright: Color::Indexed(91),
-            code_dim: Color::Indexed(97),
-        }
-    }
 }
+
 
 impl Theme {
     /// Build a fully-populated [`Theme`] from `palette`.  Every style
@@ -969,9 +832,10 @@ mod tests {
         // Sanity check that the light built-in is actually distinct
         // from the dark default — otherwise we shipped two themes
         // with the same colour table.
+        use super::super::themes::{default_dark, default_light};
         assert_ne!(
-            Palette::default_dark().default_bg,
-            Palette::default_light().default_bg
+            default_dark::palette().default_bg,
+            default_light::palette().default_bg
         );
     }
 
