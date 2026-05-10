@@ -33,7 +33,6 @@
 //! (`236`) — the latter is friendlier in TOML.
 
 mod color;
-mod defaults;
 mod palette;
 mod style_spec;
 
@@ -44,7 +43,6 @@ mod style_spec;
 // preserving the public path.
 #[allow(unused_imports)]
 pub use color::ColorField;
-pub use defaults::default_theme_toml;
 pub use palette::PaletteFile;
 pub use style_spec::StyleSpec;
 
@@ -621,156 +619,5 @@ bold = true
         // `table_cell` and `active_line` are intentionally
         // `Style::default()` in the compiled default and round-trip
         // identically through both branches of the merge.
-    }
-
-    #[test]
-    fn default_theme_toml_palette_lines_are_commented() {
-        // Every palette field must appear as a `# field = …` line so the
-        // generated file documents the compiled-in default without
-        // overriding it at load time.
-        let toml_str = default_theme_toml();
-        for field in [
-            "default_text",
-            "default_bg",
-            "primary_bright",
-            "primary_dim",
-            "emphasis_bright",
-            "emphasis_dim",
-            "structural_bright",
-            "structural_dim",
-            "interactive_bright",
-            "interactive_dim",
-            "success_bright",
-            "success_dim",
-            "warning_bright",
-            "warning_dim",
-            "error_bright",
-            "error_dim",
-            "text_muted",
-            "muted",
-            "surface_elevated",
-            "surface",
-        ] {
-            let commented = format!("# {field} = ");
-            assert!(
-                toml_str.contains(&commented),
-                "expected commented line `{commented}…` in generated default.toml; \
-                 not found in:\n{toml_str}"
-            );
-            // And the same field must not appear uncommented (i.e. not
-            // immediately preceded by a `#`), which would make it an
-            // active override.
-            for line in toml_str.lines() {
-                let trimmed = line.trim_start();
-                if trimmed.starts_with(&format!("{field} =")) {
-                    panic!("palette field `{field}` is not commented out: `{line}`");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn default_theme_toml_resolves_to_default_theme() {
-        // The whole point of commenting out the palette: parsing the
-        // generated file must produce exactly `Theme::default()`.  If
-        // someone accidentally leaves a palette line uncommented (or
-        // changes a default without retracing the merge), this fails.
-        let toml_str = default_theme_toml();
-        let parsed: ThemeFile = toml::from_str(&toml_str).expect("parse generated default.toml");
-        let theme: Theme = (&parsed).into();
-        let expected = Theme::default();
-
-        macro_rules! check {
-            ($field:ident) => {
-                assert_eq!(
-                    expected.$field, theme.$field,
-                    concat!(
-                        "field `",
-                        stringify!($field),
-                        "` drifted from Theme::default()"
-                    )
-                );
-            };
-        }
-        check!(h1);
-        check!(h1_rule);
-        check!(h2);
-        check!(h3);
-        check!(h4);
-        check!(h5);
-        check!(h6);
-        check!(bold);
-        check!(italic);
-        check!(strikethrough);
-        check!(highlight);
-        check!(code_span);
-        check!(code_span_dim);
-        check!(link_text);
-        check!(link_file);
-        check!(link_heading);
-        check!(image_placeholder);
-        check!(footnote);
-        check!(code_block_border);
-        check!(code_block_lang);
-        check!(code_block_text);
-        check!(blockquote_bar);
-        check!(blockquote_text);
-        check!(rule);
-        check!(list_bullet);
-        check!(list_number);
-        check!(task_unchecked);
-        check!(task_checked);
-        check!(task_complete_text);
-        check!(table_border);
-        check!(table_header);
-        check!(table_header_border);
-        check!(table_cell);
-        check!(table_row_even);
-        check!(table_row_odd);
-        check!(table_drop_indicator);
-        check!(table_drop_target);
-        check!(table_handle);
-        check!(table_handle_delete);
-        check!(status_bar);
-        check!(status_mode_preview);
-        check!(status_mode_rendered);
-        check!(status_mode_raw);
-        check!(status_filename);
-        check!(status_info);
-        check!(status_modified);
-        check!(status_selection);
-        check!(hint_bar);
-        check!(hint_chord);
-        check!(hint_label);
-        check!(transient_info);
-        check!(transient_success);
-        check!(transient_warning);
-        check!(transient_error);
-        check!(modal_bg);
-        check!(modal_title_normal);
-        check!(modal_title_warning);
-        check!(modal_title_error);
-        check!(modal_close_hint);
-        check!(modal_item);
-        check!(modal_item_hint);
-        check!(modal_item_selected);
-        check!(modal_item_selected_hint);
-        check!(modal_description);
-        check!(modal_section_heading);
-        check!(modal_input_unfocused);
-        check!(modal_input_focused);
-        check!(modal_button_focused);
-        check!(normal);
-        check!(selection);
-        check!(search_highlight);
-        check!(active_line);
-        check!(cursor_preview);
-        check!(cursor_rendered);
-        check!(cursor_raw);
-        check!(cursor);
-        check!(scrollbar_track);
-        check!(scrollbar_thumb);
-        check!(scrollbar_thumb_active);
-        assert_eq!(expected.task_strikethrough, theme.task_strikethrough);
     }
 }

@@ -151,12 +151,19 @@ config/
                            #   Written to ~/.config/edamame/keybindings.toml.
 ```
 
-`themes/default.toml` is **not** checked in: it is generated at first run
-by `theme_file::default_theme_toml()` from `Theme::default()` /
-`Palette::default()`, with every palette value commented out so the live
-default tracks the code automatically.  Edit `Palette::default()` /
-`Theme::from_palette()` in `src/config/theme.rs` and the next first-run
-write picks up the new defaults.
+Built-in themes are compiled into the binary via the
+`BUILTIN_THEMES` registry in `src/config/theme.rs` (currently
+`default` and `light`).  `ensure_default_files` does NOT write
+`themes/<builtin>.toml` — the `themes/` directory is created empty
+and `read_theme_named` short-circuits to `Palette::builtin(name)`
+before any disk read, so a user file with a built-in name is
+ignored entirely.  To add a new built-in: write a
+`Palette::default_<name>()` constructor and add an entry to
+`BUILTIN_THEMES`; both the load path and the settings-overlay
+cycle list (`ui::settings_overlay::rows::list_theme_names`) pick
+it up automatically.  Custom user themes go in
+`~/.config/edamame/themes/<name>.toml` under any name not in the
+built-in registry.
 
 **Architectural layers** (higher depends only on lower):
 1. `main` / `App` — event loop, terminal lifecycle
