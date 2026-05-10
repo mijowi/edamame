@@ -35,6 +35,8 @@ pub struct PaletteFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interactive_dim: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection_bg: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub success_bright: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub success_dim: Option<ColorField>,
@@ -92,6 +94,7 @@ impl PaletteFile {
             structural_dim: pick(self.structural_dim, d.structural_dim),
             interactive_bright: pick(self.interactive_bright, d.interactive_bright),
             interactive_dim: pick(self.interactive_dim, d.interactive_dim),
+            selection_bg: pick(self.selection_bg, d.selection_bg),
             success_bright: pick(self.success_bright, d.success_bright),
             success_dim: pick(self.success_dim, d.success_dim),
             warning_bright: pick(self.warning_bright, d.warning_bright),
@@ -127,6 +130,7 @@ impl From<&Palette> for PaletteFile {
             structural_dim: Some(p.structural_dim.into()),
             interactive_bright: Some(p.interactive_bright.into()),
             interactive_dim: Some(p.interactive_dim.into()),
+            selection_bg: Some(p.selection_bg.into()),
             success_bright: Some(p.success_bright.into()),
             success_dim: Some(p.success_dim.into()),
             warning_bright: Some(p.warning_bright.into()),

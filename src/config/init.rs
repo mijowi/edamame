@@ -3,12 +3,16 @@
 
 use std::path::Path;
 
-use super::theme_file::default_theme_toml;
-
 /// Testable core of [`super::config::Config::ensure_default_files`]:
 /// given the config directory (which may be a tempdir in tests), create
-/// it plus the `themes/` subdirectory and write the three shipped
-/// default files if absent.  Never overwrites existing files.
+/// it plus the `themes/` subdirectory and write the shipped default
+/// files if absent.  Never overwrites existing files.
+///
+/// Built-in themes (see [`super::theme::BUILTIN_THEMES`]) are compiled
+/// into the binary and resolved before any disk read, so this function
+/// does NOT write `themes/<builtin>.toml` files.  The `themes/`
+/// directory is still created so an empty folder exists for users (or
+/// future export actions) to drop custom theme files into.
 pub(super) fn ensure_default_files_in(dir: &Path) {
     if let Err(e) = std::fs::create_dir_all(dir) {
         tracing::warn!(error = %e, dir = %dir.display(), "failed to create config dir");
@@ -28,10 +32,6 @@ pub(super) fn ensure_default_files_in(dir: &Path) {
         &dir.join("keybindings.toml"),
         include_str!("../../config/keybindings.toml"),
     );
-    // `default.toml` is generated from `Theme::default()` /
-    // `Palette::default()` rather than shipped as a checked-in file, so
-    // the on-disk default can never drift from the compiled-in one.
-    write_if_absent(&themes_dir.join("default.toml"), &default_theme_toml());
 }
 
 fn write_if_absent(path: &Path, contents: &str) {

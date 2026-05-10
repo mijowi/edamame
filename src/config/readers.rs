@@ -10,7 +10,7 @@ use std::str::FromStr;
 
 use super::config::Config;
 use super::keymap::{parse_key, Action, KeyBindingOverrides};
-use super::theme::Theme;
+use super::theme::{Palette, Theme};
 use super::theme_file::ThemeFile;
 use super::warnings::{ConfigWarning, WarningKind};
 
@@ -133,24 +133,24 @@ pub(super) fn read_theme_named(
     name: &str,
     warnings: &mut Vec<ConfigWarning>,
 ) -> ThemeFile {
+    // Built-in themes always win on name collision: a user file
+    // `themes/default.toml` is ignored if `default` is a built-in.
+    // Custom user themes go through the disk path below.
+    if let Some(palette) = Palette::builtin(name) {
+        return (&Theme::from_palette(&palette)).into();
+    }
+
     let path = config_dir.join("themes").join(format!("{name}.toml"));
     // ThemeFile fallback differs from `ThemeFile::default()`: a blank
     // file is a valid opt-out of styling, but a *missing* file means
     // we should render with the compiled palette.
     let theme_default = || (&Theme::default()).into();
     let on_missing = || {
-        // A missing `default` is normal on first run (before
-        // `ensure_default_files` has had a chance to write the shipped
-        // theme).  A missing *named* theme (user asked for
-        // `theme = "custom"` but didn't ship the file) is worth noting,
-        // though still non-fatal.
-        if name != "default" {
-            tracing::warn!(
-                theme = name,
-                path = %path.display(),
-                "theme file not found; falling back to compiled defaults"
-            );
-        }
+        tracing::warn!(
+            theme = name,
+            path = %path.display(),
+            "theme file not found; falling back to compiled defaults"
+        );
         theme_default()
     };
     read_and_warn(&path, warnings, on_missing, theme_default)

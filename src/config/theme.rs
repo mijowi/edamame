@@ -270,6 +270,16 @@ pub struct Palette {
     pub structural_dim: Color,
     pub interactive_bright: Color,
     pub interactive_dim: Color,
+    /// Background fill for an active text selection.  Split from
+    /// [`Self::interactive_dim`] because the two have conflicting
+    /// contrast requirements: `interactive_dim` is the bg for
+    /// inverse-text sites (`modal_input_unfocused`,
+    /// `modal_item_selected`) where the fg is `default_bg`, and so
+    /// must be saturated/dark on a light page; `selection_bg` is
+    /// painted under regular text (`fg = default_text`), so it must
+    /// be light enough for dark text to read.  On the dark default
+    /// the two coincide.
+    pub selection_bg: Color,
     pub success_bright: Color,
     pub success_dim: Color,
     pub warning_bright: Color,
@@ -294,11 +304,40 @@ pub struct Palette {
 
 impl Default for Palette {
     fn default() -> Self {
-        // Edamame's default palette: warm orange brand on a near-black
-        // background, with a fresh edamame-bean green for success and
-        // a complementary lavender for chrome.  Bright/dim pairs are
-        // tuned for ~30% lightness contrast so both variants read on a
-        // dark surface.
+        Self::default_dark()
+    }
+}
+
+/// Constructor for a built-in palette.  Each entry in
+/// [`BUILTIN_THEMES`] pairs a reserved theme name with one of these.
+pub type PaletteCtor = fn() -> Palette;
+
+/// Registry of built-in palettes shipped in the binary.  Names listed
+/// here are reserved: a user file `themes/<name>.toml` with one of
+/// these names is ignored at load time so the built-in always wins.
+/// Order is the user-facing cycle order in the settings overlay.
+pub const BUILTIN_THEMES: &[(&str, PaletteCtor)] = &[
+    ("default", Palette::default_dark),
+    ("light", Palette::default_light),
+];
+
+impl Palette {
+    /// Look up a built-in palette by name.  Returns `None` for names not
+    /// in [`BUILTIN_THEMES`], in which case the caller falls back to
+    /// reading `themes/<name>.toml` from the user's config directory.
+    pub fn builtin(name: &str) -> Option<Palette> {
+        BUILTIN_THEMES
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, ctor)| ctor())
+    }
+
+    /// Edamame's default palette: warm orange brand on a near-black
+    /// background, with a fresh edamame-bean green for success and a
+    /// complementary lavender for chrome.  Bright/dim pairs are tuned
+    /// for ~30% lightness contrast so both variants read on a dark
+    /// surface.
+    pub fn default_dark() -> Self {
         Self {
             default_text: Color::Indexed(253),
             default_bg: Color::Indexed(233),
@@ -315,9 +354,13 @@ impl Default for Palette {
             structural_bright: Color::Indexed(136),
             structural_dim: Color::Indexed(94),
 
-            // Blue — links, focus, selection.
+            // Blue — links, focus.
             interactive_bright: Color::Indexed(39),
             interactive_dim: Color::Indexed(25),
+            // Selection bg coincides with interactive_dim on the dark
+            // theme: dark blue carries both light text (inverse-text
+            // sites) and the near-white default_text well.
+            selection_bg: Color::Indexed(25),
 
             // Green — success, completed tasks, edamame.
             success_bright: Color::Indexed(76),
@@ -350,143 +393,86 @@ impl Default for Palette {
             code_dim: Color::Indexed(60),
         }
     }
-}
 
-/// One semantic group of [`Palette`] fields that share a UI purpose.
-///
-/// Used by [`super::theme_file::default_theme_toml`] to generate the
-/// "Palette roles" section of `themes/default.toml` from a single source
-/// of truth, so adding or renaming a palette field can't silently desync
-/// the docs.  Tests assert that every field on [`Palette`] appears in
-/// exactly one role.
-pub struct PaletteRole {
-    /// Heading shown in the generated docs (e.g. `"primary"`).  Field
-    /// names are listed separately on the next line(s).
-    pub name: &'static str,
-    /// Field names in [`Palette`] that belong to this role, in the
-    /// order they should be listed in the docs.
-    pub fields: &'static [&'static str],
-    /// Prose body explaining what UI elements draw on this role and
-    /// what kind of colour to pick.  Already line-wrapped to ~64 cols
-    /// so the renderer can prefix `#       ` without exceeding 80.
-    pub body: &'static str,
-}
+    /// Companion light palette to [`Palette::default_dark`].  Same
+    /// colour families (warm orange brand, edamame-green success,
+    /// gold chrome) re-tuned for a near-white page: brights are darker
+    /// and more saturated so they pop against the light surface, dims
+    /// are lighter so they recede.  Inverse-text uses (`fg =
+    /// default_bg`) on any saturated brand colour rely on those colours
+    /// being dark enough to contrast with near-white — yellows are
+    /// shifted to amber/orange-gold for that reason.
+    pub fn default_light() -> Self {
+        Self {
+            default_text: Color::Indexed(234),
+            default_bg: Color::Indexed(254),
 
-/// Conceptual palette roles, in the order they should appear in the
-/// generated default theme file.  Every field on [`Palette`] must appear
-/// in exactly one role; the `palette_roles_cover_every_field` test
-/// enforces that.
-pub const PALETTE_ROLES: &[PaletteRole] = &[
-    PaletteRole {
-        name: "default_text / default_bg",
-        fields: &["default_text", "default_bg"],
-        body: "\
-The \"blank page\" colours of the document area.  default_bg is also
-used as a *fg* colour for inverse text (e.g. the rendered/raw mode
-chip in the status bar, or text on a search-highlight band) — pick
-a value that contrasts with the bright palette colours.",
-    },
-    PaletteRole {
-        name: "primary",
-        fields: &["primary_bright", "primary_dim"],
-        body: "\
-Brand colour.  Drives the rendered-mode chip background, the status
-bar's cursor-info segment, and the modal title bar.  Default is warm
-orange.",
-    },
-    PaletteRole {
-        name: "emphasis",
-        fields: &["emphasis_bright", "emphasis_dim"],
-        body: "\
-Highlights against a chrome surface — table headers, ordered-list
-numbers, modal description text, focused-row hint chips.  Default is
-light blue.",
-    },
-    PaletteRole {
-        name: "structural",
-        fields: &["structural_bright", "structural_dim"],
-        body: "\
-Frames and dividers — modal section headings, modal borders, the
-horizontal-rule glyph, blockquote bars, footnote markers.  Default
-is gold.",
-    },
-    PaletteRole {
-        name: "interactive",
-        fields: &["interactive_bright", "interactive_dim"],
-        body: "\
-Links, focus, selection background, modal text-input background,
-table drop-target indicator.  Default is blue.",
-    },
-    PaletteRole {
-        name: "success",
-        fields: &["success_bright", "success_dim"],
-        body: "\
-Completed-task markers and success-flavoured transient messages.
-Default is edamame-bean green.",
-    },
-    PaletteRole {
-        name: "warning",
-        fields: &["warning_bright", "warning_dim"],
-        body: "\
-Unchecked-task markers, modified-buffer indicator in the status bar,
-raw-mode chip background, warning transient messages, the highlight
-span background.  Default is yellow.",
-    },
-    PaletteRole {
-        name: "error",
-        fields: &["error_bright", "error_dim"],
-        body: "\
-Errors and destructive affordances — error transient messages, the
-table row/column delete glyph.  Default is red.",
-    },
-    PaletteRole {
-        name: "text_muted",
-        fields: &["text_muted"],
-        body: "\
-Faded foreground.  Strikethrough text, completed-task body text, and
-the preview-mode chip background.  Default is light grey.",
-    },
-    PaletteRole {
-        name: "muted",
-        fields: &["muted"],
-        body: "\
-Subtle background fill on top of the document surface — inline code
-spans, fenced code-block bodies, alternating table rows.  Default is
-dark grey, slightly lighter than default_bg.",
-    },
-    PaletteRole {
-        name: "surface_elevated",
-        fields: &["surface_elevated"],
-        body: "\
-Overlay chrome that sits above the document — hint line, modal body
-fill, transient-message strip, default modal item rows.  Default is
-a touch lighter than `surface` so a modal reads as raised.",
-    },
-    PaletteRole {
-        name: "surface",
-        fields: &["surface"],
-        body: "\
-Document-level chrome — status bar fill, fenced code-block frame and
-language label, dim-code-span background.  Default is between `muted`
-and `surface_elevated`.",
-    },
-    PaletteRole {
-        name: "headings",
-        fields: &["h1", "h2", "h3", "h4", "h5", "h6"],
-        body: "\
-Per-level heading foregrounds.  Independent of the bright/dim split
-because heading hierarchy benefits from its own ramp; the defaults
-walk yellow → orange → purple → gold → orange-dim → purple-dim.",
-    },
-    PaletteRole {
-        name: "code",
-        fields: &["code_bright", "code_dim"],
-        body: "\
-Foreground for inline code spans, the fenced code-block language
-label, and dimmed code (e.g. inline code inside strikethrough).
-Default is purple on the muted/surface backgrounds.",
-    },
-];
+            // Orange — brand identity.
+            primary_bright: Color::Indexed(166),
+            primary_dim: Color::Indexed(173),
+
+            // Cyan — emphasis.
+            emphasis_bright: Color::Indexed(31),
+            emphasis_dim: Color::Indexed(38),
+
+            // Gold — structural chrome.
+            structural_bright: Color::Indexed(136),
+            structural_dim: Color::Indexed(94),
+
+            // Blue — links, focus.  `interactive_dim` is pulled
+            // darker than its dark-theme counterpart because
+            // `from_palette` uses it as the bg for inverse-text sites
+            // (`modal_input_unfocused`, `modal_item_selected`) that
+            // paint `fg = default_bg`.  On a light page that fg is
+            // near-white, so the bg has to be saturated/dark enough
+            // for the text to read.
+            interactive_bright: Color::Indexed(27),
+            interactive_dim: Color::Indexed(18),
+            // Selection bg is split from `interactive_dim` on the
+            // light theme: a pale tint lets the near-black
+            // `default_text` read through the highlight, the way
+            // selection traditionally looks on a light page.
+            selection_bg: Color::Indexed(153),
+
+            // Green — success.
+            success_bright: Color::Indexed(28),
+            success_dim: Color::Indexed(70),
+
+            // Amber — warnings.  Shifted darker than the dark palette's
+            // yellow so inverse-text sites (highlight, raw-mode chip,
+            // task_unchecked text colour) stay legible against a
+            // near-white page.
+            warning_bright: Color::Indexed(172),
+            warning_dim: Color::Indexed(130),
+
+            // Red — errors.
+            error_bright: Color::Indexed(124),
+            error_dim: Color::Indexed(167),
+
+            // Greys — chrome.  Surfaces step *darker* than the page
+            // because lifting a card off a light background reads as
+            // "more grey", mirroring the dark palette's "lift = lighter".
+            text_muted: Color::Indexed(244),
+            muted: Color::Indexed(252),
+            surface: Color::Indexed(251),
+            surface_elevated: Color::Indexed(250),
+
+            // Headings — same yellow → orange → purple → gold ramp as
+            // the dark palette, with each shade pushed darker so it
+            // reads on a light page.
+            h1: Color::Indexed(178),
+            h2: Color::Indexed(166),
+            h3: Color::Indexed(91),
+            h4: Color::Indexed(130),
+            h5: Color::Indexed(172),
+            h6: Color::Indexed(97),
+
+            // Inline code — purple foreground on the muted light grey.
+            code_bright: Color::Indexed(91),
+            code_dim: Color::Indexed(97),
+        }
+    }
+}
 
 impl Theme {
     /// Build a fully-populated [`Theme`] from `palette`.  Every style
@@ -683,9 +669,11 @@ impl Theme {
             // TOML.
             normal: Style::default().fg(p.default_text).bg(p.default_bg),
 
-            // Selection: interactive_dim bg, text colour preserved so
-            // colour-coded content stays legible inside the selection.
-            selection: Style::default().bg(p.interactive_dim).fg(p.default_text),
+            // Selection: dedicated `selection_bg` so the highlight can
+            // be tuned independently of `interactive_dim`.  Text colour
+            // preserved so colour-coded content stays legible inside
+            // the selection.
+            selection: Style::default().bg(p.selection_bg).fg(p.default_text),
 
             // Search highlight: structural_bright bg, default_bg fg —
             // distinct from selection so a search hit inside the
@@ -899,12 +887,10 @@ impl Default for Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
 
     /// Every field on [`Palette`] in the order it appears in the struct
-    /// definition.  Used by the role-coverage test below.  When you add
-    /// a field to `Palette`, add it here AND add it to a `PaletteRole`
-    /// in `PALETTE_ROLES`.
+    /// definition.  When you add a field to `Palette`, add it here so
+    /// `palette_fields_list_matches_struct` keeps the count honest.
     const PALETTE_FIELDS: &[&str] = &[
         "default_text",
         "default_bg",
@@ -916,6 +902,7 @@ mod tests {
         "structural_dim",
         "interactive_bright",
         "interactive_dim",
+        "selection_bg",
         "success_bright",
         "success_dim",
         "warning_bright",
@@ -940,8 +927,8 @@ mod tests {
     fn palette_fields_list_matches_struct() {
         // Construct a Palette from defaults and read each field.  If a
         // field is renamed or removed, this won't compile.  If a field
-        // is *added* to Palette without updating PALETTE_FIELDS, the
-        // role-coverage test below will fail.
+        // is added without updating PALETTE_FIELDS, the length
+        // assertion at the bottom fails.
         let p = Palette::default();
         let _all = [
             p.default_text,
@@ -954,6 +941,7 @@ mod tests {
             p.structural_dim,
             p.interactive_bright,
             p.interactive_dim,
+            p.selection_bg,
             p.success_bright,
             p.success_dim,
             p.warning_bright,
@@ -977,37 +965,20 @@ mod tests {
     }
 
     #[test]
-    fn palette_roles_cover_every_field() {
-        let mut role_fields: Vec<&str> = Vec::new();
-        for role in PALETTE_ROLES {
-            for f in role.fields {
-                role_fields.push(*f);
-            }
-        }
+    fn light_palette_has_distinct_default_bg() {
+        // Sanity check that the light built-in is actually distinct
+        // from the dark default — otherwise we shipped two themes
+        // with the same colour table.
+        assert_ne!(
+            Palette::default_dark().default_bg,
+            Palette::default_light().default_bg
+        );
+    }
 
-        // No duplicates: a field in two roles would render twice.
-        let mut seen = HashSet::new();
-        for f in &role_fields {
-            assert!(
-                seen.insert(*f),
-                "palette field `{f}` listed in multiple PALETTE_ROLES entries"
-            );
-        }
-
-        // Every Palette field appears in some role.
-        for f in PALETTE_FIELDS {
-            assert!(
-                role_fields.contains(f),
-                "palette field `{f}` is not covered by any PALETTE_ROLES entry"
-            );
-        }
-
-        // Every role.field is a real Palette field.
-        for f in &role_fields {
-            assert!(
-                PALETTE_FIELDS.contains(f),
-                "PALETTE_ROLES references unknown Palette field `{f}`"
-            );
-        }
+    #[test]
+    fn builtin_lookup_resolves_registered_names() {
+        assert!(Palette::builtin("default").is_some());
+        assert!(Palette::builtin("light").is_some());
+        assert!(Palette::builtin("nonexistent").is_none());
     }
 }

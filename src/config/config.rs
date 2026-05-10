@@ -276,10 +276,10 @@ mod tests {
 
     #[test]
     fn read_theme_missing_default_falls_back_to_compiled_theme() {
-        // The `default` theme is allowed to be missing (first run, before
-        // ensure_default_files has written it).  The fallback must be the
-        // compiled `Theme::default()` — NOT an empty ThemeFile — otherwise
-        // the app would render unstyled output on the very first launch.
+        // The `default` theme is a built-in (see `BUILTIN_THEMES`) and
+        // is resolved from compiled-in code without any disk read at
+        // all — the user's themes directory may legitimately be empty.
+        // The result must equal the compiled `Theme::default()`.
         let dir = tempfile::tempdir().unwrap();
         let mut warnings = Vec::new();
         let theme = read_theme_named(dir.path(), "default", &mut warnings);
@@ -307,13 +307,51 @@ mod tests {
     #[test]
     fn read_theme_empty_file_stays_empty() {
         // Distinct from the missing-file case: if the user deliberately
-        // empties `default.toml`, they get an empty theme — their choice.
+        // empties their custom theme file, they get an empty theme —
+        // their choice.  Uses a non-built-in name so the disk file is
+        // actually consulted (built-ins always win on name collision
+        // and would otherwise short-circuit before the file read).
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("themes")).unwrap();
-        std::fs::write(dir.path().join("themes").join("default.toml"), "").unwrap();
+        std::fs::write(dir.path().join("themes").join("custom.toml"), "").unwrap();
+        let mut warnings = Vec::new();
+        let theme = read_theme_named(dir.path(), "custom", &mut warnings);
+        assert_eq!(theme.h1, super::super::theme_file::StyleSpec::default());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn read_theme_builtin_wins_over_user_file() {
+        // A user file at `themes/<builtin>.toml` must NOT override the
+        // compiled-in built-in: the file is ignored entirely, even if
+        // it contains valid overrides.  The user's escape hatch is to
+        // pick a different name.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("themes")).unwrap();
+        std::fs::write(
+            dir.path().join("themes").join("default.toml"),
+            "[h1]\nfg = \"red\"\n",
+        )
+        .unwrap();
         let mut warnings = Vec::new();
         let theme = read_theme_named(dir.path(), "default", &mut warnings);
-        assert_eq!(theme.h1, super::super::theme_file::StyleSpec::default());
+        let theme_out: Theme = (&theme).into();
+        assert_eq!(theme_out.h1, Theme::default().h1);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn read_theme_resolves_light_builtin() {
+        // The companion light palette resolves from the built-in
+        // registry without any disk file.
+        use super::super::theme::Palette;
+        let dir = tempfile::tempdir().unwrap();
+        let mut warnings = Vec::new();
+        let theme = read_theme_named(dir.path(), "light", &mut warnings);
+        let theme_out: Theme = (&theme).into();
+        let expected = Theme::from_palette(&Palette::default_light());
+        assert_eq!(theme_out.h1, expected.h1);
+        assert_eq!(theme_out.normal, expected.normal);
         assert!(warnings.is_empty());
     }
 
@@ -465,13 +503,15 @@ mod tests {
 
     #[test]
     fn read_theme_parse_error_warns_and_falls_back_to_compiled_theme() {
+        // Uses a non-built-in name so the disk file is consulted —
+        // built-in names short-circuit before any read.
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("themes")).unwrap();
-        let theme_path = dir.path().join("themes").join("default.toml");
+        let theme_path = dir.path().join("themes").join("custom.toml");
         // Invalid colour value type.
         std::fs::write(&theme_path, "[h1]\nfg = 42\nbold = \"oops\"\n").unwrap();
         let mut warnings = Vec::new();
-        let theme = read_theme_named(dir.path(), "default", &mut warnings);
+        let theme = read_theme_named(dir.path(), "custom", &mut warnings);
         let theme_out: Theme = (&theme).into();
         assert_eq!(theme_out.h1, Theme::default().h1);
         assert_eq!(warnings.len(), 1);
@@ -481,12 +521,19 @@ mod tests {
     // ── ensure_default_files ───────────────────────────────────────────────
 
     #[test]
-    fn ensure_default_files_writes_three_files_on_first_run() {
+    fn ensure_default_files_writes_config_and_keybindings_but_not_themes() {
+        // Built-in themes are compiled in (see `BUILTIN_THEMES`), so
+        // first-run scaffolding must not write `themes/<builtin>.toml`
+        // — those files would be inert (the built-in always wins) and
+        // misleading to a user who tried to edit them.  The themes
+        // directory itself is still created so it exists for custom
+        // theme files.
         let dir = tempfile::tempdir().unwrap();
         ensure_default_files_in(dir.path());
         assert!(dir.path().join("config.toml").exists());
         assert!(dir.path().join("keybindings.toml").exists());
-        assert!(dir.path().join("themes").join("default.toml").exists());
+        assert!(dir.path().join("themes").is_dir());
+        assert!(!dir.path().join("themes").join("default.toml").exists());
     }
 
     #[test]
@@ -494,15 +541,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         ensure_default_files_in(dir.path());
 
-        // Simulate a user edit to the theme file.
-        let theme_path = dir.path().join("themes").join("default.toml");
-        let custom = "# user-edited\ntask_strikethrough = false\n";
-        std::fs::write(&theme_path, custom).unwrap();
+        // Simulate a user edit to config.toml.
+        let config_path = dir.path().join("config.toml");
+        let custom = "# user-edited\ntheme = \"light\"\n";
+        std::fs::write(&config_path, custom).unwrap();
 
         // Second call must not touch the user's edit.
         ensure_default_files_in(dir.path());
-        let after = std::fs::read_to_string(&theme_path).unwrap();
-        assert_eq!(after, custom, "user-edited theme was overwritten");
+        let after = std::fs::read_to_string(&config_path).unwrap();
+        assert_eq!(after, custom, "user-edited config was overwritten");
     }
 
     // ── save invariant ─────────────────────────────────────────────────────
