@@ -249,9 +249,9 @@ mod tests {
         assert_eq!(ANSI_PALETTE[231], [255, 255, 255]); // cube 5,5,5
         assert_eq!(ANSI_PALETTE[232], [8, 8, 8]); // first grey
         assert_eq!(ANSI_PALETTE[255], [238, 238, 238]); // last grey
-                                                        // 196 is the bright red commonly used for `error_bright`.
+                                                        // 196 is the bright red commonly used for `error`.
         assert_eq!(ANSI_PALETTE[196], [255, 0, 0]);
-        // 208 is orange (edamame's `primary_bright`).
+        // 208 is orange (edamame's `primary`).
         assert_eq!(ANSI_PALETTE[208], [255, 135, 0]);
     }
 

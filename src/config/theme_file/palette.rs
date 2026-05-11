@@ -14,64 +14,41 @@ use crate::config::theme::Palette;
 #[serde(default)]
 pub struct PaletteFile {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_text: Option<ColorField>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_bg: Option<ColorField>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub primary_bright: Option<ColorField>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub primary_dim: Option<ColorField>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub emphasis_bright: Option<ColorField>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub emphasis_dim: Option<ColorField>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub structural_bright: Option<ColorField>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub structural_dim: Option<ColorField>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub interactive_bright: Option<ColorField>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub interactive_dim: Option<ColorField>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub selection_bg: Option<ColorField>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub success_bright: Option<ColorField>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub success_dim: Option<ColorField>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub warning_bright: Option<ColorField>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub warning_dim: Option<ColorField>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_bright: Option<ColorField>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_dim: Option<ColorField>,
+    pub text: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_muted: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub muted: Option<ColorField>,
+    pub bg: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub surface_elevated: Option<ColorField>,
+    pub bg_muted: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub surface: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub h1: Option<ColorField>,
+    pub surface_elevated: Option<ColorField>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub h2: Option<ColorField>,
+    pub primary: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub h3: Option<ColorField>,
+    pub secondary: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub h4: Option<ColorField>,
+    pub accent: Option<ColorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub h5: Option<ColorField>,
+    pub link: Option<ColorField>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub h6: Option<ColorField>,
+    pub success: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<ColorField>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<ColorField>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub code_dim: Option<ColorField>,
+    pub diff_add: Option<ColorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff_delete: Option<ColorField>,
 }
 
 impl PaletteFile {
@@ -84,35 +61,22 @@ impl PaletteFile {
             opt.map(Color::from).unwrap_or(fallback)
         };
         Palette {
-            default_text: pick(self.default_text, d.default_text),
-            default_bg: pick(self.default_bg, d.default_bg),
-            primary_bright: pick(self.primary_bright, d.primary_bright),
-            primary_dim: pick(self.primary_dim, d.primary_dim),
-            emphasis_bright: pick(self.emphasis_bright, d.emphasis_bright),
-            emphasis_dim: pick(self.emphasis_dim, d.emphasis_dim),
-            structural_bright: pick(self.structural_bright, d.structural_bright),
-            structural_dim: pick(self.structural_dim, d.structural_dim),
-            interactive_bright: pick(self.interactive_bright, d.interactive_bright),
-            interactive_dim: pick(self.interactive_dim, d.interactive_dim),
-            selection_bg: pick(self.selection_bg, d.selection_bg),
-            success_bright: pick(self.success_bright, d.success_bright),
-            success_dim: pick(self.success_dim, d.success_dim),
-            warning_bright: pick(self.warning_bright, d.warning_bright),
-            warning_dim: pick(self.warning_dim, d.warning_dim),
-            error_bright: pick(self.error_bright, d.error_bright),
-            error_dim: pick(self.error_dim, d.error_dim),
+            text: pick(self.text, d.text),
             text_muted: pick(self.text_muted, d.text_muted),
-            muted: pick(self.muted, d.muted),
-            surface_elevated: pick(self.surface_elevated, d.surface_elevated),
+            bg: pick(self.bg, d.bg),
+            bg_muted: pick(self.bg_muted, d.bg_muted),
             surface: pick(self.surface, d.surface),
-            h1: pick(self.h1, d.h1),
-            h2: pick(self.h2, d.h2),
-            h3: pick(self.h3, d.h3),
-            h4: pick(self.h4, d.h4),
-            h5: pick(self.h5, d.h5),
-            h6: pick(self.h6, d.h6),
-            code_bright: pick(self.code, d.code_bright),
-            code_dim: pick(self.code_dim, d.code_dim),
+            surface_elevated: pick(self.surface_elevated, d.surface_elevated),
+            primary: pick(self.primary, d.primary),
+            secondary: pick(self.secondary, d.secondary),
+            accent: pick(self.accent, d.accent),
+            link: pick(self.link, d.link),
+            success: pick(self.success, d.success),
+            warning: pick(self.warning, d.warning),
+            error: pick(self.error, d.error),
+            code: pick(self.code, d.code),
+            diff_add: pick(self.diff_add, d.diff_add),
+            diff_delete: pick(self.diff_delete, d.diff_delete),
         }
     }
 }
@@ -120,35 +84,22 @@ impl PaletteFile {
 impl From<&Palette> for PaletteFile {
     fn from(p: &Palette) -> Self {
         Self {
-            default_text: Some(p.default_text.into()),
-            default_bg: Some(p.default_bg.into()),
-            primary_bright: Some(p.primary_bright.into()),
-            primary_dim: Some(p.primary_dim.into()),
-            emphasis_bright: Some(p.emphasis_bright.into()),
-            emphasis_dim: Some(p.emphasis_dim.into()),
-            structural_bright: Some(p.structural_bright.into()),
-            structural_dim: Some(p.structural_dim.into()),
-            interactive_bright: Some(p.interactive_bright.into()),
-            interactive_dim: Some(p.interactive_dim.into()),
-            selection_bg: Some(p.selection_bg.into()),
-            success_bright: Some(p.success_bright.into()),
-            success_dim: Some(p.success_dim.into()),
-            warning_bright: Some(p.warning_bright.into()),
-            warning_dim: Some(p.warning_dim.into()),
-            error_bright: Some(p.error_bright.into()),
-            error_dim: Some(p.error_dim.into()),
+            text: Some(p.text.into()),
             text_muted: Some(p.text_muted.into()),
-            muted: Some(p.muted.into()),
-            surface_elevated: Some(p.surface_elevated.into()),
+            bg: Some(p.bg.into()),
+            bg_muted: Some(p.bg_muted.into()),
             surface: Some(p.surface.into()),
-            h1: Some(p.h1.into()),
-            h2: Some(p.h2.into()),
-            h3: Some(p.h3.into()),
-            h4: Some(p.h4.into()),
-            h5: Some(p.h5.into()),
-            h6: Some(p.h6.into()),
-            code: Some(p.code_bright.into()),
-            code_dim: Some(p.code_dim.into()),
+            surface_elevated: Some(p.surface_elevated.into()),
+            primary: Some(p.primary.into()),
+            secondary: Some(p.secondary.into()),
+            accent: Some(p.accent.into()),
+            link: Some(p.link.into()),
+            success: Some(p.success.into()),
+            warning: Some(p.warning.into()),
+            error: Some(p.error.into()),
+            code: Some(p.code.into()),
+            diff_add: Some(p.diff_add.into()),
+            diff_delete: Some(p.diff_delete.into()),
         }
     }
 }

@@ -334,13 +334,13 @@ impl<'t> Renderer<'t> {
             _ => return false,
         };
 
-        let bg_style = Style::default().bg(self.theme.palette.default_bg);
+        let bg_style = Style::default().bg(self.theme.palette.bg);
         let text_style = self
             .theme
             .h1
             .remove_modifier(Modifier::UNDERLINED)
-            .bg(self.theme.palette.default_bg);
-        let muted = self.theme.palette.muted;
+            .bg(self.theme.palette.bg);
+        let muted = self.theme.palette.bg_muted;
         let blank_spacer = Line::styled(" ".repeat(viewport), bg_style);
 
         for (chunk_idx, chunk) in chunks.iter().enumerate() {

@@ -473,18 +473,18 @@ fg = "blue"
 
     #[test]
     fn palette_override_ripples_to_styles() {
-        // Override only the palette; the H1 fg should pick up the new
-        // emphasis_bright colour because the merge re-derives styles
-        // from the file palette before applying overrides.
+        // Override only the palette `primary` slot; the H1 fg should
+        // pick up the new colour because the heading ramp derives
+        // from `primary` (h1) and `secondary` (h2).
         let toml = r##"
 [palette]
-emphasis_bright = "#abcdef"
+primary = "#abcdef"
 "##;
         let file: ThemeFile = toml::from_str(toml).unwrap();
         let theme: Theme = (&file).into();
-        assert_eq!(theme.h1.fg, Some(Color::Indexed(220)));
-        // h1_rule shares the emphasis_bright colour and should follow.
-        assert_eq!(theme.h1_rule.fg, Some(Color::Indexed(220)));
+        assert_eq!(theme.h1.fg, Some(Color::Rgb(0xab, 0xcd, 0xef)));
+        // h1_rule shares the `primary` palette slot and should follow.
+        assert_eq!(theme.h1_rule.fg, Some(Color::Rgb(0xab, 0xcd, 0xef)));
     }
 
     #[test]
@@ -493,7 +493,7 @@ emphasis_bright = "#abcdef"
         // override should win.
         let toml = r##"
 [palette]
-emphasis_bright = "#abcdef"
+primary = "#abcdef"
 
 [h1]
 fg = "#112233"
@@ -504,7 +504,7 @@ bold = true
         assert_eq!(theme.h1.fg, Some(Color::Rgb(0x11, 0x22, 0x33)));
         // h1_rule still picks up the palette override (no explicit
         // override in the file).
-        assert_eq!(theme.h1_rule.fg, Some(Color::Indexed(220)));
+        assert_eq!(theme.h1_rule.fg, Some(Color::Rgb(0xab, 0xcd, 0xef)));
     }
 
     #[test]
