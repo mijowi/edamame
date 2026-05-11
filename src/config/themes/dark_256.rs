@@ -68,5 +68,18 @@ pub fn theme() -> Theme {
     t.h4 = Style::default().fg(h4).add_modifier(bold | underline);
     t.h5 = Style::default().fg(h5).add_modifier(bold | underline);
     t.h6 = Style::default().fg(h6).add_modifier(bold | underline);
+
+    // Code surface: a slightly-lifted neutral grey distinct from
+    // `bg_muted` (235, the striped-row bg) so a code span inside a
+    // stripe still reads as code.  Indexed-cube stepping of `code`
+    // (140, mid purple) shifts hue, so we pick the shade by hand.
+    let code_bg = Color::Indexed(238);
+    t.code_span = Style::default().fg(palette().code).bg(code_bg);
+    t.code_span_dim = Style::default()
+        .fg(palette().code)
+        .bg(code_bg)
+        .add_modifier(Modifier::DIM);
+    t.code_block_border = Style::default().fg(palette().text).bg(code_bg);
+    t.code_block_text = Style::default().fg(palette().text).bg(code_bg);
     t
 }

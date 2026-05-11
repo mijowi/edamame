@@ -5,10 +5,11 @@
 # policy). Anything else appears commented-out as a reference — uncomment and
 # edit to override.
 
-# Name of the active theme. Resolved to themes/<theme>.toml — the shipped
-# default is `themes/default.toml` (written on first run). Copy it to
-# themes/custom.toml, edit, then set `theme = "custom"` to switch.
-theme = "default"
+# Name of the active theme. Built-in themes (see BUILTIN_THEMES in
+# src/config/theme.rs) are resolved by name; any other name is loaded
+# from themes/<theme>.toml. To author a custom theme, drop a TOML file
+# in themes/ and set `theme` to its stem.
+theme = "256 Dark"
 
 # ── Editor ────────────────────────────────────────────────────────────────────
 [editor]

@@ -1,5 +1,12 @@
 use ratatui::style::{Color, Modifier, Style};
 
+use super::themes::util::blend;
+
+/// How heavily to mix `code` toward `bg` when deriving the code
+/// surface bg.  Closer to 1.0 = closer to `bg` (a barely-tinted
+/// neutral); closer to 0.0 = closer to the raw `code` shade.
+const CODE_BG_MIX_TOWARD_BG: f32 = 0.92;
+
 /// Darken `base` by `level` steps for the heading ramp (0 = base,
 /// 1 = medium, 2 = dull).  RGB colours are scaled toward black via a
 /// fixed lightness factor per step.  Indexed and named colours can't
@@ -286,8 +293,10 @@ pub struct Palette {
     pub text_muted: Color,
     /// Default document background.
     pub bg: Color,
-    /// Muted surface for inline-code background, table-row stripes,
-    /// scrollbar track, Preview-mode cursor bg.
+    /// Muted surface for table-row stripes, scrollbar track,
+    /// Preview-mode cursor bg.  Inline / fenced code use a tinted
+    /// shade derived from [`Self::code`] instead, so a code span on
+    /// top of a striped row still reads as code.
     pub bg_muted: Color,
     /// Lifted chrome surface (hint line, transient-message strip).
     pub surface: Color,
@@ -348,6 +357,17 @@ pub type ThemeCtor = fn() -> Theme;
 pub const BUILTIN_THEMES: &[(&str, ThemeCtor)] = &[
     ("256 Dark", super::themes::dark_256::theme),
     ("256 Light", super::themes::light_256::theme),
+    ("Ayu", super::themes::ayu::theme),
+    ("Catppuccin", super::themes::catppuccin::theme),
+    ("Dracula", super::themes::dracula::theme),
+    ("GitHub Dark", super::themes::github_dark::theme),
+    ("Gruvbox", super::themes::gruvbox::theme),
+    ("Monokai", super::themes::monokai::theme),
+    ("One Dark", super::themes::one_dark::theme),
+    ("Orng", super::themes::orng::theme),
+    ("Rosé Pine", super::themes::rose_pine::theme),
+    ("SynthWave '84", super::themes::synthwave84::theme),
+    ("Tokyo Night", super::themes::tokyo_night::theme),
 ];
 
 impl Theme {
@@ -372,6 +392,14 @@ impl Theme {
         let italic = Modifier::ITALIC;
         let underline = Modifier::UNDERLINED;
         let p = palette.clone();
+
+        // Code surface: a desaturated, bg-tinted shade of `code` —
+        // distinguishable from `bg_muted` (striped-row bg) so a code
+        // span inside a stripe still reads as code.  `blend` returns
+        // `p.code` unchanged for non-RGB palettes; the 256-cube
+        // built-ins compensate by overriding the four code styles
+        // after `from_palette` returns.
+        let code_bg = blend(p.code, p.bg, CODE_BG_MIX_TOWARD_BG);
 
         // Heading ramp alternates `primary` and `secondary`, getting
         // progressively duller / darker with each level.  RGB themes
@@ -418,10 +446,10 @@ impl Theme {
                 .fg(p.text_muted)
                 .add_modifier(Modifier::CROSSED_OUT),
             highlight: Style::default().bg(p.warning).fg(p.bg),
-            code_span: Style::default().fg(p.code).bg(p.bg_muted),
+            code_span: Style::default().fg(p.code).bg(code_bg),
             code_span_dim: Style::default()
                 .fg(p.code)
-                .bg(p.bg_muted)
+                .bg(code_bg)
                 .add_modifier(Modifier::DIM),
             link_text: Style::default().fg(p.link).add_modifier(underline),
             link_file: Style::default().fg(p.link).add_modifier(underline),
@@ -431,12 +459,12 @@ impl Theme {
 
             // Code block — surface_elevated background reads as a single
             // unit across border, language label, and body.
-            code_block_border: Style::default().fg(p.text).bg(p.bg_muted),
+            code_block_border: Style::default().fg(p.text).bg(code_bg),
             code_block_lang: Style::default()
                 .fg(p.code)
                 .bg(p.surface)
                 .add_modifier(italic),
-            code_block_text: Style::default().fg(p.text).bg(p.bg_muted),
+            code_block_text: Style::default().fg(p.text).bg(code_bg),
 
             // Blockquote
             blockquote_bar: Style::default().fg(p.secondary),
@@ -533,8 +561,13 @@ impl Theme {
             modal_close_hint: Style::default().fg(p.text_muted).bg(p.surface_elevated),
             modal_item: Style::default().fg(p.text).bg(p.surface_elevated),
             modal_item_hint: Style::default().fg(p.primary).bg(p.surface_elevated),
-            modal_item_selected: Style::default().bg(p.primary).fg(p.text).add_modifier(bold),
-            modal_item_selected_hint: Style::default().fg(p.accent).bg(p.primary),
+            // Use `bg` (the document background) as the fg instead of
+            // `text`: most themes have a light `text` and a saturated /
+            // light `primary`, so a light-on-light row reads as washed
+            // out.  Dark text on the primary fill matches the inverse-
+            // text pattern already used by `modal_input_*`.
+            modal_item_selected: Style::default().bg(p.primary).fg(p.bg).add_modifier(bold),
+            modal_item_selected_hint: Style::default().fg(p.bg).bg(p.primary),
             modal_description: Style::default().fg(p.accent).bg(p.surface_elevated),
             modal_section_heading: Style::default()
                 .fg(p.secondary)
