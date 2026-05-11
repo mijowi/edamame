@@ -1,64 +1,72 @@
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier, Style};
 
-use crate::config::theme::Palette;
+use crate::config::theme::{Palette, Theme};
 
 /// Edamame's default palette: warm orange brand on a near-black
 /// background, with a fresh edamame-bean green for success and a
-/// complementary lavender for chrome.  Bright/dim pairs are tuned for
-/// ~30% lightness contrast so both variants read on a dark surface.
+/// cool purple for chrome (contrasting with the warm `primary` so the
+/// alternating heading ramp reads as two distinct families).
 pub fn palette() -> Palette {
     Palette {
-        default_text: Color::Indexed(253),
-        default_bg: Color::Indexed(233),
+        text: Color::Indexed(253),
+        text_muted: Color::Indexed(245),
+        bg: Color::Indexed(233),
+        bg_muted: Color::Indexed(235),
+        surface: Color::Indexed(236),
+        surface_elevated: Color::Indexed(237),
 
         // Orange — brand identity, headings, mode chip.
-        primary_bright: Color::Indexed(208),
-        primary_dim: Color::Indexed(172),
+        primary: Color::Indexed(208),
+        // Mid purple — structural chrome (rules, blockquote bar,
+        // section headings, search-highlight bg).  Cool hue chosen
+        // to contrast with the warm `primary` orange.
+        secondary: Color::Indexed(97),
+        // Mid blue — list markers, table header, selection bg.
+        // Dark enough to carry `text` (253) as a fg when used as
+        // selection bg, saturated enough to read as a fg colour on
+        // the document surface.
+        accent: Color::Indexed(25),
+        // Bright blue — link foreground.
+        link: Color::Indexed(39),
 
-        // Blue — emphasis
-        emphasis_bright: Color::Indexed(117),
-        emphasis_dim: Color::Indexed(45),
+        success: Color::Indexed(76),
+        warning: Color::Indexed(220),
+        error: Color::Indexed(196),
 
-        // Gold — structural chrome (frames, dividers, asides).
-        structural_bright: Color::Indexed(136),
-        structural_dim: Color::Indexed(94),
+        // Inline code and code-block language line.  Lighter purple
+        // than `secondary` so inline-code reads distinct from
+        // chrome / section-heading colour.
+        code: Color::Indexed(140),
 
-        // Blue — links, focus.
-        interactive_bright: Color::Indexed(39),
-        interactive_dim: Color::Indexed(25),
-        // Selection bg coincides with interactive_dim on the dark
-        // theme: dark blue carries both light text (inverse-text
-        // sites) and the near-white default_text well.
-        selection_bg: Color::Indexed(25),
-
-        // Green — success, completed tasks, edamame.
-        success_bright: Color::Indexed(76),
-        success_dim: Color::Indexed(28),
-
-        // Yellow — warnings.
-        warning_bright: Color::Indexed(220),
-        warning_dim: Color::Indexed(178),
-
-        // Red — errors.
-        error_bright: Color::Indexed(196),
-        error_dim: Color::Indexed(124),
-
-        // Greys — UI chrome and muted items
-        text_muted: Color::Indexed(245), // Muted text, e.g. strikethrough
-        muted: Color::Indexed(235),      // Muted background, e.g. table row stripes
-        surface_elevated: Color::Indexed(237), // Elevated surface, e.g. dialogs
-        surface: Color::Indexed(236),    // Surface, e.g. panels, dialogs
-
-        // Headings — bright color 1/2/3, dim color 1/2/3
-        h1: Color::Indexed(220),
-        h2: Color::Indexed(208),
-        h3: Color::Indexed(135),
-        h4: Color::Indexed(136),
-        h5: Color::Indexed(172),
-        h6: Color::Indexed(140),
-
-        // Inline code and code block language line
-        code_bright: Color::Indexed(140),
-        code_dim: Color::Indexed(60),
+        // Reserved for a future diff view; not consumed yet.
+        diff_add: Color::Indexed(76),
+        diff_delete: Color::Indexed(196),
     }
+}
+
+/// Built-in theme: builds a [`Theme`] from [`palette`] and pins the
+/// `h1`–`h6` heading ramp to curated 256-cube shades.  The default
+/// `Theme::from_palette` darkening only works for RGB colours;
+/// stepping indexed colours through the 6×6×6 cube shifts hue, so
+/// 256-colour built-ins curate the ramp explicitly.
+pub fn theme() -> Theme {
+    let mut t = Theme::from_palette(&palette());
+    let bold = Modifier::BOLD;
+    let underline = Modifier::UNDERLINED;
+    // Heading ramp: alternates primary (orange) and secondary (purple),
+    // dulling / darkening with each level.
+    let h1 = Color::Indexed(208); // primary, bright
+    let h2 = Color::Indexed(99); // secondary, bright violet
+    let h3 = Color::Indexed(172); // primary, medium
+    let h4 = Color::Indexed(97); // secondary, medium
+    let h5 = Color::Indexed(130); // primary, dull
+    let h6 = Color::Indexed(60); // secondary, dull
+    t.h1 = Style::default().fg(h1).add_modifier(bold);
+    t.h1_rule = Style::default().fg(h1);
+    t.h2 = Style::default().fg(h2).add_modifier(bold | underline);
+    t.h3 = Style::default().fg(h3).add_modifier(bold | underline);
+    t.h4 = Style::default().fg(h4).add_modifier(bold | underline);
+    t.h5 = Style::default().fg(h5).add_modifier(bold | underline);
+    t.h6 = Style::default().fg(h6).add_modifier(bold | underline);
+    t
 }

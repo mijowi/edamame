@@ -329,12 +329,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("themes")).unwrap();
         std::fs::write(
-            dir.path().join("themes").join("default.toml"),
+            dir.path().join("themes").join("256 Dark.toml"),
             "[h1]\nfg = \"red\"\n",
         )
         .unwrap();
         let mut warnings = Vec::new();
-        let theme = read_theme_named(dir.path(), "default", &mut warnings);
+        let theme = read_theme_named(dir.path(), "256 Dark", &mut warnings);
         let theme_out: Theme = (&theme).into();
         assert_eq!(theme_out.h1, Theme::default().h1);
         assert!(warnings.is_empty());
@@ -347,7 +347,7 @@ mod tests {
         use super::super::themes::light_256;
         let dir = tempfile::tempdir().unwrap();
         let mut warnings = Vec::new();
-        let theme = read_theme_named(dir.path(), "light", &mut warnings);
+        let theme = read_theme_named(dir.path(), "256 Light", &mut warnings);
         let theme_out: Theme = (&theme).into();
         let expected = Theme::from_palette(&light_256::palette());
         assert_eq!(theme_out.h1, expected.h1);

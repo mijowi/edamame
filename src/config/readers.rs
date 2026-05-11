@@ -10,7 +10,7 @@ use std::str::FromStr;
 
 use super::config::Config;
 use super::keymap::{parse_key, Action, KeyBindingOverrides};
-use super::theme::{Palette, Theme};
+use super::theme::Theme;
 use super::theme_file::ThemeFile;
 use super::warnings::{ConfigWarning, WarningKind};
 
@@ -136,8 +136,8 @@ pub(super) fn read_theme_named(
     // Built-in themes always win on name collision: a user file
     // `themes/default.toml` is ignored if `default` is a built-in.
     // Custom user themes go through the disk path below.
-    if let Some(palette) = Palette::builtin(name) {
-        return (&Theme::from_palette(&palette)).into();
+    if let Some(theme) = Theme::builtin(name) {
+        return (&theme).into();
     }
 
     let path = config_dir.join("themes").join(format!("{name}.toml"));

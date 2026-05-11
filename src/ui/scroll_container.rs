@@ -27,7 +27,7 @@ use ratatui::{
 use crate::config::Theme;
 
 /// Visual urgency of a modal.  Drives the title colour (Normal =
-/// `primary_bright`, Warning = `warning_bright`, Error = `error_bright`)
+/// `primary`, Warning = `warning`, Error = `error`)
 /// and is independent of dismissability — a Warning may be either
 /// freely dismissable (informational) or gated (must press a button),
 /// depending on the owning `Modal::dismissable` return.

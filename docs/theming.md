@@ -1,127 +1,180 @@
 # Edamame Design Guide and Default Theme
 
-## Color palette — each have bright/dim variants
-The assigned colors represent edamame's default theme. The palette is used by every theme.
-- `default_text`: white
-- `default_bg`: black
-- `primary`/brand: orange — identity, headings
-- `emphasis`: yellow — highlights, warnings, hints
-- `structural`: purple — chrome, frames, dividers, asides
-- `interactive`: blue — links, focus, selection, hint chords
+## Color palette — flat semantic names
+The assigned colors describe edamame's default (256 Dark) theme. The
+palette is a single named slot per role; focus / active / disabled
+affordances layer text modifiers (BOLD, REVERSED, DIM) on top rather
+than reaching for a second palette slot.
+
+- `text`: white — default document foreground
+- `text_muted`: light grey — peripheral text (h6, strikethrough body,
+  completed-task text, modal close hint, Preview-mode chip bg)
+- `bg`: black — default document background
+- `bg_muted`: dark grey — inline-code background, table-row stripes,
+  scrollbar track, Preview-mode cursor bg
+- `surface`: slightly lifted dark grey — hint line and the
+  transient-message strip that overlays it
+- `surface_elevated`: heavier chrome dark grey — status bar, modal
+  body, fenced code-block bg
+- `primary`/brand: orange — identity, headings, mode chip, non-link
+  focus affordances (selected modal row, modal input fill, button
+  focus, scrollbar thumb)
+- `secondary`: gold — structural chrome (section headings,
+  search-highlight bg, rules, blockquote bar, footnote marker,
+  command-palette divider)
+- `accent`: blue — list markers, table header, modal description /
+  selected-row hint, and the bg for text selection
+- `link`: bright blue — web link, file link, heading link, image
+  placeholder (reserved for link affordances only)
 - `success`: green
-- `warning`: same as emphasis in this theme, but can be differentiated in future themes
+- `warning`: yellow
 - `error`: red
-- `muted`: light grey — peripheral text (h6, strikethrough) and borders (table rules, separators)
-- `surface`: dark grey — base UI chrome (`surface_elevated`: status line, modal body, inline / fenced code bg, table-stripe fill); slightly lighter grey — elevated UI chrome (`surface`: hint line and the transient-message strip that overlays it)
+- `code`: purple — inline-code and code-block-language foreground
+- The `h1`–`h6` headings are *derived* — they're not palette
+  fields.  `Theme::from_palette` builds the ramp by alternating
+  `primary` and `secondary` and dulling / darkening with each
+  level: `h1` = primary bright, `h2` = secondary bright, `h3` =
+  primary medium, `h4` = secondary medium, `h5` = primary dull,
+  `h6` = secondary dull.  For RGB palettes the medium / dull
+  shades are computed by darkening the base toward black.  Indexed
+  palettes can't be cleanly darkened without shifting hue, so
+  built-in 256-colour themes pin the ramp manually in their ctor
+  (see `BUILTIN_THEMES`).  User themes can still override an
+  individual heading by setting a `[h1]`..`[h6]` style section in
+  their TOML.
+- `diff_add` / `diff_delete`: reserved for a future diff view; no
+  styles currently consume them
 
 ## Palette Assignments
 
-Selected text: `interactive_dim` bg, `default_text` fg
+Selected text: `accent` bg, `text` fg
 
-Search/find highlight: `structural_bright` bg, `default_bg` fg
+Search/find highlight: `secondary` bg, `bg` fg
 
-Active line highlight (not implemented): slightly lighter shade than default bg (orange tint?)
+Active line highlight (not implemented): slightly lighter shade than
+default bg (orange tint?)
 
 ### Headings
-- H1: `emphasis_bright` fg, bold, setext trailing rule (`═`)
-- H2: `primary_bright` fg, bold
-- H3: `structural_bright` fg, bold
-- H4: `primary_dim` fg, bold
-- H5: `structural_dim` fg, bold
-- H6: `text_muted`, bold
+- H1: `primary` (bright), bold, setext trailing rule (`═`)
+- H2: `secondary` (bright), bold, underlined
+- H3: `primary` (medium), bold, underlined
+- H4: `secondary` (medium), bold, underlined
+- H5: `primary` (dull), bold, underlined
+- H6: `secondary` (dull), bold, underlined
 
-Strikethrough: `text_muted` fg
+Strikethrough: `text_muted` fg, CROSSED_OUT
 
-Highlight: `emphasis_dim` bg, `default_bg` fg
+Highlight: `warning` bg, `bg` fg
 
-Block quote: `structural_dim` left bar, italic text
+Block quote: `secondary` left bar, italic text
 
-Web link: `interactive_bright` fg, underlined
+Web link: `link` fg, underlined
 
-File link: `interactive_dim` fg, underlined
+File link: `link` fg, underlined
 
-Heading link: `interactive_dim` fg
+Heading link: `link` fg
 
-Image link (when image not shown): `interactive_dim` fg, italicized
+Image link (when image not shown): `link` fg, italicized
 
-Unordered list marker: `structural_bright` fg
+Unordered list marker: `accent` fg
 
-Ordered list number marker (including `.`): `structural_bright` fg
+Ordered list number marker (including `.`): `accent` fg
 
 ### Task list
-- Incomplete item: `emphasis_bright` fg bullet and checkbox
-- Complete item: `success_bright` fg bullet and checkbox; `text_muted` fg text with strikethrough
+- Incomplete item: `warning` fg bullet and checkbox
+- Complete item: `success` fg bullet and checkbox; `text_muted` fg
+  text with strikethrough
+- Inline code inside a checked task: `code` fg, `bg_muted` bg, DIM
+  modifier — derives from the inline `code_span` style with DIM
+  layered on so the snippet still reads as code while fading with the
+  surrounding strikethrough
 
-Horizontal rule: `structural_dim` fg
+Horizontal rule: `secondary` fg
 
 ### Table
-- Header row: bold, default fg
-- Borders: `muted` fg (light `─` rules around and between cells)
-- Header bottom separator: `structural_dim` fg — the heavy `━` rule below the header row is themed independently of the regular borders so the header reads as a structural divider
-- Row striping (when `[table] row_striping = true`): odd data rows get `surface_elevated` bg so the table chrome matches the inline-code surface
+- Header row: bold, `accent` fg
+- Borders: `surface_elevated` fg
+- Row striping (when `[table] row_striping = true`): odd data rows
+  get `bg_muted` bg
+- Drop indicator (active drag target): `primary` fg
+- Drop target (inert valid sites during drag): `primary` fg + DIM
+- Row / column reorder + resize handles: `primary` fg + DIM
+- Row / column delete handle: `error` fg
 
-Inline code: `surface_elevated` bg, `structural_bright` fg
+Inline code: `bg_muted` bg, `code` fg
 
 ### Code block
-- Language: `structural_bright` fg, italicized
-- Block: `surface_elevated` bg
-- Text: `default_text` fg (syntax highlighting later)
+- Language: `code` fg on `surface` bg, italicized
+- Block border + text: `text` fg on `bg_muted` bg
 
-Footnote/reference marker (not implemented yet)
-- `structural_dim` fg
+Footnote/reference marker (not implemented yet): `secondary` fg
 
-### Status line: `surface_elevated` bg
+### Status line: `surface` bg
 Mode chip (bold)
-  - Preview: `muted` bg, `surface_elevated` fg
-  - Rendered: `primary_bright` bg, `default_bg` fg
-  - Raw: `emphasis_bright` bg, `default_bg` fg
-File name: `default_text` fg
-Dirty file marker (`*`): `emphasis_bright` fg, bold
-Cursor coordinates, line count, etc: `primary_bright` fg
+  - Preview: `text_muted` bg, `surface` fg
+  - Rendered: `primary` bg, `bg` fg
+  - Raw: `warning` bg, `bg` fg
+File name: `text` fg
+Dirty file marker (`*`): `warning` fg, bold
+Cursor coordinates, line count, etc: `primary` fg
+Selection size indicator: `primary` fg, bold
 
-### Hint line: `surface` bg
-Preview hint (`Press any key to edit`): `default_text` fg
-Hint chord: `interactive_bright` fg, bold
-Hint label: `default_text` fg
-Transient message: 
-- Info: `default_text` fg
-- Warning: `warning_bright` fg
-- Error: `error_bright` fg
+### Hint line: `surface_elevated` bg
+Preview hint (`Press any key to edit`): `text` fg
+Hint chord: `primary` fg, bold
+Hint label: `text` fg
+Transient message:
+- Info: `text` fg
+- Success: `success` fg, bold
+- Warning: `warning` fg, bold
+- Error: `error` fg, bold
 
-Cursor (in editor): Each mode has its own cursor style mirroring the status-line mode chip. The renderer picks via `theme.cursor_style(mode)`:
-- Preview: `muted` bg, `surface_elevated` fg (matches the Preview mode chip)
-- Rendered: `primary_bright` bg, `default_bg` fg
-- Raw: `emphasis_bright` bg, `default_bg` fg
+Cursor (in editor): Each mode has its own cursor style mirroring the
+status-line mode chip. The renderer picks via `theme.cursor_style(mode)`:
+- Preview: `bg_muted` bg, `surface_elevated` fg
+- Rendered: `primary` bg, `bg` fg
+- Raw: `warning` bg, `bg` fg
 
-Cursor (modal text inputs): `theme.cursor` — REVERSED only, so the `▏` glyph inverts whatever's underneath without needing to know the modal's surface colour. Kept distinct from the editor cursor because modal inputs aren't tied to editor mode.
+Cursor (modal text inputs): `theme.cursor` — REVERSED only, so the
+`▏` glyph inverts whatever's underneath without needing to know the
+modal's surface colour. Kept distinct from the editor cursor because
+modal inputs aren't tied to editor mode.
 
 ### Modal windows
 Background: `surface_elevated`
-Title: `primary_bright` fg, bold
-Border: `structural_dim` fg
-Item: `default_text`
-Item hint / sub-label (right-aligned chord, value column, etc. on an unfocused row): `interactive_bright` fg
-Selected item: `interactive_dim` bg, `default_text` fg, bold
-Selected item hint (right-aligned chord / value column on the focused row): `emphasis_bright` fg
-Description (pinned-footer copy explaining the focused row, e.g. settings overlay bottom line): `emphasis_bright` fg
-Input (unfocused): `default_bg` fg, `interactive_dim` bg
-Input (focused): `default_bg` fg, `interactive_bright` bg; modal-input cursor inverts whatever's underneath
-Focused button (e.g. Save / Discard / Cancel in the unsaved-changes confirmation): `interactive_bright` fill (REVERSED, bold)
-Section heading: `structural_bright` fg, bold
+Title: `primary` (Normal) / `warning` / `error` fg, bold
+Item: `text` fg on `surface_elevated`
+Item hint / sub-label (right-aligned chord, value column, etc. on an
+unfocused row): `primary` fg
+Selected item: `primary` bg, `text` fg, bold
+Selected item hint (right-aligned chord / value column on the focused
+row): `accent` fg on the `primary` selection fill
+Description (pinned-footer copy explaining the focused row): `accent`
+fg on `surface_elevated`
+Input (unfocused): `bg` fg, `primary` bg
+Input (focused): `bg` fg, `primary` bg, **bold** — focus is shown via
+the BOLD modifier on top of the same `primary` fill
+Focused button (e.g. Save / Discard / Cancel): `primary` fg + REVERSED
++ bold
+Section heading: `secondary` fg, bold
+
+Scrollbar
+- Track: `bg_muted` fg (`│` glyph)
+- Thumb (idle): `primary` fg (`█` glyph)
+- Thumb (hover / drag): `primary` fg + REVERSED
 
 #### Command palette input — exception
 Unlike other modal inputs, the command palette's typing row sits flush
 against the modal body — no coloured bg fill — and the `▏` cursor
-glyph is `interactive_bright` so the typing affordance still pops.
-This break is deliberate: the palette is a search affordance, not a
-form field, so it reads as part of the modal rather than as a sunken
-input chip.
+glyph is `primary` so the typing affordance still pops. This break is
+deliberate: the palette is a search affordance, not a form field, so
+it reads as part of the modal rather than as a sunken input chip.
 
 ## Built-in themes
+- [x] 256 Dark
+- [x] 256 Light
 - [ ] Edamame
 - [ ] Monochrome
-- [x] 256 color dark
-- [ ] 256 color light
 - [ ] GitHub
 - [ ] Dracula
 - [ ] Catpuccin
@@ -139,24 +192,20 @@ can return to them once the visual language settles.
   isn't yet painting any active-line band either — a future patch
   needs both the palette assignment and the renderer pass.
 - **Search / find-in-document.** `theme.search_highlight` is in place
-  (structural_bright bg, default_bg fg) for when the find feature
-  lands. The find UI itself (input chrome, match counter, surrounding
-  status banner) is not specified.
+  (`secondary` bg, `bg` fg) for when the find feature lands. The find
+  UI itself (input chrome, match counter, surrounding status banner)
+  is not specified.
 - **Footnote / reference markers.** `theme.footnote` is in place
-  (structural_dim fg) but the renderer doesn't emit footnote markers
+  (`secondary` fg) but the renderer doesn't emit footnote markers
   yet. Once `pulldown-cmark`'s footnote inlines surface, hook the
   style up.
-- **Scrollbars.** Modals draw a textual `↑` / `↓` / `↑↓` indicator
-  in the title; there's no narrow gutter scrollbar. Once we add one,
-  it'll need a palette entry (probably `structural_dim` fg).
-- **Diff / merge markers.** No styling for diff view (added /
-  removed / context lines) — deferred until the editor grows a
-  diff feature.
-- **Surface naming.** The palette description in this file says
-  "dark grey — UI surfaces (status line, modal, code block bg);
-  slightly lighter grey — elevated UI surfaces (inputs, hint
-  line)", but the rule list above uses `surface_elevated` for the
-  darker chrome (status / modal / code) and `surface` for the
-  elevated surfaces (hint / inputs). The implementation follows the
-  rule list. Consider renaming the variants — `surface_chrome` and
-  `surface_elevated` would read more naturally — once we revisit.
+- **Diff / merge markers.** The palette ships `diff_add` and
+  `diff_delete` slots so themes can pre-author the colours, but no
+  rendered styles consume them yet. Wire them up when the diff
+  feature lands.
+- **Surface naming.** The palette description says `surface` is the
+  lifted-chrome variant (hint / transient strip) and
+  `surface_elevated` is the heavier chrome (status / modal / code
+  block). The rule list above follows that convention; consider
+  renaming the variants — `surface_chrome` and `surface_elevated`
+  would read more naturally — once we revisit.

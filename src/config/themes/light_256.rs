@@ -1,76 +1,77 @@
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier, Style};
 
-use crate::config::theme::Palette;
+use crate::config::theme::{Palette, Theme};
 
-/// Companion light palette to [`super::default_dark`].  Same colour
-/// families (warm orange brand, edamame-green success, gold chrome)
-/// re-tuned for a near-white page: brights are darker and more
-/// saturated so they pop against the light surface, dims are lighter
-/// so they recede.  Inverse-text sites (`fg = default_bg`) on any
-/// saturated brand colour rely on those colours being dark enough to
-/// contrast with near-white — yellows are shifted to amber/orange-gold
-/// for that reason.
+/// Companion light palette to [`super::dark_256`].  Same colour
+/// families (warm orange brand, edamame-green success, cool purple
+/// chrome) re-tuned for a near-white page: brand colours are darker
+/// and more saturated so they pop against the light surface.
+/// Inverse-text sites (`fg = bg`) on any saturated brand colour rely
+/// on those colours being dark enough to contrast with near-white —
+/// yellows are shifted to amber/orange-gold for that reason.
 pub fn palette() -> Palette {
     Palette {
-        default_text: Color::Indexed(234),
-        default_bg: Color::Indexed(254),
-
-        // Orange — brand identity.
-        primary_bright: Color::Indexed(166),
-        primary_dim: Color::Indexed(173),
-
-        // Cyan — emphasis.
-        emphasis_bright: Color::Indexed(24),
-        emphasis_dim: Color::Indexed(31),
-
-        // Gold — structural chrome.
-        structural_bright: Color::Indexed(136),
-        structural_dim: Color::Indexed(94),
-
-        // Blue — links, focus.
-        interactive_bright: Color::Indexed(21),
-        interactive_dim: Color::Indexed(75),
-        // Selection bg is split from `interactive_dim` on the light
-        // theme: a pale tint lets the near-black `default_text` read
-        // through the highlight, the way selection traditionally
-        // looks on a light page.
-        selection_bg: Color::Indexed(153),
-
-        // Green — success.
-        success_bright: Color::Indexed(28),
-        success_dim: Color::Indexed(70),
-
-        // Amber — warnings.  Shifted darker than the dark palette's
-        // yellow so inverse-text sites (highlight, raw-mode chip,
-        // task_unchecked text colour) stay legible against a
-        // near-white page.
-        warning_bright: Color::Indexed(172),
-        warning_dim: Color::Indexed(130),
-
-        // Red — errors.
-        error_bright: Color::Indexed(124),
-        error_dim: Color::Indexed(167),
-
-        // Greys — chrome.  Surfaces step *darker* than the page
-        // because lifting a card off a light background reads as
-        // "more grey", mirroring the dark palette's "lift = lighter".
+        text: Color::Indexed(234),
         text_muted: Color::Indexed(244),
-        muted: Color::Indexed(252),
+        bg: Color::Indexed(254),
+        bg_muted: Color::Indexed(252),
         surface: Color::Indexed(251),
         surface_elevated: Color::Indexed(250),
 
-        // Headings — same yellow → orange → purple → gold ramp as the
-        // dark palette, with each shade pushed darker so it reads on
-        // a light page.
-        h1: Color::Indexed(178),
-        h2: Color::Indexed(166),
-        h3: Color::Indexed(91),
-        h4: Color::Indexed(130),
-        h5: Color::Indexed(172),
-        h6: Color::Indexed(97),
+        // Orange — brand identity.
+        primary: Color::Indexed(166),
+        // Mid purple — structural chrome.  Cool hue chosen to
+        // contrast with the warm `primary` orange.
+        secondary: Color::Indexed(97),
+        // Medium blue — list markers, table header, selection bg.
+        // Pale enough to let the near-black `text` (234) read
+        // through when used as selection bg, dark enough to read as
+        // a fg on the near-white page.
+        accent: Color::Indexed(75),
+        // Saturated blue — link foreground.
+        link: Color::Indexed(21),
 
-        // Inline code — purple foreground on the muted light grey.
-        code_bright: Color::Indexed(91),
-        code_dim: Color::Indexed(97),
+        success: Color::Indexed(28),
+        // Amber — shifted darker than the dark palette's yellow so
+        // inverse-text sites (highlight, raw-mode chip,
+        // task_unchecked text colour) stay legible against the
+        // near-white page.
+        warning: Color::Indexed(172),
+        error: Color::Indexed(124),
+
+        // Inline code — saturated purple foreground on the muted
+        // light grey.  Distinct enough from the `secondary` mid
+        // purple that inline-code reads as code rather than chrome.
+        code: Color::Indexed(91),
+
+        // Reserved for a future diff view; not consumed yet.
+        diff_add: Color::Indexed(28),
+        diff_delete: Color::Indexed(124),
     }
+}
+
+/// Built-in theme: builds a [`Theme`] from [`palette`] and pins the
+/// `h1`–`h6` heading ramp to curated 256-cube shades.  See the
+/// `dark_256::theme` doc for the rationale.
+pub fn theme() -> Theme {
+    let mut t = Theme::from_palette(&palette());
+    let bold = Modifier::BOLD;
+    let underline = Modifier::UNDERLINED;
+    // Heading ramp: alternates primary (orange) and secondary (purple),
+    // each shade pushed darker than its dark-palette counterpart so
+    // it reads on a light page.
+    let h1 = Color::Indexed(166); // primary, bright
+    let h2 = Color::Indexed(53); // secondary, bright (dark purple)
+    let h3 = Color::Indexed(130); // primary, medium
+    let h4 = Color::Indexed(97); // secondary, medium
+    let h5 = Color::Indexed(94); // primary, dull
+    let h6 = Color::Indexed(60); // secondary, dull
+    t.h1 = Style::default().fg(h1).add_modifier(bold);
+    t.h1_rule = Style::default().fg(h1);
+    t.h2 = Style::default().fg(h2).add_modifier(bold | underline);
+    t.h3 = Style::default().fg(h3).add_modifier(bold | underline);
+    t.h4 = Style::default().fg(h4).add_modifier(bold | underline);
+    t.h5 = Style::default().fg(h5).add_modifier(bold | underline);
+    t.h6 = Style::default().fg(h6).add_modifier(bold | underline);
+    t
 }
