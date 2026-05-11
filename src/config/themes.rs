@@ -12,5 +12,19 @@
 //!    Palette { … }`.
 //! 3. Add an entry to `BUILTIN_THEMES` in `theme.rs`.
 
+pub mod util;
+
 pub mod dark_256;
 pub mod light_256;
+
+pub mod ayu;
+pub mod catppuccin;
+pub mod dracula;
+pub mod github_dark;
+pub mod gruvbox;
+pub mod monokai;
+pub mod one_dark;
+pub mod orng;
+pub mod rose_pine;
+pub mod synthwave84;
+pub mod tokyo_night;

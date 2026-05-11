@@ -21,9 +21,11 @@ pub use super::warnings::{ConfigWarning, WarningKind};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Name of the active theme, resolved to `themes/<theme>.toml` at load.
-    /// Defaults to `"default"`.  A missing file falls back to the compiled-in
-    /// `Theme::default()` so the editor always has a working colour table.
+    /// Name of the active theme.  Built-in names (see `BUILTIN_THEMES`)
+    /// resolve to a compiled-in palette; any other name is loaded from
+    /// `themes/<theme>.toml`.  Defaults to `"256 Dark"`.  A missing file
+    /// falls back to the compiled-in `Theme::default()` so the editor
+    /// always has a working colour table.
     pub theme: String,
     pub editor: EditorConfig,
     pub modal: ModalConfig,
@@ -36,7 +38,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            theme: "default".into(),
+            theme: "256 Dark".into(),
             editor: EditorConfig::default(),
             modal: ModalConfig::default(),
             table: TableConfig::default(),
@@ -198,7 +200,7 @@ mod tests {
         assert_eq!(config.editor.tab_width, 4);
         assert!(!config.dev.logging);
         assert_eq!(config.modal.handler, "default");
-        assert_eq!(config.theme, "default");
+        assert_eq!(config.theme, "256 Dark");
     }
 
     #[test]
@@ -218,7 +220,7 @@ mod tests {
         assert!(config.dev.logging);
         assert_eq!(config.editor.tab_width, 4); // default
         assert_eq!(config.modal.handler, "default"); // default
-        assert_eq!(config.theme, "default"); // default
+        assert_eq!(config.theme, "256 Dark"); // default
     }
 
     #[test]
@@ -259,7 +261,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         let mut warnings = Vec::new();
         let config = read_main_config(&path, &mut warnings);
-        assert_eq!(config.theme, "default");
+        assert_eq!(config.theme, "256 Dark");
         assert_eq!(config.editor.tab_width, 4);
         assert!(warnings.is_empty());
     }
@@ -276,10 +278,11 @@ mod tests {
 
     #[test]
     fn read_theme_missing_default_falls_back_to_compiled_theme() {
-        // The `default` theme is a built-in (see `BUILTIN_THEMES`) and
-        // is resolved from compiled-in code without any disk read at
-        // all — the user's themes directory may legitimately be empty.
-        // The result must equal the compiled `Theme::default()`.
+        // `default` is the historical theme name (still referenced by
+        // some user `config.toml` files written by older edamame
+        // versions).  It isn't in `BUILTIN_THEMES`, so the loader hits
+        // the missing-file path and falls back to the compiled
+        // `Theme::default()` — the editor must still come up themed.
         let dir = tempfile::tempdir().unwrap();
         let mut warnings = Vec::new();
         let theme = read_theme_named(dir.path(), "default", &mut warnings);

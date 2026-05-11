@@ -150,6 +150,14 @@ pub(super) fn list_theme_names() -> Vec<String> {
                         // matches what the user will actually see.
                         return None;
                     }
+                    // `default` is the historical alias for the first
+                    // built-in (256 Dark) — written to disk on first run
+                    // of earlier edamame versions.  Hide it so the
+                    // settings cycle doesn't list two entries that
+                    // resolve to the same theme.
+                    if stem == "default" {
+                        return None;
+                    }
                     Some(stem)
                 })
                 .collect();
