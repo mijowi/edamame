@@ -20,22 +20,16 @@ pub fn palette() -> Palette {
         primary_dim: Color::Indexed(173),
 
         // Cyan — emphasis.
-        emphasis_bright: Color::Indexed(31),
-        emphasis_dim: Color::Indexed(38),
+        emphasis_bright: Color::Indexed(24),
+        emphasis_dim: Color::Indexed(31),
 
         // Gold — structural chrome.
         structural_bright: Color::Indexed(136),
         structural_dim: Color::Indexed(94),
 
-        // Blue — links, focus.  `interactive_dim` is pulled darker
-        // than its dark-theme counterpart because `from_palette` uses
-        // it as the bg for inverse-text sites
-        // (`modal_input_unfocused`, `modal_item_selected`) that paint
-        // `fg = default_bg`.  On a light page that fg is near-white,
-        // so the bg has to be saturated/dark enough for the text to
-        // read.
-        interactive_bright: Color::Indexed(33),
-        interactive_dim: Color::Indexed(27),
+        // Blue — links, focus.
+        interactive_bright: Color::Indexed(21),
+        interactive_dim: Color::Indexed(75),
         // Selection bg is split from `interactive_dim` on the light
         // theme: a pale tint lets the near-black `default_text` read
         // through the highlight, the way selection traditionally
