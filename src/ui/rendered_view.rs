@@ -236,10 +236,21 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             })
         ) && cursor_block_own > 2;
         // True when the cursor's current line is allowed to de-render: any
-        // non-code-block line, or the opening-fence line of a fenced code
-        // block with a language tag.
-        let code_block_allows_reveal =
-            !is_code_block || (is_fenced_code_with_lang && cursor_raw_line == 0);
+        // non-code-block line, the opening-fence line of a fenced code
+        // block with a language tag, or the closing-fence line of any
+        // fenced code block (the renderer reserves a trailing padded row
+        // for it; revealing that row shows the ``` glyphs).
+        let raw_line_count = raw_lines.len();
+        let trimmed_block = raw_block_source.trim_start();
+        let block_is_fenced =
+            trimmed_block.starts_with("```") || trimmed_block.starts_with("~~~");
+        let is_closing_fence_line = is_code_block
+            && block_is_fenced
+            && raw_line_count > 0
+            && cursor_raw_line == raw_line_count - 1;
+        let code_block_allows_reveal = !is_code_block
+            || (is_fenced_code_with_lang && cursor_raw_line == 0)
+            || is_closing_fence_line;
         let cursor_in_block = if is_table && cursor_block_own >= 3 {
             let last_replaceable = cursor_block_own.saturating_sub(2);
             let block_lines = editor
@@ -291,16 +302,14 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             // edits land below the visible cursor.
             //
             // Fenced blocks WITH a language tag render a label row for
-            // the opening fence, so raw lines map 1:1 to rendered lines
-            // (the closing fence has no row of its own and clamps onto
-            // the last body line).  Fenced blocks WITHOUT a language
-            // tag have no label row, so the opening fence has no
-            // rendered counterpart — shift body lines up by one.
-            //  Indented code blocks have no fences at all; their raw
-            //  lines map 1:1.
-            let trimmed = raw_block_source.trim_start();
-            let is_fenced = trimmed.starts_with("```") || trimmed.starts_with("~~~");
-            let opening_fence_has_no_row = is_fenced && !is_fenced_code_with_lang;
+            // the opening fence and a trailing padded row for the
+            // closing fence, so raw lines map 1:1 to rendered lines.
+            // Fenced blocks WITHOUT a language tag have no opening
+            // label row but still reserve the trailing closing row —
+            // shift body lines up by one so the closing fence lands on
+            // the reserved trailing row.  Indented code blocks have no
+            // fences at all; their raw lines map 1:1.
+            let opening_fence_has_no_row = block_is_fenced && !is_fenced_code_with_lang;
             let shift = if opening_fence_has_no_row { 1 } else { 0 };
             cursor_raw_line
                 .saturating_sub(shift)

@@ -17,6 +17,7 @@ pub enum Block {
     CodeBlock {
         language: Option<String>,
         content: String,
+        fenced: bool,
     },
     BlockQuote {
         blocks: Vec<Block>,

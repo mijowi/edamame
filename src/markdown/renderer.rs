@@ -146,8 +146,8 @@ impl<'t> Renderer<'t> {
             Block::Paragraph { inlines } => {
                 self.render_paragraph(inlines, out, indent_prefix);
             }
-            Block::CodeBlock { language, content } => {
-                self.render_code_block(language.as_deref(), content, out);
+            Block::CodeBlock { language, content, fenced } => {
+                self.render_code_block(language.as_deref(), content, *fenced, out);
             }
             Block::BlockQuote { blocks } => {
                 self.render_blockquote(blocks, out);
@@ -427,6 +427,7 @@ impl<'t> Renderer<'t> {
         &self,
         language: Option<&str>,
         content: &str,
+        fenced: bool,
         out: &mut Vec<Line<'static>>,
     ) {
         // Split on '\n' and strip exactly one trailing empty string (the artifact
@@ -491,6 +492,15 @@ impl<'t> Renderer<'t> {
                     out.push(Line::styled(padded, self.theme.code_block_text));
                 }
             }
+        }
+
+        // Closing-fence placeholder row: fenced blocks reserve a trailing
+        // padded row matching the code background.  The actual ``` glyphs
+        // only become visible when the cursor enters this raw line and
+        // `RenderedView` reveals the raw source for that row.
+        if fenced {
+            let padded = "\u{00A0}".repeat(block_width);
+            out.push(Line::styled(padded, self.theme.code_block_text));
         }
     }
 
