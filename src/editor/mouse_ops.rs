@@ -312,11 +312,42 @@ pub fn apply(
                 state.drag_in_progress = false;
                 return;
             }
+            // Image block click: hit-test the click's rendered line
+            // directly against every image block's reserved rendered-
+            // line range — avoids `click_to_char_offset`'s boundary
+            // ambiguity at the very end of a placeholder line (where
+            // the offset can spill into the next block).  Skip
+            // interception when the cursor is already inside the
+            // matched image block AND the reveal has elapsed (the raw
+            // source is showing; the click should land on text
+            // normally).
+            if let Some(block_idx) =
+                image_block_at_click(state, row as usize, viewport_width)
+            {
+                let already_revealed = state.cursor_block_idx == Some(block_idx)
+                    && state.cursor_block_revealed();
+                if !already_revealed {
+                    if let Some(target) = image_block_cursor_target(state, block_idx) {
+                        state.selection = None;
+                        state.cursor.offset = target;
+                        state.cursor.preferred_col =
+                            state.current_visual_col(viewport_width);
+                        state.update_cursor_block();
+                        state.cursor_block_entered_at = None;
+                        state.ensure_cursor_visible(viewport_height, viewport_width);
+                        *drag_target = None;
+                        state.drag_in_progress = false;
+                        return;
+                    }
+                }
+            }
+
             if let Some(offset) =
                 click_to_char_offset(state, col as usize, row as usize, viewport_width)
             {
                 state.selection = None;
                 let new_offset = offset.min(state.buffer.len_chars());
+
                 // A click landing on the same logical line as the cursor
                 // already occupies should not flip the cursor block out of
                 // its raw view — without this guard, setting
@@ -528,6 +559,69 @@ pub fn apply(
             scroll_by_mouse(state, delta, viewport_width);
         }
     }
+}
+
+/// Return the block index of the image block whose reserved rendered
+/// lines contain the rendered line under doc-relative `row` (with the
+/// current scroll applied).  Returns `None` when no image block covers
+/// that row, or when the buffer/parsed view has no image blocks at all.
+fn image_block_at_click(
+    state: &EditorState,
+    row: usize,
+    viewport_width: usize,
+) -> Option<usize> {
+    if state.parsed.image_blocks.is_empty() {
+        return None;
+    }
+    let (line_idx, _) =
+        state.rendered_line_at_visual_row(state.scroll.saturating_add(row), viewport_width);
+    state
+        .parsed
+        .image_blocks
+        .iter()
+        .find(|info| {
+            state
+                .parsed
+                .source_map
+                .rendered_lines_for_block(info.block_idx)
+                .contains(&line_idx)
+        })
+        .map(|info| info.block_idx)
+}
+
+/// Compute the cursor offset to use when a click lands anywhere on a
+/// rendered image block.  Returns the buffer char offset at the end of
+/// the block's source text — for regular images, the end of the
+/// `![alt](url)` line; for diagram (`mermaid`) blocks, the end of the
+/// last code line inside the fence (i.e. just before the closing
+/// ```` ``` ````).  Returns `None` when the block has no resolvable
+/// source range.
+fn image_block_cursor_target(state: &EditorState, block_idx: usize) -> Option<usize> {
+    let range = state
+        .parsed
+        .source_map
+        .original_range_for_block(block_idx)?;
+    let source = state.buffer.contents();
+    let end = range.end.min(source.len());
+    let block_text = source.get(range.start..end)?;
+    let trimmed = block_text.trim_end_matches('\n');
+
+    let target_in_block = if state.parsed.is_mermaid_block(block_idx) {
+        // Strip the closing fence line.  `\n```` ``` ```` ` is the
+        // newline immediately before the closing fence; the char before
+        // it is the last char of the last code line.
+        trimmed.rfind("\n```").unwrap_or(trimmed.len())
+    } else {
+        trimmed.len()
+    };
+
+    let absolute_byte = range.start + target_in_block;
+    Some(
+        state
+            .buffer
+            .rope()
+            .byte_to_char(absolute_byte.min(source.len())),
+    )
 }
 
 /// Set the scroll position absolutely from a scrollbar interaction.
