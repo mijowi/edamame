@@ -1,3 +1,4 @@
+
 # Heading 1
 
 ## Heading 2
@@ -11,8 +12,6 @@
 ###### Heading 6
 
 <!-- html comment -->
-Also Heading 1
-==============
 
 Also Heading 2
 --------------
@@ -37,15 +36,18 @@ Block quote
 
 ![Github's Mona](https://brand.github.com/_next/static/media/mascots-01.fc6009a2.png)
 
+
+
+Another Heading 1
+==============
+
+## Another H2
+
 * Unordered list
 * Foo
 * Bar
 
-- Another unordered list
-- Foo
-- Bar
-
-+ Another unordered list with a very long item that should wrap when it exceeds the width of the terminal.
++ Unordered list with a very long item that should wrap when it exceeds the width of the terminal, which is usually capped at 100 characters.
 + Foo
 + Bar
 

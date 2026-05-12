@@ -1468,11 +1468,18 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 - Add a first-run config setup for images, diagrams, remote images, mouse, etc based on inferred terminal capabilities.
 
-- Light theme needs to set fg color to white for selected item in modals
-
-- Ship several built-in themes (dark, light, dracula, gruvbox, catppuccin, github dark/light)
+- Max editor width breaks table button alignment and click detection
 
 - Add a command palette action that generates a `.toml` file for a custom theme based on a default theme, with a new name. Set to current theme by default. Creating the file sets the theme to the new custom theme. Remove the existing behavior that copies a commented-out theme file to the user's config directory.
+
+- We should try saturating the bg color of these themes some more so that the surface colors pop:
+  - Ayu
+  - Catpuccin
+  - Dracula
+  - Orng
+  - SynthWave '84
+  
+- edamame in-app about page
 
 ---
 
