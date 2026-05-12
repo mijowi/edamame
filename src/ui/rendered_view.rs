@@ -19,7 +19,10 @@ use super::table_view::{self, TableLayoutSnapshot};
 
 use self::cell_overlay::{compute_cell_chunk_overlay, compute_wrapped_cell_overlay};
 use self::list_marker::list_raw_col_to_rendered_col;
-use self::paint::{make_raw_line_with_selection, overlay_raw_cell, paint_selection_overlay};
+use self::paint::{
+    make_code_styled_body_line, make_raw_line_with_selection, overlay_raw_cell,
+    paint_selection_overlay,
+};
 use self::raw_text::{cursor_position_in_block, raw_line_byte_start, raw_source_lines};
 
 /// State for the `RenderedView` widget.
@@ -242,8 +245,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // for it; revealing that row shows the ``` glyphs).
         let raw_line_count = raw_lines.len();
         let trimmed_block = raw_block_source.trim_start();
-        let block_is_fenced =
-            trimmed_block.starts_with("```") || trimmed_block.starts_with("~~~");
+        let block_is_fenced = trimmed_block.starts_with("```") || trimmed_block.starts_with("~~~");
         let is_closing_fence_line = is_code_block
             && block_is_fenced
             && raw_line_count > 0
@@ -453,13 +455,9 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         render_line_from_visual(&styled, area, buf, vis_y as u16, wrap, skip_rows)
                             as usize;
                 }
-            } else if reveal_raw && (is_mermaid_block || is_setext) && in_cursor_block {
-                // Both setext headings and mermaid blocks reveal every
-                // rendered row of the block to its matching raw-source
-                // line in one pass.  For mermaid blocks, rows past the
-                // end of the source render as blank (mirroring how a
-                // code block's reserved area looks when its source is
-                // short).
+            } else if reveal_raw && is_setext && in_cursor_block {
+                // Setext headings reveal every rendered row of the block
+                // to its matching raw-source line in one pass.
                 let sub = virtual_idx - cursor_block_lines.start;
                 let raw_text = raw_lines.get(sub).copied().unwrap_or("");
                 let cursor_on_this = cursor_raw_line == sub;
@@ -487,6 +485,105 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     sel_cols,
                     self.theme,
                 );
+                rows_used =
+                    render_line_from_visual(&styled, area, buf, vis_y as u16, wrap, skip_rows)
+                        as usize;
+            } else if reveal_raw && is_mermaid_block && in_cursor_block {
+                // Mermaid blocks reveal as if they were a regular fenced
+                // ```mermaid``` code block — the same way they'd appear
+                // when the `diagrams` setting is disabled.  Each reserved
+                // row gets:
+                //
+                //   * row 0 (opening fence) → ` mermaid ` language label,
+                //     or the raw `` ```mermaid `` line with cursor when
+                //     the cursor is on row 0.
+                //   * body rows → raw source text painted on the code-
+                //     block background; cursor / selection overlays
+                //     applied per char.
+                //   * the last raw row (closing `` ``` ``) → a padded
+                //     placeholder row, or the raw fence with cursor when
+                //     the cursor sits on the closing fence.
+                //   * rows past the end of the source (reserved height
+                //     exceeds the source line count) → padded code-block
+                //     background so the entire reservation reads as one
+                //     continuous code block.
+                let sub = virtual_idx - cursor_block_lines.start;
+                let raw_text = raw_lines.get(sub).copied().unwrap_or("");
+                let cursor_on_this = cursor_raw_line == sub;
+                let last_raw_idx = raw_lines.len().saturating_sub(1);
+                let is_opening_fence_row = sub == 0 && raw_lines.len() >= 2;
+                let is_closing_fence_row =
+                    sub == last_raw_idx && raw_lines.len() >= 2 && raw_text.trim() == "```";
+                let in_source = sub < raw_lines.len();
+                let width = area.width as usize;
+
+                let sel_cols = selection_bytes.and_then(|(sa, sb)| {
+                    let block_start = block_range_for_cursor.as_ref()?.start;
+                    let raw_line_start_in_block = raw_line_byte_start(&raw_block_source, sub);
+                    let raw_line_start_abs = block_start + raw_line_start_in_block;
+                    let raw_line_end_abs = raw_line_start_abs + raw_text.len();
+                    let start_byte = sa.max(raw_line_start_abs).min(raw_line_end_abs);
+                    let end_byte = sb.max(raw_line_start_abs).min(raw_line_end_abs);
+                    if start_byte >= end_byte {
+                        return None;
+                    }
+                    let start_col = raw_text[..start_byte - raw_line_start_abs].chars().count();
+                    let end_col = raw_text[..end_byte - raw_line_start_abs].chars().count();
+                    Some((start_col, end_col))
+                });
+
+                let styled = if cursor_on_this && (is_opening_fence_row || is_closing_fence_row) {
+                    // Fence row with cursor on it: reveal the raw fence
+                    // text (matches a regular fenced code block's reveal
+                    // behaviour for the opening / closing fence rows).
+                    make_raw_line_with_selection(
+                        raw_text,
+                        if cursor_visible {
+                            Some(cursor_col)
+                        } else {
+                            None
+                        },
+                        sel_cols,
+                        self.theme,
+                    )
+                } else if is_opening_fence_row {
+                    // No cursor: paint the language label as a code block
+                    // would emit it.  Falls back to raw source for any
+                    // language that isn't `mermaid` so the row still
+                    // shows something sensible.
+                    let lang = raw_text.trim_start_matches(['`', '~']);
+                    let lang = if lang.is_empty() { "mermaid" } else { lang };
+                    ratatui::text::Line::styled(format!(" {} ", lang), self.theme.code_block_lang)
+                } else if is_closing_fence_row {
+                    // No cursor: padded closing-fence row (NBSP-filled,
+                    // code-block background) — same as the renderer's
+                    // reserved closing row for a fenced code block.
+                    ratatui::text::Line::styled(
+                        "\u{00A0}".repeat(width.max(1)),
+                        self.theme.code_block_text,
+                    )
+                } else if in_source {
+                    // Body row.  Apply the code-block background so the
+                    // block reads as code; overlay cursor / selection.
+                    make_code_styled_body_line(
+                        raw_text,
+                        if cursor_on_this && cursor_visible {
+                            Some(cursor_col)
+                        } else {
+                            None
+                        },
+                        sel_cols,
+                        self.theme,
+                    )
+                } else {
+                    // Past the end of the source: pad with code-block
+                    // background so the reservation looks continuous.
+                    ratatui::text::Line::styled(
+                        "\u{00A0}".repeat(width.max(1)),
+                        self.theme.code_block_text,
+                    )
+                };
+
                 rows_used =
                     render_line_from_visual(&styled, area, buf, vis_y as u16, wrap, skip_rows)
                         as usize;
