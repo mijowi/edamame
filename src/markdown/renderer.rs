@@ -340,7 +340,7 @@ impl<'t> Renderer<'t> {
             .h1
             .remove_modifier(Modifier::UNDERLINED)
             .bg(self.theme.palette.bg);
-        let muted = self.theme.palette.bg_muted;
+        let shadow_color = self.theme.palette.bg_muted;
         let blank_spacer = Line::styled(" ".repeat(viewport), bg_style);
 
         for (chunk_idx, chunk) in chunks.iter().enumerate() {
@@ -370,7 +370,7 @@ impl<'t> Renderer<'t> {
                 }
                 let cell_start = glyph_start_x + i * GLYPH_W_PER_CHAR;
                 for x in cell_start..cell_start + GLYPH_W_PER_CHAR {
-                    buf[(x as u16, bottom)].set_bg(muted);
+                    buf[(x as u16, bottom)].set_bg(shadow_color);
                 }
             }
             for y in 0..GLYPH_H {
