@@ -1660,6 +1660,63 @@ fn same_mermaid_block_click_does_not_set_drag_in_progress() {
 }
 
 #[test]
+fn click_on_visible_mermaid_block_parks_cursor_at_end_of_last_code_line() {
+    // Cursor lives in the trailer (not the mermaid block) so the image
+    // is actually showing.  A click anywhere on the rendered placeholder
+    // must de-render the image (clear `cursor_block_entered_at`) and
+    // park the cursor right after the last char of the last code line —
+    // here, after the `C` in `B-->C`.
+    let src = "Intro.\n\n```mermaid\nflowchart TD\nA-->B\nB-->C\n```\n\nTrailer.\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    st.cursor.offset = src.find("Trailer").unwrap();
+    st.update_cursor_block();
+
+    // Mermaid block starts at rendered row 2 (after "Intro.\n\n").  Click
+    // on row 3 (somewhere in the reserved placeholder area).
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    mouse_ops::apply(&mut st, click(5, 3), &mut anchor, &[], VP, VW);
+
+    let chars: Vec<char> = st.contents().chars().collect();
+    let last_c = src.find("B-->C").unwrap() + "B-->C".len();
+    assert_eq!(
+        st.cursor.offset, last_c,
+        "click on rendered mermaid placeholder must park cursor after last code char (got {:?})",
+        chars.get(st.cursor.offset),
+    );
+    assert!(
+        st.cursor_block_revealed(),
+        "image click must force-reveal the block immediately",
+    );
+    assert!(anchor.is_none(), "image click should not start a drag");
+}
+
+#[test]
+fn click_on_visible_image_block_parks_cursor_at_end_of_source_line() {
+    // Regular image — paragraph promoted to ImageBlock.  Cursor parked
+    // outside the block so the image is rendered.  Clicking the rendered
+    // placeholder must park the cursor at the end of `![alt](url)`.
+    let src = "Before.\n\n![alt](pic.png)\n\nAfter.\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    st.cursor.offset = src.find("Before").unwrap();
+    st.update_cursor_block();
+
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    mouse_ops::apply(&mut st, click(3, 2), &mut anchor, &[], VP, VW);
+
+    let line_end = src.find("![alt](pic.png)").unwrap() + "![alt](pic.png)".len();
+    assert_eq!(
+        st.cursor.offset, line_end,
+        "click on rendered image must park cursor at end of source line",
+    );
+    assert!(
+        st.cursor_block_revealed(),
+        "image click must force-reveal the block immediately",
+    );
+}
+
+#[test]
 fn click_on_mermaid_row_lands_on_clicked_column() {
     // The `[Image: …]` placeholder + blank reserved rows have no
     // useful per-character content for the standard rendered→raw
