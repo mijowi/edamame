@@ -76,6 +76,17 @@ impl App {
         }
     }
 
+    /// Counterpart to [`Self::effective_images_enabled`] for diagram
+    /// blocks (mermaid, etc.).  Decoupled from the image flag so a user
+    /// can answer the two prompts independently.
+    pub(super) fn effective_diagrams_enabled(&self) -> bool {
+        match self.config.diagrams.enabled {
+            crate::config::DiagramsEnabled::Always => true,
+            crate::config::DiagramsEnabled::Never => false,
+            crate::config::DiagramsEnabled::Ask => self.session_diagrams_enabled.unwrap_or(false),
+        }
+    }
+
     /// Whether image blocks should still reserve layout rows, even if
     /// no decode will run.  Returns `false` only when the user has
     /// explicitly declined — persisted `Never` or a session-level `No`
@@ -87,6 +98,15 @@ impl App {
             crate::config::ImagesEnabled::Never => false,
             crate::config::ImagesEnabled::Always => true,
             crate::config::ImagesEnabled::Ask => self.session_images_enabled != Some(false),
+        }
+    }
+
+    /// Counterpart to [`Self::images_layout_enabled`] for diagram blocks.
+    pub(super) fn diagrams_layout_enabled(&self) -> bool {
+        match self.config.diagrams.enabled {
+            crate::config::DiagramsEnabled::Never => false,
+            crate::config::DiagramsEnabled::Always => true,
+            crate::config::DiagramsEnabled::Ask => self.session_diagrams_enabled != Some(false),
         }
     }
 
@@ -140,7 +160,9 @@ impl App {
     /// `ImageReady(Err(...))` instead of stranding the cache entry as
     /// `Pending` forever.
     pub(super) fn dispatch_image_decodes_for(&mut self, infos: &[crate::document::ImageBlockInfo]) {
-        if !self.effective_images_enabled() {
+        let images_on = self.effective_images_enabled();
+        let diagrams_on = self.effective_diagrams_enabled();
+        if !images_on && !diagrams_on {
             return;
         }
         let Some(tx) = self.app_tx.clone() else {
@@ -178,6 +200,17 @@ impl App {
         };
 
         for info in infos {
+            // Route each block to its respective enabled flag.  Skip
+            // blocks whose class is currently declined so a user who
+            // said "yes images, no diagrams" doesn't trigger mermaid
+            // renders behind their back.
+            let is_diagram = info.source.is_some();
+            if is_diagram && !diagrams_on {
+                continue;
+            }
+            if !is_diagram && !images_on {
+                continue;
+            }
             if !self.editor.images.request(&info.url) {
                 continue;
             }

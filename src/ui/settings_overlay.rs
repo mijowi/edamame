@@ -630,6 +630,7 @@ mod tests {
                 "Use visual line navigation",
                 "Scroll speed",
                 "Show images",
+                "Show diagrams",
                 "Show remote images",
                 "Show table buttons",
                 "Export inlined images",

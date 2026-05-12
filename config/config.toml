@@ -83,6 +83,13 @@ enabled = "ask"
 # Policy for `http(s)://` image URLs: "ask" | "always" | "never".
 remote_policy = "ask"
 
+# ── Diagrams ──────────────────────────────────────────────────────────────────
+[diagrams]
+# Master switch for inline diagram rendering (e.g. ```mermaid):
+# "ask" | "always" | "never".  Kept separate from `[images].enabled` so a
+# user can opt in to one without the other.
+enabled = "ask"
+
 # ── Export ────────────────────────────────────────────────────────────────────
 # HTML is edamame's single built-in export target. It also serves as the
 # intermediate format for custom commands (see [[export.custom]] below), so

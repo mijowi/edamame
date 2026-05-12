@@ -1,7 +1,10 @@
-//! Master images-enabled prompt.  Shown when `config.images.enabled`
-//! is `Ask` and the open document contains at least one image.
-//! Four buttons (Yes / No / Always / Never) — the first two affect
-//! only the current session; the latter two persist to config.
+//! Master diagrams-enabled prompt.  Shown when `config.diagrams.enabled`
+//! is `Ask` and the open document contains at least one diagram code
+//! block (e.g. ```mermaid).  Four buttons (Yes / No / Always / Never)
+//! — the first two affect only the current session; the latter two
+//! persist to config.  Mirrors [`super::ImagesEnabledPromptModal`] —
+//! the two prompts are deliberately independent so a user can opt in
+//! to images without opting in to diagrams (or vice-versa).
 
 use std::any::Any;
 
@@ -11,13 +14,12 @@ use ratatui::text::Line;
 use ratatui::Frame;
 
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
-use super::RemoteImagePromptModal;
 use crate::app::App;
 use crate::config::Config;
 use crate::editor::EditorState;
 use crate::ui::{ModalButton, ModalResponse, ModalState, ModalView};
 
-pub struct ImagesEnabledPromptModal {
+pub struct DiagramsEnabledPromptModal {
     body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
     state: ModalState,
@@ -25,30 +27,28 @@ pub struct ImagesEnabledPromptModal {
     dismissable: bool,
 }
 
-impl ImagesEnabledPromptModal {
+impl DiagramsEnabledPromptModal {
     /// Construct the modal when the policy is `Ask` and the document
-    /// has image blocks.  Returns `None` otherwise.
+    /// has diagram blocks.  Returns `None` otherwise.
     pub fn from_state(editor: &EditorState, config: &Config) -> Option<Self> {
-        if !matches!(config.images.enabled, crate::config::ImagesEnabled::Ask) {
+        if !matches!(
+            config.diagrams.enabled,
+            crate::config::DiagramsEnabled::Ask
+        ) {
             return None;
         }
-        // Diagram blocks are synthetic `Block::ImageBlock`s promoted
-        // from fenced code blocks; they carry `source: Some(_)` and are
-        // handled by `DiagramsEnabledPromptModal` instead.  A document
-        // with only diagrams (no real images) must not trigger this
-        // prompt.
-        let has_real_image = editor
+        let has_diagram = editor
             .parsed
             .image_blocks
             .iter()
-            .any(|b| b.source.is_none());
-        if !has_real_image {
+            .any(|b| b.source.is_some());
+        if !has_diagram {
             return None;
         }
         let body = vec![
-            Line::raw("This document contains images."),
+            Line::raw("This document contains diagrams."),
             Line::raw(""),
-            Line::raw("Would you like edamame to display images?"),
+            Line::raw("Would you like edamame to display diagrams?"),
         ];
         Some(Self {
             body,
@@ -65,10 +65,10 @@ impl ImagesEnabledPromptModal {
     }
 }
 
-impl Modal for ImagesEnabledPromptModal {
+impl Modal for DiagramsEnabledPromptModal {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
         let view = ModalView {
-            title: "Images",
+            title: "Diagrams",
             body: &self.body,
             buttons: &self.buttons,
             theme: ctx.theme,
@@ -95,22 +95,22 @@ impl Modal for ImagesEnabledPromptModal {
                 // Button order:
                 //   0 → Yes    (session-only show, no config change)
                 //   1 → No     (session-only hide, no config change)
-                //   2 → Always (persist `ImagesEnabled::Always`)
-                //   3 → Never  (persist `ImagesEnabled::Never`)
+                //   2 → Always (persist `DiagramsEnabled::Always`)
+                //   3 → Never  (persist `DiagramsEnabled::Never`)
                 match idx {
                     0 => ModalOutcome::CloseAnd(Box::new(|app| {
-                        app.session_images_enabled = Some(true);
+                        app.session_diagrams_enabled = Some(true);
                         app.dispatch_image_decodes();
                     })),
                     1 => ModalOutcome::CloseAnd(Box::new(decline_for_session)),
                     2 => ModalOutcome::CloseAnd(Box::new(|app| {
-                        app.config.images.enabled = crate::config::ImagesEnabled::Always;
-                        app.save_config_with_flash("failed to persist images.enabled=always");
+                        app.config.diagrams.enabled = crate::config::DiagramsEnabled::Always;
+                        app.save_config_with_flash("failed to persist diagrams.enabled=always");
                         app.dispatch_image_decodes();
                     })),
                     _ => ModalOutcome::CloseAnd(Box::new(|app| {
-                        app.config.images.enabled = crate::config::ImagesEnabled::Never;
-                        app.save_config_with_flash("failed to persist images.enabled=never");
+                        app.config.diagrams.enabled = crate::config::DiagramsEnabled::Never;
+                        app.save_config_with_flash("failed to persist diagrams.enabled=never");
                         decline_for_session(app);
                     })),
                 }
@@ -139,13 +139,11 @@ impl Modal for ImagesEnabledPromptModal {
     }
 }
 
-/// Common cleanup when the user opts out of images this session: drop
-/// any queued remote-image prompt (since no images will load),
-/// collapse image blocks to their one-line placeholders, and refresh
+/// Common cleanup when the user opts out of diagrams this session:
+/// collapse diagram blocks to their one-line placeholders and refresh
 /// the parse so the layout reflects the change immediately.
 fn decline_for_session(app: &mut App) {
-    app.session_images_enabled = Some(false);
-    app.modal_stack.remove_first::<RemoteImagePromptModal>();
-    app.editor.images_enabled = false;
+    app.session_diagrams_enabled = Some(false);
+    app.editor.diagrams_enabled = false;
     app.editor.refresh_parsed();
 }

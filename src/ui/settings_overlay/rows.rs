@@ -8,7 +8,7 @@
 
 use crate::config::sections::MAX_WIDTH_COLS_MIN;
 use crate::config::theme::BUILTIN_THEMES;
-use crate::config::{Config, ImagesEnabled, RemoteImagePolicy, StatusBarLayout};
+use crate::config::{Config, DiagramsEnabled, ImagesEnabled, RemoteImagePolicy, StatusBarLayout};
 
 #[derive(Debug)]
 pub(super) enum RowAction {
@@ -82,6 +82,12 @@ const IMAGES_ENABLED_ORDER: &[ImagesEnabled] = &[
     ImagesEnabled::Never,
 ];
 
+const DIAGRAMS_ENABLED_ORDER: &[DiagramsEnabled] = &[
+    DiagramsEnabled::Ask,
+    DiagramsEnabled::Always,
+    DiagramsEnabled::Never,
+];
+
 const REMOTE_POLICY_ORDER: &[RemoteImagePolicy] = &[
     RemoteImagePolicy::Ask,
     RemoteImagePolicy::Always,
@@ -109,6 +115,23 @@ fn parse_images_enabled(s: &str) -> Result<ImagesEnabled, String> {
         "ask" => Ok(ImagesEnabled::Ask),
         "always" => Ok(ImagesEnabled::Always),
         "never" => Ok(ImagesEnabled::Never),
+        other => Err(format!("expected Ask/Always/Never, got {other:?}")),
+    }
+}
+
+fn diagrams_enabled_label(v: DiagramsEnabled) -> &'static str {
+    match v {
+        DiagramsEnabled::Ask => "Ask",
+        DiagramsEnabled::Always => "Always",
+        DiagramsEnabled::Never => "Never",
+    }
+}
+
+fn parse_diagrams_enabled(s: &str) -> Result<DiagramsEnabled, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "ask" => Ok(DiagramsEnabled::Ask),
+        "always" => Ok(DiagramsEnabled::Always),
+        "never" => Ok(DiagramsEnabled::Never),
         other => Err(format!("expected Ask/Always/Never, got {other:?}")),
     }
 }
@@ -370,6 +393,24 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 },
                 cycle: Some(|c, delta, _| {
                     c.images.enabled = cycle_enum(c.images.enabled, IMAGES_ENABLED_ORDER, delta);
+                    true
+                }),
+            },
+        },
+        RowDef {
+            label: "Show diagrams",
+            description: Some("Render Mermaid (and similar) code blocks as inline diagrams"),
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Cycle,
+                read: |c, _| diagrams_enabled_label(c.diagrams.enabled).to_owned(),
+                write_string: |c, v| {
+                    c.diagrams.enabled = parse_diagrams_enabled(v)?;
+                    Ok(())
+                },
+                cycle: Some(|c, delta, _| {
+                    c.diagrams.enabled =
+                        cycle_enum(c.diagrams.enabled, DIAGRAMS_ENABLED_ORDER, delta);
                     true
                 }),
             },

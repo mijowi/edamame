@@ -7,8 +7,8 @@ use super::init::ensure_default_files_in;
 use super::keymap::KeyBindingOverrides;
 use super::readers::{read_keybindings, read_main_config, read_theme_named};
 pub use super::sections::{
-    CustomExportEntry, DevConfig, EditorConfig, ExportConfig, ImagesConfig, ImagesEnabled,
-    ModalConfig, RemoteImagePolicy, StatusBarLayout, TableConfig,
+    CustomExportEntry, DevConfig, DiagramsConfig, DiagramsEnabled, EditorConfig, ExportConfig,
+    ImagesConfig, ImagesEnabled, ModalConfig, RemoteImagePolicy, StatusBarLayout, TableConfig,
 };
 use super::theme::Theme;
 use super::theme_file::ThemeFile;
@@ -31,6 +31,7 @@ pub struct Config {
     pub modal: ModalConfig,
     pub table: TableConfig,
     pub images: ImagesConfig,
+    pub diagrams: DiagramsConfig,
     pub export: ExportConfig,
     pub dev: DevConfig,
 }
@@ -43,6 +44,7 @@ impl Default for Config {
             modal: ModalConfig::default(),
             table: TableConfig::default(),
             images: ImagesConfig::default(),
+            diagrams: DiagramsConfig::default(),
             export: ExportConfig::default(),
             dev: DevConfig::default(),
         }
@@ -575,6 +577,7 @@ mod tests {
         assert!(serialized.contains("[editor]"));
         assert!(serialized.contains("[modal]"));
         assert!(serialized.contains("[images]"));
+        assert!(serialized.contains("[diagrams]"));
         assert!(serialized.contains("[export"));
         assert!(serialized.contains("[dev]"));
     }
