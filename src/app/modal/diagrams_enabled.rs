@@ -31,10 +31,7 @@ impl DiagramsEnabledPromptModal {
     /// Construct the modal when the policy is `Ask` and the document
     /// has diagram blocks.  Returns `None` otherwise.
     pub fn from_state(editor: &EditorState, config: &Config) -> Option<Self> {
-        if !matches!(
-            config.diagrams.enabled,
-            crate::config::DiagramsEnabled::Ask
-        ) {
+        if !matches!(config.diagrams.enabled, crate::config::DiagramsEnabled::Ask) {
             return None;
         }
         let has_diagram = editor

@@ -1452,9 +1452,10 @@ fn rendered_view_bare_code_fence_never_de_renders() {
 #[test]
 fn mermaid_block_reveals_full_raw_source_on_cursor_entry() {
     // When the cursor enters a `\`\`\`mermaid` fenced block, the entire
-    // image-reservation region must paint the raw mermaid source — not
-    // just the cursor's single line.  Regression guard for the "only
-    // one line de-renders" bug.
+    // image-reservation region must paint the mermaid source styled as
+    // a regular fenced code block (matching how the block would render
+    // when the `diagrams` setting is disabled).  Regression guard for
+    // the "only one line de-renders" bug.
     use edamame::document::Buffer;
     use edamame::editor::EditorState;
     use edamame::ui::{RenderedView, RenderedViewState};
@@ -1496,11 +1497,14 @@ fn mermaid_block_reveals_full_raw_source_on_cursor_entry() {
             })
             .collect()
     };
-    // Every raw source line must appear on its corresponding rendered
-    // row — not the `[Image: …]` placeholder.
+    // The cursor is on the first body line, so the block reveals as a
+    // fenced code block would: row 0 is the ` mermaid ` language label,
+    // body rows show their raw source, and the closing fence row is the
+    // padded placeholder (the raw `` ``` `` only appears when the cursor
+    // sits on that row).
     assert!(
-        row_text(0).starts_with("```mermaid"),
-        "row 0 must show opening fence, got: {:?}",
+        row_text(0).trim_start().starts_with("mermaid"),
+        "row 0 must show the ` mermaid ` language label, got: {:?}",
         row_text(0)
     );
     assert!(
@@ -1517,11 +1521,6 @@ fn mermaid_block_reveals_full_raw_source_on_cursor_entry() {
         row_text(3).starts_with("B-->C"),
         "row 3 must show third body line, got: {:?}",
         row_text(3)
-    );
-    assert!(
-        row_text(4).starts_with("```"),
-        "row 4 must show closing fence, got: {:?}",
-        row_text(4)
     );
     // The placeholder text the renderer would otherwise emit on row 0
     // must not be visible anywhere in the reserved region.

@@ -63,6 +63,46 @@ pub(super) fn make_raw_line_with_selection(
     Line::from(spans)
 }
 
+/// Build a `Line` for one body row of a mermaid block revealed as a code
+/// block: `raw_text` carries the source line with optional cursor and
+/// selection overlays, and the line's base style is `code_block_text` so
+/// `render_line_from_visual`'s trailing-cell fill extends the code
+/// background to the full viewport width.
+///
+/// Char positions are kept 1:1 with `raw_text` (no leading-pad column),
+/// so mouse click → raw col mapping in `rendered_sub_line_to_offset`
+/// continues to work without offset adjustments.
+pub(super) fn make_code_styled_body_line(
+    raw_text: &str,
+    cursor_col: Option<usize>,
+    selection_cols: Option<(usize, usize)>,
+    theme: &Theme,
+) -> Line<'static> {
+    let base = theme.code_block_text;
+    let cursor_style = theme.cursor_rendered;
+    let sel_style = theme.selection;
+    let chars: Vec<char> = raw_text.chars().collect();
+    let total = chars.len();
+
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(total + 1);
+    for (i, ch) in chars.iter().enumerate() {
+        let mut style = base;
+        if matches!(selection_cols, Some((s, e)) if i >= s && i < e) {
+            style = style.patch(sel_style);
+        }
+        if cursor_col == Some(i) {
+            style = cursor_style;
+        }
+        spans.push(Span::styled(ch.to_string(), style));
+    }
+    if let Some(col) = cursor_col {
+        if col >= total {
+            spans.push(Span::styled(" ".to_string(), cursor_style));
+        }
+    }
+    Line::from(spans).style(base)
+}
+
 /// Post-render pass: paint the theme's selection background on top of the
 /// rendered cells for a given rendered line, if that line's block is part of
 /// the active selection.

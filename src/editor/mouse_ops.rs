@@ -321,17 +321,14 @@ pub fn apply(
             // matched image block AND the reveal has elapsed (the raw
             // source is showing; the click should land on text
             // normally).
-            if let Some(block_idx) =
-                image_block_at_click(state, row as usize, viewport_width)
-            {
-                let already_revealed = state.cursor_block_idx == Some(block_idx)
-                    && state.cursor_block_revealed();
+            if let Some(block_idx) = image_block_at_click(state, row as usize, viewport_width) {
+                let already_revealed =
+                    state.cursor_block_idx == Some(block_idx) && state.cursor_block_revealed();
                 if !already_revealed {
                     if let Some(target) = image_block_cursor_target(state, block_idx) {
                         state.selection = None;
                         state.cursor.offset = target;
-                        state.cursor.preferred_col =
-                            state.current_visual_col(viewport_width);
+                        state.cursor.preferred_col = state.current_visual_col(viewport_width);
                         state.update_cursor_block();
                         state.cursor_block_entered_at = None;
                         state.ensure_cursor_visible(viewport_height, viewport_width);
@@ -565,11 +562,7 @@ pub fn apply(
 /// lines contain the rendered line under doc-relative `row` (with the
 /// current scroll applied).  Returns `None` when no image block covers
 /// that row, or when the buffer/parsed view has no image blocks at all.
-fn image_block_at_click(
-    state: &EditorState,
-    row: usize,
-    viewport_width: usize,
-) -> Option<usize> {
+fn image_block_at_click(state: &EditorState, row: usize, viewport_width: usize) -> Option<usize> {
     if state.parsed.image_blocks.is_empty() {
         return None;
     }
