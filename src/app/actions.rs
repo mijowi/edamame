@@ -141,6 +141,10 @@ impl App {
                 self.open_keybinds_overlay();
                 true
             }
+            Action::SwitchTheme => {
+                self.open_theme_picker();
+                true
+            }
             Action::OpenConfigFolder => {
                 if let Some(dir) = Config::config_dir() {
                     self.spawn_open_worker(dir.display().to_string());
@@ -336,6 +340,16 @@ impl App {
     pub fn open_settings_overlay(&mut self) {
         self.modal_stack
             .push(Box::new(modal::SettingsOverlayModal::new()));
+    }
+
+    /// Open the fuzzy-searchable theme picker.  Replaces the Theme
+    /// row that the settings overlay used to carry — selecting a row
+    /// writes `config.theme`, saves, and reapplies the palette live.
+    pub fn open_theme_picker(&mut self) {
+        let themes = crate::config::theme::list_theme_names();
+        let current = self.config.theme.clone();
+        self.modal_stack
+            .push(Box::new(modal::ThemePickerModal::new(themes, current)));
     }
 
     /// Open the keybinds overlay.  Builds a live `KeyMap` if one

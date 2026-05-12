@@ -78,9 +78,7 @@ impl Modal for SettingsOverlayModal {
             })),
             SettingsResponse::FieldChanged(label) => {
                 app.save_config_with_flash("failed to persist settings overlay change");
-                if label == "Theme" {
-                    app.apply_active_theme();
-                } else if label == "Big H1 headings" {
+                if label == "Big H1 headings" {
                     // Mirror the App-startup wiring: live-toggle the
                     // editor's big_h1 flag so the change takes effect
                     // on the next frame instead of waiting for a file
@@ -121,7 +119,7 @@ mod tests {
         let mut app = make_app();
         app.open_settings_overlay();
         assert!(app.modal_stack.contains::<SettingsOverlayModal>());
-        // Default focus is "Theme"; one Up skips the divider and lands
+        // Default focus is the first editable row; one Up skips the divider and lands
         // on the editor row.
         app.dispatch_modal_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 40, 80);
         app.dispatch_modal_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 40, 80);
@@ -134,7 +132,7 @@ mod tests {
         // The top-row "Open config folder" entry hands the path to the
         // OS file manager via `spawn_open_worker` and closes the
         // overlay.  No `pending_open_config_in_editor` flag is set —
-        // that path is editor-only.  Default focus is "Theme"; two Up
+        // that path is editor-only.  Default focus is the first editable row; two Up
         // presses (skipping the divider) reach the folder row.
         let mut app = make_app();
         app.open_settings_overlay();

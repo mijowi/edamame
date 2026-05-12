@@ -59,7 +59,7 @@ use crate::ui::scroll_container::{
     VERTICAL_CHROME_ROWS,
 };
 
-use self::rows::{build_rows, list_theme_names, RowAction, RowDef};
+use self::rows::{build_rows, RowAction, RowDef};
 
 /// Outcome of dispatching a key event to the settings overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,11 +97,11 @@ pub struct SettingsState {
     /// Last error from a rejected edit.  Cleared on the next
     /// successful edit / cancel.
     pub last_error: Option<String>,
-    /// Snapshot of available theme names (file stems of
-    /// `<config_dir>/themes/*.toml`).  Built once when the overlay
-    /// opens; used by `cycle_theme` to advance the Theme field.
-    /// Falls back to `["default"]` when the config dir is not
-    /// readable so cycling is never a no-op.
+    /// Empty placeholder — kept so the row table's `read` / `cycle`
+    /// function pointers can continue to take `&[String]`.  Theme
+    /// selection moved out of the settings overlay into a dedicated
+    /// `Action::SwitchTheme` modal, so no live row needs this list
+    /// anymore.
     pub theme_names: Vec<String>,
     /// Vertical scroll bookkeeping for the row table.  Up/Down move
     /// `focused` and pull the viewport via `ensure_visible`; PgUp/PgDn
@@ -115,24 +115,23 @@ pub struct SettingsState {
 
 impl SettingsState {
     pub fn new() -> Self {
-        let theme_names = list_theme_names();
         let mut state = Self {
             focused: 0,
             editing: None,
             last_error: None,
-            theme_names,
+            theme_names: Vec::new(),
             scroll_state: ScrollContainerState::default(),
             esc_button_rect: None,
             rows: build_rows(),
         };
-        // Default focus to the first editable setting ("Theme") rather
-        // than the "open externally" pair at the top.  Most users open
-        // the overlay to tweak a setting; the externals are still one
-        // Up arrow away.
+        // Default focus to the first editable setting ("Use hint line")
+        // rather than the "open externally" pair at the top.  Most
+        // users open the overlay to tweak a setting; the externals are
+        // still one Up arrow away.
         state.focused = state
             .rows
             .iter()
-            .position(|r| r.label == "Theme")
+            .position(|r| r.label == "Use hint line")
             .or_else(|| state.first_focusable_index())
             .unwrap_or(0);
         state
@@ -533,20 +532,20 @@ mod tests {
     }
 
     #[test]
-    fn default_focus_is_theme_row() {
+    fn default_focus_is_first_editable_row() {
         // Most users open Settings to adjust a setting, not the
         // externals.  Default focus skips past the open-externally
-        // pair and lands on Theme.
+        // pair (and the divider) and lands on the first editable row.
         let state = SettingsState::new();
-        assert_eq!(state.rows[state.focused].label, "Theme");
+        assert_eq!(state.rows[state.focused].label, "Use hint line");
     }
 
     #[test]
     fn arrow_navigation_skips_divider_row() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        // Default focus is "Theme" — Up must skip the blank divider
-        // and land on "Open config.toml in default editor".
+        // Default focus is the first editable row — Up must skip the
+        // blank divider and land on "Open config.toml in default editor".
         state.handle_key(&key(KeyCode::Up), &mut config);
         assert_eq!(
             state.rows[state.focused].label,
@@ -621,7 +620,6 @@ mod tests {
                 "Open config folder",
                 "Open config.toml in default editor",
                 "",
-                "Theme",
                 "Use hint line",
                 "Hint duration",
                 "Limit editor width",
@@ -762,13 +760,12 @@ mod tests {
     fn settings_description_appears_in_pinned_footer() {
         let config = Config::default();
         let mut state = SettingsState::new();
-        // Default focus is on the Theme row, which has a description.
+        // Default focus is on the first editable row ("Use hint
+        // line"), which has a description.
         let contents = render(&mut state, &config, 100, 25);
-        // Description text should be present somewhere in the rendered
-        // buffer — the pinned-footer slot is at the bottom of the modal.
         assert!(
-            contents.contains("Active theme"),
-            "expected Theme description in pinned footer, got: {contents}"
+            contents.contains("hint line"),
+            "expected focused-row description in pinned footer, got: {contents}"
         );
     }
 }

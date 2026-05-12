@@ -372,6 +372,45 @@ pub const BUILTIN_THEMES: &[(&str, ThemeCtor)] = &[
     ("Tokyo Night", super::themes::tokyo_night::theme),
 ];
 
+/// List every theme name available to the user: the compiled-in
+/// [`BUILTIN_THEMES`] (in their declared order) followed by any
+/// user-authored `<config_dir>/themes/*.toml` stems whose name doesn't
+/// shadow a built-in.  Built-ins are always present so the picker
+/// works even when the user has no custom themes installed.
+pub fn list_theme_names() -> Vec<String> {
+    let mut out: Vec<String> = BUILTIN_THEMES
+        .iter()
+        .map(|(n, _)| (*n).to_owned())
+        .collect();
+
+    if let Some(dir) = super::config::Config::config_dir() {
+        let themes = dir.join("themes");
+        if let Ok(read) = std::fs::read_dir(&themes) {
+            let mut user: Vec<String> = read
+                .flatten()
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                        return None;
+                    }
+                    let stem = path.file_stem().and_then(|s| s.to_str())?.to_owned();
+                    if out.contains(&stem) {
+                        return None;
+                    }
+                    if stem == "default" {
+                        return None;
+                    }
+                    Some(stem)
+                })
+                .collect();
+            user.sort();
+            user.dedup();
+            out.extend(user);
+        }
+    }
+    out
+}
+
 impl Theme {
     /// Look up a built-in theme by name.  Returns `None` for names not
     /// in [`BUILTIN_THEMES`], in which case the caller falls back to

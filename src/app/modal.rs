@@ -22,6 +22,7 @@ pub mod remote_image;
 pub mod save_copy;
 pub mod settings;
 pub mod startup_notice;
+pub mod theme_picker;
 pub mod width_injection;
 
 pub use stack::ModalStack;
@@ -42,4 +43,5 @@ pub use remote_image::RemoteImagePromptModal;
 pub use save_copy::SaveCopyModal;
 pub use settings::SettingsOverlayModal;
 pub use startup_notice::StartupNoticeModal;
+pub use theme_picker::ThemePickerModal;
 pub use width_injection::WidthInjectionWarning;
