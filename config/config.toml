@@ -9,7 +9,7 @@
 # src/config/theme.rs) are resolved by name; any other name is loaded
 # from themes/<theme>.toml. To author a custom theme, drop a TOML file
 # in themes/ and set `theme` to its stem.
-theme = "256 Dark"
+theme = "Edamame"
 
 # ── Editor ────────────────────────────────────────────────────────────────────
 [editor]

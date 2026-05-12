@@ -38,7 +38,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            theme: "256 Dark".into(),
+            theme: "Edamame".into(),
             editor: EditorConfig::default(),
             modal: ModalConfig::default(),
             table: TableConfig::default(),
@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(config.editor.tab_width, 4);
         assert!(!config.dev.logging);
         assert_eq!(config.modal.handler, "default");
-        assert_eq!(config.theme, "256 Dark");
+        assert_eq!(config.theme, "Edamame");
     }
 
     #[test]
@@ -220,7 +220,7 @@ mod tests {
         assert!(config.dev.logging);
         assert_eq!(config.editor.tab_width, 4); // default
         assert_eq!(config.modal.handler, "default"); // default
-        assert_eq!(config.theme, "256 Dark"); // default
+        assert_eq!(config.theme, "Edamame"); // default
     }
 
     #[test]
@@ -261,7 +261,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         let mut warnings = Vec::new();
         let config = read_main_config(&path, &mut warnings);
-        assert_eq!(config.theme, "256 Dark");
+        assert_eq!(config.theme, "Edamame");
         assert_eq!(config.editor.tab_width, 4);
         assert!(warnings.is_empty());
     }
