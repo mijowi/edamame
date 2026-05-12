@@ -176,20 +176,16 @@ fn parse_code_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block
 where
     I: Iterator<Item = Event<'a>>,
 {
-    let language = match events.next() {
+    let (language, fenced) = match events.next() {
         Some(Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang)))) => {
             let s = lang.as_ref().trim().to_owned();
-            if s.is_empty() {
-                None
-            } else {
-                Some(s)
-            }
+            (if s.is_empty() { None } else { Some(s) }, true)
         }
-        Some(Event::Start(Tag::CodeBlock(CodeBlockKind::Indented))) => None,
-        _ => None,
+        Some(Event::Start(Tag::CodeBlock(CodeBlockKind::Indented))) => (None, false),
+        _ => (None, false),
     };
     let content = collect_text_until_end(events);
-    Block::CodeBlock { language, content }
+    Block::CodeBlock { language, content, fenced }
 }
 
 fn parse_list_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block

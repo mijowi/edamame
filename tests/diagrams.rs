@@ -17,7 +17,7 @@ use edamame::markdown::{promote_diagram_code_blocks, Block};
 /// any overrides.  Produces the same structure the live App would see.
 fn build_parsed(source: &str) -> ParsedDoc {
     let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
-    ParsedDoc::build_with_overrides(source, theme, false, 12, None, None, false, 80, false)
+    ParsedDoc::build_with_overrides(source, theme, false, 12, None, None, false, 80, false, true)
 }
 
 // ── Parser promotion ──────────────────────────────────────────────────────
@@ -31,22 +31,27 @@ fn promote_diagram_only_matches_mermaid_tag() {
         Block::CodeBlock {
             language: Some("mermaid".into()),
             content: "flowchart TD\nA-->B".into(),
+            fenced: true,
         },
         Block::CodeBlock {
             language: Some("Mermaid".into()),
             content: "pie\n\"A\": 50\n\"B\": 50".into(),
+            fenced: true,
         },
         Block::CodeBlock {
             language: Some("mermaidjs".into()),
             content: "flowchart TD\nA-->B".into(),
+            fenced: true,
         },
         Block::CodeBlock {
             language: Some("diagram".into()),
             content: "flowchart TD\nA-->B".into(),
+            fenced: true,
         },
         Block::CodeBlock {
             language: Some("rust".into()),
             content: "fn main() {}".into(),
+            fenced: true,
         },
     ];
     let sources = promote_diagram_code_blocks(&mut blocks);
@@ -63,6 +68,7 @@ fn promote_diagram_preserves_alt_text() {
     let mut blocks = vec![Block::CodeBlock {
         language: Some("mermaid".into()),
         content: "flowchart TD\nA-->B".into(),
+        fenced: true,
     }];
     promote_diagram_code_blocks(&mut blocks);
     if let Block::ImageBlock { alt, .. } = &blocks[0] {
@@ -78,6 +84,7 @@ fn promote_diagram_url_matches_synthetic_url() {
     let mut blocks = vec![Block::CodeBlock {
         language: Some("mermaid".into()),
         content: src.into(),
+        fenced: true,
     }];
     let sources = promote_diagram_code_blocks(&mut blocks);
     let Block::ImageBlock { url, .. } = &blocks[0] else {
