@@ -22,6 +22,7 @@ pub(super) const ALL_ACTIONS: &[Action] = &[
     // and add nothing.
     Action::ShowMarkdownCheatSheet,
     Action::OpenSettings,
+    Action::SwitchTheme,
     Action::OpenKeybinds,
     Action::ExportHtml,
     Action::OpenInExternalEditor,
@@ -71,6 +72,7 @@ pub(super) fn label_for(action: &Action) -> Option<&'static str> {
     Some(match action {
         Action::ShowMarkdownCheatSheet => "Show Markdown cheat sheet",
         Action::OpenSettings => "Open settings",
+        Action::SwitchTheme => "Switch theme",
         Action::OpenKeybinds => "Open keybindings",
         Action::ExportHtml => "Export HTML",
         Action::OpenInExternalEditor => "Open current file in system editor",

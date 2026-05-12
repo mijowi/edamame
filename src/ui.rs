@@ -22,6 +22,7 @@ pub mod scrollbar;
 pub mod settings_overlay;
 pub mod status_bar;
 pub mod table_view;
+pub mod theme_picker;
 
 pub use bottom_region::{hint_line_for, BottomRegion, HintChord, HintContent};
 pub use command_palette::{PaletteResponse, PaletteState, PaletteView};
@@ -45,3 +46,4 @@ pub use scrollbar::{
 pub use settings_overlay::SettingsResponse;
 pub use settings_overlay::{SettingsState, SettingsView};
 pub use table_view::DropIndicator;
+pub use theme_picker::{ThemePickerResponse, ThemePickerState, ThemePickerView};

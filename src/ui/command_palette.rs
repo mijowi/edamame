@@ -29,8 +29,7 @@ use crate::config::{Action, KeyMap, Theme};
 use crate::ui::content_width::max_row_width;
 use crate::ui::modal_row::{format_modal_row, RowLayout};
 use crate::ui::scroll_container::{
-    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind,
-    ScrollContainerState,
+    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind, ScrollContainerState,
 };
 
 /// One palette row: an action plus its display label.
@@ -525,6 +524,7 @@ fn format_section_header(title: &str, theme: &Theme, width: u16) -> Line<'static
 /// muscle-memory stays stable when the real implementation arrives.
 const SUGGESTED_ACTIONS: &[Action] = &[
     Action::OpenSettings,
+    Action::SwitchTheme,
     Action::OpenKeybinds,
     Action::InsertTable,
     Action::ToggleTableButtons,
@@ -577,6 +577,7 @@ fn section_of(action: &Action) -> &'static str {
         | Action::TableDeleteColumn => "Table",
         Action::OpenSettings
         | Action::OpenKeybinds
+        | Action::SwitchTheme
         | Action::ShowMarkdownCheatSheet
         | Action::OpenInExternalEditor
         | Action::OpenGitHub => "Tools",
@@ -655,6 +656,7 @@ mod tests {
             labels,
             vec![
                 "Open settings".to_owned(),
+                "Switch theme".to_owned(),
                 "Open keybindings".to_owned(),
                 "Insert table".to_owned(),
                 "Toggle table buttons".to_owned(),

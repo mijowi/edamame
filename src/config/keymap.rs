@@ -128,6 +128,9 @@ pub enum Action {
     /// Open the keybinds overlay — edits `keybindings.toml` with
     /// conflict detection.
     OpenKeybinds,
+    /// Open the fuzzy-searchable theme picker.  Selecting a theme
+    /// writes `config.theme` to disk and reapplies the palette live.
+    SwitchTheme,
     /// Reveal the active config directory in the OS file manager / open
     /// it via `open::that`.
     OpenConfigFolder,
@@ -209,7 +212,7 @@ action_variants! {
     FollowLinkUnderCursor, OpenGitHub,
     NavigateBack, NavigateForward,
     ShowCheatSheet, ShowCommandPalette, ShowMarkdownCheatSheet,
-    OpenSettings, OpenKeybinds, OpenConfigFolder,
+    OpenSettings, OpenKeybinds, OpenConfigFolder, SwitchTheme,
     ExportHtml, ReloadFromDisk, OpenInExternalEditor,
     ToggleTableButtons, InsertTable,
 }

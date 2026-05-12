@@ -7,7 +7,6 @@
 //! plumbing — adding a new setting only touches this file.
 
 use crate::config::sections::MAX_WIDTH_COLS_MIN;
-use crate::config::theme::BUILTIN_THEMES;
 use crate::config::{Config, DiagramsEnabled, ImagesEnabled, RemoteImagePolicy, StatusBarLayout};
 
 #[derive(Debug)]
@@ -145,72 +144,6 @@ fn parse_remote_policy(s: &str) -> Result<RemoteImagePolicy, String> {
     }
 }
 
-/// List every theme available in the cycle: the compiled-in
-/// [`BUILTIN_THEMES`] (in their declared order) followed by any
-/// user-authored `.toml` stems from `<config_dir>/themes/` whose name
-/// doesn't shadow a built-in.  Built-ins are always present so the
-/// cycle works even when the user has no custom themes installed.
-pub(super) fn list_theme_names() -> Vec<String> {
-    let mut out: Vec<String> = BUILTIN_THEMES
-        .iter()
-        .map(|(n, _)| (*n).to_owned())
-        .collect();
-
-    if let Some(dir) = Config::config_dir() {
-        let themes = dir.join("themes");
-        if let Ok(read) = std::fs::read_dir(&themes) {
-            let mut user: Vec<String> = read
-                .flatten()
-                .filter_map(|entry| {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) != Some("toml") {
-                        return None;
-                    }
-                    let stem = path.file_stem().and_then(|s| s.to_str())?.to_owned();
-                    if out.contains(&stem) {
-                        // Built-in shadows the user file at load time;
-                        // hide it from the cycle so the listed name
-                        // matches what the user will actually see.
-                        return None;
-                    }
-                    // `default` is the historical alias for the first
-                    // built-in (256 Dark) — written to disk on first run
-                    // of earlier edamame versions.  Hide it so the
-                    // settings cycle doesn't list two entries that
-                    // resolve to the same theme.
-                    if stem == "default" {
-                        return None;
-                    }
-                    Some(stem)
-                })
-                .collect();
-            user.sort();
-            user.dedup();
-            out.extend(user);
-        }
-    }
-    out
-}
-
-fn cycle_theme(config: &mut Config, delta: i32, themes: &[String]) -> bool {
-    if themes.is_empty() {
-        return false;
-    }
-    let n = themes.len() as i32;
-    let cur = themes
-        .iter()
-        .position(|t| *t == config.theme)
-        .map(|i| i as i32)
-        .unwrap_or(0);
-    let next = (cur + delta).rem_euclid(n);
-    let new_name = themes[next as usize].clone();
-    if new_name == config.theme {
-        return false;
-    }
-    config.theme = new_name;
-    true
-}
-
 /// Build the static row table.  Order is the user-facing display
 /// order; nothing else depends on it.  See [`crate::config::Config`]
 /// for each field's persistence semantics.
@@ -258,24 +191,6 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             },
         },
         RowDef {
-            label: "Theme",
-            description: Some("Active theme (resolves to themes/<name>.toml)"),
-            kind: RowKind {
-                focusable: true,
-                action: RowAction::Cycle,
-                read: |c, _| c.theme.clone(),
-                write_string: |c, v| {
-                    let v = v.trim();
-                    if v.is_empty() {
-                        return Err("theme name cannot be empty".into());
-                    }
-                    c.theme = v.to_owned();
-                    Ok(())
-                },
-                cycle: Some(cycle_theme),
-            },
-        },
-        RowDef {
             label: "Use hint line",
             description: Some("Show or hide the hint line (status bar remains)"),
             kind: RowKind {
@@ -308,7 +223,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: "Limit editor width",
-            description: Some("Cap the editor content to a fixed width and centre it"),
+            description: Some("Cap the editor content to a fixed width"),
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,
@@ -322,7 +237,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: "Editor max width",
-            description: Some("Maximum content width in columns when limit is on"),
+            description: Some("Maximum content width in characters when limit is on"),
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Edit,
