@@ -622,9 +622,7 @@ impl Theme {
             // while the user hovers / drags the gutter.
             scrollbar_track: Style::default().fg(p.bg_muted),
             scrollbar_thumb: Style::default().fg(p.primary),
-            scrollbar_thumb_active: Style::default()
-                .fg(p.primary)
-                .add_modifier(Modifier::REVERSED),
+            scrollbar_thumb_active: Style::default().fg(blend(p.primary, p.text, 0.35)),
         }
     }
 
