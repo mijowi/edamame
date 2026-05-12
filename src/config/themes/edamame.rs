@@ -9,8 +9,8 @@ use crate::config::theme::{Palette, Theme};
 use super::util::{blend, chrome, rgb};
 
 pub fn palette() -> Palette {
-    let bg = rgb(0x1e1a14);
-    let ink = rgb(0xe8dbc1);
+    let bg = rgb(0x0f120b);
+    let ink = rgb(0xf0e7d7);
     Palette {
         text: ink,
         text_muted: blend(ink, bg, 0.35),
@@ -19,12 +19,12 @@ pub fn palette() -> Palette {
         surface: chrome(bg, ink, 0.12),
         surface_elevated: chrome(bg, ink, 0.18),
 
-        primary: rgb(0x9fc14b),
-        secondary: rgb(0xc09766),
-        accent: rgb(0xd07a5b),
+        primary: rgb(0x85db32),
+        secondary: rgb(0xd4a773),
+        accent: rgb(0xdb8265),
         link: rgb(0x6ba8d4),
 
-        success: rgb(0x7eaa54),
+        success: rgb(0x80b848),
         warning: rgb(0xe2bc52),
         error: rgb(0xcd5c3f),
 
