@@ -454,15 +454,12 @@ pub fn build_snapshots(
                         for i in 0..snap.col_count {
                             let start = pipes[i] as u16 + 1;
                             let end = pipes[i + 1] as u16;
-                            snap.col_ranges.push(Range {
-                                start: area.x + start,
-                                end: area.x + end,
-                            });
+                            snap.col_ranges.push(Range { start, end });
                         }
                     }
                 }
 
-                let y = area.y + vis_y as u16;
+                let y = vis_y as u16;
                 let y_end = y + rows_used as u16;
 
                 match sub_kind {
@@ -728,11 +725,11 @@ pub fn paint_handles(
         // still grab anywhere in the gutter even though the glyph only
         // shows once.
         if let Some(col) = snap.row_handle_col {
-            if col < area.x + area.width {
+            if col < area.width {
                 for y_range in &snap.row_ranges {
                     let y = y_range.start;
-                    if y >= area.y && y < area.y + area.height {
-                        if let Some(cell) = buf.cell_mut((col, y)) {
+                    if y < area.height {
+                        if let Some(cell) = buf.cell_mut((area.x + col, area.y + y)) {
                             cell.set_char(REORDER_HANDLE_GLYPH);
                             cell.set_style(move_style);
                         }
@@ -745,15 +742,15 @@ pub fn paint_handles(
         // column's content span so they overlay the `─` between the `┌`/`┬`
         // corners without disturbing them.
         if let Some(y) = snap.top_border_row {
-            if y >= area.y && y < area.y + area.height {
+            if y < area.height {
                 for x_range in &snap.col_ranges {
                     if x_range.end <= x_range.start {
                         continue;
                     }
                     let width = x_range.end - x_range.start;
                     let x = x_range.start + width / 2;
-                    if x < area.x + area.width {
-                        if let Some(cell) = buf.cell_mut((x, y)) {
+                    if x < area.width {
+                        if let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) {
                             cell.set_char(REORDER_HANDLE_GLYPH);
                             cell.set_style(move_style);
                         }
@@ -767,11 +764,11 @@ pub fn paint_handles(
         // last column).  Does NOT overwrite the leftmost outer `│` since
         // there's no column to its left to resize.
         if let Some(y) = snap.header_row {
-            if y >= area.y && y < area.y + area.height {
+            if y < area.height {
                 for x_range in &snap.col_ranges {
                     let border_x = x_range.end;
-                    if border_x < area.x + area.width {
-                        if let Some(cell) = buf.cell_mut((border_x, y)) {
+                    if border_x < area.width {
+                        if let Some(cell) = buf.cell_mut((area.x + border_x, area.y + y)) {
                             cell.set_char(COLUMN_RESIZE_GLYPH);
                             cell.set_style(move_style);
                         }
@@ -787,11 +784,11 @@ pub fn paint_handles(
         // loop naturally does the right thing.  Same multi-row "one
         // glyph per logical row" rule as the row-reorder gutter.
         if let Some(col) = snap.delete_row_handle_col {
-            if col < area.x + area.width {
+            if col < area.width {
                 for y_range in &snap.row_ranges {
                     let y = y_range.start;
-                    if y >= area.y && y < area.y + area.height {
-                        if let Some(cell) = buf.cell_mut((col, y)) {
+                    if y < area.height {
+                        if let Some(cell) = buf.cell_mut((area.x + col, area.y + y)) {
                             cell.set_char(DELETE_HANDLE_GLYPH);
                             cell.set_style(delete_style);
                         }
@@ -805,15 +802,15 @@ pub fn paint_handles(
         // glyphs on the top border).  `bottom_border_row` is `None`
         // for single-column tables, so no glyph is painted there.
         if let Some(y) = snap.bottom_border_row {
-            if y >= area.y && y < area.y + area.height {
+            if y < area.height {
                 for x_range in &snap.col_ranges {
                     if x_range.end <= x_range.start {
                         continue;
                     }
                     let width = x_range.end - x_range.start;
                     let x = x_range.start + width / 2;
-                    if x < area.x + area.width {
-                        if let Some(cell) = buf.cell_mut((x, y)) {
+                    if x < area.width {
+                        if let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) {
                             cell.set_char(DELETE_HANDLE_GLYPH);
                             cell.set_style(delete_style);
                         }
@@ -875,7 +872,7 @@ pub fn paint_drop_indicator(
             };
             let x_start = first.start.saturating_sub(1);
             let x_end = last.end;
-            let x_max = area.x + area.width;
+            let x_max = area.width;
             for (i, y_range) in snap.row_ranges.iter().enumerate() {
                 // Separator above this data row (between row i-1 and i).
                 let above = y_range.start.saturating_sub(1);
@@ -883,7 +880,7 @@ pub fn paint_drop_indicator(
                 // or above the bottom border).
                 let below = y_range.end;
                 for &y in &[above, below] {
-                    if y < area.y || y >= area.y + area.height {
+                    if y >= area.height {
                         continue;
                     }
                     // Skip the separators that bound the source row
@@ -899,7 +896,7 @@ pub fn paint_drop_indicator(
                     } else {
                         candidate_style
                     };
-                    paint_horizontal_drop(buf, x_start, x_end, x_max, y, style);
+                    paint_horizontal_drop(buf, area.x + x_start, area.x + x_end, area.x + x_max, area.y + y, style);
                 }
             }
         }
@@ -922,13 +919,13 @@ pub fn paint_drop_indicator(
             let y_top = snap
                 .top_border_row
                 .or_else(|| snap.row_ranges.first().map(|r| r.start.saturating_sub(2)))
-                .unwrap_or(area.y);
+                .unwrap_or(0);
             let y_bot = snap
                 .row_ranges
                 .last()
                 .map(|r| r.end)
-                .unwrap_or(area.y + area.height.saturating_sub(1));
-            let y_max = area.y + area.height;
+                .unwrap_or(area.height.saturating_sub(1));
+            let y_max = area.height;
             // Every column-border (interior + the two outer borders) is
             // a candidate drop point, except the two flanking the source
             // column.
@@ -940,7 +937,7 @@ pub fn paint_drop_indicator(
                 borders.push(r.end);
             }
             for (i, &x) in borders.iter().enumerate() {
-                if x < area.x || x >= area.x + area.width {
+                if x >= area.width {
                     continue;
                 }
                 // Skip borders adjacent to the source column.
@@ -952,7 +949,7 @@ pub fn paint_drop_indicator(
                 } else {
                     candidate_style
                 };
-                paint_vertical_drop(buf, y_top, y_bot, y_max, x, style);
+                paint_vertical_drop(buf, area.y + y_top, area.y + y_bot, area.y + y_max, area.x + x, style);
             }
         }
         DropIndicator::ColumnBorder {
@@ -965,24 +962,24 @@ pub fn paint_drop_indicator(
             else {
                 return;
             };
-            if x < area.x || x >= area.x + area.width {
+            if x >= area.width {
                 return;
             }
             let y_top = snap
                 .top_border_row
                 .or_else(|| snap.row_ranges.first().map(|r| r.start.saturating_sub(2)))
-                .unwrap_or(area.y);
+                .unwrap_or(0);
             let y_bot = snap
                 .row_ranges
                 .last()
                 .map(|r| r.end)
-                .unwrap_or(area.y + area.height.saturating_sub(1));
-            let y_max = area.y + area.height;
+                .unwrap_or(area.height.saturating_sub(1));
+            let y_max = area.height;
             for y in y_top..=y_bot {
                 if y >= y_max {
                     break;
                 }
-                if let Some(cell) = buf.cell_mut((x, y)) {
+                if let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) {
                     cell.set_char(DROP_COL_GLYPH);
                     cell.set_style(active_style);
                 }
