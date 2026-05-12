@@ -1680,7 +1680,8 @@ fn click_on_visible_mermaid_block_parks_cursor_at_end_of_last_code_line() {
     let chars: Vec<char> = st.contents().chars().collect();
     let last_c = src.find("B-->C").unwrap() + "B-->C".len();
     assert_eq!(
-        st.cursor.offset, last_c,
+        st.cursor.offset,
+        last_c,
         "click on rendered mermaid placeholder must park cursor after last code char (got {:?})",
         chars.get(st.cursor.offset),
     );

@@ -146,7 +146,11 @@ impl<'t> Renderer<'t> {
             Block::Paragraph { inlines } => {
                 self.render_paragraph(inlines, out, indent_prefix);
             }
-            Block::CodeBlock { language, content, fenced } => {
+            Block::CodeBlock {
+                language,
+                content,
+                fenced,
+            } => {
                 self.render_code_block(language.as_deref(), content, *fenced, out);
             }
             Block::BlockQuote { blocks } => {

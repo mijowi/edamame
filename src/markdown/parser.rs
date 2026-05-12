@@ -185,7 +185,11 @@ where
         _ => (None, false),
     };
     let content = collect_text_until_end(events);
-    Block::CodeBlock { language, content, fenced }
+    Block::CodeBlock {
+        language,
+        content,
+        fenced,
+    }
 }
 
 fn parse_list_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block

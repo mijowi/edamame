@@ -896,7 +896,14 @@ pub fn paint_drop_indicator(
                     } else {
                         candidate_style
                     };
-                    paint_horizontal_drop(buf, area.x + x_start, area.x + x_end, area.x + x_max, area.y + y, style);
+                    paint_horizontal_drop(
+                        buf,
+                        area.x + x_start,
+                        area.x + x_end,
+                        area.x + x_max,
+                        area.y + y,
+                        style,
+                    );
                 }
             }
         }
@@ -949,7 +956,14 @@ pub fn paint_drop_indicator(
                 } else {
                     candidate_style
                 };
-                paint_vertical_drop(buf, area.y + y_top, area.y + y_bot, area.y + y_max, area.x + x, style);
+                paint_vertical_drop(
+                    buf,
+                    area.y + y_top,
+                    area.y + y_bot,
+                    area.y + y_max,
+                    area.x + x,
+                    style,
+                );
             }
         }
         DropIndicator::ColumnBorder {
