@@ -29,7 +29,7 @@ use crate::config::{Action, KeyMap, Theme};
 use crate::ui::content_width::max_row_width;
 use crate::ui::modal_row::{format_modal_row, RowLayout};
 use crate::ui::scroll_container::{
-    draw_frame, top_anchored_rect_for_content, ContentSize, FrameOpts, ModalKind,
+    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind,
     ScrollContainerState,
 };
 
@@ -313,10 +313,25 @@ impl<'a> StatefulWidget for PaletteView<'a> {
             pinned_top: 2, // input row + divider
             pinned_bottom: 0,
         };
-        // Top-anchored so the input row stays put as the match list grows
-        // and shrinks per keystroke; a centred palette would jump up and
-        // down by half the height delta on every character typed.
-        let modal_area = top_anchored_rect_for_content(content, area);
+        // Centre the modal in the terminal, but anchor the top edge as if
+        // the modal were at its maximum possible height.  A naively-centred
+        // palette would shift up and down by half the height delta on every
+        // character typed; computing the y position from the max-height
+        // layout keeps the input row pinned while the modal still appears
+        // centred at its full extent.
+        let max_content = ContentSize {
+            height: MAX_LIST_ROWS,
+            ..content
+        };
+        let anchor = centered_rect_for_content(max_content, area);
+        let actual = centered_rect_for_content(content, area);
+        let max_y = area.y + area.height.saturating_sub(actual.height);
+        let modal_area = Rect {
+            x: actual.x,
+            y: anchor.y.min(max_y),
+            width: actual.width,
+            height: actual.height,
+        };
 
         // Pre-compute layout so the title's arrow indicator reflects
         // the post-observe scroll bounds.  Body height excludes the
