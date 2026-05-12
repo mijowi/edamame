@@ -5,7 +5,7 @@ use crate::config::theme::{Palette, Theme};
 use super::util::{blend, chrome, rgb};
 
 pub fn palette() -> Palette {
-    let bg = rgb(0x181825);
+    let bg = rgb(0x18182a);
     let ink = rgb(0xcdd6f4);
     Palette {
         text: ink,
