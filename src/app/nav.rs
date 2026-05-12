@@ -155,14 +155,18 @@ impl App {
         // session-level `No`, a persisted `Never`, or anything else that
         // zeroed `images_enabled` on the previous editor stays in
         // effect for the new one.
-        if !self.images_layout_enabled() {
+        let images_off = !self.images_layout_enabled();
+        let diagrams_off = !self.diagrams_layout_enabled();
+        if images_off {
             new_editor.images_enabled = false;
-            new_editor.set_row_striping(self.config.table.row_striping);
-            new_editor.set_big_h1(self.config.editor.big_h1);
+        }
+        if diagrams_off {
+            new_editor.diagrams_enabled = false;
+        }
+        new_editor.set_row_striping(self.config.table.row_striping);
+        new_editor.set_big_h1(self.config.editor.big_h1);
+        if images_off || diagrams_off {
             new_editor.refresh_parsed();
-        } else {
-            new_editor.set_row_striping(self.config.table.row_striping);
-            new_editor.set_big_h1(self.config.editor.big_h1);
         }
         self.editor = new_editor;
         // Image cache is owned by `EditorState`, so swapping to a new

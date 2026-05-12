@@ -207,6 +207,41 @@ impl Default for ImagesConfig {
     }
 }
 
+/// Master switch for inline diagram rendering (e.g. mermaid).  `Ask`
+/// prompts the user the first time a document with diagrams is opened;
+/// `Always` renders without prompting; `Never` keeps the placeholder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiagramsEnabled {
+    /// Prompt the user the first time a document with diagrams is opened.
+    #[default]
+    Ask,
+    /// Always render diagrams inline.
+    Always,
+    /// Never render diagrams — always fall back to the placeholder.
+    Never,
+}
+
+/// Diagram-rendering configuration.  Mirrors [`ImagesConfig::enabled`] —
+/// kept separate so a user can opt in to images but not diagrams (or
+/// vice-versa).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiagramsConfig {
+    /// Master switch — `"ask"` (default) prompts on first document with
+    /// diagrams, `"always"` renders without prompting, `"never"` always
+    /// falls back to the placeholder.
+    pub enabled: DiagramsEnabled,
+}
+
+impl Default for DiagramsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: DiagramsEnabled::Ask,
+        }
+    }
+}
+
 /// Export configuration (Phase 16).
 ///
 /// HTML is the single built-in export target; it doubles as the intermediate

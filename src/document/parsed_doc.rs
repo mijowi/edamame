@@ -165,6 +165,7 @@ impl ParsedDoc {
             false,
             80,
             false,
+            true,
         )
     }
 
@@ -191,6 +192,13 @@ impl ParsedDoc {
         row_striping: bool,
         viewport_width: usize,
         big_h1: bool,
+        // When false, fenced ```mermaid blocks stay as regular code
+        // blocks — the renderer shows the diagram source verbatim
+        // instead of substituting a synthetic image placeholder.  Set
+        // by `EditorState::refresh_parsed` to `self.diagrams_enabled`
+        // so a user who declined the diagrams prompt (or set
+        // `[diagrams].enabled = "never"`) sees the original code.
+        promote_diagrams: bool,
     ) -> Self {
         // 1. Extract top-level block byte ranges.
         let mut real_ranges = parse_offsets::top_level_block_ranges(source);
@@ -225,7 +233,11 @@ impl ParsedDoc {
         // a `url → DiagramSource` map — attached to `ImageBlockInfo.source`
         // below so the App decode worker can find the mermaid text without
         // re-walking `blocks`.
-        let diagram_sources = promote_diagram_code_blocks(&mut blocks);
+        let diagram_sources = if promote_diagrams {
+            promote_diagram_code_blocks(&mut blocks)
+        } else {
+            HashMap::new()
+        };
         if let Some((override_start, widths)) = live_table_widths {
             apply_live_table_widths(&mut blocks, &real_ranges, *override_start, widths);
         }
@@ -839,6 +851,7 @@ mod tests {
             false,
             80,
             false,
+            true,
         );
         for line in &doc.lines {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();

@@ -91,6 +91,11 @@ pub struct App {
     /// `Always` / `Never` persist the choice to config instead of
     /// setting this flag.
     session_images_enabled: Option<bool>,
+    /// Session-only override for the master diagrams-enabled switch,
+    /// set by `Yes` / `No` on the diagrams-enabled prompt.  Mirrors
+    /// [`Self::session_images_enabled`] — kept separate so the two
+    /// prompts can be answered independently.
+    pub(crate) session_diagrams_enabled: Option<bool>,
     /// Click-count tracking and drag state for mouse input.
     mouse: MouseDispatcher,
     /// Active drag target, set on mouse-down and read by each subsequent
@@ -310,14 +315,21 @@ impl App {
         // no reserved rows beneath.  The `Ask` / `Always` paths leave
         // the layout reserved so the prompt / live decode populates the
         // area; the declined-session flip happens in the prompt handler.
-        if matches!(config.images.enabled, crate::config::ImagesEnabled::Never) {
+        let images_off = matches!(config.images.enabled, crate::config::ImagesEnabled::Never);
+        let diagrams_off = matches!(
+            config.diagrams.enabled,
+            crate::config::DiagramsEnabled::Never
+        );
+        if images_off {
             editor.images_enabled = false;
-            editor.set_row_striping(config.table.row_striping);
-            editor.set_big_h1(config.editor.big_h1);
+        }
+        if diagrams_off {
+            editor.diagrams_enabled = false;
+        }
+        editor.set_row_striping(config.table.row_striping);
+        editor.set_big_h1(config.editor.big_h1);
+        if images_off || diagrams_off {
             editor.refresh_parsed();
-        } else {
-            editor.set_row_striping(config.table.row_striping);
-            editor.set_big_h1(config.editor.big_h1);
         }
 
         // PreviewView borrows `editor.parsed.lines` at render time, so
@@ -332,6 +344,8 @@ impl App {
         let config_warning_modal = modal::ConfigWarningModal::from_warnings(&config_warnings);
         let startup_notice = modal::StartupNoticeModal::from_capabilities(&capabilities, &config);
         let images_enabled_prompt = modal::ImagesEnabledPromptModal::from_state(&editor, &config);
+        let diagrams_enabled_prompt =
+            modal::DiagramsEnabledPromptModal::from_state(&editor, &config);
         let remote_image_prompt = modal::RemoteImagePromptModal::from_state(&editor, &config);
         let wheel_step = config.editor.mouse_scroll_lines;
 
@@ -341,6 +355,9 @@ impl App {
         // images-enabled → remote-image → (any subsequent modals).
         let mut modal_stack = ModalStack::new();
         if let Some(m) = remote_image_prompt {
+            modal_stack.push(Box::new(m));
+        }
+        if let Some(m) = diagrams_enabled_prompt {
             modal_stack.push(Box::new(m));
         }
         if let Some(m) = images_enabled_prompt {
@@ -367,7 +384,10 @@ impl App {
         // the dominant source of initial-load lag.
         // Skipped when images are configured as `Never` — no diagram
         // will ever decode, so the warmup would be wasted IO.
-        if !matches!(config.images.enabled, crate::config::ImagesEnabled::Never) {
+        if !matches!(
+            config.diagrams.enabled,
+            crate::config::DiagramsEnabled::Never
+        ) {
             std::thread::spawn(crate::diagram::warm_fontdb);
         }
 
@@ -381,6 +401,7 @@ impl App {
             view_state,
             should_quit: false,
             session_images_enabled: None,
+            session_diagrams_enabled: None,
             mouse: MouseDispatcher::with_wheel_step(wheel_step),
             drag_target: None,
             scrollbar_hover: false,

@@ -150,6 +150,11 @@ pub struct EditorState {
     /// preserves the cache-driven layout for tests and for the `Ask` /
     /// `Always` paths.
     pub images_enabled: bool,
+    /// Counterpart to [`Self::images_enabled`] for diagram blocks
+    /// (mermaid, etc.).  Image blocks whose `source` field is `Some(_)`
+    /// honour this flag instead of `images_enabled` — so a user can opt
+    /// in to images but not diagrams (or vice-versa).  Default `true`.
+    pub diagrams_enabled: bool,
     /// Monotonically-increasing version counter, bumped every time
     /// `refresh_parsed` rebuilds the `ParsedDoc`.  Consumed by the view
     /// state to invalidate per-frame snapshot caches only when the parse
@@ -310,6 +315,7 @@ impl EditorState {
             image_font_size,
             images: ImageCache::new(),
             images_enabled: true,
+            diagrams_enabled: true,
             parsed_version: 0,
             live_table_widths: None,
             row_striping: false,
@@ -533,6 +539,10 @@ impl EditorState {
         let max_h = self.image_max_height as u16;
         let font_size = self.image_font_size;
         let images_enabled = self.images_enabled;
+        // Diagram blocks honour `self.diagrams_enabled` at promotion
+        // time — when false, `build_with_overrides` leaves the mermaid
+        // fenced code blocks intact, so the row override never sees a
+        // diagram URL and only has to think about real images.
         let override_fn = |url: &str| {
             if !images_enabled {
                 return Some(1);
@@ -549,6 +559,7 @@ impl EditorState {
             self.row_striping,
             self.viewport_width,
             self.big_h1,
+            self.diagrams_enabled,
         );
         self.parsed_version = self.parsed_version.wrapping_add(1);
         self.parsed_dirty = false;
