@@ -21,7 +21,7 @@ pub fn palette() -> Palette {
         link: rgb(0x56b6c2),
 
         success: rgb(0x59c57c),
-        warning: rgb(0xec5b2b),
+        warning: rgb(0xf0b429),
         error: rgb(0xe06c75),
 
         code: rgb(0xb87500),

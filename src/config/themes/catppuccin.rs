@@ -17,12 +17,12 @@ pub fn palette() -> Palette {
 
         primary: rgb(0xcba6f7),
         secondary: rgb(0x94e2d5),
-        accent: rgb(0xf38ba8),
+        accent: rgb(0xeba0ac),
         link: rgb(0x89b4fa),
 
         success: rgb(0xa6d189),
         warning: rgb(0xf9e2af),
-        error: rgb(0xf38ba8),
+        error: rgb(0xe64553),
 
         code: rgb(0xa6e3a1),
 
