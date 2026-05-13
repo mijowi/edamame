@@ -59,6 +59,13 @@ use super::theme::Theme;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeFile {
+    /// When `true`, this theme is shown under "Light" in the theme
+    /// picker; when `false` (the default) it's shown under "Dark".
+    /// Authoring a light theme is a matter of setting `light = true` at
+    /// the top of the TOML and tuning the palette accordingly — the
+    /// flag has no rendering effect, only filter / picker effect.
+    pub light: bool,
+
     /// Brand-colour palette.  Edit this section to retheme edamame
     /// end-to-end without touching individual style fields.
     pub palette: PaletteFile,
@@ -222,7 +229,7 @@ macro_rules! style_fields {
 /// over the default because there's no "absent" sentinel to detect.
 impl From<&ThemeFile> for Theme {
     fn from(f: &ThemeFile) -> Self {
-        let palette = palette::PaletteFile::resolve(&f.palette);
+        let palette = palette::PaletteFile::resolve(&f.palette, f.light);
         let mut theme = Theme::from_palette(&palette);
 
         // Per-style overrides.  Empty specs fall through to keep the
@@ -250,6 +257,7 @@ impl From<&Theme> for ThemeFile {
         macro_rules! collect {
             ($($field:ident),* $(,)?) => {
                 Self {
+                    light: t.palette.light,
                     palette: (&t.palette).into(),
                     task_strikethrough: t.task_strikethrough,
                     $( $field: (&t.$field).into(), )*

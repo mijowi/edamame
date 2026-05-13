@@ -55,7 +55,11 @@ impl PaletteFile {
     /// Resolve `self` against `Palette::default()`, returning a
     /// fully-populated palette.  Missing fields fall through to the
     /// compiled-in default so a partial `[palette]` section is valid.
-    pub(super) fn resolve(&self) -> Palette {
+    /// `light` is passed in explicitly because the flag lives at the
+    /// top level of `ThemeFile`, not inside the palette table — taking
+    /// it as a parameter avoids the foot-gun of resolving to a default
+    /// here and patching it post-hoc.
+    pub(super) fn resolve(&self, light: bool) -> Palette {
         let d = Palette::default();
         let pick = |opt: Option<ColorField>, fallback: Color| -> Color {
             opt.map(Color::from).unwrap_or(fallback)
@@ -77,6 +81,7 @@ impl PaletteFile {
             code: pick(self.code, d.code),
             diff_add: pick(self.diff_add, d.diff_add),
             diff_delete: pick(self.diff_delete, d.diff_delete),
+            light,
         }
     }
 }

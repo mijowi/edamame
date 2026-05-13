@@ -11,6 +11,13 @@
 # in themes/ and set `theme` to its stem.
 theme = "Edamame"
 
+# Appearance mode — filters the theme picker (Ctrl+Shift+T) so only themes
+# matching this mode are shown, and decides which counterpart theme is
+# previewed when the mode is toggled.  Must be "dark" or "light".  Default:
+# "dark".  Toggle interactively via the picker's [ Dark | Light ] pill
+# (Tab / Left / Right or click) or the settings overlay's Appearance row.
+appearance = "dark"
+
 # ── Editor ────────────────────────────────────────────────────────────────────
 [editor]
 # Number of spaces per tab stop. Default: 4.

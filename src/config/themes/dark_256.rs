@@ -41,6 +41,8 @@ pub fn palette() -> Palette {
         // Reserved for a future diff view; not consumed yet.
         diff_add: Color::Indexed(76),
         diff_delete: Color::Indexed(196),
+
+        light: false,
     }
 }
 

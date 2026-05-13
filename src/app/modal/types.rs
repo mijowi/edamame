@@ -50,6 +50,11 @@ pub struct ModalRenderCtx<'a> {
 pub enum ModalOutcome {
     /// Modal stays on the stack, no follow-up action.
     Continue,
+    /// Modal stays on the stack; run the callback against `App`.  Used
+    /// by handlers that need `&mut App` from a context that doesn't
+    /// already have it (e.g. `handle_click`, whose signature doesn't
+    /// take an App reference) but want to keep the modal open.
+    ContinueAnd(Box<dyn FnOnce(&mut App)>),
     /// Modal is removed from the stack; no follow-up.
     Close,
     /// Modal is removed from the stack; run the callback against `App`.
