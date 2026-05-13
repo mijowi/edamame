@@ -400,17 +400,28 @@ pub const BUILTIN_THEMES: &[(&str, ThemeCtor)] = &[
     ("Monochrome Dark", super::themes::monochrome_dark::theme),
     ("Ayu", super::themes::ayu::theme),
     ("Catppuccin", super::themes::catppuccin::theme),
+    ("Catppuccin Latte", super::themes::catppuccin_latte::theme),
     ("Dracula", super::themes::dracula::theme),
     ("Edamame", super::themes::edamame::theme),
+    ("Everforest", super::themes::everforest::theme),
     ("GitHub Dark", super::themes::github_dark::theme),
+    ("GitHub Light", super::themes::github_light::theme),
     ("Gruvbox", super::themes::gruvbox::theme),
+    ("Gruvbox Light", super::themes::gruvbox_light::theme),
+    ("Kanagawa", super::themes::kanagawa::theme),
     ("Monokai", super::themes::monokai::theme),
+    ("Nord", super::themes::nord::theme),
     ("One Dark", super::themes::one_dark::theme),
     ("Orng", super::themes::orng::theme),
     ("Rainbow", super::themes::rainbow::theme),
     ("Rosé Pine", super::themes::rose_pine::theme),
+    ("Rosé Pine Dawn", super::themes::rose_pine_dawn::theme),
+    ("Solarized Dark", super::themes::solarized_dark::theme),
+    ("Solarized Light", super::themes::solarized_light::theme),
     ("SynthWave '84", super::themes::synthwave84::theme),
     ("Tokyo Night", super::themes::tokyo_night::theme),
+    ("Tokyo Night Day", super::themes::tokyo_night_day::theme),
+    ("Zenburn", super::themes::zenburn::theme),
 ];
 
 /// Bidirectional pairings between dark and light variants of the same
@@ -423,12 +434,12 @@ pub const BUILTIN_THEMES: &[(&str, ThemeCtor)] = &[
 /// helper [`counterpart_theme`] checks both directions.
 pub const THEME_COUNTERPARTS: &[(&str, &str)] = &[
     ("256 Dark", "256 Light"),
-    // Future entries land here as light themes are added:
-    // ("GitHub Dark",  "GitHub Light"),
-    // ("Catppuccin",   "Catppuccin Latte"),
-    // ("Tokyo Night",  "Tokyo Night Day"),
-    // ("Gruvbox",      "Gruvbox Light"),
-    // ("Rosé Pine",    "Rosé Pine Dawn"),
+    ("Catppuccin", "Catppuccin Latte"),
+    ("GitHub Dark", "GitHub Light"),
+    ("Gruvbox", "Gruvbox Light"),
+    ("Rosé Pine", "Rosé Pine Dawn"),
+    ("Solarized Dark", "Solarized Light"),
+    ("Tokyo Night", "Tokyo Night Day"),
 ];
 
 /// Default theme name when the user toggles mode to Dark and the
@@ -1100,7 +1111,15 @@ mod tests {
         // forgetting `light: true` in a new palette ctor will fail
         // here (and forgetting `light: false` on a dark theme would
         // too).
-        let expected_light: &[&str] = &["256 Light"];
+        let expected_light: &[&str] = &[
+            "256 Light",
+            "Catppuccin Latte",
+            "GitHub Light",
+            "Gruvbox Light",
+            "Rosé Pine Dawn",
+            "Solarized Light",
+            "Tokyo Night Day",
+        ];
         for (name, ctor) in BUILTIN_THEMES {
             let appearance = ctor().palette.appearance();
             let should_be_light = expected_light.contains(name);
@@ -1109,6 +1128,43 @@ mod tests {
                 should_be_light,
                 "theme {name:?} classified as {appearance:?} but expected light={should_be_light}",
             );
+        }
+    }
+
+    #[test]
+    fn builtin_palettes_have_no_duplicate_slots() {
+        // No two colour slots within a built-in palette should hold the
+        // same value — duplicates make a theme look monochromatic in the
+        // affected affordance pair (e.g. when `accent == error`, all
+        // text selections render in the error colour).
+        for (name, ctor) in BUILTIN_THEMES {
+            let p = ctor().palette;
+            let slots: &[(&str, Color)] = &[
+                ("text", p.text),
+                ("text_muted", p.text_muted),
+                ("bg", p.bg),
+                ("bg_muted", p.bg_muted),
+                ("surface", p.surface),
+                ("surface_elevated", p.surface_elevated),
+                ("primary", p.primary),
+                ("secondary", p.secondary),
+                ("accent", p.accent),
+                ("link", p.link),
+                ("success", p.success),
+                ("warning", p.warning),
+                ("error", p.error),
+                ("code", p.code),
+                ("diff_add", p.diff_add),
+                ("diff_delete", p.diff_delete),
+            ];
+            for (i, (a, ca)) in slots.iter().enumerate() {
+                for (b, cb) in &slots[i + 1..] {
+                    assert_ne!(
+                        ca, cb,
+                        "theme {name:?}: slot {a} and {b} share the same colour",
+                    );
+                }
+            }
         }
     }
 
@@ -1141,7 +1197,7 @@ mod tests {
             DEFAULT_LIGHT_THEME,
         );
         assert_eq!(
-            resolve_theme_for_mode_switch("Catppuccin", AppearanceMode::Light),
+            resolve_theme_for_mode_switch("Dracula", AppearanceMode::Light),
             DEFAULT_LIGHT_THEME,
         );
     }

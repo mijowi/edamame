@@ -44,9 +44,11 @@ pub fn palette() -> Palette {
         // purple that inline-code reads as code rather than chrome.
         code: Color::Indexed(91),
 
-        // Reserved for a future diff view; not consumed yet.
-        diff_add: Color::Indexed(28),
-        diff_delete: Color::Indexed(124),
+        // Reserved for a future diff view; not consumed yet.  Picked
+        // distinct from `success` / `error` so the palette has no
+        // duplicate slot values.
+        diff_add: Color::Indexed(22),
+        diff_delete: Color::Indexed(88),
 
         light: true,
     }

@@ -26,8 +26,8 @@ pub fn palette() -> Palette {
 
         code: rgb(0xff7b72),
 
-        diff_add: rgb(0x3fb950),
-        diff_delete: rgb(0xf85149),
+        diff_add: rgb(0x238636),
+        diff_delete: rgb(0xda3633),
 
         light: false,
     }
