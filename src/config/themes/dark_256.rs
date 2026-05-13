@@ -38,9 +38,11 @@ pub fn palette() -> Palette {
         // chrome / section-heading colour.
         code: Color::Indexed(140),
 
-        // Reserved for a future diff view; not consumed yet.
-        diff_add: Color::Indexed(76),
-        diff_delete: Color::Indexed(196),
+        // Reserved for a future diff view; not consumed yet.  Picked
+        // distinct from `success` / `error` so the palette has no
+        // duplicate slot values.
+        diff_add: Color::Indexed(34),
+        diff_delete: Color::Indexed(160),
 
         light: false,
     }

@@ -28,10 +28,10 @@ pub fn palette() -> Palette {
         warning: rgb(0xf6c177),
         error: rgb(0xeb6f92),
 
-        code: rgb(0xf6c177),
+        code: rgb(0xea9d34),
 
-        diff_add: rgb(0x6aa687),
-        diff_delete: rgb(0xeb6f92),
+        diff_add: rgb(0x4d8a6c),
+        diff_delete: rgb(0xb4637a),
 
         light: false,
     }
