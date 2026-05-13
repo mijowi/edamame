@@ -1,12 +1,12 @@
-//! Orng — colours ported from the opencode Orng theme.
+//! Everforest — colours ported from the opencode Everforest theme.
 
 use crate::config::theme::{Palette, Theme};
 
 use super::util::{blend, chrome, rgb};
 
 pub fn palette() -> Palette {
-    let bg = rgb(0x0a0a0a);
-    let ink = rgb(0xeeeeee);
+    let bg = rgb(0x2d353b);
+    let ink = rgb(0xd3c6aa);
     Palette {
         text: ink,
         text_muted: blend(ink, bg, 0.35),
@@ -15,18 +15,18 @@ pub fn palette() -> Palette {
         surface: chrome(bg, ink, 0.12),
         surface_elevated: chrome(bg, ink, 0.18),
 
-        primary: rgb(0xec5b2b),
-        secondary: rgb(0xb87500),
-        accent: rgb(0x6ba1e6),
-        link: rgb(0x56b6c2),
+        primary: rgb(0xd699b6),
+        secondary: rgb(0xa7c080),
+        accent: rgb(0xe69875),
+        link: rgb(0x7fbbb3),
 
-        success: rgb(0x59c57c),
-        warning: rgb(0xf0b429),
-        error: rgb(0xe06c75),
+        success: rgb(0x83c092),
+        warning: rgb(0xdbbc7f),
+        error: rgb(0xe67e80),
 
-        code: rgb(0xd99350),
+        code: rgb(0xb8db87),
 
-        diff_add: rgb(0x3a9a55),
+        diff_add: rgb(0x58a35a),
         diff_delete: rgb(0xe26a75),
 
         light: false,

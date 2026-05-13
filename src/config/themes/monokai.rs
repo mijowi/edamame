@@ -22,7 +22,7 @@ pub fn palette() -> Palette {
 
         success: rgb(0xa6e22e),
         warning: rgb(0xf4bf75),
-        error: rgb(0xf92672),
+        error: rgb(0xe04a4a),
 
         code: rgb(0xe6db74),
 
