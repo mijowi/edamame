@@ -42,7 +42,7 @@ impl<'a> Widget for StatusBar<'a> {
         let s = &self.state;
         let theme = self.theme;
 
-        // Mode badge — colour swaps per-mode so each mode reads at a
+        // Mode badge — color swaps per-mode so each mode reads at a
         // glance (orange = Rendered, yellow = Raw, muted = Preview).
         let mode_text = format!(" {} ", s.mode);
         let mode_span = Span::styled(mode_text.clone(), theme.status_mode_style(s.mode));

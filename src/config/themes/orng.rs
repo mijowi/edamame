@@ -1,4 +1,4 @@
-//! Orng — colours ported from the opencode Orng theme.
+//! Orng — colors ported from the opencode Orng theme.
 
 use crate::config::theme::{Palette, Theme};
 

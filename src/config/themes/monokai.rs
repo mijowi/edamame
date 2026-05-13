@@ -1,4 +1,4 @@
-//! Monokai — colours ported from the opencode Monokai theme.
+//! Monokai — colors ported from the opencode Monokai theme.
 
 use crate::config::theme::{Palette, Theme};
 

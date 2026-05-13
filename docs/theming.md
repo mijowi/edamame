@@ -38,7 +38,7 @@ than reaching for a second palette slot.
   `h6` = secondary dull.  For RGB palettes the medium / dull
   shades are computed by darkening the base toward black.  Indexed
   palettes can't be cleanly darkened without shifting hue, so
-  built-in 256-colour themes pin the ramp manually in their ctor
+  built-in 256-color themes pin the ramp manually in their ctor
   (see `BUILTIN_THEMES`).  User themes can still override an
   individual heading by setting a `[h1]`..`[h6]` style section in
   their TOML.
@@ -137,7 +137,7 @@ status-line mode chip. The renderer picks via `theme.cursor_style(mode)`:
 
 Cursor (modal text inputs): `theme.cursor` — REVERSED only, so the
 `▏` glyph inverts whatever's underneath without needing to know the
-modal's surface colour. Kept distinct from the editor cursor because
+modal's surface color. Kept distinct from the editor cursor because
 modal inputs aren't tied to editor mode.
 
 ### Modal windows
@@ -187,7 +187,7 @@ to:
 
 The filled-vs-outlined distinction makes the focus location and the
 persistent selection independently scannable.  Two filled affordances
-of the same colour read as ambiguous; an outlined "selected" with a
+of the same color read as ambiguous; an outlined "selected" with a
 filled "focused" reads unambiguously.
 
 For composite affordances (e.g. a checkbox toggle: `[x]` glyph + label
@@ -203,7 +203,7 @@ already taken by the unselected `modal_item` state in monochrome).
 
 #### Command palette input — exception
 Unlike other modal inputs, the command palette's typing row sits flush
-against the modal body — no coloured bg fill — and the `▏` cursor
+against the modal body — no colored bg fill — and the `▏` cursor
 glyph is `primary` so the typing affordance still pops. This break is
 deliberate: the palette is a search affordance, not a form field, so
 it reads as part of the modal rather than as a sunken input chip.
@@ -238,7 +238,7 @@ can return to them once the visual language settles.
   yet. Once `pulldown-cmark`'s footnote inlines surface, hook the
   style up.
 - **Diff / merge markers.** The palette ships `diff_add` and
-  `diff_delete` slots so themes can pre-author the colours, but no
+  `diff_delete` slots so themes can pre-author the colors, but no
   rendered styles consume them yet. Wire them up when the diff
   feature lands.
 - **Surface naming.** The palette description says `surface` is the

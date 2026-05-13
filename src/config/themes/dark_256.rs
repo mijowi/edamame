@@ -23,7 +23,7 @@ pub fn palette() -> Palette {
         secondary: Color::Indexed(97),
         // Mid blue — list markers, table header, selection bg.
         // Dark enough to carry `text` (253) as a fg when used as
-        // selection bg, saturated enough to read as a fg colour on
+        // selection bg, saturated enough to read as a fg color on
         // the document surface.
         accent: Color::Indexed(25),
         // Bright blue — link foreground.
@@ -35,7 +35,7 @@ pub fn palette() -> Palette {
 
         // Inline code and code-block language line.  Lighter purple
         // than `secondary` so inline-code reads distinct from
-        // chrome / section-heading colour.
+        // chrome / section-heading color.
         code: Color::Indexed(140),
 
         // Reserved for a future diff view; not consumed yet.  Picked
@@ -50,9 +50,9 @@ pub fn palette() -> Palette {
 
 /// Built-in theme: builds a [`Theme`] from [`palette`] and pins the
 /// `h1`–`h6` heading ramp to curated 256-cube shades.  The default
-/// `Theme::from_palette` darkening only works for RGB colours;
-/// stepping indexed colours through the 6×6×6 cube shifts hue, so
-/// 256-colour built-ins curate the ramp explicitly.
+/// `Theme::from_palette` darkening only works for RGB colors;
+/// stepping indexed colors through the 6×6×6 cube shifts hue, so
+/// 256-color built-ins curate the ramp explicitly.
 pub fn theme() -> Theme {
     let mut t = Theme::from_palette(&palette());
     let bold = Modifier::BOLD;

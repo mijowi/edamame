@@ -1,4 +1,4 @@
-//! Ayu (dark) — colours ported from the opencode Ayu theme.
+//! Ayu (dark) — colors ported from the opencode Ayu theme.
 
 use crate::config::theme::{Palette, Theme};
 

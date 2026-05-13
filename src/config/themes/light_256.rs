@@ -2,12 +2,12 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::config::theme::{Palette, Theme};
 
-/// Companion light palette to [`super::dark_256`].  Same colour
+/// Companion light palette to [`super::dark_256`].  Same color
 /// families (warm orange brand, edamame-green success, cool purple
-/// chrome) re-tuned for a near-white page: brand colours are darker
+/// chrome) re-tuned for a near-white page: brand colors are darker
 /// and more saturated so they pop against the light surface.
-/// Inverse-text sites (`fg = bg`) on any saturated brand colour rely
-/// on those colours being dark enough to contrast with near-white —
+/// Inverse-text sites (`fg = bg`) on any saturated brand color rely
+/// on those colors being dark enough to contrast with near-white —
 /// yellows are shifted to amber/orange-gold for that reason.
 pub fn palette() -> Palette {
     Palette {
@@ -34,7 +34,7 @@ pub fn palette() -> Palette {
         success: Color::Indexed(28),
         // Amber — shifted darker than the dark palette's yellow so
         // inverse-text sites (highlight, raw-mode chip,
-        // task_unchecked text colour) stay legible against the
+        // task_unchecked text color) stay legible against the
         // near-white page.
         warning: Color::Indexed(172),
         error: Color::Indexed(124),

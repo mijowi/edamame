@@ -221,7 +221,7 @@ pub struct PaintContext<'a> {
     pub modal_open: bool,
     /// Block index to skip (cursor's block during raw-reveal).
     pub suppress_block_idx: Option<usize>,
-    /// Theme background colour used (a) to clear the reserved rect
+    /// Theme background color used (a) to clear the reserved rect
     /// before the protocol paints over it and (b) to substitute for
     /// `Color::Reset` cells produced by the halfblocks renderer.
     /// Without (b), letter-box cells in the scratch buffer would punch

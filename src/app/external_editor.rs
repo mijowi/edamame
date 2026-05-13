@@ -22,7 +22,7 @@ use ratatui::Terminal;
 
 use crate::app::modal;
 use crate::config::{Config, KeyMap, Theme};
-use crate::terminal::ColourDepth;
+use crate::terminal::ColorDepth;
 
 use super::flash::MessageKind;
 use super::{App, AppEvent};
@@ -109,7 +109,7 @@ impl App {
                 // the external editor takes effect without a
                 // restart.  Uses the already-loaded `ThemeFile` so
                 // we don't read the theme TOML twice.
-                let monochrome = self.capabilities.colour_depth == ColourDepth::NoColour;
+                let monochrome = self.capabilities.color_depth == ColorDepth::NoColor;
                 let new_theme: &'static Theme =
                     Box::leak(Box::new(Theme::from_file(&loaded.theme, monochrome)));
                 self.theme = new_theme;
@@ -235,7 +235,7 @@ impl App {
         // and the editor both call `read()` on the same fd: bytes
         // get split between them, the editor sees corrupted input
         // (the `1;rgb:...` artifact users reported was the OSC 11
-        // background-colour response that neovim queried for, with
+        // background-color response that neovim queried for, with
         // some bytes stolen by us), and keystrokes feel laggy
         // because half of them never reach the editor.
         if let Some(p) = self.read_paused.as_ref() {

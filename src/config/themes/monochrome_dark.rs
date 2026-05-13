@@ -1,20 +1,20 @@
-//! Monochrome built-in theme — no colour escapes, only text attribute
+//! Monochrome built-in theme — no color escapes, only text attribute
 //! modifiers (bold / italic / underline / reversed / dim).  Recommended
-//! for terminals reporting `ColourDepth::Ansi16` or `NoColour`; selected
-//! automatically on first launch when colour support is limited.
+//! for terminals reporting `ColorDepth::Ansi16` or `NoColor`; selected
+//! automatically on first launch when color support is limited.
 //!
 //! Every palette slot resolves to [`Color::Reset`] so any site that
 //! reads `theme.palette.<x>` directly (big-H1 background, table border
 //! bg, command-palette / theme-picker rows, …) still produces a
-//! colour-free escape: the terminal's own default fg/bg shows through.
+//! color-free escape: the terminal's own default fg/bg shows through.
 //! Text attributes are preserved because they work over SGR regardless
-//! of colour depth.
+//! of color depth.
 
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::config::theme::{Palette, Theme};
 
-/// Colourless palette — every slot resolves to the terminal's own
+/// Colorless palette — every slot resolves to the terminal's own
 /// default fg/bg via [`Color::Reset`].  `light` is `false` only
 /// because the field is non-optional; for the appearance-mode filter
 /// monochrome is classified as dark (the registry name pins this).
@@ -111,7 +111,7 @@ pub fn theme() -> Theme {
 
         modal_bg: Style::default().add_modifier(Modifier::REVERSED),
         modal_title_normal: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
-        // Monochrome can't colour-code urgency; warning/error fall
+        // Monochrome can't color-code urgency; warning/error fall
         // back to BOLD + REVERSED + DIM so the title still reads as
         // distinct chrome on dim-aware terminals.
         modal_title_warning: Style::default()
@@ -122,7 +122,7 @@ pub fn theme() -> Theme {
         modal_item: Style::default().add_modifier(Modifier::REVERSED),
         modal_item_hint: Style::default().add_modifier(Modifier::REVERSED),
         modal_item_selected: Style::default().add_modifier(Modifier::BOLD),
-        // Monochrome can't colour-code distinction; `DIM` reads as
+        // Monochrome can't color-code distinction; `DIM` reads as
         // "marked but quiet" — distinct from BOLD (focused selection)
         // and plain (unselected) without using REVERSED (which is
         // already the unselected `modal_item` state in monochrome).

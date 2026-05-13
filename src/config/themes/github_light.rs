@@ -1,4 +1,4 @@
-//! GitHub Light — colours ported from the opencode GitHub theme.
+//! GitHub Light — colors ported from the opencode GitHub theme.
 
 use crate::config::theme::{Palette, Theme};
 

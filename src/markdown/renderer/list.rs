@@ -79,7 +79,7 @@ impl<'t> Renderer<'t> {
             // Checked-item text style.  `task_complete_text` is the
             // theme's "muted text" style; `task_strikethrough` keeps
             // the CROSSED_OUT modifier opt-in so themes can ship the
-            // muted colour without the strikethrough.
+            // muted color without the strikethrough.
             let checked_text_style = if item.task == Some(true) {
                 if self.theme.task_strikethrough {
                     self.theme

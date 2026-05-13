@@ -1,6 +1,6 @@
 //! Startup capability-notice modal.  Shown when the terminal lacks
 //! features the editor would otherwise use (mouse, image protocols,
-//! truecolour, etc.).  Two buttons: "Ok" and "Don't show this again".
+//! truecolor, etc.).  Two buttons: "Ok" and "Don't show this again".
 
 use std::any::Any;
 

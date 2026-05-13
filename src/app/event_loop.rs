@@ -282,7 +282,7 @@ impl App {
                 // painting the modal.  The modal's own `Clear` + bg
                 // fill overwrites its rect cleanly, so this sweep can
                 // cover the whole terminal area without computing a
-                // complement.  Strategy depends on terminal colour
+                // complement.  Strategy depends on terminal color
                 // depth — see `crate::ui::dim`.
                 let area = frame.area();
                 crate::ui::dim::dim_area(frame.buffer_mut(), area, capabilities_ref, theme_ref);

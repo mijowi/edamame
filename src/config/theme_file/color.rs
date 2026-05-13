@@ -1,7 +1,7 @@
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 
-/// Deserializes a colour from TOML.  Accepts either:
+/// Deserializes a color from TOML.  Accepts either:
 ///   * a string (`"magenta"`, `"#ff00aa"`, `"236"`)  — via ratatui's `Color`
 ///   * a bare integer (`236`)                        — as `Color::Indexed`
 ///

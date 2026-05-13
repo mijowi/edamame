@@ -1,4 +1,4 @@
-//! Gruvbox (dark) — colours ported from the opencode Gruvbox theme.
+//! Gruvbox (dark) — colors ported from the opencode Gruvbox theme.
 
 use crate::config::theme::{Palette, Theme};
 

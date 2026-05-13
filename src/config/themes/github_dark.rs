@@ -1,4 +1,4 @@
-//! GitHub Dark — colours ported from the opencode GitHub theme (dark variant).
+//! GitHub Dark — colors ported from the opencode GitHub theme (dark variant).
 
 use crate::config::theme::{Palette, Theme};
 

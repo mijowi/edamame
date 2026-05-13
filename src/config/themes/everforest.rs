@@ -1,4 +1,4 @@
-//! Everforest — colours ported from the opencode Everforest theme.
+//! Everforest — colors ported from the opencode Everforest theme.
 
 use crate::config::theme::{Palette, Theme};
 

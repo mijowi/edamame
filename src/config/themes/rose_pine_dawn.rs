@@ -1,4 +1,4 @@
-//! Rosé Pine Dawn — light variant of Rosé Pine, with colours ported
+//! Rosé Pine Dawn — light variant of Rosé Pine, with colors ported
 //! from the opencode Rose Pine theme.
 
 use crate::config::theme::{Palette, Theme};

@@ -1,4 +1,4 @@
-//! Dracula — colours ported from the opencode Dracula theme.
+//! Dracula — colors ported from the opencode Dracula theme.
 
 use crate::config::theme::{Palette, Theme};
 

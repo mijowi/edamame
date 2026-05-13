@@ -2,13 +2,13 @@
 //!
 //! [`super::theme::Theme`] is the live in-memory style table used by the
 //! renderer.  It carries a [`super::theme::Palette`] (the named brand
-//! colours every style is derived from) plus a flat field per styled
+//! colors every style is derived from) plus a flat field per styled
 //! UI element.  Users cannot edit it directly.
 //!
 //! This module supplies a parallel [`ThemeFile`] that round-trips
 //! through TOML.  A theme file has two sections:
 //!
-//! 1. `[palette]` — the bright/dim brand colours every style derives
+//! 1. `[palette]` — the bright/dim brand colors every style derives
 //!    from.  Editing only the palette is the cheapest way to retheme
 //!    edamame end-to-end: every style that hasn't been individually
 //!    overridden re-derives from the new palette on load.
@@ -18,7 +18,7 @@
 //!
 //! Authoring a new theme typically means rewriting the palette and
 //! letting every style fall through.  Power users can override
-//! individual fields (e.g. give H1 a setext rule colour distinct from
+//! individual fields (e.g. give H1 a setext rule color distinct from
 //! the H1 fg) without touching the rest.
 //!
 //! On load we run a three-stage merge:
@@ -28,8 +28,8 @@
 //! 3. Build a default [`super::theme::Theme`] from the merged palette,
 //!    then apply any per-element overrides that the file declares.
 //!
-//! `Color` accepts named colours (`"magenta"`), hex (`"#ff00aa"`), or a
-//! 256-colour index either as a string (`"236"`) or a bare TOML integer
+//! `Color` accepts named colors (`"magenta"`), hex (`"#ff00aa"`), or a
+//! 256-color index either as a string (`"236"`) or a bare TOML integer
 //! (`236`) — the latter is friendlier in TOML.
 
 mod color;
@@ -66,7 +66,7 @@ pub struct ThemeFile {
     /// flag has no rendering effect, only filter / picker effect.
     pub light: bool,
 
-    /// Brand-colour palette.  Edit this section to retheme edamame
+    /// Brand-color palette.  Edit this section to retheme edamame
     /// end-to-end without touching individual style fields.
     pub palette: PaletteFile,
 
@@ -385,7 +385,7 @@ mod tests {
 
     // No `monochrome_theme_round_trips` test: the monochrome theme is
     // always built programmatically (`Theme::monochrome()`) when the
-    // terminal reports no colour support — it never loads from a
+    // terminal reports no color support — it never loads from a
     // file.  Several of its styles are intentionally `Style::default()`
     // (e.g. `h1_rule`), and the file format treats absent sections as
     // "use the palette-derived default", so `Style::default()` is not
@@ -484,7 +484,7 @@ fg = "blue"
     #[test]
     fn palette_override_ripples_to_styles() {
         // Override only the palette `primary` slot; the H1 fg should
-        // pick up the new colour because the heading ramp derives
+        // pick up the new color because the heading ramp derives
         // from `primary` (h1) and `secondary` (h2).
         let toml = r##"
 [palette]

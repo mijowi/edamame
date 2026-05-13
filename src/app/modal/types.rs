@@ -96,7 +96,7 @@ pub trait Modal {
         ModalOutcome::Continue
     }
 
-    /// The modal's visual urgency — drives title colour.  Default
+    /// The modal's visual urgency — drives title color.  Default
     /// [`ModalKind::Normal`].  Concrete modals store this as a field on
     /// their struct and have this method, the `ModalView { kind }`
     /// literal, and the constructor all read from `self.kind` so the

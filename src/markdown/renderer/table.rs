@@ -99,7 +99,7 @@ impl<'t> Renderer<'t> {
         // would clash with the alternating background fill — so we
         // emit a *blank* separator whose background matches the row
         // immediately above it.  Visual effect: each data row appears
-        // as a 2-row band of its own colour, with no horizontal rule
+        // as a 2-row band of its own color, with no horizontal rule
         // breaking up the stripe.
         let thin: String = std::iter::once("├".to_string())
             .chain(widths.iter().enumerate().map(|(i, &w)| {

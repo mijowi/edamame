@@ -1,4 +1,4 @@
-//! Gruvbox Light — colours ported from the opencode Gruvbox theme,
+//! Gruvbox Light — colors ported from the opencode Gruvbox theme,
 //! drawing on the canonical Gruvbox palette for slots that opencode
 //! collapses into a single hue.
 
