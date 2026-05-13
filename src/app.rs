@@ -341,18 +341,44 @@ impl App {
         // Build startup-time modals.  Each is optional — `None` when
         // its precondition isn't satisfied (no warnings, capability
         // notice suppressed, document has no images, etc.).
+        //
+        // The first-run welcome modal subsumes the four legacy startup
+        // prompts (capability notice, images-enabled, remote-image,
+        // diagrams) — they're skipped while the welcome is still
+        // pending so the user is never double-prompted.
+        let welcome_modal = modal::WelcomeModal::from_state(&capabilities, &config);
+        let suppress_legacy_prompts = welcome_modal.is_some();
         let config_warning_modal = modal::ConfigWarningModal::from_warnings(&config_warnings);
-        let startup_notice = modal::StartupNoticeModal::from_capabilities(&capabilities, &config);
-        let images_enabled_prompt = modal::ImagesEnabledPromptModal::from_state(&editor, &config);
-        let diagrams_enabled_prompt =
-            modal::DiagramsEnabledPromptModal::from_state(&editor, &config);
-        let remote_image_prompt = modal::RemoteImagePromptModal::from_state(&editor, &config);
+        let startup_notice = if suppress_legacy_prompts {
+            None
+        } else {
+            modal::StartupNoticeModal::from_capabilities(&capabilities, &config)
+        };
+        let images_enabled_prompt = if suppress_legacy_prompts {
+            None
+        } else {
+            modal::ImagesEnabledPromptModal::from_state(&editor, &config)
+        };
+        let diagrams_enabled_prompt = if suppress_legacy_prompts {
+            None
+        } else {
+            modal::DiagramsEnabledPromptModal::from_state(&editor, &config)
+        };
+        let remote_image_prompt = if suppress_legacy_prompts {
+            None
+        } else {
+            modal::RemoteImagePromptModal::from_state(&editor, &config)
+        };
         let wheel_step = config.editor.mouse_scroll_lines;
 
         // Push the queued startup-time modals onto the stack in
         // reverse-priority order so the highest-priority one is on
-        // top.  Order shown to the user: config-warning → notice →
-        // images-enabled → remote-image → (any subsequent modals).
+        // top.  Order shown to the user when present: config-warning →
+        // welcome → startup-notice → images-enabled → diagrams-enabled
+        // → remote-image.  The legacy prompts (everything below
+        // welcome) are suppressed via `suppress_legacy_prompts` whenever
+        // the welcome itself is queued, so on a launch that shows the
+        // welcome the user only sees config-warning + welcome.
         let mut modal_stack = ModalStack::new();
         if let Some(m) = remote_image_prompt {
             modal_stack.push(Box::new(m));
@@ -364,6 +390,9 @@ impl App {
             modal_stack.push(Box::new(m));
         }
         if let Some(m) = startup_notice {
+            modal_stack.push(Box::new(m));
+        }
+        if let Some(m) = welcome_modal {
             modal_stack.push(Box::new(m));
         }
         if let Some(m) = config_warning_modal {
@@ -575,3 +604,4 @@ impl App {
         }
     }
 }
+

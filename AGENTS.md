@@ -331,6 +331,25 @@ they exist:
   `OpenConfigFolder`, `ShowMarkdownCheatSheet`, `ShowCheatSheet`) belong on
   the allowlist — adding a new modal-opening action means adding it here too,
   otherwise Ctrl-P / similar will silently no-op in Preview.
+- **Focus vs. persistent selection (modal styling convention).** When
+  a modal carries a *persistent selection* that's independent of focus
+  — e.g. the welcome modal's `Ask | Always | Never` pill rows, the
+  `Don't show this again` checkbox, or any future form whose value
+  survives focus moves — use this three-tier styling:
+  - Focused element → `theme.modal_button_focused`
+    (`primary` bg + REVERSED + bold).  Filled, strongest.
+  - Persistent selection *without* focus → `theme.modal_item_selected_unfocused`
+    (`secondary` **fg** on `surface_elevated`, bold).  Outlined, no
+    fill — so it never reads the same as the focused element.
+  - Neither → `theme.modal_item` (plain text on `surface_elevated`).
+
+  Don't reuse `modal_item_selected` for "selected but unfocused" — it
+  also uses a filled `primary` bg, which collides with the focused
+  affordance and produces the exact bug we fixed for the welcome
+  modal.  For composite affordances (checkbox glyph + label), apply
+  the unfocused-selection style to the *glyph only*, not the full
+  row.  See [`docs/theming.md`](docs/theming.md) §"Focus vs. persistent
+  selection" for the rationale and the monochrome fallback.
 
 ## Code Style
 

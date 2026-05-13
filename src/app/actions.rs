@@ -360,8 +360,8 @@ impl App {
         // in the mode that actually contains the current theme — otherwise
         // it would be filtered out of the list and the "(current)" marker
         // would never render.
-        let mode = crate::config::theme::theme_appearance(&current)
-            .unwrap_or(self.config.appearance);
+        let mode =
+            crate::config::theme::theme_appearance(&current).unwrap_or(self.config.appearance);
         let themes = crate::config::theme::list_theme_names_for_mode(mode);
         self.modal_stack.push(Box::new(modal::ThemePickerModal::new(
             themes, current, mode,

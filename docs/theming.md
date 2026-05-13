@@ -146,7 +146,12 @@ Title: `primary` (Normal) / `warning` / `error` fg, bold
 Item: `text` fg on `surface_elevated`
 Item hint / sub-label (right-aligned chord, value column, etc. on an
 unfocused row): `primary` fg
-Selected item: `primary` bg, `text` fg, bold
+Selected item (the row that currently has focus): `primary` bg, `text`
+fg, bold
+Selected item, unfocused (persistent selection on a row that does NOT
+have focus — e.g. the active tri-state pill in a row whose label isn't
+focused): `secondary` **fg** (no fill) on `surface_elevated`, bold.
+See "Focus vs. persistent selection" below for the full convention.
 Selected item hint (right-aligned chord / value column on the focused
 row): `accent` fg on the `primary` selection fill
 Description (pinned-footer copy explaining the focused row): `accent`
@@ -162,6 +167,39 @@ Scrollbar
 - Track: `bg_muted` fg (`│` glyph)
 - Thumb (idle): `primary` fg (`█` glyph)
 - Thumb (hover / drag): `primary` fg + REVERSED
+
+#### Focus vs. persistent selection
+Some modals carry **persistent selections** independent of which row
+has focus — for example, the welcome modal's three tri-state rows each
+remember an `Ask | Always | Never` value while focus moves around, and
+the "Don't show this again" toggle remembers a checked / unchecked
+state.  These differ from list-style modals (palette, settings,
+keybinds) where focus and "the chosen row" are the same concept.
+
+Convention for such modals — pick which tier each affordance belongs
+to:
+
+| State | Style | Theme field |
+|---|---|---|
+| Focused | `primary` bg + REVERSED + bold (filled, strongest) | `modal_button_focused` |
+| Persistent selection without focus | `secondary` **fg** on `surface_elevated`, bold (outlined, no fill) | `modal_item_selected_unfocused` |
+| Neither | plain `text` fg on `surface_elevated` | `modal_item` |
+
+The filled-vs-outlined distinction makes the focus location and the
+persistent selection independently scannable.  Two filled affordances
+of the same colour read as ambiguous; an outlined "selected" with a
+filled "focused" reads unambiguously.
+
+For composite affordances (e.g. a checkbox toggle: `[x]` glyph + label
+text), apply the `modal_item_selected_unfocused` style **only to the
+glyph that carries the selection**, not the full row — the persistent-
+selection cue should land on the smallest expressive surface so the
+surrounding label stays legible.
+
+Monochrome fallback: `modal_item_selected_unfocused` uses plain `DIM`
+so it reads as "marked but quiet" — distinct from `BOLD` (focused
+selection) and plain (unselected) without needing REVERSED (which is
+already taken by the unselected `modal_item` state in monochrome).
 
 #### Command palette input — exception
 Unlike other modal inputs, the command palette's typing row sits flush
