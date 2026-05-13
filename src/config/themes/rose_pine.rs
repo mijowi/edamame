@@ -32,6 +32,8 @@ pub fn palette() -> Palette {
 
         diff_add: rgb(0x6aa687),
         diff_delete: rgb(0xeb6f92),
+
+        light: false,
     }
 }
 

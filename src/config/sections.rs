@@ -62,6 +62,32 @@ pub struct EditorConfig {
 /// stray `0` or single-digit value can't break layout.
 pub const MAX_WIDTH_COLS_MIN: usize = 20;
 
+/// User-selected appearance mode.  Independent of `Config::theme`: the
+/// mode filters which themes appear in the picker and which counterpart
+/// is previewed when the user toggles modes, but does not directly
+/// dictate the active theme name.  The picker / settings overlay are
+/// responsible for keeping `theme` consistent with `appearance` when
+/// the user changes either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppearanceMode {
+    #[default]
+    Dark,
+    Light,
+}
+
+impl AppearanceMode {
+    /// The mode on the other side of the toggle.  Used by the picker's
+    /// Tab / Left / Right / pill-click handlers and by the settings
+    /// overlay's Appearance cycle row.
+    pub fn opposite(self) -> Self {
+        match self {
+            AppearanceMode::Dark => AppearanceMode::Light,
+            AppearanceMode::Light => AppearanceMode::Dark,
+        }
+    }
+}
+
 /// How the bottom status region is laid out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

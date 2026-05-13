@@ -7,8 +7,9 @@ use super::init::ensure_default_files_in;
 use super::keymap::KeyBindingOverrides;
 use super::readers::{read_keybindings, read_main_config, read_theme_named};
 pub use super::sections::{
-    CustomExportEntry, DevConfig, DiagramsConfig, DiagramsEnabled, EditorConfig, ExportConfig,
-    ImagesConfig, ImagesEnabled, ModalConfig, RemoteImagePolicy, StatusBarLayout, TableConfig,
+    AppearanceMode, CustomExportEntry, DevConfig, DiagramsConfig, DiagramsEnabled, EditorConfig,
+    ExportConfig, ImagesConfig, ImagesEnabled, ModalConfig, RemoteImagePolicy, StatusBarLayout,
+    TableConfig,
 };
 use super::theme::Theme;
 use super::theme_file::ThemeFile;
@@ -23,10 +24,15 @@ pub use super::warnings::{ConfigWarning, WarningKind};
 pub struct Config {
     /// Name of the active theme.  Built-in names (see `BUILTIN_THEMES`)
     /// resolve to a compiled-in palette; any other name is loaded from
-    /// `themes/<theme>.toml`.  Defaults to `"256 Dark"`.  A missing file
+    /// `themes/<theme>.toml`.  Defaults to `"Edamame"`.  A missing file
     /// falls back to the compiled-in `Theme::default()` so the editor
     /// always has a working colour table.
     pub theme: String,
+    /// User-selected appearance mode.  Filters the theme picker and
+    /// governs which counterpart theme is previewed when the mode is
+    /// toggled.  Does not by itself change the active theme — see
+    /// [`AppearanceMode`].
+    pub appearance: AppearanceMode,
     pub editor: EditorConfig,
     pub modal: ModalConfig,
     pub table: TableConfig,
@@ -40,6 +46,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             theme: "Edamame".into(),
+            appearance: AppearanceMode::default(),
             editor: EditorConfig::default(),
             modal: ModalConfig::default(),
             table: TableConfig::default(),

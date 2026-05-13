@@ -245,6 +245,10 @@ impl App {
         let outcome = top.handle_key(key, self, doc_height, doc_width);
         match outcome {
             ModalOutcome::Continue => self.modal_stack.push(top),
+            ModalOutcome::ContinueAnd(cb) => {
+                self.modal_stack.push(top);
+                cb(self);
+            }
             ModalOutcome::Close => {}
             ModalOutcome::CloseAnd(cb) => cb(self),
         }
@@ -260,6 +264,10 @@ impl App {
         let outcome = top.handle_click(col, row);
         match outcome {
             ModalOutcome::Continue => self.modal_stack.push(top),
+            ModalOutcome::ContinueAnd(cb) => {
+                self.modal_stack.push(top);
+                cb(self);
+            }
             ModalOutcome::Close => {}
             ModalOutcome::CloseAnd(cb) => cb(self),
         }
@@ -346,10 +354,18 @@ impl App {
     /// row that the settings overlay used to carry — selecting a row
     /// writes `config.theme`, saves, and reapplies the palette live.
     pub fn open_theme_picker(&mut self) {
-        let themes = crate::config::theme::list_theme_names();
         let current = self.config.theme.clone();
-        self.modal_stack
-            .push(Box::new(modal::ThemePickerModal::new(themes, current)));
+        // If the configured appearance doesn't match the current theme's
+        // appearance (e.g. config.toml was hand-edited), open the picker
+        // in the mode that actually contains the current theme — otherwise
+        // it would be filtered out of the list and the "(current)" marker
+        // would never render.
+        let mode = crate::config::theme::theme_appearance(&current)
+            .unwrap_or(self.config.appearance);
+        let themes = crate::config::theme::list_theme_names_for_mode(mode);
+        self.modal_stack.push(Box::new(modal::ThemePickerModal::new(
+            themes, current, mode,
+        )));
     }
 
     /// Open the keybinds overlay.  Builds a live `KeyMap` if one

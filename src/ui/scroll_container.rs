@@ -248,30 +248,6 @@ pub fn centered_rect_for_content(content: ContentSize, area: Rect) -> Rect {
     }
 }
 
-/// Same sizing as [`centered_rect_for_content`], but anchors the modal
-/// near the *top* of `area` instead of vertically centring it.  Used by
-/// the command palette so the input row stays put as the match list
-/// grows or shrinks per keystroke — a centred palette would shift up
-/// and down by half the height delta on every character typed, making
-/// the input row appear to jump.
-///
-/// The anchor sits at one-eighth of the area height (capped at 4 rows
-/// from the top to keep the offset small on tall terminals), then is
-/// clamped so the modal still fits inside `area`.
-pub fn top_anchored_rect_for_content(content: ContentSize, area: Rect) -> Rect {
-    let (modal_width, modal_height) = modal_dimensions_for(content, area);
-    let x = area.x + (area.width.saturating_sub(modal_width)) / 2;
-    let desired_offset = (area.height / 8).min(4);
-    let max_y = area.y + area.height.saturating_sub(modal_height);
-    let y = (area.y + desired_offset).min(max_y);
-    Rect {
-        x,
-        y,
-        width: modal_width,
-        height: modal_height,
-    }
-}
-
 /// Compute the modal's outer width and height for a given content size
 /// and available area.  Padding is `2 * MAX_PAD_H` cells on the
 /// horizontal axis (clamped to area), and [`VERTICAL_CHROME_ROWS`]
@@ -714,76 +690,6 @@ mod tests {
         assert_eq!(compute_pad_h(36, 30), 3);
         // 32-wide modal, 30-cell content → slack 2, half = 1 = MIN.
         assert_eq!(compute_pad_h(32, 30), MIN_PAD_H);
-    }
-
-    // ── top_anchored_rect_for_content ────────────────────────────────────
-
-    #[test]
-    fn top_anchored_rect_y_does_not_change_with_content_height() {
-        // The whole point of top-anchoring: the y position must be the
-        // same regardless of body height, so the input row at the top
-        // of the modal stays put as the content grows or shrinks.
-        let area = Rect::new(0, 0, 100, 40);
-        let small = ContentSize {
-            width: 30,
-            height: 3,
-            pinned_top: 2,
-            pinned_bottom: 0,
-        };
-        let large = ContentSize {
-            width: 30,
-            height: 15,
-            pinned_top: 2,
-            pinned_bottom: 0,
-        };
-        let r_small = top_anchored_rect_for_content(small, area);
-        let r_large = top_anchored_rect_for_content(large, area);
-        assert_eq!(r_small.y, r_large.y);
-    }
-
-    #[test]
-    fn top_anchored_rect_uses_capped_offset_on_tall_terminals() {
-        // The desired offset is `area.height / 8` capped at 4.  At
-        // height 80 the eighth would be 10 — verify the cap kicks in.
-        let area = Rect::new(0, 0, 100, 80);
-        let content = ContentSize {
-            width: 30,
-            height: 5,
-            pinned_top: 2,
-            pinned_bottom: 0,
-        };
-        let r = top_anchored_rect_for_content(content, area);
-        assert_eq!(r.y, 4);
-    }
-
-    #[test]
-    fn top_anchored_rect_clamps_y_when_modal_would_overflow_bottom() {
-        // Tiny terminal: the modal nearly fills the area, so the
-        // top-anchor offset has to retreat to keep the modal on screen.
-        let area = Rect::new(0, 0, 100, 8);
-        let content = ContentSize {
-            width: 30,
-            height: 10,
-            pinned_top: 2,
-            pinned_bottom: 0,
-        };
-        let r = top_anchored_rect_for_content(content, area);
-        assert!(r.y + r.height <= area.y + area.height);
-    }
-
-    #[test]
-    fn top_anchored_rect_centres_x_like_centered_variant() {
-        let area = Rect::new(0, 0, 100, 40);
-        let content = ContentSize {
-            width: 30,
-            height: 5,
-            pinned_top: 2,
-            pinned_bottom: 0,
-        };
-        let r_top = top_anchored_rect_for_content(content, area);
-        let r_centred = centered_rect_for_content(content, area);
-        assert_eq!(r_top.x, r_centred.x);
-        assert_eq!(r_top.width, r_centred.width);
     }
 
     // ── wrapped_rows ─────────────────────────────────────────────────────

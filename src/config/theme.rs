@@ -1,5 +1,10 @@
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::SystemTime;
+
 use ratatui::style::{Color, Modifier, Style};
 
+use super::sections::AppearanceMode;
 use super::themes::util::blend;
 
 /// How heavily to mix `code` toward `bg` when deriving the code
@@ -329,6 +334,29 @@ pub struct Palette {
     pub diff_add: Color,
     /// Reserved for a future diff view — removed line gutter / fill.
     pub diff_delete: Color,
+
+    /// `true` when this palette is intended as a light-mode theme; `false`
+    /// for dark themes (the common case).  Drives the theme picker's
+    /// light/dark filter — every built-in palette sets this explicitly in
+    /// its constructor, and user TOML themes opt in via `light = true`
+    /// at the top of their `.toml` file.  We don't infer from `bg`
+    /// luminance: the flag is the single source of truth so a theme with
+    /// a mid-grey bg or an indexed colour still classifies unambiguously.
+    pub light: bool,
+}
+
+impl Palette {
+    /// Classification used by the theme picker's light/dark filter.
+    /// Reads the explicit [`Palette::light`] flag — there is no
+    /// luminance heuristic, so a theme with an unconventional bg still
+    /// classifies unambiguously.
+    pub fn appearance(&self) -> AppearanceMode {
+        if self.light {
+            AppearanceMode::Light
+        } else {
+            AppearanceMode::Dark
+        }
+    }
 }
 
 impl Default for Palette {
@@ -371,6 +399,124 @@ pub const BUILTIN_THEMES: &[(&str, ThemeCtor)] = &[
     ("SynthWave '84", super::themes::synthwave84::theme),
     ("Tokyo Night", super::themes::tokyo_night::theme),
 ];
+
+/// Bidirectional pairings between dark and light variants of the same
+/// theme brand.  Used when the user flips appearance mode in the theme
+/// picker: if the currently-active theme appears in this table, its
+/// sibling is previewed; otherwise the default theme of the new mode
+/// (see [`DEFAULT_DARK_THEME`] / [`DEFAULT_LIGHT_THEME`]) is previewed.
+///
+/// Order is `(dark_name, light_name)` for readability — the lookup
+/// helper [`counterpart_theme`] checks both directions.
+pub const THEME_COUNTERPARTS: &[(&str, &str)] = &[
+    ("256 Dark", "256 Light"),
+    // Future entries land here as light themes are added:
+    // ("GitHub Dark",  "GitHub Light"),
+    // ("Catppuccin",   "Catppuccin Latte"),
+    // ("Tokyo Night",  "Tokyo Night Day"),
+    // ("Gruvbox",      "Gruvbox Light"),
+    // ("Rosé Pine",    "Rosé Pine Dawn"),
+];
+
+/// Default theme name when the user toggles mode to Dark and the
+/// previously-active theme has no counterpart.
+pub const DEFAULT_DARK_THEME: &str = "Edamame";
+
+/// Default theme name when the user toggles mode to Light and the
+/// previously-active theme has no counterpart.
+pub const DEFAULT_LIGHT_THEME: &str = "256 Light";
+
+/// Return the cross-mode sibling of `name`, if registered in
+/// [`THEME_COUNTERPARTS`].  Bidirectional: passing either half of a
+/// pair returns the other.
+pub fn counterpart_theme(name: &str) -> Option<&'static str> {
+    for (a, b) in THEME_COUNTERPARTS {
+        if *a == name {
+            return Some(b);
+        }
+        if *b == name {
+            return Some(a);
+        }
+    }
+    None
+}
+
+/// Decide which theme to preview when the user toggles appearance mode
+/// to `target` while `current` is the active theme.  Strategy:
+///
+/// 1. If `current` has a counterpart in [`THEME_COUNTERPARTS`] and that
+///    counterpart classifies as `target`, return the counterpart.
+/// 2. Otherwise return the [`DEFAULT_DARK_THEME`] / [`DEFAULT_LIGHT_THEME`]
+///    for the target mode.
+///
+/// Used by both the theme-picker mode toggle and the settings-overlay
+/// Appearance row so the live preview is consistent across both UIs.
+pub fn resolve_theme_for_mode_switch(current: &str, target: AppearanceMode) -> String {
+    if let Some(sibling) = counterpart_theme(current) {
+        if theme_appearance(sibling) == Some(target) {
+            return sibling.to_owned();
+        }
+    }
+    match target {
+        AppearanceMode::Dark => DEFAULT_DARK_THEME.to_owned(),
+        AppearanceMode::Light => DEFAULT_LIGHT_THEME.to_owned(),
+    }
+}
+
+/// Cache entry for a user theme's classification: the file's mtime
+/// (so stale entries are detected when the user edits a theme file
+/// mid-session) and the resolved appearance mode.
+type AppearanceCacheEntry = (Option<SystemTime>, AppearanceMode);
+
+/// Cache of user-theme classifications, keyed by theme name.  Built-ins
+/// are resolved without consulting the cache.
+static USER_THEME_APPEARANCE_CACHE: Mutex<Option<HashMap<String, AppearanceCacheEntry>>> =
+    Mutex::new(None);
+
+/// Resolve `name` to its [`AppearanceMode`] by loading the theme and
+/// reading [`Palette::light`].  Returns `None` if the theme can't be
+/// resolved (unknown name, malformed user TOML); callers default to
+/// `Dark` in that case so the theme stays visible in the dark list.
+///
+/// Built-in themes resolve in O(1) via [`Theme::builtin`].  User
+/// themes hit a process-wide mtime-keyed cache so repeated calls (the
+/// theme-picker filter invokes this once per theme on every mode flip)
+/// don't re-read + re-parse the TOML each time.
+pub fn theme_appearance(name: &str) -> Option<AppearanceMode> {
+    if let Some(t) = Theme::builtin(name) {
+        return Some(t.palette.appearance());
+    }
+    let dir = super::config::Config::config_dir()?;
+    let path = dir.join("themes").join(format!("{name}.toml"));
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+
+    let mut guard = USER_THEME_APPEARANCE_CACHE.lock().ok()?;
+    let cache = guard.get_or_insert_with(HashMap::new);
+    if let Some((cached_mtime, cached_mode)) = cache.get(name) {
+        if *cached_mtime == mtime {
+            return Some(*cached_mode);
+        }
+    }
+    // Cache miss / mtime mismatch — read the file.  We don't surface
+    // parse warnings here; classification is best-effort and silent.
+    let text = std::fs::read_to_string(&path).ok()?;
+    let file: super::theme_file::ThemeFile = toml::from_str(&text).ok()?;
+    let theme: Theme = (&file).into();
+    let mode = theme.palette.appearance();
+    cache.insert(name.to_owned(), (mtime, mode));
+    Some(mode)
+}
+
+/// List theme names whose appearance matches `mode`.  Resolves each
+/// name from [`list_theme_names`] and filters by [`Palette::light`].
+/// Themes that fail to resolve are treated as `Dark` (so they remain
+/// visible in the dark list rather than silently disappearing).
+pub fn list_theme_names_for_mode(mode: AppearanceMode) -> Vec<String> {
+    list_theme_names()
+        .into_iter()
+        .filter(|name| theme_appearance(name).unwrap_or(AppearanceMode::Dark) == mode)
+        .collect()
+}
 
 /// List every theme name available to the user: the compiled-in
 /// [`BUILTIN_THEMES`] (in their declared order) followed by any
@@ -868,6 +1014,11 @@ mod tests {
         "code",
         "diff_add",
         "diff_delete",
+        // NOTE: the `_all` Color array below can't include the new
+        // `light: bool` field, so the length check still tracks only
+        // colour-typed fields.  New colour fields go here; new non-
+        // colour fields are covered by every palette ctor needing to
+        // compile.
     ];
 
     #[test]
@@ -912,5 +1063,69 @@ mod tests {
         assert!(Theme::builtin("256 Dark").is_some());
         assert!(Theme::builtin("256 Light").is_some());
         assert!(Theme::builtin("nonexistent").is_none());
+    }
+
+    #[test]
+    fn only_light_256_is_classified_as_light() {
+        // Iterate every built-in and assert exactly the expected one(s)
+        // classify as light.  When new light themes ship this list
+        // becomes the central place to register the expectation —
+        // forgetting `light: true` in a new palette ctor will fail
+        // here (and forgetting `light: false` on a dark theme would
+        // too).
+        let expected_light: &[&str] = &["256 Light"];
+        for (name, ctor) in BUILTIN_THEMES {
+            let appearance = ctor().palette.appearance();
+            let should_be_light = expected_light.contains(name);
+            assert_eq!(
+                appearance == AppearanceMode::Light,
+                should_be_light,
+                "theme {name:?} classified as {appearance:?} but expected light={should_be_light}",
+            );
+        }
+    }
+
+    #[test]
+    fn counterpart_theme_is_bidirectional() {
+        assert_eq!(counterpart_theme("256 Dark"), Some("256 Light"));
+        assert_eq!(counterpart_theme("256 Light"), Some("256 Dark"));
+        assert_eq!(counterpart_theme("Edamame"), None);
+        assert_eq!(counterpart_theme("nonexistent"), None);
+    }
+
+    #[test]
+    fn resolve_theme_for_mode_switch_uses_counterpart_when_available() {
+        assert_eq!(
+            resolve_theme_for_mode_switch("256 Dark", AppearanceMode::Light),
+            "256 Light",
+        );
+        assert_eq!(
+            resolve_theme_for_mode_switch("256 Light", AppearanceMode::Dark),
+            "256 Dark",
+        );
+    }
+
+    #[test]
+    fn resolve_theme_for_mode_switch_falls_back_to_default() {
+        // Themes with no registered counterpart fall back to the
+        // mode default.
+        assert_eq!(
+            resolve_theme_for_mode_switch("Edamame", AppearanceMode::Light),
+            DEFAULT_LIGHT_THEME,
+        );
+        assert_eq!(
+            resolve_theme_for_mode_switch("Catppuccin", AppearanceMode::Light),
+            DEFAULT_LIGHT_THEME,
+        );
+    }
+
+    #[test]
+    fn list_theme_names_for_mode_filters() {
+        let dark = list_theme_names_for_mode(AppearanceMode::Dark);
+        let light = list_theme_names_for_mode(AppearanceMode::Light);
+        assert!(dark.iter().any(|n| n == "Edamame"));
+        assert!(!dark.iter().any(|n| n == "256 Light"));
+        assert!(light.iter().any(|n| n == "256 Light"));
+        assert!(!light.iter().any(|n| n == "Edamame"));
     }
 }

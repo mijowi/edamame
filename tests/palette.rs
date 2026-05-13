@@ -164,6 +164,7 @@ impl SettingsStateExt for SettingsState {
             "Open config folder",
             "Open config.toml in default editor",
             "",
+            "Appearance",
             "Use hint line",
             "Hint duration",
             "Use visual line navigation",
