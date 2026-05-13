@@ -1,4 +1,4 @@
-//! Shared helpers for RGB-based built-in themes.  Indexed-colour
+//! Shared helpers for RGB-based built-in themes.  Indexed-color
 //! built-ins (`dark_256`, `light_256`) hand-pick their tints from the
 //! 6×6×6 cube; everything else uses these to derive surface tones and
 //! muted text from a base `bg` / `ink` pair.
@@ -31,9 +31,9 @@ pub fn blend(a: Color, b: Color, t: f32) -> Color {
     }
 }
 
-/// Push each channel away from the colour's own mean by
+/// Push each channel away from the color's own mean by
 /// `1.0 + amount`, increasing chroma without shifting hue.  Pure
-/// greys (`r == g == b`) stay grey.  Non-RGB colours pass through
+/// greys (`r == g == b`) stay grey.  Non-RGB colors pass through
 /// unchanged.
 pub fn saturate(c: Color, amount: f32) -> Color {
     let Color::Rgb(r, g, b) = c else { return c };
@@ -48,7 +48,7 @@ pub fn saturate(c: Color, amount: f32) -> Color {
 /// Chroma boost applied to derived chrome surfaces — picked so the
 /// tint reads as "warm dark grey" / "cool dark grey" rather than as
 /// a recognisable hue.  Bump cautiously; values above ~1.0 start to
-/// look like coloured panels rather than chrome.
+/// look like colored panels rather than chrome.
 const CHROME_SATURATION_BOOST: f32 = 1.0;
 
 /// Build a chrome surface lifted from `bg` toward `ink` by `t`,

@@ -301,7 +301,7 @@ they exist:
   any of these and the editor races our read thread for stdin: bytes get
   split, keystrokes feel laggy, and OSC responses to startup-time queries
   leak into the buffer (the original symptom was `1;rgb:0e0e/0909/1d1d` —
-  a partially-consumed background-colour reply — landing at the top of
+  a partially-consumed background-color reply — landing at the top of
   `config.toml`).  The read thread is poll-based (`crossterm::event::poll(100ms)`)
   precisely so a `read_paused: Arc<AtomicBool>` flag can stop it without
   having to interrupt a blocked `read()` syscall.  After the editor exits,

@@ -142,7 +142,7 @@ The application is structured in horizontal layers. Higher layers depend on lowe
 ├──────────────────────────────────────────────────────────────────┤
 │                    Config / Theme Layer                          │
 │   - Config: loaded from ~/.config/edamamey/config.toml      │
-│   - Theme: colour palette, applied to every rendered element     │
+│   - Theme: color palette, applied to every rendered element     │
 │   - KeyMap: default bindings overridable in config               │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -231,7 +231,7 @@ edamame/
     │   ├── mod.rs
     │   ├── config.rs               # Config struct; serde/toml loading + saving
     │   ├── keymap.rs               # KeyMap: Action enum, compiled-in default bindings, override merging from [keybindings] config
-    │   └── theme.rs                # Theme: named colour palette; default + user themes
+    │   └── theme.rs                # Theme: named color palette; default + user themes
     │
     ├── document/
     │   ├── mod.rs
@@ -282,7 +282,7 @@ edamame/
     │
     └── terminal/
         ├── mod.rs
-        └── capabilities.rs         # Probe terminal at startup: colour depth, mouse, images
+        └── capabilities.rs         # Probe terminal at startup: color depth, mouse, images
 ```
 
 ---
@@ -332,7 +332,7 @@ trait ModalHandler {
 
 ### 5. Theming from Day One
 
-All colour and style values are routed through the `Theme` struct. There are no hardcoded `ratatui::style::Color` literals in the UI layer. The default theme is defined in code and can be overridden via `~/.config/edamame/config.toml`. This means adding full theme support later requires only exposing the theme config keys — no refactoring.
+All color and style values are routed through the `Theme` struct. There are no hardcoded `ratatui::style::Color` literals in the UI layer. The default theme is defined in code and can be overridden via `~/.config/edamame/config.toml`. This means adding full theme support later requires only exposing the theme config keys — no refactoring.
 
 ### 6. Config File Architecture
 
@@ -381,7 +381,7 @@ unrecognised action name or an unparseable key string is a hard error at startup
 (not silently ignored), so the user knows immediately if they've made a typo.
 
 **Themes** live in `themes/<name>.toml`.  The file format is one section per style
-field on `Theme`, with `fg` / `bg` colour strings and per-modifier booleans:
+field on `Theme`, with `fg` / `bg` color strings and per-modifier booleans:
 
 ```toml
 # ~/.config/edamame/themes/default.toml
@@ -398,14 +398,14 @@ fg = "#00afff"    # hex
 underlined = true
 ```
 
-Colours accept named values (`"magenta"`, `"darkgray"`, …), hex (`"#ff00aa"`),
+Colors accept named values (`"magenta"`, `"darkgray"`, …), hex (`"#ff00aa"`),
 indexed palette entries as either strings (`"236"`) or bare integers (`236`), and
 `{ r = 0, g = 95, b = 175 }` RGB tables.  `themes/default.toml` is generated on
 first run by `theme_file::default_theme_toml()` from `Theme::default()` /
 `Palette::default()` — every palette entry is written as a commented-out
 `# field = value` line so the file documents the compiled defaults without
 overriding them, eliminating any chance of drift between the on-disk file and
-the code.  On monochrome terminals (`ColourDepth::NoColour`) the theme file is
+the code.  On monochrome terminals (`ColorDepth::NoColor`) the theme file is
 ignored and the compiled-in `Theme::monochrome()` palette is used.
 
 **Quit confirmation**: The `Quit` action (`Ctrl-Q`) always shows a confirmation dialog (e.g. "Save changes? [Y]es / [N]o / [C]ancel") when there are unsaved changes. When the buffer is clean the app quits immediately. `Ctrl-C` is bound to `Copy` and does not quit. `Escape` is the cancel/dismiss key for modals and dialogs; it does not trigger quit. Note: in crossterm raw mode `ISIG` is disabled, so `Ctrl-C` arrives as a key event rather than SIGINT — we must always intercept it explicitly to prevent SIGINT killing the process and leaving the terminal in raw mode; mapping it to `Copy` satisfies this.
@@ -450,7 +450,7 @@ ignored and the compiled-in `Theme::monochrome()` palette is used.
 - [x] Add `ratatui`, `crossterm`, `pulldown-cmark`, `ropey`, `serde`, `toml`, `dirs`, `thiserror`, `anyhow`, `tracing`, `tracing-appender` as dependencies
 - [x] Implement `Config` with serde/toml deserialization; load from XDG path with defaults fallback
 - [x] Implement `KeyMap` in `config/keymap.rs`: define the `Action` enum and all compiled-in default key bindings; after loading `Config`, iterate the `[keybindings]` table and override defaults — error at startup on unknown action names or unparseable key strings
-- [x] Implement `Theme` with default dark-mode colour palette wired to all rendered elements
+- [x] Implement `Theme` with default dark-mode color palette wired to all rendered elements
 - [x] Implement `Buffer` wrapping `ropey::Rope` with `load_file` / `save_file` / `insert` / `delete` / `line` / `line_count`
 - [x] Implement `parser.rs` — parse a `&str` with pulldown-cmark, return typed AST
 - [x] Implement `renderer.rs` — walk AST, produce `Vec<ratatui::text::Line>` with styling for: headings (H1–H6), bold, italic, code spans, fenced code blocks, blockquotes, bullet lists, horizontal rules, links (styled but not yet clickable)
@@ -637,15 +637,15 @@ These emerged from the "To Fix" iterations and are documented as gotchas in `AGE
 *Goal: detect what the terminal supports and gate features accordingly.*
 
 **Tasks:**
-- [x] Implement `terminal/capabilities.rs` with a `Capabilities` struct: `{ colour_depth: ColourDepth, mouse: bool, image_protocol: Option<ImageProtocol>, unicode_full: bool, keyboard_enhancement: bool }` — where `ImageProtocol` is an enum (`Sixel`, `KittyGraphics`, `ITerm2`, `Halfblocks`); `keyboard_enhancement` indicates whether `PushKeyboardEnhancementFlags` succeeded (required for `Ctrl-Shift-Z` redo)
+- [x] Implement `terminal/capabilities.rs` with a `Capabilities` struct: `{ color_depth: ColorDepth, mouse: bool, image_protocol: Option<ImageProtocol>, unicode_full: bool, keyboard_enhancement: bool }` — where `ImageProtocol` is an enum (`Sixel`, `KittyGraphics`, `ITerm2`, `Halfblocks`); `keyboard_enhancement` indicates whether `PushKeyboardEnhancementFlags` succeeded (required for `Ctrl-Shift-Z` redo)
 - [x] Probe at startup using crossterm queries and environment variable heuristics (`$TERM`, `$COLORTERM`, `$TERM_PROGRAM`, `$KITTY_WINDOW_ID`, etc.)
 - [x] Use `ratatui-image`'s `Picker` API for image protocol detection (this handles the detailed probing)
 - [x] Store capabilities in `App` and thread them through to features that need them
 - [x] Log detected capabilities to the tracing log file
-- [x] Graceful degradation: if no colour support, render without ANSI styles (`Theme::monochrome()`); if no mouse, disable all mouse features without error
+- [x] Graceful degradation: if no color support, render without ANSI styles (`Theme::monochrome()`); if no mouse, disable all mouse features without error
 - [x] Show a popup modal notice if any features (e.g. mouse) are not available, with `[Ok]` and `[Don't show this again]`. The latter sets `editor.suppress_capability_warnings = true` in the config file via the new `Config::save()`. The `ui::modal` widget is generic enough to host the settings panel and confirm dialogs in later phases.
 
-**Acceptance criteria:** `edamame` starts correctly in a minimal `xterm` (no mouse, 8 colours) and in a feature-rich terminal like Ghostty or Kitty, adapting its behaviour in both cases.
+**Acceptance criteria:** `edamame` starts correctly in a minimal `xterm` (no mouse, 8 colors) and in a feature-rich terminal like Ghostty or Kitty, adapting its behaviour in both cases.
 
 **Implementation notes:**
 - `ratatui-image` is pinned to `9.*` (not `10.*`) because 10 requires ratatui 0.30; default features are disabled to skip the `libchafa` system dependency (we only need the probing Picker, not halfblock rendering).
@@ -1162,7 +1162,7 @@ These items are cohesive (all table-layer concerns) and share the `table_layout`
 **Tasks — testing:**
 - [x] Unit tests in `table_layout` for min-max proportional: a narrow prose column stays at `min` when there's no slack; excess distribution respects the `(max − min)` weighting.
 - [x] Integration test in `tests/mouse.rs`: a column-border drag on a table without `tui-columns` defers the commit until the warning resolves; `cancel_pending_column_widths` reverts with no buffer mutation.
-- [x] `TestBackend` test of a striped-row table (verifies alternating bg colours).
+- [x] `TestBackend` test of a striped-row table (verifies alternating bg colors).
 - [x] `TestBackend` test of a table mid-drag with row-drop indicator visible.
 
 **Acceptance criteria:** Tables allocate column widths proportionally; narrow prose columns wrap rather than forcing wide columns to truncate.  Drag-to-resize warns on first use that an HTML comment will be injected.  Row striping is opt-in and theme-controlled.  Row / column drag shows a drop indicator on the target separator.
@@ -1191,7 +1191,7 @@ Extracted from old Phase 11.  Pulls in the "Heading visual hierarchy — framing
 - [ ] H1 gets a full-width `═══` rule above and below.
 - [ ] H2 gets a `═══` rule below.
 - [ ] H3 gets a `───` rule below.
-- [ ] H4–H6 stay colour + bold (current behaviour).
+- [ ] H4–H6 stay color + bold (current behaviour).
 - [ ] Readable everywhere, zero new dependencies.  The `tui-big-text` variant stays in Deferred Work for the theming phase.
 - [ ] `per_block_own` accounts for the added rule rows so cursor navigation doesn't skip them.
 - [ ] **Or do we want to differentiate headings with foreground and background colors?**
@@ -1442,44 +1442,35 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 ## Miscellaneous Issues / Features
 
-- Press keys to set chord in keybinding modal instead of typing in e.g. `Ctrl-c`
+Press keys to set chord in keybinding modal instead of typing in e.g. `Ctrl-c`
 
-- Add next cell/prev cell to keybindings modal?
+Add next cell/prev cell to keybindings modal?
 
-- Heading table of contents 
+Heading table of contents 
 
-- Add support for footnotes. Add to Markdown cheat sheet.
+Add support for footnotes. Add to Markdown cheat sheet.
 
-- Clean up source and tests
+Clean up source and tests
 
-- Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
+Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
 
-- Implement a dedicated theme selection modal and remove the theme picker from the settings overlay. Add an action `Switch theme` to the command palette that opens the theme modal.
+Refactor tests
 
-- Clicking anywhere in an image, while in hybrid edit mode, should de-render the image and place the cursor at the end of the image link line.
+Add a few more character substitutions to `normalize_for_big_text` so we can show big titles more often
 
-- Refactor tests
+Make insert table blank line warning a modal instead of hint line flash
 
-- Add a few more character substitutions to `normalize_for_big_text` so we can show big titles more often
+Add a command palette action that generates a `.toml` file for a custom theme based on a default theme, with a new name. Set to current theme by default. Creating the file sets the theme to the new custom theme. Remove the existing behavior that copies a commented-out theme file to the user's config directory.
 
-- Make insert table blank line warning a modal instead of hint line flash
+Change all instances of "color" to "color"
 
-- Add a modal that mirrors the "display images" modal, but for diagrams.
+edamame in-app about page
 
-- Add a first-run config setup for images, diagrams, remote images, mouse, etc based on inferred terminal capabilities.
+Edamame lighter and less saturated background
+Solarized dark needs a darker bg and lighter fg
+Monochrome theme should use REVERSED for selection/focus
 
-- Max editor width breaks table button alignment and click detection
-
-- Add a command palette action that generates a `.toml` file for a custom theme based on a default theme, with a new name. Set to current theme by default. Creating the file sets the theme to the new custom theme. Remove the existing behavior that copies a commented-out theme file to the user's config directory.
-
-- We should try saturating the bg color of these themes some more so that the surface colors pop:
-  - Ayu
-  - Catpuccin
-  - Dracula
-  - Orng
-  - SynthWave '84
-  
-- edamame in-app about page
+Apply the `modal_item_selected_unfocused` pattern to other modals, including settings overlay. Remove the "appearance" setting from the settings overlay—the one place to set this will be in the theme picker modal.
 
 ---
 

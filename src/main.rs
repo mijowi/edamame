@@ -126,7 +126,7 @@ fn setup_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
 /// Write a one-line summary of the detected terminal capabilities to the log.
 fn log_capabilities(caps: &Capabilities) {
     tracing::info!(
-        colour_depth = ?caps.colour_depth,
+        color_depth = ?caps.color_depth,
         mouse = caps.mouse,
         image_protocol = ?caps.image_protocol,
         unicode_full = caps.unicode_full,

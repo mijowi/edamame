@@ -1,4 +1,4 @@
-//! Kanagawa — colours ported from the opencode Kanagawa theme.
+//! Kanagawa — colors ported from the opencode Kanagawa theme.
 
 use crate::config::theme::{Palette, Theme};
 

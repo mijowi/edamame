@@ -26,7 +26,7 @@ use ratatui::{
 
 use crate::config::Theme;
 
-/// Visual urgency of a modal.  Drives the title colour (Normal =
+/// Visual urgency of a modal.  Drives the title color (Normal =
 /// `primary`, Warning = `warning`, Error = `error`)
 /// and is independent of dismissability — a Warning may be either
 /// freely dismissable (informational) or gated (must press a button),
@@ -274,7 +274,7 @@ pub struct FrameOpts<'a> {
     /// Title text rendered on row 1 of `area`, left-aligned at the left
     /// padding edge.  Not formatted — pass the bare title.
     pub title: &'a str,
-    /// Visual urgency — drives the title colour.
+    /// Visual urgency — drives the title color.
     pub kind: ModalKind,
     /// When true, render the `esc` close hint at the right edge of the
     /// title row using `theme.modal_close_hint`, and populate
@@ -311,7 +311,7 @@ pub struct FrameLayout {
 pub fn draw_frame(area: Rect, buf: &mut Buffer, opts: FrameOpts<'_>) -> FrameLayout {
     Clear.render(area, buf);
     // Fill the entire modal rect with modal_bg so the padding picks up
-    // the same surface colour as the body.
+    // the same surface color as the body.
     Block::default()
         .style(opts.theme.modal_bg)
         .render(area, buf);

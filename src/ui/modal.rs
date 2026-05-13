@@ -158,14 +158,14 @@ impl ModalState {
 ///
 /// `body` is a slice of styled `Line`s — callers wrap plain strings as
 /// `Line::raw(s)` and use `Line::from(vec![Span::styled(...), ...])` when
-/// they need theme-driven colour or emphasis (e.g. the Markdown cheat
+/// they need theme-driven color or emphasis (e.g. the Markdown cheat
 /// sheet, which mirrors preview-mode styling on top of the raw syntax).
 pub struct ModalView<'a> {
     pub title: &'a str,
     pub body: &'a [Line<'a>],
     pub buttons: &'a [ModalButton],
     pub theme: &'a Theme,
-    /// Visual urgency — drives title colour.
+    /// Visual urgency — drives title color.
     pub kind: ModalKind,
     /// When false, no `esc` close hint is rendered and the widget's
     /// `handle_key` ignores `Esc`.  Set to false on modals that gate

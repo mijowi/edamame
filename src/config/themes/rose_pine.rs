@@ -1,5 +1,5 @@
-//! Rosé Pine — colours ported from the opencode Rosé Pine theme.
-//! Opencode's Rosé Pine palette has no `info` colour; the `link` slot
+//! Rosé Pine — colors ported from the opencode Rosé Pine theme.
+//! Opencode's Rosé Pine palette has no `info` color; the `link` slot
 //! uses a saturated blue so links read as conventional link affordances
 //! rather than competing with the foam-cyan primary or the iris-purple
 //! secondary.

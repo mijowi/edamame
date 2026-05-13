@@ -105,7 +105,7 @@ fn fenced_code_block_content() {
 #[test]
 fn fenced_code_block_has_background() {
     let lines = render("```\nhello\n```\n");
-    // Code block now renders with a coloured background, no box border.
+    // Code block now renders with a colored background, no box border.
     // First line should be the code content (with leading space padding).
     let first_text = line_text(&lines[0]);
     assert!(

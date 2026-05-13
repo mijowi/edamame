@@ -2,10 +2,10 @@
 //!
 //! A modal renders on top of the editor; the editor stays visible
 //! around it but should read as recessed so the user's eye lands on
-//! the modal first.  Two strategies depending on terminal colour
+//! the modal first.  Two strategies depending on terminal color
 //! depth:
 //!
-//! - **Truecolor terminals** ([`ColourDepth::TrueColor`]) — convert
+//! - **Truecolor terminals** ([`ColorDepth::TrueColor`]) — convert
 //!   each cell's foreground and background to RGB, blend toward the
 //!   theme's `default_bg` by [`BLEND_T`], and write the result back as
 //!   `Color::Rgb`.  Preserves structure (headings, code blocks,
@@ -19,7 +19,7 @@
 //!   barely visible).
 //!
 //! The 256-entry ANSI palette LUT in [`ANSI_PALETTE`] is the standard
-//! xterm 256-colour table; values are well-known so adjusting them is
+//! xterm 256-color table; values are well-known so adjusting them is
 //! not a priority.
 
 use ratatui::buffer::Buffer;
@@ -27,9 +27,9 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 
 use crate::config::Theme;
-use crate::terminal::{Capabilities, ColourDepth};
+use crate::terminal::{Capabilities, ColorDepth};
 
-/// Fraction of the way each cell colour is blended toward the theme's
+/// Fraction of the way each cell color is blended toward the theme's
 /// `default_bg` on truecolor terminals.  0.0 = untouched, 1.0 = fully
 /// erased.  Tune by editing this constant — empirically 0.5 reads as
 /// "moderately recessed" without losing document structure.
@@ -39,17 +39,17 @@ const BLEND_T: f32 = 0.6;
 /// capabilities.  `theme` supplies the blend target (`default_bg`) and
 /// the Ansi256 fallback foreground (`text_muted`).
 pub fn dim_area(buf: &mut Buffer, area: Rect, caps: &Capabilities, theme: &Theme) {
-    match caps.colour_depth {
-        ColourDepth::TrueColor => dim_truecolor(buf, area, theme),
-        ColourDepth::Ansi256 => dim_ansi256(buf, area, theme),
-        ColourDepth::Ansi16 | ColourDepth::NoColour => dim_modifier_only(buf, area),
+    match caps.color_depth {
+        ColorDepth::TrueColor => dim_truecolor(buf, area, theme),
+        ColorDepth::Ansi256 => dim_ansi256(buf, area, theme),
+        ColorDepth::Ansi16 | ColorDepth::NoColor => dim_modifier_only(buf, area),
     }
 }
 
 /// Truecolor sweep: blend each cell's fg/bg toward `default_bg` by
 /// [`BLEND_T`].  Cells with `Color::Reset` foreground or background
 /// keep that side untouched (we don't know the terminal's actual
-/// default colour).
+/// default color).
 fn dim_truecolor(buf: &mut Buffer, area: Rect, theme: &Theme) {
     let target = match color_to_rgb(theme.default_bg()) {
         Some(rgb) => rgb,
@@ -90,8 +90,8 @@ fn dim_ansi256(buf: &mut Buffer, area: Rect, theme: &Theme) {
     }
 }
 
-/// Plain `Modifier::DIM` sweep — the fallback for low-colour or
-/// monochrome terminals where we have no useful colour to swap in.
+/// Plain `Modifier::DIM` sweep — the fallback for low-color or
+/// monochrome terminals where we have no useful color to swap in.
 fn dim_modifier_only(buf: &mut Buffer, area: Rect) {
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
@@ -146,18 +146,18 @@ fn color_to_rgb(color: Color) -> Option<[u8; 3]> {
     }
 }
 
-/// Standard xterm 256-colour palette.
+/// Standard xterm 256-color palette.
 ///
-/// - `0..16` — system colours (terminal-themable, but we use the
+/// - `0..16` — system colors (terminal-themable, but we use the
 ///   widely-accepted defaults so the blend target is stable).
-/// - `16..232` — 6×6×6 colour cube; index `16 + 36r + 6g + b` where
+/// - `16..232` — 6×6×6 color cube; index `16 + 36r + 6g + b` where
 ///   each component is one of `[0, 95, 135, 175, 215, 255]`.
 /// - `232..256` — 24-step grayscale ramp from `8` to `238`.
 const ANSI_PALETTE: [[u8; 3]; 256] = build_ansi_palette();
 
 const fn build_ansi_palette() -> [[u8; 3]; 256] {
     let mut p = [[0u8; 3]; 256];
-    // System colours 0..16.
+    // System colors 0..16.
     p[0] = [0, 0, 0];
     p[1] = [128, 0, 0];
     p[2] = [0, 128, 0];
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn ansi_palette_known_indices() {
-        // Spot-checks against the published xterm 256-colour table.
+        // Spot-checks against the published xterm 256-color table.
         assert_eq!(ANSI_PALETTE[0], [0, 0, 0]); // black
         assert_eq!(ANSI_PALETTE[15], [255, 255, 255]); // white
         assert_eq!(ANSI_PALETTE[16], [0, 0, 0]); // cube 0,0,0

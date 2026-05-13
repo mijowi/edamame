@@ -1,4 +1,4 @@
-//! One Dark — colours ported from the opencode One Dark theme.
+//! One Dark — colors ported from the opencode One Dark theme.
 
 use crate::config::theme::{Palette, Theme};
 

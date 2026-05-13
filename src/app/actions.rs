@@ -20,7 +20,7 @@ use crate::config::{Action, Config, KeyBindingOverrides, KeyMap, Theme};
 use crate::editor::{edit_ops, EditorState};
 use crate::input::mode_handler::default::DefaultHandler;
 use crate::input::ModeHandler;
-use crate::terminal::ColourDepth;
+use crate::terminal::ColorDepth;
 
 use super::flash::MessageKind;
 use super::modal::ModalOutcome;
@@ -444,7 +444,7 @@ impl App {
     /// accumulate at most a few MB across the editor's session.
     pub(super) fn apply_active_theme(&mut self) {
         let (theme_file, warnings) = Config::load_theme(&self.config.theme);
-        let monochrome = self.capabilities.colour_depth == ColourDepth::NoColour;
+        let monochrome = self.capabilities.color_depth == ColorDepth::NoColor;
         let new_theme: &'static Theme =
             Box::leak(Box::new(Theme::from_file(&theme_file, monochrome)));
         self.theme = new_theme;

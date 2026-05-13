@@ -1,4 +1,4 @@
-//! Solarized Light — colours ported from the opencode Solarized theme.
+//! Solarized Light — colors ported from the opencode Solarized theme.
 
 use crate::config::theme::{Palette, Theme};
 

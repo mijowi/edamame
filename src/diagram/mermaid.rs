@@ -5,7 +5,7 @@
 //! by the App decode worker, which wants a `LoadedImage` ready for the
 //! existing Phase 7 cache).  Both share `render_mermaid_svg_core` which
 //! wraps the third-party renderer in `catch_unwind` — `mermaid-rs-renderer`
-//! 0.2.1 has several known panic bugs (invalid hex colours, empty
+//! 0.2.1 has several known panic bugs (invalid hex colors, empty
 //! subgraphs, over-wide sequence labels) and a panicking worker thread
 //! would strand the cache entry as `Pending` forever.
 //!
@@ -203,7 +203,7 @@ fn rasterise_svg(
     // Mermaid SVGs are transparent, but the terminal image protocols
     // alpha-composite over whatever is already on the cell.  Fill with
     // white to match the typical mermaid background and avoid text
-    // bleeding through to the document's background colour.
+    // bleeding through to the document's background color.
     pixmap.fill(resvg::tiny_skia::Color::WHITE);
     resvg::render(
         &tree,

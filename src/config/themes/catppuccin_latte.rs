@@ -1,4 +1,4 @@
-//! Catppuccin Latte — light variant of Catppuccin, with colours ported
+//! Catppuccin Latte — light variant of Catppuccin, with colors ported
 //! from the opencode Catppuccin theme.
 
 use crate::config::theme::{Palette, Theme};

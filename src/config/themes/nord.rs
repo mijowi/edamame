@@ -1,4 +1,4 @@
-//! Nord — colours ported from the opencode Nord theme, with classic
+//! Nord — colors ported from the opencode Nord theme, with classic
 //! Nord aurora hues filled in for slots opencode doesn't expose.
 
 use crate::config::theme::{Palette, Theme};

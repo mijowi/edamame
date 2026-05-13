@@ -3,7 +3,7 @@
 //!
 //! Field changes drive [`crate::app::App::save_config_with_flash`];
 //! the Theme row also drives [`crate::app::App::apply_active_theme`]
-//! so the colour palette updates live.  The "Open config.toml in
+//! so the color palette updates live.  The "Open config.toml in
 //! external editor" row sets a deferred flag that the run loop
 //! drains — the editor invocation needs `&mut Terminal` which only
 //! the run loop owns.

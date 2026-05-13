@@ -1,4 +1,4 @@
-//! Zenburn — colours ported from the opencode Zenburn theme.
+//! Zenburn — colors ported from the opencode Zenburn theme.
 
 use crate::config::theme::{Palette, Theme};
 

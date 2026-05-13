@@ -13,10 +13,10 @@ use super::themes::util::blend;
 const CODE_BG_MIX_TOWARD_BG: f32 = 0.92;
 
 /// Darken `base` by `level` steps for the heading ramp (0 = base,
-/// 1 = medium, 2 = dull).  RGB colours are scaled toward black via a
-/// fixed lightness factor per step.  Indexed and named colours can't
+/// 1 = medium, 2 = dull).  RGB colors are scaled toward black via a
+/// fixed lightness factor per step.  Indexed and named colors can't
 /// be cleanly stepped without shifting hue, so they're returned
-/// unchanged — built-in indexed-colour themes pin the ramp manually
+/// unchanged — built-in indexed-color themes pin the ramp manually
 /// in their ctor (see [`BUILTIN_THEMES`]).
 fn dim_color(base: Color, level: u8) -> Color {
     if level == 0 {
@@ -34,8 +34,8 @@ fn dim_color(base: Color, level: u8) -> Color {
 
 /// Edamame's two-tier theming model.
 ///
-/// 1. [`Palette`] — a small flat set of semantic colours (brand, accent,
-///    link, status colours, surface tones).  Each name maps to a single
+/// 1. [`Palette`] — a small flat set of semantic colors (brand, accent,
+///    link, status colors, surface tones).  Each name maps to a single
 ///    shade; focus / active / disabled affordances layer text modifiers
 ///    (BOLD, REVERSED, DIM) on top rather than reaching for a second
 ///    palette slot.
@@ -47,13 +47,13 @@ fn dim_color(base: Color, level: u8) -> Color {
 /// individual styles, or both.  See [`super::theme_file`] for the on-disk
 /// format and the merge order.
 ///
-/// No hardcoded colours exist outside [`Palette::default`] — every UI site
+/// No hardcoded colors exist outside [`Palette::default`] — every UI site
 /// reads from `theme.<field>`.
 #[derive(Debug, Clone)]
 pub struct Theme {
-    /// The named brand-colour palette every style is derived from.
+    /// The named brand-color palette every style is derived from.
     /// Stored on the theme so user code (e.g. modal selection rendering)
-    /// can reach for `bg` as a fg colour against a coloured bg.
+    /// can reach for `bg` as a fg color against a colored bg.
     pub palette: Palette,
 
     // ── Headings ──────────────────────────────────────────────────
@@ -80,7 +80,7 @@ pub struct Theme {
     /// Web link (`http://`, `https://`, `mailto:`, etc.) — `link`
     /// foreground + underline so the URL reads as actionable.
     pub link_text: Style,
-    /// File link (relative or absolute path) — same `link` colour as
+    /// File link (relative or absolute path) — same `link` color as
     /// `link_text`; themes that want a quieter shade can override the
     /// style directly in TOML.
     pub link_file: Style,
@@ -245,7 +245,7 @@ pub struct Theme {
     pub normal: Style,
 
     /// Background style applied to characters inside an active text selection.
-    /// Renders on top of the character's own style so colour-coded content
+    /// Renders on top of the character's own style so color-coded content
     /// stays legible.
     pub selection: Style,
 
@@ -285,10 +285,10 @@ pub struct Theme {
     pub scrollbar_thumb_active: Style,
 }
 
-/// Edamame's semantic colour palette.  Every theme is built from these
-/// eighteen colours plus six heading slots.
+/// Edamame's semantic color palette.  Every theme is built from these
+/// eighteen colors plus six heading slots.
 ///
-/// `text` / `bg` are concrete colours rather than terminal defaults
+/// `text` / `bg` are concrete colors rather than terminal defaults
 /// because they're used as foregrounds in inverse contexts (e.g. the
 /// Rendered-mode mode chip: `primary` bg with `bg` fg), where
 /// `Color::Reset` would not produce the right contrast.
@@ -320,11 +320,11 @@ pub struct Palette {
     /// Heavier chrome surface (status bar, modal body, code-block bg).
     pub surface_elevated: Color,
 
-    /// Brand colour.  Headings (Rendered-mode chip, status info,
+    /// Brand color.  Headings (Rendered-mode chip, status info,
     /// modal titles), non-link focus affordances (selected modal
     /// row, modal input fill, button focus, scrollbar thumb).
     pub primary: Color,
-    /// Structural chrome colour (section headings, search-highlight
+    /// Structural chrome color (section headings, search-highlight
     /// bg, rules, blockquote bar, footnote marker, command-palette
     /// divider).
     pub secondary: Color,
@@ -353,7 +353,7 @@ pub struct Palette {
     /// its constructor, and user TOML themes opt in via `light = true`
     /// at the top of their `.toml` file.  We don't infer from `bg`
     /// luminance: the flag is the single source of truth so a theme with
-    /// a mid-grey bg or an indexed colour still classifies unambiguously.
+    /// a mid-grey bg or an indexed color still classifies unambiguously.
     pub light: bool,
 }
 
@@ -383,7 +383,7 @@ impl Default for Palette {
 /// `h1`–`h6` heading ramp to curated shades — `Theme::from_palette`
 /// derives the ramp algorithmically from `primary` and `secondary`,
 /// which works well for RGB themes but produces poor results on
-/// indexed-colour built-ins where stepping through the 6×6×6 cube
+/// indexed-color built-ins where stepping through the 6×6×6 cube
 /// shifts hue.
 pub type ThemeCtor = fn() -> Theme;
 
@@ -614,7 +614,7 @@ impl Theme {
 
         // Heading ramp alternates `primary` and `secondary`, getting
         // progressively duller / darker with each level.  RGB themes
-        // get a tinted ramp; indexed / named colours fall back to the
+        // get a tinted ramp; indexed / named colors fall back to the
         // base shade and rely on built-ins to override h1–h6.
         let h1c = dim_color(p.primary, 0);
         let h2c = dim_color(p.secondary, 0);
@@ -685,7 +685,7 @@ impl Theme {
             rule: Style::default().fg(p.secondary),
 
             // List markers — accent so bullets / numbers carry a hint
-            // of brand colour without competing with body text.
+            // of brand color without competing with body text.
             list_bullet: Style::default().fg(p.accent),
             list_number: Style::default().fg(p.accent),
 
@@ -803,14 +803,14 @@ impl Theme {
                 .add_modifier(Modifier::REVERSED | bold),
 
             // General — concrete `text` / `bg` so the document area
-            // renders with the theme's "blank page" colours rather
+            // renders with the theme's "blank page" colors rather
             // than letting the terminal's defaults show through.
             // Themes that prefer the terminal's own bg can set
             // `[normal] fg = "Reset"` and `bg = "Reset"` in their TOML.
             normal: Style::default().fg(p.text).bg(p.bg),
 
             // Selection: `accent` bg with the document `text` fg so
-            // colour-coded content stays legible inside the highlight.
+            // color-coded content stays legible inside the highlight.
             selection: Style::default().bg(p.accent).fg(p.text),
 
             // Search highlight: `secondary` bg, `bg` fg — distinct
@@ -844,14 +844,14 @@ impl Theme {
         }
     }
 
-    /// The "blank page" background colour — exposed so UI code that
+    /// The "blank page" background color — exposed so UI code that
     /// blends or composites against the document surface (e.g. the
     /// modal-dim pass) doesn't have to reach into `palette` directly.
     pub fn default_bg(&self) -> Color {
         self.palette.bg
     }
 
-    /// Foreground colour for muted text — used as the Ansi256 fallback
+    /// Foreground color for muted text — used as the Ansi256 fallback
     /// foreground for the modal-dim sweep.
     pub fn text_muted(&self) -> Color {
         self.palette.text_muted
@@ -884,8 +884,8 @@ impl Theme {
     ///
     /// When `monochrome` is true the file is ignored and the compiled-in
     /// monochrome fallback ([`super::themes::monochrome_dark::theme`]) is
-    /// returned — preserves the contract that `ColourDepth::NoColour`
-    /// terminals never emit colour escapes, even if a colourful theme file is
+    /// returned — preserves the contract that `ColorDepth::NoColor`
+    /// terminals never emit color escapes, even if a colorful theme file is
     /// installed.
     pub fn from_file(file: &super::theme_file::ThemeFile, monochrome: bool) -> Self {
         if monochrome {
@@ -928,8 +928,8 @@ mod tests {
         "diff_delete",
         // NOTE: the `_all` Color array below can't include the new
         // `light: bool` field, so the length check still tracks only
-        // colour-typed fields.  New colour fields go here; new non-
-        // colour fields are covered by every palette ctor needing to
+        // color-typed fields.  New color fields go here; new non-
+        // color fields are covered by every palette ctor needing to
         // compile.
     ];
 
@@ -965,7 +965,7 @@ mod tests {
     fn light_palette_has_distinct_default_bg() {
         // Sanity check that the light built-in is actually distinct
         // from the dark default — otherwise we shipped two themes
-        // with the same colour table.
+        // with the same color table.
         use super::super::themes::{dark_256, light_256};
         assert_ne!(dark_256::palette().bg, light_256::palette().bg);
     }
@@ -1007,10 +1007,10 @@ mod tests {
 
     #[test]
     fn builtin_palettes_have_no_duplicate_slots() {
-        // No two colour slots within a built-in palette should hold the
+        // No two color slots within a built-in palette should hold the
         // same value — duplicates make a theme look monochromatic in the
         // affected affordance pair (e.g. when `accent == error`, all
-        // text selections render in the error colour).
+        // text selections render in the error color).
         for (name, ctor) in BUILTIN_THEMES {
             // Monochrome intentionally collapses every palette slot to
             // `Color::Reset` so any site that reads `palette.<x>`
@@ -1042,7 +1042,7 @@ mod tests {
                 for (b, cb) in &slots[i + 1..] {
                     assert_ne!(
                         ca, cb,
-                        "theme {name:?}: slot {a} and {b} share the same colour",
+                        "theme {name:?}: slot {a} and {b} share the same color",
                     );
                 }
             }

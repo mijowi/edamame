@@ -1,7 +1,7 @@
 //! Terminal capability detection.
 //!
 //! Phase 4 probes the terminal for features the editor uses or will use in
-//! later phases: colour depth, mouse support, the image protocol supported
+//! later phases: color depth, mouse support, the image protocol supported
 //! by the emulator (sixel / kitty / iterm2 / halfblocks), whether the locale
 //! advertises full Unicode support, and whether the kitty keyboard
 //! enhancement protocol is available.
@@ -21,20 +21,20 @@ use std::env;
 
 use ratatui_image::picker::Picker;
 
-/// Colour bit-depth supported by the terminal.
+/// Color bit-depth supported by the terminal.
 ///
 /// Values are ordered from poorest to richest so comparisons like
-/// `depth >= ColourDepth::Ansi256` work as expected.
+/// `depth >= ColorDepth::Ansi256` work as expected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ColourDepth {
-    /// Terminal advertises no colour support (e.g. `TERM=dumb`).  Rendering
+pub enum ColorDepth {
+    /// Terminal advertises no color support (e.g. `TERM=dumb`).  Rendering
     /// falls back to plain text with no ANSI style escapes.
-    NoColour,
-    /// Classic 8/16-colour palette.
+    NoColor,
+    /// Classic 8/16-color palette.
     Ansi16,
-    /// 256-indexed colour palette (xterm-256color and friends).
+    /// 256-indexed color palette (xterm-256color and friends).
     Ansi256,
-    /// 24-bit / true-colour palette (`COLORTERM=truecolor` or `24bit`).
+    /// 24-bit / true-color palette (`COLORTERM=truecolor` or `24bit`).
     TrueColor,
 }
 
@@ -47,15 +47,15 @@ pub enum ImageProtocol {
     KittyGraphics,
     /// iTerm2 inline-images protocol.
     ITerm2,
-    /// Unicode half-block fallback (works in any truecolour terminal).
+    /// Unicode half-block fallback (works in any truecolor terminal).
     Halfblocks,
 }
 
 /// Detected terminal capabilities.
 #[derive(Debug, Clone)]
 pub struct Capabilities {
-    /// Colour bit-depth the terminal advertises.
-    pub colour_depth: ColourDepth,
+    /// Color bit-depth the terminal advertises.
+    pub color_depth: ColorDepth,
     /// Whether the terminal appears to support mouse reporting.
     pub mouse: bool,
     /// Image protocol detected by `ratatui-image`, or `None` when image display
@@ -97,7 +97,7 @@ impl Capabilities {
     /// disagree with reality on some terminals).
     pub fn detect(kbd_enhancement: bool) -> Self {
         let term = env::var("TERM").unwrap_or_default();
-        let colour_depth = detect_colour_depth(&term);
+        let color_depth = detect_color_depth(&term);
         let mouse = detect_mouse(&term);
         let unicode_full = detect_unicode_full();
         let (image_protocol, image_picker) = detect_image_protocol();
@@ -114,7 +114,7 @@ impl Capabilities {
             .map(|p| Picker::from_fontsize(p.font_size()));
 
         Self {
-            colour_depth,
+            color_depth,
             mouse,
             image_protocol,
             image_picker,
@@ -126,11 +126,11 @@ impl Capabilities {
 
     /// Conservative default used by tests and when probing is impossible.
     ///
-    /// Assumes the minimum-common-denominator terminal: 16 colours, no mouse,
+    /// Assumes the minimum-common-denominator terminal: 16 colors, no mouse,
     /// no images, no kitty keyboard protocol.
     pub fn minimal() -> Self {
         Self {
-            colour_depth: ColourDepth::Ansi16,
+            color_depth: ColorDepth::Ansi16,
             mouse: false,
             image_protocol: None,
             image_picker: None,
@@ -141,17 +141,17 @@ impl Capabilities {
     }
 
     /// Returns true when the user's terminal is missing at least one feature
-    /// the editor would otherwise light up (mouse, colour, image support,
+    /// the editor would otherwise light up (mouse, color, image support,
     /// kitty keyboard protocol).  The UI uses this to decide whether to show
     /// a one-time notice at startup.
     ///
     /// `Ansi16` terminals are *not* considered missing a feature — the editor
-    /// is fully usable in 16 colours, the theme just looks muted.  We only
-    /// trigger the notice for `NoColour`, where style escapes are stripped
+    /// is fully usable in 16 colors, the theme just looks muted.  We only
+    /// trigger the notice for `NoColor`, where style escapes are stripped
     /// entirely.
     pub fn has_missing_features(&self) -> bool {
         !self.mouse
-            || self.colour_depth == ColourDepth::NoColour
+            || self.color_depth == ColorDepth::NoColor
             || self.image_protocol.is_none()
             || !self.keyboard_enhancement
     }
@@ -163,12 +163,12 @@ impl Capabilities {
         if !self.mouse {
             out.push("Mouse reporting not available.".to_owned());
         }
-        match self.colour_depth {
-            ColourDepth::NoColour => {
-                out.push("No colour support — falling back to plain text.".to_owned())
+        match self.color_depth {
+            ColorDepth::NoColor => {
+                out.push("No color support — falling back to plain text.".to_owned())
             }
-            ColourDepth::Ansi16 => {
-                out.push("Only 16 colours available — themes will look muted.".to_owned())
+            ColorDepth::Ansi16 => {
+                out.push("Only 16 colors available — themes will look muted.".to_owned())
             }
             _ => {}
         }
@@ -194,42 +194,42 @@ impl Default for Capabilities {
 
 // ── Probing helpers ──────────────────────────────────────────────────────────
 
-/// Infer colour depth from environment variables.
+/// Infer color depth from environment variables.
 ///
-/// `$COLORTERM` takes precedence when it names a true-colour terminal; failing
+/// `$COLORTERM` takes precedence when it names a true-color terminal; failing
 /// that we fall back to inspecting `$TERM` for the conventional `-256color`
-/// suffix, then to the built-in 8/16-colour palette.
-fn detect_colour_depth(term: &str) -> ColourDepth {
+/// suffix, then to the built-in 8/16-color palette.
+fn detect_color_depth(term: &str) -> ColorDepth {
     if term == "dumb" || term.is_empty() {
-        return ColourDepth::NoColour;
+        return ColorDepth::NoColor;
     }
     let colorterm = env::var("COLORTERM")
         .unwrap_or_default()
         .to_ascii_lowercase();
     if colorterm == "truecolor" || colorterm == "24bit" {
-        return ColourDepth::TrueColor;
+        return ColorDepth::TrueColor;
     }
     if term.contains("direct") {
         // e.g. `xterm-direct`, `tmux-direct`.
-        return ColourDepth::TrueColor;
+        return ColorDepth::TrueColor;
     }
-    // A handful of modern terminals are known to support truecolour even when
+    // A handful of modern terminals are known to support truecolor even when
     // `$COLORTERM` is unset (e.g. a remote session that stripped it).
     if env::var("KITTY_WINDOW_ID").is_ok() || env::var("WEZTERM_PANE").is_ok() {
-        return ColourDepth::TrueColor;
+        return ColorDepth::TrueColor;
     }
     if let Ok(tp) = env::var("TERM_PROGRAM") {
         match tp.as_str() {
             "iTerm.app" | "Apple_Terminal" | "WezTerm" | "ghostty" | "Ghostty" => {
-                return ColourDepth::TrueColor
+                return ColorDepth::TrueColor
             }
             _ => {}
         }
     }
     if term.contains("256color") {
-        return ColourDepth::Ansi256;
+        return ColorDepth::Ansi256;
     }
-    ColourDepth::Ansi16
+    ColorDepth::Ansi16
 }
 
 /// Infer mouse support from `$TERM`.
@@ -289,7 +289,7 @@ mod tests {
 
     /// Save the current value of an env var, set a new value (or clear it),
     /// and restore on drop.  Lets tests mutate env vars without races — we
-    /// just need to be careful to not run colour-depth tests in parallel,
+    /// just need to be careful to not run color-depth tests in parallel,
     /// which cargo does by default per test binary.
     struct EnvGuard {
         key: &'static str,
@@ -337,52 +337,52 @@ mod tests {
     }
 
     #[test]
-    fn colour_depth_no_colour_for_dumb_terminal() {
-        assert_eq!(detect_colour_depth("dumb"), ColourDepth::NoColour);
-        assert_eq!(detect_colour_depth(""), ColourDepth::NoColour);
+    fn color_depth_no_color_for_dumb_terminal() {
+        assert_eq!(detect_color_depth("dumb"), ColorDepth::NoColor);
+        assert_eq!(detect_color_depth(""), ColorDepth::NoColor);
     }
 
     #[test]
-    fn colour_depth_truecolor_from_colorterm() {
+    fn color_depth_truecolor_from_colorterm() {
         let _lock = env_lock();
         let _g1 = EnvGuard::set("COLORTERM", "truecolor");
         let _g2 = EnvGuard::unset("KITTY_WINDOW_ID");
         let _g3 = EnvGuard::unset("WEZTERM_PANE");
         let _g4 = EnvGuard::unset("TERM_PROGRAM");
         assert_eq!(
-            detect_colour_depth("xterm-256color"),
-            ColourDepth::TrueColor
+            detect_color_depth("xterm-256color"),
+            ColorDepth::TrueColor
         );
     }
 
     #[test]
-    fn colour_depth_256_from_term_suffix() {
+    fn color_depth_256_from_term_suffix() {
         let _lock = env_lock();
         let _g1 = EnvGuard::unset("COLORTERM");
         let _g2 = EnvGuard::unset("KITTY_WINDOW_ID");
         let _g3 = EnvGuard::unset("WEZTERM_PANE");
         let _g4 = EnvGuard::unset("TERM_PROGRAM");
-        assert_eq!(detect_colour_depth("xterm-256color"), ColourDepth::Ansi256);
+        assert_eq!(detect_color_depth("xterm-256color"), ColorDepth::Ansi256);
     }
 
     #[test]
-    fn colour_depth_16_for_plain_xterm() {
+    fn color_depth_16_for_plain_xterm() {
         let _lock = env_lock();
         let _g1 = EnvGuard::unset("COLORTERM");
         let _g2 = EnvGuard::unset("KITTY_WINDOW_ID");
         let _g3 = EnvGuard::unset("WEZTERM_PANE");
         let _g4 = EnvGuard::unset("TERM_PROGRAM");
-        assert_eq!(detect_colour_depth("xterm"), ColourDepth::Ansi16);
+        assert_eq!(detect_color_depth("xterm"), ColorDepth::Ansi16);
     }
 
     #[test]
-    fn colour_depth_truecolor_for_kitty_envvar() {
+    fn color_depth_truecolor_for_kitty_envvar() {
         let _lock = env_lock();
         let _g1 = EnvGuard::unset("COLORTERM");
         let _g2 = EnvGuard::set("KITTY_WINDOW_ID", "1");
         let _g3 = EnvGuard::unset("WEZTERM_PANE");
         let _g4 = EnvGuard::unset("TERM_PROGRAM");
-        assert_eq!(detect_colour_depth("xterm"), ColourDepth::TrueColor);
+        assert_eq!(detect_color_depth("xterm"), ColorDepth::TrueColor);
     }
 
     #[test]
@@ -420,7 +420,7 @@ mod tests {
     #[test]
     fn minimal_capabilities_are_conservative() {
         let caps = Capabilities::minimal();
-        assert_eq!(caps.colour_depth, ColourDepth::Ansi16);
+        assert_eq!(caps.color_depth, ColorDepth::Ansi16);
         assert!(!caps.mouse);
         assert!(caps.image_protocol.is_none());
         assert!(!caps.unicode_full);
@@ -432,7 +432,7 @@ mod tests {
     #[test]
     fn ansi16_alone_does_not_trigger_missing_features_notice() {
         let caps = Capabilities {
-            colour_depth: ColourDepth::Ansi16,
+            color_depth: ColorDepth::Ansi16,
             mouse: true,
             image_protocol: Some(ImageProtocol::KittyGraphics),
             image_picker: None,
@@ -444,9 +444,9 @@ mod tests {
     }
 
     #[test]
-    fn no_colour_triggers_missing_features_notice() {
+    fn no_color_triggers_missing_features_notice() {
         let caps = Capabilities {
-            colour_depth: ColourDepth::NoColour,
+            color_depth: ColorDepth::NoColor,
             mouse: true,
             image_protocol: Some(ImageProtocol::KittyGraphics),
             image_picker: None,
@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn missing_features_summary_is_empty_when_everything_is_supported() {
         let caps = Capabilities {
-            colour_depth: ColourDepth::TrueColor,
+            color_depth: ColorDepth::TrueColor,
             mouse: true,
             image_protocol: Some(ImageProtocol::KittyGraphics),
             image_picker: None,
@@ -481,7 +481,7 @@ mod tests {
         assert!(summary.iter().any(|s| s.contains("Mouse")));
         assert!(summary
             .iter()
-            .any(|s| s.contains("colours") || s.contains("colour")));
+            .any(|s| s.contains("colors") || s.contains("color")));
         assert!(summary.iter().any(|s| s.contains("image")));
         assert!(summary.iter().any(|s| s.contains("Kitty")));
     }

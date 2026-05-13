@@ -1,4 +1,4 @@
-//! Tokyo Night — colours ported from the opencode Tokyo Night theme.
+//! Tokyo Night — colors ported from the opencode Tokyo Night theme.
 
 use crate::config::theme::{Palette, Theme};
 

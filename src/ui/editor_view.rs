@@ -167,7 +167,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
         // (e.g. the trailing whitespace below the last paragraph) keep
         // the terminal's default fg/bg — defeating themes that supply
         // a concrete `default_text` / `default_bg`.  Subsequent line
-        // and span renders patch onto these cells, so coloured spans
+        // and span renders patch onto these cells, so colored spans
         // (h1, code blocks, etc.) still win on the cells they touch.
         // The fill spans `full_doc_area` so the left/right gutters
         // exposed by `clamp_doc_area_to_max_width` carry the theme bg.

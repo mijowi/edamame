@@ -371,7 +371,7 @@ impl<'a> StatefulWidget for PaletteView<'a> {
             height: 1,
         };
         // Unlike other modal inputs, the command palette's input row
-        // sits flush against the modal body — no coloured bg fill —
+        // sits flush against the modal body — no colored bg fill —
         // so the row reads as part of the modal rather than as a
         // sunken text-input chip.  The `▏` cursor glyph picks up
         // `primary` so the typing affordance still pops.
@@ -493,7 +493,7 @@ fn palette_content_width(state: &PaletteState) -> u16 {
 
 /// Format one palette row: focused rows fill with `modal_item_selected`
 /// (interactive bg + default_bg fg) and render the chord with the
-/// hint colour; unfocused rows use `modal_item` and a dim chord.
+/// hint color; unfocused rows use `modal_item` and a dim chord.
 fn format_row(entry: &PaletteEntry, focused: bool, theme: &Theme, width: u16) -> Line<'static> {
     let chord = entry.chord.as_deref().unwrap_or("");
     format_modal_row(

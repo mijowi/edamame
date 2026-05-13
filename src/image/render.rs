@@ -40,7 +40,7 @@ use ratatui::style::Color;
 ///   `None` on out-of-bounds positions).
 /// * `buf` — the destination `Buffer` (the frame buffer supplied to
 ///   every `render` call).
-/// * `bg` — theme background colour used wherever the scratch cell has
+/// * `bg` — theme background color used wherever the scratch cell has
 ///   `Color::Reset` for its background.  ratatui_image's halfblocks
 ///   renderer leaves `Reset` for letter-box cells around an
 ///   aspect-mismatched image and for fully transparent input pixels;
@@ -87,8 +87,8 @@ pub fn paint_halfblocks_partial(
             // Substitute the theme bg wherever the scratch cell carries
             // `Reset` (letter-box, transparent pixels, the lower half of
             // an `▀` cell whose bottom pixel was transparent).  The fg is
-            // left alone — the halfblocks glyph's `▀` colour is the image's
-            // top-pixel colour and must be preserved.
+            // left alone — the halfblocks glyph's `▀` color is the image's
+            // top-pixel color and must be preserved.
             if copied.bg == Color::Reset {
                 copied.bg = bg;
             }

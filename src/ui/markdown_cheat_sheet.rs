@@ -3,8 +3,8 @@
 //!
 //! The body is built as styled `Line`s drawn directly from the active
 //! [`Theme`], so the cheat sheet visually matches preview / rendered
-//! mode (bold for `**bold**`, code-span colours for `` `code` ``, link
-//! colour for `[text](url)`, and so on).  We deliberately do *not*
+//! mode (bold for `**bold**`, code-span colors for `` `code` ``, link
+//! color for `[text](url)`, and so on).  We deliberately do *not*
 //! parse the source as Markdown: the whole point of the sheet is to
 //! show the raw syntax markers, which a real renderer would consume.
 //!
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn cheat_sheet_styles_track_theme() {
         // The whole point of the rewrite: spans pull their style from
-        // the theme rather than carrying hardcoded colours.  Verify by
+        // the theme rather than carrying hardcoded colors.  Verify by
         // building the body with two themes and confirming the bold
         // span on the inline row picks up the theme's `bold` style.
         let a = Theme {
@@ -375,7 +375,7 @@ mod tests {
         // through the modal; using `Span::raw` (style == default)
         // keeps the modal background intact.  Whitespace spans MAY
         // carry an explicit bg, however — that's how the code-block
-        // sections fill their surface colour out to the modal width.
+        // sections fill their surface color out to the modal width.
         let theme = Theme::default();
         let lines = body_lines(&theme);
         for span in lines.iter().flat_map(|l| l.spans.iter()) {

@@ -22,7 +22,7 @@ use ratatui::{
 };
 
 use crate::config::{DiagramsEnabled, ImagesEnabled, RemoteImagePolicy, Theme};
-use crate::terminal::{Capabilities, ColourDepth, ImageProtocol};
+use crate::terminal::{Capabilities, ColorDepth, ImageProtocol};
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind,
 };
@@ -98,8 +98,8 @@ pub struct WelcomeState {
 
 #[derive(Debug, Clone)]
 struct CapSummary {
-    colour: String,
-    colour_ok: bool,
+    color: String,
+    color_ok: bool,
     images: String,
     images_ok: bool,
     mouse: String,
@@ -321,11 +321,11 @@ impl WelcomeState {
 
 impl CapSummary {
     fn from(caps: &Capabilities) -> Self {
-        let (colour, colour_ok) = match caps.colour_depth {
-            ColourDepth::TrueColor => ("truecolor (24-bit)".to_owned(), true),
-            ColourDepth::Ansi256 => ("256 colours".to_owned(), true),
-            ColourDepth::Ansi16 => ("16 colours — themes will look muted".to_owned(), false),
-            ColourDepth::NoColour => ("none — plain text only".to_owned(), false),
+        let (color, color_ok) = match caps.color_depth {
+            ColorDepth::TrueColor => ("truecolor (24-bit)".to_owned(), true),
+            ColorDepth::Ansi256 => ("256 colors".to_owned(), true),
+            ColorDepth::Ansi16 => ("16 colors — themes will look muted".to_owned(), false),
+            ColorDepth::NoColor => ("none — plain text only".to_owned(), false),
         };
         let (images, images_ok) = match caps.image_protocol {
             Some(ImageProtocol::KittyGraphics) => ("Kitty graphics".to_owned(), true),
@@ -342,8 +342,8 @@ impl CapSummary {
             ("not supported".to_owned(), false)
         };
         Self {
-            colour,
-            colour_ok,
+            color,
+            color_ok,
             images,
             images_ok,
             mouse,
@@ -392,7 +392,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
     type State = WelcomeState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let degraded = !(state.cap_summary.colour_ok
+        let degraded = !(state.cap_summary.color_ok
             && state.cap_summary.images_ok
             && state.cap_summary.mouse_ok);
         let hint_rows = if degraded { DEGRADED_HINT_ROWS } else { 0 };
@@ -484,9 +484,9 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             body.x,
             y,
             body.width,
-            "Colour",
-            &state.cap_summary.colour,
-            state.cap_summary.colour_ok,
+            "Color",
+            &state.cap_summary.color,
+            state.cap_summary.color_ok,
             self.theme,
             ok_style,
             warn_style,
@@ -1080,7 +1080,7 @@ mod tests {
 
     fn caps_full() -> Capabilities {
         Capabilities {
-            colour_depth: ColourDepth::TrueColor,
+            color_depth: ColorDepth::TrueColor,
             mouse: true,
             image_protocol: Some(ImageProtocol::KittyGraphics),
             image_picker: None,

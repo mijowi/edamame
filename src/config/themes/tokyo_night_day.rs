@@ -1,4 +1,4 @@
-//! Tokyo Night Day — light variant of Tokyo Night, with colours ported
+//! Tokyo Night Day — light variant of Tokyo Night, with colors ported
 //! from the opencode Tokyonight theme.
 
 use crate::config::theme::{Palette, Theme};

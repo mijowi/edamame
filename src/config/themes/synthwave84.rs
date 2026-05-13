@@ -1,4 +1,4 @@
-//! SynthWave '84 — colours ported from the opencode SynthWave '84 theme.
+//! SynthWave '84 — colors ported from the opencode SynthWave '84 theme.
 
 use crate::config::theme::{Palette, Theme};
 

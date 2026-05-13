@@ -26,7 +26,7 @@ pub struct Config {
     /// resolve to a compiled-in palette; any other name is loaded from
     /// `themes/<theme>.toml`.  Defaults to `"Edamame"`.  A missing file
     /// falls back to the compiled-in `Theme::default()` so the editor
-    /// always has a working colour table.
+    /// always has a working color table.
     pub theme: String,
     /// User-selected appearance mode.  Filters the theme picker and
     /// governs which counterpart theme is previewed when the mode is
@@ -520,7 +520,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("themes")).unwrap();
         let theme_path = dir.path().join("themes").join("custom.toml");
-        // Invalid colour value type.
+        // Invalid color value type.
         std::fs::write(&theme_path, "[h1]\nfg = 42\nbold = \"oops\"\n").unwrap();
         let mut warnings = Vec::new();
         let theme = read_theme_named(dir.path(), "custom", &mut warnings);

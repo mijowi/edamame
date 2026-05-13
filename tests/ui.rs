@@ -1036,7 +1036,7 @@ fn table_row_striping_alternates_bg_per_data_row() {
 /// rows is rendered as a *blank* line (NBSP-padded) instead of the
 /// `├─┼─┤` rule.  The blank line carries the background of the row
 /// immediately above it so each striped row reads as a 2-row band of
-/// its own colour, with no horizontal rule breaking up the rhythm.
+/// its own color, with no horizontal rule breaking up the rhythm.
 #[test]
 fn table_row_striping_replaces_thin_rule_with_blank_separator() {
     use edamame::config::Theme;
@@ -1144,7 +1144,7 @@ fn table_row_striping_off_leaves_default_bg() {
     let buf = terminal.backend().buffer().clone();
     let bg_at = |x: u16, y: u16| buf.cell((x, y)).map(|c| c.bg).unwrap_or(Color::Reset);
     // Both data rows should have the same (default) background — neither
-    // stripe colour should leak through.
+    // stripe color should leak through.
     assert_ne!(bg_at(2, 3), Color::Indexed(238));
     assert_ne!(bg_at(2, 3), Color::Indexed(237));
     assert_eq!(bg_at(2, 3), bg_at(2, 5));

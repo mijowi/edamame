@@ -480,7 +480,7 @@ impl<'t> Renderer<'t> {
             }
         } else {
             // No wrapping: each source line becomes one display line, padded to
-            // block_width with the code background so the coloured block fills
+            // block_width with the code background so the colored block fills
             // the viewport edge.  Lines longer than viewport_width are not
             // truncated here — the terminal clips them — but we never pad
             // beyond viewport_width, so short lines do not wrap.

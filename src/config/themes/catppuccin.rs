@@ -1,4 +1,4 @@
-//! Catppuccin Mocha — colours ported from the opencode Catppuccin theme.
+//! Catppuccin Mocha — colors ported from the opencode Catppuccin theme.
 
 use crate::config::theme::{Palette, Theme};
 

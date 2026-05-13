@@ -28,7 +28,7 @@ use crate::document::Buffer;
 use crate::editor::link::LinkTarget;
 use crate::editor::{mouse_ops, EditorState};
 use crate::input::MouseDispatcher;
-use crate::terminal::{Capabilities, ColourDepth, PointerShape};
+use crate::terminal::{Capabilities, ColorDepth, PointerShape};
 use crate::ui::{EditorViewState, HintChord};
 
 pub use flash::MessageKind;
@@ -264,9 +264,9 @@ impl App {
         // full rationale and the alternatives considered.
         //
         // `Theme::from_file` handles the monochrome fallback
-        // internally so `NoColour` terminals never emit colour
+        // internally so `NoColor` terminals never emit color
         // escapes regardless of the theme file's contents.
-        let monochrome = capabilities.colour_depth == ColourDepth::NoColour;
+        let monochrome = capabilities.color_depth == ColorDepth::NoColor;
         let theme: &'static Theme = Box::leak(Box::new(Theme::from_file(&theme_file, monochrome)));
 
         // Table buttons depend on mouse reporting; disable them on
