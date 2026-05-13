@@ -25,6 +25,14 @@ pub struct EditorConfig {
     /// is skipped.  Set by the `[Don't show this again]` button on the notice
     /// modal.
     pub suppress_capability_warnings: bool,
+    /// When true, the first-run welcome modal is shown at startup.  Defaults
+    /// to `true` so a fresh install sees the welcome on first launch; the
+    /// modal's "Show again next time" toggle (default off) writes `false`
+    /// here when the user saves.  Also gates the four legacy startup prompts
+    /// (capability notice, images-enabled, remote-image, diagrams) — they
+    /// are suppressed while the welcome is still pending so the user is never
+    /// double-prompted.
+    pub show_welcome: bool,
     /// Lines advanced per mouse-wheel tick.  Default 1 — users can bump this
     /// to 2 or 3 for a coarser, faster feel at the cost of fine-grained
     /// control.  The keyboard `ScrollUp` / `ScrollDown` actions always step
@@ -108,6 +116,7 @@ impl Default for EditorConfig {
             preserve_blank_lines: true,
             visual_line_nav: true,
             suppress_capability_warnings: false,
+            show_welcome: true,
             mouse_scroll_lines: 1,
             status_bar: StatusBarLayout::default(),
             transient_ms: 1500,

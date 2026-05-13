@@ -16,6 +16,7 @@ pub mod util;
 
 pub mod dark_256;
 pub mod light_256;
+pub mod monochrome_dark;
 
 pub mod ayu;
 pub mod catppuccin;

@@ -212,9 +212,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: "Appearance",
-            description: Some(
-                "Dark vs. light theme set (filters the theme picker; also picks a sibling theme when available)",
-            ),
+            description: Some("Select dark mode or light mode"),
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,

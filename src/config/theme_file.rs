@@ -153,6 +153,7 @@ pub struct ThemeFile {
     pub modal_item: StyleSpec,
     pub modal_item_hint: StyleSpec,
     pub modal_item_selected: StyleSpec,
+    pub modal_item_selected_unfocused: StyleSpec,
     pub modal_item_selected_hint: StyleSpec,
     pub modal_description: StyleSpec,
     pub modal_section_heading: StyleSpec,
@@ -206,7 +207,7 @@ macro_rules! style_fields {
             modal_title_normal, modal_title_warning, modal_title_error,
             modal_close_hint,
             modal_item, modal_item_hint,
-            modal_item_selected, modal_item_selected_hint,
+            modal_item_selected, modal_item_selected_unfocused, modal_item_selected_hint,
             modal_description, modal_section_heading,
             modal_input_unfocused, modal_input_focused, modal_button_focused,
             normal, selection, search_highlight, active_line,
@@ -353,6 +354,7 @@ mod tests {
         check!(modal_item);
         check!(modal_item_hint);
         check!(modal_item_selected);
+        check!(modal_item_selected_unfocused);
         check!(modal_item_selected_hint);
         check!(modal_description);
         check!(modal_section_heading);
@@ -608,6 +610,7 @@ bold = true
         check!(modal_item);
         check!(modal_item_hint);
         check!(modal_item_selected);
+        check!(modal_item_selected_unfocused);
         check!(modal_item_selected_hint);
         check!(modal_description);
         check!(modal_section_heading);

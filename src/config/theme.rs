@@ -210,6 +210,18 @@ pub struct Theme {
     /// Selected row in a list-style modal (palette / settings /
     /// keybinds).  Filled background so the row reads as the focus.
     pub modal_item_selected: Style,
+    /// A persistent selection that does NOT currently have focus —
+    /// e.g. the active tri-state pill in a row whose label isn't
+    /// focused, or a checked toggle whose label isn't the active
+    /// element.  Rendered as `secondary` **foreground** (no fill) so
+    /// the focused affordance (which uses `primary` *fill*) reads
+    /// unambiguously, while the persistent selection still carries a
+    /// distinct outlined affordance.  See `docs/theming.md`
+    /// §"Focus vs. persistent selection" for the three-tier
+    /// convention this field is part of, and the monochrome fallback.
+    /// For composite affordances (e.g. `[x] Label`), apply only to
+    /// the glyph that carries the selection, not the full row.
+    pub modal_item_selected_unfocused: Style,
     /// Right-aligned hint / sub-label on the focused row (e.g. the
     /// chord shown next to a palette entry, or the value column on
     /// settings / keybinds rows).
@@ -385,6 +397,7 @@ pub type ThemeCtor = fn() -> Theme;
 pub const BUILTIN_THEMES: &[(&str, ThemeCtor)] = &[
     ("256 Dark", super::themes::dark_256::theme),
     ("256 Light", super::themes::light_256::theme),
+    ("Monochrome Dark", super::themes::monochrome_dark::theme),
     ("Ayu", super::themes::ayu::theme),
     ("Catppuccin", super::themes::catppuccin::theme),
     ("Dracula", super::themes::dracula::theme),
@@ -754,6 +767,15 @@ impl Theme {
             // out.  Dark text on the primary fill matches the inverse-
             // text pattern already used by `modal_input_*`.
             modal_item_selected: Style::default().bg(p.primary).fg(p.bg).add_modifier(bold),
+            // Persistent selection without focus.  `secondary` as a
+            // foreground (no fill) so the affordance reads "marked"
+            // without competing with the focused element, which uses
+            // a filled `primary` background.  Sits on the modal body's
+            // surface so it composes cleanly inside `modal_bg` rows.
+            modal_item_selected_unfocused: Style::default()
+                .fg(p.secondary)
+                .bg(p.surface_elevated)
+                .add_modifier(bold),
             modal_item_selected_hint: Style::default().fg(p.bg).bg(p.primary),
             modal_description: Style::default().fg(p.accent).bg(p.surface_elevated),
             modal_section_heading: Style::default()
@@ -957,6 +979,11 @@ impl Theme {
             modal_item: Style::default().add_modifier(Modifier::REVERSED),
             modal_item_hint: Style::default().add_modifier(Modifier::REVERSED),
             modal_item_selected: Style::default().add_modifier(Modifier::BOLD),
+            // Monochrome can't colour-code distinction; `DIM` reads as
+            // "marked but quiet" — distinct from BOLD (focused selection)
+            // and plain (unselected) without using REVERSED (which is
+            // already the unselected `modal_item` state in monochrome).
+            modal_item_selected_unfocused: Style::default().add_modifier(Modifier::DIM),
             modal_item_selected_hint: Style::default().add_modifier(Modifier::BOLD),
             modal_description: Style::default().add_modifier(Modifier::REVERSED),
             modal_section_heading: Style::default()
