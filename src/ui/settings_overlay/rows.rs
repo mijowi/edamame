@@ -360,7 +360,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: "Show diagrams",
-            description: Some("Render Mermaid (and similar) code blocks as inline diagrams"),
+            description: Some("Render Mermaid code blocks as inline diagrams"),
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,
