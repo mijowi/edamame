@@ -24,7 +24,7 @@ pub fn palette() -> Palette {
         warning: rgb(0xfede5d),
         error: rgb(0xfe4450),
 
-        code: rgb(0x72f1b8),
+        code: rgb(0xf97e72),
 
         diff_add: rgb(0x97f1d8),
         diff_delete: rgb(0xff5e5b),
