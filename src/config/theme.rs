@@ -883,141 +883,15 @@ impl Theme {
     /// Build a `Theme` from a user-authored [`ThemeFile`].
     ///
     /// When `monochrome` is true the file is ignored and the compiled-in
-    /// monochrome fallback is returned — preserves the contract that
-    /// `ColourDepth::NoColour` terminals never emit colour escapes, even if
-    /// a colourful theme file is installed.
+    /// monochrome fallback ([`super::themes::monochrome_dark::theme`]) is
+    /// returned — preserves the contract that `ColourDepth::NoColour`
+    /// terminals never emit colour escapes, even if a colourful theme file is
+    /// installed.
     pub fn from_file(file: &super::theme_file::ThemeFile, monochrome: bool) -> Self {
         if monochrome {
-            Self::monochrome()
+            super::themes::monochrome_dark::theme()
         } else {
             file.into()
-        }
-    }
-
-    /// Monochrome fallback theme — used when the terminal reports no colour
-    /// support (e.g. `TERM=dumb`).  All colours are stripped; text attributes
-    /// (bold, italic, underline, strikethrough) are preserved because they
-    /// work over SGR regardless of colour depth.
-    pub fn monochrome() -> Self {
-        let default = Self::default();
-        let strip = |s: Style| -> Style {
-            // Keep only the modifier bits (bold/italic/underline/etc).
-            Style::default().add_modifier(s.add_modifier)
-        };
-
-        Self {
-            // Palette is preserved verbatim so user code that reads it
-            // (e.g. `default_bg` as a fg) still compiles, but no style
-            // actually consumes it.
-            palette: default.palette.clone(),
-
-            h1: strip(default.h1),
-            h1_rule: Style::default(),
-            h2: strip(default.h2),
-            h3: strip(default.h3),
-            h4: strip(default.h4),
-            h5: strip(default.h5),
-            h6: strip(default.h6),
-
-            bold: strip(default.bold),
-            italic: strip(default.italic),
-            strikethrough: strip(default.strikethrough),
-            highlight: Style::default().add_modifier(Modifier::REVERSED),
-            code_span: Style::default().add_modifier(Modifier::REVERSED),
-            code_span_dim: Style::default().add_modifier(Modifier::REVERSED | Modifier::DIM),
-            link_text: Style::default().add_modifier(Modifier::UNDERLINED),
-            link_file: Style::default().add_modifier(Modifier::UNDERLINED),
-            link_heading: Style::default().add_modifier(Modifier::UNDERLINED),
-            image_placeholder: Style::default().add_modifier(Modifier::ITALIC),
-            footnote: Style::default(),
-
-            code_block_border: Style::default(),
-            code_block_lang: Style::default().add_modifier(Modifier::ITALIC),
-            code_block_text: Style::default(),
-            blockquote_bar: Style::default(),
-            blockquote_text: Style::default().add_modifier(Modifier::ITALIC),
-            rule: Style::default(),
-
-            list_bullet: Style::default(),
-            list_number: Style::default(),
-
-            task_unchecked: Style::default(),
-            task_checked: Style::default().add_modifier(Modifier::BOLD),
-            task_complete_text: Style::default().add_modifier(Modifier::CROSSED_OUT),
-            task_strikethrough: true,
-
-            table_border: Style::default(),
-            table_header: Style::default().add_modifier(Modifier::BOLD),
-            table_header_border: Style::default(),
-            table_cell: Style::default(),
-            table_row_even: Style::default(),
-            table_row_odd: Style::default().add_modifier(Modifier::DIM),
-            table_drop_indicator: Style::default()
-                .add_modifier(Modifier::REVERSED | Modifier::BOLD),
-            table_drop_target: Style::default().add_modifier(Modifier::REVERSED),
-            table_handle: Style::default(),
-            table_handle_delete: Style::default().add_modifier(Modifier::BOLD),
-
-            status_bar: Style::default().add_modifier(Modifier::REVERSED),
-            status_mode_preview: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
-            status_mode_rendered: Style::default()
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
-            status_mode_raw: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
-            status_filename: Style::default().add_modifier(Modifier::REVERSED),
-            status_info: Style::default().add_modifier(Modifier::REVERSED),
-            status_modified: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
-            status_selection: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
-
-            hint_bar: Style::default(),
-            hint_chord: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
-            hint_label: Style::default(),
-
-            transient_info: Style::default().add_modifier(Modifier::REVERSED),
-            transient_success: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
-            transient_warning: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
-            transient_error: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
-
-            modal_bg: Style::default().add_modifier(Modifier::REVERSED),
-            modal_title_normal: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
-            // Monochrome can't colour-code urgency; warning/error fall
-            // back to BOLD + REVERSED + DIM so the title still reads as
-            // distinct chrome on dim-aware terminals.
-            modal_title_warning: Style::default()
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED | Modifier::DIM),
-            modal_title_error: Style::default()
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED | Modifier::DIM),
-            modal_close_hint: Style::default().add_modifier(Modifier::REVERSED | Modifier::DIM),
-            modal_item: Style::default().add_modifier(Modifier::REVERSED),
-            modal_item_hint: Style::default().add_modifier(Modifier::REVERSED),
-            modal_item_selected: Style::default().add_modifier(Modifier::BOLD),
-            // Monochrome can't colour-code distinction; `DIM` reads as
-            // "marked but quiet" — distinct from BOLD (focused selection)
-            // and plain (unselected) without using REVERSED (which is
-            // already the unselected `modal_item` state in monochrome).
-            modal_item_selected_unfocused: Style::default().add_modifier(Modifier::DIM),
-            modal_item_selected_hint: Style::default().add_modifier(Modifier::BOLD),
-            modal_description: Style::default().add_modifier(Modifier::REVERSED),
-            modal_section_heading: Style::default()
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
-            modal_input_unfocused: Style::default().add_modifier(Modifier::REVERSED),
-            modal_input_focused: Style::default().add_modifier(Modifier::BOLD),
-            modal_button_focused: Style::default()
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
-
-            normal: Style::default(),
-            selection: Style::default().add_modifier(Modifier::REVERSED),
-            search_highlight: Style::default().add_modifier(Modifier::REVERSED),
-            active_line: Style::default(),
-            cursor_preview: Style::default().add_modifier(Modifier::REVERSED),
-            cursor_rendered: Style::default().add_modifier(Modifier::REVERSED),
-            cursor_raw: Style::default().add_modifier(Modifier::REVERSED),
-            cursor: Style::default().add_modifier(Modifier::REVERSED),
-
-            // Scrollbar — glyphs alone disambiguate track from thumb;
-            // active state inverts so monochrome users still see it.
-            scrollbar_track: Style::default(),
-            scrollbar_thumb: Style::default(),
-            scrollbar_thumb_active: Style::default().add_modifier(Modifier::REVERSED),
         }
     }
 }
@@ -1138,6 +1012,13 @@ mod tests {
         // affected affordance pair (e.g. when `accent == error`, all
         // text selections render in the error colour).
         for (name, ctor) in BUILTIN_THEMES {
+            // Monochrome intentionally collapses every palette slot to
+            // `Color::Reset` so any site that reads `palette.<x>`
+            // directly emits a terminal-default escape.  The duplicate
+            // check doesn't apply.
+            if *name == "Monochrome Dark" {
+                continue;
+            }
             let p = ctor().palette;
             let slots: &[(&str, Color)] = &[
                 ("text", p.text),
