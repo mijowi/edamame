@@ -1,5 +1,6 @@
 pub mod bottom_region;
 pub mod button_row;
+pub mod cap_summary;
 pub mod command_palette;
 pub mod content_width;
 pub mod dim;
@@ -27,6 +28,7 @@ pub mod theme_picker;
 pub mod welcome;
 
 pub use bottom_region::{hint_line_for, BottomRegion, HintChord, HintContent};
+pub use cap_summary::{build_cap_lines, CapSummary};
 pub use command_palette::{PaletteResponse, PaletteState, PaletteView};
 pub use editor_view::{EditorView, EditorViewState};
 pub use export_theme_modal::{ExportThemeResponse, ExportThemeState, ExportThemeView};

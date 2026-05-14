@@ -19,11 +19,7 @@ use crate::app::App;
 use crate::config::Config;
 use crate::ui::{ModalButton, ModalKind, ModalResponse, ModalState, ModalView};
 
-const BUTTONS: &[&str] = &[
-    "OK",
-    "Open in default editor",
-    "Open config folder",
-];
+const BUTTONS: &[&str] = &["OK", "Open in default editor", "Open config folder"];
 
 pub struct ExportSuccessModal {
     state: ModalState,
@@ -69,7 +65,10 @@ impl Modal for ExportSuccessModal {
         _doc_height: usize,
         _doc_width: usize,
     ) -> ModalOutcome {
-        match self.state.handle_key(&key, self.buttons.len(), self.dismissable) {
+        match self
+            .state
+            .handle_key(&key, self.buttons.len(), self.dismissable)
+        {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled => ModalOutcome::Close,
             ModalResponse::ButtonPressed(0) => ModalOutcome::Close,

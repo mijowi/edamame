@@ -30,7 +30,8 @@ use ratatui::{
 };
 
 use crate::config::{DiagramsEnabled, ImagesEnabled, RemoteImagePolicy, Theme};
-use crate::terminal::{Capabilities, ColorDepth, ImageProtocol};
+use crate::terminal::Capabilities;
+use crate::ui::cap_summary::{render_cap_row as shared_render_cap_row, CapSummary};
 use crate::ui::scroll_container::{
     centered_rect_for_content, compute_pad_h, draw_frame, ContentSize, FrameOpts, ModalKind,
     ScrollContainerState, MAX_PAD_H,
@@ -116,16 +117,6 @@ pub struct WelcomeState {
     cap_summary: CapSummary,
 }
 
-#[derive(Debug, Clone)]
-struct CapSummary {
-    color: String,
-    color_ok: bool,
-    images: String,
-    images_ok: bool,
-    mouse: String,
-    mouse_ok: bool,
-}
-
 impl WelcomeState {
     /// Construct fresh state from detected `caps` and the current
     /// `config` tri-state values.
@@ -152,7 +143,7 @@ impl WelcomeState {
             show_again_rect: None,
             save_button_rect: None,
             focus_offsets: [0; FOCUS_ORDER.len()],
-            cap_summary: CapSummary::from(caps),
+            cap_summary: CapSummary::from_caps(caps),
         }
     }
 
@@ -354,39 +345,6 @@ impl WelcomeState {
     }
 }
 
-impl CapSummary {
-    fn from(caps: &Capabilities) -> Self {
-        let (color, color_ok) = match caps.color_depth {
-            ColorDepth::TrueColor => ("truecolor (24-bit)".to_owned(), true),
-            ColorDepth::Ansi256 => ("256 colors".to_owned(), true),
-            ColorDepth::Ansi16 => ("16 colors — themes will look muted".to_owned(), false),
-            ColorDepth::NoColor => ("none — plain text only".to_owned(), false),
-        };
-        let (images, images_ok) = match caps.image_protocol {
-            Some(ImageProtocol::KittyGraphics) => ("Kitty graphics".to_owned(), true),
-            Some(ImageProtocol::Sixel) => ("Sixel".to_owned(), true),
-            Some(ImageProtocol::ITerm2) => ("iTerm2 inline images".to_owned(), true),
-            Some(ImageProtocol::Halfblocks) => {
-                ("Unicode half-blocks (low fidelity)".to_owned(), false)
-            }
-            None => ("not supported — placeholders only".to_owned(), false),
-        };
-        let (mouse, mouse_ok) = if caps.mouse {
-            ("enabled".to_owned(), true)
-        } else {
-            ("not supported".to_owned(), false)
-        };
-        Self {
-            color,
-            color_ok,
-            images,
-            images_ok,
-            mouse,
-            mouse_ok,
-        }
-    }
-}
-
 // ── Rendering ──────────────────────────────────────────────────────────
 
 /// View widget — drawn each frame from fresh state.
@@ -409,10 +367,10 @@ const PILL_ROW_W: u16 = PILL_W * 3 + PILL_GAP * 2;
 const CONTROL_COL: u16 = 22;
 /// Body text describing the editor — wraps at the body's inner width
 /// at render time (see `wrapped_para_rows`).
-const QUICK_START_TEXT: &str =
-    "edamame is a Markdown editor for your terminal. These are some of its features:\n\
-• PREVIEW, hybrid EDIT, and RAW edit modes — In EDIT mode, the cursor's line or table cell \
-reveals its raw Markdown, while everything else stays formatted.\n\
+const QUICK_START_TEXT: &str = "edamame is a Markdown editor for your terminal, featuring:\n\
+• PREVIEW, hybrid EDIT, and RAW edit modes — PREVIEW is for viewing only; \
+in EDIT, the cursor's line or table cell reveals its raw Markdown and \
+everything else stays formatted; RAW has no formatting. \n\
 • Mouse, image, and Mermaid diagram support, depending on your terminal's capabilities\n\
 • GitHub Flavored Markdown, including tables, task lists, and more, plus highlights\n\
 • Bottom bar with status and contextual hints\n\
@@ -441,9 +399,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
     type State = WelcomeState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let degraded = !(state.cap_summary.color_ok
-            && state.cap_summary.images_ok
-            && state.cap_summary.mouse_ok);
+        let degraded = !state.cap_summary.all_ok();
 
         // Body width is determined by the modal's outer width and its
         // horizontal padding — both derived from `area` and the fixed
@@ -465,14 +421,15 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         //  1                 "Getting started" label
         //  para_rows + 1     paragraph + spacer
         //  1                 "Terminal capabilities" label
-        //  3                 Color / Images / Mouse rows
+        //  cap_rows          one row per capability in the summary
         //  hint_rows         degraded hint (0 when all OK)
         //  1                 spacer
         //  1                 current theme line
         //  2                 switch theme button + spacer below
         //  3 * 3             three tri-state sections (row + explanation + spacer)
         //  1                 footer (toggle + Save)
-        let natural_height = 1 + para_rows + 1 + 1 + 3 + hint_rows + 1 + 1 + 2 + 9 + 1;
+        let cap_rows = state.cap_summary.rows.len() as u16;
+        let natural_height = 1 + para_rows + 1 + 1 + cap_rows + hint_rows + 1 + 1 + 2 + 9 + 1;
 
         let content = ContentSize {
             width: CONTENT_WIDTH,
@@ -516,6 +473,9 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             .style(self.theme.modal_bg)
             .render(scratch_rect, &mut scratch);
 
+        let normal_style = Style::default()
+            .fg(self.theme.palette.text)
+            .bg(self.theme.palette.surface_elevated);
         let muted_style = Style::default()
             .fg(self.theme.palette.text_muted)
             .bg(self.theme.palette.surface_elevated);
@@ -561,7 +521,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         };
         Paragraph::new(QUICK_START_TEXT)
             .wrap(Wrap { trim: false })
-            .style(muted_style)
+            .style(normal_style)
             .render(para_area, &mut scratch);
         y += para_rows + 1; // +1 spacer between sections
 
@@ -575,45 +535,19 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             self.theme,
         );
         y += 1;
-        render_cap_row(
-            &mut scratch,
-            body_x,
-            y,
-            body_w,
-            "Color",
-            &state.cap_summary.color,
-            state.cap_summary.color_ok,
-            self.theme,
-            ok_style,
-            warn_style,
-        );
-        y += 1;
-        render_cap_row(
-            &mut scratch,
-            body_x,
-            y,
-            body_w,
-            "Images",
-            &state.cap_summary.images,
-            state.cap_summary.images_ok,
-            self.theme,
-            ok_style,
-            warn_style,
-        );
-        y += 1;
-        render_cap_row(
-            &mut scratch,
-            body_x,
-            y,
-            body_w,
-            "Mouse",
-            &state.cap_summary.mouse,
-            state.cap_summary.mouse_ok,
-            self.theme,
-            ok_style,
-            warn_style,
-        );
-        y += 1;
+        for row in &state.cap_summary.rows {
+            shared_render_cap_row(
+                &mut scratch,
+                body_x,
+                y,
+                body_w,
+                row,
+                self.theme,
+                ok_style,
+                warn_style,
+            );
+            y += 1;
+        }
 
         if degraded {
             for row in 0..hint_rows {
@@ -1116,39 +1050,6 @@ fn render_label(buf: &mut Buffer, x: u16, y: u16, width: u16, text: &str, theme:
         );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_cap_row(
-    buf: &mut Buffer,
-    x: u16,
-    y: u16,
-    width: u16,
-    label: &str,
-    value: &str,
-    ok: bool,
-    theme: &Theme,
-    ok_style: Style,
-    warn_style: Style,
-) {
-    let value_style = if ok { ok_style } else { warn_style };
-    let mark = if ok { "✓" } else { "✗" };
-    let line = Line::from(vec![
-        Span::raw("  • "),
-        Span::styled(format!("{label}: "), theme.modal_bg),
-        Span::styled(value.to_owned(), value_style),
-        Span::raw(" "),
-        Span::styled(mark.to_owned(), value_style),
-    ]);
-    Paragraph::new(line).style(theme.modal_bg).render(
-        Rect {
-            x,
-            y,
-            width,
-            height: 1,
-        },
-        buf,
-    );
-}
-
 fn render_line(buf: &mut Buffer, x: u16, y: u16, width: u16, line: Line<'_>, theme: &Theme) {
     Paragraph::new("").style(theme.modal_bg).render(
         Rect {
@@ -1225,7 +1126,7 @@ fn cycle_diagrams(value: DiagramsEnabled, delta: isize) -> DiagramsEnabled {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::Capabilities;
+    use crate::terminal::{Capabilities, ColorDepth, ImageProtocol};
 
     fn caps_full() -> Capabilities {
         Capabilities {

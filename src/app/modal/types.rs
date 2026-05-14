@@ -15,6 +15,16 @@ use crate::config::{Config, KeyMap, Theme};
 
 pub use crate::ui::ModalKind;
 
+/// Pure hit-test for the cached `esc` close-affordance rect.  Shared by
+/// every modal's `handle_click` so the bounds check has a single
+/// definition.
+pub fn esc_rect_hit(esc_rect: Option<ratatui::layout::Rect>, col: u16, row: u16) -> bool {
+    match esc_rect {
+        Some(r) => col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height,
+        None => false,
+    }
+}
+
 /// Helper: close a modal when `(col, row)` lands inside `esc_rect`,
 /// otherwise keep it open.  Concrete `Modal` impls call this from
 /// their `handle_click` after delegating to the state's hit-test.
@@ -23,12 +33,11 @@ pub fn close_if_esc_clicked(
     col: u16,
     row: u16,
 ) -> ModalOutcome {
-    if let Some(r) = esc_rect {
-        if col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height {
-            return ModalOutcome::Close;
-        }
+    if esc_rect_hit(esc_rect, col, row) {
+        ModalOutcome::Close
+    } else {
+        ModalOutcome::Continue
     }
-    ModalOutcome::Continue
 }
 
 /// Read-only context handed to [`Modal::render`].  Centralises the

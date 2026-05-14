@@ -18,6 +18,7 @@ use crate::ui::{WelcomeResponse, WelcomeState, WelcomeView};
 
 pub struct WelcomeModal {
     state: WelcomeState,
+    fingerprint: String,
 }
 
 impl WelcomeModal {
@@ -36,6 +37,7 @@ impl WelcomeModal {
                 config.images.remote_policy,
                 config.diagrams.enabled,
             ),
+            fingerprint: caps.fingerprint(),
         })
     }
 }
@@ -106,6 +108,7 @@ impl WelcomeModal {
         let diagrams = self.state.diagrams;
         let dont_show_again = self.state.dont_show_again;
         let image_capable = self.state.image_capable;
+        let fingerprint = self.fingerprint.clone();
         ModalOutcome::CloseAnd(Box::new(move |app| {
             if image_capable {
                 app.config.images.enabled = images;
@@ -113,6 +116,21 @@ impl WelcomeModal {
                 app.config.diagrams.enabled = diagrams;
             }
             app.config.editor.show_welcome = !dont_show_again;
+            // The welcome modal already showed the capability summary for
+            // this terminal, so seed the seen-fingerprints set with it —
+            // otherwise the standalone capabilities notice would fire on
+            // the very next launch.
+            if !app
+                .config
+                .editor
+                .seen_terminal_fingerprints
+                .contains(&fingerprint)
+            {
+                app.config
+                    .editor
+                    .seen_terminal_fingerprints
+                    .push(fingerprint);
+            }
             app.save_config_with_flash("failed to persist welcome modal preferences");
             app.dispatch_image_decodes();
             app.editor.refresh_parsed();

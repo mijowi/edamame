@@ -21,8 +21,7 @@ use crate::config::Theme;
 use crate::ui::button_row::{button_row_width, render_button_row};
 use crate::ui::modal_row::{format_modal_row, RowLayout};
 use crate::ui::scroll_container::{
-    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind,
-    ScrollContainerState,
+    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind, ScrollContainerState,
 };
 
 const BUTTON_LABELS: &[&str] = &["Export"];
@@ -119,11 +118,7 @@ impl ExportThemeState {
     }
 
     /// Apply a key event.
-    pub fn handle_key(
-        &mut self,
-        key: &KeyEvent,
-        existing: &[String],
-    ) -> ExportThemeResponse {
+    pub fn handle_key(&mut self, key: &KeyEvent, existing: &[String]) -> ExportThemeResponse {
         if key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -235,9 +230,7 @@ impl ExportThemeState {
                     self.focus = ExportThemeField::Name;
                     ExportThemeResponse::Continue
                 }
-                ExportThemeField::Name | ExportThemeField::Export => {
-                    self.try_export(existing)
-                }
+                ExportThemeField::Name | ExportThemeField::Export => self.try_export(existing),
             },
             KeyCode::Char(' ') if matches!(self.focus, ExportThemeField::Export) => {
                 self.try_export(existing)
@@ -259,9 +252,7 @@ impl ExportThemeState {
             self.focus = ExportThemeField::Name;
             return ExportThemeResponse::Continue;
         }
-        if new_name.contains(|c: char| {
-            c == '/' || c == '\\' || c == '\0' || c.is_control()
-        }) {
+        if new_name.contains(|c: char| c == '/' || c == '\\' || c == '\0' || c.is_control()) {
             self.last_error =
                 Some("Name cannot contain path separators or control chars".to_owned());
             self.focus = ExportThemeField::Name;
@@ -336,9 +327,7 @@ impl<'a> StatefulWidget for ExportThemeView<'a> {
         let pinned_bottom: u16 = 5 + error_row;
 
         let content_width = {
-            let label_w = "Choose an existing theme to export from:"
-                .chars()
-                .count() as u16;
+            let label_w = "Choose an existing theme to export from:".chars().count() as u16;
             let longest_theme = state
                 .themes
                 .iter()
@@ -347,7 +336,10 @@ impl<'a> StatefulWidget for ExportThemeView<'a> {
                 .unwrap_or(0) as u16
                 + 2; // marker
             let buttons_w = button_row_width(BUTTON_LABELS);
-            label_w.max(longest_theme).max(NAME_INPUT_WIDTH).max(buttons_w)
+            label_w
+                .max(longest_theme)
+                .max(NAME_INPUT_WIDTH)
+                .max(buttons_w)
         };
 
         let content = ContentSize {
@@ -425,10 +417,7 @@ impl<'a> StatefulWidget for ExportThemeView<'a> {
                     let marker = "  ";
                     lines.push(Line::from(vec![
                         Span::styled(marker.to_owned(), self.theme.modal_item),
-                        Span::styled(
-                            name.clone(),
-                            self.theme.modal_item_selected_unfocused,
-                        ),
+                        Span::styled(name.clone(), self.theme.modal_item_selected_unfocused),
                     ]));
                 } else {
                     lines.push(format_modal_row(
@@ -464,17 +453,15 @@ impl<'a> StatefulWidget for ExportThemeView<'a> {
         let mut row_y = inner.y + 1 + list_height;
         // Spacer.
         if row_y < inner.y + inner.height {
-            Paragraph::new("")
-                .style(self.theme.modal_bg)
-                .render(
-                    Rect {
-                        x: inner.x,
-                        y: row_y,
-                        width: inner.width,
-                        height: 1,
-                    },
-                    buf,
-                );
+            Paragraph::new("").style(self.theme.modal_bg).render(
+                Rect {
+                    x: inner.x,
+                    y: row_y,
+                    width: inner.width,
+                    height: 1,
+                },
+                buf,
+            );
             row_y += 1;
         }
 
@@ -537,17 +524,15 @@ impl<'a> StatefulWidget for ExportThemeView<'a> {
 
         // Spacer before button row.
         if row_y < inner.y + inner.height {
-            Paragraph::new("")
-                .style(self.theme.modal_bg)
-                .render(
-                    Rect {
-                        x: inner.x,
-                        y: row_y,
-                        width: inner.width,
-                        height: 1,
-                    },
-                    buf,
-                );
+            Paragraph::new("").style(self.theme.modal_bg).render(
+                Rect {
+                    x: inner.x,
+                    y: row_y,
+                    width: inner.width,
+                    height: 1,
+                },
+                buf,
+            );
             row_y += 1;
         }
 
@@ -571,7 +556,6 @@ impl<'a> StatefulWidget for ExportThemeView<'a> {
                 self.theme,
             );
         }
-
     }
 }
 
@@ -625,8 +609,11 @@ fn render_name_row(
         let pre_end = cursor.min(end);
         let post_start = cursor.max(start);
         let pre: String = value.chars().skip(start).take(pre_end - start).collect();
-        let post: String =
-            value.chars().skip(post_start).take(end - post_start).collect();
+        let post: String = value
+            .chars()
+            .skip(post_start)
+            .take(end - post_start)
+            .collect();
 
         if !pre.is_empty() {
             spans.push(Span::styled(pre, value_style));

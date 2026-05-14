@@ -23,9 +23,12 @@ appearance = "dark"
 # Number of spaces per tab stop. Default: 4.
 # tab_width = 4
 
-# Set to true to skip the startup notice that lists unsupported terminal
-# features. The "[Don't show this again]" button on the notice also sets this.
-suppress_capability_warnings = false
+# Fingerprints of terminals that have already shown the capabilities notice.
+# Dismissing the notice (or completing the welcome modal) appends the current
+# terminal's fingerprint here so it won't fire again. Launching in a new,
+# previously-unseen terminal re-fires the notice once. Clear this list to see
+# the capabilities notice on the next launch.
+# seen_terminal_fingerprints = []
 
 # Lines advanced per mouse-wheel tick. Default 1 (fine control); 2 or 3 gives
 # a faster, coarser scroll. This setting also applies to touchpad scroll speed,

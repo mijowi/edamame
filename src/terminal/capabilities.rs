@@ -140,49 +140,36 @@ impl Capabilities {
         }
     }
 
-    /// Returns true when the user's terminal is missing at least one feature
-    /// the editor would otherwise light up (mouse, color, image support,
-    /// kitty keyboard protocol).  The UI uses this to decide whether to show
-    /// a one-time notice at startup.
+    /// Build a stable, debuggable fingerprint that identifies this terminal
+    /// "identity" for the new-terminal detection in the startup capabilities
+    /// notice.  Combines `$TERM_PROGRAM` and `$TERM` (the env-level identity)
+    /// with the detected capability tuple (so two environments that probe
+    /// differently are treated as different terminals) and a `tmux` marker
+    /// when running inside tmux.
     ///
-    /// `Ansi16` terminals are *not* considered missing a feature — the editor
-    /// is fully usable in 16 colors, the theme just looks muted.  We only
-    /// trigger the notice for `NoColor`, where style escapes are stripped
-    /// entirely.
-    pub fn has_missing_features(&self) -> bool {
-        !self.mouse
-            || self.color_depth == ColorDepth::NoColor
-            || self.image_protocol.is_none()
-            || !self.keyboard_enhancement
-    }
-
-    /// Human-readable summary of the missing features (for display in the
-    /// startup notice modal).
-    pub fn missing_features_summary(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        if !self.mouse {
-            out.push("Mouse reporting not available.".to_owned());
-        }
-        match self.color_depth {
-            ColorDepth::NoColor => {
-                out.push("No color support — falling back to plain text.".to_owned())
-            }
-            ColorDepth::Ansi16 => {
-                out.push("Only 16 colors available — themes will look muted.".to_owned())
-            }
-            _ => {}
-        }
-        if self.image_protocol.is_none() {
-            out.push("No image protocol detected — images will render as placeholders.".to_owned());
-        }
-        if !self.keyboard_enhancement {
-            out.push(
-                "Kitty keyboard protocol unavailable — Ctrl-Shift-Z redo and \
-                 Alt+Shift+Arrow table insert/delete bindings are disabled."
-                    .to_owned(),
-            );
-        }
-        out
+    /// `$TERM_PROGRAM_VERSION` is deliberately excluded — every minor version
+    /// update would otherwise re-trigger the notice.
+    pub fn fingerprint(&self) -> String {
+        let term_program = env::var("TERM_PROGRAM").unwrap_or_default();
+        let term = env::var("TERM").unwrap_or_default();
+        let tmux = if env::var("TMUX").is_ok() { "tmux" } else { "" };
+        let color = match self.color_depth {
+            ColorDepth::NoColor => "none",
+            ColorDepth::Ansi16 => "16",
+            ColorDepth::Ansi256 => "256",
+            ColorDepth::TrueColor => "truecolor",
+        };
+        let image = match self.image_protocol {
+            None => "none",
+            Some(ImageProtocol::Sixel) => "sixel",
+            Some(ImageProtocol::KittyGraphics) => "kitty",
+            Some(ImageProtocol::ITerm2) => "iterm2",
+            Some(ImageProtocol::Halfblocks) => "halfblocks",
+        };
+        format!(
+            "{term_program}|{term}|{tmux}|{color}|{image}|mouse={}|kbd={}|unicode={}",
+            self.mouse, self.keyboard_enhancement, self.unicode_full,
+        )
     }
 }
 
@@ -349,10 +336,7 @@ mod tests {
         let _g2 = EnvGuard::unset("KITTY_WINDOW_ID");
         let _g3 = EnvGuard::unset("WEZTERM_PANE");
         let _g4 = EnvGuard::unset("TERM_PROGRAM");
-        assert_eq!(
-            detect_color_depth("xterm-256color"),
-            ColorDepth::TrueColor
-        );
+        assert_eq!(detect_color_depth("xterm-256color"), ColorDepth::TrueColor);
     }
 
     #[test]
@@ -425,40 +409,14 @@ mod tests {
         assert!(caps.image_protocol.is_none());
         assert!(!caps.unicode_full);
         assert!(!caps.keyboard_enhancement);
-        // Minimal configuration is "missing features" by definition.
-        assert!(caps.has_missing_features());
     }
 
     #[test]
-    fn ansi16_alone_does_not_trigger_missing_features_notice() {
-        let caps = Capabilities {
-            color_depth: ColorDepth::Ansi16,
-            mouse: true,
-            image_protocol: Some(ImageProtocol::KittyGraphics),
-            image_picker: None,
-            halfblocks_picker: None,
-            unicode_full: true,
-            keyboard_enhancement: true,
-        };
-        assert!(!caps.has_missing_features());
-    }
-
-    #[test]
-    fn no_color_triggers_missing_features_notice() {
-        let caps = Capabilities {
-            color_depth: ColorDepth::NoColor,
-            mouse: true,
-            image_protocol: Some(ImageProtocol::KittyGraphics),
-            image_picker: None,
-            halfblocks_picker: None,
-            unicode_full: true,
-            keyboard_enhancement: true,
-        };
-        assert!(caps.has_missing_features());
-    }
-
-    #[test]
-    fn missing_features_summary_is_empty_when_everything_is_supported() {
+    fn fingerprint_is_stable_for_identical_caps() {
+        let _lock = env_lock();
+        let _g1 = EnvGuard::set("TERM_PROGRAM", "WezTerm");
+        let _g2 = EnvGuard::set("TERM", "xterm-256color");
+        let _g3 = EnvGuard::unset("TMUX");
         let caps = Capabilities {
             color_depth: ColorDepth::TrueColor,
             mouse: true,
@@ -468,21 +426,52 @@ mod tests {
             unicode_full: true,
             keyboard_enhancement: true,
         };
-        assert!(!caps.has_missing_features());
-        assert!(caps.missing_features_summary().is_empty());
+        assert_eq!(caps.fingerprint(), caps.fingerprint());
     }
 
     #[test]
-    fn missing_features_summary_names_each_missing_capability() {
+    fn fingerprint_differs_when_a_capability_flips() {
+        let _lock = env_lock();
+        let _g1 = EnvGuard::set("TERM_PROGRAM", "WezTerm");
+        let _g2 = EnvGuard::set("TERM", "xterm-256color");
+        let _g3 = EnvGuard::unset("TMUX");
+        let base = Capabilities {
+            color_depth: ColorDepth::TrueColor,
+            mouse: true,
+            image_protocol: Some(ImageProtocol::KittyGraphics),
+            image_picker: None,
+            halfblocks_picker: None,
+            unicode_full: true,
+            keyboard_enhancement: true,
+        };
+        let mouseless = Capabilities {
+            mouse: false,
+            ..base.clone()
+        };
+        let no_kbd = Capabilities {
+            keyboard_enhancement: false,
+            ..base.clone()
+        };
+        let no_image = Capabilities {
+            image_protocol: None,
+            ..base.clone()
+        };
+        assert_ne!(base.fingerprint(), mouseless.fingerprint());
+        assert_ne!(base.fingerprint(), no_kbd.fingerprint());
+        assert_ne!(base.fingerprint(), no_image.fingerprint());
+    }
+
+    #[test]
+    fn fingerprint_includes_tmux_marker() {
+        let _lock = env_lock();
+        let _g1 = EnvGuard::set("TERM_PROGRAM", "WezTerm");
+        let _g2 = EnvGuard::set("TERM", "tmux-256color");
         let caps = Capabilities::minimal();
-        let summary = caps.missing_features_summary();
-        assert!(!summary.is_empty());
-        // All four "missing" messages should appear.
-        assert!(summary.iter().any(|s| s.contains("Mouse")));
-        assert!(summary
-            .iter()
-            .any(|s| s.contains("colors") || s.contains("color")));
-        assert!(summary.iter().any(|s| s.contains("image")));
-        assert!(summary.iter().any(|s| s.contains("Kitty")));
+        let _no_tmux = EnvGuard::unset("TMUX");
+        let outside = caps.fingerprint();
+        let _in_tmux = EnvGuard::set("TMUX", "/tmp/tmux-1000/default,123,0");
+        let inside = caps.fingerprint();
+        assert_ne!(outside, inside);
+        assert!(inside.contains("tmux"));
     }
 }

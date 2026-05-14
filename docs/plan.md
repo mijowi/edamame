@@ -1458,17 +1458,17 @@ Refactor tests
 
 Add a few more character substitutions to `normalize_for_big_text` so we can show big titles more often
 
-Make insert table blank line warning a modal instead of hint line flash
-
 edamame in-app about page
 
-Edamame lighter and less saturated background
 Solarized dark needs a darker bg and lighter fg
 Monochrome theme should use REVERSED for selection/focus
+Zenburn darken background
 
 Apply the `modal_item_selected_unfocused` pattern to other modals, including settings overlay. Remove the "appearance" setting from the settings overlay—the one place to set this will be in the theme picker modal.
 
 Handle active theme not found. Switch to default theme and display warning modal
+
+Updating the scroll speed in the settings modal does not change the setting until the editor is restarted. Fix and investigate what other settings are not live-updating.
 
 ---
 
