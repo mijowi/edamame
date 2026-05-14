@@ -793,10 +793,14 @@ impl Theme {
                 .fg(p.secondary)
                 .bg(p.surface_elevated)
                 .add_modifier(bold),
-            // Focused / unfocused inputs share the `primary` bg; the
-            // focused variant adds BOLD so the affordance still reads
-            // as the active field.
-            modal_input_unfocused: Style::default().fg(p.bg).bg(p.primary),
+            // Focused input is filled (`primary` bg, inverse-text fg,
+            // bold) so it clearly reads as the active field.  Unfocused
+            // input is outlined (`primary` fg, no fill) — same
+            // "filled vs outlined" convention used for selected items
+            // (see `modal_item_selected_unfocused`).  Without this
+            // contrast, an unfocused input on first render is easily
+            // mistaken for a focused button.
+            modal_input_unfocused: Style::default().fg(p.primary).bg(p.surface_elevated),
             modal_input_focused: Style::default().fg(p.bg).bg(p.primary).add_modifier(bold),
             modal_button_focused: Style::default()
                 .fg(p.primary)

@@ -130,8 +130,13 @@ pub fn theme() -> Theme {
         modal_item_selected_hint: Style::default().add_modifier(Modifier::BOLD),
         modal_description: Style::default().add_modifier(Modifier::REVERSED),
         modal_section_heading: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
-        modal_input_unfocused: Style::default().add_modifier(Modifier::REVERSED),
-        modal_input_focused: Style::default().add_modifier(Modifier::BOLD),
+        // Focused input matches `modal_button_focused` (REVERSED|BOLD)
+        // — filled.  Unfocused input is plain BOLD (no fill), so it
+        // reads as "an input here" without competing with the focused
+        // element, mirroring the colored theme's filled-vs-outlined
+        // pattern.
+        modal_input_unfocused: Style::default().add_modifier(Modifier::BOLD),
+        modal_input_focused: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
         modal_button_focused: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
 
         normal: Style::default(),

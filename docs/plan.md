@@ -1460,10 +1460,6 @@ Add a few more character substitutions to `normalize_for_big_text` so we can sho
 
 Make insert table blank line warning a modal instead of hint line flash
 
-Add a command palette action that generates a `.toml` file for a custom theme based on a default theme, with a new name. Set to current theme by default. Creating the file sets the theme to the new custom theme. Remove the existing behavior that copies a commented-out theme file to the user's config directory.
-
-Change all instances of "color" to "color"
-
 edamame in-app about page
 
 Edamame lighter and less saturated background
@@ -1471,6 +1467,8 @@ Solarized dark needs a darker bg and lighter fg
 Monochrome theme should use REVERSED for selection/focus
 
 Apply the `modal_item_selected_unfocused` pattern to other modals, including settings overlay. Remove the "appearance" setting from the settings overlay—the one place to set this will be in the theme picker modal.
+
+Handle active theme not found. Switch to default theme and display warning modal
 
 ---
 

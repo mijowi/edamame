@@ -578,6 +578,7 @@ fn section_of(action: &Action) -> &'static str {
         Action::OpenSettings
         | Action::OpenKeybinds
         | Action::SwitchTheme
+        | Action::CreateCustomTheme
         | Action::ShowMarkdownCheatSheet
         | Action::OpenInExternalEditor
         | Action::OpenGitHub => "Tools",

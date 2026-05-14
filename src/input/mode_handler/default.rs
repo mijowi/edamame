@@ -102,6 +102,7 @@ fn preview_safe_action(action: &Action) -> bool {
             | Action::OpenSettings
             | Action::OpenKeybinds
             | Action::SwitchTheme
+            | Action::CreateCustomTheme
             | Action::OpenConfigFolder
             // Both are palette-only by default but a user may bind a
             // chord — allow them to fire from Preview without first
