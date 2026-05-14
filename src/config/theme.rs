@@ -741,7 +741,10 @@ impl Theme {
             // Transient messages — escalate in salience.  All sit on
             // the hint_bar surface so they layer cleanly over the
             // chord row.
-            transient_info: Style::default().fg(p.text).bg(p.surface_elevated),
+            transient_info: Style::default()
+                .fg(p.text)
+                .bg(p.surface_elevated)
+                .add_modifier(bold),
             transient_success: Style::default()
                 .fg(p.success)
                 .bg(p.surface_elevated)
