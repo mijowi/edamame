@@ -11,6 +11,14 @@
 //! Save persists everything; the Theme button pushes the theme picker
 //! onto the modal stack so it stacks ON TOP of the welcome and pops
 //! back to it on close.
+//!
+//! Layout is computed at render time from the available terminal area:
+//! the "Getting started" paragraph and the degraded-capabilities hint
+//! both wrap at the modal's body width, and the body is rendered into
+//! a scratch buffer of the natural height before a `scroll`-offset
+//! window is blitted into the visible body area.  This lets the modal
+//! gracefully scroll on small terminals instead of clipping or
+//! collapsing rows.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -18,13 +26,14 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, StatefulWidget, Widget},
+    widgets::{Block, Paragraph, StatefulWidget, Widget, Wrap},
 };
 
 use crate::config::{DiagramsEnabled, ImagesEnabled, RemoteImagePolicy, Theme};
 use crate::terminal::{Capabilities, ColorDepth, ImageProtocol};
 use crate::ui::scroll_container::{
-    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind,
+    centered_rect_for_content, compute_pad_h, draw_frame, ContentSize, FrameOpts, ModalKind,
+    ScrollContainerState, MAX_PAD_H,
 };
 
 /// One focusable row on the welcome modal.  Order matches the on-screen
@@ -39,7 +48,7 @@ pub enum WelcomeFocus {
     Save,
 }
 
-const FOCUS_ORDER: &[WelcomeFocus] = &[
+const FOCUS_ORDER: [WelcomeFocus; 6] = [
     WelcomeFocus::Theme,
     WelcomeFocus::Images,
     WelcomeFocus::RemoteImages,
@@ -83,6 +92,11 @@ pub struct WelcomeState {
     /// Never restores the user's prior remote choice.
     pre_cascade_remote: Option<RemoteImagePolicy>,
 
+    /// Vertical scroll bookkeeping.  When the natural body height
+    /// exceeds the available body height, this drives the window of
+    /// content that gets blitted from the scratch buffer.
+    pub scroll_state: ScrollContainerState,
+
     // ── Hit-test rects, captured each render for click dispatch ──
     pub theme_button_rect: Option<Rect>,
     pub esc_button_rect: Option<Rect>,
@@ -91,6 +105,12 @@ pub struct WelcomeState {
     pub diagrams_pill_rects: [Option<Rect>; 3],
     pub show_again_rect: Option<Rect>,
     pub save_button_rect: Option<Rect>,
+
+    /// Body-relative y of each focusable row, captured each render so
+    /// focus moves can scroll the focused element back into view.
+    /// Indexed by position in `FOCUS_ORDER` — array length is tied to
+    /// `FOCUS_ORDER.len()` so the two can't drift.
+    focus_offsets: [u16; FOCUS_ORDER.len()],
 
     // ── Capability summary, captured at construction ──
     cap_summary: CapSummary,
@@ -123,6 +143,7 @@ impl WelcomeState {
             dont_show_again: true,
             image_capable: caps.image_protocol.is_some(),
             pre_cascade_remote: None,
+            scroll_state: ScrollContainerState::default(),
             theme_button_rect: None,
             esc_button_rect: None,
             images_pill_rects: [None, None, None],
@@ -130,6 +151,7 @@ impl WelcomeState {
             diagrams_pill_rects: [None, None, None],
             show_again_rect: None,
             save_button_rect: None,
+            focus_offsets: [0; FOCUS_ORDER.len()],
             cap_summary: CapSummary::from(caps),
         }
     }
@@ -152,7 +174,8 @@ impl WelcomeState {
 
     /// Step focus by `delta` (-1 for Shift-Tab, +1 for Tab).  Skips
     /// disabled rows so the user never lands on a non-interactive
-    /// pill row.
+    /// pill row.  Scrolls the newly focused row into view using the
+    /// body-relative y captured by the previous render.
     fn step_focus(&mut self, delta: isize) {
         let len = FOCUS_ORDER.len() as isize;
         let cur = FOCUS_ORDER
@@ -166,6 +189,7 @@ impl WelcomeState {
             let candidate = FOCUS_ORDER[i];
             if !self.row_disabled(candidate) {
                 self.focused = candidate;
+                self.scroll_state.ensure_visible(self.focus_offsets[i]);
                 return;
             }
         }
@@ -205,6 +229,11 @@ impl WelcomeState {
     }
 
     pub fn handle_key(&mut self, key: &KeyEvent) -> WelcomeResponse {
+        // PgUp/PgDn/Home/End scroll the body without moving focus.
+        // Arrow keys remain bound to focus / tri-state cycling below.
+        if self.scroll_state.handle_paging_key(key) {
+            return WelcomeResponse::Continue;
+        }
         match key.code {
             KeyCode::Tab => {
                 self.step_focus(1);
@@ -265,6 +294,12 @@ impl WelcomeState {
             KeyCode::Esc => WelcomeResponse::Continue,
             _ => WelcomeResponse::Continue,
         }
+    }
+
+    /// Forward a mouse wheel delta into the scroll state.  Mirrors the
+    /// pattern used by `SettingsOverlay` / `KeybindsOverlay`.
+    pub fn handle_wheel(&mut self, delta: i32) {
+        self.scroll_state.scroll_by(delta);
     }
 
     /// Hit-test `(col, row)` against the cached rects from the last
@@ -365,21 +400,6 @@ pub struct WelcomeView<'a> {
 /// breathing room.  Pinned so the modal width doesn't jitter when the
 /// content changes (e.g. switching between truecolor/256/none).
 const CONTENT_WIDTH: u16 = 64;
-/// Body height when no capabilities are degraded.  Includes a single
-/// blank spacer row between the capability summary and the theme
-/// section.  When any capability is degraded, the body grows by
-/// `DEGRADED_HINT_ROWS` to fit the wrapped hint paragraph above that
-/// spacer (so the spacer is preserved and the theme section never
-/// gets crowded by the hint text).
-const BODY_HEIGHT_BASE: u16 = 27;
-/// Extra rows the wrapped "✗ consider upgrading…" hint occupies when
-/// any capability is degraded.  Added on top of `BODY_HEIGHT_BASE`
-/// (and consumed inside `render`) only in that case.
-const DEGRADED_HINT_ROWS: u16 = 2;
-/// Rows reserved for the wrapped "Getting started" paragraph (label
-/// row is counted separately).  Sized to fit the current copy at
-/// `CONTENT_WIDTH - 2` columns with a safety margin.
-const QUICK_START_ROWS: u16 = 7;
 /// Width of each tri-state pill cell (`[ Always ]` = 10 cols).
 const PILL_W: u16 = 10;
 const PILL_GAP: u16 = 2;
@@ -387,6 +407,35 @@ const PILL_ROW_W: u16 = PILL_W * 3 + PILL_GAP * 2;
 /// Left column where each row's interactive control starts.  Lines up
 /// the three pill rows so the user sees a coherent column.
 const CONTROL_COL: u16 = 22;
+/// Body text describing the editor — wraps at the body's inner width
+/// at render time (see `wrapped_para_rows`).
+const QUICK_START_TEXT: &str =
+    "edamame is a Markdown editor for your terminal. These are some of its features:\n\
+• PREVIEW, hybrid EDIT, and RAW edit modes — In EDIT mode, the cursor's line or table cell \
+reveals its raw Markdown, while everything else stays formatted.\n\
+• Mouse, image, and Mermaid diagram support, depending on your terminal's capabilities\n\
+• GitHub Flavored Markdown, including tables, task lists, and more, plus highlights\n\
+• Bottom bar with status and contextual hints\n\
+• Command palette for access to commands and settings (Ctrl-P)";
+/// Hint shown below the capability summary when any capability is
+/// degraded.  Wrapped at body inner width at render time.
+const DEGRADED_HINT: &str = "  ✗ — Consider upgrading to a modern terminal, \
+such as kitty, wezterm, or ghostty, for a better experience.";
+
+/// Number of wrapped rows a string would occupy at `width` columns
+/// under `Paragraph::wrap(Wrap { trim: false })`.  Uses ratatui's own
+/// line counter (gated by `unstable-rendered-line-info`) so the
+/// pre-render sizing matches the actual `WordWrapper` output.
+fn wrapped_para_rows(text: &str, width: u16) -> u16 {
+    if width == 0 {
+        // Worst-case: each \n becomes its own row.
+        return text.split('\n').count().max(1) as u16;
+    }
+    Paragraph::new(text)
+        .wrap(Wrap { trim: false })
+        .line_count(width)
+        .min(u16::MAX as usize) as u16
+}
 
 impl<'a> StatefulWidget for WelcomeView<'a> {
     type State = WelcomeState;
@@ -395,11 +444,39 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         let degraded = !(state.cap_summary.color_ok
             && state.cap_summary.images_ok
             && state.cap_summary.mouse_ok);
-        let hint_rows = if degraded { DEGRADED_HINT_ROWS } else { 0 };
-        let body_height = BODY_HEIGHT_BASE + hint_rows;
+
+        // Body width is determined by the modal's outer width and its
+        // horizontal padding — both derived from `area` and the fixed
+        // CONTENT_WIDTH.  We need it BEFORE computing natural body
+        // height because the paragraph and hint wrap at this width.
+        let modal_width = CONTENT_WIDTH.saturating_add(2 * MAX_PAD_H).min(area.width);
+        let pad_h = compute_pad_h(modal_width, CONTENT_WIDTH);
+        let body_width = modal_width.saturating_sub(2 * pad_h);
+
+        let para_inner_w = body_width.saturating_sub(2);
+        let para_rows = wrapped_para_rows(QUICK_START_TEXT, para_inner_w);
+        let hint_rows = if degraded {
+            wrapped_para_rows(DEGRADED_HINT, para_inner_w)
+        } else {
+            0
+        };
+
+        // Natural body row count.  Trace:
+        //  1                 "Getting started" label
+        //  para_rows + 1     paragraph + spacer
+        //  1                 "Terminal capabilities" label
+        //  3                 Color / Images / Mouse rows
+        //  hint_rows         degraded hint (0 when all OK)
+        //  1                 spacer
+        //  1                 current theme line
+        //  2                 switch theme button + spacer below
+        //  3 * 3             three tri-state sections (row + explanation + spacer)
+        //  1                 footer (toggle + Save)
+        let natural_height = 1 + para_rows + 1 + 1 + 3 + hint_rows + 1 + 1 + 2 + 9 + 1;
+
         let content = ContentSize {
             width: CONTENT_WIDTH,
-            height: body_height,
+            height: natural_height,
             pinned_top: 0,
             pinned_bottom: 0,
         };
@@ -417,11 +494,28 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         );
         state.esc_button_rect = layout.esc_hit_rect;
         let body = layout.body;
-        if body.height < body_height || body.width == 0 {
+        if body.height == 0 || body.width == 0 {
             return;
         }
 
-        let mut y = body.y;
+        state.scroll_state.observe(natural_height, body.height);
+        let scroll = state.scroll_state.scroll;
+
+        // Render the natural-sized body into a scratch buffer whose
+        // origin is (0, 0).  Subsequent rect bookkeeping is in
+        // body-relative coords (matching the scratch); we translate to
+        // absolute terminal coords once at the end.
+        let scratch_rect = Rect {
+            x: 0,
+            y: 0,
+            width: body.width,
+            height: natural_height,
+        };
+        let mut scratch = Buffer::empty(scratch_rect);
+        Block::default()
+            .style(self.theme.modal_bg)
+            .render(scratch_rect, &mut scratch);
+
         let muted_style = Style::default()
             .fg(self.theme.palette.text_muted)
             .bg(self.theme.palette.surface_elevated);
@@ -432,58 +526,60 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             .fg(self.theme.palette.warning)
             .bg(self.theme.palette.surface_elevated);
 
-        // ── Getting started — short paragraph describing how edamame
-        // works.  Renders with `Paragraph::wrap` so the body width
-        // determines the line breaks; reserved row count is
-        // `QUICK_START_ROWS` and the paragraph is expected to fit.
-        // Placed at the top per UX feedback so the user reads what the
-        // app does before fiddling with capability gauges or toggles.
-        render_label(buf, body.x, y, body.width, "Getting started", self.theme);
-        y += 1;
-        let para_text = "edamame is a Markdown viewer and editor for the terminal. \
-            Preview mode renders the document for distraction-free reading; start \
-            typing to edit in Rendered mode, where the cursor's block reveals its raw \
-            Markdown while neighbouring blocks stay formatted. Press Escape to return \
-            to Preview, Ctrl+` for Raw mode (plain source for the whole document), \
-            Ctrl-P for the command palette.";
-        let para_area = Rect {
-            x: body.x + 2,
+        let body_x: u16 = 0;
+        let body_w = body.width;
+        let mut y: u16 = 0;
+
+        // ── Getting started ──────────────────────────────────────────
+        render_label(
+            &mut scratch,
+            body_x,
             y,
-            width: body.width.saturating_sub(2),
-            height: QUICK_START_ROWS,
-        };
-        for row in 0..QUICK_START_ROWS {
+            body_w,
+            "Getting started",
+            self.theme,
+        );
+        y += 1;
+        // Fill the band with modal_bg so unprinted cells inside the
+        // wrapped paragraph inherit the modal surface color.
+        for row in 0..para_rows {
             Paragraph::new("").style(self.theme.modal_bg).render(
                 Rect {
-                    x: body.x,
+                    x: body_x,
                     y: y + row,
-                    width: body.width,
+                    width: body_w,
                     height: 1,
                 },
-                buf,
+                &mut scratch,
             );
         }
-        Paragraph::new(para_text)
-            .wrap(ratatui::widgets::Wrap { trim: false })
+        let para_area = Rect {
+            x: body_x + 2,
+            y,
+            width: para_inner_w,
+            height: para_rows,
+        };
+        Paragraph::new(QUICK_START_TEXT)
+            .wrap(Wrap { trim: false })
             .style(muted_style)
-            .render(para_area, buf);
-        y += QUICK_START_ROWS + 1; // +1 spacer between sections
+            .render(para_area, &mut scratch);
+        y += para_rows + 1; // +1 spacer between sections
 
         // ── Capability summary ────────────────────────────────────────
         render_label(
-            buf,
-            body.x,
+            &mut scratch,
+            body_x,
             y,
-            body.width,
+            body_w,
             "Terminal capabilities",
             self.theme,
         );
         y += 1;
         render_cap_row(
-            buf,
-            body.x,
+            &mut scratch,
+            body_x,
             y,
-            body.width,
+            body_w,
             "Color",
             &state.cap_summary.color,
             state.cap_summary.color_ok,
@@ -493,10 +589,10 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         );
         y += 1;
         render_cap_row(
-            buf,
-            body.x,
+            &mut scratch,
+            body_x,
             y,
-            body.width,
+            body_w,
             "Images",
             &state.cap_summary.images,
             state.cap_summary.images_ok,
@@ -506,10 +602,10 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         );
         y += 1;
         render_cap_row(
-            buf,
-            body.x,
+            &mut scratch,
+            body_x,
             y,
-            body.width,
+            body_w,
             "Mouse",
             &state.cap_summary.mouse,
             state.cap_summary.mouse_ok,
@@ -519,58 +615,46 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         );
         y += 1;
 
-        // Wrapped "✗ consider upgrading…" hint, only when degraded.
-        // Sized at `hint_rows` so the modal collapses by that many rows
-        // when every capability is fine — no empty space below the
-        // capability summary in the common case.  Wraps within
-        // `body.width - 2` so it never gets cut off on narrow modals.
         if degraded {
             for row in 0..hint_rows {
                 Paragraph::new("").style(self.theme.modal_bg).render(
                     Rect {
-                        x: body.x,
+                        x: body_x,
                         y: y + row,
-                        width: body.width,
+                        width: body_w,
                         height: 1,
                     },
-                    buf,
+                    &mut scratch,
                 );
             }
-            let hint = "  ✗ — Consider upgrading to a modern terminal, \
-                such as kitty, wezterm, or ghostty, for a better experience.";
-            Paragraph::new(hint)
-                .wrap(ratatui::widgets::Wrap { trim: false })
+            Paragraph::new(DEGRADED_HINT)
+                .wrap(Wrap { trim: false })
                 .style(muted_style)
                 .render(
                     Rect {
-                        x: body.x,
+                        x: body_x,
                         y,
-                        width: body.width.saturating_sub(2),
+                        width: para_inner_w,
                         height: hint_rows,
                     },
-                    buf,
+                    &mut scratch,
                 );
             y += hint_rows;
         }
-        // One-row spacer between the capability summary (or its
-        // wrapped hint) and the theme section — consistent regardless
-        // of whether the hint is shown.
+        // Spacer between capability summary (or its wrapped hint) and
+        // the theme section.
         Paragraph::new("").style(self.theme.modal_bg).render(
             Rect {
-                x: body.x,
+                x: body_x,
                 y,
-                width: body.width,
+                width: body_w,
                 height: 1,
             },
-            buf,
+            &mut scratch,
         );
         y += 1;
 
-        // ── Theme — two lines: current theme + "Switch theme" button
-        // The button-only line is the focusable target; the "Current
-        // theme: <name>" line is purely informational so the active
-        // selection reads at a glance after the picker mutates
-        // `config.theme`.
+        // ── Theme ────────────────────────────────────────────────────
         let theme_focused = state.focused == WelcomeFocus::Theme;
         let current_line = Line::from(vec![
             Span::styled("Current theme: ", self.theme.modal_bg),
@@ -582,7 +666,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
                     .add_modifier(Modifier::BOLD),
             ),
         ]);
-        render_line(buf, body.x, y, body.width, current_line, self.theme);
+        render_line(&mut scratch, body_x, y, body_w, current_line, self.theme);
         y += 1;
         let button_style = if theme_focused {
             self.theme.modal_button_focused
@@ -591,15 +675,15 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         };
         let button_label = "[ Switch theme ▸ ]";
         let button_w = button_label.chars().count() as u16;
-        let button_x = body.x;
+        let button_x = body_x;
         Paragraph::new("").style(self.theme.modal_bg).render(
             Rect {
-                x: body.x,
+                x: body_x,
                 y,
-                width: body.width,
+                width: body_w,
                 height: 1,
             },
-            buf,
+            &mut scratch,
         );
         Paragraph::new(Line::from(Span::styled(button_label, button_style)))
             .style(self.theme.modal_bg)
@@ -610,7 +694,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
                     width: button_w,
                     height: 1,
                 },
-                buf,
+                &mut scratch,
             );
         state.theme_button_rect = Some(Rect {
             x: button_x,
@@ -618,12 +702,14 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             width: button_w,
             height: 1,
         });
+        state.focus_offsets[0] = y;
         y += 2;
 
         // ── Tri-state rows ──────────────────────────────────────────
+        state.focus_offsets[1] = y;
         let images_rects = render_tristate(
-            buf,
-            body,
+            &mut scratch,
+            scratch_rect,
             y,
             "Show images",
             images_pill_labels(state.images),
@@ -634,20 +720,21 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         state.images_pill_rects = images_rects;
         y += 1;
         render_explanation(
-            buf,
-            body.x,
+            &mut scratch,
+            body_x,
             y,
-            body.width,
+            body_w,
             "Render inline images using your terminal's image protocol.",
             muted_style,
             self.theme,
         );
         y += 2;
 
+        state.focus_offsets[2] = y;
         let remote_disabled = !state.image_capable || state.remote_locked_by_images();
         let remote_rects = render_tristate(
-            buf,
-            body,
+            &mut scratch,
+            scratch_rect,
             y,
             "Show remote images",
             remote_pill_labels(state.remote, remote_disabled),
@@ -658,19 +745,20 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         state.remote_pill_rects = remote_rects;
         y += 1;
         render_explanation(
-            buf,
-            body.x,
+            &mut scratch,
+            body_x,
             y,
-            body.width,
+            body_w,
             "Fetch images from http(s):// URLs",
             muted_style,
             self.theme,
         );
         y += 2;
 
+        state.focus_offsets[3] = y;
         let diagrams_rects = render_tristate(
-            buf,
-            body,
+            &mut scratch,
+            scratch_rect,
             y,
             "Show diagrams",
             diagrams_pill_labels(state.diagrams),
@@ -681,20 +769,17 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         state.diagrams_pill_rects = diagrams_rects;
         y += 1;
         render_explanation(
-            buf,
-            body.x,
+            &mut scratch,
+            body_x,
             y,
-            body.width,
+            body_w,
             "Render mermaid code blocks as inline diagrams.",
             muted_style,
             self.theme,
         );
         y += 2;
 
-        // ── Footer row: Don't-show-again toggle followed by [ Save ]
-        // Centred as a pair so the two related affordances read as one
-        // group.  The toggle sits to the left of Save so users scan it
-        // first; Tab order matches (ShowAgain → Save).
+        // ── Footer row: Don't-show-again toggle + [ Save ] ──────────
         let save_focused = state.focused == WelcomeFocus::Save;
         let save_style = if save_focused {
             self.theme.modal_button_focused
@@ -705,10 +790,6 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         let save_w = save_label.chars().count() as u16;
 
         let sa_focused = state.focused == WelcomeFocus::ShowAgain;
-        // Label-row style: focused → primary bg, unfocused → plain.
-        // The `[x]` glyph gets its own secondary-fg accent (when
-        // unfocused-checked) so the persistent-selection affordance
-        // lands on the checkbox itself rather than the full label.
         let sa_label_style = if sa_focused {
             self.theme.modal_button_focused
         } else {
@@ -727,19 +808,18 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
 
         let gap_w: u16 = 4;
         let combined_w = toggle_w + gap_w + save_w;
-        let start_x = body.x + body.width.saturating_sub(combined_w) / 2;
+        let start_x = body_x + body_w.saturating_sub(combined_w) / 2;
         let toggle_x = start_x;
         let save_x = toggle_x + toggle_w + gap_w;
 
-        // Fill the row with modal_bg so the surface stays uniform.
         Paragraph::new("").style(self.theme.modal_bg).render(
             Rect {
-                x: body.x,
+                x: body_x,
                 y,
-                width: body.width,
+                width: body_w,
                 height: 1,
             },
-            buf,
+            &mut scratch,
         );
 
         let toggle_area = Rect {
@@ -753,8 +833,9 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             Span::styled(suffix.to_owned(), sa_label_style),
         ]))
         .style(self.theme.modal_bg)
-        .render(toggle_area, buf);
+        .render(toggle_area, &mut scratch);
         state.show_again_rect = Some(toggle_area);
+        state.focus_offsets[4] = y;
 
         let save_area = Rect {
             x: save_x,
@@ -764,9 +845,83 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         };
         Paragraph::new(Line::from(Span::styled(save_label, save_style)))
             .style(self.theme.modal_bg)
-            .render(save_area, buf);
+            .render(save_area, &mut scratch);
         state.save_button_rect = Some(save_area);
+        state.focus_offsets[5] = y;
+
+        // ── Blit visible window of scratch into the body ────────────
+        // Retarget `scratch`'s area so its (scroll..scroll+visible_h)
+        // window aligns with the visible body rect, then merge into
+        // `buf`.  `Buffer::merge` clips by absolute coords, but it also
+        // *unions* the two areas — so we have to align the scratch top
+        // with `body.y` (not `body.y - scroll`) and drop the rows above
+        // `scroll` by trimming both `area.y` and `area.height`.
+        let visible_h = body.height.min(natural_height.saturating_sub(scroll));
+        let visible_window = Rect {
+            x: body.x,
+            y: body.y,
+            width: body.width,
+            height: visible_h,
+        };
+        let trimmed_len = (visible_h as usize) * (body.width as usize);
+        let src_start = (scroll as usize) * (body.width as usize);
+        scratch.content = scratch.content[src_start..src_start + trimmed_len].to_vec();
+        scratch.area = visible_window;
+        buf.merge(&scratch);
+
+        // Translate every captured rect from body-relative scratch
+        // coords to absolute terminal coords, clipping to the visible
+        // body window.  Rects entirely outside the visible window
+        // become `None` — clicks in those regions read as misses.
+        state.theme_button_rect = translate_rect(state.theme_button_rect, body, scroll);
+        state.save_button_rect = translate_rect(state.save_button_rect, body, scroll);
+        state.show_again_rect = translate_rect(state.show_again_rect, body, scroll);
+        for r in state.images_pill_rects.iter_mut() {
+            *r = translate_rect(*r, body, scroll);
+        }
+        for r in state.remote_pill_rects.iter_mut() {
+            *r = translate_rect(*r, body, scroll);
+        }
+        for r in state.diagrams_pill_rects.iter_mut() {
+            *r = translate_rect(*r, body, scroll);
+        }
+
+        // Scrollbar in the right padding column, only when overflowing.
+        if state.scroll_state.max_scroll() > 0 {
+            let bar_area = Rect {
+                x: layout.scrollbar_col,
+                y: body.y,
+                width: 1,
+                height: body.height,
+            };
+            crate::ui::scrollbar::render_for_scroll_state(
+                bar_area,
+                &state.scroll_state,
+                self.theme,
+                buf,
+            );
+        }
     }
+}
+
+/// Translate a body-relative rect (origin at body's top-left) into
+/// absolute terminal coords, clipped to the visible body window.
+/// Returns `None` when the rect lies entirely outside the window.
+fn translate_rect(rect: Option<Rect>, body: Rect, scroll: u16) -> Option<Rect> {
+    let r = rect?;
+    let src_y0 = r.y;
+    let src_y1 = r.y.saturating_add(r.height);
+    let vis_y0 = src_y0.max(scroll);
+    let vis_y1 = src_y1.min(scroll.saturating_add(body.height));
+    if vis_y0 >= vis_y1 {
+        return None;
+    }
+    Some(Rect {
+        x: body.x + r.x,
+        y: body.y + (vis_y0 - scroll),
+        width: r.width,
+        height: vis_y1 - vis_y0,
+    })
 }
 
 fn images_pill_labels(value: ImagesEnabled) -> [PillCell; 3] {
@@ -834,11 +989,6 @@ fn render_tristate(
         },
         buf,
     );
-    // Row label on the left — focused rows get a bold primary-fg label
-    // so the focused row's leading text matches the focused pill's
-    // primary affordance.  Unfocused-but-selected pills use
-    // `modal_item_selected_unfocused` (secondary) so focus location is
-    // distinguishable from persistent selection at a glance.
     let label_style = if disabled {
         Style::default()
             .fg(theme.palette.text_muted)
@@ -864,7 +1014,6 @@ fn render_tristate(
             buf,
         );
 
-    // Pill row, drawn at `body.x + CONTROL_COL`.
     let mut rects = [None, None, None];
     if body.width < CONTROL_COL + PILL_ROW_W {
         return rects;
@@ -1227,5 +1376,32 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert_eq!(r, WelcomeResponse::Continue);
+    }
+
+    #[test]
+    fn wheel_scrolls_body() {
+        let caps = caps_full();
+        let mut s = make_state(&caps);
+        // Simulate a prior render observing a body shorter than the
+        // natural content height so max_scroll() > 0.
+        s.scroll_state.observe(40, 20);
+        s.handle_wheel(3);
+        assert_eq!(s.scroll_state.scroll, 3);
+        s.handle_wheel(-1);
+        assert_eq!(s.scroll_state.scroll, 2);
+    }
+
+    #[test]
+    fn pgdown_scrolls_without_moving_focus() {
+        let caps = caps_full();
+        let mut s = make_state(&caps);
+        s.scroll_state.observe(40, 10);
+        let before = s.focused;
+        s.handle_key(&KeyEvent::new(
+            KeyCode::PageDown,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(s.focused, before, "PgDn must not move focus");
+        assert_eq!(s.scroll_state.scroll, 10);
     }
 }
