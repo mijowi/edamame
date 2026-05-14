@@ -145,6 +145,10 @@ impl App {
                 self.open_theme_picker();
                 true
             }
+            Action::CreateCustomTheme => {
+                self.open_export_theme_modal();
+                true
+            }
             Action::OpenConfigFolder => {
                 if let Some(dir) = Config::config_dir() {
                     self.spawn_open_worker(dir.display().to_string());

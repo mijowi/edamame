@@ -486,6 +486,9 @@ impl App {
             self.pending_open_file_in_editor = false;
             self.open_current_file_in_editor(terminal, rx);
         }
+        if let Some(path) = self.pending_open_theme_in_editor.take() {
+            self.open_theme_in_editor(&path, terminal, rx);
+        }
     }
 
     /// Pre-empt scrollbar interactions before normal mouse dispatch.
@@ -806,6 +809,9 @@ impl App {
         if self.pending_open_file_in_editor {
             self.pending_open_file_in_editor = false;
             self.open_current_file_in_editor(terminal, rx);
+        }
+        if let Some(path) = self.pending_open_theme_in_editor.take() {
+            self.open_theme_in_editor(&path, terminal, rx);
         }
     }
 }

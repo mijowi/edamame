@@ -198,6 +198,42 @@ impl App {
         }
     }
 
+    /// Open a theme `.toml` in the user's `$VISUAL` / `$EDITOR`, then
+    /// reload the active theme so any edits take effect immediately.
+    /// Mirrors [`Self::open_config_in_editor`] but scoped to a single
+    /// theme file — the success modal pushed after
+    /// `Action::CreateCustomTheme` routes here.
+    pub(super) fn open_theme_in_editor(
+        &mut self,
+        path: &Path,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+        rx: &mpsc::Receiver<AppEvent>,
+    ) {
+        if !path.exists() {
+            self.flash(
+                format!("Theme file no longer exists: {}", path.display()),
+                MessageKind::Error,
+            );
+            return;
+        }
+        let outcome = self.run_external_editor(path, terminal, rx);
+
+        match outcome {
+            ExternalEditorOutcome::Exited(Ok(s)) if s.success() => {
+                self.apply_active_theme();
+                self.flash("Theme reloaded", MessageKind::Success);
+            }
+            ExternalEditorOutcome::Exited(Ok(s)) => {
+                self.apply_active_theme();
+                self.flash(format!("Editor exited {s}"), MessageKind::Warning);
+            }
+            ExternalEditorOutcome::Exited(Err(e)) => {
+                self.flash(format!("Editor failed: {e}"), MessageKind::Error);
+            }
+            ExternalEditorOutcome::SuspendFailed | ExternalEditorOutcome::OsHandler => {}
+        }
+    }
+
     /// Suspend the TUI, run an external editor on `path`, and resume.
     /// Shared between the settings-overlay "Open config.toml" flow
     /// and the palette "Open current file in system editor" flow:

@@ -204,6 +204,11 @@ pub struct App {
     /// site doesn't have the `Terminal` handle, so the run loop
     /// drains the flag.
     pending_open_file_in_editor: bool,
+    /// Set by the export-success modal's "Open in default editor"
+    /// button.  Drained by the run loop, which then suspends the TUI
+    /// and runs `$VISUAL` / `$EDITOR` on this path.  After the editor
+    /// exits the active theme is reloaded so user edits take effect.
+    pub(crate) pending_open_theme_in_editor: Option<std::path::PathBuf>,
     /// Pause flag for the crossterm read thread.  When `true`, the
     /// thread sleeps instead of polling stdin, releasing it to a
     /// child process (e.g. `$EDITOR` shelled out from the settings
@@ -451,6 +456,7 @@ impl App {
             keymap: None,
             pending_open_config_in_editor: false,
             pending_open_file_in_editor: false,
+            pending_open_theme_in_editor: None,
             read_paused: None,
             hint_prompt: None,
             modal_stack,

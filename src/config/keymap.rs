@@ -131,6 +131,10 @@ pub enum Action {
     /// Open the fuzzy-searchable theme picker.  Selecting a theme
     /// writes `config.theme` to disk and reapplies the palette live.
     SwitchTheme,
+    /// Open the export-theme modal: choose an existing theme to copy,
+    /// pick a new name, write the resulting `<name>.toml` into the
+    /// user's `themes/` directory, and apply it as the active theme.
+    CreateCustomTheme,
     /// Reveal the active config directory in the OS file manager / open
     /// it via `open::that`.
     OpenConfigFolder,
@@ -212,7 +216,7 @@ action_variants! {
     FollowLinkUnderCursor, OpenGitHub,
     NavigateBack, NavigateForward,
     ShowCheatSheet, ShowCommandPalette, ShowMarkdownCheatSheet,
-    OpenSettings, OpenKeybinds, OpenConfigFolder, SwitchTheme,
+    OpenSettings, OpenKeybinds, OpenConfigFolder, SwitchTheme, CreateCustomTheme,
     ExportHtml, ReloadFromDisk, OpenInExternalEditor,
     ToggleTableButtons, InsertTable,
 }
