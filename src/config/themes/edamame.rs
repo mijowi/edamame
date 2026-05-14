@@ -9,7 +9,7 @@ use crate::config::theme::{Palette, Theme};
 use super::util::{blend, chrome, rgb};
 
 pub fn palette() -> Palette {
-    let bg = rgb(0x0f120b);
+    let bg = rgb(0x37342f);
     let ink = rgb(0xf0e7d7);
     Palette {
         text: ink,
@@ -19,7 +19,7 @@ pub fn palette() -> Palette {
         surface: chrome(bg, ink, 0.12),
         surface_elevated: chrome(bg, ink, 0.18),
 
-        primary: rgb(0x85db32),
+        primary: rgb(0x7acf29),
         secondary: rgb(0xd4a773),
         accent: rgb(0xdb8265),
         link: rgb(0x6ba8d4),
