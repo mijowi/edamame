@@ -243,13 +243,18 @@ mod tests {
     }
 
     #[test]
-    fn suppress_capability_warnings_round_trips() {
+    fn seen_terminal_fingerprints_round_trip() {
         let mut config = Config::default();
-        assert!(!config.editor.suppress_capability_warnings);
-        config.editor.suppress_capability_warnings = true;
+        assert!(config.editor.seen_terminal_fingerprints.is_empty());
+        config.editor.seen_terminal_fingerprints.push(
+            "WezTerm|xterm-256color||truecolor|kitty|mouse=true|kbd=true|unicode=true".into(),
+        );
         let serialized = toml::to_string(&config).expect("serialize");
         let deserialized: Config = toml::from_str(&serialized).expect("deserialize");
-        assert!(deserialized.editor.suppress_capability_warnings);
+        assert_eq!(
+            deserialized.editor.seen_terminal_fingerprints,
+            config.editor.seen_terminal_fingerprints
+        );
     }
 
     #[test]

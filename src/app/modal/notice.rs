@@ -98,7 +98,10 @@ impl Modal for NoticeModal {
         _doc_height: usize,
         _doc_width: usize,
     ) -> ModalOutcome {
-        match self.state.handle_key(&key, self.buttons.len(), self.dismissable) {
+        match self
+            .state
+            .handle_key(&key, self.buttons.len(), self.dismissable)
+        {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled | ModalResponse::ButtonPressed(_) => ModalOutcome::Close,
         }
@@ -133,18 +136,9 @@ mod tests {
 
     #[test]
     fn title_follows_kind() {
-        assert_eq!(
-            NoticeModal::new("x", ModalKind::Error).title,
-            "Error"
-        );
-        assert_eq!(
-            NoticeModal::new("x", ModalKind::Warning).title,
-            "Warning"
-        );
-        assert_eq!(
-            NoticeModal::new("x", ModalKind::Normal).title,
-            "Notice"
-        );
+        assert_eq!(NoticeModal::new("x", ModalKind::Error).title, "Error");
+        assert_eq!(NoticeModal::new("x", ModalKind::Warning).title, "Warning");
+        assert_eq!(NoticeModal::new("x", ModalKind::Normal).title, "Notice");
     }
 
     #[test]

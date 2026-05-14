@@ -354,10 +354,13 @@ impl App {
         let welcome_modal = modal::WelcomeModal::from_state(&capabilities, &config);
         let suppress_legacy_prompts = welcome_modal.is_some();
         let config_warning_modal = modal::ConfigWarningModal::from_warnings(&config_warnings);
-        let startup_notice = if suppress_legacy_prompts {
+        let capabilities_notice = if suppress_legacy_prompts {
             None
         } else {
-            modal::StartupNoticeModal::from_capabilities(&capabilities, &config)
+            modal::TerminalCapabilitiesModal::from_capabilities(
+                &capabilities,
+                &config.editor.seen_terminal_fingerprints,
+            )
         };
         let images_enabled_prompt = if suppress_legacy_prompts {
             None
@@ -394,7 +397,7 @@ impl App {
         if let Some(m) = images_enabled_prompt {
             modal_stack.push(Box::new(m));
         }
-        if let Some(m) = startup_notice {
+        if let Some(m) = capabilities_notice {
             modal_stack.push(Box::new(m));
         }
         if let Some(m) = welcome_modal {
@@ -610,4 +613,3 @@ impl App {
         }
     }
 }
-

@@ -21,15 +21,18 @@ pub struct EditorConfig {
     /// stays at the same horizontal column on the screen.  When false, movement
     /// is by **logical** buffer lines (one `\n`-terminated line per step).
     pub visual_line_nav: bool,
-    /// When true, the startup notice that lists unsupported terminal features
-    /// is skipped.  Set by the `[Don't show this again]` button on the notice
-    /// modal.
-    pub suppress_capability_warnings: bool,
+    /// Fingerprints of terminals (TERM_PROGRAM + TERM + capability tuple)
+    /// the user has already seen the capabilities notice for.  The notice
+    /// fires once per new fingerprint and is silenced on dismiss; subsequent
+    /// launches in the same terminal stay quiet, while launches in a
+    /// previously-unseen terminal re-fire the notice.  Built by
+    /// [`crate::terminal::Capabilities::fingerprint`].
+    pub seen_terminal_fingerprints: Vec<String>,
     /// When true, the first-run welcome modal is shown at startup.  Defaults
     /// to `true` so a fresh install sees the welcome on first launch; the
     /// modal's "Show again next time" toggle (default off) writes `false`
     /// here when the user saves.  Also gates the four legacy startup prompts
-    /// (capability notice, images-enabled, remote-image, diagrams) — they
+    /// (images-enabled, remote-image, diagrams, capabilities notice) — they
     /// are suppressed while the welcome is still pending so the user is never
     /// double-prompted.
     pub show_welcome: bool,
@@ -115,7 +118,7 @@ impl Default for EditorConfig {
             line_wrap: true,
             preserve_blank_lines: true,
             visual_line_nav: true,
-            suppress_capability_warnings: false,
+            seen_terminal_fingerprints: Vec::new(),
             show_welcome: true,
             mouse_scroll_lines: 1,
             status_bar: StatusBarLayout::default(),
