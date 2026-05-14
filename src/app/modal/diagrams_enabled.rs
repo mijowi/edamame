@@ -5,6 +5,8 @@
 //! persist to config.  Mirrors [`super::ImagesEnabledPromptModal`] —
 //! the two prompts are deliberately independent so a user can opt in
 //! to images without opting in to diagrams (or vice-versa).
+//! Escape (or the `esc` close hint) is equivalent to "No": diagrams
+//! are disabled for this session without persisting a preference.
 
 use std::any::Any;
 
@@ -57,7 +59,7 @@ impl DiagramsEnabledPromptModal {
             ],
             state: ModalState::new(),
             kind: ModalKind::Warning,
-            dismissable: false,
+            dismissable: true,
         })
     }
 }

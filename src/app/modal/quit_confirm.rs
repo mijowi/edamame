@@ -1,7 +1,7 @@
-//! Three buttons: Save / Discard / Cancel.
-//! Save persists the buffer then exits; failure surfaces a sticky
-//! error transient and aborts the quit.  Discard exits without
-//! saving; Cancel / Escape dismisses.
+//! Two buttons: Save / Discard.  Save persists the buffer then exits;
+//! failure surfaces a sticky error transient and aborts the quit.
+//! Discard exits without saving.  Escape (or the `esc` close hint)
+//! dismisses without quitting.
 
 use std::any::Any;
 
@@ -34,11 +34,7 @@ impl QuitConfirmModal {
         ];
         Self {
             body,
-            buttons: vec![
-                ModalButton::new("Save"),
-                ModalButton::new("Discard"),
-                ModalButton::new("Cancel"),
-            ],
+            buttons: vec![ModalButton::new("Save"), ModalButton::new("Discard")],
             state: ModalState::new(),
             kind: ModalKind::Warning,
             dismissable: true,
@@ -127,18 +123,6 @@ mod tests {
         assert!(app.modal_stack.contains::<QuitConfirmModal>());
         // Button-label invariants are covered by the QuitConfirmModal
         // constructor; here we just assert the modal is on the stack.
-    }
-
-    #[test]
-    fn quit_confirm_cancel_dismisses_without_quit() {
-        let mut app = make_app();
-        app.open_quit_confirm();
-        // Cancel is button index 2; default focus is 0 (Save).
-        app.dispatch_modal_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), 40, 80);
-        app.dispatch_modal_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), 40, 80);
-        app.dispatch_modal_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 40, 80);
-        assert!(!app.modal_stack.contains::<QuitConfirmModal>());
-        assert!(!app.should_quit);
     }
 
     #[test]

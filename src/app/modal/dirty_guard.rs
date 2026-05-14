@@ -1,7 +1,8 @@
 //! Dirty-buffer guard shown before navigating away from an unsaved
-//! document.  Three buttons: Save / Discard / Cancel.  Carries the
-//! pending navigation target across the modal's lifetime so the App
-//! can resume the navigation once the user picks a button.
+//! document.  Two buttons: Save / Discard.  Escape (or the `esc`
+//! close hint) abandons the navigation entirely.  Carries the pending
+//! navigation target across the modal's lifetime so the App can
+//! resume it once the user picks a button.
 
 use std::any::Any;
 use std::path::PathBuf;
@@ -38,11 +39,7 @@ impl DirtyGuardModal {
         ];
         Self {
             body,
-            buttons: vec![
-                ModalButton::new("Save"),
-                ModalButton::new("Discard"),
-                ModalButton::new("Cancel"),
-            ],
+            buttons: vec![ModalButton::new("Save"), ModalButton::new("Discard")],
             state: ModalState::new(),
             pending,
             kind: ModalKind::Warning,
@@ -76,7 +73,9 @@ impl Modal for DirtyGuardModal {
             .handle_key(&key, self.buttons.len(), self.dismissable)
         {
             ModalResponse::Continue => ModalOutcome::Continue,
-            ModalResponse::Cancelled => ModalOutcome::Close,
+            ModalResponse::Cancelled => ModalOutcome::CloseAnd(Box::new(move |app| {
+                app.editor.ensure_cursor_visible(doc_height, doc_width);
+            })),
             ModalResponse::ButtonPressed(idx) => {
                 let pending = std::mem::take(&mut self.pending);
                 match idx {
@@ -89,12 +88,9 @@ impl Modal for DirtyGuardModal {
                         }
                         app.editor.ensure_cursor_visible(doc_height, doc_width);
                     })),
-                    1 => ModalOutcome::CloseAnd(Box::new(move |app| {
+                    _ => ModalOutcome::CloseAnd(Box::new(move |app| {
                         app.editor.dirty = false;
                         app.navigate_to_file(pending);
-                        app.editor.ensure_cursor_visible(doc_height, doc_width);
-                    })),
-                    _ => ModalOutcome::CloseAnd(Box::new(move |app| {
                         app.editor.ensure_cursor_visible(doc_height, doc_width);
                     })),
                 }

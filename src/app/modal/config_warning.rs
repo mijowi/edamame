@@ -71,10 +71,10 @@ impl ConfigWarningModal {
         }
         Some(Self {
             body,
-            buttons: vec![ModalButton::new("Ok")],
+            buttons: Vec::new(),
             state: ModalState::new(),
             kind: ModalKind::Warning,
-            dismissable: false,
+            dismissable: true,
         })
     }
 }
@@ -160,8 +160,7 @@ mod tests {
         assert!(joined.contains("/home/u/.config/edamame/config.toml"));
         assert!(joined.contains("Parse error"));
         assert!(joined.contains("line 3"));
-        assert_eq!(modal.buttons.len(), 1);
-        assert_eq!(modal.buttons[0].label, "Ok");
+        assert!(modal.buttons.is_empty());
     }
 
     #[test]
@@ -235,7 +234,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     #[test]
-    fn modal_dismissed_on_button_press() {
+    fn modal_dismissed_on_escape() {
         let mut app = make_app();
         let warnings = vec![ConfigWarning {
             path: PathBuf::from("config.toml"),
@@ -244,22 +243,7 @@ mod tests {
         let modal = ConfigWarningModal::from_warnings(&warnings).expect("modal built");
         app.modal_stack.push(Box::new(modal));
         assert!(app.modal_stack.contains::<ConfigWarningModal>());
-        app.dispatch_modal_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 40, 80);
-        assert!(!app.modal_stack.contains::<ConfigWarningModal>());
-    }
-
-    #[test]
-    fn escape_does_not_dismiss_gated_warning() {
-        // ConfigWarning is non-dismissable: the user must press Ok to
-        // acknowledge.  Esc must not close the modal.
-        let mut app = make_app();
-        let warnings = vec![ConfigWarning {
-            path: PathBuf::from("config.toml"),
-            kind: WarningKind::UnknownKeys(vec!["bogus".into()]),
-        }];
-        let modal = ConfigWarningModal::from_warnings(&warnings).expect("modal built");
-        app.modal_stack.push(Box::new(modal));
         app.dispatch_modal_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 40, 80);
-        assert!(app.modal_stack.contains::<ConfigWarningModal>());
+        assert!(!app.modal_stack.contains::<ConfigWarningModal>());
     }
 }
