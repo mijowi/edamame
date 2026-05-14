@@ -21,6 +21,7 @@ use crate::editor::{edit_ops, EditorState};
 use crate::input::mode_handler::default::DefaultHandler;
 use crate::input::ModeHandler;
 use crate::terminal::ColorDepth;
+use crate::ui::ModalKind;
 
 use super::flash::MessageKind;
 use super::modal::ModalOutcome;
@@ -153,7 +154,7 @@ impl App {
                 if let Some(dir) = Config::config_dir() {
                     self.spawn_open_worker(dir.display().to_string());
                 } else {
-                    self.flash("No config directory available", MessageKind::Error);
+                    self.notify("No config directory available", ModalKind::Error);
                 }
                 true
             }
@@ -162,16 +163,16 @@ impl App {
             // them in the palette get explicit feedback rather than
             // silent failure.
             Action::ExportHtml => {
-                self.flash("HTML export — see Phase 16", MessageKind::Info);
+                self.notify("HTML export — see Phase 16", ModalKind::Normal);
                 true
             }
             Action::ReloadFromDisk => {
-                self.flash("Reload from disk — see Phase 11", MessageKind::Info);
+                self.notify("Reload from disk — see Phase 11", ModalKind::Normal);
                 true
             }
             Action::OpenInExternalEditor => {
                 if self.editor.buffer.path().is_none() {
-                    self.flash("No file path for buffer", MessageKind::Error);
+                    self.notify("No file path for buffer", ModalKind::Error);
                 } else {
                     // The actual editor invocation needs the live
                     // `Terminal` handle, owned by the run loop.
@@ -197,7 +198,7 @@ impl App {
                     };
                     self.flash(format!("Table buttons {state}"), MessageKind::Info);
                 } else {
-                    self.flash("Mouse not supported on this terminal", MessageKind::Error);
+                    self.notify("Mouse not supported on this terminal", ModalKind::Error);
                 }
                 self.needs_draw = true;
                 true
@@ -205,7 +206,7 @@ impl App {
             Action::InsertTable => {
                 // Pre-flight the blank-line guard before
                 // opening the modal so a non-blank cursor surfaces an
-                // immediate sticky error.  The same guard subsumes
+                // immediate warning notice.  The same guard subsumes
                 // mid-paragraph, heading, list, code-block, and
                 // existing-table cases without classifying the block.
                 let source = self.editor.buffer.contents();
@@ -217,7 +218,7 @@ impl App {
                 if crate::editor::table_edit::cursor_line_is_blank(&source, cursor_byte) {
                     self.open_insert_table_modal();
                 } else {
-                    self.flash("Insert Table requires a blank line", MessageKind::Warning);
+                    self.notify("Insert Table requires a blank line", ModalKind::Warning);
                 }
                 self.needs_draw = true;
                 true

@@ -16,7 +16,7 @@ use ratatui::Frame;
 use super::types::{Modal, ModalOutcome, ModalRenderCtx};
 use crate::app::{App, MessageKind};
 use crate::config::{Config, KeyMap};
-use crate::ui::{KeybindsResponse, KeybindsState, KeybindsView};
+use crate::ui::{KeybindsResponse, KeybindsState, KeybindsView, ModalKind};
 
 pub struct KeybindsOverlayModal {
     state: KeybindsState,
@@ -72,23 +72,13 @@ impl Modal for KeybindsOverlayModal {
                     let path = dir.join("keybindings.toml");
                     if let Err(e) = app.keybindings.save_to(&path) {
                         tracing::warn!(error = %e, "failed to write keybindings.toml");
-                        app.flash(format!("Save failed: {e}"), MessageKind::Error);
+                        app.notify(format!("Save failed: {e}"), ModalKind::Error);
                     } else {
                         app.flash(format!("Bound {action} to {key}"), MessageKind::Success);
                     }
                 } else {
-                    app.flash("No config directory available", MessageKind::Error);
+                    app.notify("No config directory available", ModalKind::Error);
                 }
-                ModalOutcome::Continue
-            }
-            KeybindsResponse::Conflict {
-                key,
-                existing_action,
-            } => {
-                app.flash(
-                    format!("'{key}' is already bound to {existing_action}"),
-                    MessageKind::Error,
-                );
                 ModalOutcome::Continue
             }
         }

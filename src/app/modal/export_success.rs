@@ -15,7 +15,7 @@ use ratatui::text::Line;
 use ratatui::Frame;
 
 use super::types::{Modal, ModalOutcome, ModalRenderCtx};
-use crate::app::{App, MessageKind};
+use crate::app::App;
 use crate::config::Config;
 use crate::ui::{ModalButton, ModalKind, ModalResponse, ModalState, ModalView};
 
@@ -84,7 +84,7 @@ impl Modal for ExportSuccessModal {
                 if let Some(dir) = Config::config_dir() {
                     app.spawn_open_worker(dir.display().to_string());
                 } else {
-                    app.flash("No config directory available", MessageKind::Error);
+                    app.notify("No config directory available", ModalKind::Error);
                 }
             })),
             ModalResponse::ButtonPressed(_) => ModalOutcome::Continue,

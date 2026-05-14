@@ -7,9 +7,8 @@
 //! mutated and the overrides table is updated; the caller is then
 //! responsible for persisting via [`KeyBindingOverrides::save_to`].
 //!
-//! Conflict detection delegates to [`KeyMap::rebind`]: the caller
-//! pattern-matches on [`KeyMapError::ConflictingBinding`] to flash a
-//! sticky `Error`.  The overlay also surfaces the same error inline
+//! Conflict detection delegates to [`KeyMap::rebind`].  The overlay
+//! surfaces the resulting error inline via [`KeybindsState::last_error`]
 //! so the user sees immediately why the rebind didn't take.
 
 mod categories;
@@ -49,12 +48,6 @@ pub enum KeybindsResponse {
     Rebound {
         action: Action,
         key: String,
-    },
-    /// A conflict was detected; the rebind was rejected.  Caller is
-    /// expected to flash a sticky `Error` describing the conflict.
-    Conflict {
-        key: String,
-        existing_action: String,
     },
 }
 
@@ -180,10 +173,7 @@ impl KeybindsState {
                         }) => {
                             self.last_error =
                                 Some(format!("'{key}' is already bound to {existing_action}"));
-                            KeybindsResponse::Conflict {
-                                key,
-                                existing_action,
-                            }
+                            KeybindsResponse::Continue
                         }
                         Err(e) => {
                             self.last_error = Some(e.to_string());
@@ -556,8 +546,11 @@ mod tests {
             state.handle_key(&key(KeyCode::Char(c)), &mut km, &mut overrides);
         }
         let resp = state.handle_key(&key(KeyCode::Enter), &mut km, &mut overrides);
-        assert!(matches!(resp, KeybindsResponse::Conflict { .. }));
-        assert!(state.last_error.is_some());
+        assert!(matches!(resp, KeybindsResponse::Continue));
+        assert!(
+            state.last_error.is_some(),
+            "conflict must surface inline via last_error"
+        );
         assert_eq!(km.first_key_for(&Action::Save).as_deref(), Some("Ctrl-S"));
     }
 

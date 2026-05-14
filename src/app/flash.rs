@@ -1,4 +1,4 @@
-//! Phase 9 transient hint-line message system.  Owns [`MessageKind`],
+//! Transient hint-line message system.  Owns [`MessageKind`],
 //! the [`TransientMessage`] payload, and the App-level hooks for
 //! emitting / expiring / dismissing flash notifications.
 //!
@@ -8,20 +8,20 @@ use std::time::{Duration, Instant};
 
 use crate::config::KeyBindingOverrides;
 use crate::config::KeyMap;
-use crate::ui::{hint_line_for, HintContent};
+use crate::ui::{hint_line_for, HintContent, ModalKind};
 
+use super::modal::{Modal, NoticeModal};
 use super::App;
 
-/// Severity of a [`TransientMessage`].  Drives style selection and
-/// decides whether the message auto-expires.  `Error` is sticky:
-/// the user must dismiss with Escape or a subsequent `Error` replaces
-/// it.  Non-error kinds expire after `config.editor.transient_ms`.
+/// Severity of a [`TransientMessage`].  Drives style selection.
+/// All transient kinds auto-expire after `config.editor.transient_ms`;
+/// situations that need the user to actually acknowledge a message
+/// (errors, rejections, stubs) use [`App::notify`] to push a sticky
+/// [`NoticeModal`] instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
     Info,
     Success,
-    Warning,
-    Error,
 }
 
 /// A single transient status message shown in the hint line.
@@ -35,22 +35,38 @@ pub(super) struct TransientMessage {
 }
 
 impl App {
-    /// Phase 9 — emit a transient message on the hint line.  Non-error
-    /// kinds auto-expire after `config.editor.transient_ms`; `Error`
-    /// kinds stick until Escape or until a subsequent `Error` replaces
-    /// them.  Called from every phase that wants a one-shot
-    /// notification — save/copy/cut outcomes, link-open failures,
-    /// `Config::save` successes, etc.
+    /// Emit a transient message on the hint line.  Auto-expires after
+    /// `config.editor.transient_ms`.  Use for passive confirmations
+    /// (saved, copied, file reloaded, etc.) — anything the user can
+    /// safely miss.  For errors and rejections that need
+    /// acknowledgement, use [`Self::notify`] instead.
     pub fn flash(&mut self, text: impl Into<String>, kind: MessageKind) {
-        let mut text = text.into();
-        let until = match kind {
-            MessageKind::Error => {
-                text.push_str(" — Esc to dismiss");
-                None
-            }
-            _ => Some(Instant::now() + Duration::from_millis(self.config.editor.transient_ms)),
-        };
+        let text = text.into();
+        let until = Some(Instant::now() + Duration::from_millis(self.config.editor.transient_ms));
         self.transient = Some(TransientMessage { text, kind, until });
+        self.needs_draw = true;
+    }
+
+    /// Surface a sticky notification as a [`NoticeModal`].  Used for
+    /// errors, rejections, and stub messages — anything the user needs
+    /// to actually see and acknowledge rather than risk missing on the
+    /// hint line.  Pushes onto [`Self::modal_stack`] so the notice
+    /// stacks on top of any modal that triggered it; `Esc` dismisses.
+    pub fn notify(&mut self, text: impl Into<String>, kind: ModalKind) {
+        let text = text.into();
+        // Coalesce: if the topmost modal is already a NoticeModal with
+        // identical text+kind, skip the push so a retry loop (e.g.
+        // repeated save failures) doesn't pile duplicates on the stack
+        // for the user to dismiss one by one.
+        if let Some(top) = self.modal_stack.top_mut() {
+            if let Some(existing) = top.as_any().downcast_ref::<NoticeModal>() {
+                if Modal::kind(existing) == kind && existing.text() == text {
+                    return;
+                }
+            }
+        }
+        self.modal_stack
+            .push(Box::new(NoticeModal::new(text, kind)));
         self.needs_draw = true;
     }
 
@@ -92,8 +108,6 @@ impl App {
             let style = match msg.kind {
                 MessageKind::Info => self.theme.transient_info,
                 MessageKind::Success => self.theme.transient_success,
-                MessageKind::Warning => self.theme.transient_warning,
-                MessageKind::Error => self.theme.transient_error,
             };
             return HintContent::Transient {
                 text: msg.text.clone(),
@@ -119,21 +133,6 @@ impl App {
         HintContent::Chords(hint_line_for(&self.editor, keymap))
     }
 
-    /// Clear a sticky `Error` transient on Escape, returning true to
-    /// signal that the Escape was consumed and should not fall through
-    /// to `Action::ExitToPreview`.  Non-sticky transients don't absorb
-    /// Escape.
-    pub(super) fn dismiss_sticky_transient(&mut self) -> bool {
-        let Some(msg) = self.transient.as_ref() else {
-            return false;
-        };
-        if matches!(msg.kind, MessageKind::Error) {
-            self.transient = None;
-            return true;
-        }
-        false
-    }
-
     /// Inspect `action` after dispatch and emit the matching flash
     /// notification.  Centralising this here means every code path
     /// that calls `Action::Save` / `Copy` / `Cut` gets consistent
@@ -149,7 +148,7 @@ impl App {
                 if dirty_before_save && !self.editor.dirty {
                     self.flash("Saved", MessageKind::Success);
                 } else if dirty_before_save && self.editor.dirty {
-                    self.flash("Save failed", MessageKind::Error);
+                    self.notify("Save failed", ModalKind::Error);
                 }
             }
             Action::Copy | Action::Cut => {
@@ -167,11 +166,11 @@ impl App {
     pub(super) fn save_config_with_flash(&mut self, err_context: &'static str) {
         match self.config.save() {
             Ok(()) => {
-                self.flash("Configuration updated", MessageKind::Warning);
+                self.flash("Configuration updated", MessageKind::Success);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "{}", err_context);
-                self.flash(format!("Config save failed: {e}"), MessageKind::Error);
+                self.notify(format!("Config save failed: {e}"), ModalKind::Error);
             }
         }
     }
@@ -199,15 +198,7 @@ mod tests {
         let msg = app.transient.as_ref().unwrap();
         assert_eq!(msg.text, "Copied");
         assert!(matches!(msg.kind, MessageKind::Info));
-        assert!(msg.until.is_some(), "non-error messages auto-expire");
-    }
-
-    #[test]
-    fn flash_error_is_sticky() {
-        let mut app = make_app();
-        app.flash("Save failed", MessageKind::Error);
-        let msg = app.transient.as_ref().unwrap();
-        assert!(msg.until.is_none(), "errors have no expiry deadline");
+        assert!(msg.until.is_some(), "all flashes auto-expire");
     }
 
     #[test]
@@ -223,29 +214,38 @@ mod tests {
     }
 
     #[test]
-    fn expire_leaves_stick_errors() {
+    fn notify_pushes_notice_modal() {
+        use crate::app::modal::NoticeModal;
         let mut app = make_app();
-        app.flash("Boom", MessageKind::Error);
-        assert!(!app.expire_transient_if_due());
-        assert!(app.transient.is_some());
+        app.notify("Boom", ModalKind::Error);
+        assert!(app.modal_stack.contains::<NoticeModal>());
     }
 
     #[test]
-    fn dismiss_sticky_transient_on_escape() {
+    fn notify_coalesces_duplicate_top_notice() {
         let mut app = make_app();
-        app.flash("Boom", MessageKind::Error);
-        assert!(app.dismiss_sticky_transient());
-        assert!(app.transient.is_none());
+        let base = app.modal_stack.len();
+        app.notify("Save failed", ModalKind::Error);
+        app.notify("Save failed", ModalKind::Error);
+        app.notify("Save failed", ModalKind::Error);
+        assert_eq!(
+            app.modal_stack.len() - base,
+            1,
+            "identical consecutive notices must collapse to one modal"
+        );
     }
 
     #[test]
-    fn dismiss_sticky_ignores_non_error() {
+    fn notify_does_not_coalesce_distinct_text_or_kind() {
         let mut app = make_app();
-        app.flash("Saved", MessageKind::Success);
-        assert!(!app.dismiss_sticky_transient());
-        assert!(
-            app.transient.is_some(),
-            "non-errors must not clear on escape"
+        let base = app.modal_stack.len();
+        app.notify("Save failed", ModalKind::Error);
+        app.notify("Reload failed", ModalKind::Error);
+        app.notify("Save failed", ModalKind::Warning);
+        assert_eq!(
+            app.modal_stack.len() - base,
+            3,
+            "different text or kind must each push a fresh modal"
         );
     }
 
@@ -262,13 +262,20 @@ mod tests {
     }
 
     #[test]
-    fn flash_for_action_save_failure_emits_error() {
+    fn flash_for_action_save_failure_pushes_error_modal() {
+        use crate::app::modal::NoticeModal;
         let mut app = make_app();
         // Failure: dirty was true and remains true after "save".
         app.editor.dirty = true;
         app.flash_for_action(&Action::Save, /*dirty_before=*/ true);
-        let msg = app.transient.as_ref().expect("flash recorded");
-        assert!(matches!(msg.kind, MessageKind::Error));
+        assert!(
+            app.modal_stack.contains::<NoticeModal>(),
+            "save failure must surface a sticky NoticeModal"
+        );
+        assert!(
+            app.transient.is_none(),
+            "save failure no longer leaves a transient flash"
+        );
     }
 
     #[test]
@@ -314,12 +321,14 @@ mod tests {
     }
 
     #[test]
-    fn save_config_with_flash_emits_transient() {
-        // `Config::save` *might* fail when no config dir is available in
-        // the test environment.  Either branch produces a flash; we just
-        // assert *some* transient is set so the user gets feedback.
+    fn save_config_with_flash_emits_feedback() {
+        // `Config::save` *might* fail when no config dir is available
+        // in the test environment.  The success branch records a
+        // transient; the failure branch pushes a NoticeModal — we
+        // accept either so the test is robust to the environment.
+        use crate::app::modal::NoticeModal;
         let mut app = make_app();
         app.save_config_with_flash("test");
-        assert!(app.transient.is_some());
+        assert!(app.transient.is_some() || app.modal_stack.contains::<NoticeModal>());
     }
 }

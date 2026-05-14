@@ -15,7 +15,7 @@ use ratatui::Frame;
 use super::types::{Modal, ModalOutcome, ModalRenderCtx};
 use crate::app::{App, MessageKind};
 use crate::editor::edit_ops;
-use crate::ui::{InsertTableResponse, InsertTableState, InsertTableView};
+use crate::ui::{InsertTableResponse, InsertTableState, InsertTableView, ModalKind};
 
 pub struct InsertTableModal {
     state: InsertTableState,
@@ -63,7 +63,7 @@ impl Modal for InsertTableModal {
                     .char_to_byte(app.editor.cursor.offset);
                 if !crate::editor::table_edit::cursor_line_is_blank(&source, cursor_byte) {
                     return ModalOutcome::CloseAnd(Box::new(|app| {
-                        app.flash("Insert Table requires a blank line", MessageKind::Warning);
+                        app.notify("Insert Table requires a blank line", ModalKind::Warning);
                     }));
                 }
                 edit_ops::insert_table_at_cursor(
@@ -98,6 +98,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
+    use crate::app::modal::NoticeModal;
     use crate::app::test_utils::app_with_buffer;
     use crate::config::Action;
     use crate::editor::Mode;
@@ -168,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn insert_table_in_mid_paragraph_flashes_warning_and_leaves_buffer_untouched() {
+    fn insert_table_in_mid_paragraph_warns_and_leaves_buffer_untouched() {
         let src = "this is a paragraph\nwith two lines\n";
         // Cursor in the middle of the first line.
         let mut app = app_with_buffer(src, 5);
@@ -180,47 +181,37 @@ mod tests {
             "modal should NOT open on a non-blank line"
         );
         assert_eq!(app.editor.buffer.contents(), before, "buffer unchanged");
-        let msg = app.transient.as_ref().expect("warning flash present");
         assert!(
-            matches!(msg.kind, MessageKind::Warning),
-            "blank-line guard must use the auto-expiring Warning kind"
+            app.modal_stack.contains::<NoticeModal>(),
+            "blank-line guard must push a NoticeModal"
         );
-        assert!(msg.until.is_some(), "warning must auto-expire");
-        assert_eq!(msg.text, "Insert Table requires a blank line");
     }
 
     #[test]
-    fn insert_table_on_heading_flashes_warning() {
+    fn insert_table_on_heading_warns() {
         let src = "# Heading\n";
         let mut app = app_with_buffer(src, 4);
         app.handle_app_action(&Action::InsertTable, 40, 80);
         assert!(!app.modal_stack.contains::<InsertTableModal>());
-        let msg = app.transient.as_ref().expect("warning flash");
-        assert!(matches!(msg.kind, MessageKind::Warning));
+        assert!(app.modal_stack.contains::<NoticeModal>());
     }
 
     #[test]
-    fn insert_table_on_list_item_flashes_warning() {
+    fn insert_table_on_list_item_warns() {
         let src = "- one\n- two\n";
         let mut app = app_with_buffer(src, 2);
         app.handle_app_action(&Action::InsertTable, 40, 80);
         assert!(!app.modal_stack.contains::<InsertTableModal>());
-        assert!(matches!(
-            app.transient.as_ref().map(|t| t.kind),
-            Some(MessageKind::Warning)
-        ));
+        assert!(app.modal_stack.contains::<NoticeModal>());
     }
 
     #[test]
-    fn insert_table_on_existing_table_row_flashes_warning() {
+    fn insert_table_on_existing_table_row_warns() {
         let src = "| a | b |\n|---|---|\n| 1 | 2 |\n";
         let mut app = app_with_buffer(src, 4); // mid-header
         app.handle_app_action(&Action::InsertTable, 40, 80);
         assert!(!app.modal_stack.contains::<InsertTableModal>());
-        assert!(matches!(
-            app.transient.as_ref().map(|t| t.kind),
-            Some(MessageKind::Warning)
-        ));
+        assert!(app.modal_stack.contains::<NoticeModal>());
     }
 
     #[test]
@@ -235,11 +226,13 @@ mod tests {
             !app.modal_stack.contains::<InsertTableModal>(),
             "modal should NOT open at EOF on a non-blank final line"
         );
-        let msg = app.transient.as_ref().expect("warning flash present");
-        assert!(matches!(msg.kind, MessageKind::Warning));
-        // Clear the error so the second dispatch's success flash is
-        // observable.
-        app.transient = None;
+        assert!(
+            app.modal_stack.contains::<NoticeModal>(),
+            "blank-line guard must push a NoticeModal"
+        );
+        // Dismiss the notice so the second dispatch can open the
+        // InsertTableModal cleanly.
+        app.dispatch_modal_key(key(KeyCode::Esc), 40, 80);
 
         // Add a newline at the cursor: the cursor was on the last byte
         // of a non-blank line; `Newline` inserts `\n`, moving the
