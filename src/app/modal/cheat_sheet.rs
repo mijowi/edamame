@@ -1,6 +1,7 @@
-//! Markdown syntax cheat-sheet popover.  Static body, single button,
-//! dismiss-only — the simplest of the modal implementations and the
-//! reference example for trait-based migration.
+//! Markdown syntax cheat-sheet popover.  Static body, no footer
+//! buttons — dismissed via Escape or the `esc` close hint.  The
+//! simplest of the modal implementations and the reference example
+//! for trait-based migration.
 
 use std::any::Any;
 
@@ -26,7 +27,7 @@ impl CheatSheetModal {
     pub fn new(theme: &Theme) -> Self {
         Self {
             body: markdown_cheat_sheet_body(theme),
-            buttons: vec![ModalButton::new("OK")],
+            buttons: Vec::new(),
             state: ModalState::new(),
             kind: ModalKind::Normal,
             dismissable: true,

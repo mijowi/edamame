@@ -2,7 +2,9 @@
 //! is `Ask` and the open document references at least one
 //! `http(s)://` image.  Four buttons (Yes / No / Always / Never) —
 //! the first two affect only the current session; the latter two
-//! persist to config.
+//! persist to config.  Escape (or the `esc` close hint) is
+//! equivalent to "No": images stay un-fetched for this session, no
+//! preference is written.
 
 use std::any::Any;
 
@@ -63,7 +65,7 @@ impl RemoteImagePromptModal {
             ],
             state: ModalState::new(),
             kind: ModalKind::Warning,
-            dismissable: false,
+            dismissable: true,
         })
     }
 }

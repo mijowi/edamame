@@ -1,6 +1,7 @@
 //! Startup capability-notice modal.  Shown when the terminal lacks
 //! features the editor would otherwise use (mouse, image protocols,
-//! truecolor, etc.).  Two buttons: "Ok" and "Don't show this again".
+//! truecolor, etc.).  Single button: "Don't show this again".
+//! Escape (or the `esc` close hint) dismisses for this session.
 
 use std::any::Any;
 
@@ -44,10 +45,7 @@ impl StartupNoticeModal {
         ));
         Some(Self {
             body,
-            buttons: vec![
-                ModalButton::new("Ok"),
-                ModalButton::new("Don't show this again"),
-            ],
+            buttons: vec![ModalButton::new("Don't show this again")],
             state: ModalState::new(),
             kind: ModalKind::Normal,
             dismissable: true,
@@ -81,12 +79,11 @@ impl Modal for StartupNoticeModal {
         {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled => ModalOutcome::Close,
-            // Button index 1 is "Don't show this again".
-            ModalResponse::ButtonPressed(1) => ModalOutcome::CloseAnd(Box::new(|app| {
+            // The sole button is "Don't show this again".
+            ModalResponse::ButtonPressed(_) => ModalOutcome::CloseAnd(Box::new(|app| {
                 app.config.editor.suppress_capability_warnings = true;
                 app.save_config_with_flash("failed to persist capability-warning preference");
             })),
-            ModalResponse::ButtonPressed(_) => ModalOutcome::Close,
         }
     }
 

@@ -2,6 +2,8 @@
 //! is `Ask` and the open document contains at least one image.
 //! Four buttons (Yes / No / Always / Never) — the first two affect
 //! only the current session; the latter two persist to config.
+//! Escape (or the `esc` close hint) is equivalent to "No": images
+//! are disabled for this session without persisting a preference.
 
 use std::any::Any;
 
@@ -60,7 +62,7 @@ impl ImagesEnabledPromptModal {
             ],
             state: ModalState::new(),
             kind: ModalKind::Warning,
-            dismissable: false,
+            dismissable: true,
         })
     }
 }

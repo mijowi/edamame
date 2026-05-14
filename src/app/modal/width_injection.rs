@@ -4,7 +4,8 @@
 //!   0 → `Continue` — write the comment for this table; ask again next time.
 //!   1 → `Continue and don't ask again` — flip
 //!       `config.table.warn_on_width_injection` to false and persist it.
-//!   2 → `Cancel` — discard the live width preview without writing.
+//! Escape (or the `esc` close hint) discards the live width preview
+//! without writing.
 //!
 //! The pending table-byte-start is stored in
 //! [`crate::editor::EditorState::pending_column_widths_commit`] (set by
@@ -44,7 +45,6 @@ impl WidthInjectionWarning {
             buttons: vec![
                 ModalButton::new("Continue"),
                 ModalButton::new("Continue and don't ask again"),
-                ModalButton::new("Cancel"),
             ],
             state: ModalState::new(),
             kind: ModalKind::Warning,
@@ -90,13 +90,10 @@ impl Modal for WidthInjectionWarning {
             ModalResponse::ButtonPressed(0) => ModalOutcome::CloseAnd(Box::new(|app| {
                 app.editor.commit_pending_column_widths();
             })),
-            ModalResponse::ButtonPressed(1) => ModalOutcome::CloseAnd(Box::new(|app| {
+            ModalResponse::ButtonPressed(_) => ModalOutcome::CloseAnd(Box::new(|app| {
                 app.config.table.warn_on_width_injection = false;
                 app.save_config_with_flash("failed to persist table.warn_on_width_injection");
                 app.editor.commit_pending_column_widths();
-            })),
-            ModalResponse::ButtonPressed(_) => ModalOutcome::CloseAnd(Box::new(|app| {
-                app.editor.cancel_pending_column_widths();
             })),
         }
     }
