@@ -11,7 +11,7 @@ use ratatui::text::Line;
 use ratatui::Frame;
 
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
-use crate::app::{App, MessageKind};
+use crate::app::App;
 use crate::ui::{ModalButton, ModalResponse, ModalState, ModalView};
 
 pub struct QuitConfirmModal {
@@ -73,7 +73,7 @@ impl Modal for QuitConfirmModal {
                     app.editor.dirty = false;
                     app.should_quit = true;
                 } else {
-                    app.flash("Save failed — quit aborted", MessageKind::Error);
+                    app.notify("Save failed — quit aborted", ModalKind::Error);
                 }
             })),
             ModalResponse::ButtonPressed(1) => ModalOutcome::CloseAnd(Box::new(|app| {

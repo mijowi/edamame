@@ -23,6 +23,7 @@ use ratatui::Terminal;
 use crate::app::modal;
 use crate::config::{Config, KeyMap, Theme};
 use crate::terminal::ColorDepth;
+use crate::ui::ModalKind;
 
 use super::flash::MessageKind;
 use super::{App, AppEvent};
@@ -64,7 +65,7 @@ impl App {
         rx: &mpsc::Receiver<AppEvent>,
     ) {
         let Some(path) = Config::config_path() else {
-            self.flash("No config directory available", MessageKind::Error);
+            self.notify("No config directory available", ModalKind::Error);
             return;
         };
         // Make sure the file exists before we hand it to an editor
@@ -75,7 +76,7 @@ impl App {
         if !path.exists() {
             if let Err(e) = self.config.save() {
                 tracing::warn!(error = %e, "failed to seed config.toml before editor launch");
-                self.flash(format!("Config save failed: {e}"), MessageKind::Error);
+                self.notify(format!("Config save failed: {e}"), ModalKind::Error);
                 return;
             }
         }
@@ -126,13 +127,16 @@ impl App {
 
         match outcome {
             ExternalEditorOutcome::Exited(Ok(s)) if s.success() => {
-                self.flash("Configuration updated", MessageKind::Warning);
+                self.flash("Configuration updated", MessageKind::Success);
             }
             ExternalEditorOutcome::Exited(Ok(s)) => {
-                self.flash(format!("Editor exited {s}"), MessageKind::Warning);
+                // Non-zero exit is often deliberate (`:cq` in Vim, signal,
+                // editor abort) — surface it as a passing hint rather than
+                // a blocking modal.
+                self.flash(format!("Editor exited {s}"), MessageKind::Info);
             }
             ExternalEditorOutcome::Exited(Err(e)) => {
-                self.flash(format!("Editor failed: {e}"), MessageKind::Error);
+                self.notify(format!("Editor failed: {e}"), ModalKind::Error);
             }
             // Suspend failure / OS-handler fallback already flashed
             // their own status — no extra message here.
@@ -153,7 +157,7 @@ impl App {
         rx: &mpsc::Receiver<AppEvent>,
     ) {
         let Some(path) = self.editor.buffer.path().map(|p| p.to_path_buf()) else {
-            self.flash("No file path for buffer", MessageKind::Error);
+            self.notify("No file path for buffer", ModalKind::Error);
             return;
         };
 
@@ -161,7 +165,7 @@ impl App {
         if self.editor.dirty {
             if let Err(e) = self.editor.buffer.save_file() {
                 tracing::warn!(error = %e, "failed to save buffer before editor launch");
-                self.flash(format!("Save failed: {e}"), MessageKind::Error);
+                self.notify(format!("Save failed: {e}"), ModalKind::Error);
                 return;
             }
             self.editor.dirty = false;
@@ -179,7 +183,7 @@ impl App {
         if matches!(outcome, ExternalEditorOutcome::Exited(_)) {
             if let Err(e) = self.load_file_into_editor(path) {
                 tracing::warn!(error = %e, "failed to reload buffer after editor exit");
-                self.flash(format!("Reload failed: {e}"), MessageKind::Error);
+                self.notify(format!("Reload failed: {e}"), ModalKind::Error);
                 return;
             }
         }
@@ -189,10 +193,10 @@ impl App {
                 self.flash("File reloaded", MessageKind::Success);
             }
             ExternalEditorOutcome::Exited(Ok(s)) => {
-                self.flash(format!("Editor exited {s}"), MessageKind::Warning);
+                self.flash(format!("Editor exited {s}"), MessageKind::Info);
             }
             ExternalEditorOutcome::Exited(Err(e)) => {
-                self.flash(format!("Editor failed: {e}"), MessageKind::Error);
+                self.notify(format!("Editor failed: {e}"), ModalKind::Error);
             }
             ExternalEditorOutcome::SuspendFailed | ExternalEditorOutcome::OsHandler => {}
         }
@@ -210,9 +214,9 @@ impl App {
         rx: &mpsc::Receiver<AppEvent>,
     ) {
         if !path.exists() {
-            self.flash(
+            self.notify(
                 format!("Theme file no longer exists: {}", path.display()),
-                MessageKind::Error,
+                ModalKind::Error,
             );
             return;
         }
@@ -225,10 +229,10 @@ impl App {
             }
             ExternalEditorOutcome::Exited(Ok(s)) => {
                 self.apply_active_theme();
-                self.flash(format!("Editor exited {s}"), MessageKind::Warning);
+                self.flash(format!("Editor exited {s}"), MessageKind::Info);
             }
             ExternalEditorOutcome::Exited(Err(e)) => {
-                self.flash(format!("Editor failed: {e}"), MessageKind::Error);
+                self.notify(format!("Editor failed: {e}"), ModalKind::Error);
             }
             ExternalEditorOutcome::SuspendFailed | ExternalEditorOutcome::OsHandler => {}
         }
@@ -291,7 +295,7 @@ impl App {
         // bail out and tell the user.
         if let Err(e) = crate::terminal::restore() {
             tracing::warn!(error = %e, "failed to suspend terminal for editor");
-            self.flash(format!("Editor failed: {e}"), MessageKind::Error);
+            self.notify(format!("Editor failed: {e}"), ModalKind::Error);
             if let Some(p) = self.read_paused.as_ref() {
                 p.store(false, Ordering::Release);
             }
@@ -309,7 +313,7 @@ impl App {
             tracing::error!(error = %e, "failed to re-enter TUI after editor");
             // We can still draw something, but the terminal is in
             // a degraded state.  Surface it loudly.
-            self.flash(format!("Terminal restore failed: {e}"), MessageKind::Error);
+            self.notify(format!("Terminal restore failed: {e}"), ModalKind::Error);
         }
         // Some terminals emit acknowledgements for the re-enter
         // sequences (kitty keyboard, mouse mode).  Pause stays on

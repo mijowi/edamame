@@ -65,6 +65,10 @@ impl Modal for WelcomeModal {
         }
     }
 
+    fn handle_wheel(&mut self, delta: i32) {
+        self.state.handle_wheel(delta);
+    }
+
     fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
         match self.state.handle_click(col, row) {
             WelcomeResponse::Continue => ModalOutcome::Continue,

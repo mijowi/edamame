@@ -36,10 +36,9 @@ pub enum ModalKind {
     #[default]
     Normal,
     Warning,
-    /// Error variant — reserved for future error modals (e.g.
-    /// unrecoverable I/O failures).  Currently unused; the field
-    /// exists so themes and the title-style switch are exhaustive.
-    #[allow(dead_code)]
+    /// Error variant — used by [`NoticeModal`] for sticky error
+    /// notifications that replaced the old `MessageKind::Error`
+    /// hint-line flashes (save / reload / link-open failures, etc.).
     Error,
 }
 

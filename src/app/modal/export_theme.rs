@@ -16,10 +16,10 @@ use ratatui::Frame;
 
 use super::types::{Modal, ModalOutcome, ModalRenderCtx};
 use super::ExportSuccessModal;
-use crate::app::{App, MessageKind};
+use crate::app::App;
 use crate::config::theme::list_theme_names;
 use crate::config::{Config, Theme, ThemeFile};
-use crate::ui::{ExportThemeResponse, ExportThemeState, ExportThemeView};
+use crate::ui::{ExportThemeResponse, ExportThemeState, ExportThemeView, ModalKind};
 
 pub struct ExportThemeModal {
     state: ExportThemeState,
@@ -148,9 +148,9 @@ fn perform_export(app: &mut App, source: String, new_name: String) {
     let theme_file = resolve_source_theme(&source);
 
     let Some(config_dir) = Config::config_dir() else {
-        app.flash(
+        app.notify(
             "No config directory available; cannot export theme",
-            MessageKind::Error,
+            ModalKind::Error,
         );
         return;
     };
@@ -158,16 +158,16 @@ fn perform_export(app: &mut App, source: String, new_name: String) {
     let path = match write_exported_theme(&themes_dir, &new_name, &theme_file) {
         Ok(p) => p,
         Err(e) => {
-            app.flash(e.to_string(), MessageKind::Error);
+            app.notify(e.to_string(), ModalKind::Error);
             return;
         }
     };
 
     app.config.theme = new_name.clone();
     if let Err(e) = app.config.save() {
-        app.flash(
+        app.notify(
             format!("Theme exported but config save failed: {e}"),
-            MessageKind::Warning,
+            ModalKind::Warning,
         );
     }
     app.apply_active_theme();

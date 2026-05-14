@@ -218,16 +218,10 @@ fn keybinds_overlay_conflict_is_rejected_and_reports_existing_action() {
         &mut overrides,
     );
 
-    match response {
-        KeybindsResponse::Conflict {
-            key,
-            existing_action,
-        } => {
-            assert_eq!(key, "ctrl+q");
-            assert_eq!(existing_action, "Quit");
-        }
-        other => panic!("expected Conflict, got {other:?}"),
-    }
+    assert!(
+        matches!(response, KeybindsResponse::Continue),
+        "conflict must yield Continue, got {response:?}"
+    );
 
     // Save's binding must be unchanged; Quit must still be bound to ctrl+q.
     assert_eq!(

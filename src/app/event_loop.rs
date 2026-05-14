@@ -35,10 +35,9 @@ use crate::editor::{edit_ops, mouse_ops};
 use crate::input::mode_handler::default::DefaultHandler;
 use crate::terminal::PointerShape;
 use crate::ui::editor_view::layout_doc_with_scrollbar;
-use crate::ui::{position_for_click, position_for_drag, thumb_range, EditorView};
+use crate::ui::{position_for_click, position_for_drag, thumb_range, EditorView, ModalKind};
 
 use super::actions::{modal_wheel_delta, HandleEvent};
-use super::flash::MessageKind;
 use super::frame_timer::{MIN_FRAME_INTERVAL, RESIZE_QUIESCE};
 use super::modal::ModalRenderCtx;
 use super::{App, AppEvent};
@@ -391,7 +390,7 @@ impl App {
             Ok(AppEvent::LinkOpenResult(result)) => {
                 if let Err(msg) = result {
                     tracing::warn!(target: "link", error = %msg, "link open failed");
-                    self.flash(format!("Link open failed: {msg}"), MessageKind::Error);
+                    self.notify(format!("Link open failed: {msg}"), ModalKind::Error);
                 }
                 None
             }
@@ -754,14 +753,6 @@ impl App {
         let Some(action) = handler.handle_event(event, &self.editor) else {
             return;
         };
-
-        // Phase 9: if a sticky error is showing, Escape dismisses it
-        // and swallows the key press so it doesn't double as
-        // ExitToPreview.  Non-sticky transients let Escape fall through.
-        if matches!(action, Action::ExitToPreview) && self.dismiss_sticky_transient() {
-            self.needs_draw = true;
-            return;
-        }
 
         // Phase 8 — App-level actions intercepted BEFORE the generic
         // `edit_ops::apply` dispatch.  Link navigation mutates App

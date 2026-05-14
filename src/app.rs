@@ -29,7 +29,7 @@ use crate::editor::link::LinkTarget;
 use crate::editor::{mouse_ops, EditorState};
 use crate::input::MouseDispatcher;
 use crate::terminal::{Capabilities, ColorDepth, PointerShape};
-use crate::ui::{EditorViewState, HintChord};
+use crate::ui::{EditorViewState, HintChord, ModalKind};
 
 pub use flash::MessageKind;
 
@@ -506,7 +506,7 @@ impl App {
                     // result in a navigation.
                     if let Err(msg) = result {
                         tracing::warn!(target: "link", error = %msg, "link open failed");
-                        self.flash(format!("Link open failed: {msg}"), MessageKind::Error);
+                        self.notify(format!("Link open failed: {msg}"), ModalKind::Error);
                         self.needs_draw = true;
                     }
                 }
