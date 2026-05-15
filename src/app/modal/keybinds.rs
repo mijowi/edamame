@@ -99,19 +99,14 @@ impl Modal for KeybindsOverlayModal {
 
 #[cfg(test)]
 mod tests {
-    //! Phase 10 review collapsed the read-only `ShowCheatSheet` popover
-    //! into the editable `OpenKeybinds` overlay.  Both actions must
-    //! produce the same overlay state so users with custom keybinds for
-    //! the legacy action still get the unified flow.
-
     use super::*;
     use crate::app::test_utils::make_app;
     use crate::config::Action;
 
     #[test]
-    fn show_cheat_sheet_action_opens_combined_keybinds_overlay() {
+    fn open_keybinds_action_opens_combined_keybinds_overlay() {
         let mut app = make_app();
-        let handled = app.handle_app_action(&Action::ShowCheatSheet, 40, 80);
+        let handled = app.handle_app_action(&Action::OpenKeybinds, 40, 80);
         assert!(handled);
         assert!(app.modal_stack.contains::<KeybindsOverlayModal>());
     }

@@ -109,12 +109,6 @@ pub enum Action {
     /// Mirror of [`Action::NavigateBack`] operating on the forward
     /// stack.
     NavigateForward,
-    /// Open the cheat-sheet popover listing every keybinding grouped
-    /// by category.  Intentionally unbound by default — the overlay
-    /// is reached only via the command palette (Phase 10) so it
-    /// doesn't consume a dedicated key that would collide with
-    /// typing inside a cell / paragraph / list.
-    ShowCheatSheet, // Configurable!
     /// Open the fuzzy-searchable command palette (Ctrl-P).  Lists
     /// every bound action and routes the chosen one through the
     /// normal `edit_ops::apply` path.
@@ -215,7 +209,7 @@ action_variants! {
     TableInsertBreak,
     FollowLinkUnderCursor, OpenGitHub,
     NavigateBack, NavigateForward,
-    ShowCheatSheet, ShowCommandPalette, ShowMarkdownCheatSheet,
+    ShowCommandPalette, ShowMarkdownCheatSheet,
     OpenSettings, OpenKeybinds, OpenConfigFolder, SwitchTheme, CreateCustomTheme,
     ExportHtml, ReloadFromDisk, OpenInExternalEditor,
     ToggleTableButtons, InsertTable,
@@ -670,13 +664,6 @@ impl KeyMap {
         // Users can still rebind NavigateBack/Forward to any key via the
         // keybindings config.
         bind!("ctrl+enter", Action::FollowLinkUnderCursor);
-
-        // Phase 9 note — `Action::ShowCheatSheet` is intentionally
-        // left unbound.  The cheat-sheet overlay is accessible only
-        // via the command palette (Phase 10), not a dedicated key.
-        // `?` would collide with typing text in cells / paragraphs,
-        // and surfacing a separate help key (F1 etc.) would duplicate
-        // the command-palette surface for no real gain.
 
         // Phase 10 — command palette.  Ctrl-P is the primary chord
         // (also surfaced on the bottom-region hint line as `^P Menu`).

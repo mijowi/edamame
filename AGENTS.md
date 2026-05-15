@@ -283,10 +283,11 @@ they exist:
   calls `KeyMap::rebind(&action, key_str, &mut overrides)` directly on it so
   rebinds take effect on the next keystroke without rebuilding.  Don't clone
   the keymap into the overlay state — that breaks live propagation.
-- **Combined view+edit keybindings overlay.** `Action::ShowCheatSheet` is now
-  an alias that opens the same `KeybindsView` as `Action::OpenKeybinds`; the
-  Phase 9 read-only `?` cheat sheet and the standalone `cheat_sheet.rs` are
-  gone.  Action variants are kept for backwards-compat with user keybindings.
+- **Combined view+edit keybindings overlay.** The Phase 9 read-only `?`
+  cheat sheet and the standalone `cheat_sheet.rs` are gone — `OpenKeybinds`
+  now owns the unified view+edit overlay.  The legacy `Action::ShowCheatSheet`
+  variant has also been removed; a user-supplied keybinding to it will fail
+  parsing with `KeyMapError::UnknownAction` (acceptable pre-release).
 - **`ModalView` is scrollable; Phase 10 overlays are not.** `ModalState`
   carries `scroll`, `last_total`, `last_visible`, plus `scroll_by(i32)`.  Up /
   Down / PgUp / PgDn / Home / End route to scroll, never to button focus —
@@ -328,7 +329,7 @@ they exist:
 - **Preview-mode Ctrl-key allowlist.** `input::mode_handler::default::preview_safe_action`
   decides which Ctrl-* chords fire in Preview mode.  Read-only overlay
   openers (`ShowCommandPalette`, `OpenSettings`, `OpenKeybinds`,
-  `OpenConfigFolder`, `ShowMarkdownCheatSheet`, `ShowCheatSheet`) belong on
+  `OpenConfigFolder`, `ShowMarkdownCheatSheet`) belong on
   the allowlist — adding a new modal-opening action means adding it here too,
   otherwise Ctrl-P / similar will silently no-op in Preview.
 - **Focus vs. persistent selection (modal styling convention).** When

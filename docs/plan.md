@@ -962,7 +962,7 @@ This phase deliberately owns the **entire** bottom region so later phases (file-
 
 **Tasks — compact mode:**
 - [x] Added `EditorConfig::status_bar: StatusBarLayout` (`two_line` | `compact`; default `two_line`) plus `transient_ms: u64` (default 1500).  Compact mode renders only the persistent status line via `BottomRegion::height`.
-- [x] Cheat-sheet popover (`src/ui/cheat_sheet.rs::build_cheat_sheet_body`) produced from the current `KeyMap::first_key_for` so overrides show their bound keys.  Displayed via `ModalView` and dispatched by `App::open_cheat_sheet`.  `Action::ShowCheatSheet` is intentionally unbound — the sheet is reached only via the command palette (Phase 10), avoiding a dedicated key that would conflict with typed text.
+- [x] Cheat-sheet popover (`src/ui/cheat_sheet.rs::build_cheat_sheet_body`) produced from the current `KeyMap::first_key_for` so overrides show their bound keys.  Displayed via `ModalView` and dispatched by `App::open_cheat_sheet`.  (Superseded in Phase 10: the standalone cheat sheet and `Action::ShowCheatSheet` were removed; `OpenKeybinds` now owns the unified view+edit overlay, reached only via the command palette.)
 
 **Tasks — testing:**
 - [x] Unit tests for `hint_line_for` cover Preview / Rendered / list-item / table contexts (`src/ui/bottom_region.rs::tests`).
@@ -1006,7 +1006,7 @@ Tabs, multi-file CLI, and the file picker were originally bundled here but are d
 
 **Tasks — markdown cheat sheet:**
 - [x] Accessible from the command palette (`Show Markdown Cheat Sheet`).  Content tailored to what edamame supports: CommonMark + GFM tables + task lists + strikethrough + footnotes + Mermaid.  No HTML.
-- [x] Content is a static `&str` fixture in `src/ui/markdown_cheat_sheet.rs` (the existing `cheat_sheet.rs` keeps the Phase 9 keybinding listing for `ShowCheatSheet` — they are separate overlays).
+- [x] Content is a static `&str` fixture in `src/ui/markdown_cheat_sheet.rs`.  (The Phase 9 keybinding listing has been removed; the keybinds overlay opened via `OpenKeybinds` now serves that role.)
 
 **Tasks — settings overlay:**
 - [x] Accessible from the command palette (`Open Settings`).  Key/value list driven by a `SCHEMA` table in `ui::settings_overlay` (description + read/write closures per row).  Mirrors the spirit of the `ConfigSchema` proposal without coupling the UI to `Config`'s exact field names.  No keybind settings in this overlay.
@@ -1466,7 +1466,13 @@ Apply the `modal_item_selected_unfocused` pattern to other modals, including set
 
 Handle active theme not found. Switch to default theme and display warning modal
 
-Updating the scroll speed in the settings modal does not change the setting until the editor is restarted. Fix and investigate what other settings are not live-updating.
+In edit mode, text selection doesn't work correctly in wrapped table cells
+
+In edit mode, text selection doesn't work correctly in this line `**Bold text** | __Underscore bold__ | *Italic text* | _Underscore italic_ | **_Bold and italic_**`
+
+Remove Cut and Copy actions from persistent hint line. Show them contextually when the user selects some text instead. Should we add bold+italic actions and hints for selections?
+
+Find and replace
 
 ---
 

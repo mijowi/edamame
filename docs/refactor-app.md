@@ -247,8 +247,8 @@ Each step is a single PR. Total estimated LOC delta: **~–1500 net** from `src/
     + `save_config_with_flash` (12 tests).
   - `src/app/modal/quit_confirm.rs` (88 → 131) — open / cancel /
     discard lifecycle (3 tests).
-  - `src/app/modal/keybinds.rs` (104 → 124) — `ShowCheatSheet` action
-    aliasing (1 test).
+  - `src/app/modal/keybinds.rs` (104 → 124) — `OpenKeybinds` action
+    opens the unified view+edit overlay (1 test).
   - `src/app/modal/command_palette.rs` (63 → 91) — palette open + the
     `dispatch_palette_action` round-trip (2 tests).
   - `src/app/modal/cheat_sheet.rs` (64 → 79) — `open_markdown_cheat_sheet`
