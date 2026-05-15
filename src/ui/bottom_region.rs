@@ -99,6 +99,23 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
                 ],
             ),
         },
+        Mode::Rendered | Mode::Raw if state.selection_size().is_some() => HintSet {
+            prelude: None,
+            chords: chords_from(
+                keymap,
+                &[
+                    (Action::Cut, "Cut"),
+                    (Action::Copy, "Copy"),
+                    // Paste is included so the user can replace the
+                    // selection with the clipboard contents in one
+                    // chord.  The whole baseline row is suppressed
+                    // for the duration of the selection — mirroring
+                    // how the table-context row replaces the row
+                    // wholesale rather than prepending to it.
+                    (Action::Paste, "Paste"),
+                ],
+            ),
+        },
         Mode::Rendered if cursor_in_table(state) => HintSet {
             prelude: None,
             chords: table_chords(keymap),
@@ -106,20 +123,20 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
         Mode::Rendered | Mode::Raw => {
             // Baseline edit-mode hints — Menu anchors the row so
             // the command-palette chord is always the discovery
-            // entry; Cut / Copy / Paste in keyboard-shortcut
-            // alphabetical order; Save; view-mode toggle; Quit.
+            // entry; then Paste / Undo / Redo / Save / view-mode
+            // toggle / Quit.  Cut / Copy are absent from the baseline
+            // because they're only useful with an active selection,
+            // which is handled by the selection-override arm above.
             // The view-mode chord label flips with the current mode
             // (Rendered → "Raw", Raw → "Render") so the label always
             // describes the destination, not the current state.
             //
-            // Contextual chords (those that only make sense on
-            // specific characters) are prepended to the front of the
-            // row so the user sees them immediately — they're the
-            // reason to look at the hint line on any given line.
-            // Link takes the leading slot because its trigger is the
-            // narrowest (a specific `[text](url)` span); Toggle
-            // follows because a task-list item extends across a full
-            // line and is easier to spot.
+            // Contextual chords (those that only make sense in a
+            // specific state) are prepended to the front of the row
+            // so the user sees them immediately.  Final order when
+            // both are active: Link, Toggle, Menu, ...  Link leads
+            // because its trigger is the narrowest (a specific
+            // `[text](url)` span); Toggle follows.
             let view_toggle_label = match state.mode {
                 Mode::Raw => "Render",
                 _ => "Raw",
@@ -128,8 +145,6 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
                 keymap,
                 &[
                     (Action::ShowCommandPalette, "Menu"),
-                    (Action::Cut, "Cut"),
-                    (Action::Copy, "Copy"),
                     (Action::Paste, "Paste"),
                     (Action::Undo, "Undo"),
                     (Action::Redo, "Redo"),
@@ -139,9 +154,10 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
                 ],
             );
             // Insertion order here matters for the final layout:
-            // the later insert pushes the earlier one back by one
-            // slot.  Link first, then Toggle → when both are active
-            // the final order is Link, Toggle, Menu, ...
+            // each `insert(0, ..)` pushes the previous head back by
+            // one slot, so the LAST insert ends up leftmost.  Order
+            // of inserts below is the REVERSE of the desired visual
+            // order: Toggle → Link.
             if cursor_on_task_item(state) {
                 if let Some(c) = chord_for(keymap, &Action::ToggleCheckbox, "Toggle") {
                     chords.insert(0, c);
@@ -476,14 +492,12 @@ mod tests {
     }
 
     #[test]
-    fn rendered_hint_has_save_and_copy_and_raw() {
+    fn rendered_hint_has_save_and_paste_and_raw() {
         let mut st = state("hello");
         st.mode = Mode::Rendered;
         let set = hint_line_for(&st, &keymap());
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(set.chords[0].chord, "^P", "Menu is always first");
-        assert!(labels.contains(&"Cut"));
-        assert!(labels.contains(&"Copy"));
         assert!(labels.contains(&"Paste"));
         assert!(labels.contains(&"Save"));
         assert!(
@@ -491,6 +505,15 @@ mod tests {
             "Rendered-mode chord toggles TO Raw"
         );
         assert!(labels.contains(&"Quit"));
+        // Cut / Copy are selection-gated — no selection here.
+        assert!(
+            !labels.contains(&"Cut"),
+            "Cut must stay hidden without an active selection"
+        );
+        assert!(
+            !labels.contains(&"Copy"),
+            "Copy must stay hidden without an active selection"
+        );
         // Plain paragraph has no link, so "Open link" must not appear.
         assert!(
             !labels.contains(&"Open link"),
@@ -551,13 +574,48 @@ mod tests {
     }
 
     #[test]
-    fn cut_comes_before_copy_in_edit_hints() {
-        let mut st = state("hello");
+    fn selection_replaces_baseline_with_cut_copy_paste() {
+        use crate::document::Selection;
+        let mut st = state("hello world");
         st.mode = Mode::Rendered;
+        st.selection = Some(Selection {
+            anchor: 0,
+            active: 5,
+        });
         let set = hint_line_for(&st, &keymap());
-        let cut_idx = set.chords.iter().position(|c| c.label == "Cut").unwrap();
-        let copy_idx = set.chords.iter().position(|c| c.label == "Copy").unwrap();
-        assert!(cut_idx < copy_idx, "Cut must be listed before Copy");
+        let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec!["Cut", "Copy", "Paste"],
+            "active selection must replace the baseline row with Cut/Copy/Paste only"
+        );
+    }
+
+    #[test]
+    fn clearing_selection_restores_baseline_hints() {
+        use crate::document::Selection;
+        let mut st = state("hello world");
+        st.mode = Mode::Rendered;
+        st.selection = Some(Selection {
+            anchor: 0,
+            active: 5,
+        });
+        assert_eq!(
+            hint_line_for(&st, &keymap())
+                .chords
+                .iter()
+                .map(|c| c.label.clone())
+                .collect::<Vec<_>>(),
+            vec!["Cut", "Copy", "Paste"]
+        );
+        // Clearing the selection must drop the row back to the
+        // baseline edit-mode chords with Menu leading.
+        st.selection = None;
+        let set = hint_line_for(&st, &keymap());
+        assert_eq!(set.chords[0].label, "Menu");
+        let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
+        assert!(!labels.contains(&"Cut"));
+        assert!(!labels.contains(&"Copy"));
     }
 
     #[test]
