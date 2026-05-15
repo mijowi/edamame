@@ -124,34 +124,111 @@ pub(super) fn read_keybindings(
     overrides
 }
 
-/// Read the active theme file.  Missing-file semantics are unchanged
-/// (compiled `Theme::default()` for absent default and named themes;
-/// blank file stays blank by user choice).  Parse errors and unknown
-/// keys flow through the warning vector the same way as `config.toml`.
+/// Built-in theme name substituted when the active theme is missing
+/// and `truecolor` is `true`.  Picked because Edamame is the project's
+/// canonical truecolor palette.
+pub const TRUECOLOR_FALLBACK_THEME: &str = "Edamame";
+/// Built-in theme name substituted when the active theme is missing
+/// and `truecolor` is `false`.  Indexed-color built-in that renders
+/// faithfully on 256-color and even 16-color terminals.
+pub const INDEXED_FALLBACK_THEME: &str = "256 Dark";
+
+/// Read the active theme file.
+///
+/// Returns the parsed [`ThemeFile`] alongside an optional fallback
+/// name: `Some(name)` means the requested theme was missing on disk
+/// (and wasn't a built-in), so `name` was substituted in its place.
+/// The caller is responsible for persisting the rename back to
+/// `config.toml` so the substitution doesn't recur on next launch.
+///
+/// Semantics by case:
+///   - name resolves to a built-in: return that built-in, `None`.
+///   - file present, parses cleanly: return parsed file, `None`.
+///   - file present, parse error: compiled default, `None`
+///     (existing `ParseError` warning still fires).
+///   - file present, blank: empty file, `None`
+///     (user opt-out of styling).
+///   - file absent: built-in fallback, `Some(name)`
+///     + [`WarningKind::MissingTheme`].
+///
+/// `truecolor` selects between [`TRUECOLOR_FALLBACK_THEME`] and
+/// [`INDEXED_FALLBACK_THEME`] for the missing-file case.
 pub(super) fn read_theme_named(
     config_dir: &Path,
     name: &str,
+    truecolor: bool,
     warnings: &mut Vec<ConfigWarning>,
-) -> ThemeFile {
+) -> (ThemeFile, Option<String>) {
     // Built-in themes always win on name collision: a user file
     // `themes/default.toml` is ignored if `default` is a built-in.
     // Custom user themes go through the disk path below.
     if let Some(theme) = Theme::builtin(name) {
-        return (&theme).into();
+        return ((&theme).into(), None);
     }
 
     let path = config_dir.join("themes").join(format!("{name}.toml"));
-    // ThemeFile fallback differs from `ThemeFile::default()`: a blank
-    // file is a valid opt-out of styling, but a *missing* file means
-    // we should render with the compiled palette.
-    let theme_default = || (&Theme::default()).into();
-    let on_missing = || {
+    // Detect "missing" up-front so we can apply a capability-aware
+    // built-in fallback and surface a `MissingTheme` warning, rather
+    // than silently degrading to the compiled `Theme::default()`.
+    // The blank-file and parse-error cases still flow through
+    // `read_and_warn` below — those are deliberate user states, not
+    // missing-file states.
+    if !path.exists() {
+        let fallback = if truecolor {
+            TRUECOLOR_FALLBACK_THEME
+        } else {
+            INDEXED_FALLBACK_THEME
+        };
         tracing::warn!(
             theme = name,
             path = %path.display(),
-            "theme file not found; falling back to compiled defaults"
+            fallback,
+            "theme file not found; substituting built-in fallback"
         );
-        theme_default()
+        warnings.push(ConfigWarning {
+            path: path.clone(),
+            kind: WarningKind::MissingTheme {
+                requested: name.to_string(),
+                fallback: fallback.to_string(),
+            },
+        });
+        let theme = Theme::builtin(fallback).expect("built-in fallback name is valid");
+        return ((&theme).into(), Some(fallback.to_string()));
+    }
+
+    // File exists — read it directly.  We bypass `read_and_warn`
+    // here because its `on_missing` branch is unreachable after the
+    // existence check above, and unread + reparse on parse failure
+    // both fall back to the compiled `Theme::default()` (a blank
+    // file is a valid opt-out of styling and still parses cleanly
+    // into an empty `ThemeFile`).
+    let theme_default = || ((&Theme::default()).into(), None);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) => {
+            warnings.push(ConfigWarning {
+                path: path.clone(),
+                kind: WarningKind::ParseError(format!("Failed to read file: {e}")),
+            });
+            return theme_default();
+        }
     };
-    read_and_warn(&path, warnings, on_missing, theme_default)
+    match deserialize_with_unknown_keys::<ThemeFile>(&raw) {
+        Ok((value, unknown)) => {
+            if !unknown.is_empty() {
+                warnings.push(ConfigWarning {
+                    path: path.clone(),
+                    kind: WarningKind::UnknownKeys(unknown),
+                });
+            }
+            (value, None)
+        }
+        Err(e) => {
+            warnings.push(ConfigWarning {
+                path,
+                kind: WarningKind::ParseError(e.to_string()),
+            });
+            theme_default()
+        }
+    }
 }

@@ -77,11 +77,11 @@ impl Modal for ExportThemeModal {
 /// Resolve `source` into a serialisable `ThemeFile`.  Built-ins
 /// resolve via the in-memory registry; user themes load through the
 /// same `Config::load_theme` path used elsewhere.
-fn resolve_source_theme(source: &str) -> ThemeFile {
+fn resolve_source_theme(source: &str, truecolor: bool) -> ThemeFile {
     if let Some(theme) = Theme::builtin(source) {
         (&theme).into()
     } else {
-        let (file, _warnings) = Config::load_theme(source);
+        let (file, _warnings) = Config::load_theme(source, truecolor);
         file
     }
 }
@@ -145,7 +145,9 @@ pub(crate) fn write_exported_theme(
 /// `<config_dir>/themes/<new_name>.toml`, persist
 /// `config.theme = <new_name>`, reapply, and open the success modal.
 fn perform_export(app: &mut App, source: String, new_name: String) {
-    let theme_file = resolve_source_theme(&source);
+    let truecolor =
+        app.capabilities.color_depth == crate::terminal::ColorDepth::TrueColor;
+    let theme_file = resolve_source_theme(&source, truecolor);
 
     let Some(config_dir) = Config::config_dir() else {
         app.notify(
@@ -246,7 +248,7 @@ mod tests {
 
     #[test]
     fn resolve_source_theme_handles_builtin() {
-        let file = resolve_source_theme("Ayu");
+        let file = resolve_source_theme("Ayu", true);
         let _round_trip = toml::to_string(&file).expect("builtin theme serialises");
     }
 }

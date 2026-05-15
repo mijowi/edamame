@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -104,10 +104,32 @@ impl Config {
     /// the editor.  The App surfaces the warnings in a startup modal so
     /// the user sees the file, line (when available), and the offending
     /// key or message.
-    pub fn load() -> Result<LoadedConfig> {
+    ///
+    /// Parameters:
+    ///
+    /// * `truecolor` — whether the terminal advertises 24-bit color.
+    ///   Used only for the missing-theme-file fallback: when the active
+    ///   theme name doesn't resolve to a built-in or a file in
+    ///   `themes/`, we substitute `Edamame` (truecolor) or `256 Dark`
+    ///   (indexed) so the editor still renders with a coherent palette
+    ///   appropriate for the terminal.  See [`read_theme_named`] for
+    ///   the full case table.
+    ///
+    /// * `persist_fallback` — when the missing-theme fallback fires,
+    ///   whether to rewrite `config.toml` so `theme = <fallback>` and
+    ///   the warning doesn't re-surface on the next launch.  `true` at
+    ///   startup (the user inherited a stale theme name from an old
+    ///   config or a renamed theme — silencing the perpetual warning
+    ///   is a clear win).  `false` on the external-editor reload path
+    ///   (the user just typed a theme name into `config.toml` and
+    ///   overwriting it seconds after they saved would be hostile to a
+    ///   legitimate "set the name now, install the theme later"
+    ///   workflow).  The fallback is always applied in memory either
+    ///   way; this flag only controls the on-disk side-effect.
+    pub fn load(truecolor: bool, persist_fallback: bool) -> Result<LoadedConfig> {
         let dir = Self::config_dir();
         let mut warnings = Vec::new();
-        let config = match &dir {
+        let mut config = match &dir {
             Some(d) => read_main_config(&d.join("config.toml"), &mut warnings),
             None => Config::default(),
         };
@@ -115,10 +137,25 @@ impl Config {
             Some(d) => read_keybindings(&d.join("keybindings.toml"), &mut warnings),
             None => KeyBindingOverrides::default(),
         };
-        let theme = match &dir {
-            Some(d) => read_theme_named(d, &config.theme, &mut warnings),
-            None => ThemeFile::default(),
+        let (theme, fallback) = match &dir {
+            Some(d) => read_theme_named(d, &config.theme, truecolor, &mut warnings),
+            None => (ThemeFile::default(), None),
         };
+        // Apply the missing-theme fallback in memory; optionally
+        // persist it (see `persist_fallback` on the function doc).
+        // Save failures are logged but non-fatal: the session runs
+        // with the fallback theme in memory either way.
+        if let Some(name) = fallback {
+            config.theme = name;
+            if persist_fallback {
+                if let Err(e) = config.save() {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to persist theme fallback to config.toml",
+                    );
+                }
+            }
+        }
         Ok(LoadedConfig {
             config,
             keybindings,
@@ -145,6 +182,25 @@ impl Config {
     /// ordinary config save.  The `Config` struct only owns fields that
     /// belong in `config.toml`, so this invariant is type-enforced.
     ///
+    /// **Comment / formatting preservation.**  When the file already
+    /// exists, we merge the new values into the existing
+    /// [`toml_edit::DocumentMut`] surgically, replacing each leaf value
+    /// in place.  Comments, blank lines, key ordering, and the user's
+    /// chosen quoting style all survive.  Keys absent from the user's
+    /// file are inserted only if their new value differs from the
+    /// compiled default — the shipped reference config follows the
+    /// convention "uncommented lines deviate from defaults" and we
+    /// honour that.  Keys present in the user's file are *always*
+    /// updated, even when the new value equals the default, so a
+    /// "change X then change it back" round-trip is reflected
+    /// faithfully (we never silently drop a key the user explicitly
+    /// chose to set).  See [`save_merge`] for the algorithm.
+    ///
+    /// First-write case (no existing file): we write the freshly
+    /// serialised TOML.  In practice this branch is rarely hit because
+    /// [`Self::ensure_default_files`] seeds the annotated reference
+    /// config on first launch.
+    ///
     /// Callers typically log the error and continue rather than making it
     /// fatal.
     pub fn save(&self) -> Result<()> {
@@ -155,9 +211,8 @@ impl Config {
                 format!("Failed to create config directory: {}", parent.display())
             })?;
         }
-        let serialized =
-            toml::to_string_pretty(self).context("Failed to serialize config to TOML")?;
-        std::fs::write(&path, serialized)
+        let output = save_merge(self, &path)?;
+        std::fs::write(&path, output)
             .with_context(|| format!("Failed to write config file: {}", path.display()))?;
         Ok(())
     }
@@ -189,14 +244,184 @@ impl Config {
     /// startup loader.  Used by the live theme-change path so the
     /// settings overlay validates the chosen theme through the same
     /// pipeline `Config::load` uses.
-    pub fn load_theme(name: &str) -> (ThemeFile, Vec<ConfigWarning>) {
+    pub fn load_theme(name: &str, truecolor: bool) -> (ThemeFile, Vec<ConfigWarning>) {
         let mut warnings = Vec::new();
         let theme_file = match Self::config_dir() {
-            Some(dir) => read_theme_named(&dir, name, &mut warnings),
+            // The fallback signal is only meaningful at startup (where
+            // `Config::load` rewrites `config.toml`).  The live theme
+            // switch goes through the settings overlay, which already
+            // restricts its picker to themes listed by
+            // `list_theme_names()` — a missing file here is an edge
+            // case (e.g. the user deleted the file between launching
+            // edamame and opening the overlay), and the substitution
+            // is transient: it won't be persisted, so retrying
+            // recovers the original choice as soon as the file
+            // reappears.
+            Some(dir) => read_theme_named(&dir, name, truecolor, &mut warnings).0,
             None => (&Theme::default()).into(),
         };
         (theme_file, warnings)
     }
+}
+
+// ── save: comment-preserving merge ────────────────────────────────────────────
+
+/// Produce the TOML string to write for [`Config::save`].
+///
+/// If `path` exists, the user's file is parsed as a `DocumentMut`
+/// and we merge in only the leaves that either (a) already appear
+/// in the user's file (replace in place — preserving the row's
+/// leading whitespace and trailing comment) or (b) differ from the
+/// compiled default (insert at the natural location, creating
+/// parent tables when needed).  See `merge_changed` for the leaf
+/// algorithm.
+///
+/// If `path` doesn't exist, we serialise `config` afresh.  This
+/// matches the previous (non-preserving) behaviour for the
+/// first-write case.
+fn save_merge(config: &Config, path: &Path) -> Result<String> {
+    use toml_edit::DocumentMut;
+
+    let new_serialized =
+        toml::to_string_pretty(config).context("Failed to serialize config to TOML")?;
+
+    let existing_raw = match std::fs::read_to_string(path) {
+        Ok(s) => Some(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!("Failed to read existing config: {}", path.display())
+            });
+        }
+    };
+
+    let Some(existing_raw) = existing_raw else {
+        // First-write path: no annotated file to preserve.
+        return Ok(new_serialized);
+    };
+
+    let mut existing_doc: DocumentMut = existing_raw.parse().with_context(|| {
+        format!(
+            "Failed to parse existing config for in-place update: {}",
+            path.display()
+        )
+    })?;
+    let new_doc: DocumentMut = new_serialized
+        .parse()
+        .context("internal error: serialized config failed to re-parse")?;
+    let default_serialized = toml::to_string_pretty(&Config::default())
+        .context("Failed to serialize default config")?;
+    let default_doc: DocumentMut = default_serialized
+        .parse()
+        .context("internal error: default config failed to re-parse")?;
+
+    merge_changed(
+        existing_doc.as_table_mut(),
+        new_doc.as_table(),
+        default_doc.as_table(),
+    );
+
+    Ok(existing_doc.to_string())
+}
+
+/// Merge `new` into `existing`, leaving comments / decor untouched.
+///
+/// Algorithm, per `new` key:
+///   - Both sides have a sub-table → recurse.
+///   - Key is present in `existing` as a value → overwrite the
+///     value, leaving its trailing-comment decor in place.
+///   - Key is absent from `existing`:
+///       * value matches `defaults` → skip (the convention is
+///         "uncommented = deviation").
+///       * value differs from `defaults` → insert.
+///       * sub-table → recurse into a fresh `Table`; only attach
+///         it to `existing` if any descendant leaf survived.
+///   - Type mismatch (e.g. existing has a value where new has a
+///     table) → replace wholesale; the user's structure is broken
+///     anyway.
+///   - Array-of-tables / `Item::None` → not yet driven from the
+///     UI; we copy them through verbatim only when the user's file
+///     already has them (handled by the existing-key branch).
+fn merge_changed(
+    existing: &mut toml_edit::Table,
+    new: &toml_edit::Table,
+    defaults: &toml_edit::Table,
+) {
+    use toml_edit::{Item, Table};
+
+    for (key, new_item) in new.iter() {
+        let default_item = defaults.get(key);
+        match new_item {
+            Item::Table(new_tbl) => {
+                let default_tbl: Table = default_item
+                    .and_then(|i| i.as_table())
+                    .cloned()
+                    .unwrap_or_default();
+                if let Some(Item::Table(exist_tbl)) = existing.get_mut(key) {
+                    merge_changed(exist_tbl, new_tbl, &default_tbl);
+                } else {
+                    // Section missing from the user's file.  Build a
+                    // pruned copy that contains only deviations from
+                    // defaults; attach it only if non-empty.
+                    let mut pruned = Table::new();
+                    merge_changed(&mut pruned, new_tbl, &default_tbl);
+                    if !pruned.is_empty() {
+                        existing.insert(key, Item::Table(pruned));
+                    }
+                }
+            }
+            Item::Value(new_val) => match existing.get_mut(key) {
+                Some(Item::Value(exist_val)) => {
+                    // Preserve the row's decor (leading whitespace +
+                    // trailing comment) when overwriting the value.
+                    // toml_edit stores decor *on* the value, so a
+                    // naive `*exist_val = new_val.clone()` would drop
+                    // the existing prefix/suffix and lose any "# this
+                    // is the active theme"-style trailing comments.
+                    let prev_decor = exist_val.decor().clone();
+                    let mut replacement = new_val.clone();
+                    *replacement.decor_mut() = prev_decor;
+                    *exist_val = replacement;
+                }
+                Some(_) => {
+                    existing.insert(key, Item::Value(new_val.clone()));
+                }
+                None => {
+                    let is_default = default_item
+                        .and_then(|i| i.as_value())
+                        .map(|d| value_canonically_equal(d, new_val))
+                        .unwrap_or(false);
+                    if !is_default {
+                        existing.insert(key, Item::Value(new_val.clone()));
+                    }
+                }
+            },
+            Item::ArrayOfTables(arr) => {
+                // Programmatic updates don't currently touch
+                // `[[export.custom]]` — but if a future change does,
+                // overwrite wholesale (we have no merge identity for
+                // array elements).
+                if existing.contains_key(key)
+                    || default_item.is_none_or(|d| {
+                        d.as_array_of_tables()
+                            .is_none_or(|d_arr| d_arr.to_string() != arr.to_string())
+                    })
+                {
+                    existing.insert(key, Item::ArrayOfTables(arr.clone()));
+                }
+            }
+            Item::None => {}
+        }
+    }
+}
+
+/// Compare two `toml_edit::Value`s by their canonical TOML
+/// representation.  `Value::to_string` includes the formatting
+/// (quotes, separators) but not row decor, so this is a stable
+/// equality on the *semantic* content of each value.  Used to
+/// decide whether a leaf differs from the compiled default.
+fn value_canonically_equal(a: &toml_edit::Value, b: &toml_edit::Value) -> bool {
+    a.to_string().trim() == b.to_string().trim()
 }
 
 #[cfg(test)]
@@ -291,34 +516,38 @@ mod tests {
     }
 
     #[test]
-    fn read_theme_missing_default_falls_back_to_compiled_theme() {
+    fn read_theme_missing_default_falls_back_to_edamame_on_truecolor() {
         // `default` is the historical theme name (still referenced by
         // some user `config.toml` files written by older edamame
         // versions).  It isn't in `BUILTIN_THEMES`, so the loader hits
-        // the missing-file path and falls back to the compiled
-        // `Theme::default()` — the editor must still come up themed.
+        // the missing-file path and substitutes the truecolor built-in
+        // (`Edamame`) — the editor must still come up themed, and the
+        // user gets a warning explaining the substitution.
         let dir = tempfile::tempdir().unwrap();
         let mut warnings = Vec::new();
-        let theme = read_theme_named(dir.path(), "default", &mut warnings);
-        let expected: super::super::theme_file::ThemeFile = (&Theme::default()).into();
-        assert_eq!(theme.h1, expected.h1);
-        assert_eq!(theme.task_strikethrough, expected.task_strikethrough);
-        // Convert through to Theme and verify it equals the compiled default.
+        let (theme, fallback) = read_theme_named(dir.path(), "default", true, &mut warnings);
+        assert_eq!(fallback.as_deref(), Some("Edamame"));
         let theme_out: Theme = (&theme).into();
-        assert_eq!(theme_out.h1, Theme::default().h1);
-        assert!(warnings.is_empty());
+        assert_eq!(theme_out.h1, Theme::builtin("Edamame").unwrap().h1);
+        assert_eq!(warnings.len(), 1);
+        assert!(matches!(
+            &warnings[0].kind,
+            WarningKind::MissingTheme { requested, fallback }
+                if requested == "default" && fallback == "Edamame"
+        ));
     }
 
     #[test]
-    fn read_theme_missing_named_falls_back_to_compiled_theme() {
-        // Same contract for a missing named theme: the warning path is
-        // exercised internally; here we just assert the fallback is the
-        // compiled `Theme::default()`, not an empty ThemeFile.
+    fn read_theme_missing_named_falls_back_to_256_dark_without_truecolor() {
+        // Indexed-color terminals get `256 Dark` instead — the truecolor
+        // fallback uses 24-bit RGB values that would degrade on a
+        // 256-color emulator.
         let dir = tempfile::tempdir().unwrap();
         let mut warnings = Vec::new();
-        let theme = read_theme_named(dir.path(), "nonexistent", &mut warnings);
+        let (theme, fallback) = read_theme_named(dir.path(), "nonexistent", false, &mut warnings);
+        assert_eq!(fallback.as_deref(), Some("256 Dark"));
         let theme_out: Theme = (&theme).into();
-        assert_eq!(theme_out.h1, Theme::default().h1);
+        assert_eq!(theme_out.h1, Theme::builtin("256 Dark").unwrap().h1);
     }
 
     #[test]
@@ -332,8 +561,9 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("themes")).unwrap();
         std::fs::write(dir.path().join("themes").join("custom.toml"), "").unwrap();
         let mut warnings = Vec::new();
-        let theme = read_theme_named(dir.path(), "custom", &mut warnings);
+        let (theme, fallback) = read_theme_named(dir.path(), "custom", true, &mut warnings);
         assert_eq!(theme.h1, super::super::theme_file::StyleSpec::default());
+        assert!(fallback.is_none());
         assert!(warnings.is_empty());
     }
 
@@ -351,9 +581,10 @@ mod tests {
         )
         .unwrap();
         let mut warnings = Vec::new();
-        let theme = read_theme_named(dir.path(), "256 Dark", &mut warnings);
+        let (theme, fallback) = read_theme_named(dir.path(), "256 Dark", true, &mut warnings);
         let theme_out: Theme = (&theme).into();
         assert_eq!(theme_out.h1, Theme::default().h1);
+        assert!(fallback.is_none());
         assert!(warnings.is_empty());
     }
 
@@ -364,7 +595,7 @@ mod tests {
         use super::super::themes::light_256;
         let dir = tempfile::tempdir().unwrap();
         let mut warnings = Vec::new();
-        let theme = read_theme_named(dir.path(), "256 Light", &mut warnings);
+        let (theme, _) = read_theme_named(dir.path(), "256 Light", true, &mut warnings);
         let theme_out: Theme = (&theme).into();
         let expected = Theme::from_palette(&light_256::palette());
         assert_eq!(theme_out.h1, expected.h1);
@@ -412,7 +643,7 @@ mod tests {
         let theme_path = dir.path().join("themes").join("custom.toml");
         std::fs::write(&theme_path, "[h1]\nfg = \"red\"\nbold = true\n").unwrap();
         let mut warnings = Vec::new();
-        let theme = read_theme_named(dir.path(), "custom", &mut warnings);
+        let (theme, _) = read_theme_named(dir.path(), "custom", true, &mut warnings);
         assert!(theme.h1.bold);
         assert!(warnings.is_empty());
     }
@@ -503,7 +734,7 @@ mod tests {
         let theme_path = dir.path().join("themes").join("custom.toml");
         std::fs::write(&theme_path, "[h1]\nfg = \"red\"\n\n[h7]\nfg = \"blue\"\n").unwrap();
         let mut warnings = Vec::new();
-        let theme = read_theme_named(dir.path(), "custom", &mut warnings);
+        let (theme, _) = read_theme_named(dir.path(), "custom", true, &mut warnings);
         // Recognised key still applied.
         assert_eq!(
             theme.h1.fg,
@@ -528,9 +759,10 @@ mod tests {
         // Invalid color value type.
         std::fs::write(&theme_path, "[h1]\nfg = 42\nbold = \"oops\"\n").unwrap();
         let mut warnings = Vec::new();
-        let theme = read_theme_named(dir.path(), "custom", &mut warnings);
+        let (theme, fallback) = read_theme_named(dir.path(), "custom", true, &mut warnings);
         let theme_out: Theme = (&theme).into();
         assert_eq!(theme_out.h1, Theme::default().h1);
+        assert!(fallback.is_none());
         assert_eq!(warnings.len(), 1);
         assert!(matches!(warnings[0].kind, WarningKind::ParseError(_)));
     }
@@ -614,4 +846,113 @@ extension = "pdf"
         assert_eq!(config.export.custom[0].extension, "pdf");
         assert_eq!(config.export.custom[0].command.len(), 3);
     }
+
+    // ── save_merge: comment-preserving in-place update ─────────────────────
+
+    /// A user file with comments + the shipped "deviation" keys must
+    /// round-trip through `save_merge` unchanged when nothing has
+    /// changed.  No clutter is appended, comments survive verbatim.
+    #[test]
+    fn save_merge_unchanged_config_preserves_file_verbatim() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let annotated = "\
+# top-of-file comment that must survive
+theme = \"Edamame\" # trailing comment on theme
+appearance = \"dark\"
+
+[editor]
+# tab_width = 4
+
+[table]
+show_buttons = true
+";
+        std::fs::write(&path, annotated).unwrap();
+        let config = Config::default();
+        let out = save_merge(&config, &path).expect("merge ok");
+        assert!(out.contains("# top-of-file comment that must survive"));
+        assert!(out.contains("# trailing comment on theme"));
+        assert!(out.contains("# tab_width = 4"));
+        // No default-valued cruft injected into [editor]:
+        assert!(!out.contains("transient_ms"));
+        assert!(!out.contains("mouse_scroll_lines"));
+    }
+
+    /// Changing an existing key in the user's file replaces just
+    /// the value — the trailing comment on the same line stays.
+    #[test]
+    fn save_merge_replaces_existing_value_in_place_preserving_decor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let annotated = "\
+theme = \"Edamame\" # active theme
+appearance = \"dark\"
+";
+        std::fs::write(&path, annotated).unwrap();
+        let config = Config {
+            theme: "catppuccin".to_string(),
+            ..Config::default()
+        };
+        let out = save_merge(&config, &path).expect("merge ok");
+        assert!(out.contains("theme = \"catppuccin\""));
+        assert!(out.contains("# active theme"));
+    }
+
+    /// A non-default value for a key not currently in the user's
+    /// file gets inserted (so settings-overlay changes persist),
+    /// but default-valued sibling keys do not — clutter avoidance.
+    #[test]
+    fn save_merge_inserts_non_default_skips_default_when_key_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let annotated = "\
+theme = \"Edamame\"
+appearance = \"dark\"
+
+[editor]
+# tab_width = 4
+";
+        std::fs::write(&path, annotated).unwrap();
+        let mut config = Config::default();
+        config.editor.tab_width = 8;
+        let out = save_merge(&config, &path).expect("merge ok");
+        assert!(out.contains("# tab_width = 4"));
+        assert!(out.contains("tab_width = 8"));
+        // Defaults that the UI didn't touch must NOT be appended:
+        assert!(!out.contains("transient_ms = 1500"));
+        assert!(!out.contains("max_width_cols = 80"));
+    }
+
+    /// First-write path: no existing file → emit a freshly
+    /// serialised config (no merge needed).  Asserts we don't
+    /// crash on the NotFound branch and produce parseable output.
+    #[test]
+    fn save_merge_first_write_emits_fresh_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let config = Config::default();
+        let out = save_merge(&config, &path).expect("merge ok");
+        let _round: Config = toml::from_str(&out).expect("parses");
+        assert!(out.contains("theme ="));
+    }
+
+    /// If the user has an explicit non-default value in their file
+    /// and the in-memory config has it back at the default, we
+    /// still rewrite the existing line — never silently drop a key
+    /// the user once chose to set explicitly.
+    #[test]
+    fn save_merge_overwrites_existing_key_back_to_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "theme = \"Edamame\"\nappearance = \"dark\"\n\n[editor]\ntab_width = 8 # explicit\n",
+        )
+        .unwrap();
+        let config = Config::default(); // tab_width = 4
+        let out = save_merge(&config, &path).expect("merge ok");
+        assert!(out.contains("tab_width = 4"));
+        assert!(out.contains("# explicit"));
+    }
+
 }
