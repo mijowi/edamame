@@ -925,15 +925,19 @@ mod tests {
     /// raw character rather than being off-by-two because of the markers.
     #[test]
     fn click_in_highlight_places_cursor_correctly() {
-        let text = "alpha ==beta== gamma\n";
+        // Cursor on the first line so the highlighted line stays
+        // rendered (the cursor's own line is de-rendered by reveal and
+        // would map clicks against raw chars instead).
+        let text = "x\nalpha ==beta== gamma\n";
         let mut state = EditorState::new(Buffer::from_str(text), theme());
         state.mode = Mode::Rendered;
         let mut target: Option<DragTarget> = None;
-        // Rendered line: "alpha beta gamma"
+        // Rendered line 1: "alpha beta gamma"
         // Click on the 't' in "beta" — rendered col 8.
-        apply(&mut state, click_plain(8, 0), &mut target, &[], 10, 80);
-        // Raw char 10 is 't' (0 a,1 l,2 p,3 h,4 a,5 space,6 =,7 =,8 b,9 e,10 t).
-        assert_eq!(state.cursor.offset, 10);
+        apply(&mut state, click_plain(8, 1), &mut target, &[], 10, 80);
+        // Line 1 starts at raw offset 2 (after "x\n").  Raw char 10 in
+        // line 1 is 't': 0 a,1 l,2 p,3 h,4 a,5 space,6 =,7 =,8 b,9 e,10 t.
+        assert_eq!(state.cursor.offset, 2 + 10);
     }
 
     /// Round-trip for highlights: every rendered col should map back to

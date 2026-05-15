@@ -744,7 +744,7 @@ fn cursor_sub_line_in_rendered(
 /// scroll arithmetic that needs to match the on-screen cursor position
 /// (e.g. preserving the cursor's screen row across a mode switch) lands on
 /// the same line the view actually paints.
-fn cursor_rendered_line_idx(state: &EditorState) -> usize {
+pub(crate) fn cursor_rendered_line_idx(state: &EditorState) -> usize {
     let cursor_offset = state.cursor.offset;
     let cursor_byte = state.buffer.rope().char_to_byte(cursor_offset);
     let cursor_block_idx = state
