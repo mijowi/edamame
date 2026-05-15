@@ -455,7 +455,8 @@ impl App {
     /// post-editor reload).  Even an aggressive cycler would
     /// accumulate at most a few MB across the editor's session.
     pub(super) fn apply_active_theme(&mut self) {
-        let (theme_file, warnings) = Config::load_theme(&self.config.theme);
+        let truecolor = self.capabilities.color_depth == ColorDepth::TrueColor;
+        let (theme_file, warnings) = Config::load_theme(&self.config.theme, truecolor);
         let monochrome = self.capabilities.color_depth == ColorDepth::NoColor;
         let new_theme: &'static Theme =
             Box::leak(Box::new(Theme::from_file(&theme_file, monochrome)));

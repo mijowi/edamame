@@ -94,7 +94,16 @@ impl App {
         // keybinding entries) returned by `Config::load` are routed
         // into the same `ConfigWarningModal` we use at startup so the
         // user sees their typo as soon as they exit the editor.
-        match Config::load() {
+        let truecolor = self.capabilities.color_depth == ColorDepth::TrueColor;
+        // `persist_fallback = false`: the user just hand-edited
+        // `config.toml` in their `$EDITOR`.  If they set `theme` to a
+        // name whose file isn't on disk yet (typical "install the
+        // theme later" workflow), we surface the warning but must
+        // NOT silently rewrite the file they just saved seconds ago
+        // — that would fight their stated intent.  At startup the
+        // tradeoff goes the other way; see `Config::load` for the
+        // rationale.
+        match Config::load(truecolor, false) {
             Ok(loaded) => {
                 self.config = loaded.config;
                 self.keybindings = loaded.keybindings;

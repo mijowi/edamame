@@ -33,4 +33,15 @@ pub enum WarningKind {
     /// action name or an unparseable key string.  Bad entries are
     /// dropped from the live keymap; valid entries still take effect.
     InvalidKeybindings(Vec<String>),
+    /// The active theme named in `config.toml` was neither a built-in
+    /// nor a file in `themes/`.  The loader substitutes a built-in
+    /// chosen by terminal capability (`Edamame` on true-color, `256
+    /// Dark` otherwise) and rewrites `config.toml` so the warning
+    /// doesn't re-surface on next launch.
+    MissingTheme {
+        /// The theme name read from `config.toml`.
+        requested: String,
+        /// The built-in substituted in its place.
+        fallback: String,
+    },
 }

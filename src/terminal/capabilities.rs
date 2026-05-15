@@ -124,6 +124,18 @@ impl Capabilities {
         }
     }
 
+    /// Probe the terminal's color depth from environment variables
+    /// only — no escape-sequence I/O.  Safe to call before
+    /// [`terminal::setup`] (and therefore before the full
+    /// [`Self::detect`]), so the config loader can pick a
+    /// capability-appropriate fallback theme when the active theme
+    /// file is missing.  The full probe is the source of truth for
+    /// every other consumer.
+    pub fn detect_color_depth_from_env() -> ColorDepth {
+        let term = env::var("TERM").unwrap_or_default();
+        detect_color_depth(&term)
+    }
+
     /// Conservative default used by tests and when probing is impossible.
     ///
     /// Assumes the minimum-common-denominator terminal: 16 colors, no mouse,

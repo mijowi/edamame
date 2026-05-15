@@ -67,6 +67,17 @@ impl ConfigWarningModal {
                         body.push(Line::raw(format!("    {e}")));
                     }
                 }
+                WarningKind::MissingTheme {
+                    requested,
+                    fallback,
+                } => {
+                    body.push(Line::raw(format!(
+                        "  Theme '{requested}' was not found."
+                    )));
+                    body.push(Line::raw(format!(
+                        "  Falling back to '{fallback}'; config.toml has been updated."
+                    )));
+                }
             }
         }
         Some(Self {
@@ -198,6 +209,27 @@ mod tests {
             .join("\n");
         assert!(joined.contains("Invalid keybinding entries"));
         assert!(joined.contains("Quitt"));
+    }
+
+    #[test]
+    fn missing_theme_body_mentions_requested_and_fallback() {
+        let warnings = vec![ConfigWarning {
+            path: PathBuf::from("/home/u/.config/edamame/themes/solarized.toml"),
+            kind: WarningKind::MissingTheme {
+                requested: "solarized".into(),
+                fallback: "Edamame".into(),
+            },
+        }];
+        let modal = ConfigWarningModal::from_warnings(&warnings).expect("modal built");
+        let joined = modal
+            .body
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("solarized"));
+        assert!(joined.contains("Edamame"));
+        assert!(joined.contains("config.toml has been updated"));
     }
 
     #[test]

@@ -12,7 +12,7 @@ mod ui;
 use anyhow::Result;
 use app::App;
 use config::{Config, LoadedConfig};
-use terminal::{Capabilities, TerminalSetup};
+use terminal::{Capabilities, ColorDepth, TerminalSetup};
 
 fn main() -> Result<()> {
     // ── Parse CLI arguments ────────────────────────────────────────
@@ -31,7 +31,21 @@ fn main() -> Result<()> {
     // case — if scaffolding fails (e.g. unwritable XDG dir) the compiled
     // `Theme::default()` is used.
     Config::ensure_default_files();
-    let loaded = Config::load().unwrap_or_else(|e| {
+    // We need to know the terminal's color depth *before* loading the
+    // config, because `Config::load` picks a capability-appropriate
+    // built-in theme when the active theme file is missing on disk
+    // (truecolor → `Edamame`, indexed-color → `256 Dark`).  The full
+    // capability probe (`Capabilities::detect`) writes escape sequences
+    // to the terminal and must therefore run *after* `terminal::setup`
+    // — too late for this decision.  `detect_color_depth_from_env`
+    // inspects `$COLORTERM`, `$TERM`, and a handful of terminal-specific
+    // env vars only (no I/O), so it's safe to call at this point and
+    // gives us the same answer the full probe will compute later.  The
+    // full probe remains the source of truth for everything else
+    // (mouse, keyboard enhancements, image support, etc.); this is a
+    // one-bit early read, not a parallel implementation.
+    let truecolor_at_load = Capabilities::detect_color_depth_from_env() == ColorDepth::TrueColor;
+    let loaded = Config::load(truecolor_at_load, true).unwrap_or_else(|e| {
         // Config errors are non-fatal; use defaults and note the problem.
         // Can't use tracing here since subscriber isn't set up yet.
         eprintln!("Warning: failed to load config: {e}. Using defaults.");
