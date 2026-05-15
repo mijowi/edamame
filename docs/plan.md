@@ -1462,15 +1462,11 @@ edamame in-app about page
 
 Monochrome theme should use REVERSED for selection/focus
 
-Apply the `modal_item_selected_unfocused` pattern to other modals, including settings overlay. Remove the "appearance" setting from the settings overlay—the one place to set this will be in the theme picker modal.
-
-Handle active theme not found. Switch to default theme and display warning modal
-
 In edit mode, text selection doesn't work correctly in wrapped table cells
 
 In edit mode, text selection doesn't work correctly in this line `**Bold text** | __Underscore bold__ | *Italic text* | _Underscore italic_ | **_Bold and italic_**`
 
-Remove Cut and Copy actions from persistent hint line. Show them contextually when the user selects some text instead. Should we add bold+italic actions and hints for selections?
+Should we add bold+italic actions and hints for selection contextual hint?
 
 Find and replace
 
