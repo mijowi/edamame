@@ -145,8 +145,7 @@ pub(crate) fn write_exported_theme(
 /// `<config_dir>/themes/<new_name>.toml`, persist
 /// `config.theme = <new_name>`, reapply, and open the success modal.
 fn perform_export(app: &mut App, source: String, new_name: String) {
-    let truecolor =
-        app.capabilities.color_depth == crate::terminal::ColorDepth::TrueColor;
+    let truecolor = app.capabilities.color_depth == crate::terminal::ColorDepth::TrueColor;
     let theme_file = resolve_source_theme(&source, truecolor);
 
     let Some(config_dir) = Config::config_dir() else {

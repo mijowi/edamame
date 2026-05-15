@@ -71,9 +71,7 @@ impl ConfigWarningModal {
                     requested,
                     fallback,
                 } => {
-                    body.push(Line::raw(format!(
-                        "  Theme '{requested}' was not found."
-                    )));
+                    body.push(Line::raw(format!("  Theme '{requested}' was not found.")));
                     body.push(Line::raw(format!(
                         "  Falling back to '{fallback}'; config.toml has been updated."
                     )));
