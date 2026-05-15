@@ -7,9 +7,22 @@
 //! plumbing — adding a new setting only touches this file.
 
 use crate::config::sections::MAX_WIDTH_COLS_MIN;
-use crate::config::{
-    Config, DiagramsEnabled, ImagesEnabled, RemoteImagePolicy, StatusBarLayout,
-};
+use crate::config::{Config, DiagramsEnabled, ImagesEnabled, RemoteImagePolicy, StatusBarLayout};
+
+/// Row labels for the settings overlay, exported as constants so the
+/// App-level live-update wiring in `app/modal/settings.rs` and the
+/// row table here can't drift out of sync on a copy change.  Only
+/// labels that are referenced from outside this module need a
+/// constant; the rest stay as inline string literals.
+pub(crate) const LABEL_BIG_H1: &str = "Big H1 headings";
+pub(crate) const LABEL_VISUAL_LINE_NAV: &str = "Use visual line navigation";
+pub(crate) const LABEL_SCROLL_SPEED: &str = "Scroll speed";
+
+/// Minimum accepted value for [`LABEL_SCROLL_SPEED`].  The
+/// dispatcher additionally clamps zero to one as a safety net, but
+/// rejecting at the input boundary keeps the persisted value and
+/// the live wheel_step in agreement.
+const MOUSE_SCROLL_LINES_MIN: usize = 1;
 
 #[derive(Debug)]
 pub(super) enum RowAction {
@@ -256,7 +269,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             },
         },
         RowDef {
-            label: "Big H1 headings",
+            label: LABEL_BIG_H1,
             description: Some("Render H1 titles as large block-character text"),
             kind: RowKind {
                 focusable: true,
@@ -270,7 +283,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             },
         },
         RowDef {
-            label: "Use visual line navigation",
+            label: LABEL_VISUAL_LINE_NAV,
             description: Some("Up/Down move by visual lines (vs. logical)"),
             kind: RowKind {
                 focusable: true,
@@ -284,14 +297,18 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             },
         },
         RowDef {
-            label: "Scroll speed",
+            label: LABEL_SCROLL_SPEED,
             description: Some("Lines per mouse-wheel tick (also applies to touchpads)"),
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Edit,
                 read: |c, _| c.editor.mouse_scroll_lines.to_string(),
                 write_string: |c, v| {
-                    c.editor.mouse_scroll_lines = parse_usize(v)?;
+                    let n = parse_usize(v)?;
+                    if n < MOUSE_SCROLL_LINES_MIN {
+                        return Err(format!("must be at least {MOUSE_SCROLL_LINES_MIN}"));
+                    }
+                    c.editor.mouse_scroll_lines = n;
                     Ok(())
                 },
                 cycle: None,
