@@ -141,6 +141,8 @@ mod tests {
     /// blank divider.  Kept next to [`LIVE_UPDATE_LABELS`] so the
     /// pair must add up to every row in the overlay.
     const NON_LIVE_UPDATE_LABELS: &[&str] = &[
+        crate::ui::settings_overlay::HEADER_NOTE,
+        "",
         "Open config folder",
         "Open config.toml in default editor",
         "",
