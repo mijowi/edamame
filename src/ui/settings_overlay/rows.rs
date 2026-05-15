@@ -14,6 +14,13 @@ use crate::config::{Config, DiagramsEnabled, ImagesEnabled, RemoteImagePolicy, S
 /// row table here can't drift out of sync on a copy change.  Only
 /// labels that are referenced from outside this module need a
 /// constant; the rest stay as inline string literals.
+///
+/// Explanatory header rendered as a styled note above the rows.
+/// Non-focusable; identified in `build_row_lines` by string equality
+/// against this constant so it can be rendered without the usual
+/// label/value formatting.
+pub(crate) const HEADER_NOTE: &str = "Common options shown below — edit config.toml for all others";
+
 pub(crate) const LABEL_BIG_H1: &str = "Big H1 headings";
 pub(crate) const LABEL_VISUAL_LINE_NAV: &str = "Use visual line navigation";
 pub(crate) const LABEL_SCROLL_SPEED: &str = "Scroll speed";
@@ -62,6 +69,23 @@ pub(super) struct RowDef {
 
 fn no_write(_: &mut Config, _: &str) -> Result<(), String> {
     Err("row is not editable in place".to_owned())
+}
+
+/// Build a non-focusable display-only row.  Used for the explanatory
+/// header note and blank dividers — anything that participates in the
+/// row list for layout but never takes focus or fires an action.
+fn display_only_row(label: &'static str) -> RowDef {
+    RowDef {
+        label,
+        description: None,
+        kind: RowKind {
+            focusable: false,
+            action: RowAction::Cycle,
+            read: |_, _| String::new(),
+            write_string: no_write,
+            cycle: None,
+        },
+    }
 }
 
 fn parse_u64(s: &str) -> Result<u64, String> {
@@ -164,6 +188,8 @@ fn parse_remote_policy(s: &str) -> Result<RemoteImagePolicy, String> {
 /// for each field's persistence semantics.
 pub(super) fn build_rows() -> Vec<RowDef> {
     vec![
+        display_only_row(HEADER_NOTE),
+        display_only_row(""),
         RowDef {
             label: "Open config folder",
             description: Some("Press Enter to open externally"),
@@ -194,17 +220,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         // from the editable settings beneath.  Non-focusable so
         // arrow-key navigation skips it; the View renders an empty
         // line for any non-focusable row with an empty label.
-        RowDef {
-            label: "",
-            description: None,
-            kind: RowKind {
-                focusable: false,
-                action: RowAction::Cycle,
-                read: |_, _| String::new(),
-                write_string: no_write,
-                cycle: None,
-            },
-        },
+        display_only_row(""),
         RowDef {
             label: "Use hint line",
             description: Some("Show or hide the hint line (status bar remains)"),

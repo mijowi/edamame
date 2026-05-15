@@ -65,7 +65,7 @@ use self::rows::{build_rows, RowAction, RowDef};
 // The lib itself never reads them, so allow(dead_code) on the helper
 // suppresses the otherwise-spurious `cargo clippy --lib` warning.
 #[allow(unused_imports)]
-pub(crate) use self::rows::{LABEL_BIG_H1, LABEL_SCROLL_SPEED, LABEL_VISUAL_LINE_NAV};
+pub(crate) use self::rows::{HEADER_NOTE, LABEL_BIG_H1, LABEL_SCROLL_SPEED, LABEL_VISUAL_LINE_NAV};
 
 /// All row labels in display order, including non-focusable dividers.
 /// Used by the App-level live-update wiring tests in
@@ -415,6 +415,13 @@ fn build_row_lines<'a>(
             lines.push(Line::from(""));
             continue;
         }
+        if !row.kind.focusable && row.label == HEADER_NOTE {
+            lines.push(Line::from(Span::styled(
+                row.label.to_owned(),
+                theme.modal_close_hint,
+            )));
+            continue;
+        }
         let focused = idx == state.focused;
         let editing = focused && state.editing.is_some();
         let value = if editing && cursor_visible {
@@ -443,6 +450,9 @@ fn build_row_lines<'a>(
 fn settings_content_width(state: &SettingsState, config: &Config) -> u16 {
     const FOCUS_MARKER_WIDTH: usize = 2;
     let row_max = max_row_width(&state.rows, |r| {
+        if !r.kind.focusable && r.label == HEADER_NOTE {
+            return r.label.chars().count();
+        }
         let value_w = (r.kind.read)(config, &state.theme_names).chars().count();
         FOCUS_MARKER_WIDTH + LABEL_PAD + value_w
     });
@@ -632,6 +642,8 @@ mod tests {
         assert_eq!(
             labels,
             vec![
+                rows::HEADER_NOTE,
+                "",
                 "Open config folder",
                 "Open config.toml in default editor",
                 "",
