@@ -225,7 +225,21 @@ pub fn rendered_sub_line_to_offset(
     // rendered `Line`s therefore don't reflect what the user clicks
     // on — walk the raw line's own wrap layout and map `col` directly
     // against it.
-    if state.parsed.is_mermaid_block(block.idx) {
+    //
+    // The same shortcut applies to the cursor's own line in any block
+    // when the hybrid-edit reveal is active: `RenderedView` paints raw
+    // source over that one rendered row, so a click on dropped markers
+    // like the `](url)` portion of a link must map against the raw
+    // chars the user sees, not the rendered span set.
+    //
+    // Tables are excluded: even when the cursor's row is "revealed",
+    // `RenderedView` keeps the table chrome (pipes and padding) painted
+    // for layout, so clicks must continue to use the pipe-aware mapping
+    // in the table branch below.
+    let revealed_cursor_line = !is_table
+        && state.cursor_block_revealed()
+        && rendered_line_idx == crate::editor::state::cursor_rendered_line_idx(state);
+    if state.parsed.is_mermaid_block(block.idx) || revealed_cursor_line {
         let raw_chars: Vec<(char, ratatui::style::Style)> = line_text
             .chars()
             .map(|c| (c, ratatui::style::Style::default()))

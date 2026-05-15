@@ -1137,21 +1137,54 @@ fn plain_click_in_rendered_on_link_places_cursor_does_not_follow() {
 /// the *o* in `[docs]` — raw byte 6 of `See [docs](...)`.
 #[test]
 fn click_inside_rendered_link_text_lands_on_clicked_char() {
+    // The link line must NOT be the cursor's current line so it stays
+    // rendered — otherwise reveal de-renders it and the click maps
+    // against raw chars (a separate code path covered by the
+    // `click_on_revealed_link_line_*` tests).
+    let src = "first line\nSee [docs](https://example.com) for more.\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    let mut mouse = MouseDispatcher::new();
+    // Rendered line 1 is "See docs for more." — col 5 is 'o' (S-e-e-
+    // space at 0..3 + 'd' is col 4 + 'o' is col 5).
+    if let Some(a) = mouse.dispatch(click_event(5, 1), area()) {
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+    }
+    // 'o' inside `[docs]` sits at raw byte 6 of line 2:
+    // `See [docs](https://...)` — preceded by the 11-byte first line.
+    assert_eq!(
+        st.contents().chars().nth(st.cursor.offset),
+        Some('o'),
+        "expected cursor on 'o' of 'docs', landed at offset {} ({:?})",
+        st.cursor.offset,
+        st.contents().chars().nth(st.cursor.offset),
+    );
+}
+
+/// When the cursor is on a line containing a link, the reveal in
+/// `RenderedView` paints the raw `[text](url)` source over that
+/// rendered row.  A click on the visible `(`, the URL chars, or `)`
+/// must place the cursor at the corresponding raw column — not get
+/// clamped past the rendered link text as it did before clicks on
+/// revealed lines were routed through raw-char mapping.
+#[test]
+fn click_on_revealed_link_line_lands_on_raw_char() {
     let src = "See [docs](https://example.com) for more.\n";
     let mut st = state(src);
     st.mode = Mode::Rendered;
     let mut anchor: Option<mouse_ops::DragTarget> = None;
     let mut mouse = MouseDispatcher::new();
-    // Rendered: "See docs for more." — col 5 is 'o' (the second char of
-    // "docs" since "See " is 4 chars + 'd' is col 4, 'o' is col 5).
-    if let Some(a) = mouse.dispatch(click_event(5, 0), area()) {
+    // Cursor is at offset 0; reveal is active on a fresh state so the
+    // line is shown as the raw `See [docs](https://example.com)...`.
+    // Col 11 → 'h' of `https`.
+    if let Some(a) = mouse.dispatch(click_event(11, 0), area()) {
         mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
     }
-    // 'o' inside `[docs]` sits at raw byte 6 in `See [docs](https://...)`.
     assert_eq!(
         st.contents().chars().nth(st.cursor.offset),
-        Some('o'),
-        "expected cursor on 'o' of 'docs', landed at offset {} ({:?})",
+        Some('h'),
+        "expected cursor on 'h' of 'https', landed at offset {} ({:?})",
         st.cursor.offset,
         st.contents().chars().nth(st.cursor.offset),
     );
