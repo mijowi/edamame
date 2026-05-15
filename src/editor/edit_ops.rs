@@ -600,10 +600,6 @@ pub fn apply(
                 state.dirty = false;
             }
         }
-        Action::Open => {
-            // File picker is deferred to Phase 9.
-        }
-
         // ── Phase 3 — list editing ───────────────────────────────
         Action::ToggleCheckbox => {
             enter_edit_if_preview(state, viewport_height);

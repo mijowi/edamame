@@ -8,9 +8,7 @@ use crate::config::Action;
 /// matter — `build_entries` re-sorts.  Cursor-movement and selection
 /// actions are excluded: they have no meaning when dispatched from a
 /// modal palette (the cursor's already moved by the time the user
-/// clicks `Move Right`).  `ShowCheatSheet` is also excluded because
-/// the Phase 10 review merged it into `OpenKeybinds` — surfacing both
-/// would be confusing.
+/// clicks `Move Right`).
 pub(super) const ALL_ACTIONS: &[Action] = &[
     // Phase 10 entries (palette-only).  `OpenConfigFolder` is no
     // longer surfaced here — it lives on the first row of the

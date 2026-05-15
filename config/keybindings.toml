@@ -73,8 +73,3 @@
 
 # ── Table — cell line break ──────────────────────────────────────────────────
 # TableInsertBreak       = "shift+enter"
-
-# ── Help ─────────────────────────────────────────────────────────────────────
-# ShowCheatSheet is unbound by default — the cheat sheet is reached through the
-# command palette (Phase 10). Uncomment and set a key to bind it directly.
-# ShowCheatSheet         = "f1"

@@ -98,7 +98,6 @@ fn preview_safe_action(action: &Action) -> bool {
             // browsing.
             | Action::ShowCommandPalette
             | Action::ShowMarkdownCheatSheet
-            | Action::ShowCheatSheet
             | Action::OpenSettings
             | Action::OpenKeybinds
             | Action::SwitchTheme

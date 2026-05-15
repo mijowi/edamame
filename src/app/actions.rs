@@ -27,6 +27,20 @@ use super::flash::MessageKind;
 use super::modal::ModalOutcome;
 use super::App;
 
+/// Actions whose handlers are stubs.  When one of these fires (from a
+/// keybinding, palette pick, or other surface) the App pops a generic
+/// "not implemented" notice.  This is the single source of truth for
+/// unfinished features — grep `NOT_YET_IMPLEMENTED` to enumerate them.
+///
+/// When you implement one of these for real: add an explicit
+/// `Action::Foo => …` arm above the catch-all guard AND remove the
+/// variant from this list.  The two are not enforced to stay in
+/// sync — an entry left here after a real handler lands will never
+/// fire (the explicit arm wins), but the stale entry is misleading
+/// to future readers of this list.
+pub(super) const NOT_YET_IMPLEMENTED: &[Action] =
+    &[Action::Open, Action::ExportHtml, Action::ReloadFromDisk];
+
 /// True when the editor's cursor sits inside a table block.  Mirrors
 /// the check used by `edit_ops::cursor_in_table`; re-implemented here
 /// to keep the App free of a cross-module private dep.
@@ -125,15 +139,6 @@ impl App {
                 self.open_markdown_cheat_sheet();
                 true
             }
-            // Phase 10 review — ShowCheatSheet is no longer a
-            // separate flow.  We accept it as an alias for
-            // OpenKeybinds so users with a custom keybinding to it
-            // (the action is configurable per `keybindings.toml`)
-            // still see the combined view+edit overlay.
-            Action::ShowCheatSheet => {
-                self.open_keybinds_overlay();
-                true
-            }
             Action::OpenSettings => {
                 self.open_settings_overlay();
                 true
@@ -158,16 +163,11 @@ impl App {
                 }
                 true
             }
-            // Phase 16 / Phase 11 — these overlays are wired up in their
-            // own phases.  Until then, surface a flash so users hitting
-            // them in the palette get explicit feedback rather than
-            // silent failure.
-            Action::ExportHtml => {
-                self.notify("HTML export — see Phase 16", ModalKind::Normal);
-                true
-            }
-            Action::ReloadFromDisk => {
-                self.notify("Reload from disk — see Phase 11", ModalKind::Normal);
+            // Stub actions — every entry in `NOT_YET_IMPLEMENTED` lands
+            // here and surfaces the generic notice.  Wire a real handler
+            // above and drop the entry from the list to implement.
+            a if NOT_YET_IMPLEMENTED.contains(a) => {
+                self.notify_not_implemented();
                 true
             }
             Action::OpenInExternalEditor => {
@@ -276,6 +276,13 @@ impl App {
             ModalOutcome::Close => {}
             ModalOutcome::CloseAnd(cb) => cb(self),
         }
+    }
+
+    /// Push the generic "feature not implemented yet" notice.  Called
+    /// from the [`NOT_YET_IMPLEMENTED`] dispatch arm; kept as its own
+    /// method so any future change to the wording lives in one place.
+    pub(super) fn notify_not_implemented(&mut self) {
+        self.notify("This feature is not implemented yet.", ModalKind::Normal);
     }
 
     /// Open the three-button `Save / Discard / Cancel` modal.  Called
