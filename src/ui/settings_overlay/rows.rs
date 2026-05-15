@@ -7,9 +7,8 @@
 //! plumbing — adding a new setting only touches this file.
 
 use crate::config::sections::MAX_WIDTH_COLS_MIN;
-use crate::config::theme::resolve_theme_for_mode_switch;
 use crate::config::{
-    AppearanceMode, Config, DiagramsEnabled, ImagesEnabled, RemoteImagePolicy, StatusBarLayout,
+    Config, DiagramsEnabled, ImagesEnabled, RemoteImagePolicy, StatusBarLayout,
 };
 
 #[derive(Debug)]
@@ -95,23 +94,6 @@ const REMOTE_POLICY_ORDER: &[RemoteImagePolicy] = &[
     RemoteImagePolicy::Always,
     RemoteImagePolicy::Never,
 ];
-
-const APPEARANCE_ORDER: &[AppearanceMode] = &[AppearanceMode::Dark, AppearanceMode::Light];
-
-fn appearance_label(v: AppearanceMode) -> &'static str {
-    match v {
-        AppearanceMode::Dark => "Dark",
-        AppearanceMode::Light => "Light",
-    }
-}
-
-fn parse_appearance(s: &str) -> Result<AppearanceMode, String> {
-    match s.trim().to_ascii_lowercase().as_str() {
-        "dark" => Ok(AppearanceMode::Dark),
-        "light" => Ok(AppearanceMode::Light),
-        other => Err(format!("expected Dark/Light, got {other:?}")),
-    }
-}
 
 fn images_enabled_label(v: ImagesEnabled) -> &'static str {
     match v {
@@ -208,32 +190,6 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 read: |_, _| String::new(),
                 write_string: no_write,
                 cycle: None,
-            },
-        },
-        RowDef {
-            label: "Appearance",
-            description: Some("Select dark mode or light mode"),
-            kind: RowKind {
-                focusable: true,
-                action: RowAction::Cycle,
-                read: |c, _| appearance_label(c.appearance).to_owned(),
-                write_string: |c, v| {
-                    let new_mode = parse_appearance(v)?;
-                    if c.appearance != new_mode {
-                        c.theme = resolve_theme_for_mode_switch(&c.theme, new_mode);
-                        c.appearance = new_mode;
-                    }
-                    Ok(())
-                },
-                cycle: Some(|c, delta, _| {
-                    let new_mode = cycle_enum(c.appearance, APPEARANCE_ORDER, delta);
-                    if new_mode == c.appearance {
-                        return false;
-                    }
-                    c.theme = resolve_theme_for_mode_switch(&c.theme, new_mode);
-                    c.appearance = new_mode;
-                    true
-                }),
             },
         },
         RowDef {
