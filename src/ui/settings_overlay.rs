@@ -124,14 +124,14 @@ impl SettingsState {
             esc_button_rect: None,
             rows: build_rows(),
         };
-        // Default focus to the first editable setting ("Appearance")
-        // rather than the "open externally" pair at the top.  Most
-        // users open the overlay to tweak a setting; the externals are
-        // still one Up arrow away.
+        // Default focus to the first editable setting rather than the
+        // "open externally" pair at the top.  Most users open the
+        // overlay to tweak a setting; the externals are still one Up
+        // arrow away.
         state.focused = state
             .rows
             .iter()
-            .position(|r| r.label == "Appearance")
+            .position(|r| r.label == "Use hint line")
             .or_else(|| state.first_focusable_index())
             .unwrap_or(0);
         state
@@ -537,7 +537,7 @@ mod tests {
         // externals.  Default focus skips past the open-externally
         // pair (and the divider) and lands on the first editable row.
         let state = SettingsState::new();
-        assert_eq!(state.rows[state.focused].label, "Appearance");
+        assert_eq!(state.rows[state.focused].label, "Use hint line");
     }
 
     #[test]
@@ -620,7 +620,6 @@ mod tests {
                 "Open config folder",
                 "Open config.toml in default editor",
                 "",
-                "Appearance",
                 "Use hint line",
                 "Hint duration",
                 "Limit editor width",
