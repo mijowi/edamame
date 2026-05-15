@@ -289,9 +289,8 @@ fn save_merge(config: &Config, path: &Path) -> Result<String> {
         Ok(s) => Some(s),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
-            return Err(e).with_context(|| {
-                format!("Failed to read existing config: {}", path.display())
-            });
+            return Err(e)
+                .with_context(|| format!("Failed to read existing config: {}", path.display()));
         }
     };
 
@@ -309,8 +308,8 @@ fn save_merge(config: &Config, path: &Path) -> Result<String> {
     let new_doc: DocumentMut = new_serialized
         .parse()
         .context("internal error: serialized config failed to re-parse")?;
-    let default_serialized = toml::to_string_pretty(&Config::default())
-        .context("Failed to serialize default config")?;
+    let default_serialized =
+        toml::to_string_pretty(&Config::default()).context("Failed to serialize default config")?;
     let default_doc: DocumentMut = default_serialized
         .parse()
         .context("internal error: default config failed to re-parse")?;
@@ -954,5 +953,4 @@ appearance = \"dark\"
         assert!(out.contains("tab_width = 4"));
         assert!(out.contains("# explicit"));
     }
-
 }
