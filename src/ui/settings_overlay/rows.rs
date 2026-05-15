@@ -55,7 +55,18 @@ pub(super) struct RowKind {
     pub(super) read: fn(&Config, &[String]) -> String,
     pub(super) write_string: fn(&mut Config, &str) -> Result<(), String>,
     pub(super) cycle: Option<CycleFn>,
+    /// Pill labels for option-style rows (booleans + Ask/Always/Never
+    /// tri-states).  When `Some`, the overlay renders every option
+    /// inline and styles the one matching `read(..)` with the
+    /// persistent-selection palette (`modal_item_selected_unfocused`,
+    /// upgraded to `modal_button_focused` when the row has focus).
+    /// When `None`, the row falls back to the legacy single-value
+    /// display (numeric / path / external-action rows).
+    pub(super) options: Option<&'static [&'static str]>,
 }
+
+pub(super) const BOOL_OPTIONS: &[&str] = &["true", "false"];
+pub(super) const ASK_ALWAYS_NEVER_OPTIONS: &[&str] = &["Ask", "Always", "Never"];
 
 /// Static table of rows.  `read` formats the field's current value
 /// for display; `cycle` is `Some` for fields whose value cycles on
@@ -84,6 +95,7 @@ fn display_only_row(label: &'static str) -> RowDef {
             read: |_, _| String::new(),
             write_string: no_write,
             cycle: None,
+            options: None,
         },
     }
 }
@@ -203,6 +215,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 },
                 write_string: no_write,
                 cycle: None,
+                options: None,
             },
         },
         RowDef {
@@ -214,6 +227,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 read: |_, _| String::new(),
                 write_string: no_write,
                 cycle: None,
+                options: None,
             },
         },
         // Blank divider — sets the "open externally" pair apart
@@ -236,6 +250,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     };
                     true
                 }),
+                options: Some(BOOL_OPTIONS),
             },
         },
         RowDef {
@@ -250,6 +265,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     Ok(())
                 },
                 cycle: None,
+                options: None,
             },
         },
         RowDef {
@@ -264,6 +280,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.editor.max_width_enabled = !c.editor.max_width_enabled;
                     true
                 }),
+                options: Some(BOOL_OPTIONS),
             },
         },
         RowDef {
@@ -282,6 +299,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     Ok(())
                 },
                 cycle: None,
+                options: None,
             },
         },
         RowDef {
@@ -296,6 +314,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.editor.big_h1 = !c.editor.big_h1;
                     true
                 }),
+                options: Some(BOOL_OPTIONS),
             },
         },
         RowDef {
@@ -310,6 +329,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.editor.visual_line_nav = !c.editor.visual_line_nav;
                     true
                 }),
+                options: Some(BOOL_OPTIONS),
             },
         },
         RowDef {
@@ -328,6 +348,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     Ok(())
                 },
                 cycle: None,
+                options: None,
             },
         },
         RowDef {
@@ -345,6 +366,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.images.enabled = cycle_enum(c.images.enabled, IMAGES_ENABLED_ORDER, delta);
                     true
                 }),
+                options: Some(ASK_ALWAYS_NEVER_OPTIONS),
             },
         },
         RowDef {
@@ -363,6 +385,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                         cycle_enum(c.diagrams.enabled, DIAGRAMS_ENABLED_ORDER, delta);
                     true
                 }),
+                options: Some(ASK_ALWAYS_NEVER_OPTIONS),
             },
         },
         RowDef {
@@ -381,6 +404,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                         cycle_enum(c.images.remote_policy, REMOTE_POLICY_ORDER, delta);
                     true
                 }),
+                options: Some(ASK_ALWAYS_NEVER_OPTIONS),
             },
         },
         RowDef {
@@ -395,6 +419,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.table.show_buttons = !c.table.show_buttons;
                     true
                 }),
+                options: Some(BOOL_OPTIONS),
             },
         },
         RowDef {
@@ -409,6 +434,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.export.html.inline_images = !c.export.html.inline_images;
                     true
                 }),
+                options: Some(BOOL_OPTIONS),
             },
         },
         RowDef {
@@ -423,6 +449,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.export.html.diagrams = !c.export.html.diagrams;
                     true
                 }),
+                options: Some(BOOL_OPTIONS),
             },
         },
     ]

@@ -161,6 +161,9 @@ impl SettingsStateExt for SettingsState {
         // An empty entry mirrors the non-focusable divider so indices
         // line up with `state.focused` even though Down skips it.
         const ORDER: &[&str] = &[
+            // HEADER_NOTE + divider — non-focusable but consume row indices.
+            "",
+            "",
             "Open config folder",
             "Open config.toml in default editor",
             "",

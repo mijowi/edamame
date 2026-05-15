@@ -40,6 +40,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
+    style::Style,
     text::{Line, Span},
     widgets::{Paragraph, StatefulWidget, Widget},
 };
@@ -48,6 +49,9 @@ use crate::config::{Config, Theme};
 use crate::ui::content_width::{max_row_width, optional_text_width};
 use crate::ui::modal_row::{format_modal_row, RowLayout};
 use crate::ui::overlay_nav::next_focusable;
+
+/// Gap (in cells) inserted between adjacent option pills.
+const PILL_GAP: usize = 2;
 
 /// Width of the label column in the settings overlay (column count of the
 /// padded `{label:<LABEL_PAD$}` slot before the value column begins).
@@ -60,6 +64,45 @@ use crate::ui::scroll_container::{
 };
 
 use self::rows::{build_rows, RowAction, RowDef};
+
+/// Width of one pill cell: `"[ " + label + " ]"`.  Labels are
+/// padded with single spaces around the text inside the brackets.
+fn pill_width(label: &str) -> usize {
+    label.chars().count() + 4
+}
+
+/// Total rendered width of a pill row for `options`, including gaps.
+fn pill_row_width(options: &[&str]) -> usize {
+    let pills: usize = options.iter().map(|l| pill_width(l)).sum();
+    let gaps = options.len().saturating_sub(1) * PILL_GAP;
+    pills + gaps
+}
+
+/// Build the styled spans that make up the pill row for an
+/// option-style setting.  The pill whose label matches `current` is
+/// drawn in `modal_button_focused` when the row has focus, otherwise in
+/// `modal_item_selected_unfocused`.  All other pills fall back to
+/// `modal_item`.  See the [theming docs](../../../docs/theming.md)
+/// "Focus vs. persistent selection" section for the rationale.
+fn pill_spans(options: &[&str], current: &str, focused: bool, theme: &Theme) -> Vec<Span<'static>> {
+    let gap = " ".repeat(PILL_GAP);
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(options.len() * 2);
+    for (i, label) in options.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(gap.clone(), theme.modal_item));
+        }
+        let selected = label.eq_ignore_ascii_case(current);
+        let style: Style = if selected && focused {
+            theme.modal_button_focused
+        } else if selected {
+            theme.modal_item_selected_unfocused
+        } else {
+            theme.modal_item
+        };
+        spans.push(Span::styled(format!("[ {label} ]"), style));
+    }
+    spans
+}
 
 // Re-exports for the bin-only `app::modal::settings` live-update wiring.
 // The lib itself never reads them, so allow(dead_code) on the helper
@@ -424,6 +467,24 @@ fn build_row_lines<'a>(
         }
         let focused = idx == state.focused;
         let editing = focused && state.editing.is_some();
+        // Option-style rows (booleans / Ask-Always-Never): render
+        // every pill inline and style the current value with the
+        // persistent-selection palette.  Edit-style rows can never
+        // also be option rows, so the editing branch never collides.
+        if let Some(options) = row.kind.options {
+            let current = (row.kind.read)(config, &state.theme_names);
+            let marker = if focused { "› " } else { "  " };
+            let label_padded = format!("{marker}{:<pad$}", row.label, pad = LABEL_PAD);
+            let label_style = if focused {
+                theme.modal_item_selected
+            } else {
+                theme.modal_item
+            };
+            let mut spans: Vec<Span<'static>> = vec![Span::styled(label_padded, label_style)];
+            spans.extend(pill_spans(options, &current, focused, theme));
+            lines.push(Line::from(spans));
+            continue;
+        }
         let value = if editing && cursor_visible {
             format!("{}▏", state.editing.as_deref().unwrap_or(""))
         } else if editing {
@@ -453,7 +514,10 @@ fn settings_content_width(state: &SettingsState, config: &Config) -> u16 {
         if !r.kind.focusable && r.label == HEADER_NOTE {
             return r.label.chars().count();
         }
-        let value_w = (r.kind.read)(config, &state.theme_names).chars().count();
+        let value_w = match r.kind.options {
+            Some(opts) => pill_row_width(opts),
+            None => (r.kind.read)(config, &state.theme_names).chars().count(),
+        };
         FOCUS_MARKER_WIDTH + LABEL_PAD + value_w
     });
     // 4 = "    " description indent
@@ -781,6 +845,80 @@ mod tests {
             modal_width < 130,
             "expected content-aware width well below 80% of 200, got modal width {modal_width}"
         );
+    }
+
+    #[test]
+    fn option_rows_show_every_pill_label() {
+        // The tri-state and boolean rows render all option labels
+        // inline so the user can see the alternatives without
+        // cycling.  This test asserts the rendered buffer contains
+        // each pill string verbatim for a representative row of each
+        // kind.
+        let config = Config::default();
+        let mut state = SettingsState::new();
+        let contents = render(&mut state, &config, 120, 40);
+        // Tri-state: Show images.
+        assert!(contents.contains("[ Ask ]"));
+        assert!(contents.contains("[ Always ]"));
+        assert!(contents.contains("[ Never ]"));
+        // Boolean: any of the bool rows is enough.
+        assert!(contents.contains("[ true ]"));
+        assert!(contents.contains("[ false ]"));
+    }
+
+    #[test]
+    fn option_row_marks_current_value_with_unfocused_selection_style() {
+        // Render the overlay focused on a non-option row and look at
+        // the styled span carrying the current value for "Show images"
+        // (default: Ask).  It must use `modal_item_selected_unfocused`
+        // — the persistent-selection palette — and the other pills
+        // must use `modal_item`.
+        let config = Config::default();
+        let mut state = SettingsState::new();
+        focus_row(&mut state, "Hint duration"); // unfocus the pill rows
+        let theme = theme_ref();
+        let lines = build_row_lines(&state, &config, theme, true);
+        let row = lines
+            .iter()
+            .find(|l| {
+                l.spans
+                    .first()
+                    .is_some_and(|s| s.content.contains("Show images"))
+            })
+            .expect("Show images row");
+        let pills: Vec<&Span<'_>> = row
+            .spans
+            .iter()
+            .filter(|s| s.content.starts_with('['))
+            .collect();
+        assert_eq!(pills.len(), 3);
+        let ask = pills.iter().find(|s| s.content.contains("Ask")).unwrap();
+        let always = pills.iter().find(|s| s.content.contains("Always")).unwrap();
+        assert_eq!(ask.style, theme.modal_item_selected_unfocused);
+        assert_eq!(always.style, theme.modal_item);
+    }
+
+    #[test]
+    fn option_row_marks_current_value_with_focused_style_when_focused() {
+        let config = Config::default();
+        let mut state = SettingsState::new();
+        focus_row(&mut state, "Show images");
+        let theme = theme_ref();
+        let lines = build_row_lines(&state, &config, theme, true);
+        let row = lines
+            .iter()
+            .find(|l| {
+                l.spans
+                    .first()
+                    .is_some_and(|s| s.content.contains("Show images"))
+            })
+            .expect("Show images row");
+        let ask_pill = row
+            .spans
+            .iter()
+            .find(|s| s.content.contains("Ask"))
+            .unwrap();
+        assert_eq!(ask_pill.style, theme.modal_button_focused);
     }
 
     #[test]
