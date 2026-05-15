@@ -100,6 +100,20 @@ impl MouseDispatcher {
         }
     }
 
+    /// Update the wheel step at runtime.  Called when the user changes
+    /// `config.editor.mouse_scroll_lines` via the settings overlay so
+    /// the new value takes effect without restarting the app.
+    pub fn set_wheel_step(&mut self, wheel_step: usize) {
+        self.wheel_step = wheel_step.max(1);
+    }
+
+    /// Current wheel step (lines per wheel tick).  Exposed for tests
+    /// that verify settings-overlay live-update wiring.
+    #[cfg(test)]
+    pub fn wheel_step(&self) -> usize {
+        self.wheel_step
+    }
+
     /// Translate a raw mouse event into a [`MouseAction`].
     ///
     /// `doc_area` is the editor's document area in terminal coordinates.

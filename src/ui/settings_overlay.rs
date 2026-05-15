@@ -61,6 +61,21 @@ use crate::ui::scroll_container::{
 
 use self::rows::{build_rows, RowAction, RowDef};
 
+// Re-exports for the bin-only `app::modal::settings` live-update wiring.
+// The lib itself never reads them, so allow(dead_code) on the helper
+// suppresses the otherwise-spurious `cargo clippy --lib` warning.
+#[allow(unused_imports)]
+pub(crate) use self::rows::{LABEL_BIG_H1, LABEL_SCROLL_SPEED, LABEL_VISUAL_LINE_NAV};
+
+/// All row labels in display order, including non-focusable dividers.
+/// Used by the App-level live-update wiring tests in
+/// `app/modal/settings.rs` so that adding a new row to `build_rows`
+/// becomes an explicit, reviewable change at the App layer too.
+#[allow(dead_code)]
+pub(crate) fn all_row_labels() -> Vec<&'static str> {
+    build_rows().into_iter().map(|r| r.label).collect()
+}
+
 /// Outcome of dispatching a key event to the settings overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingsResponse {

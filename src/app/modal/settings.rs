@@ -17,6 +17,7 @@ use ratatui::Frame;
 use super::types::{Modal, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
 use crate::config::Config;
+use crate::ui::settings_overlay::{LABEL_BIG_H1, LABEL_SCROLL_SPEED, LABEL_VISUAL_LINE_NAV};
 use crate::ui::{ModalKind, SettingsResponse, SettingsState, SettingsView};
 
 pub struct SettingsOverlayModal {
@@ -28,6 +29,23 @@ impl SettingsOverlayModal {
         Self {
             state: SettingsState::new(),
         }
+    }
+}
+
+/// Push a single settings-overlay change into App-owned cached
+/// state.  Called from the `FieldChanged` arm above; extracted so
+/// the live-update wiring can be unit-tested without going through
+/// the full overlay key dispatch.
+pub(super) fn apply_live_update(label: &str, app: &mut App) {
+    match label {
+        LABEL_BIG_H1 => app.editor.set_big_h1(app.config.editor.big_h1),
+        LABEL_SCROLL_SPEED => app
+            .mouse
+            .set_wheel_step(app.config.editor.mouse_scroll_lines),
+        LABEL_VISUAL_LINE_NAV => {
+            app.editor.visual_line_nav = app.config.editor.visual_line_nav;
+        }
+        _ => {}
     }
 }
 
@@ -78,13 +96,7 @@ impl Modal for SettingsOverlayModal {
             })),
             SettingsResponse::FieldChanged(label) => {
                 app.save_config_with_flash("failed to persist settings overlay change");
-                if label == "Big H1 headings" {
-                    // Mirror the App-startup wiring: live-toggle the
-                    // editor's big_h1 flag so the change takes effect
-                    // on the next frame instead of waiting for a file
-                    // reload.
-                    app.editor.set_big_h1(app.config.editor.big_h1);
-                }
+                apply_live_update(label, app);
                 ModalOutcome::Continue
             }
         }
@@ -113,6 +125,99 @@ mod tests {
 
     use super::*;
     use crate::app::test_utils::make_app;
+    use crate::ui::settings_overlay::all_row_labels;
+
+    /// Labels whose underlying config field is also cached on `App`
+    /// (or a child) at startup and therefore needs an explicit push
+    /// after a settings-overlay edit to take effect without
+    /// restarting.  The rest of the rows are read live at render /
+    /// use time.  Kept in sync with the row table by
+    /// [`live_update_coverage_is_exhaustive`].
+    const LIVE_UPDATE_LABELS: &[&str] = &[LABEL_BIG_H1, LABEL_SCROLL_SPEED, LABEL_VISUAL_LINE_NAV];
+
+    /// Labels that are read live (no App-side cache to push to) and
+    /// therefore intentionally have no arm in [`apply_live_update`].
+    /// Includes the two non-editable "open externally" rows and the
+    /// blank divider.  Kept next to [`LIVE_UPDATE_LABELS`] so the
+    /// pair must add up to every row in the overlay.
+    const NON_LIVE_UPDATE_LABELS: &[&str] = &[
+        "Open config folder",
+        "Open config.toml in default editor",
+        "",
+        "Use hint line",
+        "Hint duration",
+        "Limit editor width",
+        "Editor max width",
+        "Show images",
+        "Show diagrams",
+        "Show remote images",
+        "Show table buttons",
+        "Export inlined images",
+        "Export diagrams as SVG",
+    ];
+
+    #[test]
+    fn live_update_coverage_is_exhaustive() {
+        // Every row in the settings overlay must appear in exactly
+        // one of LIVE_UPDATE_LABELS or NON_LIVE_UPDATE_LABELS.
+        // Adding a new row to `build_rows` without classifying it
+        // here trips this test, forcing the author to decide whether
+        // the new field needs an `apply_live_update` arm or is read
+        // live at use time.
+        let actual = all_row_labels();
+        let mut classified: Vec<&str> = LIVE_UPDATE_LABELS
+            .iter()
+            .copied()
+            .chain(NON_LIVE_UPDATE_LABELS.iter().copied())
+            .collect();
+        classified.sort();
+        let mut sorted_actual = actual.clone();
+        sorted_actual.sort();
+        assert_eq!(
+            sorted_actual, classified,
+            "settings overlay rows changed; update LIVE_UPDATE_LABELS \
+             and/or NON_LIVE_UPDATE_LABELS in src/app/modal/settings.rs"
+        );
+        // Guard against a label appearing in both lists.
+        for label in LIVE_UPDATE_LABELS {
+            assert!(
+                !NON_LIVE_UPDATE_LABELS.contains(label),
+                "{label:?} is in both LIVE_UPDATE_LABELS and NON_LIVE_UPDATE_LABELS"
+            );
+        }
+    }
+
+    #[test]
+    fn live_update_pushes_big_h1_into_editor_cache() {
+        let mut app = make_app();
+        let original = app.editor.big_h1;
+        app.config.editor.big_h1 = !original;
+        apply_live_update(LABEL_BIG_H1, &mut app);
+        assert_eq!(app.editor.big_h1, app.config.editor.big_h1);
+        assert_ne!(app.editor.big_h1, original);
+    }
+
+    #[test]
+    fn live_update_pushes_visual_line_nav_into_editor_cache() {
+        let mut app = make_app();
+        let original = app.editor.visual_line_nav;
+        app.config.editor.visual_line_nav = !original;
+        apply_live_update(LABEL_VISUAL_LINE_NAV, &mut app);
+        assert_eq!(
+            app.editor.visual_line_nav,
+            app.config.editor.visual_line_nav
+        );
+        assert_ne!(app.editor.visual_line_nav, original);
+    }
+
+    #[test]
+    fn live_update_pushes_scroll_speed_into_mouse_dispatcher() {
+        let mut app = make_app();
+        let new_step = app.config.editor.mouse_scroll_lines + 7;
+        app.config.editor.mouse_scroll_lines = new_step;
+        apply_live_update(LABEL_SCROLL_SPEED, &mut app);
+        assert_eq!(app.mouse.wheel_step(), new_step);
+    }
 
     #[test]
     fn settings_overlay_open_external_sets_pending_flag_and_closes_overlay() {
