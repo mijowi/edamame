@@ -105,17 +105,18 @@ fn fenced_code_block_content() {
 #[test]
 fn fenced_code_block_has_background() {
     let lines = render("```\nhello\n```\n");
-    // Code block now renders with a colored background, no box border.
-    // First line should be the code content (with leading space padding).
-    let first_text = line_text(&lines[0]);
+    // Code block renders three rows: opening-fence placeholder, body, and
+    // closing-fence placeholder.  All three carry the code-block background.
+    let body_text = line_text(&lines[1]);
     assert!(
-        first_text.contains("hello"),
-        "Expected code content, got: {first_text:?}"
+        body_text.contains("hello"),
+        "Expected code content, got: {body_text:?}"
     );
-    // There should be no box border characters.
+    // There should be no box border characters anywhere in the block.
+    let all_text: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
     assert!(
-        !first_text.contains('╭'),
-        "Unexpected box border: {first_text:?}"
+        !all_text.contains('╭'),
+        "Unexpected box border: {all_text:?}"
     );
 }
 

@@ -211,12 +211,9 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             cursor_block_ast,
             Some(crate::markdown::Block::CodeBlock { .. })
         );
-        let is_fenced_code_with_lang = matches!(
+        let is_fenced_code = matches!(
             cursor_block_ast,
-            Some(crate::markdown::Block::CodeBlock {
-                language: Some(_),
-                ..
-            })
+            Some(crate::markdown::Block::CodeBlock { fenced: true, .. })
         );
         // Mermaid code blocks are post-processed into synthetic
         // `Block::ImageBlock`s.  When the cursor enters one, every
@@ -244,14 +241,10 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // fenced code block (the renderer reserves a trailing padded row
         // for it; revealing that row shows the ``` glyphs).
         let raw_line_count = raw_lines.len();
-        let trimmed_block = raw_block_source.trim_start();
-        let block_is_fenced = trimmed_block.starts_with("```") || trimmed_block.starts_with("~~~");
-        let is_closing_fence_line = is_code_block
-            && block_is_fenced
-            && raw_line_count > 0
-            && cursor_raw_line == raw_line_count - 1;
+        let is_closing_fence_line =
+            is_fenced_code && raw_line_count > 0 && cursor_raw_line == raw_line_count - 1;
         let code_block_allows_reveal = !is_code_block
-            || (is_fenced_code_with_lang && cursor_raw_line == 0)
+            || (is_fenced_code && cursor_raw_line == 0)
             || is_closing_fence_line;
         let cursor_in_block = if is_table && cursor_block_own >= 3 {
             let last_replaceable = cursor_block_own.saturating_sub(2);
@@ -303,19 +296,13 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             // therefore drift the cursor up by one row per blank, making
             // edits land below the visible cursor.
             //
-            // Fenced blocks WITH a language tag render a label row for
-            // the opening fence and a trailing padded row for the
-            // closing fence, so raw lines map 1:1 to rendered lines.
-            // Fenced blocks WITHOUT a language tag have no opening
-            // label row but still reserve the trailing closing row —
-            // shift body lines up by one so the closing fence lands on
-            // the reserved trailing row.  Indented code blocks have no
-            // fences at all; their raw lines map 1:1.
-            let opening_fence_has_no_row = block_is_fenced && !is_fenced_code_with_lang;
-            let shift = if opening_fence_has_no_row { 1 } else { 0 };
-            cursor_raw_line
-                .saturating_sub(shift)
-                .min(cursor_block_own.saturating_sub(1))
+            // Fenced blocks always reserve an opening row (either the
+            // ` lang ` label or, when no language tag is present, an
+            // NBSP-padded placeholder matching the closing fence) and a
+            // trailing padded row for the closing fence, so raw lines
+            // map 1:1 to rendered lines.  Indented code blocks have no
+            // fences at all; their raw lines also map 1:1.
+            cursor_raw_line.min(cursor_block_own.saturating_sub(1))
         } else {
             // Raw-to-rendered line mapping is 1:1 for simple blocks, but a
             // list that contains a blank-line separator (e.g. the form

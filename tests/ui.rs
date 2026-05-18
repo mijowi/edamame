@@ -1394,14 +1394,15 @@ fn rendered_view_code_block_blank_body_line_aligns_cursor_indicator() {
 }
 
 #[test]
-fn rendered_view_bare_code_fence_never_de_renders() {
+fn rendered_view_bare_code_fence_de_renders_opening_fence() {
     use edamame::document::Buffer;
     use edamame::editor::EditorState;
     use edamame::ui::{RenderedView, RenderedViewState};
 
     let theme = Box::leak(Box::new(Theme::default()));
-    // Code block with no language tag — the renderer emits NO language
-    // label, so nothing in the block has a useful raw form to expose.
+    // Code block with no language tag — the renderer reserves a padded
+    // opening-fence row (matching the closing-fence row) that the cursor
+    // can land on and reveal the raw ``` glyphs.
     let src = "```\nfn main() {}\n```\n";
 
     let mut state = EditorState::new(Buffer::from_str(src), theme);
@@ -1433,19 +1434,17 @@ fn rendered_view_bare_code_fence_never_de_renders() {
             })
             .collect()
     };
-    // Row 0 is the first body line "fn main() {}" — for a bare ``` fence
-    // there's no language label row.  The cursor is on raw line 0 (the
-    // opening fence), but since there's no language to expose, the
-    // body must remain rendered.
+    // The cursor sits on raw line 0 (the opening fence).  Row 0 must show
+    // the raw ``` glyphs and the body line stays on row 1.
     assert!(
-        row_text(0).contains("fn main() {}"),
-        "bare fence must not de-render the first body line, got: {:?}",
+        row_text(0).contains("```"),
+        "opening fence must de-render to show ``` glyphs, got: {:?}",
         row_text(0)
     );
     assert!(
-        !row_text(0).contains("```"),
-        "bare fence must not bleed ``` into rendered output, got: {:?}",
-        row_text(0)
+        row_text(1).contains("fn main() {}"),
+        "body line must follow the opening-fence row, got: {:?}",
+        row_text(1)
     );
 }
 
