@@ -448,12 +448,23 @@ impl<'t> Renderer<'t> {
         // blank lines after every row of code).
         let block_width = self.viewport_width.max(1);
 
-        // Optional language label shown above the block.
-        if let Some(lang) = language {
-            out.push(Line::styled(
-                format!(" {} ", lang),
-                self.theme.code_block_lang,
-            ));
+        // Opening-fence row: fenced blocks always reserve a leading padded
+        // row matching the code background.  When a language tag is present
+        // the row carries the ` lang ` label styled with `code_block_lang`;
+        // otherwise it's an NBSP-padded placeholder matching the closing
+        // fence.  In both cases the actual ``` glyphs only become visible
+        // when the cursor enters this raw line and `RenderedView` reveals
+        // the raw source for that row.
+        if fenced {
+            if let Some(lang) = language {
+                out.push(Line::styled(
+                    format!(" {} ", lang),
+                    self.theme.code_block_lang,
+                ));
+            } else {
+                let padded = "\u{00A0}".repeat(block_width);
+                out.push(Line::styled(padded, self.theme.code_block_text));
+            }
         }
 
         if self.code_wrap {
@@ -950,8 +961,9 @@ mod tests {
     #[test]
     fn code_block_has_content() {
         let lines = render("```\nfoo\n```\n");
-        let first_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(first_text.contains("foo"));
+        // Line 0 is the opening-fence placeholder; the body lives on line 1.
+        let body_text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(body_text.contains("foo"));
     }
 
     #[test]
