@@ -20,6 +20,6 @@ pub use config::{
     AppearanceMode, Config, ConfigWarning, CustomExportEntry, DiagramsEnabled, ImagesEnabled,
     LoadedConfig, RemoteImagePolicy, StatusBarLayout, WarningKind,
 };
-pub use keymap::{Action, KeyBindingOverrides, KeyMap, KeyMapError};
+pub use keymap::{Action, CoalesceKind, KeyBindingOverrides, KeyMap, KeyMapError};
 pub use theme::Theme;
 pub use theme_file::ThemeFile;

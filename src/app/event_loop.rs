@@ -30,7 +30,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Rect, Size};
 use ratatui::Terminal;
 
-use crate::config::{Action, Config, KeyBindingOverrides, KeyMap};
+use crate::config::{Action, CoalesceKind, Config, KeyBindingOverrides, KeyMap};
 use crate::editor::{edit_ops, mouse_ops};
 use crate::input::mode_handler::default::DefaultHandler;
 use crate::terminal::PointerShape;
@@ -324,9 +324,9 @@ impl App {
         rx: &mpsc::Receiver<AppEvent>,
         since_draw: Option<Duration>,
     ) -> Option<Event> {
-        // If `drain_pending_image_ready` stashed a Term event on the
-        // previous iteration, replay it before consulting the channel.
-        if let Some(e) = self.pending_term_event.take() {
+        // If a previous drain stashed Term events, replay them in
+        // order before consulting the channel.
+        if let Some(e) = self.pending_events.pop_front() {
             return Some(e);
         }
 
@@ -729,10 +729,10 @@ impl App {
     }
 
     /// Handle a key (or other non-mouse / non-paste) event when no
-    /// modal is open: translate the event into an `Action` via
-    /// `DefaultHandler`, intercept App-level actions, and otherwise
-    /// fall through to `edit_ops::apply` with the appropriate flash
-    /// and link-follow side-effects.
+    /// modal is open.  Reads ahead any additional key-press events
+    /// already sitting in the channel so a burst of autorepeat events
+    /// is processed and (where possible) coalesced into one buffer
+    /// mutation per same-kind run, rather than one per keystroke.
     ///
     /// Drains the deferred external-editor flow at the end.
     pub(super) fn dispatch_key_event(
@@ -742,36 +742,223 @@ impl App {
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
         rx: &mpsc::Receiver<AppEvent>,
     ) {
-        // Clone the live keymap for this iteration so the borrow stays
-        // cheap and doesn't conflict with `&mut self` inside action
-        // handlers.
+        let mut batch: Vec<Event> = vec![event];
+        self.collect_key_burst(rx, &mut batch);
+        self.dispatch_key_batch(batch, dims, terminal, rx);
+    }
+
+    /// Drain key-press events from the front of `pending_events` and
+    /// from `rx` into `batch`.  Non-key terminal events interrupt the
+    /// burst: they're stashed to `pending_events` (back, preserving
+    /// channel order) so the next loop iteration routes them through
+    /// the normal dispatcher.  Non-Term `AppEvent`s (image-ready /
+    /// protocol-ready / link-open-result) are processed inline so the
+    /// image pipeline doesn't starve behind a typing burst — mirrors
+    /// `drain_pending_image_ready`.
+    fn collect_key_burst(&mut self, rx: &mpsc::Receiver<AppEvent>, batch: &mut Vec<Event>) {
+        while matches!(self.pending_events.front(), Some(e) if is_key_press(e)) {
+            if let Some(e) = self.pending_events.pop_front() {
+                batch.push(e);
+            }
+        }
+        loop {
+            match rx.try_recv() {
+                Ok(AppEvent::Term(e)) => {
+                    if is_key_press(&e) {
+                        batch.push(e);
+                    } else {
+                        self.pending_events.push_back(e);
+                        break;
+                    }
+                }
+                Ok(AppEvent::ImageReady(Ok(loaded))) => {
+                    self.editor.images.set_decoded_with_prebuilt(
+                        &loaded.url,
+                        loaded.image,
+                        loaded.scratch,
+                    );
+                    self.images_dirty = true;
+                    self.needs_draw = true;
+                }
+                Ok(AppEvent::ImageReady(Err((url, message)))) => {
+                    tracing::debug!(target: "image", %url, %message, "image decode failed");
+                    self.editor.images.set_failed(&url, message);
+                    self.images_dirty = true;
+                    self.needs_draw = true;
+                }
+                Ok(AppEvent::ProtocolReady(Ok(resp))) => {
+                    self.editor.images.apply_resize_response(resp);
+                    self.needs_draw = true;
+                }
+                Ok(AppEvent::ProtocolReady(Err(err))) => {
+                    tracing::debug!(target: "image", %err, "encoder request failed");
+                    self.editor.images.drop_pending_front();
+                }
+                Ok(AppEvent::LinkOpenResult(result)) => {
+                    if let Err(msg) = result {
+                        tracing::warn!(target: "link", error = %msg, "link open failed");
+                        self.notify(format!("Link open failed: {msg}"), ModalKind::Error);
+                        self.needs_draw = true;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    /// Process a batch of key-press events.  The first event in any
+    /// run of same-coalesceable-kind actions is always dispatched
+    /// through the regular per-event path (so list-marker erase,
+    /// Preview-to-Rendered transition, selection-clearing-delete, and
+    /// other one-shot transitions still fire).  Subsequent same-kind
+    /// events with no selection / no modal / no Preview mode collapse
+    /// into a single `apply_insert_run` / `apply_delete_run` call —
+    /// one buffer mutation, one history entry, one `parsed_version`
+    /// bump for the whole burst.
+    ///
+    /// When a single dispatch opens a modal, sets a pending external-
+    /// editor flag, or sets `pending_link_follow`, the remaining events
+    /// are pushed back to the front of `pending_events` so the next
+    /// run-loop iteration routes them through the appropriate dispatcher
+    /// (modal vs. key vs. deferred-flow).
+    fn dispatch_key_batch(
+        &mut self,
+        events: Vec<Event>,
+        dims: &DocDims,
+        terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+        rx: &mpsc::Receiver<AppEvent>,
+    ) {
         let keymap = self
             .keymap
             .as_ref()
             .cloned()
             .unwrap_or_else(|| KeyMap::build(&KeyBindingOverrides::default()).unwrap());
-        let mut handler = DefaultHandler::new(&keymap);
+
+        let mut i = 0;
+        while i < events.len() {
+            // 1. Dispatch event[i] individually.  This handles every
+            //    one-shot transition (Preview→Rendered, selection
+            //    clear, list-marker consume) before we attempt to
+            //    coalesce subsequent same-kind events.
+            let action_i = resolve_action(&events[i], &keymap, &self.editor);
+            let coalesce = action_i.as_ref().and_then(Action::coalesce_kind);
+            self.dispatch_single_key(events[i].clone(), &keymap, dims);
+            i += 1;
+            if self.should_quit {
+                self.requeue_remaining(&events[i..]);
+                break;
+            }
+
+            // 2. If a side-effect has fired that demands re-dispatch
+            //    routing (modal opened, external-editor pending,
+            //    link-follow queued), stop draining and route the rest
+            //    through the next run-loop iteration.
+            if self.should_break_after_dispatch() {
+                self.requeue_remaining(&events[i..]);
+                return;
+            }
+            // If event[i-1] wasn't coalesceable, or the editor state
+            // can't extend a run, fall through to the next outer
+            // iteration (which dispatches event[i] regularly).
+            let Some(kind) = coalesce else { continue };
+            if self.editor.selection.is_some()
+                || self.drag_target.is_some()
+                || self.editor.mode == crate::editor::Mode::Preview
+            {
+                continue;
+            }
+
+            let mut run_chars: Vec<char> = Vec::new();
+            let mut run_count = 0usize;
+            while i < events.len() {
+                let Some(action_n) = resolve_action(&events[i], &keymap, &self.editor) else {
+                    break;
+                };
+                if action_n.coalesce_kind() != Some(kind) {
+                    break;
+                }
+                // Selection becomes live only between events; sample it
+                // per iteration so a mid-batch selection (impossible
+                // for pure typing, but cheap to guard) ends the run.
+                if self.editor.selection.is_some() {
+                    break;
+                }
+                if let Action::InsertChar(c) = action_n {
+                    run_chars.push(c);
+                }
+                run_count += 1;
+                i += 1;
+            }
+            if run_count > 0 {
+                let scroll_before = self.editor.scroll;
+                match kind {
+                    CoalesceKind::Insert => {
+                        edit_ops::apply_insert_run(
+                            &mut self.editor,
+                            &run_chars,
+                            dims.doc_height,
+                            dims.doc_width,
+                        );
+                    }
+                    CoalesceKind::BackDelete => {
+                        edit_ops::apply_delete_run(
+                            &mut self.editor,
+                            run_count,
+                            true,
+                            dims.doc_height,
+                            dims.doc_width,
+                        );
+                    }
+                    CoalesceKind::ForwardDelete => {
+                        edit_ops::apply_delete_run(
+                            &mut self.editor,
+                            run_count,
+                            false,
+                            dims.doc_height,
+                            dims.doc_width,
+                        );
+                    }
+                }
+                if self.editor.scroll != scroll_before {
+                    self.mark_scrolling();
+                }
+                self.needs_draw = true;
+            }
+            if self.should_break_after_dispatch() {
+                self.requeue_remaining(&events[i..]);
+                return;
+            }
+        }
+
+        if self.pending_open_file_in_editor {
+            self.pending_open_file_in_editor = false;
+            self.open_current_file_in_editor(terminal, rx);
+        }
+        if let Some(path) = self.pending_open_theme_in_editor.take() {
+            self.open_theme_in_editor(&path, terminal, rx);
+        }
+    }
+
+    /// Dispatch one key event through the same logic as the previous
+    /// (pre-coalescing) `dispatch_key_event` body — minus the external-
+    /// editor drain, which `dispatch_key_batch` handles once at the end.
+    fn dispatch_single_key(
+        &mut self,
+        event: Event,
+        keymap: &KeyMap,
+        dims: &DocDims,
+    ) {
+        let mut handler = DefaultHandler::new(keymap);
         let Some(action) = handler.handle_event(event, &self.editor) else {
             return;
         };
-
-        // Phase 8 — App-level actions intercepted BEFORE the generic
-        // `edit_ops::apply` dispatch.  Link navigation mutates App
-        // state (nav stack, file load) that `EditorState` doesn't own,
-        // so these paths stay here.
         let handled = self.handle_app_action(&action, dims.doc_height, dims.doc_width);
         if !handled {
-            // Phase 9 — Quit on a dirty buffer opens the three-button
-            // confirm modal instead of terminating.  On a clean buffer
-            // we fall through to `edit_ops::apply` which returns `true`.
             if matches!(action, Action::Quit) && self.editor.dirty {
                 self.open_quit_confirm();
                 self.needs_draw = true;
                 return;
             }
-            // Phase 9 — observe the effects of certain actions so we
-            // can flash a transient message.  Save: detect failure and
-            // raise a sticky error instead of leaving the user guessing.
             let save_before_dirty = self.editor.dirty;
             let scroll_before = self.editor.scroll;
             let quit = edit_ops::apply(
@@ -787,25 +974,54 @@ impl App {
                 self.mark_scrolling();
             }
             self.flash_for_action(&action, save_before_dirty);
-            // Edit actions may have set `pending_link_follow`
-            // (FollowLinkUnderCursor only reaches here when the action
-            // ISN'T App-level).
             if let Some(target) = self.editor.pending_link_follow.take() {
                 self.follow_link(target, dims.doc_height, dims.doc_width);
             }
         }
         self.needs_draw = true;
-        // Phase 10 — `OpenInExternalEditor` defers to the run loop the
-        // same way the settings overlay defers `OpenConfigFolder`
-        // (we own `terminal` / `rx` here, not in `handle_app_action`).
-        if self.pending_open_file_in_editor {
-            self.pending_open_file_in_editor = false;
-            self.open_current_file_in_editor(terminal, rx);
-        }
-        if let Some(path) = self.pending_open_theme_in_editor.take() {
-            self.open_theme_in_editor(&path, terminal, rx);
+    }
+
+    /// True when a just-dispatched event left App state that the next
+    /// event in the batch shouldn't route through `dispatch_single_key`:
+    /// a modal has opened, an external-editor flow is pending, or a
+    /// link-follow is queued.  The remaining batch is pushed back onto
+    /// the front of `pending_events` so the run loop dispatches it
+    /// through the appropriate path on its next iteration.
+    fn should_break_after_dispatch(&self) -> bool {
+        !self.modal_stack.is_empty()
+            || self.pending_open_file_in_editor
+            || self.pending_open_theme_in_editor.is_some()
+            || self.pending_open_config_in_editor
+            || self.editor.pending_link_follow.is_some()
+    }
+
+    /// Push `remaining` onto the front of `pending_events` in their
+    /// original order.  Reverses iteration so the first event of
+    /// `remaining` ends up at the front of the queue.
+    fn requeue_remaining(&mut self, remaining: &[Event]) {
+        for e in remaining.iter().rev() {
+            self.pending_events.push_front(e.clone());
         }
     }
+}
+
+/// True iff `event` is a `Event::Key(Press)` — the only kind of
+/// terminal event the coalescing path accepts into a key batch.
+fn is_key_press(event: &Event) -> bool {
+    matches!(event, Event::Key(k) if k.kind == KeyEventKind::Press)
+}
+
+/// Resolve `event` to an `Action` via a freshly-constructed
+/// `DefaultHandler`.  Returns `None` for non-key events or keys with
+/// no binding.  Stateless — safe to call from the run-detection
+/// look-ahead without mutating App state.
+fn resolve_action(
+    event: &Event,
+    keymap: &KeyMap,
+    editor: &crate::editor::EditorState,
+) -> Option<Action> {
+    let mut handler = DefaultHandler::new(keymap);
+    handler.handle_event(event.clone(), editor)
 }
 
 /// Translate the App's `drag_target` into a UI-layer `DropIndicator` for
