@@ -89,6 +89,15 @@ pub struct EditorState {
     pub mode: Mode,
     pub parsed: ParsedDoc,
     /// Whether the buffer has unsaved changes since last save.
+    ///
+    /// Autosave keys off the pair `(dirty, Buffer::version())` —
+    /// `App::tick_autosave` arms its debounce timer whenever the
+    /// version bumps *and* `dirty` is true, and clears the pending
+    /// timer when `dirty` flips back to false.  Any future code path
+    /// that clears `dirty` without going through a save (e.g. a
+    /// "discard changes" / revert action) is fine, but a path that
+    /// sets `dirty = true` without bumping `Buffer::version()` would
+    /// silently never trigger autosave — keep the two in lockstep.
     pub dirty: bool,
     /// Internal clipboard (kill-ring). Used as fallback when arboard is
     /// unavailable.

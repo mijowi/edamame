@@ -56,6 +56,22 @@ appearance = "dark"
 # Floored at 20 to keep layout sane. Default: 80.
 # max_width_cols = 80
 
+# Silently save the buffer to disk after `autosave_idle_ms` of typing
+# inactivity. Only buffers with an associated file path autosave; an
+# unnamed buffer (e.g. `edamame` with no filename) is never written.
+# A successful autosave flashes "Autosaved" on the hint line.
+# Default: true.
+# autosave_enabled = true
+
+# Idle window (ms) the user must stop editing for before the pending
+# dirty buffer is autosaved. Every keystroke resets the timer, so a
+# typing burst produces at most one autosave at the end of the burst.
+# Must be strictly between 1000 and 600000 (10 min); out-of-range
+# values are ignored at load time (with a warning) and the default is
+# used instead. This setting is only configurable via this file —
+# the settings overlay exposes only the on/off toggle. Default: 5000.
+# autosave_idle_ms = 5000
+
 # Render H1 headings as 4-row "big text" using Quadrant block characters
 # (▘▝▖▗▀▄▌▐█), via the `tui-big-text` widget. Falls back to the regular
 # one-line styled rendering when the title would exceed the viewport width

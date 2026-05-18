@@ -33,6 +33,15 @@ pub enum WarningKind {
     /// action name or an unparseable key string.  Bad entries are
     /// dropped from the live keymap; valid entries still take effect.
     InvalidKeybindings(Vec<String>),
+    /// A value in `config.toml` parsed successfully but fell outside
+    /// the supported range for its field.  The loader substitutes the
+    /// default and surfaces this so the user knows their requested
+    /// value didn't take effect.  `key` is the dotted TOML path (e.g.
+    /// `editor.autosave_idle_ms`), `message` explains the constraint.
+    InvalidValue {
+        key: String,
+        message: String,
+    },
     /// The active theme named in `config.toml` was neither a built-in
     /// nor a file in `themes/`.  The loader substitutes a built-in
     /// chosen by terminal capability (`Edamame` on true-color, `256

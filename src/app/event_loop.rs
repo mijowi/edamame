@@ -159,6 +159,7 @@ impl App {
         if self.editor.cursor_blink.tick() {
             self.needs_draw = true;
         }
+        self.tick_autosave();
         self.editor.modal_open = self.any_modal_open();
     }
 

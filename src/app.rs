@@ -1,6 +1,7 @@
 pub mod modal;
 
 mod actions;
+mod autosave;
 mod event_loop;
 mod external_editor;
 mod flash;
@@ -231,6 +232,17 @@ pub struct App {
     /// `App::run` flashes "[New File]" once at startup so the user
     /// understands the buffer is empty and saving will create the file.
     started_with_new_file: bool,
+    /// Wall-clock instant of the most-recently observed buffer edit
+    /// for autosave debounce.  Reset on every dirtying edit (detected
+    /// via `Buffer::version()` change in [`App::tick_autosave`]); cleared
+    /// when the buffer flips clean (manual save, autosave success,
+    /// reload, …).  When set, the run loop wakes at
+    /// `t + config.editor.autosave_idle_ms` and persists the buffer.
+    autosave_pending_since: Option<Instant>,
+    /// Last-observed `Buffer::version()`.  Used by `tick_autosave` to
+    /// detect that an edit has happened since the previous tick and
+    /// restart the debounce window.
+    autosave_last_seen_version: u64,
 }
 
 impl App {
@@ -464,6 +476,8 @@ impl App {
             hint_prompt: None,
             modal_stack,
             started_with_new_file,
+            autosave_pending_since: None,
+            autosave_last_seen_version: 0,
         })
     }
 

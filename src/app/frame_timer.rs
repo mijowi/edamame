@@ -93,6 +93,9 @@ impl App {
         // isn't typing.
         push(self.transient_deadline());
         push(self.editor.cursor_blink.next_toggle());
+        // Autosave: wake when the idle-debounce window expires so the
+        // save fires without the user having to press a key.
+        push(self.autosave_deadline());
         earliest
     }
 }
