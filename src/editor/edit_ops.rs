@@ -788,6 +788,124 @@ fn sync_cursor_to_scroll(state: &mut EditorState, viewport_height: usize) {
     }
 }
 
+/// Coalesced version of a run of `Action::InsertChar(c)` events.  Builds
+/// a single string from `chars` (with the same table-pipe escaping that
+/// the per-keystroke `Action::InsertChar` path applies) and routes it
+/// through `state.apply_delta` as ONE delta — so a held-key autorepeat
+/// burst becomes one buffer mutation, one history entry, and one
+/// `parsed_version` bump instead of N.
+///
+/// Preconditions (enforced by the run-membership predicate in the
+/// dispatcher):
+/// * `chars` is non-empty.
+/// * `state.mode != Mode::Preview` — Preview's first keystroke transitions
+///   without inserting; the caller dispatches that single event normally
+///   and only the post-transition events flow through here.
+/// * `state.selection` is `None` — a selection-deleting insert ends its
+///   own run before coalescing extends it.
+pub fn apply_insert_run(
+    state: &mut EditorState,
+    chars: &[char],
+    viewport_height: usize,
+    viewport_width: usize,
+) {
+    if chars.is_empty() {
+        return;
+    }
+    let in_table = cursor_in_table(state);
+    let mut text = String::with_capacity(chars.len());
+    for &ch in chars {
+        if ch == '|' && in_table {
+            text.push_str("\\|");
+        } else {
+            text.push(ch);
+        }
+    }
+    insert_text(state, &text);
+
+    // Mirror the post-action upkeep from `apply()`: renumber ordered
+    // lists when typing inside one, snap the cursor off any list marker
+    // it may have landed on, and re-flush + ensure-visible so the
+    // cursor stays on-screen even when the burst added a wrapped row.
+    if state.mode == Mode::Rendered {
+        list_renumber_at_cursor(state);
+        clamp_cursor_out_of_marker(state);
+    }
+    if state.mode != Mode::Raw {
+        state.flush_parsed_if_dirty();
+    }
+    state.ensure_cursor_visible(viewport_height, viewport_width);
+}
+
+/// Coalesced version of a run of `Action::DeleteCharBack` /
+/// `Action::DeleteCharForward` events.  Walks `count` graphemes from the
+/// current cursor position in the requested direction and removes them
+/// as a single delta.
+///
+/// Preconditions (enforced by the dispatcher):
+/// * `count >= 1`.
+/// * `state.mode != Mode::Preview`.
+/// * `state.selection` is `None`.
+///
+/// List-marker erase and task-checkbox erase are NOT short-circuited
+/// here — those are one-shot transitions, not autorepeat candidates.
+/// The dispatcher arranges for the first delete to fire through the
+/// regular `apply()` path, where `list_backspace_consumes_marker` runs;
+/// any subsequent same-kind events fall into this run.
+pub fn apply_delete_run(
+    state: &mut EditorState,
+    count: usize,
+    backward: bool,
+    viewport_height: usize,
+    viewport_width: usize,
+) {
+    if count == 0 {
+        return;
+    }
+    let buffer_len = state.buffer.len_chars();
+    let (start, end) = if backward {
+        let mut off = state.cursor.offset;
+        for _ in 0..count {
+            if off == 0 {
+                break;
+            }
+            off = prev_grapheme_offset(&state.buffer, off);
+        }
+        (off, state.cursor.offset)
+    } else {
+        let mut off = state.cursor.offset;
+        for _ in 0..count {
+            if off >= buffer_len {
+                break;
+            }
+            off = next_grapheme_offset(&state.buffer, off);
+        }
+        (state.cursor.offset, off)
+    };
+    if start >= end {
+        return;
+    }
+    let removed = state.buffer.slice_to_string(start, end);
+    // `apply_delta` sets cursor to `delta.redo_cursor()` (= `start`,
+    // since `inserted` is empty), which is the correct post-delete
+    // position for both backward and forward — no manual cursor
+    // pre-set needed.
+    state.apply_delta(EditDelta {
+        offset: start,
+        removed,
+        inserted: String::new(),
+    });
+
+    if state.mode == Mode::Rendered {
+        list_renumber_at_cursor(state);
+        clamp_cursor_out_of_marker(state);
+    }
+    if state.mode != Mode::Raw {
+        state.flush_parsed_if_dirty();
+    }
+    state.ensure_cursor_visible(viewport_height, viewport_width);
+}
+
 /// Insert `text` at the current cursor position, pushing through history.
 fn insert_text(state: &mut EditorState, text: &str) {
     let offset = state.cursor.offset;

@@ -123,6 +123,103 @@ fn delete_char_forward_at_end_is_noop() {
     assert_eq!(st.cursor.offset, 5);
 }
 
+// ── PR1 — coalesced run entrypoints ─────────────────────────────────────────
+
+#[test]
+fn burst_of_inserts_coalesces_into_one_delta() {
+    // Holding a key produces a burst of `InsertChar` actions that the
+    // run loop collapses into a single `apply_insert_run` call.  One
+    // delta, one history entry, one `parsed_version` bump.
+    let mut st = state("");
+    st.mode = Mode::Rendered;
+    let history_before = st.history.undo_depth();
+    let version_before = st.parsed_version;
+
+    let chars: Vec<char> = "aaaaaaaaaa".chars().collect();
+    edit_ops::apply_insert_run(&mut st, &chars, VP, VW);
+
+    assert_eq!(st.contents(), "aaaaaaaaaa");
+    assert_eq!(
+        st.history.undo_depth() - history_before,
+        1,
+        "one history entry for the whole run"
+    );
+    // The coalesced path bumps `parsed_version` at most twice — once
+    // for the in-line apply_delta (so per-frame snapshot caches
+    // invalidate at the next draw) and once for the batch-end
+    // `flush_parsed_if_dirty` reparse.  Crucially this is O(1) in the
+    // run length, not O(N), which is the load-bearing PR1 invariant.
+    let bumps = st.parsed_version.wrapping_sub(version_before);
+    assert!(bumps <= 2, "expected ≤ 2 parsed_version bumps, got {bumps}");
+}
+
+#[test]
+fn burst_breaks_on_kind_change() {
+    // Alternating Insert / Backspace / Insert is three distinct
+    // single-kind runs.  Each goes through its own apply call so the
+    // total history depth advances by three, not one.
+    let mut st = state("");
+    st.mode = Mode::Rendered;
+    let history_before = st.history.undo_depth();
+
+    apply(&mut st, Action::InsertChar('a'));
+    apply(&mut st, Action::DeleteCharBack);
+    apply(&mut st, Action::InsertChar('b'));
+
+    assert_eq!(st.contents(), "b");
+    assert_eq!(st.history.undo_depth() - history_before, 3);
+}
+
+#[test]
+fn delete_run_coalesces_into_one_delta() {
+    // A held-Backspace burst removes N graphemes via a single
+    // `apply_delete_run` call.
+    let mut st = state("abcdef");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 6;
+    let history_before = st.history.undo_depth();
+
+    edit_ops::apply_delete_run(&mut st, 4, /*backward=*/ true, VP, VW);
+
+    assert_eq!(st.contents(), "ab");
+    assert_eq!(st.cursor.offset, 2);
+    assert_eq!(st.history.undo_depth() - history_before, 1);
+}
+
+#[test]
+fn forward_delete_run_coalesces_into_one_delta() {
+    let mut st = state("abcdef");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 1;
+    let history_before = st.history.undo_depth();
+
+    edit_ops::apply_delete_run(&mut st, 3, /*backward=*/ false, VP, VW);
+
+    assert_eq!(st.contents(), "aef");
+    assert_eq!(st.cursor.offset, 1);
+    assert_eq!(st.history.undo_depth() - history_before, 1);
+}
+
+#[test]
+fn insert_run_escapes_pipe_inside_table() {
+    // Inside a table the per-keystroke `InsertChar('|')` path inserts
+    // `\|` so the cell doesn't split.  The coalesced run honours the
+    // same rule.
+    let mut st = state("|h|w|\n|-|-|\n|a|b|\n");
+    st.mode = Mode::Rendered;
+    // Position the cursor inside the first body cell ("a").
+    st.cursor.offset = 14;
+    let before = st.contents();
+    edit_ops::apply_insert_run(&mut st, &['|', 'x'], VP, VW);
+    let after = st.contents();
+    assert!(
+        after.contains("\\|x"),
+        "expected \\| escape; got: before={:?} after={:?}",
+        before,
+        after
+    );
+}
+
 #[test]
 fn insert_tab_inserts_four_spaces() {
     let mut st = state("");
@@ -150,20 +247,19 @@ fn undo_reverses_insert() {
 }
 
 #[test]
-fn undo_breaks_groups_at_non_alphanumeric_chars() {
+fn undo_merges_contiguous_inserts_across_character_classes() {
+    // Post-PR1: merge-by-contiguity means a held-key burst spanning
+    // any character class (letters, punctuation, spaces) is one undo
+    // step.  Cursor motion (= non-contiguous offsets) is the boundary.
     let mut st = state("");
     st.mode = Mode::Rendered;
     apply(&mut st, Action::InsertChar('a'));
-    apply(&mut st, Action::InsertChar(' ')); // space breaks the group
+    apply(&mut st, Action::InsertChar(' '));
     apply(&mut st, Action::InsertChar('b'));
     assert_eq!(st.contents(), "a b");
 
     apply(&mut st, Action::Undo);
-    assert_eq!(st.contents(), "a "); // undo "b"
-    apply(&mut st, Action::Undo);
-    assert_eq!(st.contents(), "a"); // undo " "
-    apply(&mut st, Action::Undo);
-    assert_eq!(st.contents(), ""); // undo "a"
+    assert_eq!(st.contents(), "");
 }
 
 #[test]

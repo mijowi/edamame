@@ -157,6 +157,35 @@ pub enum Action {
     OpenGitHub,
 }
 
+/// Classification used by the run loop to coalesce a burst of
+/// autorepeat keystrokes into a single buffer edit + history entry.
+/// Only the three highest-frequency hot-path edits are coalescable:
+/// they share an `EditDelta` shape (one offset, one removed-range,
+/// one inserted-range) so a run of them collapses cleanly.  Any
+/// action that returns `None` from [`coalesce_kind`] ends the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoalesceKind {
+    Insert,
+    BackDelete,
+    ForwardDelete,
+}
+
+impl Action {
+    /// Classify this action for keystroke coalescing.  `None` means
+    /// the action cannot be merged with its neighbours (cursor moves,
+    /// mode switches, table/list special handling, etc.).  Run-
+    /// membership is `Some(kind1) == Some(kind2)` — equal `Some`
+    /// kinds extend the current run; everything else breaks it.
+    pub fn coalesce_kind(&self) -> Option<CoalesceKind> {
+        match self {
+            Action::InsertChar(_) => Some(CoalesceKind::Insert),
+            Action::DeleteCharBack => Some(CoalesceKind::BackDelete),
+            Action::DeleteCharForward => Some(CoalesceKind::ForwardDelete),
+            _ => None,
+        }
+    }
+}
+
 /// Drive `Display for Action` and `FromStr for Action` from a single
 /// list of unit variant names.  Every payload-bearing variant has to
 /// be named explicitly outside the macro: those go into the `Display`

@@ -45,11 +45,13 @@ impl History {
 
     /// Record a completed edit. Clears the redo stack.
     ///
-    /// Adjacent single-character alphanumeric edits of the same kind are
-    /// merged into the previous undo entry so that typing "cat" — or
-    /// backspacing it — is one undo step instead of three.  The same boundary
-    /// detection is used for both directions: a space, punctuation, or any
-    /// non-alphanumeric character starts a new group.
+    /// Adjacent edits of the same kind (pure inserts or pure deletes)
+    /// merge into the previous undo entry on contiguity alone, so a
+    /// held-key autorepeat burst is one undo step regardless of what
+    /// character class (alphanumeric, punctuation, whitespace, even
+    /// `\n`) the user is repeating.  A non-contiguous offset breaks
+    /// the group — that's how intentional cursor moves naturally
+    /// separate undo entries.
     pub fn record(&mut self, delta: EditDelta) {
         if let Some(top) = self.undo_stack.last_mut() {
             if try_merge(top, &delta) {
@@ -135,14 +137,8 @@ fn try_merge(top: &mut EditDelta, new: &EditDelta) -> bool {
 }
 
 fn try_merge_insertion(top: &mut EditDelta, new: &EditDelta) -> bool {
-    match single_char(&new.inserted) {
-        Some(c) if c.is_alphanumeric() => {}
-        _ => return false,
-    }
-    // The top's LAST inserted char must also be alphanumeric.
-    match top.inserted.chars().last() {
-        Some(c) if c.is_alphanumeric() => {}
-        _ => return false,
+    if new.inserted.is_empty() {
+        return false;
     }
     // New offset must sit immediately after top's inserted text.
     let top_end = top.offset + top.inserted.chars().count();
@@ -154,41 +150,23 @@ fn try_merge_insertion(top: &mut EditDelta, new: &EditDelta) -> bool {
 }
 
 fn try_merge_deletion(top: &mut EditDelta, new: &EditDelta) -> bool {
-    match single_char(&new.removed) {
-        Some(c) if c.is_alphanumeric() => {}
-        _ => return false,
+    if new.removed.is_empty() {
+        return false;
     }
     // Backspace: the new delete sits immediately before the existing range,
-    // so prepend it.  The top's leftmost char must also be alphanumeric.
+    // so prepend it.
     if new.offset + new.removed.chars().count() == top.offset {
-        match top.removed.chars().next() {
-            Some(c) if c.is_alphanumeric() => {}
-            _ => return false,
-        }
         top.removed.insert_str(0, &new.removed);
         top.offset = new.offset;
         return true;
     }
     // Forward delete: the cursor stays put, so each new delete starts at
-    // top's offset.  Append it; the top's rightmost char must be alnum.
+    // top's offset.  Append it.
     if new.offset == top.offset {
-        match top.removed.chars().last() {
-            Some(c) if c.is_alphanumeric() => {}
-            _ => return false,
-        }
         top.removed.push_str(&new.removed);
         return true;
     }
     false
-}
-
-/// Return `Some(c)` if `s` is exactly one `char`, else `None`.
-fn single_char(s: &str) -> Option<char> {
-    let mut it = s.chars();
-    match (it.next(), it.next()) {
-        (Some(c), None) => Some(c),
-        _ => None,
-    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -298,44 +276,27 @@ mod tests {
     }
 
     #[test]
-    fn multiple_undo_redo() {
-        // Inserts separated by non-alphanumeric characters produce distinct
-        // undo entries (e.g. `a` then `!` then `b` cannot merge).
+    fn multiple_undo_redo_non_contiguous() {
+        // Non-contiguous offsets produce distinct undo entries — typing
+        // at offset 0, moving the cursor, typing at offset 5, moving
+        // again, typing at offset 10 each starts a new group.
         let mut h = History::new();
-        let mut b = buf("");
-        b.insert(0, "a");
         h.record(EditDelta {
             offset: 0,
             removed: "".into(),
             inserted: "a".into(),
         });
-        b.insert(1, "!");
         h.record(EditDelta {
-            offset: 1,
+            offset: 5,
             removed: "".into(),
             inserted: "!".into(),
         });
-        b.insert(2, "b");
         h.record(EditDelta {
-            offset: 2,
+            offset: 10,
             removed: "".into(),
             inserted: "b".into(),
         });
-        assert_eq!(b.contents(), "a!b");
-
-        h.undo(&mut b).unwrap();
-        assert_eq!(b.contents(), "a!");
-        h.undo(&mut b).unwrap();
-        assert_eq!(b.contents(), "a");
-        h.undo(&mut b).unwrap();
-        assert_eq!(b.contents(), "");
-
-        h.redo(&mut b).unwrap();
-        assert_eq!(b.contents(), "a");
-        h.redo(&mut b).unwrap();
-        assert_eq!(b.contents(), "a!");
-        h.redo(&mut b).unwrap();
-        assert_eq!(b.contents(), "a!b");
+        assert_eq!(h.undo_depth(), 3);
     }
 
     #[test]
@@ -387,7 +348,10 @@ mod tests {
     }
 
     #[test]
-    fn space_breaks_word_group() {
+    fn space_merges_into_contiguous_group() {
+        // Post-PR1: merge-by-contiguity means a held key spanning any
+        // character class produces ONE undo entry.  Cursor motion (=
+        // non-contiguous offsets) is the boundary, not character class.
         let mut h = History::new();
         h.record(EditDelta {
             offset: 0,
@@ -409,8 +373,7 @@ mod tests {
             removed: "".into(),
             inserted: "d".into(),
         });
-        // "ca", " ", "d" — three distinct groups.
-        assert_eq!(h.undo_depth(), 3);
+        assert_eq!(h.undo_depth(), 1);
     }
 
     #[test]
@@ -431,21 +394,22 @@ mod tests {
     }
 
     #[test]
-    fn multi_char_insert_does_not_merge() {
+    fn contiguous_inserts_merge_regardless_of_length() {
+        // Post-PR1: contiguity alone drives the merge.  A coalesced
+        // run-of-inserts arriving as a single multi-char delta merges
+        // with subsequent contiguous inserts.
         let mut h = History::new();
         h.record(EditDelta {
             offset: 0,
             removed: "".into(),
             inserted: "hi".into(),
         });
-        // Pasting / newline insertion is its own undo entry even if content
-        // is alphanumeric.
         h.record(EditDelta {
             offset: 2,
             removed: "".into(),
             inserted: "foo".into(),
         });
-        assert_eq!(h.undo_depth(), 2);
+        assert_eq!(h.undo_depth(), 1);
     }
 
     #[test]
@@ -525,12 +489,14 @@ mod tests {
         assert_eq!(b.contents(), "cat");
     }
 
-    /// A space between alphanumeric backspaces breaks the group, mirroring
-    /// the insertion-side behaviour.
+    /// Post-PR1: any held-backspace burst merges by contiguity — the
+    /// character class of the bytes being removed is irrelevant.  A
+    /// 3-second hold deleting through punctuation, whitespace, and
+    /// letters undoes in one step.
     #[test]
-    fn space_breaks_backspace_group() {
+    fn backspace_merges_across_character_classes() {
         let mut h = History::new();
-        // Backspacing through "ca d": d, ' ', a, c.
+        // Backspacing through "ca d": d, ' ', a, c — all contiguous.
         h.record(EditDelta {
             offset: 3,
             removed: "d".into(),
@@ -551,13 +517,13 @@ mod tests {
             removed: "c".into(),
             inserted: "".into(),
         });
-        // "d", " ", "ca" — three groups.
-        assert_eq!(h.undo_depth(), 3);
+        assert_eq!(h.undo_depth(), 1);
     }
 
-    /// A space between alphanumeric forward-deletes breaks the group.
+    /// Post-PR1: forward-delete also merges by contiguity regardless
+    /// of character class.
     #[test]
-    fn space_breaks_forward_delete_group() {
+    fn forward_delete_merges_across_character_classes() {
         let mut h = History::new();
         // Forward-deleting "ca d" from offset 0: c, a, ' ', d.
         h.record(EditDelta {
@@ -580,8 +546,7 @@ mod tests {
             removed: "d".into(),
             inserted: "".into(),
         });
-        // "ca", " ", "d" — three groups.
-        assert_eq!(h.undo_depth(), 3);
+        assert_eq!(h.undo_depth(), 1);
     }
 
     /// A non-contiguous backspace (cursor jumped elsewhere) starts a new

@@ -13,6 +13,7 @@ mod pointer;
 #[cfg(test)]
 mod test_utils;
 
+use std::collections::VecDeque;
 use std::io::Stdout;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -170,10 +171,15 @@ pub struct App {
     /// width — images render inside the doc area, so the scratch must
     /// match the doc width or the first paint resizes anyway.
     last_area_width: u16,
-    /// A `Term` event pulled off the channel by `drain_pending_image_ready`
-    /// (which uses `try_recv` and can't put the event back).  Processed
-    /// on the next loop iteration before calling `recv_timeout` again.
-    pending_term_event: Option<Event>,
+    /// FIFO of terminal events pulled off the channel ahead of time —
+    /// either by `drain_pending_image_ready` (which uses `try_recv` and
+    /// can't put events back) or by `drain_pending_key_events` (which
+    /// reads ahead so a burst of keystrokes can be coalesced into a
+    /// single dispatch).  `next_event` pops from the front before
+    /// consulting `rx`, preserving the user's event timeline — a
+    /// Resize sandwiched between two keystrokes is still processed
+    /// between them.
+    pending_events: VecDeque<Event>,
     /// Phase 8 back-stack: `NavigateBack` pops the most-recent entry
     /// and restores it.  A new link-follow clears `nav_forward`
     /// (browser semantics).
@@ -463,7 +469,7 @@ impl App {
             images_dirty: false,
             needs_draw: true,
             resize_quiesce_at: None,
-            pending_term_event: None,
+            pending_events: VecDeque::new(),
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
             hovered_link: None,
@@ -528,13 +534,13 @@ impl App {
                     }
                 }
                 // A Term event pulled via `try_recv` cannot be put back
-                // into the channel, so stash it for the next iteration
-                // and stop draining.  The main loop checks this field
-                // before calling `recv_timeout` again so events are
-                // still processed in the original channel order.
+                // into the channel, so push it onto `pending_events` —
+                // the next loop iteration consults that queue before
+                // `recv_timeout` so events stay in their original order.
+                // We keep draining so queued image-ready events behind
+                // the first key aren't starved.
                 Ok(AppEvent::Term(e)) => {
-                    self.pending_term_event = Some(e);
-                    break;
+                    self.pending_events.push_back(e);
                 }
                 Err(_) => break,
             }
