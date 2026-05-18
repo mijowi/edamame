@@ -67,6 +67,10 @@ impl ConfigWarningModal {
                         body.push(Line::raw(format!("    {e}")));
                     }
                 }
+                WarningKind::InvalidValue { key, message } => {
+                    body.push(Line::raw(format!("  Invalid value for {key}:")));
+                    body.push(Line::raw(format!("    {message}")));
+                }
                 WarningKind::MissingTheme {
                     requested,
                     fallback,
@@ -207,6 +211,29 @@ mod tests {
             .join("\n");
         assert!(joined.contains("Invalid keybinding entries"));
         assert!(joined.contains("Quitt"));
+    }
+
+    #[test]
+    fn invalid_value_body_lists_key_and_message() {
+        let warnings = vec![ConfigWarning {
+            path: PathBuf::from("config.toml"),
+            kind: WarningKind::InvalidValue {
+                key: "editor.autosave_idle_ms".into(),
+                message: "value 0 is outside the supported range (1000 < N < 600000); \
+                          using the default (5000) instead"
+                    .into(),
+            },
+        }];
+        let modal = ConfigWarningModal::from_warnings(&warnings).expect("modal built");
+        let joined = modal
+            .body
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("Invalid value for editor.autosave_idle_ms"));
+        assert!(joined.contains("outside the supported range"));
+        assert!(joined.contains("using the default (5000)"));
     }
 
     #[test]

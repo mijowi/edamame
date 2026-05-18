@@ -67,11 +67,34 @@ pub struct EditorConfig {
     /// when the title would exceed the viewport width or contains
     /// non-ASCII characters (font8x8 only covers ASCII).  Default: true.
     pub big_h1: bool,
+    /// When true, the buffer is silently written to disk after
+    /// `autosave_idle_ms` of typing inactivity.  Only fires for buffers
+    /// with an associated file path; an unnamed buffer never autosaves.
+    /// Default: true.
+    pub autosave_enabled: bool,
+    /// Idle window (ms) the user must stop editing for before the
+    /// pending dirty buffer is autosaved.  Every keystroke resets the
+    /// timer (debounce, not throttle), so a typing burst produces at
+    /// most one autosave at the end.  Default: 5000.
+    pub autosave_idle_ms: u64,
 }
 
 /// Floor applied to `EditorConfig::max_width_cols` at every use site so a
 /// stray `0` or single-digit value can't break layout.
 pub const MAX_WIDTH_COLS_MIN: usize = 20;
+
+/// Exclusive lower bound for `EditorConfig::autosave_idle_ms`.  Values
+/// at or below this are rejected at load time with a warning so an
+/// accidental small / zero value can't autosave on every keystroke.
+pub const AUTOSAVE_IDLE_MS_MIN_EXCLUSIVE: u64 = 1000;
+/// Exclusive upper bound for `EditorConfig::autosave_idle_ms` (10
+/// minutes).  Past this the feature is effectively off and the user
+/// almost certainly wants to disable autosave outright instead.
+pub const AUTOSAVE_IDLE_MS_MAX_EXCLUSIVE: u64 = 600_000;
+/// Default debounce window used by `EditorConfig::default` and by the
+/// loader's out-of-range fallback in `validate_main_config`.  Kept
+/// alongside the bounds so all three numbers move together.
+pub const AUTOSAVE_IDLE_MS_DEFAULT: u64 = 5000;
 
 /// User-selected appearance mode.  Independent of `Config::theme`: the
 /// mode filters which themes appear in the picker and which counterpart
@@ -126,6 +149,8 @@ impl Default for EditorConfig {
             max_width_enabled: false,
             max_width_cols: 100,
             big_h1: true,
+            autosave_enabled: true,
+            autosave_idle_ms: AUTOSAVE_IDLE_MS_DEFAULT,
         }
     }
 }

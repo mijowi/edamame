@@ -671,6 +671,72 @@ mod tests {
     }
 
     #[test]
+    fn read_main_config_rejects_autosave_idle_below_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[editor]\nautosave_idle_ms = 500\n").unwrap();
+        let mut warnings = Vec::new();
+        let config = read_main_config(&path, &mut warnings);
+        assert_eq!(
+            config.editor.autosave_idle_ms,
+            EditorConfig::default().autosave_idle_ms,
+            "out-of-range value must be replaced with the default",
+        );
+        assert_eq!(warnings.len(), 1);
+        match &warnings[0].kind {
+            WarningKind::InvalidValue { key, message } => {
+                assert_eq!(key, "editor.autosave_idle_ms");
+                assert!(message.contains("500"), "msg should cite bad value: {message}");
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_main_config_rejects_autosave_idle_at_floor() {
+        // Bound is strict: exactly 1000 is rejected.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[editor]\nautosave_idle_ms = 1000\n").unwrap();
+        let mut warnings = Vec::new();
+        let config = read_main_config(&path, &mut warnings);
+        assert_eq!(
+            config.editor.autosave_idle_ms,
+            EditorConfig::default().autosave_idle_ms,
+        );
+        assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn read_main_config_rejects_autosave_idle_at_ceiling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[editor]\nautosave_idle_ms = 600000\n").unwrap();
+        let mut warnings = Vec::new();
+        let config = read_main_config(&path, &mut warnings);
+        assert_eq!(
+            config.editor.autosave_idle_ms,
+            EditorConfig::default().autosave_idle_ms,
+        );
+        assert_eq!(warnings.len(), 1);
+        match &warnings[0].kind {
+            WarningKind::InvalidValue { .. } => {}
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_main_config_accepts_autosave_idle_in_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[editor]\nautosave_idle_ms = 2500\n").unwrap();
+        let mut warnings = Vec::new();
+        let config = read_main_config(&path, &mut warnings);
+        assert_eq!(config.editor.autosave_idle_ms, 2500);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
     fn read_main_config_unknown_key_warns_but_keeps_value() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");

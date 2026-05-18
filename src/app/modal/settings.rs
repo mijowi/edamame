@@ -150,6 +150,7 @@ mod tests {
         "Hint duration",
         "Limit editor width",
         "Editor max width",
+        "Autosave",
         "Show images",
         "Show diagrams",
         "Show remote images",

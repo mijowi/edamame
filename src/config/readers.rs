@@ -10,6 +10,9 @@ use std::str::FromStr;
 
 use super::config::Config;
 use super::keymap::{parse_key, Action, KeyBindingOverrides};
+use super::sections::{
+    AUTOSAVE_IDLE_MS_DEFAULT, AUTOSAVE_IDLE_MS_MAX_EXCLUSIVE, AUTOSAVE_IDLE_MS_MIN_EXCLUSIVE,
+};
 use super::theme::Theme;
 use super::theme_file::ThemeFile;
 use super::warnings::{ConfigWarning, WarningKind};
@@ -85,7 +88,35 @@ where
 /// warning.  IO errors other than NotFound also produce a `ParseError`
 /// warning so the user always sees the failure path.
 pub(super) fn read_main_config(path: &Path, warnings: &mut Vec<ConfigWarning>) -> Config {
-    read_and_warn(path, warnings, Config::default, Config::default)
+    let mut config: Config = read_and_warn(path, warnings, Config::default, Config::default);
+    validate_main_config(path, &mut config, warnings);
+    config
+}
+
+/// Post-deserialization sanity checks for `config.toml`.  Each rule
+/// resets the offending field to its default and pushes a
+/// [`WarningKind::InvalidValue`] so the user sees that their requested
+/// value didn't take effect.  Keep this list short — runtime-clamp at
+/// the use site (see e.g. `MAX_WIDTH_COLS_MIN`) is preferred for fields
+/// where any value still produces a sensible UI; this path is for
+/// fields where an out-of-range value would be actively confusing
+/// (autosave firing on every keystroke at `idle_ms = 0`, etc.).
+fn validate_main_config(path: &Path, config: &mut Config, warnings: &mut Vec<ConfigWarning>) {
+    let idle = config.editor.autosave_idle_ms;
+    if idle <= AUTOSAVE_IDLE_MS_MIN_EXCLUSIVE || idle >= AUTOSAVE_IDLE_MS_MAX_EXCLUSIVE {
+        config.editor.autosave_idle_ms = AUTOSAVE_IDLE_MS_DEFAULT;
+        warnings.push(ConfigWarning {
+            path: path.to_path_buf(),
+            kind: WarningKind::InvalidValue {
+                key: "editor.autosave_idle_ms".to_string(),
+                message: format!(
+                    "value {idle} is outside the supported range ({} < N < {}); \
+                     using the default ({AUTOSAVE_IDLE_MS_DEFAULT}) instead",
+                    AUTOSAVE_IDLE_MS_MIN_EXCLUSIVE, AUTOSAVE_IDLE_MS_MAX_EXCLUSIVE,
+                ),
+            },
+        });
+    }
 }
 
 /// Read `keybindings.toml`.  In addition to the usual parse-error /
