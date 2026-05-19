@@ -156,7 +156,6 @@ mod tests {
                 let ctx = ModalRenderCtx {
                     theme,
                     config: &config,
-                    keymap: None,
                     cursor_visible: false,
                 };
                 let area = frame.area();

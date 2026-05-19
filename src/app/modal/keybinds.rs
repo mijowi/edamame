@@ -1,11 +1,16 @@
 //! Keybinds overlay.  Adapter wrapping
 //! [`crate::ui::KeybindsState`].
 //!
-//! Rebinds mutate the live [`crate::config::KeyMap`] in place (so the
-//! next keystroke uses the new binding) AND
-//! [`crate::config::KeyBindingOverrides`] (so the override persists to
-//! `keybindings.toml`).  Both are owned by `App`; the overlay needs
-//! `&mut` access to both for [`crate::ui::KeybindsState::handle_key`].
+//! Edits are buffered inside the overlay's draft keymap / overrides
+//! and only applied to the live [`crate::config::KeyMap`] and
+//! [`crate::config::KeyBindingOverrides`] when the user activates
+//! `[ Save ]`.  Esc and `[ Cancel ]` discard the draft.  Persistence
+//! to `keybindings.toml` happens on Save and only on Save.
+//!
+//! Save failures (missing config dir, disk write errors) surface as a
+//! warning [`crate::ui::ModalKind::Warning`] notice and keep the
+//! overlay open with the user's drafts intact, so they can retry
+//! without losing work.
 
 use std::any::Any;
 
@@ -15,7 +20,7 @@ use ratatui::Frame;
 
 use super::types::{Modal, ModalOutcome, ModalRenderCtx};
 use crate::app::{App, MessageKind};
-use crate::config::{Config, KeyMap};
+use crate::config::{Config, KeyBindingOverrides, KeyMap};
 use crate::ui::{KeybindsResponse, KeybindsState, KeybindsView, ModalKind};
 
 pub struct KeybindsOverlayModal {
@@ -23,23 +28,67 @@ pub struct KeybindsOverlayModal {
 }
 
 impl KeybindsOverlayModal {
-    pub fn new(keymap: &KeyMap) -> Self {
+    pub fn new(keymap: &KeyMap, overrides: &KeyBindingOverrides) -> Self {
         Self {
-            state: KeybindsState::open(keymap),
+            state: KeybindsState::open(keymap, overrides),
         }
+    }
+}
+
+/// Try to persist the draft overrides to `keybindings.toml`.  Returns
+/// `Err(message)` on missing config dir or write failure; the caller
+/// surfaces the message via [`App::notify`] and keeps the overlay
+/// open so the user can retry without losing their drafts.
+fn try_persist(overrides: &KeyBindingOverrides) -> Result<(), String> {
+    let Some(dir) = Config::config_dir() else {
+        return Err("No config directory available — keybindings not saved".into());
+    };
+    let path = dir.join("keybindings.toml");
+    overrides.save_to(&path).map_err(|e| {
+        tracing::warn!(error = %e, "failed to write keybindings.toml");
+        format!("Failed to save keybindings: {e}")
+    })
+}
+
+/// Swap the drafts onto `app` after a successful persist.  Only the
+/// in-memory state is touched here; disk has already been written.
+fn install_drafts(app: &mut App, keymap: KeyMap, overrides: KeyBindingOverrides) {
+    app.keymap = Some(keymap);
+    app.keybindings = overrides;
+    app.flash("Keybindings saved", MessageKind::Success);
+}
+
+/// Map a `KeybindsResponse::Save` to a `ModalOutcome` that either
+/// closes-with-install on success or stays-open-with-warning on
+/// failure.  `on_failure_outcome` controls how the warning is
+/// delivered: from `handle_key` we have `&mut App` directly so the
+/// notify is inline and we return `Continue`; from `handle_click` we
+/// don't, so we return `ContinueAnd(notify)`.
+fn outcome_for_save(
+    keymap: KeyMap,
+    overrides: KeyBindingOverrides,
+    notify_inline: Option<&mut App>,
+) -> ModalOutcome {
+    match try_persist(&overrides) {
+        Ok(()) => {
+            ModalOutcome::CloseAnd(Box::new(move |app| install_drafts(app, keymap, overrides)))
+        }
+        Err(msg) => match notify_inline {
+            Some(app) => {
+                app.notify(msg, ModalKind::Warning);
+                ModalOutcome::Continue
+            }
+            None => ModalOutcome::ContinueAnd(Box::new(move |app| {
+                app.notify(msg, ModalKind::Warning);
+            })),
+        },
     }
 }
 
 impl Modal for KeybindsOverlayModal {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
-        if let Some(km) = ctx.keymap {
-            let view = KeybindsView {
-                theme: ctx.theme,
-                keymap: km,
-                cursor_visible: ctx.cursor_visible,
-            };
-            frame.render_stateful_widget(view, area, &mut self.state);
-        }
+        let view = KeybindsView { theme: ctx.theme };
+        frame.render_stateful_widget(view, area, &mut self.state);
     }
 
     fn handle_key(
@@ -49,37 +98,11 @@ impl Modal for KeybindsOverlayModal {
         _doc_height: usize,
         _doc_width: usize,
     ) -> ModalOutcome {
-        // The overlay needs `&mut KeyMap` and `&mut KeyBindingOverrides`;
-        // ensure both exist on `app` first so the borrow stays simple.
-        if app.keymap.is_none() {
-            match KeyMap::build(&app.keybindings) {
-                Ok(km) => app.keymap = Some(km),
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to build KeyMap for keybinds overlay");
-                    return ModalOutcome::Close;
-                }
-            }
-        }
-        let response = {
-            let keymap = app.keymap.as_mut().expect("keymap built above");
-            self.state.handle_key(&key, keymap, &mut app.keybindings)
-        };
-        match response {
+        match self.state.handle_key(&key) {
             KeybindsResponse::Continue => ModalOutcome::Continue,
             KeybindsResponse::Cancelled => ModalOutcome::Close,
-            KeybindsResponse::Rebound { action, key } => {
-                if let Some(dir) = Config::config_dir() {
-                    let path = dir.join("keybindings.toml");
-                    if let Err(e) = app.keybindings.save_to(&path) {
-                        tracing::warn!(error = %e, "failed to write keybindings.toml");
-                        app.notify(format!("Save failed: {e}"), ModalKind::Error);
-                    } else {
-                        app.flash(format!("Bound {action} to {key}"), MessageKind::Success);
-                    }
-                } else {
-                    app.notify("No config directory available", ModalKind::Error);
-                }
-                ModalOutcome::Continue
+            KeybindsResponse::Save { keymap, overrides } => {
+                outcome_for_save(keymap, overrides, Some(app))
             }
         }
     }
@@ -89,7 +112,13 @@ impl Modal for KeybindsOverlayModal {
     }
 
     fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
-        super::types::close_if_esc_clicked(self.state.esc_button_rect, col, row)
+        match self.state.handle_click(col, row) {
+            KeybindsResponse::Continue => ModalOutcome::Continue,
+            KeybindsResponse::Cancelled => ModalOutcome::Close,
+            KeybindsResponse::Save { keymap, overrides } => {
+                outcome_for_save(keymap, overrides, None)
+            }
+        }
     }
 
     fn as_any(&self) -> &dyn Any {

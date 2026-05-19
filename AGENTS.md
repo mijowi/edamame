@@ -278,11 +278,19 @@ they exist:
 
 ## Phase 10 Architectural Notes (Command Palette + Overlays)
 
-- **One `KeyMap`, mutated in place.** `App::keymap: Option<KeyMap>` is built
-  once in `run()` and held for the life of the process.  The keybinds overlay
-  calls `KeyMap::rebind(&action, key_str, &mut overrides)` directly on it so
-  rebinds take effect on the next keystroke without rebuilding.  Don't clone
-  the keymap into the overlay state — that breaks live propagation.
+- **Live `KeyMap` on `App`, draft inside the overlay.** `App::keymap:
+  Option<KeyMap>` is built once in `run()` and held for the life of the
+  process.  The keybinds overlay opens with a *clone* of it
+  (`KeybindsState::draft_keymap`) plus a cloned `KeyBindingOverrides`,
+  and every rebind mutates only the draft.  Nothing is written back to
+  `App::keymap` / `App::keybindings` (or to `keybindings.toml`) until
+  the user activates the overlay's `[ Save ]` button — Esc and
+  `[ Cancel ]` discard the draft so a mis-press is recoverable.  On
+  Save the overlay returns `KeybindsResponse::Save { keymap, overrides }`
+  carrying the drafts; the modal adapter swaps them onto `App` and
+  persists.  An earlier version mutated the live keymap on every
+  keystroke and a fumbled chord could only be undone by hand-editing
+  `keybindings.toml` — do not regress to that.
 - **Combined view+edit keybindings overlay.** The Phase 9 read-only `?`
   cheat sheet and the standalone `cheat_sheet.rs` are gone — `OpenKeybinds`
   now owns the unified view+edit overlay.  The legacy `Action::ShowCheatSheet`

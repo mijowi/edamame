@@ -277,8 +277,8 @@ fn parse_key_code(key_part: &str) -> Option<KeyCode> {
         "right" => KeyCode::Right,
         "home" => KeyCode::Home,
         "end" => KeyCode::End,
-        "page_up" | "pageup" => KeyCode::PageUp,
-        "page_down" | "pagedown" => KeyCode::PageDown,
+        "page_up" | "pageup" | "pgup" => KeyCode::PageUp,
+        "page_down" | "pagedown" | "pgdn" => KeyCode::PageDown,
         "enter" | "return" => KeyCode::Enter,
         "backspace" => KeyCode::Backspace,
         "delete" | "del" => KeyCode::Delete,
@@ -314,26 +314,31 @@ fn parse_key_code(key_part: &str) -> Option<KeyCode> {
 
 /// Parse a human-readable key string such as `"ctrl+q"`, `"up"`, `"page_up"`,
 /// `"ctrl+shift+z"` into a crossterm `KeyEvent`.
+///
+/// The literal `+` key collides with the modifier separator; it is
+/// spelled `"+"` on its own and `"<mods>++"` with modifiers (e.g.
+/// `"ctrl++"`).  All other keys split cleanly on `+`.
 pub fn parse_key(s: &str) -> Result<KeyEvent, KeyMapError> {
     let lower = s.to_lowercase();
-    let parts: Vec<&str> = lower.split('+').collect();
 
-    let mut modifiers = KeyModifiers::NONE;
-    let mut key_part = "";
-
-    let last_idx = parts.len().saturating_sub(1);
-    for (i, part) in parts.iter().enumerate() {
-        if let Some(m) = parse_modifier(part) {
-            modifiers |= m;
-        } else if i == last_idx {
-            key_part = part;
-        } else {
-            return Err(KeyMapError::UnparseableKey(s.to_owned()));
-        }
-    }
+    let (modifier_parts, key_part): (Vec<&str>, &str) = if lower == "+" {
+        (Vec::new(), "+")
+    } else if let Some(prefix) = lower.strip_suffix("++") {
+        (prefix.split('+').collect(), "+")
+    } else {
+        let mut parts: Vec<&str> = lower.split('+').collect();
+        let key = parts.pop().unwrap_or("");
+        (parts, key)
+    };
 
     if key_part.is_empty() {
         return Err(KeyMapError::UnparseableKey(s.to_owned()));
+    }
+
+    let mut modifiers = KeyModifiers::NONE;
+    for part in modifier_parts {
+        let m = parse_modifier(part).ok_or_else(|| KeyMapError::UnparseableKey(s.to_owned()))?;
+        modifiers |= m;
     }
 
     let code = parse_key_code(key_part).ok_or_else(|| KeyMapError::UnparseableKey(s.to_owned()))?;
@@ -428,6 +433,56 @@ pub fn format_key_compact(ev: &KeyEvent) -> String {
     }
     out.push_str(&format_keycode(ev.code, keycode_glyph));
     out
+}
+
+/// Render `ev` in the lowercase `+`-separated form accepted by
+/// [`parse_key`].  Use this when the result needs to round-trip back
+/// through `parse_key` (e.g. the keybinds overlay writes the captured
+/// chord to `keybindings.toml`).  Going via `format_key` + `replace('-',
+/// '+')` instead would mangle keys whose own glyph is `-` or `+`.
+///
+/// Returns `None` for `KeyCode` variants that have no parseable
+/// spelling — e.g. `KeyCode::Modifier(_)` (bare modifier presses,
+/// emitted only with keyboard-enhancement flags), `Null`, the
+/// lock/print/pause cluster, `Media(_)`, `KeypadBegin`.  Callers
+/// should surface these as "unsupported key" rather than silently
+/// writing an un-parseable string to disk.
+pub fn format_key_parseable(ev: &KeyEvent) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if ev.modifiers.contains(KeyModifiers::CONTROL) {
+        parts.push("ctrl".into());
+    }
+    if ev.modifiers.contains(KeyModifiers::ALT) {
+        parts.push("alt".into());
+    }
+    // BackTab implies Shift even when the SHIFT modifier isn't set —
+    // mirror the canonicalisation `action_for` does on lookup so the
+    // serialised form is the canonical `shift+tab`.
+    if ev.modifiers.contains(KeyModifiers::SHIFT) || ev.code == KeyCode::BackTab {
+        parts.push("shift".into());
+    }
+    let code_str: String = match ev.code {
+        KeyCode::Char(' ') => "space".into(),
+        KeyCode::Char(c) => c.to_ascii_lowercase().to_string(),
+        KeyCode::Up => "up".into(),
+        KeyCode::Down => "down".into(),
+        KeyCode::Left => "left".into(),
+        KeyCode::Right => "right".into(),
+        KeyCode::Home => "home".into(),
+        KeyCode::End => "end".into(),
+        KeyCode::PageUp => "page_up".into(),
+        KeyCode::PageDown => "page_down".into(),
+        KeyCode::Enter => "enter".into(),
+        KeyCode::Backspace => "backspace".into(),
+        KeyCode::Delete => "delete".into(),
+        KeyCode::Esc => "escape".into(),
+        KeyCode::Tab | KeyCode::BackTab => "tab".into(),
+        KeyCode::Insert => "insert".into(),
+        KeyCode::F(n) => format!("f{n}"),
+        _ => return None,
+    };
+    parts.push(code_str);
+    Some(parts.join("+"))
 }
 
 /// Render `ev` as a human-readable key string roughly matching what
@@ -789,6 +844,19 @@ mod tests {
         assert!(parse_key("escape").is_ok());
         assert!(parse_key("space").is_ok());
         assert!(parse_key("ctrl+space").is_ok());
+    }
+
+    #[test]
+    fn literal_plus_and_hyphen_round_trip() {
+        // The `+` separator collides with `+` as a key glyph; `-` is
+        // unambiguous but used to be mangled by the overlay's old
+        // dash-to-plus normalisation.  Both must round-trip cleanly
+        // through `parse_key` / `format_key_parseable`.
+        for chord in ["+", "-", "ctrl++", "ctrl+-", "ctrl+shift++"] {
+            let ev = parse_key(chord).unwrap_or_else(|_| panic!("parse {chord}"));
+            let re = format_key_parseable(&ev).expect("supported key");
+            assert_eq!(parse_key(&re).unwrap(), ev, "round-trip {chord} → {re}");
+        }
     }
 
     #[test]

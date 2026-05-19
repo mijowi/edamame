@@ -11,7 +11,7 @@ use ratatui::layout::Rect;
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::config::{Config, KeyMap, Theme};
+use crate::config::{Config, Theme};
 
 pub use crate::ui::ModalKind;
 
@@ -46,7 +46,6 @@ pub fn close_if_esc_clicked(
 pub struct ModalRenderCtx<'a> {
     pub theme: &'a Theme,
     pub config: &'a Config,
-    pub keymap: Option<&'a KeyMap>,
     pub cursor_visible: bool,
 }
 
