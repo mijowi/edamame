@@ -1459,7 +1459,12 @@ Monochrome theme should use REVERSED for selection/focus
 
 In edit mode, text selection doesn't work correctly in wrapped table cells
 
-In edit mode, text selection doesn't work correctly in this line: `**Bold text** | __Underscore bold__ | *Italic text* | _Underscore italic_ | **_Bold and italic_**`. The final selection is correct when the line de-renders, but the visible selection is not correct *while* the user is still selecting text. It looks like the hidden character offset calculation is off while the line is still rendered.
+Selection highlight is wrong while a rendered line is still rendered (snaps to correct position on de-render). The inline-markup case (`**bold**`, `*italic*`, `_under_`, `~~strike~~`, `==highlight==`, `` `code` ``, `[text](url)`) is fixed by `docs/fix-selection-rendererd-raw-map.md`. Still broken after that fix, on lines that contain these constructs, because the rendered↔raw map can't represent the rendered prefix/glyph or the construct itself:
+- Heading lines (`# `, `## `, …) — the rendered heading prefix has no raw counterpart, so the map falls back to 1:1.
+- Blockquote bodies (`> …`) — same problem with the rendered gutter glyph.
+- Reference-style links (`[text][ref]`) and autolinks (`<https://…>`) — the walker doesn't emit map entries for these events; falls back to 1:1.
+- Images (`![alt](url)`) — same as reference links.
+Fixing each requires either extending the walker to emit synthetic entries for the rendered prefix/glyph, or teaching the painter to subtract the prefix width before consulting the inline map.
 
 Should we add bold+italic actions and hints for selection contextual hint?
 
@@ -1468,6 +1473,8 @@ Find and replace
 Blank last line of a document doesn't seem to behave correctly
 
 Add optional line numbers
+
+Line wraps swallow some whitespace in all modes. For example, if a line ends in `a              b`, and the wrap is just after `a ` (one character plus one space), the rest of the whitespace before `b` is swallowed. `b` is then rendered at the start of the next line, leaving no space before it.
 
 ---
 
