@@ -1039,10 +1039,10 @@ Tabs, multi-file CLI, and the file picker were originally bundled here but are d
 ### Phase 11 — File Change Detection and Inline Diff
 *Goal: detect external file changes and surface an inline diff for agentic workflow support.*
 
-Was old Phase 10.  Renumbered to flow after the Phase 9 status-region infrastructure it consumes.  Agentic workflows (where an AI agent and the user are editing the same file concurrently) are the motivating use case.
+Agentic workflows (where an AI agent and the user are editing the same file concurrently) are the motivating use case.
 
 **Starting state (already in place after Phase 9):**
-- Phase 9 provides the hint-line modal-prompt channel and sticky `Error` transient messages.  This phase only writes the specific prompt definitions — no new UI primitives.
+- We already implemented the hint-line modal-prompt channel and sticky `Error` transient messages.
 
 **Tasks — watcher:**
 - [ ] Add `notify` (latest stable 7.x) and `similar` (2.x) as dependencies.
@@ -1050,7 +1050,7 @@ Was old Phase 10.  Renumbered to flow after the Phase 9 status-region infrastruc
 - [ ] Debounce: coalesce multiple `Modify` events within a 200 ms window before dispatching — editors like vim produce a write-rename-delete sequence that would otherwise fire the reload prompt three times.
 
 **Tasks — reload flow (clean buffer):**
-- [ ] On `FileChanged` for a tab whose `editor.buffer.is_dirty() == false`, post a `HintPrompt` (`R Reload   I Ignore`) via the Phase 9 channel.  No modal overlay, no interruption to editing elsewhere.
+- [ ] On `FileChanged` for a tab whose `editor.buffer.is_dirty() == false`, should we post a hint line prompt or a modal? (`R Reload   I Ignore`)
 - [ ] `R` → `Buffer::load_file` + rebuild `ParsedDoc` + reset scroll to preserve cursor line; `I` → dismiss.
 - [ ] Autosave-safe: if `config.editor.autosave` is on and an external change triggers a reload while the buffer is also dirty-from-autosave, treat as dirty (three-way below).
 
@@ -1183,22 +1183,20 @@ These items are cohesive (all table-layer concerns) and share the `table_layout`
 Extracted from old Phase 11.  Pulls in the "Heading visual hierarchy — framing/rules" item from *Deferred Work* since the plan itself flagged it as "do this now."  Items are independent — any subset can ship.
 
 **Tasks — checkbox glyphs:**
-- [ ] Replace the current `[x]` text rendering of completed task-list checkboxes with Unicode glyph (`[✓]`) in Preview and Rendered modes.  Raw mode is untouched. 
-- [ ] `Theme::checkbox_unchecked` and `Theme::checkbox_checked` are `&'static str` slots (not `Style`) so themes can switch glyph sets — `[ ]` / `[x]` remains an opt-in for users on terminals without reliable Unicode.
-- [ ] Ensure click hit-test on the task-list checkbox remains on all 3 characters of the box.
+- [x] Replace the current `[x]` text rendering of completed task-list checkboxes with Unicode glyph (`[✓]`) in Preview and Rendered modes.  Raw mode is untouched.
+- [x] `Theme::checkbox_unchecked` and `Theme::checkbox_checked` are `&'static str` slots (not `Style`) so themes can switch glyph sets — `[ ]` / `[x]` remains an opt-in for users on terminals without reliable Unicode.
+- [x] Ensure click hit-test on the task-list checkbox remains on all 3 characters of the box.
 
 **Tasks — heading visual hierarchy (framing/rules):**
-- [ ] H1 gets a full-width `═══` rule above and below.
-- [ ] H2 gets a `═══` rule below.
-- [ ] H3 gets a `───` rule below.
-- [ ] H4–H6 stay color + bold (current behaviour).
-- [ ] Readable everywhere, zero new dependencies.  The `tui-big-text` variant stays in Deferred Work for the theming phase.
-- [ ] `per_block_own` accounts for the added rule rows so cursor navigation doesn't skip them.
-- [ ] **Or do we want to differentiate headings with foreground and background colors?**
+- [x] H1 gets a full-width `═══` rule above and below.
+- [x] H2 gets a `───` rule below.
+- [x] H3–H6 stay color + bold (current behaviour).
+- [x] Readable everywhere, zero new dependencies.  The `tui-big-text` variant stays in Deferred Work for the theming phase.
+- [x] `per_block_own` accounts for the added rule rows so cursor navigation doesn't skip them.
 
 **Tasks — themes:**
-- [ ] 256 color default dark/light
-- [ ] Monochrome default dark/light
+- [x] 256 color default dark/light
+- [x] Monochrome default dark/light
 
 ---
 
@@ -1253,8 +1251,7 @@ etc. are one external-tool invocation away — edamame stays dependency-free.
       the future command-palette overwrite-confirmation modal needs.
 
 **Deferred to Phase 10 (command palette):**
-- [ ] Dispatch — palette entries `Export HTML` + one `Export <name>` per
-      custom entry.
+- [x] Dispatch — palette entries `Export HTML` + one `Export <name>` per custom entry.
 - [ ] Overwrite confirmation modal when `preflight` returns `TargetExists`;
       on approve, re-invoke the spawner with the overwrite precondition met.
 - [ ] Transient-message wiring on the App's mpsc channel (success: "Exported
@@ -1307,7 +1304,7 @@ etc. are one external-tool invocation away — edamame stays dependency-free.
 - [ ] Halfblocks-only pre-resize.  On terminals without a native protocol, we still rasterise at native-target resolution (~640×384) and let the halfblocks encoder downscale to ~80×48 per frame.  A specialized halfblocks-target raster would save ~50ms per decode but requires plumbing the picker protocol type into `resolve_mermaid`.
 - [ ] Non-mermaid backends (PlantUML, Graphviz/DOT, D2).  `DiagramSource` is an enum with one variant today; adding a new variant plus a resolver is the expected shape.
 
-### Phase 18 — Handle Terminal Change
+### Phase 18 — Handle Terminal Change ✅
 *Goal: Ask user about changing their configuration if they start using a different terminal application*
 
 On occasion a user may start using a new terminal application, which may have improved or degraded support for edamame's features. We should detect this and prompt the user to revise their configuration. For example it would be unfortunate for a user who upgrades to a terminal with better image support to never see images because they disabled image display when they were using the previous terminal application.
@@ -1456,8 +1453,6 @@ Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI input
 
 Refactor tests
 
-Add a few more character substitutions to `normalize_for_big_text` so we can show big titles more often
-
 edamame in-app about page
 
 Monochrome theme should use REVERSED for selection/focus
@@ -1469,6 +1464,14 @@ In edit mode, text selection doesn't work correctly in this line `**Bold text** 
 Should we add bold+italic actions and hints for selection contextual hint?
 
 Find and replace
+
+Gruvbox `Palette::Success` is too yellow
+
+In edit mode, the cursor is not placed at the correct offset when clicking in a bolded word in a list item. The line de-renders and the cursor is not placed at the character that was clicked on due to the hidden characters becoming visible. We have already addressed this before—it's not an issue for regular lines (i.e. not a list item). Check what other element render paths we may need to correct as well as list items.
+
+Blank last line of a document doesn't seem to behave correctly
+
+Add optional line numbers
 
 ---
 
