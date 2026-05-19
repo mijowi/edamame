@@ -3,8 +3,9 @@ use std::io::Stdout;
 use anyhow::Result;
 use crossterm::{
     event::{
-        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -38,6 +39,11 @@ pub fn setup() -> Result<TerminalSetup> {
     // the host terminal can reach the system clipboard but this process
     // cannot (SSH, Wayland without data-control, WSL, etc.).
     let _ = execute!(stdout, EnableBracketedPaste);
+    // Best-effort: terminals that don't implement xterm focus reporting
+    // silently ignore the enable sequence.  When supported, the terminal
+    // emits `Event::FocusGained` / `Event::FocusLost` as the user switches
+    // windows, which the editor uses to hide its cursor while unfocused.
+    let _ = execute!(stdout, EnableFocusChange);
     // Best-effort: terminals without the kitty protocol return an error here
     // and we remember that so the caller can report the degraded state.
     let keyboard_enhancement = execute!(
@@ -117,6 +123,7 @@ pub fn restore() -> Result<()> {
     set_pointer_shape(PointerShape::Default);
     disable_mouse();
     let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+    let _ = execute!(std::io::stdout(), DisableFocusChange);
     let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     disable_raw_mode()?;
     execute!(std::io::stdout(), LeaveAlternateScreen)?;
@@ -139,6 +146,7 @@ pub fn re_enter(mouse: bool, keyboard_enhancement: bool) -> Result<()> {
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let _ = execute!(stdout, EnableBracketedPaste);
+    let _ = execute!(stdout, EnableFocusChange);
     if keyboard_enhancement {
         let _ = execute!(
             stdout,

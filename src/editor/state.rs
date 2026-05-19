@@ -235,6 +235,13 @@ pub struct EditorState {
     /// is visible.  While set, the editor cursor is solid (ignores
     /// blink) and the modal cursor follows `cursor_blink`.
     pub modal_open: bool,
+    /// Whether the host terminal window currently has focus.  Driven by
+    /// `Event::FocusGained` / `Event::FocusLost` (xterm `CSI ?1004h`).
+    /// Defaults to `true` because terminals don't emit a FocusGained at
+    /// startup — the window that just launched us is presumed focused.
+    /// While `false`, `cursor_visible()` returns false so the in-buffer
+    /// cursor disappears.
+    pub terminal_focused: bool,
     /// Lazy per-(buffer-version, viewport-width) cache of wrapped row
     /// counts for the raw view.  Mirrors `ParsedDoc::visual_rows` for
     /// rendered mode but lives on `EditorState` because raw mode reads
@@ -336,6 +343,7 @@ impl EditorState {
             cursor_block_line_range: None,
             cursor_blink: CursorBlink::default(),
             modal_open: false,
+            terminal_focused: true,
             raw_visual_rows: RefCell::new(Vec::new()),
         };
         // Populate the cursor-block cache so the rendered view's
