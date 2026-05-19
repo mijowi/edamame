@@ -384,8 +384,11 @@ impl App {
     /// hasn't been kept around yet.
     pub fn open_keybinds_overlay(&mut self) {
         let keymap = self.ensure_keymap_clone();
+        let overrides = self.keybindings.clone();
         self.modal_stack
-            .push(Box::new(modal::KeybindsOverlayModal::new(&keymap)));
+            .push(Box::new(modal::KeybindsOverlayModal::new(
+                &keymap, &overrides,
+            )));
     }
 
     /// Open the rows/columns prompt.  Caller is expected to have

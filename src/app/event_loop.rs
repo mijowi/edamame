@@ -249,7 +249,6 @@ impl App {
         let hint = self.hint_content();
         let modal_cursor_visible = self.editor.cursor_blink.is_visible();
         let theme_ref = self.theme;
-        let keymap_for_render = self.keymap.clone();
         let drop_indicator = drop_indicator_for(&self.drag_target);
         let scrollbar_active = self.scrollbar_hover
             || matches!(
@@ -289,7 +288,6 @@ impl App {
                 let render_ctx = ModalRenderCtx {
                     theme: theme_ref,
                     config: config_ref,
-                    keymap: keymap_for_render.as_ref(),
                     cursor_visible: modal_cursor_visible,
                 };
                 top.render(frame, frame.area(), &render_ctx);
@@ -942,12 +940,7 @@ impl App {
     /// Dispatch one key event through the same logic as the previous
     /// (pre-coalescing) `dispatch_key_event` body — minus the external-
     /// editor drain, which `dispatch_key_batch` handles once at the end.
-    fn dispatch_single_key(
-        &mut self,
-        event: Event,
-        keymap: &KeyMap,
-        dims: &DocDims,
-    ) {
+    fn dispatch_single_key(&mut self, event: Event, keymap: &KeyMap, dims: &DocDims) {
         let mut handler = DefaultHandler::new(keymap);
         let Some(action) = handler.handle_event(event, &self.editor) else {
             return;

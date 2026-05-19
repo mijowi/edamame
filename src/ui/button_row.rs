@@ -25,13 +25,18 @@ pub fn button_row_width(labels: &[&str]) -> u16 {
 /// Render the button row, horizontally centred in `area`, with the
 /// button at `focused_idx` drawn in `theme.modal_button_focused` and
 /// the rest in `theme.modal_item`.
+///
+/// Returns the absolute terminal rect of each rendered button, in the
+/// same order as `labels`, so callers that need to hit-test mouse
+/// clicks can do so without duplicating the centring / bracket-padding
+/// arithmetic.  Single source of truth for button layout.
 pub fn render_button_row(
     area: Rect,
     buf: &mut Buffer,
     labels: &[&str],
     focused_idx: usize,
     theme: &Theme,
-) {
+) -> Vec<Rect> {
     let mut spans: Vec<Span<'_>> = Vec::with_capacity(labels.len() * 2 + 1);
     for (i, label) in labels.iter().enumerate() {
         let style = if i == focused_idx {
@@ -48,6 +53,26 @@ pub fn render_button_row(
         .alignment(Alignment::Center)
         .style(theme.modal_bg)
         .render(area, buf);
+
+    // Mirror Paragraph's centred layout: total row width is
+    // button_row_width(labels), and it starts at the centred offset
+    // inside `area`.  Each button occupies `label + 4` columns
+    // ("[ label ]"), with a 2-column gap between buttons.
+    let total = button_row_width(labels);
+    let start_x = area.x + area.width.saturating_sub(total) / 2;
+    let mut rects = Vec::with_capacity(labels.len());
+    let mut x = start_x;
+    for label in labels {
+        let w = label.chars().count() as u16 + 4;
+        rects.push(Rect {
+            x,
+            y: area.y,
+            width: w,
+            height: 1,
+        });
+        x += w + 2;
+    }
+    rects
 }
 
 #[cfg(test)]

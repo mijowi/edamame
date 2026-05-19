@@ -189,60 +189,37 @@ impl SettingsStateExt for SettingsState {
 fn keybinds_overlay_conflict_is_rejected_and_reports_existing_action() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    let mut keymap = keymap();
-    let mut overrides = KeyBindingOverrides::default();
-    let mut state = KeybindsState::open(&keymap);
+    let keymap = keymap();
+    let overrides = KeyBindingOverrides::default();
+    let mut state = KeybindsState::open(&keymap, &overrides);
 
     // Focus the row for `Save`.  `focus_action` is the public surface
     // for jumping to a known row in the category-grouped layout.
     assert!(state.focus_action(&Action::Save), "Save in overlay");
 
-    // Open the inline editor and replace the seeded chord with `ctrl+q`
-    // (currently bound to Quit).
-    state.handle_key(
-        &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-        &mut keymap,
-        &mut overrides,
-    );
-    for _ in 0..6 {
-        state.handle_key(
-            &KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-            &mut keymap,
-            &mut overrides,
-        );
-    }
-    for c in "ctrl+q".chars() {
-        state.handle_key(
-            &KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
-            &mut keymap,
-            &mut overrides,
-        );
-    }
-    let response = state.handle_key(
-        &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-        &mut keymap,
-        &mut overrides,
-    );
+    // Arm capture mode and press `Ctrl-Q` (currently bound to Quit).
+    state.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let response = state.handle_key(&KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
 
     assert!(
         matches!(response, KeybindsResponse::Continue),
         "conflict must yield Continue, got {response:?}"
     );
 
-    // Save's binding must be unchanged; Quit must still be bound to ctrl+q.
+    // Save's binding must be unchanged in the draft; Quit must still be ctrl+q.
     assert_eq!(
-        keymap.first_key_for(&Action::Save).as_deref(),
+        state.draft_keymap.first_key_for(&Action::Save).as_deref(),
         Some("Ctrl-S")
     );
     assert_eq!(
-        keymap.first_key_for(&Action::Quit).as_deref(),
+        state.draft_keymap.first_key_for(&Action::Quit).as_deref(),
         Some("Ctrl-Q")
     );
-    // Overrides are not mutated on conflict — important for the
-    // "rejected edit doesn't leak to disk" guarantee.
+    // Draft overrides are not mutated on conflict — important for the
+    // "rejected edit doesn't leak to disk" guarantee, even before Save.
     assert!(
-        overrides.0.is_empty(),
-        "overrides was mutated despite the conflict"
+        state.draft_overrides.0.is_empty(),
+        "draft overrides was mutated despite the conflict"
     );
 
     // The overlay surfaces the same conflict message inline so the
@@ -250,47 +227,33 @@ fn keybinds_overlay_conflict_is_rejected_and_reports_existing_action() {
     assert!(state
         .last_error
         .as_deref()
-        .is_some_and(|e| e.contains("Quit") && e.contains("ctrl+q")));
+        .is_some_and(|e| e.contains("Quit") && e.contains("Ctrl-Q")));
 }
 
 #[test]
 fn keybinds_overlay_rebind_round_trips_through_save() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use edamame::ui::keybinds_overlay::FocusArea;
 
-    let mut keymap = keymap();
-    let mut overrides = KeyBindingOverrides::default();
-    let mut state = KeybindsState::open(&keymap);
+    let keymap = keymap();
+    let overrides = KeyBindingOverrides::default();
+    let mut state = KeybindsState::open(&keymap, &overrides);
     assert!(state.focus_action(&Action::Save));
-    state.handle_key(
-        &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-        &mut keymap,
-        &mut overrides,
-    );
-    for _ in 0..6 {
-        state.handle_key(
-            &KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-            &mut keymap,
-            &mut overrides,
-        );
-    }
-    for c in "f9".chars() {
-        state.handle_key(
-            &KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
-            &mut keymap,
-            &mut overrides,
-        );
-    }
-    let resp = state.handle_key(
-        &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-        &mut keymap,
-        &mut overrides,
-    );
-    assert!(matches!(resp, KeybindsResponse::Rebound { .. }));
+    state.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    state.handle_key(&KeyEvent::new(KeyCode::F(9), KeyModifiers::NONE));
+
+    // Activate Save button to harvest the drafts.
+    state.focus_area = FocusArea::Save;
+    let resp = state.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let saved_overrides = match resp {
+        KeybindsResponse::Save { overrides, .. } => overrides,
+        other => panic!("expected Save response, got {other:?}"),
+    };
 
     // Persist + reload — round-trip through TOML.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("keybindings.toml");
-    overrides.save_to(&path).unwrap();
+    saved_overrides.save_to(&path).unwrap();
     let raw = std::fs::read_to_string(&path).unwrap();
     assert!(raw.contains("Save"), "{raw}");
     assert!(raw.contains("\"f9\""), "{raw}");
