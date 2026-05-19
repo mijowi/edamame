@@ -243,9 +243,8 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         let raw_line_count = raw_lines.len();
         let is_closing_fence_line =
             is_fenced_code && raw_line_count > 0 && cursor_raw_line == raw_line_count - 1;
-        let code_block_allows_reveal = !is_code_block
-            || (is_fenced_code && cursor_raw_line == 0)
-            || is_closing_fence_line;
+        let code_block_allows_reveal =
+            !is_code_block || (is_fenced_code && cursor_raw_line == 0) || is_closing_fence_line;
         let cursor_in_block = if is_table && cursor_block_own >= 3 {
             let last_replaceable = cursor_block_own.saturating_sub(2);
             let block_lines = editor
