@@ -51,7 +51,7 @@ Another Heading 1
 + Foo
 + Bar
 
-1. Ordered list
+1. Ordered list **bold**
 2. Second item
     1. nested item
 3. Third item
