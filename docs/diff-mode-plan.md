@@ -243,10 +243,7 @@ it just flips `decisions[i]`.
 
 ### Resolution checkpoint
 
-When all decisions become non-`Pending` and `DiffState` resolves, the
-resolved rope is swapped into `editor.buffer` and **`editor.history`
-is cleared**. The diff merge is a hard checkpoint — undo cannot
-cross it.
+When all decisions become non-`Pending` and `DiffState` resolves, the resolved rope is swapped into `editor.buffer` and **`editor.history` is cleared**. The diff merge is a hard checkpoint — undo cannot cross it.
 
 Rationale: if the diff merge were recorded as a single `EditDelta` on
 the main `History`, `Ctrl-Z` could revert it. That's tolerable on its
@@ -260,8 +257,9 @@ truth. The `DirtyConflictModal`'s "Save a copy" option (§8) is the
 escape hatch for users who want to preserve the pre-diff buffer
 across the merge.
 
-`editor.dirty` is set to `true` after resolution so the normal save
-path can write the merged result to disk.
+`editor.dirty` is set to `true` after resolution so the normal save path can write the merged result to disk.
+
+Upon resolution and exit from diff mode, flash a success transient "Diff resolved"  hint.
 
 ## 7. Theme additions
 
