@@ -123,13 +123,17 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
         Mode::Rendered | Mode::Raw => {
             // Baseline edit-mode hints — Menu anchors the row so
             // the command-palette chord is always the discovery
-            // entry; then Paste / Undo / Redo / Save / view-mode
-            // toggle / Quit.  Cut / Copy are absent from the baseline
-            // because they're only useful with an active selection,
-            // which is handled by the selection-override arm above.
-            // The view-mode chord label flips with the current mode
-            // (Rendered → "Raw", Raw → "Render") so the label always
-            // describes the destination, not the current state.
+            // entry; then Paste / Undo / [Redo] / Open / Save /
+            // Preview / view-mode toggle / Quit.  Redo is gated on
+            // `state.history.can_redo()` so it only appears when
+            // there's actually something to redo; the row shifts
+            // by one slot when it pops in or out.  Cut / Copy are
+            // absent from the baseline because they're only useful
+            // with an active selection, which is handled by the
+            // selection-override arm above.  The view-mode chord
+            // label flips with the current mode (Rendered → "Raw",
+            // Raw → "Render") and "Preview" / "Raw" / "Render" are
+            // all destination labels — never the current state.
             //
             // Contextual chords (those that only make sense in a
             // specific state) are prepended to the front of the row
@@ -141,18 +145,23 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
                 Mode::Raw => "Render",
                 _ => "Raw",
             };
-            let mut chords = chords_from(
-                keymap,
-                &[
-                    (Action::ShowCommandPalette, "Menu"),
-                    (Action::Paste, "Paste"),
-                    (Action::Undo, "Undo"),
-                    (Action::Redo, "Redo"),
-                    (Action::Save, "Save"),
-                    (Action::ToggleRawMode, view_toggle_label),
-                    (Action::Quit, "Quit"),
-                ],
-            );
+            let redo_entry = state
+                .history
+                .can_redo()
+                .then_some((Action::Redo, "Redo"));
+            let baseline = [
+                Some((Action::ShowCommandPalette, "Menu")),
+                Some((Action::Paste, "Paste")),
+                Some((Action::Undo, "Undo")),
+                redo_entry,
+                Some((Action::Open, "Open")),
+                Some((Action::Save, "Save")),
+                Some((Action::ExitToPreview, "Preview")),
+                Some((Action::ToggleRawMode, view_toggle_label)),
+                Some((Action::Quit, "Quit")),
+            ];
+            let entries: Vec<(Action, &str)> = baseline.into_iter().flatten().collect();
+            let mut chords = chords_from(keymap, &entries);
             // Insertion order here matters for the final layout:
             // each `insert(0, ..)` pushes the previous head back by
             // one slot, so the LAST insert ends up leftmost.  Order
@@ -521,6 +530,63 @@ mod tests {
         );
         // No prelude in edit mode.
         assert!(set.prelude.is_none());
+    }
+
+    #[test]
+    fn redo_hint_only_appears_when_history_can_redo() {
+        use crate::document::history::EditDelta;
+
+        let mut st = state("hello");
+        st.mode = Mode::Rendered;
+
+        // Fresh history → no redo entry yet.
+        let labels: Vec<_> = hint_line_for(&st, &keymap())
+            .chords
+            .iter()
+            .map(|c| c.label.clone())
+            .collect();
+        assert!(
+            !labels.contains(&"Redo".to_string()),
+            "Redo must be hidden when history.can_redo() is false: {labels:?}"
+        );
+
+        // Record an edit and undo it — now redo is available.
+        st.buffer.insert(5, "!");
+        st.history.record(EditDelta {
+            offset: 5,
+            removed: String::new(),
+            inserted: "!".into(),
+        });
+        st.history.undo(&mut st.buffer).unwrap();
+        assert!(st.history.can_redo(), "test premise");
+
+        let labels: Vec<_> = hint_line_for(&st, &keymap())
+            .chords
+            .iter()
+            .map(|c| c.label.clone())
+            .collect();
+        assert!(
+            labels.contains(&"Redo".to_string()),
+            "Redo must appear once history.can_redo() is true: {labels:?}"
+        );
+
+        // Recording a fresh edit clears the redo stack — Redo vanishes.
+        st.buffer.insert(0, "X");
+        st.history.record(EditDelta {
+            offset: 0,
+            removed: String::new(),
+            inserted: "X".into(),
+        });
+        assert!(!st.history.can_redo(), "test premise");
+        let labels: Vec<_> = hint_line_for(&st, &keymap())
+            .chords
+            .iter()
+            .map(|c| c.label.clone())
+            .collect();
+        assert!(
+            !labels.contains(&"Redo".to_string()),
+            "Redo must disappear after the redo stack is cleared: {labels:?}"
+        );
     }
 
     #[test]
