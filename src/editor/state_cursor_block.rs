@@ -69,7 +69,9 @@ impl EditorState {
     /// Whether the cursor should be painted this frame.  Combines the
     /// blink state with the current mode — Preview never shows a cursor.
     pub fn cursor_visible(&self) -> bool {
-        self.mode != Mode::Preview && (self.modal_open || self.cursor_blink.is_visible())
+        self.terminal_focused
+            && self.mode != Mode::Preview
+            && (self.modal_open || self.cursor_blink.is_visible())
     }
 
     /// Returns true when the raw view for the cursor block should be shown.

@@ -596,6 +596,20 @@ impl App {
                 continue;
             }
 
+            if matches!(event, Event::FocusGained | Event::FocusLost) {
+                let focused = matches!(event, Event::FocusGained);
+                if self.editor.terminal_focused != focused {
+                    self.editor.terminal_focused = focused;
+                    // Reset the blink phase so the cursor reappears solid
+                    // for a full interval on regaining focus, and so the
+                    // last visible/hidden phase before focus loss doesn't
+                    // determine what shows up on the next regain.
+                    self.editor.cursor_blink.reset();
+                    self.needs_draw = true;
+                }
+                continue;
+            }
+
             if !self.modal_stack.is_empty() {
                 self.dispatch_modal_event(&event, &dims, &mut terminal, &rx);
                 if self.should_quit {
