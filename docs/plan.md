@@ -1459,7 +1459,7 @@ Monochrome theme should use REVERSED for selection/focus
 
 In edit mode, text selection doesn't work correctly in wrapped table cells
 
-In edit mode, text selection doesn't work correctly in this line `**Bold text** | __Underscore bold__ | *Italic text* | _Underscore italic_ | **_Bold and italic_**`
+In edit mode, text selection doesn't work correctly in this line: `**Bold text** | __Underscore bold__ | *Italic text* | _Underscore italic_ | **_Bold and italic_**`. The final selection is correct when the line de-renders, but the visible selection is not correct *while* the user is still selecting text. It looks like the hidden character offset calculation is off while the line is still rendered.
 
 Should we add bold+italic actions and hints for selection contextual hint?
 
@@ -1467,7 +1467,7 @@ Find and replace
 
 Gruvbox `Palette::Success` is too yellow
 
-In edit mode, the cursor is not placed at the correct offset when clicking in a bolded word in a list item. The line de-renders and the cursor is not placed at the character that was clicked on due to the hidden characters becoming visible. We have already addressed this before—it's not an issue for regular lines (i.e. not a list item). Check what other element render paths we may need to correct as well as list items.
+In edit mode, the cursor is not placed at the correct offset when clicking in a bolded word in a list item. The line de-renders and the cursor is not placed at the character that was clicked on due to the hidden characters becoming visible. We have already addressed this before—it's not an issue for regular text (i.e. not a list item). Fix this issue and check what other element render paths we may need to correct as well as list items.
 
 Blank last line of a document doesn't seem to behave correctly
 
