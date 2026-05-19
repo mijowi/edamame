@@ -1465,10 +1465,6 @@ Should we add bold+italic actions and hints for selection contextual hint?
 
 Find and replace
 
-Gruvbox `Palette::Success` is too yellow
-
-In edit mode, the cursor is not placed at the correct offset when clicking in a bolded word in a list item. The line de-renders and the cursor is not placed at the character that was clicked on due to the hidden characters becoming visible. We have already addressed this before—it's not an issue for regular text (i.e. not a list item). Fix this issue and check what other element render paths we may need to correct as well as list items.
-
 Blank last line of a document doesn't seem to behave correctly
 
 Add optional line numbers
