@@ -436,10 +436,18 @@ fn raw_line_byte_range(block_text: &str, raw_line_idx: usize) -> (usize, usize) 
 /// sub-row the click landed on, translate the click's cell column into a
 /// char position using the cell-aware mapping (wide-char snap-past,
 /// hanging-indent forbidden zone), then map that rendered char back to a
-/// raw char column on `line_text`.  Falls back to the 1:1 column mapping
-/// when the rendered→raw map's length doesn't match the line's actual
-/// rendered char count (headings/lists/blockquotes have prefix glyphs the
-/// map doesn't model).
+/// raw char column on `line_text`.
+///
+/// The renderer emits a leading prefix (`• ` / `1. ` / `[ ] ` / `▎ ` /
+/// heading indent) on lists, tasks, blockquotes and headings; that prefix
+/// has no counterpart in pulldown-cmark's `Text` events.  Compare the
+/// rendered char count against the map's content count to recover the
+/// prefix width, then route clicks on the prefix region into the raw
+/// prefix area and clicks past it through the map — so a click on a
+/// `**bold**` span inside a list item lands correctly even though the
+/// raw `**` markers must be skipped.  Falls back to 1:1 when the prefix
+/// width isn't trustworthy (e.g. code blocks pad their lines with
+/// trailing spaces).
 fn non_table_click_to_raw_col(
     rendered_line: &Line<'_>,
     line_text: &str,
@@ -474,13 +482,31 @@ fn non_table_click_to_raw_col(
 
     let actual_rendered_count = rendered_chars.len();
     let map = rendered_to_raw_char_map(line_text);
-    if map.len().saturating_sub(1) == actual_rendered_count {
-        map.get(rendered_idx)
-            .copied()
-            .unwrap_or_else(|| line_text.chars().count())
-    } else {
-        rendered_idx
+    let map_content_count = map.len().saturating_sub(1);
+    let raw_content_start = map.first().copied().unwrap_or(0);
+
+    // The renderer's prefix has no Text-event counterpart; the difference
+    // between rendered-char count and map content count IS the prefix
+    // width — but only when the diff fits inside the raw prefix area
+    // (`raw_content_start`).  A wildly larger diff (code block padding,
+    // unusual renderer output) means the diff isn't a prefix at all;
+    // fall back to a plain 1:1 mapping in that case.
+    if actual_rendered_count >= map_content_count {
+        let prefix_len = actual_rendered_count - map_content_count;
+        if prefix_len <= raw_content_start {
+            return if rendered_idx < prefix_len {
+                // Click on the rendered prefix → land in the raw prefix
+                // area, never past where content begins.
+                rendered_idx.min(raw_content_start)
+            } else {
+                let content_idx = rendered_idx - prefix_len;
+                map.get(content_idx)
+                    .copied()
+                    .unwrap_or_else(|| line_text.chars().count())
+            };
+        }
     }
+    rendered_idx
 }
 
 /// Convert `raw_col` (a char column on `line_text`) to a buffer-wide char

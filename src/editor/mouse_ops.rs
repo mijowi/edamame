@@ -940,6 +940,59 @@ mod tests {
         assert_eq!(state.cursor.offset, 2 + 10);
     }
 
+    /// Clicking inside a `**bold**` span of a list item lands on the
+    /// correct raw character: the rendered `• ` bullet replaces the raw
+    /// `- ` marker, and the `**` markers around `bold` have no rendered
+    /// counterpart — both must be accounted for when mapping the click's
+    /// rendered column back to a raw char.
+    #[test]
+    fn click_in_bold_inside_list_item_places_cursor_correctly() {
+        // Two lines so the second (the list item) keeps its formatted
+        // line rendered: cursor begins on line 0 (the spacer), so the
+        // list item's rendered line is what the click sees.
+        let text = "x\n- **bold** text\n";
+        let mut state = EditorState::new(Buffer::from_str(text), theme());
+        state.mode = Mode::Rendered;
+        let mut target: Option<DragTarget> = None;
+        // Rendered line 1: "• bold text".  Click the `o` in `bold` —
+        // rendered col 3 (0:• 1:space 2:b 3:o).
+        apply(&mut state, click_plain(3, 1), &mut target, &[], 10, 80);
+        // Line 1 starts at raw offset 2.  Raw "- **bold** text": 0:- 1:space
+        // 2:* 3:* 4:b 5:o 6:l 7:d 8:* 9:* 10:space 11:t … — `o` is raw col 5.
+        assert_eq!(state.cursor.offset, 2 + 5);
+    }
+
+    /// Ordered-list variant: rendered `1. ` vs raw `1. ` happen to be
+    /// the same width, but the `**` markers inside the content still
+    /// must be skipped when mapping the click column.
+    #[test]
+    fn click_in_bold_inside_ordered_list_item_places_cursor_correctly() {
+        let text = "x\n1. **bold** text\n";
+        let mut state = EditorState::new(Buffer::from_str(text), theme());
+        state.mode = Mode::Rendered;
+        let mut target: Option<DragTarget> = None;
+        // Rendered line 1: "1. bold text".  Click `o` — col 4 (0:1 1:.
+        // 2:space 3:b 4:o).
+        apply(&mut state, click_plain(4, 1), &mut target, &[], 10, 80);
+        // Raw "1. **bold** text": 0:1 1:. 2:space 3:* 4:* 5:b 6:o …
+        assert_eq!(state.cursor.offset, 2 + 6);
+    }
+
+    /// Blockquote variant — the rendered `▎ ` bar is a renderer-emitted
+    /// prefix that has no Text-event counterpart in pulldown's parse of
+    /// the raw `> ` line.
+    #[test]
+    fn click_in_bold_inside_blockquote_places_cursor_correctly() {
+        let text = "x\n> **bold** text\n";
+        let mut state = EditorState::new(Buffer::from_str(text), theme());
+        state.mode = Mode::Rendered;
+        let mut target: Option<DragTarget> = None;
+        // Rendered line 1: "▎ bold text".  Click `o` — col 3.
+        apply(&mut state, click_plain(3, 1), &mut target, &[], 10, 80);
+        // Raw "> **bold** text": 0:> 1:space 2:* 3:* 4:b 5:o …
+        assert_eq!(state.cursor.offset, 2 + 5);
+    }
+
     /// Round-trip for highlights: every rendered col should map back to
     /// itself through `paragraph_raw_col_to_rendered_col`.
     #[test]
