@@ -686,7 +686,10 @@ mod tests {
         match &warnings[0].kind {
             WarningKind::InvalidValue { key, message } => {
                 assert_eq!(key, "editor.autosave_idle_ms");
-                assert!(message.contains("500"), "msg should cite bad value: {message}");
+                assert!(
+                    message.contains("500"),
+                    "msg should cite bad value: {message}"
+                );
             }
             other => panic!("expected InvalidValue, got {other:?}"),
         }
