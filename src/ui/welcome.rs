@@ -405,9 +405,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         // horizontal padding — both derived from `area` and the fixed
         // CONTENT_WIDTH.  We need it BEFORE computing natural body
         // height because the paragraph and hint wrap at this width.
-        let modal_width = CONTENT_WIDTH
-            .saturating_add(2 * MAX_PAD_H)
-            .min(area.width);
+        let modal_width = CONTENT_WIDTH.saturating_add(2 * MAX_PAD_H).min(area.width);
         let pad_h = compute_pad_h(modal_width, CONTENT_WIDTH, MAX_PAD_H);
         let body_width = modal_width.saturating_sub(2 * pad_h);
 
