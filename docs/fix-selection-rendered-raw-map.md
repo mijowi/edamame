@@ -68,11 +68,23 @@ contract means `raw_to_rendered` returns `None` for:
 Reference-style links, autolinks, and images are deferred (the walker
 doesn't emit map entries for them today — Phase 8 concern per CLAUDE.md).
 
+`==highlight==` spans *are* covered — the walker's `push_text` manually
+splits `==…==` markers out of `Text` events (pulldown-cmark doesn't know
+about them), so both the forward and inverse maps are correct for
+highlighted text.
+
 ## Approach
 
 ### Step 1 — Extract `InlineColMap` into a small module
 
-Create `src/markdown/inline_col_map.rs` (re-export from `src/markdown.rs`):
+Create `src/markdown/inline_col_map.rs` and add to `src/markdown.rs`:
+
+```rust
+pub mod inline_col_map;
+pub use inline_col_map::InlineColMap;
+```
+
+Public API:
 
 ```rust
 pub struct InlineColMap {
@@ -131,13 +143,26 @@ stays module-private.  Build the inverse map in the same walk: each
 the raw char index it maps to — record both vectors at once.
 
 **`raw_to_rendered` is a dense vector** of length `raw_len + 1`, indexed
-directly by raw char index (no binary search needed).  During the walk,
-entries for marker bytes (raw chars that have no rendered counterpart) are
-forward-filled with the rendered index of the next visible character.
-After the walk completes, any trailing unfilled entries (past the last
-emitted char) are filled with `rendered_len`.  `raw_to_rendered(&self,
-raw_char)` is then a simple `self.raw_to_rendered[raw_char.min(self.raw_len)]`
-index lookup.  Out-of-range queries clamp to `rendered_len` / `raw_len`.
+directly by raw char index (no binary search needed).  Construction
+algorithm:
+
+1. Initialize `raw_to_rendered = vec![usize::MAX; raw_len + 1]` (sentinel).
+2. During the walk, each `push_*` call that records
+   `rendered_to_raw[rendered_idx] = raw_char_idx` also sets
+   `raw_to_rendered[raw_char_idx] = rendered_idx`.  Marker bytes (gaps
+   between `Text` events) are never pushed, so their slots keep the
+   sentinel.
+3. After the walk, set `raw_to_rendered[raw_len] = rendered_len` (the
+   past-end entry).
+4. Backward-fill: iterate from `raw_len - 1` down to `0`.  If
+   `raw_to_rendered[i] == usize::MAX`, set it to `raw_to_rendered[i + 1]`.
+   This gives each marker byte the rendered index of the *next* visible
+   character — matching the existing `paragraph_raw_col_to_rendered_col`
+   semantics ("smallest rendered idx whose raw position is ≥ raw_col").
+
+`raw_to_rendered(&self, raw_char)` is then a simple
+`self.raw_to_rendered[raw_char.min(self.raw_len)]` index lookup.
+Out-of-range queries clamp to `rendered_len` / `raw_len`.
 
 ### Step 2 — Cache one `InlineColMap` per buffer line on `ParsedDoc`
 
@@ -162,6 +187,19 @@ In `src/document/parsed_doc.rs`:
   lives only as long as the current parse; it is dropped and rebuilt when
   `ParsedDoc` re-parses on edit.
 
+**Lifetime note.** `OnceCell::get_or_init` takes `&self` and returns
+`&T` with the same lifetime as the `&OnceCell`.  Since `inline_maps`
+is an owned field on `ParsedDoc`, and `ParsedDoc` is accessed via
+`&EditorState` (shared reference) at all call sites (paint path, click
+path, cursor overlay), the returned `&InlineColMap` borrows from
+`&self` on `ParsedDoc` — no `RefCell` borrow guard involved, so no
+guard-lifetime issues.  This holds as long as no caller takes
+`&mut ParsedDoc` while an `&InlineColMap` reference is live.  All
+current callers use the map immediately within a single expression
+(lookup → use result → drop reference), so this is safe.  If a future
+caller needs to hold the reference across a mutable borrow, it would
+need to copy the lookup result into a local `usize` first.
+
 **Canonical line source.** Both call sites (paint path and click path)
 must derive `raw_line` the same way: from the block's byte range sliced
 out of `Buffer::contents()`, then `split('\n')` to get the line within
@@ -169,9 +207,11 @@ the block.  This matches the paint path's existing `block_text` /
 `raw_lines` decomposition.  The click path currently gets `line_text`
 from `Buffer::line()` which may include a trailing `\n` — strip it
 before passing to `inline_map` so the char count agrees.  Add a
-`debug_assert_eq!(raw_line.chars().count(), cached.raw_len())` inside
-`inline_map` that fires when a subsequent caller passes a different
-line than the one the map was built from, catching drift loudly.
+`debug_assert_eq!(raw_line.chars().count(), cached.raw_len())` in the
+`inline_map` method body *after* the `get_or_init` call (not inside the
+init closure).  This runs on every access — including the first — and
+catches drift when a subsequent caller passes a different line than the
+one the map was built from.
 
 **`parsed_dirty` handling.** During the window between an edit and the
 next parse, byte offsets after the edit shift but `inline_maps` is still
@@ -188,6 +228,16 @@ In `src/editor/mouse_ops/coord.rs`:
 - Replace the call to local `rendered_to_raw_char_map(...)` inside
   `non_table_click_to_raw_col` (`coord.rs:484`) with
   `state.parsed.inline_map(buffer_line_idx, line_text).rendered_to_raw(...)`.
+  `non_table_click_to_raw_col` currently receives `line_text` but not a
+  buffer line index.  Add a `buffer_line_idx: usize` parameter to the
+  function and thread it through from the caller (`click_to_raw_col`
+  at `coord.rs:200`), which already has `block: BlockLocation` with
+  `block.range.start`.  Derive the buffer line index from that:
+  `rope().byte_to_char(block.range.start)` → `char_to_line()`, then
+  add the `line_byte_start`-based line offset within the block (the
+  same derivation used in Step 4a).  Strip any trailing `\n` from `line_text` before
+  passing to `inline_map` — `Buffer::line()` may include one, but the
+  paint path's `block_text.split('\n')` does not.
 - Delete `paragraph_raw_col_to_rendered_col` (`coord.rs:634`) — its
   single production caller is in `src/ui/rendered_view.rs:745` and will
   be replaced in Step 5.  Also remove the re-export at
@@ -252,21 +302,47 @@ inline markup within the list item content is also collapsed correctly.
   (in `list_marker.rs:33`) and `rendered_marker_width` from
   `rendered_list_marker_char_width(line)` (in `list_marker.rs:70`).
 - Use the full-line cached `InlineColMap` (from Step 2) rather than
-  building a separate sub-line map.  The content-relative rendered column
-  is derived by offsetting into the full map:
-  `content_rendered_col = map.raw_to_rendered(raw_col) - map.raw_to_rendered(raw_marker_width)`.
-  This avoids a redundant parse and leverages the existing per-line cache.
-- Translate `start_raw_col` / `end_raw_col` from absolute raw chars into
-  content-relative chars: `content_raw_col = raw_col.saturating_sub(raw_marker_width)`.
-  If the raw col falls within the marker, clamp to `rendered_marker_width`.
-- For the well-formedness check, compute `actual_content_rendered_count`
-  as the rendered line's total char count minus `rendered_marker_width`.
-  Use `raw_to_rendered_checked` on the full-line map with
-  `actual_rendered_count = actual_content_rendered_count + rendered_marker_width`
-  (i.e. the total rendered char count of the line).  On `Some(rendered_col)`,
-  the final rendered col is `rendered_col` directly (the full-line map
-  already accounts for the marker).  On `None`, fall back to the existing
-  list-only marker-shift mapping (current behavior).
+  building a separate sub-line map.
+
+  **How the walker handles list-prefixed lines.** When `InlineColMap::build`
+  feeds a full line like `- **bold** item` to pulldown-cmark, the parser
+  sees it as a list item: the `- ` prefix bytes never appear in any `Text`
+  event, so they fall into the inter-event gaps and get backward-filled in
+  step 4 of the inverse construction (each marker-prefix char maps to the
+  rendered index of the first content char, i.e. `0`).  The forward map
+  (`rendered_to_raw`) starts at the first `Text` event's raw offset,
+  skipping the marker entirely.  This is "accidentally correct via
+  gap-filling" rather than explicit list-prefix handling.  A unit test for
+  `InlineColMap::build("- **bold** item")` must verify the marker bytes
+  map correctly (see Step 6) so a pulldown-cmark offset regression would
+  be caught.
+
+- **Well-formedness check — content-only comparison.** The full-line
+  `map.rendered_len()` counts only chars emitted by the walker, which
+  excludes the list marker (pulldown-cmark doesn't emit `Text` for `- `).
+  The actual rendered line includes the rendered marker glyph (e.g. `• `).
+  So `map.rendered_len()` will always be less than the line's total rendered
+  char count, and `raw_to_rendered_checked` against the total would *always*
+  return `None` — defeating the purpose.
+
+  Instead, use the **unchecked** `raw_to_rendered` for list items, and
+  validate via a content-only count comparison:
+  `actual_content_rendered_count = total_rendered_chars - rendered_marker_width`.
+  If `map.rendered_len() != actual_content_rendered_count`, fall back to
+  the existing list-only marker-shift mapping.  Otherwise, the inline map
+  is well-formed for the content portion.
+
+- Derive the rendered column for a raw column `raw_col`:
+  - If `raw_col < raw_marker_width`: clamp to `rendered_marker_width`
+    (selection falls within the marker region).
+  - Otherwise: `rendered_col = map.raw_to_rendered(raw_col) + rendered_marker_width - map.raw_to_rendered(raw_marker_width)`.
+    This offsets the walker's content-only rendered index by the rendered
+    marker width, adjusting for the walker's implicit zero-basing of the
+    content.  `map.raw_to_rendered(raw_marker_width)` is `0` (the first
+    content char), so this simplifies to
+    `map.raw_to_rendered(raw_col) + rendered_marker_width`.
+  - On well-formedness failure, fall back to the existing list-only
+    marker-shift mapping (current behavior).
 
 This is the only branch where the plan adds materially new code beyond
 "swap call site for cache hit".  Keep it behind the same `if let (Some,
@@ -333,6 +409,28 @@ Unit tests in `src/markdown/inline_col_map.rs`:
 - Marker-byte input — `raw_to_rendered_checked` on the raw col of the `[`
   of `[link]` returns the rendered col of `l` (next emitted char), not
   the col where `[` would have been if uncollapsed.
+- List-prefix lines — `InlineColMap::build("- **bold** item")`: assert
+  that the `- ` prefix chars backward-fill to rendered index `0`, and
+  that `raw_to_rendered` for the `b` of `bold` returns `0` (the walker's
+  content-only rendered index, before the caller adds
+  `rendered_marker_width`).
+
+Integration test (in `tests/ui.rs` or a new `tests/selection.rs`):
+
+- Render a line like `**bold** text` via `TestBackend`, apply a selection
+  covering the raw bytes of `bold`, call `paint_selection_overlay`, and
+  assert that the highlighted cells in the `TestBackend` buffer correspond
+  to the *rendered* glyph positions of `bold` (cells 0–3), not the raw
+  positions (cells 2–7).  This catches "map is correct but never called"
+  wiring bugs that unit tests alone would miss.
+
+  Follow the pattern in `tests/ui.rs::rendered_view_paints_selection_across_multiple_rendered_blocks`
+  (line 102): create an `EditorState` via `EditorState::new(Buffer::from_str(src), theme)`,
+  set `state.mode = Mode::Rendered`, assign `state.selection = Some(Selection { anchor, active })`
+  with rope char offsets for the raw range, set `state.cursor.offset`, then render a
+  `RenderedView` into a `Terminal<TestBackend>` via `frame.render_stateful_widget`.
+  After drawing, clone `terminal.backend().buffer()` and assert per-cell `style().bg`
+  against `theme.selection.bg` at the expected rendered columns.
 
 Manual smoke:
 
