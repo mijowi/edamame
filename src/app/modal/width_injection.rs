@@ -61,14 +61,14 @@ impl Default for WidthInjectionWarning {
 
 impl Modal for WidthInjectionWarning {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
-        let view = ModalView {
-            title: "Custom column widths",
-            body: &self.body,
-            buttons: &self.buttons,
-            theme: ctx.theme,
-            kind: self.kind,
-            dismissable: self.dismissable,
-        };
+        let view = ModalView::new(
+            "Custom column widths",
+            &self.body,
+            &self.buttons,
+            ctx.theme,
+            self.kind,
+            self.dismissable,
+        );
         frame.render_stateful_widget(view, area, &mut self.state);
     }
 

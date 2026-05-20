@@ -145,10 +145,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
                 Mode::Raw => "Render",
                 _ => "Raw",
             };
-            let redo_entry = state
-                .history
-                .can_redo()
-                .then_some((Action::Redo, "Redo"));
+            let redo_entry = state.history.can_redo().then_some((Action::Redo, "Redo"));
             let baseline = [
                 Some((Action::ShowCommandPalette, "Menu")),
                 Some((Action::Paste, "Paste")),

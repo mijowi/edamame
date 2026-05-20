@@ -46,6 +46,13 @@ use crate::ui::scroll_container::{
 /// action name without clipping; chords sit in the remaining width.
 const LABEL_PAD: usize = 22;
 
+/// Maximum horizontal padding per side for the keybinds overlay.
+/// Twice the default [`MAX_PAD_H`](scroll_container::MAX_PAD_H): the
+/// overlay's content is narrow, and the extra slack absorbs most
+/// "Already bound to …" error strings without re-flowing the modal
+/// wider while the user is still in capture mode.
+const KEYBINDS_MAX_PAD_H: u16 = 8;
+
 const CAPTURE_HINT: &str = "Press a key… (Esc to cancel)";
 /// Footer buttons, left-to-right.  Cancel is the leading (left) button so
 /// the destructive-by-default option matches the user's reading order and
@@ -280,8 +287,9 @@ impl KeybindsState {
                 // rather than the normalised `ctrl+q` carried by the
                 // error, so the message matches the rest of the UI.
                 let display_key = format_key(key);
-                self.last_error =
-                    Some(format!("'{display_key}' is already bound to {existing_action}"));
+                self.last_error = Some(format!(
+                    "'{display_key}' is already bound to {existing_action}"
+                ));
             }
             Err(e) => {
                 self.last_error = Some(e.to_string());
@@ -328,8 +336,7 @@ impl KeybindsState {
                 self.last_error = None;
                 KeybindsResponse::Continue
             }
-            KeyCode::Down => KeybindsResponse::Continue,
-            KeyCode::Left | KeyCode::Right => {
+            KeyCode::Down | KeyCode::Left | KeyCode::Right => {
                 self.focus_area = match self.focus_area {
                     FocusArea::Save => FocusArea::Cancel,
                     FocusArea::Cancel => FocusArea::Save,
@@ -477,6 +484,7 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
             height: body_lines.len() as u16,
             pinned_top: 0,
             pinned_bottom,
+            max_pad_h: KEYBINDS_MAX_PAD_H,
         };
         let rect = centered_rect_for_content(content, area);
 
@@ -498,7 +506,7 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
                 title: "Keybindings",
                 kind: ModalKind::Normal,
                 show_close_hint: true,
-                content_width,
+                content,
                 theme: self.theme,
             },
         );
@@ -986,7 +994,10 @@ mod tests {
         assert!(state.focus_action(&Action::Save));
         state.handle_key(&key(KeyCode::Enter));
         state.handle_key(&KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
-        let msg = state.last_error.as_deref().expect("conflict surfaces error");
+        let msg = state
+            .last_error
+            .as_deref()
+            .expect("conflict surfaces error");
         assert!(
             msg.contains("Ctrl-Q") && !msg.contains("ctrl+q"),
             "expected human-readable chord in conflict message, got: {msg}"
@@ -1068,8 +1079,8 @@ mod tests {
                 break;
             }
         }
-        // One more Down crosses into the button row — Cancel first.
-        state.handle_key(&key(KeyCode::Down));
+        // The final iteration's Down crossed into the button row —
+        // Cancel first (it's the leading/leftmost footer button).
         assert_eq!(state.focus_area, FocusArea::Cancel);
     }
 
@@ -1126,6 +1137,22 @@ mod tests {
         assert_eq!(state.focus_area, FocusArea::Cancel);
         state.handle_key(&key(KeyCode::Left));
         assert_eq!(state.focus_area, FocusArea::Save);
+    }
+
+    #[test]
+    fn down_from_cancel_moves_to_save() {
+        let mut state = open();
+        state.focus_area = FocusArea::Cancel;
+        state.handle_key(&key(KeyCode::Down));
+        assert_eq!(state.focus_area, FocusArea::Save);
+    }
+
+    #[test]
+    fn down_from_save_moves_to_cancel() {
+        let mut state = open();
+        state.focus_area = FocusArea::Save;
+        state.handle_key(&key(KeyCode::Down));
+        assert_eq!(state.focus_area, FocusArea::Cancel);
     }
 
     #[test]
@@ -1305,6 +1332,46 @@ mod tests {
         assert!(
             modal_width < 130,
             "expected content-aware width well below 80% of 200, got modal width {modal_width}"
+        );
+    }
+
+    #[test]
+    fn keybinds_modal_uses_raised_horizontal_padding() {
+        // The overlay opts into KEYBINDS_MAX_PAD_H (8) per side.  Pin
+        // both the wide-terminal cap and the narrow shrink-to-MIN
+        // behaviour so a future change doesn't silently drop the slack.
+        use crate::ui::scroll_container::{compute_pad_h, MIN_PAD_H};
+        assert_eq!(
+            compute_pad_h(200, 30, KEYBINDS_MAX_PAD_H),
+            KEYBINDS_MAX_PAD_H,
+            "wide-terminal pad_h must reach the keybinds cap"
+        );
+        assert_eq!(
+            compute_pad_h(32, 30, KEYBINDS_MAX_PAD_H),
+            MIN_PAD_H,
+            "narrow-terminal pad_h must still degrade to MIN_PAD_H"
+        );
+        // End-to-end: in a wide terminal the modal rect includes the
+        // raised padding on each side.
+        use crate::ui::scroll_container::{centered_rect_for_content, ContentSize};
+        use ratatui::layout::Rect;
+        let state = open();
+        let cw = keybinds_content_width(&state);
+        let area = Rect::new(0, 0, 200, 40);
+        let r = centered_rect_for_content(
+            ContentSize {
+                width: cw,
+                height: 5,
+                pinned_top: 0,
+                pinned_bottom: 2,
+                max_pad_h: KEYBINDS_MAX_PAD_H,
+            },
+            area,
+        );
+        assert_eq!(
+            r.width,
+            cw + 2 * KEYBINDS_MAX_PAD_H,
+            "wide-terminal modal width must include raised padding on both sides"
         );
     }
 

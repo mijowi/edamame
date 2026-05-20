@@ -311,6 +311,7 @@ impl<'a> StatefulWidget for PaletteView<'a> {
             height: scrolling_height,
             pinned_top: 2, // input row + divider
             pinned_bottom: 0,
+            ..Default::default()
         };
         // Centre the modal in the terminal, but anchor the top edge as if
         // the modal were at its maximum possible height.  A naively-centred
@@ -351,7 +352,7 @@ impl<'a> StatefulWidget for PaletteView<'a> {
                 title: "Command Palette",
                 kind: ModalKind::Normal,
                 show_close_hint: true,
-                content_width,
+                content,
                 theme: self.theme,
             },
         );

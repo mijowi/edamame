@@ -75,14 +75,14 @@ impl Modal for TerminalCapabilitiesModal {
                 "Items marked ✗ will be disabled or degraded automatically.",
             ));
         }
-        let view = ModalView {
-            title: "Terminal capabilities",
-            body: &body,
-            buttons: &self.buttons,
-            theme: ctx.theme,
-            kind: self.kind,
-            dismissable: self.dismissable,
-        };
+        let view = ModalView::new(
+            "Terminal capabilities",
+            &body,
+            &self.buttons,
+            ctx.theme,
+            self.kind,
+            self.dismissable,
+        );
         frame.render_stateful_widget(view, area, &mut self.state);
     }
 

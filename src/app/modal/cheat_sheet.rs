@@ -37,14 +37,14 @@ impl CheatSheetModal {
 
 impl Modal for CheatSheetModal {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
-        let view = ModalView {
-            title: "Markdown Cheat Sheet",
-            body: &self.body,
-            buttons: &self.buttons,
-            theme: ctx.theme,
-            kind: self.kind,
-            dismissable: self.dismissable,
-        };
+        let view = ModalView::new(
+            "Markdown Cheat Sheet",
+            &self.body,
+            &self.buttons,
+            ctx.theme,
+            self.kind,
+            self.dismissable,
+        );
         frame.render_stateful_widget(view, area, &mut self.state);
     }
 

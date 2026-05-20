@@ -359,6 +359,7 @@ impl<'a> StatefulWidget for ThemePickerView<'a> {
             height: scrolling_height,
             pinned_top: 5,
             pinned_bottom: 0,
+            ..Default::default()
         };
         // Anchor the modal's top edge at the y it would have when the
         // *initial* (no-query) list is rendered — i.e. centred for the
@@ -397,7 +398,7 @@ impl<'a> StatefulWidget for ThemePickerView<'a> {
                 title: "Switch theme",
                 kind: ModalKind::Normal,
                 show_close_hint: true,
-                content_width,
+                content,
                 theme: self.theme,
             },
         );

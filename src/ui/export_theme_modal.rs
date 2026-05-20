@@ -347,6 +347,7 @@ impl<'a> StatefulWidget for ExportThemeView<'a> {
             height: list_visible,
             pinned_top: 1,
             pinned_bottom,
+            ..Default::default()
         };
         let modal_area = centered_rect_for_content(content, area);
         let layout = draw_frame(
@@ -356,7 +357,7 @@ impl<'a> StatefulWidget for ExportThemeView<'a> {
                 title: "Create custom theme",
                 kind: ModalKind::Normal,
                 show_close_hint: true,
-                content_width,
+                content,
                 theme: self.theme,
             },
         );

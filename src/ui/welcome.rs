@@ -405,8 +405,10 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         // horizontal padding — both derived from `area` and the fixed
         // CONTENT_WIDTH.  We need it BEFORE computing natural body
         // height because the paragraph and hint wrap at this width.
-        let modal_width = CONTENT_WIDTH.saturating_add(2 * MAX_PAD_H).min(area.width);
-        let pad_h = compute_pad_h(modal_width, CONTENT_WIDTH);
+        let modal_width = CONTENT_WIDTH
+            .saturating_add(2 * MAX_PAD_H)
+            .min(area.width);
+        let pad_h = compute_pad_h(modal_width, CONTENT_WIDTH, MAX_PAD_H);
         let body_width = modal_width.saturating_sub(2 * pad_h);
 
         let para_inner_w = body_width.saturating_sub(2);
@@ -436,6 +438,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             height: natural_height,
             pinned_top: 0,
             pinned_bottom: 0,
+            ..Default::default()
         };
         let modal_area = centered_rect_for_content(content, area);
         let layout = draw_frame(
@@ -445,7 +448,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
                 title: "Welcome to edamame",
                 kind: ModalKind::Normal,
                 show_close_hint: false,
-                content_width: CONTENT_WIDTH,
+                content,
                 theme: self.theme,
             },
         );

@@ -69,14 +69,14 @@ impl ImagesEnabledPromptModal {
 
 impl Modal for ImagesEnabledPromptModal {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
-        let view = ModalView {
-            title: "Images",
-            body: &self.body,
-            buttons: &self.buttons,
-            theme: ctx.theme,
-            kind: self.kind,
-            dismissable: self.dismissable,
-        };
+        let view = ModalView::new(
+            "Images",
+            &self.body,
+            &self.buttons,
+            ctx.theme,
+            self.kind,
+            self.dismissable,
+        );
         frame.render_stateful_widget(view, area, &mut self.state);
     }
 

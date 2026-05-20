@@ -344,6 +344,7 @@ impl<'a> StatefulWidget for SettingsView<'a> {
             height: row_lines.len() as u16,
             pinned_top: 0,
             pinned_bottom,
+            ..Default::default()
         };
         let rect = centered_rect_for_content(content, area);
 
@@ -365,7 +366,7 @@ impl<'a> StatefulWidget for SettingsView<'a> {
                 title: "Settings",
                 kind: ModalKind::Normal,
                 show_close_hint: true,
-                content_width,
+                content,
                 theme: self.theme,
             },
         );

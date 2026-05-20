@@ -285,6 +285,7 @@ impl<'a> StatefulWidget for SaveCopyView<'a> {
             height: 0,
             pinned_top: body_rows,
             pinned_bottom: 0,
+            ..Default::default()
         };
         let modal_area = centered_rect_for_content(content, area);
         let layout = draw_frame(
@@ -294,7 +295,7 @@ impl<'a> StatefulWidget for SaveCopyView<'a> {
                 title: "Save a Copy",
                 kind: ModalKind::Normal,
                 show_close_hint: true,
-                content_width,
+                content,
                 theme: self.theme,
             },
         );

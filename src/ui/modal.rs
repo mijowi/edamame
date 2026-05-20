@@ -171,6 +171,45 @@ pub struct ModalView<'a> {
     /// `handle_key` ignores `Esc`.  Set to false on modals that gate
     /// the user on an explicit choice (warnings, errors).
     pub dismissable: bool,
+    /// Maximum horizontal padding per side, in cells.  Defaults to
+    /// [`MAX_PAD_H`] via [`ModalView::new`]; raise it with
+    /// [`ModalView::with_max_pad_h`] for modals whose content reads
+    /// cramped at the default.
+    pub max_pad_h: u16,
+}
+
+impl<'a> ModalView<'a> {
+    /// Construct a `ModalView` with the default maximum horizontal
+    /// padding ([`MAX_PAD_H`]).  Use the field-by-field struct literal
+    /// only inside the module's own tests; production callers should go
+    /// through this constructor so a future default change picks them
+    /// up automatically.
+    pub fn new(
+        title: &'a str,
+        body: &'a [Line<'a>],
+        buttons: &'a [ModalButton],
+        theme: &'a Theme,
+        kind: ModalKind,
+        dismissable: bool,
+    ) -> Self {
+        Self {
+            title,
+            body,
+            buttons,
+            theme,
+            kind,
+            dismissable,
+            max_pad_h: MAX_PAD_H,
+        }
+    }
+
+    /// Override the maximum horizontal padding.  Builder-style so the
+    /// caller can chain: `ModalView::new(...).with_max_pad_h(8)`.
+    #[allow(dead_code)]
+    pub fn with_max_pad_h(mut self, max_pad_h: u16) -> Self {
+        self.max_pad_h = max_pad_h;
+        self
+    }
 }
 
 impl<'a> StatefulWidget for ModalView<'a> {
@@ -190,8 +229,11 @@ impl<'a> StatefulWidget for ModalView<'a> {
         // leaves the modal too short for its content, AND a narrow
         // terminal forces `compute_pad_h` to floor at MIN_PAD_H while
         // this pre-pass still subtracts the full MAX padding.
-        let prospective_modal_width = content_width.saturating_add(2 * MAX_PAD_H).min(area.width);
-        let prospective_pad_h = compute_pad_h(prospective_modal_width, content_width);
+        let prospective_modal_width = content_width
+            .saturating_add(2 * self.max_pad_h)
+            .min(area.width);
+        let prospective_pad_h =
+            compute_pad_h(prospective_modal_width, content_width, self.max_pad_h);
         let prospective_body_inner_w = prospective_modal_width
             .saturating_sub(2 * prospective_pad_h)
             .max(1);
@@ -204,6 +246,7 @@ impl<'a> StatefulWidget for ModalView<'a> {
             height: wrapped_body_height,
             pinned_top: 0,
             pinned_bottom,
+            max_pad_h: self.max_pad_h,
         };
         let modal_area = centered_rect_for_content(content, area);
 
@@ -217,7 +260,7 @@ impl<'a> StatefulWidget for ModalView<'a> {
         // padding column, NOT inside the body, so the body's wrap
         // width is the full inner width.  Use `compute_pad_h` so the
         // padding here exactly matches what `draw_frame` will apply.
-        let pad_h = compute_pad_h(modal_area.width, content_width);
+        let pad_h = compute_pad_h(modal_area.width, content_width, self.max_pad_h);
         let body_inner_w = modal_area.width.saturating_sub(2 * pad_h).max(1);
         let total = wrapped_rows(self.body, body_inner_w);
         state.scroll_state.observe(total, text_body_height);
@@ -229,7 +272,7 @@ impl<'a> StatefulWidget for ModalView<'a> {
                 title: self.title,
                 kind: self.kind,
                 show_close_hint: self.dismissable,
-                content_width,
+                content,
                 theme: self.theme,
             },
         );
@@ -357,14 +400,7 @@ mod tests {
         let buttons = vec![ModalButton::new("Ok"), ModalButton::new("Cancel")];
         terminal
             .draw(|frame| {
-                let m = ModalView {
-                    title: "Notice",
-                    body: &body,
-                    buttons: &buttons,
-                    theme: theme(),
-                    kind: ModalKind::Normal,
-                    dismissable: true,
-                };
+                let m = ModalView::new("Notice", &body, &buttons, theme(), ModalKind::Normal, true);
                 frame.render_stateful_widget(m, frame.area(), &mut state);
             })
             .unwrap();
@@ -393,14 +429,14 @@ mod tests {
         let buttons = vec![ModalButton::new("Ok"), ModalButton::new("No")];
         terminal
             .draw(|frame| {
-                let m = ModalView {
-                    title: "Pick one",
-                    body: &body,
-                    buttons: &buttons,
-                    theme: theme(),
-                    kind: ModalKind::Warning,
-                    dismissable: false,
-                };
+                let m = ModalView::new(
+                    "Pick one",
+                    &body,
+                    &buttons,
+                    theme(),
+                    ModalKind::Warning,
+                    false,
+                );
                 frame.render_stateful_widget(m, frame.area(), &mut state);
             })
             .unwrap();
@@ -419,14 +455,7 @@ mod tests {
         let buttons = vec![ModalButton::new("Ok")];
         terminal
             .draw(|frame| {
-                let m = ModalView {
-                    title: "T",
-                    body: &body,
-                    buttons: &buttons,
-                    theme: theme(),
-                    kind: ModalKind::Normal,
-                    dismissable: true,
-                };
+                let m = ModalView::new("T", &body, &buttons, theme(), ModalKind::Normal, true);
                 frame.render_stateful_widget(m, frame.area(), &mut state);
             })
             .unwrap();
@@ -505,14 +534,7 @@ mod tests {
         let buttons = vec![ModalButton::new("Ok")];
         terminal
             .draw(|frame| {
-                let m = ModalView {
-                    title: "Notice",
-                    body: &body,
-                    buttons: &buttons,
-                    theme: theme(),
-                    kind: ModalKind::Normal,
-                    dismissable: true,
-                };
+                let m = ModalView::new("Notice", &body, &buttons, theme(), ModalKind::Normal, true);
                 frame.render_stateful_widget(m, frame.area(), &mut state);
             })
             .unwrap();
@@ -531,14 +553,7 @@ mod tests {
         let buttons = vec![ModalButton::new("Ok")];
         terminal
             .draw(|frame| {
-                let m = ModalView {
-                    title: "Tall",
-                    body: &body,
-                    buttons: &buttons,
-                    theme: theme(),
-                    kind: ModalKind::Normal,
-                    dismissable: true,
-                };
+                let m = ModalView::new("Tall", &body, &buttons, theme(), ModalKind::Normal, true);
                 frame.render_stateful_widget(m, frame.area(), &mut state);
             })
             .unwrap();
@@ -578,14 +593,7 @@ mod tests {
         let buttons = vec![ModalButton::new("Ok")];
         terminal
             .draw(|frame| {
-                let m = ModalView {
-                    title: "Wrap",
-                    body: &body,
-                    buttons: &buttons,
-                    theme: theme(),
-                    kind: ModalKind::Normal,
-                    dismissable: true,
-                };
+                let m = ModalView::new("Wrap", &body, &buttons, theme(), ModalKind::Normal, true);
                 frame.render_stateful_widget(m, frame.area(), &mut state);
             })
             .unwrap();
@@ -598,5 +606,16 @@ mod tests {
             state.scroll_state.last_total,
             state.scroll_state.last_visible,
         );
+    }
+
+    #[test]
+    fn new_uses_default_max_pad_and_builder_overrides_it() {
+        let body: [Line<'_>; 0] = [];
+        let buttons: [ModalButton; 0] = [];
+        let m = ModalView::new("T", &body, &buttons, theme(), ModalKind::Normal, true);
+        assert_eq!(m.max_pad_h, MAX_PAD_H);
+        let m = ModalView::new("T", &body, &buttons, theme(), ModalKind::Normal, true)
+            .with_max_pad_h(8);
+        assert_eq!(m.max_pad_h, 8);
     }
 }
