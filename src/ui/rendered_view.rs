@@ -7,7 +7,6 @@ use ratatui::{buffer::Buffer as TuiBuf, layout::Rect, widgets::StatefulWidget};
 
 use crate::config::Theme;
 use crate::document::detect_setext;
-use crate::editor::mouse_ops;
 use crate::editor::table_edit;
 use crate::editor::EditorState;
 use crate::markdown::table_layout::{compute_cell_overlay, table_raw_col_to_rendered_col};
@@ -723,6 +722,23 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 //      code.
                 if let Some(line) = editor.parsed.lines.get(virtual_idx) {
                     let raw_text = raw_lines.get(cursor_raw_line).copied().unwrap_or("");
+                    // Paragraph lines with inline links / code spans shift the
+                    // cursor's rendered column relative to its raw column.  The
+                    // inverse of the click handler's map keeps the indicator
+                    // where the click landed, avoiding a visible jump when the
+                    // raw reveal fires.  `None` when the line isn't a plain
+                    // paragraph (heading/list/blockquote) — caller falls back.
+                    let inline_col = block_range_for_cursor.as_ref().and_then(|br| {
+                        let actual_rendered: usize =
+                            line.spans.iter().map(|s| s.content.chars().count()).sum();
+                        let buffer_line_idx = editor
+                            .buffer
+                            .block_line_to_buffer_line(br.start, cursor_raw_line);
+                        editor
+                            .parsed
+                            .inline_map(buffer_line_idx, raw_text)
+                            .raw_to_rendered_checked(cursor_col, actual_rendered)
+                    });
                     let visual_col = if let Some(w) = &wrapped_cell {
                         // Wrapped-cell mapping resolves cursor offset →
                         // (sub-line, col-in-sub) using `wrap_cell_with_indices`,
@@ -741,14 +757,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         list_raw_col_to_rendered_col(raw_text, line, cursor_col)
                     {
                         col
-                    } else if let Some(col) =
-                        mouse_ops::paragraph_raw_col_to_rendered_col(raw_text, line, cursor_col)
-                    {
-                        // Paragraph lines with inline links / code spans
-                        // shift the cursor's rendered column relative to its
-                        // raw column.  Use the inverse of the click handler's
-                        // map so the indicator sits where the click landed,
-                        // avoiding a visible jump when the raw reveal fires.
+                    } else if let Some(col) = inline_col {
                         col
                     } else {
                         cursor_col

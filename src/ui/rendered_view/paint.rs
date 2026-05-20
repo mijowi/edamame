@@ -10,7 +10,9 @@ use crate::editor::table_edit;
 use crate::editor::EditorState;
 use crate::markdown::table_layout::{table_raw_col_to_rendered_col, CellOverlay};
 
-use super::list_marker::list_raw_col_to_rendered_col;
+use super::list_marker::{
+    list_raw_col_to_rendered_col, raw_list_marker_char_width, rendered_list_marker_char_width,
+};
 use super::raw_text::raw_line_byte_start;
 
 /// Build a `Line` showing `raw_text` with a block cursor at `cursor_col`.
@@ -214,18 +216,20 @@ pub(super) fn paint_selection_overlay(
         .chars()
         .count();
 
-    // Map raw cols to rendered cols.  Best-effort: 1:1 for non-table
-    // non-task-list lines (paragraph, heading, code block line).  Task items
-    // shift left by the list-marker length.  Tables go cell-by-cell via
-    // pipe positions.
+    // Map raw cols to rendered cols.  Tables go cell-by-cell via pipe
+    // positions.  List items compose the marker offset with the inline
+    // collapse map.  Paragraph lines use the inline collapse map directly.
     let Some(line) = editor.parsed.lines.get(rendered_line_idx) else {
         return;
     };
+
+    let buffer_line_idx = editor
+        .buffer
+        .block_line_to_buffer_line(block_range.start, raw_line_idx);
+    let inline_map = editor.parsed.inline_map(buffer_line_idx, raw_line);
+    let actual_rendered: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+
     let (rend_start, rend_end) = if is_table {
-        // Pipe counts disagreeing usually means the "raw" line is the
-        // alignment row (`|---|`) — the renderer drew it as a `├─┼─┤`
-        // separator, which has no `│` chars to map to.  Skip rather than
-        // flood-fill the separator.
         let Some(rs) = table_raw_col_to_rendered_col(raw_line, line, start_raw_col) else {
             return;
         };
@@ -237,15 +241,38 @@ pub(super) fn paint_selection_overlay(
         list_raw_col_to_rendered_col(raw_line, line, start_raw_col),
         list_raw_col_to_rendered_col(raw_line, line, end_raw_col),
     ) {
-        // List-item lines may shift the content column when the rendered
-        // marker width differs from the raw one (e.g. ordered lists with
-        // 10+ items render numbers right-aligned, adding leading padding).
-        // Use the same map the cursor indicator uses so selection paint
-        // and cursor stay coherent.
-        (rs, re)
+        // List-item line: the marker-only map handles the `- ` / `1. `
+        // prefix shift.  Compose with the inline collapse map so bold /
+        // italic / link markup inside the item also lines up.
+        let raw_marker = raw_list_marker_char_width(raw_line);
+        let rendered_marker = rendered_list_marker_char_width(line);
+        if let (Some(rmw), Some(rmw_r)) = (raw_marker, rendered_marker) {
+            let content_rendered = actual_rendered.saturating_sub(rmw_r);
+            if inline_map.rendered_len() == content_rendered {
+                let map_col = |raw_col: usize| -> usize {
+                    if raw_col < rmw {
+                        rmw_r
+                    } else {
+                        inline_map.raw_to_rendered(raw_col) + rmw_r
+                    }
+                };
+                (map_col(start_raw_col), map_col(end_raw_col))
+            } else {
+                (rs, re)
+            }
+        } else {
+            (rs, re)
+        }
     } else {
-        // Non-list line: rendered cells align 1:1 with raw chars.
-        (start_raw_col, end_raw_col)
+        // Paragraph / heading / code block line: use the inline collapse
+        // map so selection highlights track rendered glyph positions.
+        match (
+            inline_map.raw_to_rendered_checked(start_raw_col, actual_rendered),
+            inline_map.raw_to_rendered_checked(end_raw_col, actual_rendered),
+        ) {
+            (Some(rs), Some(re)) => (rs, re),
+            _ => (start_raw_col, end_raw_col),
+        }
     };
     if rend_start >= rend_end {
         return;
