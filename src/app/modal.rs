@@ -9,7 +9,6 @@
 pub mod stack;
 pub mod types;
 
-pub mod cheat_sheet;
 pub mod command_palette;
 pub mod config_warning;
 pub mod diagrams_enabled;
@@ -19,6 +18,7 @@ pub mod export_theme;
 pub mod images_enabled;
 pub mod insert_table;
 pub mod keybinds;
+pub mod markdown_cheat_sheet;
 pub mod notice;
 pub mod quit_confirm;
 pub mod remote_image;
@@ -34,7 +34,6 @@ pub use stack::ModalStack;
 pub use types::ModalKind;
 pub use types::{Modal, ModalOutcome, ModalRenderCtx};
 
-pub use cheat_sheet::CheatSheetModal;
 pub use command_palette::CommandPaletteModal;
 pub use config_warning::ConfigWarningModal;
 pub use diagrams_enabled::DiagramsEnabledPromptModal;
@@ -43,6 +42,7 @@ pub use export_success::ExportSuccessModal;
 pub use images_enabled::ImagesEnabledPromptModal;
 pub use insert_table::InsertTableModal;
 pub use keybinds::KeybindsOverlayModal;
+pub use markdown_cheat_sheet::CheatSheetModal;
 pub use notice::NoticeModal;
 pub use quit_confirm::QuitConfirmModal;
 pub use remote_image::RemoteImagePromptModal;
