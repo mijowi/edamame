@@ -53,8 +53,10 @@ impl ModalKind {
     }
 }
 
-/// Maximum horizontal padding inside a modal, in cells.  Padding shrinks
-/// to [`MIN_PAD_H`] when the terminal can't accommodate the full width.
+/// Default maximum horizontal padding inside a modal, in cells per side.
+/// Padding shrinks toward [`MIN_PAD_H`] when the terminal can't
+/// accommodate the full width.  A modal can raise the cap via
+/// [`ContentSize::max_pad_h`] (e.g. the keybinds overlay uses 8).
 pub const MAX_PAD_H: u16 = 4;
 /// Minimum horizontal padding inside a modal, in cells.
 pub const MIN_PAD_H: u16 = 1;
@@ -81,7 +83,7 @@ pub const CLOSE_HINT: &str = "esc";
 /// button row) are reported separately via `pinned_top` / `pinned_bottom`.
 /// `centered_rect_for_content` adds frame padding and clamps to the
 /// available terminal area.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct ContentSize {
     /// Longest body row in display columns.
     pub width: u16,
@@ -92,6 +94,24 @@ pub struct ContentSize {
     pub pinned_top: u16,
     /// Rows reserved below the scroll viewport (e.g. button row, footer).
     pub pinned_bottom: u16,
+    /// Maximum horizontal padding per side, in cells.  Defaults to
+    /// [`MAX_PAD_H`]; raise it on modals that need extra breathing room
+    /// (e.g. the keybinds overlay uses 8).  This is the single source of
+    /// truth — [`FrameOpts`] carries the same `ContentSize` so pre-render
+    /// sizing and post-render padding can never disagree.
+    pub max_pad_h: u16,
+}
+
+impl Default for ContentSize {
+    fn default() -> Self {
+        Self {
+            width: 0,
+            height: 0,
+            pinned_top: 0,
+            pinned_bottom: 0,
+            max_pad_h: MAX_PAD_H,
+        }
+    }
 }
 
 /// Vertical-scroll bookkeeping shared by every overlay.  Embedded as
@@ -248,14 +268,14 @@ pub fn centered_rect_for_content(content: ContentSize, area: Rect) -> Rect {
 }
 
 /// Compute the modal's outer width and height for a given content size
-/// and available area.  Padding is `2 * MAX_PAD_H` cells on the
+/// and available area.  Padding is `2 * content.max_pad_h` cells on the
 /// horizontal axis (clamped to area), and [`VERTICAL_CHROME_ROWS`]
 /// (top pad + title + spacer + bottom pad) on the vertical axis.
 /// Inside we want `pinned_top + height + pinned_bottom` rows.  Both
 /// dimensions clamp to `area`.
 fn modal_dimensions_for(content: ContentSize, area: Rect) -> (u16, u16) {
     let modal_width = (content.width)
-        .saturating_add(2 * MAX_PAD_H)
+        .saturating_add(2 * content.max_pad_h)
         .min(area.width);
     let body_height = content
         .height
@@ -279,10 +299,12 @@ pub struct FrameOpts<'a> {
     /// title row using `theme.modal_close_hint`, and populate
     /// [`FrameLayout::esc_hit_rect`] for click hit-testing.
     pub show_close_hint: bool,
-    /// Natural body content width.  Used to derive horizontal padding
-    /// (`pad_h = ((area.width - content_width) / 2).clamp(MIN_PAD_H,
-    /// MAX_PAD_H)`).  Pass the same value used to size `area`.
-    pub content_width: u16,
+    /// Natural body content spec.  Carries both the width used to derive
+    /// horizontal padding and the per-modal `max_pad_h` cap.  Pass the
+    /// *same* `ContentSize` value that was fed to
+    /// [`centered_rect_for_content`] so pre-render sizing and post-render
+    /// padding can never disagree.
+    pub content: ContentSize,
     pub theme: &'a Theme,
 }
 
@@ -315,7 +337,7 @@ pub fn draw_frame(area: Rect, buf: &mut Buffer, opts: FrameOpts<'_>) -> FrameLay
         .style(opts.theme.modal_bg)
         .render(area, buf);
 
-    let pad_h = compute_pad_h(area.width, opts.content_width);
+    let pad_h = compute_pad_h(area.width, opts.content.width, opts.content.max_pad_h);
 
     let body_x = area.x + pad_h;
     let body_w = area.width.saturating_sub(2 * pad_h);
@@ -385,10 +407,10 @@ pub fn draw_frame(area: Rect, buf: &mut Buffer, opts: FrameOpts<'_>) -> FrameLay
 
 /// Horizontal padding for a modal of `area_w` total width with a
 /// natural body of `content_w` cells.  Centred: each side gets
-/// `(area_w - content_w) / 2`, clamped to `[MIN_PAD_H, MAX_PAD_H]`.
-pub fn compute_pad_h(area_w: u16, content_w: u16) -> u16 {
+/// `(area_w - content_w) / 2`, clamped to `[MIN_PAD_H, max_pad_h]`.
+pub fn compute_pad_h(area_w: u16, content_w: u16, max_pad_h: u16) -> u16 {
     let slack = area_w.saturating_sub(content_w);
-    (slack / 2).clamp(MIN_PAD_H, MAX_PAD_H)
+    (slack / 2).clamp(MIN_PAD_H, max_pad_h)
 }
 
 /// Total wrapped row count for `lines` at `width` columns under
@@ -625,6 +647,7 @@ mod tests {
             height: 5,
             pinned_top: 0,
             pinned_bottom: 1,
+            ..Default::default()
         };
         let r = centered_rect_for_content(content, area);
         // 30 + 2 * MAX_PAD_H (4) horizontal padding.
@@ -644,6 +667,7 @@ mod tests {
             height: 10,
             pinned_top: 0,
             pinned_bottom: 0,
+            ..Default::default()
         };
         let r = centered_rect_for_content(content, area);
         assert_eq!(r.width, 20);
@@ -658,6 +682,7 @@ mod tests {
             height: 5,
             pinned_top: 2,
             pinned_bottom: 3,
+            ..Default::default()
         };
         let r = centered_rect_for_content(content, area);
         // 5 + 2 + 3 pinned + 4 vertical chrome.
@@ -670,25 +695,75 @@ mod tests {
     fn pad_h_caps_at_max_when_terminal_is_wide() {
         // 200-wide modal, 30-cell content → slack 170, half = 85,
         // clamped to MAX_PAD_H = 4.
-        assert_eq!(compute_pad_h(200, 30), MAX_PAD_H);
+        assert_eq!(compute_pad_h(200, 30, MAX_PAD_H), MAX_PAD_H);
     }
 
     #[test]
     fn pad_h_floors_at_min_when_content_fills_modal() {
         // Modal width equals content width: no slack.  Padding still
         // honours MIN_PAD_H so the title text never kisses the edge.
-        assert_eq!(compute_pad_h(30, 30), MIN_PAD_H);
-        assert_eq!(compute_pad_h(20, 30), MIN_PAD_H);
+        assert_eq!(compute_pad_h(30, 30, MAX_PAD_H), MIN_PAD_H);
+        assert_eq!(compute_pad_h(20, 30, MAX_PAD_H), MIN_PAD_H);
     }
 
     #[test]
     fn pad_h_uses_full_slack_when_modest() {
         // 38-wide modal, 30-cell content → slack 8, half = 4 = MAX.
-        assert_eq!(compute_pad_h(38, 30), 4);
+        assert_eq!(compute_pad_h(38, 30, MAX_PAD_H), 4);
         // 36-wide modal, 30-cell content → slack 6, half = 3.
-        assert_eq!(compute_pad_h(36, 30), 3);
+        assert_eq!(compute_pad_h(36, 30, MAX_PAD_H), 3);
         // 32-wide modal, 30-cell content → slack 2, half = 1 = MIN.
-        assert_eq!(compute_pad_h(32, 30), MIN_PAD_H);
+        assert_eq!(compute_pad_h(32, 30, MAX_PAD_H), MIN_PAD_H);
+    }
+
+    #[test]
+    fn pad_h_raised_cap_in_wide_terminal() {
+        // A modal with max_pad_h = 8 gets 8 cells per side in a wide
+        // terminal.
+        assert_eq!(compute_pad_h(200, 30, 8), 8);
+    }
+
+    #[test]
+    fn pad_h_raised_cap_still_floors_at_min_when_narrow() {
+        // Raising the cap doesn't raise the floor — when slack runs out
+        // the modal still degrades to MIN_PAD_H so content isn't clipped.
+        assert_eq!(compute_pad_h(32, 30, 8), MIN_PAD_H);
+    }
+
+    #[test]
+    fn pad_h_raised_cap_shrinks_gracefully() {
+        // 40-wide modal, 30-cell content, max_pad_h = 8 → slack 10,
+        // half 5, clamped to [1, 8].  Slack is the binding constraint.
+        assert_eq!(compute_pad_h(40, 30, 8), 5);
+    }
+
+    #[test]
+    fn centered_rect_grows_to_raised_max_pad_when_terminal_is_large() {
+        let area = Rect::new(0, 0, 200, 60);
+        let content = ContentSize {
+            width: 30,
+            height: 5,
+            pinned_top: 0,
+            pinned_bottom: 1,
+            max_pad_h: 8,
+        };
+        let r = centered_rect_for_content(content, area);
+        // 30 + 2 * 8 horizontal padding.
+        assert_eq!(r.width, 30 + 2 * 8);
+    }
+
+    #[test]
+    fn centered_rect_with_raised_max_pad_clamps_to_area_when_narrow() {
+        let area = Rect::new(0, 0, 20, 6);
+        let content = ContentSize {
+            width: 40,
+            height: 10,
+            pinned_top: 0,
+            pinned_bottom: 0,
+            max_pad_h: 8,
+        };
+        let r = centered_rect_for_content(content, area);
+        assert_eq!(r.width, 20);
     }
 
     // ── wrapped_rows ─────────────────────────────────────────────────────

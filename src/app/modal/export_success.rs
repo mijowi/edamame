@@ -47,14 +47,14 @@ impl ExportSuccessModal {
 
 impl Modal for ExportSuccessModal {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
-        let view = ModalView {
-            title: "Theme exported",
-            body: &self.body,
-            buttons: &self.buttons,
-            theme: ctx.theme,
-            kind: self.kind,
-            dismissable: self.dismissable,
-        };
+        let view = ModalView::new(
+            "Theme exported",
+            &self.body,
+            &self.buttons,
+            ctx.theme,
+            self.kind,
+            self.dismissable,
+        );
         frame.render_stateful_widget(view, area, &mut self.state);
     }
 

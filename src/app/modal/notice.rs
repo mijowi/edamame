@@ -80,14 +80,14 @@ fn title_for(kind: ModalKind) -> &'static str {
 impl Modal for NoticeModal {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
         let body = self.body_lines();
-        let view = ModalView {
-            title: self.title,
-            body: &body,
-            buttons: &self.buttons,
-            theme: ctx.theme,
-            kind: self.kind,
-            dismissable: self.dismissable,
-        };
+        let view = ModalView::new(
+            self.title,
+            &body,
+            &self.buttons,
+            ctx.theme,
+            self.kind,
+            self.dismissable,
+        );
         frame.render_stateful_widget(view, area, &mut self.state);
     }
 

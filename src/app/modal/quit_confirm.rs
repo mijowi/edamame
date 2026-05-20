@@ -44,14 +44,14 @@ impl QuitConfirmModal {
 
 impl Modal for QuitConfirmModal {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
-        let view = ModalView {
-            title: "Unsaved changes",
-            body: &self.body,
-            buttons: &self.buttons,
-            theme: ctx.theme,
-            kind: self.kind,
-            dismissable: self.dismissable,
-        };
+        let view = ModalView::new(
+            "Unsaved changes",
+            &self.body,
+            &self.buttons,
+            ctx.theme,
+            self.kind,
+            self.dismissable,
+        );
         frame.render_stateful_widget(view, area, &mut self.state);
     }
 
