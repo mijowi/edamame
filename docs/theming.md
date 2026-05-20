@@ -10,12 +10,11 @@ than reaching for a second palette slot.
 - `text_muted`: light grey — peripheral text (h6, strikethrough body,
   completed-task text, modal close hint, Preview-mode chip bg)
 - `bg`: black — default document background
-- `bg_muted`: dark grey — inline-code background, table-row stripes,
-  scrollbar track, Preview-mode cursor bg
-- `surface`: slightly lifted dark grey — hint line and the
-  transient-message strip that overlays it
-- `surface_elevated`: heavier chrome dark grey — status bar, modal
-  body, fenced code-block bg
+- `bg_muted`: dark grey — table-row stripes, scrollbar track,
+  Preview-mode cursor bg
+- `surface`: slightly lifted dark grey — status bar
+- `surface_elevated`: heavier chrome dark grey — hint line,
+  transient-message strip, modal body, fenced code-block language label
 - `primary`/brand: orange — identity, headings, mode chip, non-link
   focus affordances (selected modal row, modal input fill, button
   focus, scrollbar thumb)
@@ -30,6 +29,12 @@ than reaching for a second palette slot.
 - `warning`: yellow
 - `error`: red
 - `code`: purple — inline-code and code-block-language foreground
+- `code_bg` is *derived* — `code` blended 92% toward `bg`, producing
+  a tinted background for inline code and code blocks that's
+  distinguishable from `bg_muted` (table-row stripes) so a code span
+  on a striped row still reads as code.  For non-RGB palettes the
+  blend is a no-op; built-in 256-color themes override the four code
+  styles manually.
 - The `h1`–`h6` headings are *derived* — they're not palette
   fields.  `Theme::from_palette` builds the ramp by alternating
   `primary` and `secondary` and dulling / darkening with each
@@ -84,7 +89,7 @@ Ordered list number marker (including `.`): `accent` fg
 - Incomplete item: `warning` fg bullet and checkbox
 - Complete item: `success` fg bullet and checkbox; `text_muted` fg
   text with strikethrough
-- Inline code inside a checked task: `code` fg, `bg_muted` bg, DIM
+- Inline code inside a checked task: `code` fg, `code_bg` bg, DIM
   modifier — derives from the inline `code_span` style with DIM
   layered on so the snippet still reads as code while fading with the
   surrounding strikethrough
@@ -101,11 +106,13 @@ Horizontal rule: `secondary` fg
 - Row / column reorder + resize handles: `primary` fg + DIM
 - Row / column delete handle: `error` fg
 
-Inline code: `bg_muted` bg, `code` fg
+Inline code: `code_bg` bg (derived from `code` blended toward `bg`),
+`code` fg
 
 ### Code block
 - Language: `code` fg on `surface` bg, italicized
-- Block border + text: `text` fg on `bg_muted` bg
+- Block border + text: `text` fg on `code_bg` bg (derived from `code`
+  blended toward `bg`)
 
 Footnote/reference marker (not implemented yet): `secondary` fg
 
@@ -124,13 +131,14 @@ Preview hint (`Press any key to edit`): `text` fg
 Hint chord: `primary` fg, bold
 Hint label: `text` fg
 Transient message:
-- Info: `text` fg
+- Info: `text` fg, bold
 - Success: `success` fg, bold
 - Warning: `warning` fg, bold
 - Error: `error` fg, bold
 
-Cursor (in editor): Each mode has its own cursor style mirroring the
-status-line mode chip. The renderer picks via `theme.cursor_style(mode)`:
+Cursor (in editor): Each mode has its own cursor style field mirroring
+the status-line mode chip (`cursor_preview`, `cursor_rendered`,
+`cursor_raw`):
 - Preview: `bg_muted` bg, `surface_elevated` fg
 - Rendered: `primary` bg, `bg` fg
 - Raw: `warning` bg, `bg` fg
@@ -146,7 +154,7 @@ Title: `primary` (Normal) / `warning` / `error` fg, bold
 Item: `text` fg on `surface_elevated`
 Item hint / sub-label (right-aligned chord, value column, etc. on an
 unfocused row): `primary` fg
-Selected item (the row that currently has focus): `primary` bg, `text`
+Selected item (the row that currently has focus): `primary` bg, `bg`
 fg, bold
 Selected item, unfocused (persistent selection on a row that does NOT
 have focus — e.g. the active tri-state pill in a row whose label isn't
@@ -156,9 +164,10 @@ Selected item hint (right-aligned chord / value column on the focused
 row): `accent` fg on the `primary` selection fill
 Description (pinned-footer copy explaining the focused row): `accent`
 fg on `surface_elevated`
-Input (unfocused): `bg` fg, `primary` bg
-Input (focused): `bg` fg, `primary` bg, **bold** — focus is shown via
-the BOLD modifier on top of the same `primary` fill
+Input (unfocused): `primary` fg on `surface_elevated` — outlined, no
+fill, so it doesn't read as a focused button
+Input (focused): `bg` fg, `primary` bg, **bold** — filled, clearly
+the active field
 Focused button (e.g. Save / Discard / Cancel): `primary` fg + REVERSED
 + bold
 Section heading: `secondary` fg, bold
@@ -166,7 +175,7 @@ Section heading: `secondary` fg, bold
 Scrollbar
 - Track: `bg_muted` fg (`│` glyph)
 - Thumb (idle): `primary` fg (`█` glyph)
-- Thumb (hover / drag): `primary` fg + REVERSED
+- Thumb (hover / drag): blended `primary` toward `text` (35%); monochrome themes use `primary` fg + REVERSED instead
 
 #### Focus vs. persistent selection
 Some modals carry **persistent selections** independent of which row
@@ -209,15 +218,33 @@ deliberate: the palette is a search affordance, not a form field, so
 it reads as part of the modal rather than as a sunken input chip.
 
 ## Built-in themes
-- [x] 256 Dark
-- [x] 256 Light
-- [ ] Edamame
-- [ ] Monochrome
-- [ ] GitHub
-- [ ] Dracula
-- [ ] Catpuccin
-- [ ] Tokyo Night
-- [ ] Monokai
+- 256 Dark
+- 256 Light
+- Monochrome Dark
+- Ayu
+- Catppuccin
+- Catppuccin Latte
+- Dracula
+- Edamame
+- Everforest
+- GitHub Dark
+- GitHub Light
+- Gruvbox
+- Gruvbox Light
+- Kanagawa
+- Monokai
+- Nord
+- One Dark
+- Orng
+- Rainbow
+- Rosé Pine
+- Rosé Pine Dawn
+- Solarized Dark
+- Solarized Light
+- SynthWave '84
+- Tokyo Night
+- Tokyo Night Day
+- Zenburn
 
 ## Follow-ups
 
@@ -241,9 +268,8 @@ can return to them once the visual language settles.
   `diff_delete` slots so themes can pre-author the colors, but no
   rendered styles consume them yet. Wire them up when the diff
   feature lands.
-- **Surface naming.** The palette description says `surface` is the
-  lifted-chrome variant (hint / transient strip) and
-  `surface_elevated` is the heavier chrome (status / modal / code
-  block). The rule list above follows that convention; consider
-  renaming the variants — `surface_chrome` and `surface_elevated`
-  would read more naturally — once we revisit.
+- **Surface naming.** `surface` is the lighter chrome (status bar);
+  `surface_elevated` is the heavier chrome (hint line, transient
+  messages, modals).  The names match the visual hierarchy — consider
+  whether `surface_chrome` / `surface_elevated` would read more
+  naturally.

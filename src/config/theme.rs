@@ -281,7 +281,7 @@ pub struct Theme {
     /// Scrollbar thumb (the `█` glyph that indicates current position).
     pub scrollbar_thumb: Style,
     /// Scrollbar thumb while the user is hovering the gutter or
-    /// dragging the thumb.  Defaults to `primary` + `Modifier::REVERSED`.
+    /// dragging the thumb.  RGB themes blend `primary` toward `text`.
     pub scrollbar_thumb_active: Style,
 }
 
@@ -293,11 +293,10 @@ pub struct Theme {
 /// Rendered-mode mode chip: `primary` bg with `bg` fg), where
 /// `Color::Reset` would not produce the right contrast.
 ///
-/// `surface_elevated` is the heavier chrome surface (status bar, modal
-/// body, inline-code background); `surface` is a slightly *lighter*
-/// elevated surface used for secondary chrome (hint line, transient
-/// messages) so the hint row reads as one step lifted from the
-/// document area.
+/// `surface` is the lighter chrome surface (status bar); `surface_elevated`
+/// is the heavier chrome surface (hint line, transient messages, modal body)
+/// so those layers read as lifted from both the document area and the
+/// status bar.
 ///
 /// `diff_add` / `diff_delete` are reserved for a future diff view; no
 /// styles currently consume them.
@@ -315,9 +314,9 @@ pub struct Palette {
     /// shade derived from [`Self::code`] instead, so a code span on
     /// top of a striped row still reads as code.
     pub bg_muted: Color,
-    /// Lifted chrome surface (hint line, transient-message strip).
+    /// Lighter chrome surface (status bar).
     pub surface: Color,
-    /// Heavier chrome surface (status bar, modal body, code-block bg).
+    /// Heavier chrome surface (hint line, transient messages, modal body).
     pub surface_elevated: Color,
 
     /// Brand color.  Headings (Rendered-mode chip, status info,
@@ -843,7 +842,7 @@ impl Theme {
             cursor: Style::default().add_modifier(Modifier::REVERSED),
 
             // Scrollbar — track in muted bg, thumb in `primary`; the
-            // active state inverts via REVERSED so the thumb pops
+            // active state blends toward `text` so the thumb pops
             // while the user hovers / drags the gutter.
             scrollbar_track: Style::default().fg(p.bg_muted),
             scrollbar_thumb: Style::default().fg(p.primary),
