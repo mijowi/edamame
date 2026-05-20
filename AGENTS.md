@@ -321,7 +321,7 @@ they exist:
 - **`Modal::kind` and `Modal::dismissable` are stored as struct fields, not
   hard-coded.** Every modal that uses `ModalView` carries `kind: ModalKind`
   and `dismissable: bool` fields set once in `new()`/`from_*()`.  The
-  `ModalView` literal (`kind: self.kind, dismissable: self.dismissable`),
+  `ModalView::new(.., self.kind, self.dismissable)` call,
   the `state.handle_key(.., self.dismissable)` call, AND the trait methods
   `fn kind()` / `fn dismissable()` all read from those fields — single
   source of truth per modal.  Do NOT pass literals (`true`/`false`,
@@ -334,6 +334,29 @@ they exist:
   Modals that don't use `ModalView` (palette, settings, keybinds,
   save_copy, insert_table) inherit the trait defaults
   (`Normal` / `true`); don't add no-op overrides.
+- **Construct `ModalView` via `ModalView::new(...)`, not a struct
+  literal.** The constructor pre-fills `max_pad_h` to `MAX_PAD_H` (4);
+  chaining `.with_max_pad_h(n)` overrides it for a modal whose content
+  reads cramped at the default.  Struct-literal construction would
+  force every `ModalView { ... }` call site to spell out
+  `max_pad_h: MAX_PAD_H` and break silently the next time the default
+  changes — go through `new` so a future default tweak picks every
+  modal up automatically.
+- **Horizontal padding lives on `ContentSize`, not on `FrameOpts`.**
+  `FrameOpts.content` embeds the same `ContentSize` value that was fed
+  to `centered_rect_for_content`, so the pre-render sizing pass and the
+  post-render `draw_frame` padding can never disagree.  Set `max_pad_h`
+  once on the `ContentSize` (or take the default `MAX_PAD_H` via
+  `..Default::default()`) and pass that one value to both calls.  Do
+  NOT reintroduce a parallel `FrameOpts.max_pad_h` field — an earlier
+  pass kept them as separate fields and the "must match" invariant was
+  enforced only by a doc comment, which is exactly the drift this
+  consolidation eliminates.  Overlays that bypass `ModalView`
+  (`palette`, `settings`, `keybinds`, `save_copy`, `insert_table`,
+  `theme_picker`, `export_theme`, `welcome`) follow this single-source
+  pattern; the keybinds overlay raises `max_pad_h` to 8 because its
+  bindings table is dense and the "Already bound to …" error string
+  would otherwise reflow the modal during capture.
 - **Preview-mode Ctrl-key allowlist.** `input::mode_handler::default::preview_safe_action`
   decides which Ctrl-* chords fire in Preview mode.  Read-only overlay
   openers (`ShowCommandPalette`, `OpenSettings`, `OpenKeybinds`,

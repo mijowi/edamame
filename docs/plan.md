@@ -1476,6 +1476,7 @@ Add optional line numbers
 
 Line wraps swallow some whitespace in all modes. For example, if a line ends in `a              b`, and the wrap is just after `a ` (one character plus one space), the rest of the whitespace before `b` is swallowed. `b` is then rendered at the start of the next line, leaving no space before it.
 
+
 ---
 
 ## Edamame Acronyms
