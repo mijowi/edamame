@@ -719,6 +719,7 @@ mod tests {
                 "Autosave",
                 "Big H1 headings",
                 "Use visual line navigation",
+                "Show line numbers",
                 "Scroll speed",
                 "Show images",
                 "Show diagrams",

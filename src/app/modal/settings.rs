@@ -151,6 +151,7 @@ mod tests {
         "Limit editor width",
         "Editor max width",
         "Autosave",
+        "Show line numbers",
         "Show images",
         "Show diagrams",
         "Show remote images",

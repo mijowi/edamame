@@ -23,6 +23,7 @@ pub(crate) const HEADER_NOTE: &str = "Common options shown below — edit config
 
 pub(crate) const LABEL_BIG_H1: &str = "Big H1 headings";
 pub(crate) const LABEL_VISUAL_LINE_NAV: &str = "Use visual line navigation";
+pub(crate) const LABEL_LINE_NUMBERS: &str = "Show line numbers";
 pub(crate) const LABEL_SCROLL_SPEED: &str = "Scroll speed";
 
 /// Minimum accepted value for [`LABEL_SCROLL_SPEED`].  The
@@ -342,6 +343,21 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 write_string: no_write,
                 cycle: Some(|c, _, _| {
                     c.editor.visual_line_nav = !c.editor.visual_line_nav;
+                    true
+                }),
+                options: Some(BOOL_OPTIONS),
+            },
+        },
+        RowDef {
+            label: LABEL_LINE_NUMBERS,
+            description: Some("Show line numbers in the left gutter"),
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Cycle,
+                read: |c, _| c.editor.show_line_numbers.to_string(),
+                write_string: no_write,
+                cycle: Some(|c, _, _| {
+                    c.editor.show_line_numbers = !c.editor.show_line_numbers;
                     true
                 }),
                 options: Some(BOOL_OPTIONS),

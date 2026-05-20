@@ -30,6 +30,9 @@ appearance = "dark"
 # the capabilities notice on the next launch.
 # seen_terminal_fingerprints = []
 
+# Show line numbers in a left gutter in all modes. Default: false.
+# show_line_numbers = false
+
 # Lines advanced per mouse-wheel tick. Default 1 (fine control); 2 or 3 gives
 # a faster, coarser scroll. This setting also applies to touchpad scroll speed,
 # for which 1 might feel better. Keyboard scrolling always steps by one line and

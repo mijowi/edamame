@@ -171,6 +171,9 @@ pub struct ThemeFile {
     pub cursor_raw: StyleSpec,
     pub cursor: StyleSpec,
 
+    // Line numbers
+    pub line_number: StyleSpec,
+
     // Scrollbar
     pub scrollbar_track: StyleSpec,
     pub scrollbar_thumb: StyleSpec,
@@ -212,6 +215,7 @@ macro_rules! style_fields {
             modal_input_unfocused, modal_input_focused, modal_button_focused,
             normal, selection, search_highlight, active_line,
             cursor_preview, cursor_rendered, cursor_raw, cursor,
+            line_number,
             scrollbar_track, scrollbar_thumb, scrollbar_thumb_active
         }
     };
@@ -369,6 +373,7 @@ mod tests {
         check!(cursor_rendered);
         check!(cursor_raw);
         check!(cursor);
+        check!(line_number);
         check!(scrollbar_track);
         check!(scrollbar_thumb);
         check!(scrollbar_thumb_active);
@@ -624,6 +629,7 @@ bold = true
         check!(cursor_rendered);
         check!(cursor_raw);
         check!(cursor);
+        check!(line_number);
         check!(scrollbar_track);
         check!(scrollbar_thumb);
         check!(scrollbar_thumb_active);
