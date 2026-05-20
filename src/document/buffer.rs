@@ -146,6 +146,14 @@ impl Buffer {
         self.rope.char_to_line(char_idx)
     }
 
+    /// Buffer line index for the `raw_line_idx`-th line within a block
+    /// whose byte range starts at `block_byte_start`.
+    pub fn block_line_to_buffer_line(&self, block_byte_start: usize, raw_line_idx: usize) -> usize {
+        let block_start_char = self.rope.byte_to_char(block_byte_start);
+        let block_start_line = self.rope.char_to_line(block_start_char);
+        block_start_line + raw_line_idx
+    }
+
     /// Monotonic version counter — increments on every content mutation.
     /// Consumers cache derived state keyed by `(version, ...)` so
     /// invalidation is a cheap `u64` comparison.

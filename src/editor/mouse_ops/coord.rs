@@ -274,12 +274,18 @@ pub fn rendered_sub_line_to_offset(
         let clamped_col = col.min(row_width);
         table_click_to_raw_col(line_text, rendered_line, clamped_col).unwrap_or(clamped_col)
     } else {
+        let buffer_line_idx = state
+            .buffer
+            .block_line_to_buffer_line(block.range.start, raw_line_idx);
+        let stripped = line_text.strip_suffix('\n').unwrap_or(line_text);
+        let inline_map = state.parsed.inline_map(buffer_line_idx, stripped);
         non_table_click_to_raw_col(
             rendered_line,
             line_text,
             col,
             sub_row_within_line,
             viewport_width,
+            inline_map,
         )
     };
 
@@ -454,6 +460,7 @@ fn non_table_click_to_raw_col(
     col: usize,
     sub_row_within_line: usize,
     viewport_width: usize,
+    inline_map: &crate::markdown::InlineColMap,
 ) -> usize {
     let indent = line_render::compute_hanging_indent(rendered_line);
     let rendered_chars: Vec<(char, ratatui::style::Style)> = rendered_line
@@ -481,22 +488,14 @@ fn non_table_click_to_raw_col(
     let rendered_idx = (start + in_row).min(max_in_row);
 
     let actual_rendered_count = rendered_chars.len();
-    let map = rendered_to_raw_char_map(line_text);
-    let map_content_count = map.len().saturating_sub(1);
+    let map = inline_map.rendered_to_raw_vec();
+    let map_content_count = inline_map.rendered_len();
     let raw_content_start = map.first().copied().unwrap_or(0);
 
-    // The renderer's prefix has no Text-event counterpart; the difference
-    // between rendered-char count and map content count IS the prefix
-    // width — but only when the diff fits inside the raw prefix area
-    // (`raw_content_start`).  A wildly larger diff (code block padding,
-    // unusual renderer output) means the diff isn't a prefix at all;
-    // fall back to a plain 1:1 mapping in that case.
     if actual_rendered_count >= map_content_count {
         let prefix_len = actual_rendered_count - map_content_count;
         if prefix_len <= raw_content_start {
             return if rendered_idx < prefix_len {
-                // Click on the rendered prefix → land in the raw prefix
-                // area, never past where content begins.
                 rendered_idx.min(raw_content_start)
             } else {
                 let content_idx = rendered_idx - prefix_len;
@@ -615,190 +614,4 @@ fn table_click_to_raw_col(
 /// loses precision for clicks deep in the padding of wrapped lines.
 fn line_row_width(line: &Line<'_>, _sub_row: usize) -> usize {
     line.spans.iter().map(|s| s.content.chars().count()).sum()
-}
-
-/// Inverse of [`rendered_to_raw_char_map`] for a paragraph-style line:
-/// given a raw char column on `raw_line`, return the rendered char
-/// column it corresponds to on `rendered_line`.  Used by the jitter-
-/// delay cursor overlay (`RenderedView`) so the cursor indicator lands
-/// at the same visual column the click handler placed it — without
-/// this, the indicator briefly draws at the raw column (e.g. col 1 of
-/// the rendered "File link", on `i`) before the raw reveal switches
-/// the line to its raw form (col 1 of `[File link]`, on `F`), and the
-/// cursor visibly jumps.
-///
-/// Returns `None` when the rendered count of `rendered_line` doesn't
-/// match the rendered count produced by `rendered_to_raw_char_map`
-/// (headings/lists/blockquotes/highlights — caller falls back to a
-/// 1:1 mapping, matching the click-handler's fallback).
-pub fn paragraph_raw_col_to_rendered_col(
-    raw_line: &str,
-    rendered_line: &Line<'_>,
-    raw_col: usize,
-) -> Option<usize> {
-    let actual_rendered_count: usize = rendered_line
-        .spans
-        .iter()
-        .map(|s| s.content.chars().count())
-        .sum();
-    let map = rendered_to_raw_char_map(raw_line);
-    if map.len().saturating_sub(1) != actual_rendered_count {
-        return None;
-    }
-    // Map entries are non-decreasing (each rendered char's raw position
-    // strictly advances).  Find the smallest rendered idx whose raw
-    // position is `>= raw_col`.  When `raw_col` lands on a non-rendered
-    // marker (e.g. the `[` of `[link]`) this returns the rendered idx
-    // immediately after the marker — the same place the click handler
-    // would have parked the cursor.
-    let pos = map
-        .iter()
-        .position(|&r| r >= raw_col)
-        .unwrap_or(map.len() - 1);
-    Some(pos.min(actual_rendered_count))
-}
-
-/// Build a map from rendered character index → raw character index on a
-/// single source line.
-///
-/// The renderer drops or transforms certain syntax characters: a link's
-/// `[`, `](url)` markers leave only the bracket text on screen; a code
-/// span's backticks become surrounding spaces.  As a result, the rendered
-/// column the user clicked at doesn't correspond directly to the same
-/// column in the raw text — clicks inside `File link` (rendered) are off
-/// by one against `[File link](./plan.md)` (raw), and clicks past the
-/// rendered end of the line land mid-URL instead of at the raw line's
-/// end.
-///
-/// This map is built by re-parsing `raw_line` with `pulldown-cmark` and
-/// recording the raw byte position of every rendered character emitted
-/// by inline `Text`, `Code`, and `SoftBreak`/`HardBreak` events.  Marker
-/// bytes (asterisks, brackets, the URL portion of a link) sit in the
-/// gaps between events and are correctly skipped.
-///
-/// The returned vector has length `rendered_char_count + 1`: entry `i`
-/// is the raw char index that produced rendered char `i`, and the final
-/// entry is the raw char index just past the last rendered char (so a
-/// click past the rendered end maps to the line's raw end).
-///
-/// Caller is responsible for falling back to a 1:1 mapping when the
-/// returned length doesn't match the actual rendered char count of the
-/// line (e.g. for headings/list items/blockquotes whose rendered prefix
-/// glyphs aren't represented in the raw text).
-pub(super) fn rendered_to_raw_char_map(raw_line: &str) -> Vec<usize> {
-    use pulldown_cmark::{Event, Options, Parser};
-
-    let mut walk = CharMapWalk::new(raw_line);
-    let opts = Options::ENABLE_TABLES
-        | Options::ENABLE_FOOTNOTES
-        | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_SMART_PUNCTUATION;
-    for (event, range) in Parser::new_ext(raw_line, opts).into_offset_iter() {
-        match event {
-            Event::Text(_) => walk.push_text(raw_line, range),
-            // Code spans render as `" <inner> "` — the opening and closing
-            // backticks become surrounding spaces.  Map the leading space
-            // to the opening backtick, the inner text 1:1, and the
-            // trailing space to the closing backtick.
-            Event::Code(s) => walk.push_code(&s, range),
-            // Soft- and hard-breaks render as a single space character.
-            Event::SoftBreak | Event::HardBreak => walk.push_break(range.start),
-            // Inline tags (`Strong`, `Emphasis`, `Strikethrough`, `Link`)
-            // are handled implicitly: their inner `Text` events walk the
-            // content, while the marker bytes (`**`, `*`, `~~`, `[`,
-            // `](url)`) sit in the gaps that no `Text` event covers and
-            // never get pushed.
-            _ => {}
-        }
-    }
-    walk.finish()
-}
-
-/// Helper that accumulates the rendered→raw char map by translating raw
-/// byte offsets (pulldown-cmark's native unit) back into char indices on
-/// `raw_line`.  Encapsulates the byte→char lookup table and the running
-/// rendered-char counter so the per-event walk in
-/// `rendered_to_raw_char_map` reads as a sequence of named steps.
-struct CharMapWalk {
-    /// `byte_to_char[i]` is the char index that begins at byte `i`.
-    /// `byte_to_char[raw_line.len()] = total_chars` is the past-end
-    /// sentinel so a click past the rendered end maps to the line's raw
-    /// end.
-    byte_to_char: Vec<usize>,
-    total_chars: usize,
-    map: Vec<usize>,
-}
-
-impl CharMapWalk {
-    fn new(raw_line: &str) -> Self {
-        let mut byte_to_char = vec![0usize; raw_line.len() + 1];
-        let mut char_idx = 0usize;
-        for (byte_idx, _) in raw_line.char_indices() {
-            byte_to_char[byte_idx] = char_idx;
-            char_idx += 1;
-        }
-        byte_to_char[raw_line.len()] = char_idx;
-        Self {
-            byte_to_char,
-            total_chars: char_idx,
-            map: Vec::new(),
-        }
-    }
-
-    fn lookup(&self, byte: usize) -> usize {
-        self.byte_to_char
-            .get(byte.min(self.byte_to_char.len().saturating_sub(1)))
-            .copied()
-            .unwrap_or(self.total_chars)
-    }
-
-    /// Push every char of `text` (each spanning `len_utf8` bytes), starting
-    /// at raw byte `byte`.  Returns the byte offset just past the slice.
-    fn push_chars(&mut self, text: &str, mut byte: usize) -> usize {
-        for c in text.chars() {
-            self.map.push(self.lookup(byte));
-            byte += c.len_utf8();
-        }
-        byte
-    }
-
-    /// Push a `Text` event's chars into the map.  pulldown-cmark doesn't
-    /// know about `==highlight==` spans, so split them out manually:
-    /// content outside `==…==` and inside `==…==` both map 1:1, while the
-    /// `==` markers themselves are skipped (they sit in the gaps that
-    /// rendered chars don't cover).
-    fn push_text(&mut self, raw_line: &str, range: std::ops::Range<usize>) {
-        let slice_end = range.end.min(raw_line.len());
-        let raw_slice = &raw_line[range.start..slice_end];
-        let mut byte = range.start;
-        let mut rest = raw_slice;
-        while let Some(start) = rest.find("==") {
-            let after_open = &rest[start + 2..];
-            let Some(rel_end) = after_open.find("==") else {
-                break;
-            };
-            byte = self.push_chars(&rest[..start], byte);
-            byte += 2; // skip opening ==
-            byte = self.push_chars(&after_open[..rel_end], byte);
-            byte += 2; // skip closing ==
-            rest = &after_open[rel_end + 2..];
-        }
-        self.push_chars(rest, byte);
-    }
-
-    fn push_code(&mut self, inner: &str, range: std::ops::Range<usize>) {
-        self.map.push(self.lookup(range.start));
-        self.push_chars(inner, range.start + 1);
-        self.map.push(self.lookup(range.end.saturating_sub(1)));
-    }
-
-    fn push_break(&mut self, byte: usize) {
-        self.map.push(self.lookup(byte));
-    }
-
-    fn finish(mut self) -> Vec<usize> {
-        self.map.push(self.total_chars);
-        self.map
-    }
 }

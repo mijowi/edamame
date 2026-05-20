@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -10,7 +10,8 @@ use crate::document::visual_cache::VisualRowCache;
 use crate::document::SourceMap;
 use crate::markdown::{
     inlines_to_plain, parse_offsets, parse_raw, promote_diagram_code_blocks, promote_html_comments,
-    promote_image_paragraphs, split_lists_on_blank_lines, Block, ImageRowOverride, Renderer,
+    promote_image_paragraphs, split_lists_on_blank_lines, Block, ImageRowOverride, InlineColMap,
+    Renderer,
 };
 
 /// Setext heading style detected from raw block source.  `None` for ATX
@@ -135,6 +136,10 @@ pub struct ParsedDoc {
     /// `&EditorState` callers need shared access; `ParsedDoc` is
     /// single-threaded.
     pub(super) visual_rows: RefCell<Vec<VisualRowCache>>,
+    /// Lazy per-buffer-line cache of `InlineColMap` — maps between raw char
+    /// columns and rendered (inline-markup-collapsed) char columns.  Used by
+    /// the selection painter and cursor-indicator overlay.
+    inline_maps: Vec<OnceCell<InlineColMap>>,
 }
 
 impl ParsedDoc {
@@ -419,6 +424,7 @@ impl ParsedDoc {
             total_bytes,
         );
 
+        let line_count = source.split('\n').count();
         Self {
             lines,
             source_map,
@@ -428,6 +434,7 @@ impl ParsedDoc {
             image_blocks,
             heading_anchors,
             visual_rows: RefCell::new(Vec::new()),
+            inline_maps: (0..line_count).map(|_| OnceCell::new()).collect(),
         }
     }
 
@@ -451,6 +458,40 @@ impl ParsedDoc {
         self.image_blocks.iter().any(|info| {
             info.block_idx == block_idx && matches!(info.source, Some(DiagramSource::Mermaid(_)))
         })
+    }
+
+    // ── Inline column map cache ────────────────────────────────────────────
+
+    /// Lazily-built bidirectional char-column map for `buffer_line_idx`.
+    /// The caller passes the raw line text; on first call for this index
+    /// the map is built from `raw_line` and cached.
+    ///
+    /// **Contract:** `raw_line` must be the canonical content for
+    /// `buffer_line_idx` in the *current* `ParsedDoc` generation.  The cache
+    /// is keyed only by index, so if a caller passes a different `raw_line`
+    /// for an already-initialized index the stale map is returned silently
+    /// (the `chars().count()` debug-assert catches differing-length cases
+    /// but not equal-length content drift).  `ParsedDoc` is rebuilt on every
+    /// buffer mutation, so all live callers satisfy this naturally —
+    /// don't reuse a `ParsedDoc` across edits.
+    ///
+    /// `buffer_line_idx` must be in-bounds.  Callers derive it from a live
+    /// `block.range.start` via `Buffer::block_line_to_buffer_line`, which
+    /// always produces a valid index for a fresh `ParsedDoc`.
+    pub fn inline_map(&self, buffer_line_idx: usize, raw_line: &str) -> &InlineColMap {
+        debug_assert!(
+            buffer_line_idx < self.inline_maps.len(),
+            "InlineColMap: buffer_line_idx {buffer_line_idx} out of bounds ({})",
+            self.inline_maps.len()
+        );
+        let cell = &self.inline_maps[buffer_line_idx];
+        let map = cell.get_or_init(|| InlineColMap::build(raw_line));
+        debug_assert_eq!(
+            raw_line.chars().count(),
+            map.raw_len(),
+            "InlineColMap: raw_line char count mismatch for buffer line {buffer_line_idx}"
+        );
+        map
     }
 
     // ── Visual-row cache (rendered) ───────────────────────────────────────

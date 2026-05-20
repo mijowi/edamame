@@ -13,7 +13,6 @@ mod table_drag;
 
 // `rendered_sub_line_to_offset` is reachable through the parent module path
 // for documentation grep; no production caller imports it directly.
-pub use coord::paragraph_raw_col_to_rendered_col;
 #[allow(unused_imports)]
 pub use coord::rendered_sub_line_to_offset;
 pub use links::{hovered_link_target, link_at_offset};
@@ -840,87 +839,6 @@ mod tests {
         assert_eq!(state.cursor.offset, 8);
     }
 
-    /// The forward map covers exactly one entry per rendered char plus a
-    /// trailing past-end sentinel — that's the contract `rendered_sub_line_
-    /// to_offset` and `paragraph_raw_col_to_rendered_col` rely on to detect
-    /// "rendered count matches" and use the map instead of a 1:1 fallback.
-    #[test]
-    fn rendered_to_raw_map_link_has_one_entry_per_visible_char() {
-        let map = coord::rendered_to_raw_char_map("[File link](./plan.md)");
-        // Rendered: "File link" = 9 chars; +1 sentinel = 10 entries.
-        assert_eq!(map.len(), 10);
-        // Each rendered char maps to its position inside the brackets.
-        assert_eq!(&map[..9], &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
-        // Sentinel points past the closing `)`.
-        assert_eq!(map[9], 22);
-    }
-
-    /// Round-trip: clicking at a rendered col → raw byte (via the forward
-    /// map), then asking for the rendered col of that raw byte (via the
-    /// inverse) should return the original rendered col.  This is what
-    /// keeps the jitter-delay cursor indicator at the same visual column
-    /// the user clicked at, eliminating the "jump" when the raw reveal
-    /// fires.
-    #[test]
-    fn paragraph_raw_col_round_trips_through_map() {
-        use crate::markdown::{parse, Renderer};
-        let raw = "[File link](./plan.md)";
-        let blocks = parse(&format!("{raw}\n"));
-        let renderer = Renderer::new(theme()).with_viewport_width(80);
-        let lines = renderer.render(&blocks);
-        let rendered = &lines[0];
-
-        // Probe rendered cols 0..=9 (every visible char + the past-end
-        // position).  The forward map is `rendered_to_raw_char_map`; its
-        // `i`-th entry is the raw byte that `paragraph_raw_col_to_rendered_col`
-        // should round-trip back to `i`.
-        let forward = coord::rendered_to_raw_char_map(raw);
-        for (rendered_col, &raw_col) in forward.iter().enumerate().take(10) {
-            let round_tripped = paragraph_raw_col_to_rendered_col(raw, rendered, raw_col);
-            assert_eq!(
-                round_tripped,
-                Some(rendered_col),
-                "round-trip failed at rendered col {rendered_col}: raw {raw_col} \
-                 → {round_tripped:?} (expected Some({rendered_col}))",
-            );
-        }
-    }
-
-    /// Headings have a 2-char rendered prefix (`  `) the parser doesn't
-    /// produce — the inverse helper should detect the count mismatch and
-    /// fall back to `None`, letting callers use a 1:1 mapping for the
-    /// indicator (the same fallback path the click handler takes).
-    #[test]
-    fn paragraph_raw_col_returns_none_for_headings() {
-        use crate::markdown::{parse, Renderer};
-        let raw = "## Heading";
-        let blocks = parse(&format!("{raw}\n"));
-        let renderer = Renderer::new(theme()).with_viewport_width(80);
-        let lines = renderer.render(&blocks);
-        // For `##`, raw and rendered widths happen to coincide (2 vs 2),
-        // but the rendered prefix is `  ` and the raw is `##` — the
-        // pulldown-cmark map only covers "Heading" (7 chars) while the
-        // rendered line has 9 chars.  Mismatch → None.
-        assert_eq!(paragraph_raw_col_to_rendered_col(raw, &lines[0], 5), None,);
-    }
-
-    /// `==highlight==` markers are stripped by the renderer, so the map
-    /// must skip the `==` characters to keep click alignment correct.
-    #[test]
-    fn rendered_to_raw_map_highlight_skips_markers() {
-        let map = coord::rendered_to_raw_char_map("alpha ==beta== gamma");
-        // Rendered: "alpha beta gamma" = 16 chars; +1 sentinel = 17 entries.
-        assert_eq!(map.len(), 17);
-        // "alpha " maps 1:1 (raw chars 0..6).
-        assert_eq!(&map[..6], &[0, 1, 2, 3, 4, 5]);
-        // "beta" maps to raw chars 8..12 (skipping the opening `==`).
-        assert_eq!(&map[6..10], &[8, 9, 10, 11]);
-        // " gamma" maps to raw chars 14..20 (skipping the closing `==`).
-        assert_eq!(&map[10..16], &[14, 15, 16, 17, 18, 19]);
-        // Sentinel points past the last raw char.
-        assert_eq!(map[16], 20);
-    }
-
     /// Clicking inside a `==highlight==` span should land on the correct
     /// raw character rather than being off-by-two because of the markers.
     #[test]
@@ -991,29 +909,5 @@ mod tests {
         apply(&mut state, click_plain(3, 1), &mut target, &[], 10, 80);
         // Raw "> **bold** text": 0:> 1:space 2:* 3:* 4:b 5:o …
         assert_eq!(state.cursor.offset, 2 + 5);
-    }
-
-    /// Round-trip for highlights: every rendered col should map back to
-    /// itself through `paragraph_raw_col_to_rendered_col`.
-    #[test]
-    fn paragraph_raw_col_round_trips_for_highlight() {
-        use crate::markdown::{parse, Renderer};
-        let raw = "alpha ==beta== gamma";
-        let blocks = parse(&format!("{raw}\n"));
-        let renderer = Renderer::new(theme()).with_viewport_width(80);
-        let lines = renderer.render(&blocks);
-        let rendered = &lines[0];
-
-        let forward = coord::rendered_to_raw_char_map(raw);
-        let limit = forward.len().saturating_sub(1);
-        for (rendered_col, &raw_col) in forward.iter().enumerate().take(limit) {
-            let round_tripped = paragraph_raw_col_to_rendered_col(raw, rendered, raw_col);
-            assert_eq!(
-                round_tripped,
-                Some(rendered_col),
-                "round-trip failed at rendered col {rendered_col}: raw {raw_col} \
-                 → {round_tripped:?} (expected Some({rendered_col}))",
-            );
-        }
     }
 }

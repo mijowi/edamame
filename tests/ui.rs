@@ -152,6 +152,69 @@ fn rendered_view_paints_selection_across_multiple_rendered_blocks() {
     );
 }
 
+/// Selection highlight on a line with inline bold markup should cover the
+/// *rendered* glyph positions (cells 0-3 for "bold"), not the raw positions
+/// (cells 2-7 for "**bold**").  This catches "map is correct but never
+/// called" wiring bugs that unit tests alone would miss.
+#[test]
+fn selection_on_bold_text_highlights_rendered_positions() {
+    use edamame::document::{Buffer, Selection};
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // Line 0 is a spacer so line 1 stays rendered (cursor on line 0).
+    // Line 1: "**bold** text" renders as "bold text".
+    let src = "x\n**bold** text\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    // Select the raw range covering "bold" inside the ** markers.
+    // "x\n" = 2 chars, then "**" = 2 more, so "bold" starts at char 4
+    // and ends at char 8 (exclusive).
+    state.selection = Some(Selection {
+        anchor: 4,
+        active: 8,
+    });
+    state.cursor.offset = 0; // cursor on line 0
+
+    let width = 40u16;
+    let backend = TestBackend::new(width, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    // Row 1 renders "bold text".  Selection should highlight cells 0-3
+    // ("bold" in rendered coords), NOT cells 2-7 (raw coords with markers).
+    let cell_has_sel = |x: u16, y: u16| {
+        buf.cell((x, y))
+            .map(|c| c.style().bg == theme.selection.bg)
+            .unwrap_or(false)
+    };
+    // Rendered "bold" occupies cells 0..4 on row 1.
+    for x in 0..4 {
+        assert!(
+            cell_has_sel(x, 1),
+            "cell ({x}, 1) should have selection bg (rendered 'bold' range)"
+        );
+    }
+    // Cell 4 is the space after "bold" — should NOT be selected.
+    assert!(
+        !cell_has_sel(4, 1),
+        "cell (4, 1) should NOT have selection bg (past 'bold')"
+    );
+}
+
 #[test]
 fn setext_heading_reveals_both_title_and_underline_on_cursor() {
     use edamame::document::Buffer;

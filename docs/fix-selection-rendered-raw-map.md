@@ -521,3 +521,22 @@ cargo test                        # full sweep, including snapshots
 ```
 
 Then the manual smoke described in Step 6.
+
+## Implementation status
+
+All steps implemented and verified.
+
+- **Step 1** — DONE. `src/markdown/inline_col_map.rs` created with `InlineColMap` struct, `CharMapWalk` moved from `coord.rs`, forward+inverse maps built in a single walk. 16 unit tests.
+- **Step 2** — DONE. `ParsedDoc` caches `Vec<OnceCell<InlineColMap>>` per buffer line; `inline_map()` accessor with debug assertion.
+- **Step 3** — DONE. `non_table_click_to_raw_col` takes `&InlineColMap` param; `paragraph_raw_col_to_rendered_col`, `rendered_to_raw_char_map`, and `CharMapWalk` deleted from `coord.rs`; re-export removed from `mouse_ops.rs`; 4 unit tests referencing deleted functions removed (equivalent coverage in `inline_col_map.rs` tests); 5 integration click tests retained.
+- **Step 4a** — DONE. Generic-paragraph branch uses `raw_to_rendered_checked` with 1:1 fallback.
+- **Step 4b** — DONE. List-item branch composes inline map with marker offset when content counts match.
+- **Step 4c** — DEFERRED. Table inline-markup composition not implemented (would complicate `table_layout`). Selection inside table cells with inline markup keeps existing cell-level 1:1 behavior.
+- **Step 5** — DONE. `rendered_view.rs` cursor-indicator call site replaced with `inline_map().raw_to_rendered_checked()`. Import of `mouse_ops` removed from rendered_view.
+- **Step 6** — DONE. 16 unit tests in `inline_col_map.rs` + 1 integration test in `tests/ui.rs` (`selection_on_bold_text_highlights_rendered_positions`). All 2065 tests pass. `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` clean.
+
+### Deviations from plan
+
+- **Step 3 + Step 5 combined**: Since deleting `paragraph_raw_col_to_rendered_col` from `coord.rs` broke the call site in `rendered_view.rs`, Step 5 was implemented alongside Step 3 to keep the build compiling.
+- **`rendered_to_raw` method marked `#[allow(dead_code)]`**: The method is only used in tests (production code uses `rendered_to_raw_vec()` instead), triggering a clippy dead-code warning. Kept as public API for test ergonomics.
+- **Plan said `buffer.line_count()` for cache sizing**: `ParsedDoc::build` receives `source: &str`, not a `Buffer`, so the cache is sized via `source.split('\n').count()` instead.
