@@ -42,6 +42,10 @@ pub struct EditorView<'a> {
     /// (and `image_picker`), `image_view::paint_images` is a no-op and
     /// the `[Image: alt]` placeholder stays visible.
     pub capabilities: &'a Capabilities,
+    /// When true, a line-number gutter is painted at the left edge of
+    /// the document area in all three modes.  Numbers are 1-indexed,
+    /// right-aligned, and styled with `theme.line_number`.
+    pub show_line_numbers: bool,
     /// True while the App has recorded a scroll change within the
     /// quiesce window.  During scroll, non-Kitty native protocols fall
     /// back to halfblocks rendering to avoid flickering re-encode on
@@ -175,20 +179,35 @@ impl<'a> StatefulWidget for EditorView<'a> {
             .style(self.theme.normal)
             .render(full_doc_area, buf);
 
+        // ── Line-number gutter reservation ──────────────────────
+        // When enabled, reserve a left gutter BEFORE the scrollbar /
+        // max-width layout so word-wrap and scrollbar decisions use
+        // the correct content width.
+        let mode = self.state.mode;
+        let line_count = if self.show_line_numbers {
+            match mode {
+                Mode::Preview | Mode::Rendered => self.state.parsed.line_count(),
+                Mode::Raw => self.state.buffer.line_count(),
+            }
+        } else {
+            0
+        };
+        let (gutter_area, full_after_gutter) =
+            super::gutter::split_gutter(full_doc_area, line_count);
+
         // Lay out doc area + optional scrollbar gutter.  The overflow
         // decision is made at the post-clamp doc width because narrower
         // widths wrap to MORE rows; deciding at the pre-clamp width
         // would miss overflow that only appears once the max-width
         // clamp narrows the doc.
         let (doc_area, scrollbar_area) = layout_doc_with_scrollbar(
-            full_doc_area,
+            full_after_gutter,
             self.max_width_enabled,
             self.max_width_cols,
             |w| self.state.total_visual_rows_for_mode(w as usize),
         );
 
         // ── Document area ─────────────────────────────────────────
-        let mode = self.state.mode;
         match mode {
             Mode::Preview => {
                 // Mirror the canonical scroll / selection from
@@ -253,6 +272,37 @@ impl<'a> StatefulWidget for EditorView<'a> {
                     buf,
                     &mut state.raw,
                 );
+            }
+        }
+
+        // ── Line-number gutter paint ─────────────────────────────
+        if let Some(ga) = gutter_area {
+            let scroll = self.state.scroll;
+            let content_width = doc_area.width as usize;
+            let style = self.theme.line_number;
+            match mode {
+                Mode::Preview | Mode::Rendered => {
+                    super::gutter::paint_gutter(
+                        buf,
+                        ga,
+                        scroll,
+                        line_count,
+                        |row, w| self.state.rendered_line_at_visual_row(row, w),
+                        content_width,
+                        style,
+                    );
+                }
+                Mode::Raw => {
+                    super::gutter::paint_gutter(
+                        buf,
+                        ga,
+                        scroll,
+                        line_count,
+                        |row, w| self.state.raw_line_at_visual_row(row, w),
+                        content_width,
+                        style,
+                    );
+                }
             }
         }
 

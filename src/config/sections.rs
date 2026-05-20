@@ -36,6 +36,11 @@ pub struct EditorConfig {
     /// are suppressed while the welcome is still pending so the user is never
     /// double-prompted.
     pub show_welcome: bool,
+    /// When true, line numbers are displayed in a left gutter in all three
+    /// modes (Preview, Rendered, Raw).  Numbers are right-aligned and styled
+    /// with the theme's `line_number` style (derived from `text_muted`).
+    /// Default: false.
+    pub show_line_numbers: bool,
     /// Lines advanced per mouse-wheel tick.  Default 1 — users can bump this
     /// to 2 or 3 for a coarser, faster feel at the cost of fine-grained
     /// control.  The keyboard `ScrollUp` / `ScrollDown` actions always step
@@ -143,6 +148,7 @@ impl Default for EditorConfig {
             visual_line_nav: true,
             seen_terminal_fingerprints: Vec::new(),
             show_welcome: true,
+            show_line_numbers: false,
             mouse_scroll_lines: 1,
             status_bar: StatusBarLayout::default(),
             transient_ms: 1500,

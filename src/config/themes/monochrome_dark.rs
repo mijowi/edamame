@@ -148,6 +148,8 @@ pub fn theme() -> Theme {
         cursor_raw: Style::default().add_modifier(Modifier::REVERSED),
         cursor: Style::default().add_modifier(Modifier::REVERSED),
 
+        line_number: Style::default().add_modifier(Modifier::DIM),
+
         // Scrollbar — glyphs alone disambiguate track from thumb;
         // active state inverts so monochrome users still see it.
         scrollbar_track: Style::default(),

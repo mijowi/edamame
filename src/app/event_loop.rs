@@ -31,7 +31,7 @@ use ratatui::layout::{Rect, Size};
 use ratatui::Terminal;
 
 use crate::config::{Action, CoalesceKind, Config, KeyBindingOverrides, KeyMap};
-use crate::editor::{edit_ops, mouse_ops};
+use crate::editor::{edit_ops, mouse_ops, Mode};
 use crate::input::mode_handler::default::DefaultHandler;
 use crate::terminal::PointerShape;
 use crate::ui::editor_view::layout_doc_with_scrollbar;
@@ -187,13 +187,21 @@ impl App {
             width: term_size.width,
             height: term_size.height.saturating_sub(bottom_rows),
         };
-        // Mirror `EditorView::render`'s scrollbar-gutter + max-width
-        // layout so `viewport_width`, mouse hit-testing, and per-line
-        // wrap all agree with the painted content area.  The shared
-        // helper measures total rows at the post-clamp width, which is
-        // the only width that lines up with what the user sees.
+        // Mirror `EditorView::render`'s line-number gutter + scrollbar
+        // + max-width layout so `viewport_width`, mouse hit-testing,
+        // and per-line wrap all agree with the painted content area.
+        let line_count = if self.config.editor.show_line_numbers {
+            match self.editor.mode {
+                Mode::Preview | Mode::Rendered => self.editor.parsed.line_count(),
+                Mode::Raw => self.editor.buffer.line_count(),
+            }
+        } else {
+            0
+        };
+        let (_gutter, full_after_gutter) =
+            crate::ui::split_gutter(full_doc_area, line_count);
         let (doc_area, _bar) = layout_doc_with_scrollbar(
-            full_doc_area,
+            full_after_gutter,
             self.config.editor.max_width_enabled,
             self.config.editor.max_width_cols,
             |w| self.editor.total_visual_rows_for_mode(w as usize),
@@ -255,6 +263,7 @@ impl App {
                 self.drag_target,
                 Some(mouse_ops::DragTarget::Scrollbar { .. })
             );
+        let show_line_numbers = self.config.editor.show_line_numbers;
         let capabilities_ref = &self.capabilities;
         let config_ref: &Config = &self.config;
         let editor_ref = &mut self.editor;
@@ -267,6 +276,7 @@ impl App {
                 filename: &filename,
                 show_table_buttons: show_handles,
                 table_drop_indicator: drop_indicator,
+                show_line_numbers,
                 capabilities: capabilities_ref,
                 is_scrolling,
                 status_bar_layout: layout,

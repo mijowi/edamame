@@ -275,6 +275,9 @@ pub struct Theme {
     /// because modal inputs aren't tied to editor mode.
     pub cursor: Style,
 
+    /// Line-number gutter — right-aligned numbers in `text_muted`.
+    pub line_number: Style,
+
     /// Scrollbar track (the `│` glyph drawn down the gutter behind the
     /// thumb).  The track is only painted when the content overflows.
     pub scrollbar_track: Style,
@@ -840,6 +843,10 @@ impl Theme {
             // a modal text input inverts whatever's underneath without
             // needing to know the surrounding bg.
             cursor: Style::default().add_modifier(Modifier::REVERSED),
+
+            // Line-number gutter — muted fg on the document bg so
+            // numbers recede behind the content.
+            line_number: Style::default().fg(p.text_muted),
 
             // Scrollbar — track in muted bg, thumb in `primary`; the
             // active state blends toward `text` so the thumb pops
