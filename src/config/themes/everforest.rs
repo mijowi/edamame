@@ -20,7 +20,7 @@ pub fn palette() -> Palette {
         accent: rgb(0xe69875),
         link: rgb(0x7fbbb3),
 
-        success: rgb(0x83c092),
+        success: rgb(0x5ebf76),
         warning: rgb(0xdbbc7f),
         error: rgb(0xe67e80),
 
