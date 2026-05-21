@@ -11,14 +11,10 @@ mod links;
 mod selection;
 mod table_drag;
 
-// `rendered_sub_line_to_offset` is reachable through the parent module path
-// for documentation grep; no production caller imports it directly.
-#[allow(unused_imports)]
-pub use coord::rendered_sub_line_to_offset;
 pub use links::{hovered_link_target, link_at_offset};
 pub use selection::visual_selection_to_rendered_text;
 
-use crate::document::Selection;
+use crate::document::{Selection, VisualSelection};
 use crate::editor::list_edit;
 use crate::editor::table_edit;
 use crate::editor::{EditorState, Mode};
@@ -26,14 +22,18 @@ use crate::input::MouseAction;
 use crate::ui::table_view::{TableHit, TableLayoutSnapshot};
 
 use self::checkbox::toggle_checkbox_at;
-use self::coord::{click_to_char_offset, rendered_line_at_row, span_at_col_has_modifier};
+use self::coord::{
+    click_to_char_offset, rendered_click_to_line_col, rendered_line_at_row,
+    span_at_col_has_modifier,
+};
 use self::links::follow_link_at_click;
 use self::selection::{
     expand_selection_to_inline_markers, select_line_at_cursor, select_word_at_cursor,
+    word_range_around,
 };
 use self::table_drag::{
-    apply_preview, commit_column_border_drag, commit_column_drag, commit_row_drag,
-    current_widths_for_table, delete_table_column_at, delete_table_row_at, resize_widths,
+    commit_column_border_drag, commit_column_drag, commit_row_drag, current_widths_for_table,
+    delete_table_column_at, delete_table_row_at, resize_widths,
 };
 
 /// What a mouse-down/drag interaction currently targets.
@@ -184,6 +184,139 @@ pub fn hit_test_clickable(
     false
 }
 
+/// Preview-mode mouse handler.  Selection lives in
+/// `state.visual_selection` (rendered-line `(line_idx, char_col)` pairs)
+/// rather than `state.selection` (rope offsets) so the Copy action can
+/// extract rendered text without Markdown markers — see
+/// `Action::Copy` in `edit_ops.rs`.
+///
+/// All coordinate math and word-boundary logic is shared with the
+/// Rendered/Raw path: this function only owns the per-mode storage and
+/// the Preview-specific "plain click follows links" policy.
+fn apply_preview_action(
+    state: &mut EditorState,
+    action: MouseAction,
+    drag_target: &mut Option<DragTarget>,
+    viewport_width: usize,
+) {
+    match action {
+        MouseAction::Click { col, row, .. } => {
+            // Preview is read-only: any click on a link (plain or Ctrl)
+            // follows it; there's no cursor placement to disambiguate.
+            if follow_link_at_click(state, col, row, viewport_width) {
+                *drag_target = None;
+                state.drag_in_progress = false;
+                return;
+            }
+            match rendered_click_to_line_col(state, col as usize, row as usize, viewport_width) {
+                Some((line_idx, char_col)) => {
+                    state.visual_selection = Some(VisualSelection {
+                        anchor: (line_idx, char_col),
+                        active: (line_idx, char_col),
+                    });
+                    // The `anchor: 0` is unused by Preview's Drag arm
+                    // (which extends the visual selection, not a rope
+                    // selection) — it only needs to be `Some(_)` so the
+                    // Drag arm below doesn't no-op.
+                    *drag_target = Some(DragTarget::TextSelection { anchor: 0 });
+                    state.drag_in_progress = true;
+                }
+                None => {
+                    state.visual_selection = None;
+                }
+            }
+        }
+        MouseAction::DoubleClick { col, row, .. } => {
+            if let Some((line_idx, char_col)) =
+                rendered_click_to_line_col(state, col as usize, row as usize, viewport_width)
+            {
+                if let Some((s, e)) = preview_word_range(state, line_idx, char_col) {
+                    state.visual_selection = Some(VisualSelection {
+                        anchor: (line_idx, s),
+                        active: (line_idx, e),
+                    });
+                }
+            }
+            *drag_target = None;
+            state.drag_in_progress = false;
+        }
+        MouseAction::TripleClick { col, row, .. } => {
+            if let Some((line_idx, _)) =
+                rendered_click_to_line_col(state, col as usize, row as usize, viewport_width)
+            {
+                let end_col = state
+                    .parsed
+                    .lines
+                    .get(line_idx)
+                    .map(|l| l.spans.iter().map(|s| s.content.chars().count()).sum())
+                    .unwrap_or(0);
+                state.visual_selection = Some(VisualSelection {
+                    anchor: (line_idx, 0),
+                    active: (line_idx, end_col),
+                });
+            }
+            *drag_target = None;
+            state.drag_in_progress = false;
+        }
+        MouseAction::Drag { col, row } => {
+            if drag_target.is_none() {
+                return;
+            }
+            if let Some(active) =
+                rendered_click_to_line_col(state, col as usize, row as usize, viewport_width)
+            {
+                if let Some(sel) = state.visual_selection.as_mut() {
+                    sel.active = active;
+                } else {
+                    state.visual_selection = Some(VisualSelection {
+                        anchor: active,
+                        active,
+                    });
+                }
+            }
+        }
+        MouseAction::Release => {
+            if let Some(sel) = state.visual_selection {
+                if sel.is_empty() {
+                    state.visual_selection = None;
+                }
+            }
+            state.drag_in_progress = false;
+            *drag_target = None;
+        }
+        MouseAction::Scroll(delta) => {
+            scroll_by_mouse(state, delta, viewport_width);
+        }
+    }
+}
+
+/// Word range under `(line_idx, char_col)` in the Preview rendered-line
+/// coordinate system.  Defers boundary detection to the shared
+/// `word_range_around`; only the char-source closure is Preview-specific
+/// (chars come from the rendered `Line`'s span sequence).
+fn preview_word_range(
+    state: &EditorState,
+    line_idx: usize,
+    char_col: usize,
+) -> Option<(usize, usize)> {
+    let line = state.parsed.lines.get(line_idx)?;
+    let chars: Vec<char> = line.spans.iter().flat_map(|s| s.content.chars()).collect();
+    if chars.is_empty() {
+        return None;
+    }
+    let clamped = char_col.min(chars.len());
+    if let Some(range) = word_range_around(chars.len(), clamped, |i| chars[i]) {
+        return Some(range);
+    }
+    // On whitespace — fall back to a single-char selection so the user
+    // still gets visible feedback from the double-click.
+    if clamped < chars.len() {
+        Some((clamped, clamped + 1))
+    } else {
+        None
+    }
+}
+
 /// Apply a mouse action to the editor.
 ///
 /// `drag_target` persists state across a click → drag → release sequence.
@@ -199,13 +332,16 @@ pub fn apply(
     viewport_height: usize,
     viewport_width: usize,
 ) {
-    // Preview-mode clicks work over rendered coordinates and stay in
-    // Preview — the user may want to copy rendered text without entering
-    // edit mode (entering edit mode would expose raw Markdown markers and
-    // change the text under the pointer).  Keyboard actions still transition
-    // Preview → Rendered via `enter_edit_if_preview` in `edit_ops`.
+    // Preview-mode clicks store their selection in rendered-line
+    // coordinates (`state.visual_selection`) rather than rope offsets
+    // (`state.selection`), so the copy path can extract the rendered text
+    // verbatim — no Markdown markers.  Preview also intentionally does NOT
+    // trigger `enter_edit_if_preview` on mouse input: the user may want to
+    // copy without flipping into edit mode (which would expose raw markers
+    // under the pointer).  Keyboard actions still flip via
+    // `enter_edit_if_preview` in `edit_ops`.
     if state.mode == Mode::Preview {
-        apply_preview(state, action, drag_target, viewport_width);
+        apply_preview_action(state, action, drag_target, viewport_width);
         return;
     }
 

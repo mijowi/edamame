@@ -138,9 +138,67 @@ fn rendered_click_to_offset(
     row: usize,
     viewport_width: usize,
 ) -> usize {
+    match walk_rendered_rows(state, row, viewport_width) {
+        Some((idx, sub_row)) => {
+            rendered_sub_line_to_offset(state, idx, sub_row, col, viewport_width)
+        }
+        None => state.buffer.len_chars(),
+    }
+}
+
+/// Preview-mode click translator.  Returns the `(rendered_line_idx,
+/// char_col)` pair used to seed Preview's `VisualSelection`, applying the
+/// same scroll-aware visual-row walk as `rendered_click_to_offset` so
+/// wrapped lines (long list items, paragraphs) map clicks to the correct
+/// line, and the same per-sub-row wrap layout as
+/// `paint_preview_selection` so `char_col` is the cumulative position
+/// within the flat rendered line — required for drag-selection across
+/// wrapped sub-rows to highlight the correct range.
+pub(super) fn rendered_click_to_line_col(
+    state: &EditorState,
+    col: usize,
+    row: usize,
+    viewport_width: usize,
+) -> Option<(usize, usize)> {
+    let (idx, sub_row) = walk_rendered_rows(state, row, viewport_width)?;
+    let line = state.parsed.lines.get(idx)?;
+    let chars: Vec<(char, ratatui::style::Style)> = line
+        .spans
+        .iter()
+        .flat_map(|span| {
+            let style = span.style;
+            span.content.chars().map(move |c| (c, style))
+        })
+        .collect();
+    if chars.is_empty() {
+        return Some((idx, 0));
+    }
+    let indent = line_render::compute_hanging_indent(line);
+    let rows = line_render::visual_rows_of_chars(&chars, viewport_width.max(1), indent);
+    let sub = sub_row.min(rows.len().saturating_sub(1));
+    let (row_start, row_end, _) = rows.get(sub).copied().unwrap_or((0, chars.len(), chars.len()));
+    // Continuation rows render with `indent` blank cells of left-padding;
+    // subtract them so `col=indent` maps to the first content char of the
+    // sub-row, matching `paint_preview_selection`'s x_off calculation.
+    let row_indent = if sub == 0 { 0 } else { indent };
+    let local_col = col.saturating_sub(row_indent);
+    let char_col = (row_start + local_col).min(row_end);
+    Some((idx, char_col))
+}
+
+/// Walk rendered lines from `state.scroll`, accumulating per-line wrapped
+/// visual-row counts (with reveal corrections), and find which
+/// `(rendered_line_idx, sub_row_within_line)` the document-relative `row`
+/// falls on.  Shared by `rendered_click_to_offset` and
+/// `rendered_click_to_line_col` so the two cannot drift.
+fn walk_rendered_rows(
+    state: &EditorState,
+    row: usize,
+    viewport_width: usize,
+) -> Option<(usize, usize)> {
     let lines = &state.parsed.lines;
     if lines.is_empty() {
-        return 0;
+        return None;
     }
     let (mut idx, mut first_sub_row) =
         state.rendered_line_at_visual_row(state.scroll, viewport_width);
@@ -151,14 +209,13 @@ fn rendered_click_to_offset(
             .max(1);
         let used = rows_used.saturating_sub(first_sub_row).max(1);
         if row < y + used {
-            let sub_row = first_sub_row + row - y;
-            return rendered_sub_line_to_offset(state, idx, sub_row, col, viewport_width);
+            return Some((idx, first_sub_row + row - y));
         }
         y += used;
         idx += 1;
         first_sub_row = 0;
     }
-    state.buffer.len_chars()
+    None
 }
 
 /// Map `(rendered_line_idx, sub_row_within_line, col)` to a buffer char

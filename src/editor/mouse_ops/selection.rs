@@ -66,11 +66,68 @@ pub(super) fn expand_selection_to_inline_markers(
     sel
 }
 
+/// Generic word-boundary scan around char index `at` in a sequence of
+/// length `len` whose chars are produced by `get_char`.  Mirrors the
+/// double-click word-selection rule: alphanumeric-or-`_` first, falling
+/// back to a punctuation run when the cursor is on neither a word char nor
+/// whitespace.  Returns `None` only when both passes collapse (cursor sits
+/// on whitespace with no adjacent word or punctuation).
+///
+/// Used by both the rope-offset path (`select_word_at_cursor`) and the
+/// Preview rendered-line path (`mouse_ops::apply`'s DoubleClick arm) so a
+/// single definition of "word" governs both selection mechanisms.
+pub(super) fn word_range_around<F>(len: usize, at: usize, get_char: F) -> Option<(usize, usize)>
+where
+    F: Fn(usize) -> char,
+{
+    if len == 0 {
+        return None;
+    }
+    let at = at.min(len);
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+
+    let mut start = at;
+    while start > 0 && is_word(get_char(start - 1)) {
+        start -= 1;
+    }
+    let mut end = at;
+    while end < len && is_word(get_char(end)) {
+        end += 1;
+    }
+    if start != end {
+        return Some((start, end));
+    }
+
+    // Punctuation fallback: expand across non-alphanumeric, non-whitespace
+    // chars so a double-click on `==` or `**` still produces a meaningful
+    // selection.
+    let mut s2 = at;
+    while s2 > 0 {
+        let c = get_char(s2 - 1);
+        if c.is_whitespace() || is_word(c) {
+            break;
+        }
+        s2 -= 1;
+    }
+    let mut e2 = at;
+    while e2 < len {
+        let c = get_char(e2);
+        if c.is_whitespace() || is_word(c) {
+            break;
+        }
+        e2 += 1;
+    }
+    if s2 != e2 {
+        Some((s2, e2))
+    } else {
+        None
+    }
+}
+
 /// Expand the selection to the word under the cursor (double-click).
 pub(super) fn select_word_at_cursor(state: &mut EditorState) {
     let buf = &state.buffer;
     let len = buf.len_chars();
-    let rope = buf.rope();
     let offset = state.cursor.offset.min(len);
 
     if len == 0 {
@@ -78,54 +135,20 @@ pub(super) fn select_word_at_cursor(state: &mut EditorState) {
         return;
     }
 
-    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
-
-    // If the cursor is on whitespace, fall back to selecting the run of
-    // whitespace instead of an empty selection.
-    let mut start = offset;
-    while start > 0 && is_word_char(rope.char(start - 1)) {
-        start -= 1;
-    }
-    let mut end = offset;
-    while end < len && is_word_char(rope.char(end)) {
-        end += 1;
-    }
-    if start == end {
-        // Not on a word — try expanding across non-alphanumeric chars (e.g.
-        // punctuation).  If there's no such run either, leave unchanged.
-        let mut s2 = offset;
-        while s2 > 0 {
-            let c = rope.char(s2 - 1);
-            if c.is_whitespace() || is_word_char(c) {
-                break;
-            }
-            s2 -= 1;
-        }
-        let mut e2 = offset;
-        while e2 < len {
-            let c = rope.char(e2);
-            if c.is_whitespace() || is_word_char(c) {
-                break;
-            }
-            e2 += 1;
-        }
-        if s2 != e2 {
+    let rope = buf.rope();
+    match word_range_around(len, offset, |i| rope.char(i)) {
+        Some((start, end)) => {
             state.selection = Some(Selection {
-                anchor: s2,
-                active: e2,
+                anchor: start,
+                active: end,
             });
-            state.cursor.offset = e2;
-            return;
+            state.cursor.offset = end;
+            state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
         }
-        state.selection = None;
-        return;
+        None => {
+            state.selection = None;
+        }
     }
-    state.selection = Some(Selection {
-        anchor: start,
-        active: end,
-    });
-    state.cursor.offset = end;
-    state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
 }
 
 /// Expand the selection to the whole line (triple-click).
