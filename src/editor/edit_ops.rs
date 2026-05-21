@@ -595,11 +595,9 @@ pub fn apply(
         }
 
         // ── File operations ───────────────────────────────────────
-        Action::Save => {
-            if state.buffer.save_file().is_ok() {
-                state.dirty = false;
-            }
-        }
+        // `Action::Save` is intercepted by `App::handle_app_action`
+        // before this dispatch is reached — see `App::save_buffer`
+        // for the single call site of `Buffer::save_file`.
         // ── Phase 3 — list editing ───────────────────────────────
         Action::ToggleCheckbox => {
             enter_edit_if_preview(state, viewport_height);

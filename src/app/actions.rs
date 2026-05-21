@@ -5,8 +5,10 @@
 //! - [`App::handle_app_action`] — App-level actions intercepted before
 //!   the generic `edit_ops::apply` fallthrough (link follow, palette,
 //!   overlays, table buttons toggle, insert table, save copy, …).
-//! - [`App::dispatch_palette_action`] — palette-pick re-entry into the
-//!   same dispatch pipeline as a direct keystroke.
+//! - [`App::dispatch_action`] — the single unified dispatcher used by
+//!   both the run-loop keystroke arm and the palette-pick re-entry
+//!   path.  Resolves `handle_app_action` → dirty-quit guard →
+//!   `edit_ops::apply` → scroll / flash / link-follow side effects.
 //! - The thin `open_X` modal-push helpers + [`App::ensure_keymap_clone`].
 //! - Modal-key dispatch and the quit-confirm / column-widths flows.
 //! - The [`HandleEvent`] adapter trait used by the run loop.
@@ -232,6 +234,21 @@ impl App {
                 self.needs_draw = true;
                 true
             }
+            // Hoisted out of `edit_ops::apply` so all save paths
+            // (keystroke, palette, autosave, post-merge resolution
+            // in later checkpoints) route through `App::save_buffer`
+            // — the single call site for `Buffer::save_file`.
+            // `flash_for_action` is invoked here because the
+            // post-dispatch flash in `dispatch_action` only fires
+            // when `handle_app_action` returns `false`.
+            Action::Save => {
+                let dirty_before = self.editor.dirty;
+                if let Err(e) = self.save_buffer() {
+                    tracing::warn!(error = %e, "save failed");
+                }
+                self.flash_for_action(&Action::Save, dirty_before);
+                true
+            }
             _ => false,
         }
     }
@@ -334,10 +351,14 @@ impl App {
         self.keymap.as_ref().unwrap().clone()
     }
 
-    /// Dispatch an `Action` chosen from the palette through the same
-    /// path as a direct keystroke.  Mirrors the dispatch arm in
-    /// [`App::run`].
-    pub fn dispatch_palette_action(&mut self, action: Action, doc_height: usize, doc_width: usize) {
+    /// Dispatch a resolved [`Action`] through the unified pipeline.
+    /// Both the run-loop keystroke arm
+    /// ([`super::App::dispatch_single_key`]) and the command palette
+    /// (`CommandPaletteModal`) funnel through here so there is exactly
+    /// one place where `handle_app_action`, the dirty-buffer quit
+    /// guard, `edit_ops::apply`, scroll tracking, post-action flashes,
+    /// and pending link-follow draining are sequenced.
+    pub fn dispatch_action(&mut self, action: Action, doc_height: usize, doc_width: usize) {
         let handled = self.handle_app_action(&action, doc_height, doc_width);
         if !handled {
             if matches!(action, Action::Quit) && self.editor.dirty {
@@ -358,6 +379,33 @@ impl App {
                 self.follow_link(target, doc_height, doc_width);
             }
         }
+    }
+
+    /// The single call site for [`crate::document::Buffer::save_file`]
+    /// across the application.  Every save path funnels through
+    /// here so that follow-up state — clearing the dirty flag today,
+    /// and the watcher's own-write hash stamp in a later checkpoint —
+    /// has a single place to live.  Routed callers today:
+    ///
+    /// - keystroke / palette-invoked `Action::Save`
+    ///   ([`App::handle_app_action`])
+    /// - idle autosave ([`App::tick_autosave`])
+    /// - save-before-navigate from the dirty-link guard
+    ///   ([`super::modal::DirtyGuardModal`])
+    /// - save-and-quit from the dirty-quit confirm modal
+    ///   ([`super::modal::QuitConfirmModal`])
+    /// - save-before-launch in the external-editor flow
+    ///   ([`App::open_current_file_in_editor`])
+    /// - future post-merge diff resolution (Phase 1 §6)
+    ///
+    /// Callers are responsible for their own success / failure UX
+    /// (toast vs. error modal vs. silent autosave flash); this helper
+    /// only returns the underlying `Result` so each caller can shape
+    /// the message it wants.
+    pub(super) fn save_buffer(&mut self) -> anyhow::Result<()> {
+        self.editor.buffer.save_file()?;
+        self.editor.dirty = false;
+        Ok(())
     }
 
     /// Open the settings overlay.
@@ -483,6 +531,34 @@ mod tests {
     };
 
     use super::modal_wheel_delta;
+    use crate::app::test_utils::make_app;
+    use crate::document::Buffer;
+
+    #[test]
+    fn save_buffer_clears_dirty_on_success() {
+        let mut app = make_app();
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        app.editor.buffer = Buffer::for_new_file(tmp.path());
+        let len = app.editor.buffer.len_chars();
+        app.editor.buffer.insert_char(len, 'z');
+        app.editor.dirty = true;
+
+        app.save_buffer().expect("save");
+
+        assert!(!app.editor.dirty);
+        let on_disk = std::fs::read_to_string(tmp.path()).expect("read back");
+        assert!(on_disk.ends_with('z'));
+    }
+
+    #[test]
+    fn save_buffer_returns_err_when_buffer_has_no_path() {
+        let mut app = make_app();
+        assert!(app.editor.buffer.path().is_none());
+        app.editor.dirty = true;
+        let result = app.save_buffer();
+        assert!(result.is_err(), "unnamed buffer must fail to save");
+        assert!(app.editor.dirty, "failed save must leave dirty set");
+    }
 
     #[test]
     fn modal_wheel_delta_translates_scroll_direction() {

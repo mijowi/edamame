@@ -68,10 +68,12 @@ impl App {
             return;
         }
 
-        // Window elapsed: persist.
-        match self.editor.buffer.save_file() {
+        // Window elapsed: persist through the unified save helper so
+        // any future side effect (e.g. the watcher's own-write hash
+        // stamp introduced in a later checkpoint) applies to autosave
+        // automatically.
+        match self.save_buffer() {
             Ok(()) => {
-                self.editor.dirty = false;
                 self.autosave_pending_since = None;
                 self.flash("Autosaved", MessageKind::Success);
             }
