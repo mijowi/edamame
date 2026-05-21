@@ -284,7 +284,7 @@ impl KeybindsState {
                 ..
             }) => {
                 // Display the chord in human-readable form (`Ctrl-Q`)
-                // rather than the normalised `ctrl+q` carried by the
+                // rather than the normalized `ctrl+q` carried by the
                 // error, so the message matches the rest of the UI.
                 let display_key = format_key(key);
                 self.last_error = Some(format!(
@@ -988,7 +988,7 @@ mod tests {
     #[test]
     fn conflict_error_uses_human_readable_chord() {
         // Regression: the conflict error used to surface the
-        // `parse_key`-normalised form (`ctrl+q`) carried by the error
+        // `parse_key`-normalized form (`ctrl+q`) carried by the error
         // value.  It should match the rest of the UI (`Ctrl-Q`).
         let mut state = open();
         assert!(state.focus_action(&Action::Save));

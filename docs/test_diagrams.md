@@ -232,7 +232,7 @@ timeline
     2004 : Web 2.0 coined
          : Facebook launched
     2008 : Chrome released
-    2014 : HTML5 finalised
+    2014 : HTML5 finalized
     2020 : Web Vitals
 ```
 

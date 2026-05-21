@@ -56,7 +56,7 @@ impl ConfigWarningModal {
                     }
                 }
                 WarningKind::UnknownKeys(keys) => {
-                    body.push(Line::raw("  Unrecognised keys (ignored):"));
+                    body.push(Line::raw("  Unrecognized keys (ignored):"));
                     for k in keys {
                         body.push(Line::raw(format!("    {k}")));
                     }
@@ -189,7 +189,7 @@ mod tests {
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(joined.contains("Unrecognised keys"));
+        assert!(joined.contains("Unrecognized keys"));
         assert!(joined.contains("editor.tab_widht"));
         assert!(joined.contains("boguss"));
     }

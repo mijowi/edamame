@@ -26,7 +26,7 @@ pub struct VisualSelection {
 }
 
 impl VisualSelection {
-    /// Normalised range `(start, end)` where `start <= end` in row-major
+    /// Normalized range `(start, end)` where `start <= end` in row-major
     /// ordering.  Convenience helper for highlight + copy code that needs a
     /// deterministic forward span.
     pub fn range(&self) -> ((usize, usize), (usize, usize)) {

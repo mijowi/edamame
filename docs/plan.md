@@ -374,7 +374,7 @@ Copy = "ctrl+c"
 Paste = "ctrl+v"
 ```
 
-`KeyMap` is initialised with the full set of compiled-in defaults, then any keys
+`KeyMap` is initialized with the full set of compiled-in defaults, then any keys
 present in `keybindings.toml` are applied on top, replacing only those bindings.
 Action names are the string representation of the `Action` enum variants.  An
 unrecognised action name or an unparseable key string is a hard error at startup
@@ -414,7 +414,7 @@ ignored and the compiled-in `Theme::monochrome()` palette is used.
 
 ### 7. Logging Strategy
 
-`tracing` output is never written to stdout/stderr, because those would corrupt the TUI output. If an error occurs, we will show a popup to the user. Logging to a file (`$XDG_DATA_HOME/edamame/debug.log`) is gated behind a `[dev] logging = true` flag in `config.toml` (default: `false`). When enabled, `tracing-appender` writes structured logs to the file; when disabled, the tracing subscriber is not initialised and no log file is created.
+`tracing` output is never written to stdout/stderr, because those would corrupt the TUI output. If an error occurs, we will show a popup to the user. Logging to a file (`$XDG_DATA_HOME/edamame/debug.log`) is gated behind a `[dev] logging = true` flag in `config.toml` (default: `false`). When enabled, `tracing-appender` writes structured logs to the file; when disabled, the tracing subscriber is not initialized and no log file is created.
 
 ---
 
@@ -1177,7 +1177,7 @@ These items are cohesive (all table-layer concerns) and share the `table_layout`
 
 ---
 
-### Phase 14 — Visual Polish
+### Phase 14 — Visual Polish ✅
 *Goal: small UX improvements that make the app feel cared-for.*
 
 Extracted from old Phase 11.  Pulls in the "Heading visual hierarchy — framing/rules" item from *Deferred Work* since the plan itself flagged it as "do this now."  Items are independent — any subset can ship.
@@ -1398,7 +1398,7 @@ These features should be **architecturally anticipated** from Phase 0 but not im
 ### Code Syntax Highlighting
 - In the AST renderer, when rendering a fenced code block, identify the language tag
 - Use `syntect` (via `syntect_tui` or a custom bridge) to apply token-based highlighting
-- Fall back to plain monospace rendering if the language is unrecognised
+- Fall back to plain monospace rendering if the language is unrecognized
 - Cache highlighted blocks keyed by (language, content hash)
 
 ### Heading visual hierarchy — `tui-big-text` variant

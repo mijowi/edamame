@@ -298,7 +298,7 @@ mod tests {
     impl EnvGuard {
         fn set(key: &'static str, value: &str) -> Self {
             let prev = env::var(key).ok();
-            // SAFETY: this test module is serialised by the `env_mutex` below.
+            // SAFETY: this test module is serialized by the `env_mutex` below.
             unsafe {
                 env::set_var(key, value);
             }

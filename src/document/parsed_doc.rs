@@ -93,7 +93,7 @@ pub struct ParsedDoc {
     /// so callers see exactly what the renderer rendered.
     pub blocks: Vec<crate::markdown::Block>,
     /// Byte ranges of the real (non-blank) source blocks, 1:1 with
-    /// `blocks`.  Blank-line virtual blocks synthesised by
+    /// `blocks`.  Blank-line virtual blocks synthesized by
     /// `build_with_overrides` are NOT present here — look them up via
     /// `source_map` instead.
     pub real_ranges: Vec<Range<usize>>,

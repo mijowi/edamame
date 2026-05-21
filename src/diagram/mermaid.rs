@@ -172,7 +172,7 @@ fn rasterise_svg(
     // picks dimensions based on internal layout heuristics, and a small
     // natural size just means "a simple diagram", not "render small".  So
     // upscale small diagrams to fill the envelope too, so users who have
-    // not customised `[images].max_width / max_height` still see diagrams
+    // not customized `[images].max_width / max_height` still see diagrams
     // at a useful on-screen size.  Rasterising an SVG at a higher
     // resolution is ~free — usvg draws text from font glyphs at the
     // target resolution, so crispness is preserved.

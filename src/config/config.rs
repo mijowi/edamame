@@ -197,7 +197,7 @@ impl Config {
     /// chose to set).  See [`save_merge`] for the algorithm.
     ///
     /// First-write case (no existing file): we write the freshly
-    /// serialised TOML.  In practice this branch is rarely hit because
+    /// serialized TOML.  In practice this branch is rarely hit because
     /// [`Self::ensure_default_files`] seeds the annotated reference
     /// config on first launch.
     ///
@@ -803,7 +803,7 @@ mod tests {
         std::fs::write(&theme_path, "[h1]\nfg = \"red\"\n\n[h7]\nfg = \"blue\"\n").unwrap();
         let mut warnings = Vec::new();
         let (theme, _) = read_theme_named(dir.path(), "custom", true, &mut warnings);
-        // Recognised key still applied.
+        // Recognized key still applied.
         assert_eq!(
             theme.h1.fg,
             Some(super::super::theme_file::ColorField::Named(
@@ -992,7 +992,7 @@ appearance = \"dark\"
     }
 
     /// First-write path: no existing file → emit a freshly
-    /// serialised config (no merge needed).  Asserts we don't
+    /// serialized config (no merge needed).  Asserts we don't
     /// crash on the NotFound branch and produce parseable output.
     #[test]
     fn save_merge_first_write_emits_fresh_toml() {

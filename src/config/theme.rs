@@ -307,7 +307,7 @@ pub struct Theme {
 pub struct Palette {
     /// Default document foreground.
     pub text: Color,
-    /// Peripheral / de-emphasised text — strikethrough body,
+    /// Peripheral / de-emphasized text — strikethrough body,
     /// completed-task text, modal close hint, Preview-mode chip bg.
     pub text_muted: Color,
     /// Default document background.
