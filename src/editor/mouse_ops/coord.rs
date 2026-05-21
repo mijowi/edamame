@@ -146,17 +146,7 @@ fn rendered_click_to_offset(
         state.rendered_line_at_visual_row(state.scroll, viewport_width);
     let mut y = 0usize;
     while idx < lines.len() {
-        // Per-line lookup against `ParsedDoc`'s O(1) visual-row cache —
-        // historically this called `visual_rows_for_line` directly, which
-        // adds up on rapid mouse-move events over a long document.
-        //
-        // Mermaid reveal exception: when the painter swaps the image
-        // placeholder for raw mermaid source, a long source line can
-        // wrap across multiple visual rows even though the cached
-        // placeholder always reports one.  Use the raw line's actual
-        // wrap count so `(idx, sub_row)` accumulation matches what's on
-        // screen.
-        let rows_used = revealed_mermaid_row_count(state, idx, viewport_width)
+        let rows_used = revealed_raw_row_count(state, idx, viewport_width)
             .unwrap_or_else(|| state.parsed.visual_rows_for_line_at(idx, viewport_width))
             .max(1);
         let used = rows_used.saturating_sub(first_sub_row).max(1);
@@ -371,17 +361,20 @@ fn table_raw_line_idx(state: &EditorState, block: &BlockLocation, block_text: &s
     }
 }
 
-/// When `rendered_line_idx` lies inside the cursor's mermaid block AND the
-/// reveal is active, returns the wrap count of the raw mermaid source line
-/// the painter actually paints onto that rendered row.  Returns `None`
+/// When the reveal is active and `rendered_line_idx` lies inside the
+/// cursor's block, returns the wrap count of the raw source line the
+/// painter actually paints onto that rendered row.  Returns `None`
 /// otherwise — callers fall back to the regular per-line cache.
 ///
-/// Why this exists: `RenderedView` reserves `image_max_height` placeholder
-/// rendered lines per mermaid block; each one normally wraps to 1 row.
-/// During reveal the painter overlays each rendered row with one raw
-/// source line, which may itself wrap.  Click hit-testing must agree with
-/// what's painted, not with the cached placeholder wrap count.
-fn revealed_mermaid_row_count(
+/// Two cases need this correction:
+/// - **Mermaid blocks**: `RenderedView` reserves placeholder rendered lines
+///   that each report 1 visual row; during reveal the painter overlays raw
+///   mermaid source lines that may themselves wrap.
+/// - **Non-table cursor line**: `RenderedView` replaces the cursor's
+///   rendered line with raw source text.  Inline formatting markers
+///   (`**`, `_`, backticks) make the raw line longer than the rendered
+///   form, so it can wrap to more visual rows at the same viewport width.
+fn revealed_raw_row_count(
     state: &EditorState,
     rendered_line_idx: usize,
     viewport_width: usize,
@@ -390,9 +383,6 @@ fn revealed_mermaid_row_count(
         return None;
     }
     let cursor_block_idx = state.cursor_block_idx?;
-    if !state.parsed.is_mermaid_block(cursor_block_idx) {
-        return None;
-    }
     let block_lines = state
         .parsed
         .source_map
@@ -400,7 +390,7 @@ fn revealed_mermaid_row_count(
     if !block_lines.contains(&rendered_line_idx) {
         return None;
     }
-    let sub = rendered_line_idx - block_lines.start;
+
     let block_start_byte = state
         .parsed
         .source_map
@@ -413,6 +403,31 @@ fn revealed_mermaid_row_count(
     let block_text = source
         .get(block_range.start..block_range.end.min(source.len()))
         .unwrap_or("");
+
+    if state.parsed.is_mermaid_block(cursor_block_idx) {
+        let sub = rendered_line_idx - block_lines.start;
+        let raw_line = block_text.split('\n').nth(sub).unwrap_or("");
+        return Some(
+            line_render::visual_rows_of_str(raw_line, viewport_width.max(1))
+                .len()
+                .max(1),
+        );
+    }
+
+    // Non-mermaid: only the cursor's own rendered line gets replaced with
+    // raw text.  Tables keep their rendered chrome, so skip them.
+    let is_table = table_edit::is_table_block(block_text);
+    if is_table {
+        return None;
+    }
+    let cursor_line = crate::editor::state::cursor_rendered_line_idx(state);
+    if rendered_line_idx != cursor_line {
+        return None;
+    }
+
+    // Find the raw source line within the block that corresponds to the
+    // cursor's rendered line, matching the render loop's logic.
+    let sub = rendered_line_idx - block_lines.start;
     let raw_line = block_text.split('\n').nth(sub).unwrap_or("");
     Some(
         line_render::visual_rows_of_str(raw_line, viewport_width.max(1))
