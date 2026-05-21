@@ -198,8 +198,7 @@ impl App {
         } else {
             0
         };
-        let (_gutter, full_after_gutter) =
-            crate::ui::split_gutter(full_doc_area, line_count);
+        let (_gutter, full_after_gutter) = crate::ui::split_gutter(full_doc_area, line_count);
         let (doc_area, _bar) = layout_doc_with_scrollbar(
             full_after_gutter,
             self.config.editor.max_width_enabled,
