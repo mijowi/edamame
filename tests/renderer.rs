@@ -312,7 +312,7 @@ fn list_item_with_code_block_containing_blank_line_renders_without_gap() {
     // The fix is verified at two layers — at the AST layer the list stays
     // intact (asserted in the parser's unit tests), and at the rendered
     // layer the second bullet sits directly after the first item's last
-    // continuation paragraph with no synthesised separator row in between.
+    // continuation paragraph with no synthesized separator row in between.
     let md = "- intro\n  ```toml\n  [a]\n\n  [b]\n  ```\n  trailing\n- next item\n";
     let lines = render(md);
     let texts: Vec<String> = lines.iter().map(line_text).collect();

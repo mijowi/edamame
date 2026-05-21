@@ -142,7 +142,7 @@ pub struct App {
     /// Drives the event-driven redraw gate: the main loop only calls
     /// `terminal.draw()` when this is true.  Set by event handlers
     /// that mutate visible state; cleared after a successful draw.
-    /// Initialised to `true` so the first iteration paints the opening
+    /// Initialized to `true` so the first iteration paints the opening
     /// frame.  Without this gate, the 60 ms `recv_timeout` would fire a
     /// full redraw ~17 times per second even with no input — the
     /// dominant cause of idle CPU prior to Phase 15.
@@ -225,7 +225,7 @@ pub struct App {
     /// sequences leaking into the editor (the `1;rgb:...` artifact
     /// users saw at the top of their `config.toml` after closing
     /// neovim was an OSC 11 background-color response).
-    /// Initialised in [`Self::run`] alongside the read-thread spawn.
+    /// Initialized in [`Self::run`] alongside the read-thread spawn.
     read_paused: Option<Arc<AtomicBool>>,
     /// Phase 9 — active hint-line prompt (first consumer is Phase 11).
     /// Renders in place of the default hint chords; Escape dismisses.

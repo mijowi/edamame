@@ -34,7 +34,7 @@ toml = "0.8"
 # heavily annotated, and a serde round-trip would nuke that.
 toml_edit = "0.22"
 # Detects unknown keys during deserialization so the config loader can
-# surface "unrecognised field" warnings without forcing `deny_unknown_fields`
+# surface "unrecognized field" warnings without forcing `deny_unknown_fields`
 # on the structs (we want forward-compat for theme files, not strictness).
 serde_ignored = "0.1"
 
@@ -137,4 +137,3 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
-

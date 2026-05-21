@@ -84,7 +84,7 @@ pub struct SaveCopyState {
     /// Cursor position into [`Self::path`] expressed as a Unicode-scalar
     /// (char) index, so paths containing multi-byte characters behave
     /// the way the user expects when navigating with Left / Right.
-    /// Initialised to the end of `path` so the user can immediately
+    /// Initialized to the end of `path` so the user can immediately
     /// backspace / type to rename without first jumping past the
     /// pre-filled default.
     pub cursor: usize,

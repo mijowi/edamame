@@ -399,7 +399,7 @@ Move table-related rendering out:
 |---|---|
 | `ui/rendered_view/snapshot.rs` | `TableLayoutSnapshot` and `build_snapshots` (lines 61–544). Extract `build_snapshots`'s inner block-closing and row-accumulation closures into named functions while moving — drops nesting from 5 to 2–3. |
 | `ui/rendered_view/classify.rs` | `TableSubLineKind` and classification (lines 545–674) |
-| `ui/rendered_view/paint.rs` | `paint_handles`, `paint_drop_indicator`. Consolidate `paint_horizontal_drop` + `paint_vertical_drop` into one parameterised helper. |
+| `ui/rendered_view/paint.rs` | `paint_handles`, `paint_drop_indicator`. Consolidate `paint_horizontal_drop` + `paint_vertical_drop` into one parameterized helper. |
 
 `rendered_view.rs` becomes a thin coordinator (~300 LOC).
 
@@ -652,7 +652,7 @@ command.  No CI script lives in the repo to update.
 
 ## Suggested PR sequence
 
-A reasonable order, optimised so each PR is small and independent:
+A reasonable order, optimized so each PR is small and independent:
 
 1. ~~**Phase A bundle** (PR): A0+A1+A2+A3+A4+A5~~ — **shipped as one
    commit** covering all clippy/build cleanup plus the small extractions.

@@ -147,7 +147,7 @@ enabled = "ask"
 # ── Dev ───────────────────────────────────────────────────────────────────────
 # Developer tooling. When `logging` is true, structured `tracing` logs are
 # written to the XDG data directory (e.g. ~/.local/share/edamame/); otherwise
-# the tracing subscriber is never initialised and all `tracing::*` calls are
+# the tracing subscriber is never initialized and all `tracing::*` calls are
 # no-ops. Default: false — keeps the TUI silent in normal use.
 # [dev]
 # logging = false

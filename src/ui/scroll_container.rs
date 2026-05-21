@@ -534,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_scroll_key_returns_false_for_unrecognised() {
+    fn handle_scroll_key_returns_false_for_unrecognized() {
         let mut s = ScrollContainerState::default();
         assert!(!s.handle_scroll_key(&key(KeyCode::Char('x'))));
         assert!(!s.handle_scroll_key(&key(KeyCode::Enter)));

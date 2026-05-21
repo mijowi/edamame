@@ -324,8 +324,8 @@ impl<'t> Renderer<'t> {
         // render as a blank square.  After substitution, anything still
         // non-ASCII (accented letters, arrows, emoji, math symbols) is
         // a hard fall back to the regular one-line render.
-        let normalised = normalise_for_big_text(plain.trim());
-        if normalised.is_empty() || !normalised.is_ascii() {
+        let normalized = normalise_for_big_text(plain.trim());
+        if normalized.is_empty() || !normalized.is_ascii() {
             return false;
         }
         let viewport = self.viewport_width.max(1);
@@ -333,7 +333,7 @@ impl<'t> Renderer<'t> {
         if max_chars == 0 {
             return false;
         }
-        let chunks = match word_wrap_for_big_text(&normalised, max_chars) {
+        let chunks = match word_wrap_for_big_text(&normalized, max_chars) {
             Some(c) if c.len() <= MAX_WRAPPED_LINES => c,
             _ => return false,
         };

@@ -2,7 +2,7 @@
 //!
 //! The palette is a centred modal with a single-line input on top of a
 //! scrollable list of matched actions.  When the input is empty, all
-//! actions are shown organised into named sections (`Suggested`, `File`,
+//! actions are shown organized into named sections (`Suggested`, `File`,
 //! `Edit`, …); once the user types, [`nucleo_matcher`] ranks every entry
 //! by fuzzy score against the query and sections collapse into a flat
 //! ranked list.

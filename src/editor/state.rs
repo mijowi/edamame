@@ -226,7 +226,7 @@ pub struct EditorState {
     /// in-line typing (no newlines → line indices don't shift), so
     /// the rendered view can extract the cursor block's raw text
     /// from the live buffer without consulting the stale
-    /// `source_map`.  `None` for empty documents / uninitialised state.
+    /// `source_map`.  `None` for empty documents / uninitialized state.
     pub cursor_block_line_range: Option<std::ops::Range<usize>>,
     /// Blink state for the cursor.  The App ticks this before each
     /// draw and threads `cursor_visible()` into the view layer.

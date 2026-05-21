@@ -26,7 +26,7 @@ pub enum WarningKind {
     ParseError(String),
     /// `serde_ignored` reported keys that no struct field consumed.
     /// Each entry is a dotted path (e.g. `editor.tab_widht`).  The
-    /// parsed struct is still applied — only the unrecognised keys are
+    /// parsed struct is still applied — only the unrecognized keys are
     /// silently dropped, so the warning is the user's only signal.
     UnknownKeys(Vec<String>),
     /// One or more entries in `keybindings.toml` referenced an unknown

@@ -651,7 +651,7 @@ pub fn classify_table_sub_lines(lines: &[Line<'_>]) -> Vec<TableSubLineKind> {
                 }
             }
             _ => {
-                // Defensive fallback: unrecognised leading glyph.  Treat
+                // Defensive fallback: unrecognized leading glyph.  Treat
                 // as a header line so the snapshot doesn't panic, even
                 // though we don't expect to hit this path.
                 TableSubLineKind::Header { sub: 0 }

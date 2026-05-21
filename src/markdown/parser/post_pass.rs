@@ -419,7 +419,7 @@ fn is_closing_fence(line: &str, fence_char: char, min_count: usize) -> bool {
 /// Parse the marker prefix of `line` (a raw line without trailing `\n`).
 /// Returns `(indent, marker_or_delim, optional_number)` — bullet markers
 /// have `None` as the number; ordered markers carry their parsed integer.
-/// Returns `None` for lines that don't start with a recognised marker.
+/// Returns `None` for lines that don't start with a recognized marker.
 fn parse_marker_line(line: &str) -> Option<(String, char, Option<u64>)> {
     let bytes = line.as_bytes();
     let mut i = 0;

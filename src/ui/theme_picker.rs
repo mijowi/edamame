@@ -72,7 +72,7 @@ pub struct ThemePickerState {
     matched_for_query: Option<String>,
     /// Last theme name we emitted a `Preview` for — used to suppress
     /// redundant previews when navigation lands on the same row again.
-    /// Initialised to `current` so the first move away from the
+    /// Initialized to `current` so the first move away from the
     /// already-active theme emits a preview.
     last_previewed: String,
     pub esc_button_rect: Option<Rect>,

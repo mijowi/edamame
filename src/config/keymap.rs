@@ -268,7 +268,7 @@ fn parse_modifier(part: &str) -> Option<KeyModifiers> {
 }
 
 /// Parse a `key_part` token (everything after the modifiers) into a
-/// `KeyCode`, or return `None` if the token is not a recognised key.
+/// `KeyCode`, or return `None` if the token is not a recognized key.
 fn parse_key_code(key_part: &str) -> Option<KeyCode> {
     let code = match key_part {
         "up" => KeyCode::Up,
@@ -457,7 +457,7 @@ pub fn format_key_parseable(ev: &KeyEvent) -> Option<String> {
     }
     // BackTab implies Shift even when the SHIFT modifier isn't set —
     // mirror the canonicalisation `action_for` does on lookup so the
-    // serialised form is the canonical `shift+tab`.
+    // serialized form is the canonical `shift+tab`.
     if ev.modifiers.contains(KeyModifiers::SHIFT) || ev.code == KeyCode::BackTab {
         parts.push("shift".into());
     }
