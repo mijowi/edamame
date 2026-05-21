@@ -80,11 +80,11 @@ impl Modal for DirtyGuardModal {
                 let pending = std::mem::take(&mut self.pending);
                 match idx {
                     0 => ModalOutcome::CloseAnd(Box::new(move |app| {
-                        if app.editor.buffer.save_file().is_ok() {
-                            app.editor.dirty = false;
-                            app.navigate_to_file(pending);
-                        } else {
-                            tracing::warn!(target: "link", "save-before-navigate failed");
+                        match app.save_buffer() {
+                            Ok(()) => app.navigate_to_file(pending),
+                            Err(e) => {
+                                tracing::warn!(target: "link", error = %e, "save-before-navigate failed");
+                            }
                         }
                         app.editor.ensure_cursor_visible(doc_height, doc_width);
                     })),

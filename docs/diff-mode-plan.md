@@ -54,11 +54,11 @@ machinery on top.
 ## 1. New dependencies
 
 ```toml
-notify = "6"
+notify = "8"
 similar = "2"
 ```
 
-- `notify` — cross-platform watcher (used by cargo-watch, mdbook, helix). Default features include backends for Linux (inotify), macOS (FSEvents), and Windows (ReadDirectoryChanges). We feed events into our existing `mpsc::Sender<AppEvent>` rather than using `crossbeam-channel`.
+- `notify` — cross-platform watcher (used by cargo-watch, mdbook, helix). Pin to the current major (8.x); 6→7→8 reshaped the `RecommendedWatcher` constructor and `Event` types, so the `NotifyWatcher` impl is written against 8's API directly rather than against a stale tutorial. Default features include backends for Linux (inotify), macOS (FSEvents), and Windows (ReadDirectoryChanges). We feed events into our existing `mpsc::Sender<AppEvent>` rather than using `crossbeam-channel`.
 - `similar` — line-level + inline word-level diff in one crate (`TextDiff::from_lines`, `InlineChange`).
 
 ## 2. Watcher subsystem
@@ -78,14 +78,21 @@ pub trait FileWatcher: Send {
 
 - One impl today: `NotifyWatcher` wraps `notify::RecommendedWatcher`.
 - The watcher worker thread accumulates events for 200 ms of quiet, then reads the file from disk and pushes a single `AppEvent::FileChanged { path, contents }` onto the existing mpsc. Reading happens on the worker, never on the main loop.
-- A `paused: Arc<AtomicBool>` mirrors `read_paused`. The external-editor flow flips it true before suspend and false after re-entry, then drains queued `FileChanged` events. The reconciliation read is **triggered by the suspend-flow code, not by the watcher worker thread.** After setting `paused = false`, the external-editor flow calls `FileWatcher::force_reconcile()` synchronously on its own thread; that method reads the current file from disk and pushes one `FileChanged { path, contents }` onto the mpsc, bypassing the watcher's 200 ms debounce window and its event filtering. The watcher worker thread stays a passive event source — the "did anything change during suspend?" question is asked by the suspend-flow code explicitly. The reconciliation read bypasses the debounce because the debouncer's purpose is to coalesce rapid successive OS events, and a single forced read after resume has no rapid-fire concern.
+- A `paused: Arc<AtomicBool>` mirrors `read_paused`. The external-editor flow flips it true before suspend and false after re-entry, then drains queued `FileChanged` events. The reconciliation read is **performed by the watcher worker thread, not on the main thread.** After setting `paused = false`, the external-editor flow calls `FileWatcher::force_reconcile()`, which signals the watcher worker (via a dedicated `force_reconcile` channel or an `AtomicBool` the worker polls between events) to perform a one-shot disk read and push one fresh `FileChanged { path, contents }` onto the mpsc, bypassing the watcher's 200 ms debounce window and its event filtering. The main thread does not block on disk I/O — it returns to the event loop immediately and picks up the resulting `FileChanged` event like any other. The watcher worker stays the single owner of disk reads for this file. The reconciliation read bypasses the debounce because the debouncer's purpose is to coalesce rapid successive OS events, and a single forced read after resume has no rapid-fire concern. This matches the worker-thread model used for queued-event re-entry in §11.
 - `notify::Event` variants other than `Modify` and `Create` are ignored. In particular, `Remove` events (file deletion) do not trigger diff mode — deleted-file handling is out of scope and will be addressed separately.
-- **Own-write filter (content-hash).** A timestamp-based filter is unreliable on slow filesystems (NFS, SSHFS) where write-then-inotify latency can exceed 500 ms and on fast ones where rapid successive saves overlap the window. Instead we keep a content hash of the last-saved file in memory and compare incoming `FileChanged` payloads against it. Concretely:
-  - `App` carries `last_saved_hash: Option<u64>`, computed via `seahash` (zero-dependency, very fast — sub-µs for typical markdown files) over the bytes written.
-  - `Action::Save`, the post-merge save path in §6 resolution, and autosave all route through a single `App::save_buffer()` helper that calls `editor.buffer.save_file()` and, on `Ok`, stamps `self.last_saved_hash = Some(seahash::hash(bytes))`. `App::save_buffer()` is the only call site that touches `save_file()` after this change.
-  - The event-loop arm that handles `AppEvent::FileChanged { contents }` computes `seahash::hash(contents.as_bytes())` and drops the event if it matches `last_saved_hash`. A match means the incoming contents are byte-identical to what we just wrote — necessarily our own echo.
-  - The one false-positive case is a user genuinely re-saving the same bytes externally that we just wrote — but in that case there is nothing to reconcile (disk = buffer), so silently dropping is correct.
-  - The hash field is `Option<u64>` because the initial state (just-opened file, never saved) has no echo to filter; an external change at that point should always trigger the diff path. The hash is updated on the initial file load too, so reopening or external rewrites that happen to match the just-loaded content also drop silently (again: nothing to reconcile).
+- **Own-write filter (content-hash).** A timestamp-based filter is unreliable on slow filesystems (NFS, SSHFS) where write-then-inotify latency can exceed 500 ms and on fast ones where rapid successive saves overlap the window. Instead we keep a content hash of the last-observed-on-disk file in memory and compare incoming `FileChanged` payloads against it. Concretely:
+  - `App` carries `last_disk_hash: Option<u64>`, computed via `seahash` (zero-dependency, very fast — sub-µs for typical markdown files).
+  - **Hash is stamped from three sources, all routed through the same `set_disk_hash(bytes)` helper:**
+    1. Initial file load (stamp from the bytes just loaded).
+    2. Every successful save — `App::save_buffer()` (the single call site for `Buffer::save_file()`, see Q1 below) stamps after `save_file()` returns `Ok`.
+    3. Every accepted `AppEvent::FileChanged { contents }` — when an incoming event survives the filter (i.e. hash differs), the event-loop arm stamps the new hash *before* dispatching the change to the dirty-check / diff-entry flow.
+  - The event-loop arm that handles `AppEvent::FileChanged { contents }` computes `seahash::hash(contents.as_bytes())` and drops the event iff it equals `last_disk_hash`. A match means the on-disk bytes are byte-identical to what we last observed there — either our own save echo, or a no-op write by an external tool. Either way: nothing to reconcile.
+  - **Second filter: skip diff entry when disk matches the live buffer.** Even after the own-write filter accepts the event, if `seahash(contents) == seahash(editor.buffer.contents())`, no diff would be produced (disk and in-memory buffer are byte-identical). In that case stamp `last_disk_hash` to the new value and return without entering diff mode or showing the dirty-conflict modal. This is the canonical "file was modified on disk but ends up byte-equal to what I have in memory" case (e.g. an external tool re-saved the file unchanged, or the user's edits happened to converge with an external edit). Skipping diff entry here also means `DiffState::new` is never called with a hunk list that would be empty — `enter_diff_mode` can safely assume `hunks.len() >= 1`, and `focused_id` is initialized to `hunks[0].id`.
+  - Because the hash tracks "what was last on disk" (not "what we last wrote"), the false-positive case I worried about earlier — external writer reverts disk to a prior state we'd already observed — does not arise. After the prior state was observed, `last_disk_hash` was updated to that state's hash; subsequent events that re-arrive at the same hash are correctly dropped (we already showed the user what disk looks like at that hash).
+  - The hash field is `Option<u64>` only for the very brief window between `App::new()` and the initial file load. After load it is always `Some` for any open file.
+
+**Q1 resolution — where does `Action::Save` and `last_disk_hash` live?**
+The hash filter state lives on `App` (option a from review). `Action::Save` is hoisted out of `edit_ops::apply` into `App::handle_app_action` (`src/app/actions.rs`), which routes through a single new helper `App::save_buffer()` — the only call site for `Buffer::save_file()` post-this-change. Autosave (`src/app/autosave.rs`) and the §6 post-merge save path also call `App::save_buffer()`. Option (b) — moving `last_disk_hash` onto `EditorState` / `Buffer` — was considered and rejected: `Buffer` has no business knowing about own-write filtering, and `EditorState` would have to reach back into the watcher-event flow on `App` to be useful.
 
 ## 3. Diff subsystem
 
@@ -116,7 +123,8 @@ pub struct DiffState {
                                    //   (§4a). Throughout this doc
                                    //   `new_rope` is shorthand for
                                    //   `new_buffer.rope()`.
-    pub cursor: Cursor,            // cursor into `new_rope`, used only
+    pub cursor: Cursor,            // { offset, preferred_col }, cursor
+                                   //   into `new_rope`, used only
                                    //   while DiffSubMode::Edit is active
                                    //   (in Review it is positioned at
                                    //   the start of the focused hunk's
@@ -147,7 +155,9 @@ pub struct Hunk {
 `DiffState::resolved_rope()` walks `hunks` in order, picking the
 old-side or new-side line range per `decisions[i]`. It is only called
 when every decision is non-`Pending` — calling it with any `Pending`
-decisions is a bug and should panic. When every decision becomes
+decisions is a programming error; the function `debug_assert!`s and
+returns `Err(DiffError::PendingDecisions)` in release so a misuse
+flashes a status hint instead of crashing the TUI. When every decision becomes
 non-`Pending`, a `DiffResolveConfirmModal` is shown (see §8). On
 confirmation, the App calls `resolved_rope()`, swaps the result
 into `editor.buffer`, clears `editor.diff`, replaces
@@ -181,33 +191,63 @@ parser's offset iterator. The scan is performed by a new shared
 helper in `src/markdown/parse_offsets.rs`:
 
 ```rust
-pub fn tag_ranges_by<F>(source: &str, mut keep: F) -> Vec<Range<usize>>
+/// Abstract over the three event kinds we care about for block scanning,
+/// so the shared scanner can pair starts and ends cleanly and dispatch
+/// leaf events without exposing pulldown-cmark's `Tag`/`TagEnd`
+/// asymmetry to callers.
+///
+/// Verified against pulldown-cmark 0.13 (the version pinned in
+/// `Cargo.toml`): `Tag::HtmlBlock`/`TagEnd::HtmlBlock` is the wrapped
+/// form, and `Event::Html(_)` is the leaf block-level form that
+/// arrives without a surrounding `Tag`. `Event::InlineHtml(_)` is
+/// inline-level by definition and is **not** a block — it does not
+/// appear in `BlockKind`. The `HtmlLeaf` variant exists solely so the
+/// shared scanner can record block-level HTML emitted as a leaf event
+/// (the parser does this for some constructs); add a match arm in the
+/// scanner for `Event::Html(_)` that records the event's offset range
+/// when `depth == 0` and `keep(BlockKind::HtmlLeaf)`.
+pub enum BlockKind {
+    Paragraph, Heading, CodeBlock, BlockQuote, List, Table, HtmlBlock,
+    Rule, HtmlLeaf,
+}
+
+pub fn block_ranges_by<F>(source: &str, mut keep: F) -> Vec<Range<usize>>
 where
-    F: FnMut(&Tag<'_>) -> bool,
-{ /* ... */ }
+    F: FnMut(BlockKind) -> bool,
+{ /* depth-tracked walk over the offset iterator: push on Start when
+     keep(kind), pop on matching End, record range when depth returns
+     to zero; for leaf events (Rule, HtmlInline) record directly when
+     keep(kind) and depth==0; trailing-newline handling identical to
+     today's advance_past_newline. */ }
 ```
 
-The existing `top_level_block_ranges()` is reimplemented in terms
-of this helper (filter = `|_| true` on top-level events), and the
-diff engine calls it with `|tag| matches!(tag, Tag::Table(_))`. A
+The existing `top_level_block_ranges()` is reimplemented as
+`block_ranges_by(source, |k| matches!(k, BlockKind::Paragraph | ::Heading | ::CodeBlock | ::BlockQuote | ::List | ::Table | ::HtmlBlock | ::Rule | ::HtmlLeaf))`,
+and the diff engine calls it with `|k| k == BlockKind::Table`. A
 thin wrapper `diff::engine::table_extents(source: &str) ->
 Vec<TableExtent>` converts the returned byte ranges to line ranges
-and wraps each in a `TableExtent`. This avoids duplicating the
-pulldown-cmark traversal logic across two modules while keeping
-`diff::engine`'s public API self-contained.
+and wraps each in a `TableExtent`. The `BlockKind` abstraction
+sidesteps the `Tag` / `TagEnd` start-end asymmetry that made the
+original `keep: FnMut(&Tag<'_>) -> bool` proposal impossible to use
+for depth tracking (you can't ask `TagEnd::Table` "are you a kept
+tag?" because `TagEnd` carries no `Tag`); mapping both sides into a
+single `BlockKind` enum first restores the symmetry.
 
-**Line-range convention.** Each `TableExtent { rope_lines:
-Range<usize> }` uses a **half-open** range `[start_line, end_line)`,
-where `start_line = rope.byte_to_line(tag_start)` and `end_line =
-rope.byte_to_line(tag_end_exclusive)`. `tag_end_exclusive` is the
-byte offset *after* the last byte of the table (i.e. one past the
-trailing newline of the final row). For tables that are the last
+**Line-range convention (applies to `TableExtent` AND to every
+`Hunk`'s `old_lines` / `new_lines`).** All line ranges in the diff
+subsystem use **half-open** `[start_line, end_line)` semantics,
+where `start_line = rope.byte_to_line(byte_start)` and `end_line =
+rope.byte_to_line(byte_end_exclusive)`. `byte_end_exclusive` is the
+byte offset *after* the last byte of the range (i.e. one past the
+trailing newline of the final line). For a range that is the last
 block in the file with no trailing newline, pulldown-cmark's
-`TagEnd::Table` offset still points one past the last byte, which
-maps to `rope.len_lines()` (the past-the-end line index) — so
-`end_line = rope.len_lines()` is the natural value and no
-special-casing is needed. A hunk's old-side or new-side line range
-intersects a `TableExtent` iff
+`TagEnd::*` offset still points one past the last byte; in `ropey`,
+calling `byte_to_line(rope.len_bytes())` returns
+`rope.len_lines().saturating_sub(1)` if the file ends without a
+newline, and `rope.len_lines()` if it does — both are valid
+half-open `end_line` values and no special-casing is needed in
+either case. A hunk's old-side or new-side line range intersects a
+`TableExtent` iff
 `hunk.lines.start < extent.end_line && extent.start_line <
 hunk.lines.end` (standard half-open overlap test).
 
@@ -226,8 +266,25 @@ triggers row-level diffing.
 
 1. Identify the contiguous old-side and new-side table-row ranges
    within the hunk.
-2. Run `similar::TextDiff::from_lines` over just those rows.
-3. Split the single `Replace` hunk into per-row hunks. **Maximum
+2. **Column-count guard (every row, both sides).** Scan every row
+   on each side (header, separator, and all data rows) and tally
+   cell counts. If *any* row's cell count differs from any other
+   on the same side, or if the per-side maximum cell counts differ
+   between sides, abort row-level sub-diff and leave the hunk as
+   a single whole-table `Replace`. Header-only checking is
+   insufficient because markdown allows data rows with fewer cells
+   than the header (legal — trailing cells default to empty), and
+   per-row accept/reject across a cell-count boundary can produce
+   a merged table where data rows reference a different column
+   count than the header. Bailing on any mismatch — not just
+   header mismatch — avoids the footgun and the user reviews the
+   table as a unit. When the guard trips, fire a transient hint
+   "Table has uneven row widths — reviewing as a unit" so the
+   user understands why this table was not row-diffed (otherwise
+   the monolithic replace reads like a bug). If every row on both
+   sides has the same cell count, proceed.
+3. Run `similar::TextDiff::from_lines` over just those rows.
+4. Split the single `Replace` hunk into per-row hunks. **Maximum
    granularity is per-row, not per-cell** — sub-row cell-level diffing
    is deferred to Phase 2. **Neighboring changed rows are coalesced
    into a single hunk** rather than emitted as one-hunk-per-row: a run
@@ -271,7 +328,7 @@ pub struct EditorState {
 }
 ```
 
-- New `Mode::Diff` variant added to `editor::mode::Mode`. The invariant is `mode == Mode::Diff ⟺ diff.is_some()`, kept consistent by `enter_diff_mode()` / `exit_diff_mode()` helpers. The redundancy is intentional — existing `match state.mode { … }` dispatch in status-bar, hint-line, and `preview_safe_action` is cheaper to extend with one arm than to thread `Option<&DiffState>` everywhere.
+- New `Mode::Diff` variant added to `editor::mode::Mode`. The invariant is `mode == Mode::Diff ⟺ diff.is_some()`, kept consistent by `enter_diff_mode()` / `exit_diff_mode()` helpers. `enter_diff_mode` initializes `DiffState::sub_mode = DiffSubMode::Review` and `focused_id = hunks[0].id`; it requires `hunks.len() >= 1` (callers must guard with the buffer-vs-disk hash check in §2 before invoking). The redundancy is intentional — existing `match state.mode { … }` dispatch in status-bar, hint-line, and `preview_safe_action` is cheaper to extend with one arm than to thread `Option<&DiffState>` everywhere.
 - Edits in diff mode mutate `diff.new_rope` and `diff.cursor`, **not** `editor.buffer` / `editor.cursor`. After each edit the hunk list is recomputed (cheap — `similar` line-diff over a typical markdown file is sub-millisecond).
 - `EditorState` gains `pub pre_diff_scroll: usize`. `enter_diff_mode()` writes it from the current `scroll` then resets `scroll = 0`; `exit_diff_mode()` reads it back into `scroll`. It is consumed at exit and otherwise inert.
 
@@ -320,11 +377,29 @@ instead of the normal side effects. This means:
 
 ```rust
 pub(crate) fn apply_delta(&mut self, delta: EditDelta) {
+    // Invariant: mode == Mode::Diff ⟺ diff.is_some(). Surfaces a
+    // desync the first time enter_diff_mode/exit_diff_mode is
+    // bypassed (or one is flipped without the other).
+    debug_assert_eq!(
+        self.mode == Mode::Diff,
+        self.diff.is_some(),
+        "Mode::Diff and self.diff.is_some() must agree",
+    );
     if let Some(ref mut diff) = self.diff {
         if diff.sub_mode == DiffSubMode::Edit {
             diff.apply_edit(delta);
             return;
         }
+        // Review sub-mode: apply_delta should never be called.
+        // Cursor-motion and decision actions don't go through
+        // apply_delta; text-input handlers are gated upstream
+        // by the diff-mode dispatch arm in App::dispatch_action.
+        debug_assert!(
+            false,
+            "apply_delta called in DiffSubMode::Review — text edits \
+             should be gated by App::dispatch_action's diff arm",
+        );
+        return;
     }
     // ... existing logic (buffer, history, cursor, dirty,
     //     refresh_parsed, update_cursor_block) unchanged ...
@@ -370,6 +445,15 @@ pub enum ActiveHistory<'a> {
 }
 
 impl EditorState {
+    /// Returns the active edit target: the buffer / cursor / history
+    /// that mutating actions should target. Valid in Normal mode and
+    /// in `DiffSubMode::Edit`. **Panics (debug) / `unreachable!()`s
+    /// (release-ish via `debug_assert!` + early return path) when
+    /// called in `Mode::Diff` Review** — Review does not perform
+    /// text edits and there is no coherent buffer to return there
+    /// (the main buffer and `DiffHistory` belong to different ropes).
+    /// Use `decision_history_mut()` instead for Decision/BulkDecision
+    /// undo/redo in Review.
     pub fn edit_target(&mut self) -> EditTarget<'_> {
         match &mut self.diff {
             Some(d) if d.sub_mode == DiffSubMode::Edit => EditTarget {
@@ -377,17 +461,33 @@ impl EditorState {
                 cursor:  &mut d.cursor,
                 history: ActiveHistory::Diff(&mut d.history),
             },
-            Some(d) => EditTarget {
-                buffer:  &mut self.buffer,
-                cursor:  &mut self.cursor,
-                history: ActiveHistory::Diff(&mut d.history),
-            },
+            Some(_) => {
+                debug_assert!(false, "edit_target() called in DiffSubMode::Review");
+                // Release fallback: route to main buffer with main
+                // history so we never hand back a mismatched
+                // (buffer, history) pair. Any actual mutation here
+                // is a programming error caught by the debug_assert.
+                EditTarget {
+                    buffer:  &mut self.buffer,
+                    cursor:  &mut self.cursor,
+                    history: ActiveHistory::Main(&mut self.history),
+                }
+            }
             None => EditTarget {
                 buffer:  &mut self.buffer,
                 cursor:  &mut self.cursor,
                 history: ActiveHistory::Main(&mut self.history),
             },
         }
+    }
+
+    /// Accessor for Decision/BulkDecision undo/redo paths, valid in
+    /// either diff sub-mode. Returns `None` outside `Mode::Diff`.
+    /// Does not return a buffer or cursor — Decision ops do not
+    /// mutate the rope, so there is no risk of routing a write to
+    /// the wrong buffer.
+    pub fn decision_history_mut(&mut self) -> Option<&mut DiffHistory> {
+        self.diff.as_mut().map(|d| &mut d.history)
     }
 }
 ```
@@ -422,49 +522,114 @@ guard is the `Tab` / `Shift-Tab` collision: those keys are reserved
 for hunk navigation in Review and for ordinary indentation in Edit,
 so column-cycling must not fire.
 
-**List continuation is allowed in diff Edit.** No parallel guard is
-added to `current_list()` — pressing `Enter` inside a list item
-continues the list as it does in normal editing, and `Tab` /
-`Shift-Tab` inside a list indent / outdent the item. These all
-trigger off keys that have no diff-mode conflict, the resulting
-mutations go through `apply_delta` (so they land on `new_buffer`
-and `DiffHistory`), and they expand the focused hunk downward
-exactly like any other newline insertion (§4 "Newlines expand the
-hunk"). A user editing a replacement list inside a hunk gets the
-same affordances they would outside diff mode.
+**List continuation, indent, and renumber are disabled in diff
+Edit.** A guard mirroring `cursor_in_table()` is added to
+`current_list()` (and any other list-edit entry point that reads
+from `state.buffer` to decide what to do):
+
+```rust
+pub(super) fn current_list(state: &EditorState) -> Option<...> {
+    if state.mode == Mode::Diff { return None; }
+    // existing logic
+}
+```
+
+The reason is correctness, not policy. List-edit code in
+`src/editor/list_edit/` reads the buffer to find the existing list
+marker, indent depth, and ordinal, then builds an `EditDelta` based
+on what it found. In diff Edit the writes route correctly to
+`new_buffer` via `apply_delta`, but the *reads* still hit
+`state.buffer` (the main buffer, unchanged since diff entry), so a
+list line that only exists inside `new_buffer` would be invisible
+to the list-edit code, producing a no-op or — worse — a delta keyed
+to the wrong marker. Rather than rewrite every read site in
+`edit_ops` to go through `edit_target().buffer`, we accept that
+list affordances are unavailable in diff Edit: pressing `Enter`
+inserts a bare newline (no marker continuation), `Tab` /
+`Shift-Tab` insert/remove a literal indent at the cursor, and the
+user maintains list markers by hand if they need to. The same
+applies to checkbox-toggling helpers (`toggle_checkbox_at_cursor`)
+which also read from `state.buffer`.
+
+A user who needs full list-editing affordances inside a replacement
+hunk can resolve the diff first (accept what they want, reject the
+rest), then edit the merged buffer normally. Lifting this to full
+read-routing through `edit_target()` is a future improvement
+called out in §16 polish.
+
+**Mouse policy in diff mode.** Rather than thread `edit_target()`
+through every mouse handler in `src/editor/mouse_ops/`, **mouse
+interactions in diff mode are constrained to the bare minimum
+needed for hunk editing.** Any mouse handler that reads
+`state.buffer` to do something more than "set the text cursor" is
+disabled in `Mode::Diff` by an early-return guard at its entry
+point. Concretely:
+
+| Function | File | Diff-mode behavior | Why |
+|---|---|---|---|
+| `mouse_ops::apply` | `mouse_ops.rs` | Dispatches based on action; the table below covers each branch. | Top-level entry. |
+| `selection::handle_click` (cursor placement) | `mouse_ops/selection.rs` | **Edit only.** In Edit, places the text cursor within the focused hunk's new-side range (clamps via `clamp_to_focused_hunk`, §5). In Review, no-op (Review has no text cursor). | Cursor outside the hunk would break the clamp invariant; cursor in Review is meaningless. |
+| `selection::handle_drag` | `mouse_ops/selection.rs` | **Edit only.** Extends selection within the focused hunk; drag past the hunk edge clamps to the edge (does not flash, mouse drags routinely cross the edge). In Review, no-op. | Same rationale. |
+| `selection::select_word_at_cursor`, `select_line_at_cursor` (double/triple click) | `mouse_ops/selection.rs` | **Edit only**, clamped to hunk. Review: no-op. | Reads `state.buffer` to walk word/line boundaries — must read `new_buffer` in Edit; meaningless in Review. The simplest correct path is to route the `&state.buffer` reads through `edit_target().buffer` only in these two functions (they are the cleanest candidates because they don't transitively call into list/table code). |
+| `selection::scroll_by_mouse`, `set_scroll_absolute` | `mouse_ops.rs` | Allowed in both sub-modes; reads `EditorState::scroll` only, not the buffer. | Already buffer-agnostic. |
+| `checkbox::toggle_checkbox_at` | `mouse_ops/checkbox.rs` | **No-op in `Mode::Diff` (both sub-modes).** Early-return guard at function top. | Reads main buffer, would route mutation to wrong buffer (or to `new_buffer` with a delta computed against the wrong source — silent corruption). User can toggle by editing the `[ ]` glyph directly in Edit. |
+| `links::hovered_link_target`, `link_at_offset` | `mouse_ops/links.rs` | **No-op in `Mode::Diff` (both sub-modes).** Early-return / return `None`. | Link hit-testing scans `state.buffer.contents()`; clicks on rendered links would be ambiguous (which side of the hunk did you click?) and following a link mid-review is out of scope. |
+| `table_drag::*` (column-divider drag for table resize via packed-comment hints) | `mouse_ops/table_drag.rs` | **No-op in `Mode::Diff` (both sub-modes).** Early-return guard. | Table column resize mutates the table's packed-comment hint via `state.buffer` reads + an edit — both buffers wrong in diff mode, and the diff view doesn't render tables as grids in Phase 1. |
+| `coord::click_to_char_offset` and friends | `mouse_ops/coord.rs` | Allowed; in Edit sub-mode the returned offset is then passed through `clamp_to_focused_hunk` by the caller. | Coord translation reads `state.buffer` for line layout — in Edit it must read `new_buffer` instead, so its `&EditorState` parameter is replaced with the active buffer reference via `edit_target().buffer` at the two call sites that matter (click → cursor, drag → selection extend). |
+
+**Implementation.** Add a single helper `fn diff_blocks_mouse_op(state: &EditorState) -> bool { state.mode == Mode::Diff }` (or inline the check). At the top of each function listed as "No-op in `Mode::Diff`", insert `if state.mode == Mode::Diff { return /* default */; }`. For the selection / coord functions that need to read `new_buffer` in Edit, route the `state.buffer` reads through `edit_target().buffer` (this is the only place outside `apply_delta` where a buffer read needs to be sub-mode-aware).
+
+**List-edit mouse paths.** The `src/editor/list_edit/` module has no mouse entry points — it is invoked only by `edit_ops` action handlers, which already go through the `apply_delta` path and the `current_list()` guard added above. No additional mouse-side guards are needed for list-edit.
+
+**Test coverage.** `tests/mouse.rs` gains a `Mode::Diff` test matrix: click on a checkbox in a `Mode::Diff` editor → no toggle; click on a link → no follow; drag across hunk boundary in Edit → selection clamps to hunk edge; click outside the focused hunk in Edit → cursor snaps to nearest in-hunk offset (or no-op, per implementation choice — pin whichever in the test).
 
 **Undo / Redo in diff mode.** The Undo/Redo handlers
 (`edit_ops.rs:497–511`) bypass `apply_delta` and call
-`state.history.undo(&mut state.buffer)` directly. In diff mode
-these must route through `edit_target()`:
+`state.history.undo(&mut state.buffer)` directly. In diff mode the
+dispatch splits on sub-mode because Review only touches
+`DiffHistory` (no buffer mutation) while Edit needs the full
+`(buffer, cursor, history)` triple:
 
 ```rust
 Action::Undo => {
-    let t = state.edit_target();
-    match t.history {
-        ActiveHistory::Diff(dh) => {
-            match dh.undo(t.buffer, t.cursor) {
-                // DiffOp::Decision: flip the decision back;
-                //   no buffer mutation, no hunk recompute.
-                //   Cursor is unchanged.
-                UndoResult::Decision => {}
-                // DiffOp::BulkDecision: restore the pre-bulk
-                //   decision map; stale HunkIds silently skipped.
-                //   No buffer mutation.
-                UndoResult::BulkDecision => {}
-                // DiffOp::Edit: apply the inverse delta to
-                //   new_buffer, reposition cursor to
-                //   delta.undo_cursor(), then re-run hunk
-                //   computation (§6 HunkId stability).
-                UndoResult::Edit => {
-                    // hunk recompute already triggered inside
-                    // DiffHistory::undo for Edit ops
+    match state.mode {
+        Mode::Diff => {
+            let sub_mode = state.diff.as_ref().unwrap().sub_mode;
+            match sub_mode {
+                DiffSubMode::Review => {
+                    // Decision/BulkDecision undo only — no buffer
+                    // mutation, no cursor move, no hunk recompute
+                    // (decisions are independent of the rope).
+                    let dh = state.decision_history_mut().unwrap();
+                    let _ = dh.undo_decision_only();
+                    // `undo_decision_only` skips DiffOp::Edit entries
+                    // (Edit ops should never appear in the stack
+                    // while in Review — Edit ops are only pushed in
+                    // DiffSubMode::Edit). debug_assert! enforces this.
                 }
-                UndoResult::Empty => {}
+                DiffSubMode::Edit => {
+                    let t = state.edit_target();
+                    let ActiveHistory::Diff(dh) = t.history else {
+                        unreachable!("Edit sub-mode always yields Diff history");
+                    };
+                    match dh.undo(t.buffer, t.cursor) {
+                        UndoResult::Decision => {}        // no buffer mutation
+                        UndoResult::BulkDecision => {}    // no buffer mutation
+                        UndoResult::Edit => {
+                            // hunk recompute already triggered inside
+                            // DiffHistory::undo for Edit ops
+                        }
+                        UndoResult::Empty => {}
+                    }
+                }
             }
         }
-        ActiveHistory::Main(h) => {
+        _ => {
             // Normal mode — existing logic
+            let t = state.edit_target();
+            let ActiveHistory::Main(h) = t.history else {
+                unreachable!("non-Diff mode always yields Main history");
+            };
             if let Some(offset) = h.undo(t.buffer) {
                 t.cursor.offset = offset.min(t.buffer.len_chars());
                 state.refresh_parsed();
@@ -475,12 +640,13 @@ Action::Undo => {
 }
 ```
 
-Because `edit_target()` returns `ActiveHistory::Diff` whenever
-`self.diff.is_some()` — regardless of sub-mode — the Undo/Redo
-handler has a single dispatch path. In Review sub-mode,
-`edit_target()` returns the main buffer/cursor (no text edits are
-happening) but still routes history to `DiffHistory`, so decision
-undo/redo works uniformly without a separate code path.
+`DiffHistory` gains a `undo_decision_only()` method that pops only
+`Decision` / `BulkDecision` entries from the stack and refuses
+`Edit` entries (debug-asserting they shouldn't be on the top while
+in Review). The split avoids the previous design's ambiguous
+`EditTarget` return in Review (where `buffer` and `history`
+belonged to different ropes); now Review never touches a buffer
+at all, and the type system reflects that.
 
 `DiffHistory::undo` returns an `UndoResult` enum indicating which
 variant was popped, so the handler knows whether to expect buffer
@@ -568,7 +734,7 @@ pub enum DiffSubMode {
   mutations, not just cursor motion. Other hunks — including unchanged
   context lines and other add/delete hunks — are unreachable from
   within Edit; the only way to edit a different hunk is `Esc` →
-  `Tab`/`Shift-Tab` → `Enter`. Inserting newlines is explicitly
+  `Tab` / `Shift-Tab` → `Enter`. Inserting newlines is explicitly
   allowed and **expands** the focused hunk's range; the hunk grows
   downward as the new-side line count increases, and subsequent hunks
   shift down by the net delta. The hunk re-computation after each edit
@@ -606,8 +772,16 @@ pub enum DiffSubMode {
   never the entry into Edit itself.
 
 The status-bar mode badge renders `DIFF` in Review and `DIFF·EDIT` in
-Edit so the active sub-mode is always visible. The hint bar swaps
-chord sets between sub-modes (see §9).
+Edit so the active sub-mode is always visible. **Adjacent to the
+badge, the status bar shows a pending-count indicator** —
+`<pending>/<total>` (e.g. `3/7`) where `pending` is the number of
+hunks whose `Decision == Pending` and `total` is `hunks.len()`. This
+gives the user a feedback loop when skipping (since `DiffNext`
+without a decision leaves the hunk as `Pending`, the indicator is
+the only signal that a hunk is being deferred rather than acted on).
+The counter updates after every decision, edit-driven recompute, and
+undo/redo. Rendered with `theme.status_bar_diff` so it inherits the
+diff-mode bar color.
 
 > **Deferred polish — focus dimming.** A future enhancement could dim
 > all document text outside the currently focused hunk (in Review,
@@ -726,7 +900,7 @@ scroll routes through the same field with the configured step.
 `exit_diff_mode()` restores the saved value.
 
 **Edit-mode cursor mapping.** `Cursor` stays as the existing
-`(char offset, preferred visual column)` type used everywhere else
+`{ offset: usize, preferred_col: usize }` type used everywhere else
 in the editor — no `rope_line` field is added. In Edit sub-mode
 the cursor offset is an index into `new_rope` (via the diff-Edit
 branch of `apply_delta`, §4a). To find the cursor's visual row,
@@ -735,33 +909,91 @@ compute `line = new_rope.char_to_line(cursor.offset)` and scan the
 `rope_line == line`. The reverse mapping (click on a visual row →
 rope offset) uses the same vec.
 
-**Cursor motion semantics.** Diff-Edit cursor motion uses the same
-algorithm as the rest of the editor — it respects
-`EditorConfig::visual_line_nav`. When `visual_line_nav = true`
+**Cursor motion semantics.** Diff-Edit cursor motion uses the
+same algorithm as the rest of the editor and **respects
+`EditorConfig::visual_line_nav`**. When `visual_line_nav = true`
 (default), `MoveUp` / `MoveDown` use `move_up_visual` /
 `move_down_visual` (visual rows, accounting for word-wrap); when
-`false`, they step by rope lines. The diff-Edit additions are:
+`false`, they step by rope lines. Diff-Edit does *not* impose a
+different motion algorithm — it adds only the clamp described next.
 
-1. **Hunk clamp on every cursor write.** Define
-   `focused_offset_range(state) -> Range<usize>` returning the
-   char-offset range covered by the focused hunk's `new_lines`:
-   `new_rope.line_to_char(new_lines.start) ..
-    new_rope.line_to_char(new_lines.end)`. After the move
-   computation, clamp the resulting offset into that range. If the
-   clamped offset equals the pre-move offset (the move tried to
-   escape), flash "Esc to leave hunk" and leave the cursor put.
-   This single clamp handles all motion actions — visual and
-   rope-line `MoveUp` / `MoveDown`, `MoveLeft` / `MoveRight`,
-   `MoveHome` / `MoveEnd`, `MoveDocStart` / `MoveDocEnd`, word
-   motion — because each writes through the same path.
-2. **Wrapped-row interaction (visual mode).** When
-   `visual_line_nav = true`, a `MoveDown` from a wrapped sub-row
-   of the last new-side line may land on the same rope-line at a
-   lower visual row (still within range — OK) or on the next rope
-   line (outside range — clamped + flash). Likewise `MoveUp` from
-   the first new-side line's first sub-row is the boundary case.
-   The offset clamp handles both uniformly: any computed offset
-   `>= range.end` or `< range.start` is rejected.
+1. **Hunk clamp expressed in char  offsets via `char_to_line`.**
+   Define the focused hunk's allowed offset range as the set of
+   char offsets `o` for which `new_rope.char_to_line(o)` falls
+   within the focused hunk's `new_lines` half-open range. The
+   clamp is implemented as:
+
+   ```rust
+   fn clamp_to_focused_hunk(
+       new_rope: &Rope,
+       focused: &Hunk,
+       candidate: usize,
+   ) -> usize {
+       let max_offset = new_rope.len_chars();
+       let candidate = candidate.min(max_offset);
+       let line = new_rope.char_to_line(candidate);
+       if line < focused.new_lines.start {
+           // Snap to first offset of the focused hunk's first line.
+           new_rope.line_to_char(focused.new_lines.start)
+       } else if line >= focused.new_lines.end {
+           // Snap to the last in-range offset — i.e. the position
+           // immediately before the trailing newline of the hunk's
+           // last line (line index `end - 1`). For a half-open range
+           // [start, end), that offset is `line_to_char(end) - 1` if
+           // the line `end - 1` ends with a newline (the normal
+           // case), and `line_to_char(end)` (= `len_chars`) if the
+           // hunk's last line is the file's final line with no
+           // trailing newline. We compute the candidate as
+           // `line_to_char(end).saturating_sub(1)` and then re-check
+           // which line it falls on: if it dropped into line
+           // `end - 1` we're good; if `line_to_char(end) == 0` (only
+           // possible when end == 0, an empty hunk, which shouldn't
+           // be focusable in Edit) we fall back to the hunk start.
+           let snap = new_rope
+               .line_to_char(focused.new_lines.end)
+               .saturating_sub(1)
+               .min(max_offset);
+           // Guard against the no-trailing-newline EOF case where
+           // line_to_char(end) already equals len_chars and the - 1
+           // step puts us on the last character of the final line,
+           // which is in-range — that's the intended result.
+           snap.max(new_rope.line_to_char(focused.new_lines.start))
+       } else {
+           candidate
+       }
+   }
+   ```
+
+   After every cursor-motion computation, the handler calls
+   `clamp_to_focused_hunk(...)`. If the clamped offset differs from
+   the *pre-move* offset, the user moved within the hunk (OK). If
+   the clamped offset equals the *pre-move* offset (i.e. the move
+   tried to escape and was snapped back to where it started),
+   flash "Esc to leave hunk" and write the (unchanged) clamped
+   offset.
+
+   This single clamp handles all motion actions — `MoveUp` /
+   `MoveDown` (visual or rope-line, per the setting), `MoveLeft` /
+   `MoveRight`, `MoveHome` / `MoveEnd`, `MoveDocStart` /
+   `MoveDocEnd`, word motion — because each writes the cursor
+   through the same path.
+
+2. **Wrapped-row interaction (visual nav).** With
+   `visual_line_nav = true`, `MoveDown` from a wrapped sub-row of
+   the last new-side rope line may land on the next rope line
+   (outside range) — `char_to_line(candidate) >= new_lines.end` →
+   clamped, flash, no cursor motion. `MoveDown` from a wrapped
+   sub-row of the *next-to-last* in-range line to a different
+   sub-row of the *last* in-range line is in-range — accepted, no
+   flash. `MoveUp` from the first new-side line's first sub-row
+   is the symmetric boundary. Because the clamp uses
+   `char_to_line` (rope-line resolution) the visual-row geometry
+   is irrelevant to the clamp itself; the visual-nav algorithm
+   computes the candidate offset and the clamp accepts or rejects
+   it by rope-line membership.
+
+3. **Rope-line nav.** With `visual_line_nav = false`, the same
+   clamp applies. There is no separate code path.
 
 Because the focused hunk's new-side rope lines correspond to a
 contiguous run of `NewAdd` visual rows in the `DiffVisualLine` vec,
@@ -816,11 +1048,26 @@ pub enum DiffOp {
 }
 ```
 
-`DiffHistory::record` merges contiguous single-char inserts into
-word-groups, identical to the main `History::record` merge logic (see
-CLAUDE.md "Word-group undo merging"). This means that undoing a
-stretch of typing in Edit sub-mode reverses one word at a time, not
-one character at a time. Decision and BulkDecision ops are never
+`DiffHistory::record` reuses the main `History::try_merge` logic
+verbatim. Today `try_merge` is a private free function at
+`src/document/history.rs:129`; as part of this work it is promoted
+to `pub(crate) fn try_merge(top: &mut EditDelta, new: &EditDelta) -> bool`
+in the same module so both `History::record` and
+`DiffHistory::record` can call it. Do not duplicate the function
+— the two copies will silently drift the first time merge rules
+are tweaked. **At the same time, correct the stale docstrings on
+`History::record` (`history.rs:50-52`) and `try_merge`
+(`history.rs:125-127`):** both currently claim that only
+"alphanumeric" single-char inserts/deletes merge, but the
+implementation actually merges any contiguous single-char edit
+regardless of character class. The docstrings have drifted from
+the code; promoting `try_merge` to `pub(crate)` is the right time
+to fix them so the next reader is not misled. See §12. The semantics: any contiguous single-char
+insert (resp. delete) merges into the previous delta regardless of
+character class — alphanumeric, punctuation, whitespace all merge as
+long as the new edit is contiguous with the previous one. This means
+that undoing a stretch of typing in Edit sub-mode reverses one
+"contiguous run" at a time, not one character at a time. Decision and BulkDecision ops are never
 merged. Any non-`Edit` op (`Decision`, `BulkDecision`) also breaks
 an in-progress word-group merge of `Edit` ops — if the user types in
 Edit, Escs to Review and accepts a hunk, then re-enters Edit and
@@ -934,16 +1181,28 @@ acceptable for typical markdown files; if file size becomes a
 concern later, this entry can be special-cased into a snapshot
 variant without touching the surrounding contract.
 
-Cursor on undo lands at the end of the restored pre-merge buffer
-(`EditDelta::undo_cursor() = offset + removed.chars().count() =
-old_rope.chars().count()`), then clamped to buffer length by the
-existing undo dispatch. This is acceptable: the user has already
-left diff mode and the cursor was at an arbitrary diff-mode position
-anyway; landing at the document end after a "revert the whole merge"
-is no more surprising than any other coarse undo. The resolution
-path follows the swap with `EditorState::refresh_parsed()` so the
-viewport renders against the merged rope; the post-undo undo
-dispatch refreshes again against the restored rope.
+**Post-resolution cursor placement.** Immediately after the
+resolution swap (before any user input), `editor.cursor.offset` is
+deterministically set to `0` (start of the merged buffer) and
+`preferred_col` reset to `0`. Rationale: the cursor's pre-swap
+offset was an index into `new_rope` (which no longer exists as the
+buffer); naïvely keeping it would either land out-of-bounds (longer
+new_rope), in arbitrary post-merge content (shorter merged result),
+or — at best — at a meaningless position from the user's
+perspective. Document-start is predictable and gives the user a
+known anchor from which to navigate to whichever resolved region
+they want to inspect. The resolution path follows the swap with
+`EditorState::refresh_parsed()` so the viewport renders against
+the merged rope, then `EditorState::ensure_cursor_visible(...)` to
+scroll the viewport to the top.
+
+Cursor on undo of the merge-revert entry lands at the end of the
+restored pre-merge buffer (`EditDelta::undo_cursor() = offset +
+removed.chars().count() = old_rope.chars().count()`), then clamped
+to buffer length by the existing undo dispatch. This is acceptable:
+landing at the document end after a "revert the whole merge" is no
+more surprising than any other coarse undo. The post-undo undo
+dispatch refreshes parsed state against the restored rope.
 
 In-diff undo/redo is fully bidirectional via `DiffHistory` while the
 review is open. Once the user resolves, `DiffHistory` is dropped and
@@ -1124,10 +1383,10 @@ redundant keybind.
 | `Esc` | `DiffExit` (see below) |
 
 `y` / `n` over `a` / `r` follows the convention established by `git
-add -p`, `jj split`, and most terminal accept/reject prompts; it also
-matches the `[Y]` / `[N]` glyph indicators (§5). With `Tab` /
-`Shift-Tab` for navigation, `y` / `n` are unambiguous bare keys —
-there is no double-duty.
+add -p`, `jj split`, and most terminal accept/reject prompts. With
+`Tab` / `Shift-Tab` for navigation, `y` / `n` are unambiguous bare
+keys — there is no double-duty. The on-screen decision indicators
+themselves use `[✓]` / `[x]` / `[ ]` glyphs (§5), not `[Y]`/`[N]`.
 
 ### Edit sub-mode binds
 
@@ -1146,8 +1405,9 @@ typed.
 
 Cursor-motion actions are clamped to the focused hunk's new-side line
 range (§4). Newlines are allowed and expand the hunk downward.
-**Boundary-crossing deletes** (`Backspace` at start of hunk,
-`Delete` at end of hunk) are no-ops. Any attempt to move or delete
+**Boundary-crossing deletes** (`Action::DeleteCharBack` at the first
+char of the hunk, `Action::DeleteCharForward` at the last char of the
+hunk) are no-ops. Any attempt to move or delete
 past the range edge flashes a status hint ("Esc to leave hunk") and
 the cursor stays put.
 
@@ -1167,17 +1427,27 @@ diff-mode color is preserved across both sub-modes. If the hint set
 is wider than the terminal, it silently overflows (truncated on the
 right) — matching existing behavior for all other modes.
 
-### `Esc` with unresolved changes (Review only)
+### `Esc` with unresolved or un-applied changes (Review only)
 
-Open a `DiffExitConfirmModal` (`ModalKind::Warning`, dismissable,
-body "You have unresolved changes. Discard them and exit diff mode?",
-buttons `[Keep reviewing]` default + `[Discard]`). `[Discard]`
-reverts `editor.buffer` to the cached `old_rope` and clears
-`editor.diff` and `editor.history`. `[Keep reviewing]` dismisses the
-modal with no state change. If every hunk is already decided (i.e. the
-`DiffResolveConfirmModal` is showing or has been dismissed without
-confirming), `Esc` is a no-op — the user must confirm or dismiss
-the resolution modal to proceed.
+`Esc` in Review always opens `DiffExitConfirmModal` (`ModalKind::
+Warning`, dismissable, buttons `[Keep reviewing]` default +
+`[Discard]`). The body text varies by state:
+
+- **Some hunks still `Pending`:** "You have unresolved changes.
+  Discard them and exit diff mode?"
+- **All hunks decided but resolution not yet confirmed** (the
+  `DiffResolveConfirmModal` is open or was dismissed): "You have
+  unapplied decisions. Discard them and exit diff mode?"
+
+`[Discard]` reverts `editor.buffer` to the cached `old_rope`, clears
+`editor.diff` and `editor.history`, and dismisses the resolve modal
+if it's open. `[Keep reviewing]` dismisses the exit-confirm modal
+with no other state change; the resolve modal, if it had been open,
+stays open underneath.
+
+This gives the user an always-available escape hatch — they never
+get stuck in a state where they can't exit without re-deciding
+hunks they already decided.
 
 `Esc` in Edit sub-mode is intercepted *before* this path and simply
 returns to Review — it never directly triggers diff exit.
@@ -1220,33 +1490,41 @@ overlay's display order.
 
 - `App::tick_autosave` early-returns when `editor.diff.is_some()`. The autosave deadline is suppressed from `next_deadline` so the main loop doesn't wake spuriously. Otherwise it routes through `App::save_buffer()` (§2), inheriting the own-write hash stamp automatically — autosave never calls `Buffer::save_file()` directly.
 - **Layering.** `DefaultHandler` (in `src/input/mode_handler/default.rs`)
-  remains a pure key→`Action` mapper that returns `Option<Action>`; it
-  does **not** call into `edit_ops`. The actual action dispatch lives
-  in `App::dispatch_palette_action` / the keystroke arm of `App::run`,
-  which today routes via `App::handle_app_action(&action, ...)` and,
-  on a `false` return, calls `edit_ops::apply(&mut self.editor, action, ...)`
-  (see `src/app/actions.rs:336`). Adding diff-mode dispatch means
-  inserting one branch into that flow, not into `DefaultHandler`.
+  remains a pure **key → `Option<Action>` resolver**: it looks up
+  the active `KeyMap` and returns whatever `Action` the keypress
+  resolves to (or `None`). It does **not** call into `edit_ops` and
+  **does not branch on diff sub-mode for action effects** — its only
+  diff-related responsibility is selecting *which* `KeyMap` to consult
+  (see the per-sub-mode keymap layer below). All action dispatch
+  lives in a single unified entry point: today there are two — the
+  keystroke arm of `App::run` and `App::dispatch_palette_action` —
+  and this work **unifies them into `App::dispatch_action`** (rename
+  of `dispatch_palette_action` at `src/app/actions.rs:336`; the
+  keystroke arm in `App::run` is collapsed to call
+  `self.dispatch_action(action, ...)` instead of inlining the
+  `handle_app_action` / `edit_ops::apply` flow). One dispatcher,
+  one place to add the `Mode::Diff` arm.
 
-  `DefaultHandler` also gains a per-sub-mode keymap layer: the
-  Review sub-mode needs bare `y` / `n` / `Tab` bindings that aren't
-  valid in normal editing, and the Edit sub-mode needs to override
-  `Esc` → `DiffExitEdit`. The handler reads `state.mode` and
-  `state.diff.as_ref().map(|d| d.sub_mode)` to choose which `KeyMap`
-  to consult — Review uses a `KeyMap` derived from the Review
-  keybind set (§9), Edit uses the standard `KeyMap` with the `Esc`
-  override applied first. This keeps the mode→keys mapping in
-  `DefaultHandler` (its existing responsibility) and the
-  action→effects mapping in `App` / `edit_ops` (their existing
-  responsibility).
+  `DefaultHandler` gains a **per-sub-mode keymap layer** because
+  Review needs bare `y` / `n` / `Tab` / `Shift-Tab` bindings that
+  collide with text input, and Edit needs `Esc` → `DiffExitEdit`.
+  The handler reads `state.mode` and
+  `state.diff.as_ref().map(|d| d.sub_mode)` to pick which `KeyMap`
+  variant to consult — Review uses a `KeyMap` derived from the
+  Review keybind set (§9), Edit uses the standard `KeyMap` with
+  the `Esc` override applied first. Keymap-selection is still
+  pure key → `Option<Action>`; everything past that point is `App`'s
+  responsibility.
 
-- **Action dispatch in `App`.** Inside `App::dispatch_palette_action`
-  (and the equivalent keystroke arm in `App::run`), gate the
-  `edit_ops::apply` fallthrough on diff mode:
+- **Action dispatch in `App`.** Inside `App::dispatch_action` (the
+  unified dispatcher), gate the `edit_ops::apply` fallthrough on
+  diff mode:
 
   ```rust
-  // Inside App::dispatch_palette_action, replacing the
-  // `edit_ops::apply(...)` line on the fallthrough path:
+  // Inside App::dispatch_action (renamed from
+  // dispatch_palette_action), replacing the
+  // `edit_ops::apply(...)` line on the fallthrough path
+  // (src/app/actions.rs:345):
   let quit = match self.editor.mode {
       Mode::Diff => {
           let sub_mode = self.editor.diff.as_ref().unwrap().sub_mode;
@@ -1309,27 +1587,51 @@ overlay's display order.
   `App::handle_app_action(Action::Save)`, the post-merge resolution
   path, and autosave (`src/app/autosave.rs`) all go through it.
   `save_buffer()` calls `editor.buffer.save_file()`, on `Ok` sets
-  `editor.dirty = false`, stamps `self.last_saved_hash` (§2), and
+  `editor.dirty = false`, stamps `self.last_disk_hash` via `set_disk_hash(bytes)` (§2), and
   returns. This is also where the "Resolve diff to save" flash
   fires in diff mode (early-return before touching the buffer).
-- A new `diff_safe_action(action) -> Option<Action>` helper (mirroring `preview_safe_action` in `src/input/mode_handler/default.rs`) gates every action while in diff mode. It returns:
-  - `Some(action)` for: all `Diff*` actions; `Action::Undo` / `Action::Redo` (routed to `DiffHistory`); `Action::SaveCopy` (writes to a different path); scroll actions; navigation actions (`MoveUp` / `MoveDown` / etc., which are clamped in Edit and used for hunk navigation in Review via `DiffNext`/`DiffPrev` bindings); read-only overlay openers (`OpenSettings`, `OpenKeybinds`, `ShowMarkdownCheatSheet`, `OpenConfigFolder`, `ShowCommandPalette`, theme picker); and `Action::Quit` (with the existing dirty-buffer guard).
-  - `None` (silently dropped) for: actions with no meaning in diff mode (e.g. `InsertTable`, `ToggleCheckbox` from outside Edit).
-  - A status flash "Resolve diff to save" for: `Action::Save`. The flash is fired by `App::save_buffer()`'s diff-mode early-return (§2), not by `diff_safe_action` itself — `diff_safe_action` simply returns `Some(Action::Save)` and lets `save_buffer` handle the gating.
+- A new `diff_safe_action(action) -> Option<Action>` helper (mirroring `preview_safe_action` in `src/input/mode_handler/default.rs`) gates every action while in diff mode. **The policy is default-deny:** any `Action` not in the explicit allowlist below returns `None` and is silently dropped. This is the inverse of `preview_safe_action`'s default-allow policy — Preview is "non-destructive editor mode," Diff is "structured review mode where most editor operations are meaningless or actively unsafe."
+
+  **Allowlist (returns `Some(action)`):**
+
+  | Category | Actions | Notes |
+  |---|---|---|
+  | Diff control | `DiffNext`, `DiffPrev`, `DiffAcceptHunk`, `DiffRejectHunk`, `DiffAcceptAll`, `DiffRejectAll`, `DiffEnterEdit`, `DiffExitEdit`, `DiffExit` | Core. |
+  | Diff edit-content (Edit sub-mode only) | `MoveLeft`, `MoveRight`, `MoveUp`, `MoveDown`, `MoveWordLeft`, `MoveWordRight`, `MoveHome`, `MoveEnd`, `MoveDocStart`, `MoveDocEnd`, `MoveLineUp`/`MoveLineDown` if defined, `InsertChar`, `InsertNewline`, `InsertTab`, `DeleteCharBack`, `DeleteCharForward`, `DeleteWordBack`, `DeleteWordForward`, `Paste`, `Cut`, `Copy`, `SelectAll`, selection-extend variants | Clamped to focused hunk (§4, §5). Cut/Copy/SelectAll operate on `new_buffer`. `Action::Undo` / `Action::Redo` route to `DiffHistory` (§6). |
+  | Saves | `Action::SaveCopy` | Writes to a different path; never touches the in-flight diff. `Action::Save` is also `Some(Save)` so `App::save_buffer()` can fire the "Resolve diff to save" flash from its diff-mode early-return (§2) — the flash is **not** fired by `diff_safe_action` itself. |
+  | Scroll | `ScrollUp`, `ScrollDown`, `ScrollPageUp`, `ScrollPageDown`, `ScrollHome`, `ScrollEnd`, `ScrollLeft`, `ScrollRight` if defined | View-only; do not modify state. |
+  | Read-only overlays | `OpenSettings`, `OpenKeybinds`, `ShowMarkdownCheatSheet`, `OpenConfigFolder`, `ShowCommandPalette`, `SwitchTheme`, `CreateCustomTheme`, `ShowTerminalCapabilities`, `ShowCapabilityNotice` and similar info modals | These don't mutate the buffer or change mode away from `Diff`. |
+  | Lifecycle | `Action::Quit` (with diff-aware guard, see below) | |
+
+  **Denylist (returns `None`, silently dropped):** everything else, including but not limited to: `Save` *content-mutating fallback* (handled separately above), `Open`, `OpenRecent`, `NewFile`, `NavigateBack`, `NavigateForward`, `SwitchMode` / `TogglePreviewMode` / `ToggleRawMode` (would break the `mode == Diff ⟺ diff.is_some()` invariant), `Export*`, `InsertTable`, `InsertImage`, `InsertLink`, `InsertHorizontalRule`, `ToggleCheckbox`, `ToggleBold`/`ToggleItalic`/`ToggleStrikethrough`/`ToggleCode` (would route through the markdown formatting helpers which read from `state.buffer`, §4a), `IndentList`/`OutdentList`/`ContinueList`/`RenumberList`, `TableInsertRow`/`TableInsertColumn`/`TableDeleteRow`/`TableDeleteColumn`/`TableNextCell`/`TablePrevCell` (table navigation already blocked by the `cursor_in_table` guard, §4a — explicit denial here belt-and-braces), `Find`/`FindNext`/`FindPrev`/`Replace` (search across two ropes is meaningful but out of Phase 1 scope), `OpenFile`-class actions. The default-deny rule is the source of truth; this list is the predictable result of applying it.
+
+  **Sub-mode refinement.** Some allowlisted actions are valid only in one sub-mode:
+
+  - **Edit-content actions** (`MoveLeft`/`Right`/`Up`/`Down`/word/home/end, `InsertChar`, `InsertNewline`, `InsertTab`, `DeleteCharBack`/`Forward`, `Paste`, `Cut`, `Copy`, `SelectAll`, selection extends): `Some` in `DiffSubMode::Edit`, `None` in `DiffSubMode::Review` (Review has no text cursor — hunk navigation uses `Tab`/`Shift-Tab` bound to `DiffNext`/`DiffPrev`, not arrow keys; `MoveDocStart`/`MoveDocEnd` are also dropped in Review because they have no Review-meaningful target).
+  - **Decision actions** (`DiffAcceptHunk`, `DiffRejectHunk`, `DiffAcceptAll`, `DiffRejectAll`): `Some` in Review, `None` in Edit (decision keys are just characters in Edit per §4a).
+  - **`DiffEnterEdit`**: Review only. **`DiffExitEdit`**: Edit only.
+
+  `diff_safe_action` takes `(action, sub_mode)` and applies these refinements. The implementation is a flat match producing `Option<Action>` — readable, exhaustive (compile error on new `Action` variants), and easy to audit.
+
+  **`Action::Quit` guard.** `Quit` is allowlisted, but it is **not** dispatched directly through `edit_ops::apply` in diff mode. Instead, `App::handle_app_action(Action::Quit)` gains a diff-aware guard: if `editor.diff.is_some()` and (any decision is non-`Pending` OR `DiffHistory::past` contains a `DiffOp::Edit`), the same `DiffExitConfirmModal` from §9 is opened (body reads "You have unresolved changes. Discard them and quit?"; buttons `[Keep reviewing]` default / `[Discard and quit]`). `[Discard and quit]` reverts to `old_rope`, exits diff mode, and re-dispatches `Action::Quit`. If no decisions are pending and no in-diff edits exist, `Quit` falls through to the normal dirty-buffer-Quit path. The reason: `editor.dirty` reflects pre-diff buffer state and does not capture in-diff work, so the standard dirty-buffer guard would silently lose the entire review.
+
 - The command palette filters its visible entries through `diff_safe_action` while in diff mode so blocked actions are not even offered (palette-invoked theme switching, settings, keybinds remain available).
 
 ## 11. File-change events while already in diff mode
 
 Any `AppEvent::FileChanged` received while `editor.diff.is_some()`
 is queued (single-slot — newer overwrites older) on `App`. The queued
-event is a flag only (path, no cached contents). After diff
-resolution completes, if a queued event exists the App calls
-`FileWatcher::force_reconcile()` (the same primitive used in the
-external-editor flow, §2). The watcher worker performs the disk
-read off the main thread and pushes a fresh `AppEvent::FileChanged
-{ path, contents }` onto the mpsc, which the event-loop arm picks
-up like any other change event. This keeps a potentially slow disk
-read out of the UI thread. The newly-arrived event is diffed
+event is a flag only (path, no cached contents — the contents on the
+incoming event are dropped because they may be stale by the time the
+user finishes the review). After diff resolution completes, if a
+queued flag exists, the App calls `FileWatcher::force_reconcile()`
+(the same primitive used in the external-editor flow, §2). The
+**watcher worker thread** performs the disk read off the main thread
+and pushes a fresh `AppEvent::FileChanged { path, contents }` onto
+the mpsc, which the event-loop arm picks up like any other change
+event. This keeps the potentially slow disk read out of the UI
+thread and reuses the same code path the watcher uses for organic
+events. The newly-arrived event is diffed
 against the just-merged buffer, and:
 
 - If hunks are **non-empty**, re-enters through the same path as the
@@ -1375,19 +1677,26 @@ further changes.
 **Modified files:**
 
 - `Cargo.toml` — add `seahash` for the own-write content-hash filter (§2)
-- `src/app.rs` — `AppEvent::FileChanged`, `watcher` field, `diff_paused` flag, queued-event single-slot, `last_saved_hash: Option<u64>` field (§2)
-- `src/app/event_loop.rs` — file-change arm; own-write filter (drop incoming `FileChanged` when `seahash(contents) == last_saved_hash`); watcher pause/resume + `force_reconcile()` call in external-editor flow and in the post-resolution queued-event re-entry (§11); deadline integration
-- `src/app/actions.rs` — new `App::save_buffer()` helper (the single call site for `Buffer::save_file()`); `App::handle_app_action` gains an `Action::Save` arm that routes through it; `App::dispatch_palette_action` gets the `Mode::Diff` dispatch arm wrapping `edit_ops::apply` (§10)
+- `src/app.rs` — `AppEvent::FileChanged`, `watcher` field, `diff_paused` flag, queued-event single-slot (path only, no contents), `last_disk_hash: Option<u64>` field (§2)
+- `src/app/event_loop.rs` — file-change arm; own-write filter (drop incoming `FileChanged` when `seahash(contents) == last_disk_hash`, otherwise stamp the new hash before dispatching); watcher pause/resume + `force_reconcile()` call in external-editor flow and in the post-resolution queued-event re-entry (§11); deadline integration
+- `src/app/actions.rs` — rename `dispatch_palette_action` → `dispatch_action` (unified dispatcher used by both keystroke arm in `App::run` and palette path); new `App::save_buffer()` helper (the single call site for `Buffer::save_file()`); `App::handle_app_action` gains an `Action::Save` arm that routes through it; `dispatch_action` gets the `Mode::Diff` dispatch arm wrapping `edit_ops::apply` (§10); `set_disk_hash(bytes)` helper called from save / initial load / accepted FileChanged (§2)
+- `src/app/run.rs` (or wherever `App::run`'s keystroke arm lives) — collapse the inlined `handle_app_action` + `edit_ops::apply` flow to a single `self.dispatch_action(action, doc_height, doc_width)` call
 - `src/app/autosave.rs` — early-return when in diff mode; routes saves through `App::save_buffer()` instead of dispatching `Action::Save` via `edit_ops::apply`
-- `src/document/buffer.rs` — add `Buffer::set_rope(&mut self, rope: Rope)` setter (preserves `path`, bumps `version`, clears per-rope caches); used by §6 resolution swap. **No change to `save_file()` itself** — the own-write hash is stamped by `App::save_buffer()` after a successful `save_file()` call
-- `src/document/history.rs` — add `History::reset_with(&mut self, delta: EditDelta)` setter
-- `src/input/mode_handler/default.rs` — per-sub-mode keymap selection in `Mode::Diff` (Review keybind set vs. standard keymap with `Esc` → `DiffExitEdit` override in Edit). Remains a pure key→`Action` mapper; the actual diff-mode action dispatch lives in `App::dispatch_palette_action` (§10)
+- `src/document/buffer.rs` — add `Buffer::set_rope(&mut self, rope: Rope)` setter (preserves `path`, bumps `version`, clears per-rope caches); used by §6 resolution swap. **No change to `save_file()` itself** — the own-write hash is stamped by `App::save_buffer()` after a successful `save_file()` call. `Buffer` does not know about hash filtering.
+- `src/document/history.rs` — add `History::reset_with(&mut self, delta: EditDelta)` setter; promote the private `try_merge(top, new) -> bool` function to `pub(crate)` so `DiffHistory::record` (in `src/diff/history.rs`) can reuse it without duplication (§6); fix the stale "alphanumeric" docstrings on `History::record` and `try_merge` to match the implementation (any contiguous single-char edit merges)
+- `src/input/mode_handler/default.rs` — per-sub-mode keymap selection in `Mode::Diff` (Review keybind set vs. standard keymap with `Esc` → `DiffExitEdit` override in Edit). Remains a pure key → `Option<Action>` resolver; all action dispatch lives in `App::dispatch_action` (§10)
 - `src/editor/state.rs` — `diff: Option<DiffState>` field, `pre_diff_scroll: usize` field, enter/exit helpers, mode-aware `apply_delta` branch (§4a), `edit_target()` accessor for Undo/Redo and active-buffer reads
 - `src/editor/mode.rs` — `Mode::Diff` variant
 - `src/editor/edit_ops.rs` — diff actions (`DiffEnterEdit`/`DiffExitEdit`/etc.), in-hunk clamping (via `focused_offset_range`, §5), boundary-crossing delete no-ops, Undo/Redo diff-mode routing via `edit_target()`. **`Action::Save` arm removed** — saves are now `App::save_buffer()` only (§2, §10)
 - `src/editor/table_edit_ops.rs` — `Mode::Diff` early-return guard in `cursor_in_table()` (§4a)
-- The other edit-op modules (`list_edit/`, `table_edit.rs`) are untouched — their mutations go through `state.apply_delta()` which handles diff-mode routing automatically (§4a); list continuation is intentionally allowed in diff Edit (§4a)
-- `src/markdown/parse_offsets.rs` — add `tag_ranges_by(source, keep)` shared helper; reimplement `top_level_block_ranges` in terms of it (§3a)
+- `src/editor/list_edit/parse.rs` — `Mode::Diff` early-return guard in `current_list()` and any other entry point that reads `state.buffer` (§4a); list continuation, indent / outdent, and renumber are disabled inside diff Edit because their reads would target the wrong buffer
+- `src/editor/mouse_ops/checkbox.rs` — `Mode::Diff` early-return guard in `toggle_checkbox_at` for the same reason (reads from main buffer, mutates `new_buffer` — would corrupt) (§4a mouse policy)
+- `src/editor/mouse_ops/links.rs` — `Mode::Diff` early-return in `hovered_link_target` and `link_at_offset` (§4a mouse policy)
+- `src/editor/mouse_ops/table_drag.rs` — `Mode::Diff` early-return guard at function top (§4a mouse policy)
+- `src/editor/mouse_ops/selection.rs` — `Mode::Diff` Review-sub-mode no-op for cursor placement / drag / word-select / line-select; in Edit sub-mode, route `state.buffer` reads through `edit_target().buffer` in `select_word_at_cursor` / `select_line_at_cursor`; clamp click/drag offsets to the focused hunk via `clamp_to_focused_hunk` (§5, §4a mouse policy)
+- `src/editor/mouse_ops/coord.rs` — call sites that translate click/drag coordinates to rope offsets read from the active buffer (via `edit_target().buffer` in Edit, no-op in Review); no behavior change outside diff mode (§4a mouse policy)
+- `src/editor/table_edit.rs` — untouched; its writes route through `apply_delta`, and the `cursor_in_table` guard already blocks its entry points in diff mode
+- `src/markdown/parse_offsets.rs` — add `BlockKind` enum + `block_ranges_by(source, keep: FnMut(BlockKind) -> bool)` shared scanner; reimplement `top_level_block_ranges` in terms of it (§3a)
 - `src/config/keymap.rs` — new `Action` variants and default binds
 - `src/config/sections.rs` — `EditorConfig::show_diff_intro`
 - `src/config/theme.rs` — new style fields and `Theme::from_palette` derivations
@@ -1407,52 +1716,50 @@ further changes.
 - **Autosave gating** (extend `tests/editing.rs`): set `editor.diff = Some(...)`, advance the autosave clock past `autosave_idle_ms`, assert no save fires.
 - **Own-write echo suppression** (`tests/watcher.rs`): with the content-hash filter (§2), call `App::save_buffer()`, then push a `FileChanged` whose contents equal the just-saved bytes; assert it is dropped. Push a second `FileChanged` whose contents differ by one byte; assert it is delivered. Cover the initial-load case: open a file, immediately push a `FileChanged` with identical contents, assert it is dropped (matches the just-loaded hash).
 - **Queued-event single-slot replace** (`tests/diff_view.rs` or new `tests/diff_queue.rs`): with `editor.diff = Some(...)`, push two `AppEvent::FileChanged` events in succession; assert only one remains queued (the second overwrites the first, not appends). Then resolve the diff and assert the re-entry path is invoked exactly once with the latest-disk-read contents.
-- **Boundary-crossing delete no-ops** (extend `tests/diff_history.rs` or in `tests/editing.rs`): enter `DiffSubMode::Edit` on a hunk; position the cursor at the first char of the focused new-side range and send `Action::DeleteCharBack` — assert the rope is unchanged, the cursor stays put, and a status flash is recorded. Repeat at the last char with `Action::DeleteChar`. Repeat in the middle of the range to assert the normal case still works.
+- **Boundary-crossing delete no-ops** (extend `tests/diff_history.rs` or in `tests/editing.rs`): enter `DiffSubMode::Edit` on a hunk; position the cursor at the first char of the focused new-side range and send `Action::DeleteCharBack` — assert the rope is unchanged, the cursor stays put, and a status flash is recorded. Repeat at the last char with `Action::DeleteCharForward`. Repeat in the middle of the range to assert the normal case still works.
 - **Cursor clamp on MoveUp / MoveDown** (extend `tests/editing.rs`): enter Edit on a multi-line hunk; from the first new-side line send `Action::MoveUp` — assert `cursor.offset` is unchanged and the flash fires. From the last new-side line send `Action::MoveDown` — same. Send `MoveUp` / `MoveDown` from interior lines to assert ordinary motion still works. Also assert `MoveLeft` at the range's first offset and `MoveRight` at the range's last offset clamp identically. Run the test matrix with `visual_line_nav = true` and `false` to cover both motion algorithms (§5).
+- **Ropey line-range invariants** (`tests/diff_engine.rs`): a small unit test that pins the ropey behavior the line-range convention in §3a relies on. Construct two ropes — one with a trailing newline, one without — and assert that `rope.byte_to_line(rope.len_bytes())` returns `rope.len_lines() - 1` for the no-trailing-newline rope and `rope.len_lines()` for the trailing-newline rope. The whole half-open line-range scheme rides on this; pin it as documentation in case ropey ever changes the edge.
 - **Hunk-merge id stability** (extend `tests/diff_history.rs`): construct an `old_rope` / `new_rope` pair that produces two distinct hunks; record a decision on the first hunk (`Accepted`); enter Edit on the second hunk and insert enough lines that the inter-hunk context gap disappears so the two hunks merge under the next recomputation. Assert: (a) the merged hunk's `HunkId` equals the prior with larger old-side overlap (§6 rule 5); (b) the merged hunk's `Decision` is the inherited prior's (not forcibly reset to `Pending`); (c) the dropped prior's `Decision` is silently discarded; (d) any `DiffOp::Decision` in the undo stack referencing the dropped `HunkId` is skipped on undo without erroring (§6 rule 4).
 
-## 14. Open points (all resolved)
+## 14. Implementation checkpoints
 
-All open points have been resolved:
-
-- **Decision indicator glyphs:** `[✓]` Accepted, `[x]` Rejected,
-  `[ ]` Pending. The checkmark/x convention matches the editor's
-  existing checkbox rendering and differentiates decided hunks from
-  unresolved ones at a glance. See §5.
-- Previous open points (`Esc` semantics, post-resolution undo
-  granularity, hunk-navigation key collision, hunk-edit transitions,
-  edit-pipeline routing, HunkId stability under re-shaping,
-  merge-revert history shape, table detection across context
-  boundaries, own-write echo suppression, command-palette gating in
-  diff mode, modal-Esc precedence) resolved in §2, §3a, §4, §4a, §6,
-  §8, §9, §10, and §11.
-
-## 15. Implementation checkpoints
-
-Phase 1 is broken into four checkpoints. At each boundary, all tests
+Phase 1 is broken into five checkpoints. At each boundary, all tests
 pass and the app builds and runs. Each checkpoint is a self-contained
 PR-sized unit.
 
-### Checkpoint 1 — Watcher + DirtyConflictModal (no diff mode)
+### Checkpoint 1 — Dispatcher unification + Save hoist (no watcher, no diff) ✅ DONE
+
+**New files:** *(none)*
+
+**Modified files:** `src/app/actions.rs` (rename `dispatch_palette_action` → `dispatch_action`; new `App::save_buffer()` helper — the single call site for `Buffer::save_file()` going forward; `Action::Save` arm in `handle_app_action` routes through `save_buffer()`), `src/app/event_loop.rs` (the keystroke arm lives in `dispatch_single_key`, not a separate `src/app/run.rs` — collapsed to `self.dispatch_action(...)`), `src/app/autosave.rs` (route saves through `App::save_buffer()` — the original code already bypassed `edit_ops::apply` and called `Buffer::save_file()` directly, so the change is a substitution rather than a dispatch reroute), `src/editor/edit_ops.rs` (remove `Action::Save` arm — saves are now `App::save_buffer()` only), `src/app/modal/command_palette.rs` (rename call site + tests), `tests/editing.rs` + `tests/palette.rs` (drop `edit_ops::apply(Action::Save)` from existing tests since Save no longer routes through `edit_ops::apply`; add App-level unit tests for the unified dispatch in `src/app/actions.rs` and `src/app/modal/command_palette.rs` instead, since `make_app` isn't exposed to integration tests).
+
+**Scope:**
+- **Rename `App::dispatch_palette_action` → `App::dispatch_action`** and collapse the keystroke arm in `App::run` to call it. Single unified dispatcher with no behavior change.
+- **Hoist `Action::Save` out of `edit_ops::apply` into `App::save_buffer()`** — single call site for `Buffer::save_file()`. Autosave routes through it. No new hash filtering yet; this is a pure refactor that prepares the call site for CP2's hash stamp.
+
+**Tests:** extend `tests/editing.rs` to assert (a) a palette-invoked Save and a keystroke-invoked Save go through the same `App::dispatch_action` path; (b) autosave routes through `App::save_buffer()`; (c) the existing Save snapshot tests still pass.
+
+**Verifiable live:** application behavior is unchanged from main. This is the foundation for CP2 and is shippable on its own as a refactor PR.
+
+### Checkpoint 2 — Watcher + DirtyConflictModal (no diff mode)
 
 **New files:** `src/watcher.rs`, `src/watcher/file_watcher.rs`, `src/watcher/debounce.rs`, `src/app/modal/dirty_conflict.rs`, `src/app/modal/dirty_conflict_discard_confirm.rs`, `tests/watcher.rs`
 
-**Modified files:** `Cargo.toml` (add `notify`, `seahash`), `src/app.rs` (`AppEvent::FileChanged`, `watcher` field, `last_saved_hash: Option<u64>` field), `src/app/event_loop.rs` (file-change arm, own-write hash filter, watcher pause/resume + `force_reconcile()` around external editor), `src/app/actions.rs` (new `App::save_buffer()` helper; `Action::Save` arm in `handle_app_action` routes through it), `src/app/autosave.rs` (route saves through `App::save_buffer()`), `src/editor/edit_ops.rs` (remove `Action::Save` arm — saves are now `App::save_buffer()` only)
+**Modified files:** `Cargo.toml` (add `notify = "8"`, `seahash`), `src/app.rs` (`AppEvent::FileChanged`, `watcher` field, `last_disk_hash: Option<u64>` field), `src/app/event_loop.rs` (file-change arm, own-write hash filter using `last_disk_hash`, hash-stamp on accepted events, watcher pause/resume + `force_reconcile()` around external editor), `src/app/actions.rs` (add `App::set_disk_hash()` helper; `App::save_buffer()` from CP1 gains the hash stamp on successful save)
 
 **Scope:**
-- `FileWatcher` trait + `NotifyWatcher` impl with 200 ms debounce and `force_reconcile()` (§2).
+- `FileWatcher` trait + `NotifyWatcher` impl with 200 ms debounce and `force_reconcile()` (§2). Watcher worker performs all disk reads.
 - `AppEvent::FileChanged` variant; event-loop arm that handles it.
-- **Hoist `Action::Save` out of `edit_ops::apply` into `App::save_buffer()`** — single call site for `Buffer::save_file()` (§2, §10). Autosave routes through it.
-- Own-write content-hash filter: `App::last_saved_hash`, populated by `save_buffer()` and on initial file load; consulted by the event-loop file-change arm (§2).
+- Own-write content-hash filter: `App::last_disk_hash`, stamped from three sources (initial load, successful save, accepted incoming `FileChanged`); consulted by the event-loop file-change arm (§2).
 - Clean buffer → silent reload from disk.
-- Dirty buffer → `DirtyConflictModal` with three working buttons: `[Save a copy]`, `[Discard & reload]` (with confirmation sub-modal), `[Keep buffer]`. The `[Merge]` button flashes "Diff mode coming soon" — it is wired in Checkpoint 2.
+- Dirty buffer → `DirtyConflictModal` with three working buttons: `[Save a copy]`, `[Discard & reload]` (with confirmation sub-modal), `[Keep buffer]`. The `[Merge]` button flashes "Diff mode coming soon" — it is wired in Checkpoint 3.
 - Watcher pause/resume + `force_reconcile()` around external-editor suspend.
 
-**Tests:** `tests/watcher.rs` (FakeFileWatcher debounce + tempfile integration + own-write hash echo suppression), modal button flows in `tests/ui.rs`, autosave routing through `save_buffer()` in `tests/editing.rs`.
+**Tests:** `tests/watcher.rs` (FakeFileWatcher debounce + tempfile integration + own-write hash echo suppression + stamp-on-accept behavior), modal button flows in `tests/ui.rs`.
 
 **Verifiable live:** edit the open file in another editor; the modal appears with three working actions.
 
-### Checkpoint 2 — Diff engine + raw DiffView + Review decisions (no edits, no undo)
+### Checkpoint 3 — Diff engine + raw DiffView + Review decisions (no edits, no undo)
 
 **New files:** `src/diff.rs`, `src/diff/engine.rs`, `src/diff/state.rs`, `src/diff/hunk.rs`, `src/ui/diff_view.rs`, `src/app/modal/diff_intro.rs`, `src/app/modal/diff_resolve_confirm.rs`, `tests/diff_engine.rs`, `tests/diff_view.rs`
 
@@ -1462,23 +1769,23 @@ PR-sized unit.
 - `compute_hunks` engine with line-level + inline word-level diff, including row-level table sub-diff (§3, §3a).
 - `DiffState` (without `DiffHistory` — the `history` field is
   `DiffHistory { past: vec![], future: vec![] }` and `record()` is
-  never called in CP2. `Action::Undo` / `Action::Redo` in diff mode
-  are explicit no-ops until CP3 wires them).
+  never called in CP3. `Action::Undo` / `Action::Redo` in diff mode
+  are explicit no-ops until CP4 wires them).
 - `Mode::Diff` variant; `EditorState::enter_diff_mode()` / `exit_diff_mode()`.
 - `DiffView` raw rendering with `DiffVisualLine` model (§5): stacked old/new, gutter glyph, decision indicator on first line.
 - `DiffIntroModal` with opt-out checkbox (§8).
 - Wire `DirtyConflictModal`'s `[Merge]` button to enter diff mode.
-- Actions: `DiffNext`, `DiffPrev`, `DiffAcceptHunk`, `DiffRejectHunk`, `DiffAcceptAll`, `DiffRejectAll`, `DiffExit`. Review sub-mode only — no `DiffSubMode` enum yet. `DiffEnterEdit` and `DiffExitEdit` are added to the `Action` enum and keymap in this checkpoint (consistent with the "fully defined upfront" convention) but are explicit no-ops in the dispatch — they are wired in Checkpoint 4.
+- Actions: `DiffNext`, `DiffPrev`, `DiffAcceptHunk`, `DiffRejectHunk`, `DiffAcceptAll`, `DiffRejectAll`, `DiffExit`. Review sub-mode only — no `DiffSubMode` enum yet. `DiffEnterEdit` and `DiffExitEdit` are added to the `Action` enum and keymap in this checkpoint (consistent with the "fully defined upfront" convention) but are explicit no-ops in the dispatch — they are wired in Checkpoint 5.
 - Theme additions (§7), status bar + hint bar diff coloring.
 - Keybinding overlay "Diff Review" section (§9).
 - Autosave + `Action::Save` gated in diff mode; `SaveCopy` allowed (§10).
-- Resolution: when all decisions are non-`Pending`, show `DiffResolveConfirmModal` (§8). On confirmation, swap resolved rope into buffer, flash "Diff resolved", exit diff mode. Dismissing the modal returns to Review with all decisions intact. **Decision-only history is in-memory and lost on exit; resolution writes nothing to `editor.history` in CP2.** The merge-revert entry described in §6 is introduced in CP3 alongside `DiffHistory`.
+- Resolution: when all decisions are non-`Pending`, show `DiffResolveConfirmModal` (§8). On confirmation, swap resolved rope into buffer, flash "Diff resolved", exit diff mode. Dismissing the modal returns to Review with all decisions intact. **Decision-only history is in-memory and lost on exit; resolution writes nothing to `editor.history` in CP3.** The merge-revert entry described in §6 is introduced in CP4 alongside `DiffHistory`.
 
 **Tests:** `tests/diff_engine.rs` (snapshot tests), `tests/diff_view.rs` (TestBackend snapshots), modal intro flow in `tests/ui.rs`, autosave gating in `tests/editing.rs`.
 
 **Verifiable live:** full review-and-decide flow works; accept/reject each hunk, accept-all/reject-all; `Undo` is a no-op (no history yet).
 
-### Checkpoint 3 — Decision undo/redo + Esc handling + event queue
+### Checkpoint 4 — Decision undo/redo + Esc handling + event queue
 
 **New files:** `src/diff/history.rs`, `src/app/modal/diff_exit_confirm.rs`, `tests/diff_history.rs`
 
@@ -1487,7 +1794,7 @@ PR-sized unit.
 **Scope:**
 - `DiffHistory` with `DiffOp::Decision` and `DiffOp::BulkDecision` only (no `Edit` variant yet).
 - `Action::Undo` / `Action::Redo` routed to `DiffHistory` while in diff mode; main `History` paused.
-- **Resolution checkpoint:** introduce the single synthetic merge-revert `EditDelta` and the `History::reset_with(EditDelta)` setter (§6). After CP3, exiting diff mode leaves `editor.history` with that single entry as its sole undo step (replacing the CP2 behavior where exit wrote nothing to history).
+- **Resolution checkpoint:** introduce the single synthetic merge-revert `EditDelta` and the `History::reset_with(EditDelta)` setter (§6). After CP4, exiting diff mode leaves `editor.history` with that single entry as its sole undo step (replacing the CP3 behavior where exit wrote nothing to history).
 - `DiffExitConfirmModal` for `Esc` with pending decisions (§9).
 - Queued `FileChanged` event re-entry: after resolution, re-enter through the standard dirty-check path (§11).
 
@@ -1495,7 +1802,7 @@ PR-sized unit.
 
 **Verifiable live:** cycle accept/reject with Ctrl-Z undoing decisions; Esc prompts when hunks are pending; editing file during review queues and replays after resolution.
 
-### Checkpoint 4 — Edit sub-mode + clamped editing + Edit undo
+### Checkpoint 5 — Edit sub-mode + clamped editing + Edit undo
 
 **Modified files:** `src/diff/state.rs` (`DiffSubMode`, sub-mode tracking, `DiffState::apply_edit`), `src/diff/hunk.rs` (`HunkId` stability logic), `src/diff/history.rs` (`DiffOp::Edit`, word-group merging), `src/editor/state.rs` (mode-aware `apply_delta` branch, `edit_target()` accessor), `src/editor/edit_ops.rs` (in-hunk edit gating, boundary-crossing delete no-ops, `DiffEnterEdit`/`DiffExitEdit`, Undo/Redo diff-mode routing), `src/ui/diff_view.rs` (Edit cursor rendering), `src/ui/status_bar.rs` (`DIFF·EDIT` badge), `src/ui/bottom_region.rs` (Edit hint set), `src/config/keymap.rs` (`DiffEnterEdit`/`DiffExitEdit` default binds)
 
@@ -1517,7 +1824,7 @@ PR-sized unit.
 
 ---
 
-## 16. Phase 2 — Hybrid rendered diff view (future)
+## 15. Phase 2 — Hybrid rendered diff view (future)
 
 This section is design notes for the follow-up phase, not a
 commitment. It captures the analysis so the trail isn't lost between

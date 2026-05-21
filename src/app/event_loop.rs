@@ -947,40 +947,16 @@ impl App {
         }
     }
 
-    /// Dispatch one key event through the same logic as the previous
-    /// (pre-coalescing) `dispatch_key_event` body — minus the external-
-    /// editor drain, which `dispatch_key_batch` handles once at the end.
+    /// Dispatch one key event through the unified
+    /// [`App::dispatch_action`] pipeline.  The external-editor drain
+    /// is intentionally not handled here — `dispatch_key_batch` runs
+    /// it once at the end of a batch.
     fn dispatch_single_key(&mut self, event: Event, keymap: &KeyMap, dims: &DocDims) {
         let mut handler = DefaultHandler::new(keymap);
         let Some(action) = handler.handle_event(event, &self.editor) else {
             return;
         };
-        let handled = self.handle_app_action(&action, dims.doc_height, dims.doc_width);
-        if !handled {
-            if matches!(action, Action::Quit) && self.editor.dirty {
-                self.open_quit_confirm();
-                self.needs_draw = true;
-                return;
-            }
-            let save_before_dirty = self.editor.dirty;
-            let scroll_before = self.editor.scroll;
-            let quit = edit_ops::apply(
-                &mut self.editor,
-                action.clone(),
-                dims.doc_height,
-                dims.doc_width,
-            );
-            if quit {
-                self.should_quit = true;
-            }
-            if self.editor.scroll != scroll_before {
-                self.mark_scrolling();
-            }
-            self.flash_for_action(&action, save_before_dirty);
-            if let Some(target) = self.editor.pending_link_follow.take() {
-                self.follow_link(target, dims.doc_height, dims.doc_width);
-            }
-        }
+        self.dispatch_action(action, dims.doc_height, dims.doc_width);
         self.needs_draw = true;
     }
 

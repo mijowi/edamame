@@ -172,12 +172,11 @@ impl App {
 
         // Save first so the external editor sees the in-memory state.
         if self.editor.dirty {
-            if let Err(e) = self.editor.buffer.save_file() {
+            if let Err(e) = self.save_buffer() {
                 tracing::warn!(error = %e, "failed to save buffer before editor launch");
                 self.notify(format!("Save failed: {e}"), ModalKind::Error);
                 return;
             }
-            self.editor.dirty = false;
         }
 
         let outcome = self.run_external_editor(&path, terminal, rx);

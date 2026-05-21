@@ -69,11 +69,9 @@ impl Modal for QuitConfirmModal {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled => ModalOutcome::Close,
             ModalResponse::ButtonPressed(0) => ModalOutcome::CloseAnd(Box::new(|app| {
-                if app.editor.buffer.save_file().is_ok() {
-                    app.editor.dirty = false;
-                    app.should_quit = true;
-                } else {
-                    app.notify("Save failed — quit aborted", ModalKind::Error);
+                match app.save_buffer() {
+                    Ok(()) => app.should_quit = true,
+                    Err(_) => app.notify("Save failed — quit aborted", ModalKind::Error),
                 }
             })),
             ModalResponse::ButtonPressed(1) => ModalOutcome::CloseAnd(Box::new(|app| {
