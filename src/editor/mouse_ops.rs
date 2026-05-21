@@ -38,7 +38,7 @@ use self::table_drag::{
 
 /// What a mouse-down/drag interaction currently targets.
 ///
-/// Phase 6 replaced the old `Option<usize>` drag anchor with this enum so
+/// Replaced the old `Option<usize>` drag anchor with this enum so
 /// `MouseAction::Drag` events can dispatch on the user's original intent —
 /// text selection remains the fallback when the click didn't land on any
 /// table-specific region.
@@ -215,7 +215,7 @@ pub fn apply(
             row,
             modifiers,
         } => {
-            // Phase 8: Ctrl-click on a link bypasses cursor placement
+            // Ctrl-click on a link bypasses cursor placement
             // entirely — we return early after firing the link-open
             // side effect so the cursor stays where it was.
             if modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
@@ -223,7 +223,7 @@ pub fn apply(
             {
                 return;
             }
-            // Phase 6: hit-test the click against every visible table's
+            // hit-test the click against every visible table's
             // layout snapshot.  Row-handle / column-handle / column-border
             // hits set a table-specific `DragTarget`; Cell hits fall through
             // to normal cursor placement (the cursor lands inside the cell).
@@ -397,10 +397,7 @@ pub fn apply(
                     state.drag_in_progress = true;
                 }
 
-                // Phase 5 prerequisite for Phase 8: detect clicks on Markdown
-                // link syntax so Phase 8 can wire up URL opening without
-                // reworking the mouse-dispatch plumbing.  For now we merely
-                // surface the detected URL in the tracing log.
+                // detect clicks on Markdown link syntax so we can wire up URL opening
                 let source = state.buffer.contents();
                 let click_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
                 if let Some(url) = link_at_offset(&source, click_byte) {
