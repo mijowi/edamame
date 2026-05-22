@@ -43,6 +43,47 @@ use super::App;
 pub(super) const NOT_YET_IMPLEMENTED: &[Action] =
     &[Action::Open, Action::ExportHtml, Action::ReloadFromDisk];
 
+/// Default-deny gate over [`Action`]s in diff mode (Phase 1 §10).
+/// Returns `Some(action)` when the action is allowed in Review
+/// sub-mode (CP3 only ships Review); `None` for everything else.
+/// CP5 will add a `(action, sub_mode)` signature so Edit-only and
+/// Review-only actions can refine the gate.
+pub(super) fn diff_safe_action(action: &Action) -> Option<Action> {
+    use Action::*;
+    let allowed = matches!(
+        action,
+        DiffNext
+            | DiffPrev
+            | DiffAcceptHunk
+            | DiffRejectHunk
+            | DiffAcceptAll
+            | DiffRejectAll
+            | DiffEnterEdit
+            | DiffExitEdit
+            | DiffExit
+            | ScrollUp
+            | ScrollDown
+            | ScrollPageUp
+            | ScrollPageDown
+            | ScrollToTop
+            | ScrollToBottom
+            | SaveCopy
+            | Quit
+            | ShowCommandPalette
+            | ShowMarkdownCheatSheet
+            | OpenSettings
+            | OpenKeybinds
+            | SwitchTheme
+            | CreateCustomTheme
+            | OpenConfigFolder
+    );
+    if allowed {
+        Some(action.clone())
+    } else {
+        None
+    }
+}
+
 /// True when the editor's cursor sits inside a table block.  Mirrors
 /// the check used by `edit_ops::cursor_in_table`; re-implemented here
 /// to keep the App free of a cross-module private dep.
@@ -242,6 +283,10 @@ impl App {
             // post-dispatch flash in `dispatch_action` only fires
             // when `handle_app_action` returns `false`.
             Action::Save => {
+                if self.editor.mode == crate::editor::Mode::Diff {
+                    self.flash("Resolve diff before saving", MessageKind::Info);
+                    return true;
+                }
                 let dirty_before = self.editor.dirty;
                 if let Err(e) = self.save_buffer() {
                     tracing::warn!(error = %e, "save failed");
@@ -365,6 +410,18 @@ impl App {
                 self.open_quit_confirm();
                 return;
             }
+            // Diff mode owns its own dispatch.  `diff_safe_action`
+            // filters everything that isn't on the diff-mode
+            // allowlist (default-deny per §10); diff-control actions
+            // and decision keys are dispatched through
+            // `App::dispatch_diff_action`.
+            if self.editor.mode == crate::editor::Mode::Diff {
+                let Some(safe) = diff_safe_action(&action) else {
+                    return;
+                };
+                self.dispatch_diff_action(safe, doc_height, doc_width);
+                return;
+            }
             let dirty_before = self.editor.dirty;
             let scroll_before = self.editor.scroll;
             let quit = edit_ops::apply(&mut self.editor, action.clone(), doc_height, doc_width);
@@ -379,6 +436,244 @@ impl App {
                 self.follow_link(target, doc_height, doc_width);
             }
         }
+    }
+
+    /// Dispatch a single action while `Mode::Diff` is active.  The
+    /// caller has already passed `action` through
+    /// [`diff_safe_action`] so unsupported actions never arrive here.
+    pub(super) fn dispatch_diff_action(
+        &mut self,
+        action: Action,
+        doc_height: usize,
+        doc_width: usize,
+    ) {
+        use crate::diff::Decision;
+        match action {
+            Action::DiffNext => {
+                if let Some(d) = self.editor.diff.as_mut() {
+                    d.advance_focus();
+                    self.needs_draw = true;
+                }
+            }
+            Action::DiffPrev => {
+                if let Some(d) = self.editor.diff.as_mut() {
+                    d.retreat_focus();
+                    self.needs_draw = true;
+                }
+            }
+            Action::DiffAcceptHunk => {
+                if let Some(d) = self.editor.diff.as_mut() {
+                    d.set_focused_decision(Decision::Accepted);
+                    self.needs_draw = true;
+                }
+                self.check_diff_resolution();
+            }
+            Action::DiffRejectHunk => {
+                if let Some(d) = self.editor.diff.as_mut() {
+                    d.set_focused_decision(Decision::Rejected);
+                    self.needs_draw = true;
+                }
+                self.check_diff_resolution();
+            }
+            Action::DiffAcceptAll => {
+                if let Some(d) = self.editor.diff.as_mut() {
+                    d.bulk_decide_pending(Decision::Accepted);
+                    self.needs_draw = true;
+                }
+                self.check_diff_resolution();
+            }
+            Action::DiffRejectAll => {
+                if let Some(d) = self.editor.diff.as_mut() {
+                    d.bulk_decide_pending(Decision::Rejected);
+                    self.needs_draw = true;
+                }
+                self.check_diff_resolution();
+            }
+            Action::DiffEnterEdit | Action::DiffExitEdit => {
+                // Edit sub-mode lands in CP5; until then `i` / Enter
+                // and `Esc` (Edit→Review) are explicit no-ops.
+                self.flash("Diff edit mode coming soon", MessageKind::Info);
+            }
+            Action::DiffExit => {
+                // CP4 wires the proper exit-confirm flow.  CP3
+                // discards in-progress decisions immediately so the
+                // user can always escape diff mode.
+                self.exit_diff_mode_discarding();
+            }
+            Action::ScrollUp => {
+                if self.editor.scroll > 0 {
+                    self.editor.scroll -= 1;
+                    self.mark_scrolling();
+                    self.needs_draw = true;
+                }
+            }
+            Action::ScrollDown => {
+                let total = self.editor.total_visual_rows_for_mode(doc_width);
+                let max = total.saturating_sub(1);
+                if self.editor.scroll < max {
+                    self.editor.scroll += 1;
+                    self.mark_scrolling();
+                    self.needs_draw = true;
+                }
+            }
+            Action::ScrollPageUp => {
+                self.editor.scroll = self.editor.scroll.saturating_sub(doc_height.max(1));
+                self.mark_scrolling();
+                self.needs_draw = true;
+            }
+            Action::ScrollPageDown => {
+                let total = self.editor.total_visual_rows_for_mode(doc_width);
+                let max = total.saturating_sub(1);
+                self.editor.scroll = (self.editor.scroll + doc_height.max(1)).min(max);
+                self.mark_scrolling();
+                self.needs_draw = true;
+            }
+            Action::ScrollToTop => {
+                self.editor.scroll = 0;
+                self.mark_scrolling();
+                self.needs_draw = true;
+            }
+            Action::ScrollToBottom => {
+                let total = self.editor.total_visual_rows_for_mode(doc_width);
+                let max = total.saturating_sub(doc_height.max(1));
+                self.editor.scroll = max;
+                self.mark_scrolling();
+                self.needs_draw = true;
+            }
+            Action::SaveCopy => {
+                self.open_save_copy_modal();
+                self.needs_draw = true;
+            }
+            Action::Quit => {
+                // CP3 simplification: quit while reviewing discards
+                // the review.  CP4 adds the exit-confirm guard.
+                self.exit_diff_mode_discarding();
+                self.should_quit = true;
+            }
+            // Read-only overlay openers route through their
+            // standard App-level helpers, which push the modal atop
+            // the diff view.
+            Action::ShowCommandPalette => {
+                self.open_command_palette();
+            }
+            Action::ShowMarkdownCheatSheet => {
+                self.open_markdown_cheat_sheet();
+            }
+            Action::OpenSettings => {
+                self.open_settings_overlay();
+            }
+            Action::OpenKeybinds => {
+                self.open_keybinds_overlay();
+            }
+            Action::SwitchTheme => {
+                self.open_theme_picker();
+            }
+            Action::CreateCustomTheme => {
+                self.open_export_theme_modal();
+            }
+            Action::OpenConfigFolder => {
+                if let Some(dir) = Config::config_dir() {
+                    self.spawn_open_worker(dir.display().to_string());
+                }
+            }
+            // Everything else passed `diff_safe_action` but doesn't
+            // need a specific arm (e.g. NavigateBack/Forward, which
+            // are app-level and handled by `handle_app_action`).
+            _ => {}
+        }
+    }
+
+    /// If every hunk has been decided, push the resolve-confirm
+    /// modal.  Called after every accept / reject / bulk action.
+    pub(crate) fn check_diff_resolution(&mut self) {
+        let Some(diff) = self.editor.diff.as_ref() else {
+            return;
+        };
+        if !diff.all_resolved() {
+            return;
+        }
+        // Already showing the confirm modal?  Don't push a second one.
+        if self
+            .modal_stack
+            .contains::<crate::app::modal::DiffResolveConfirmModal>()
+        {
+            return;
+        }
+        let accepted = diff
+            .decisions
+            .iter()
+            .filter(|d| **d == crate::diff::Decision::Accepted)
+            .count();
+        let rejected = diff.decisions.len() - accepted;
+        self.modal_stack
+            .push(Box::new(crate::app::modal::DiffResolveConfirmModal::new(
+                accepted, rejected,
+            )));
+        self.needs_draw = true;
+    }
+
+    /// Enter diff-review mode against the on-disk contents the user's
+    /// `DirtyConflictModal` was carrying.  Push the intro modal first
+    /// when the user hasn't opted out (§8).
+    pub(crate) fn enter_diff_mode(&mut self, on_disk: String) {
+        let old = self.editor.buffer.contents();
+        let Some(diff_state) = crate::diff::DiffState::new(&old, &on_disk) else {
+            // Edge case: the dirty-conflict modal was opened against
+            // bytes that happen to match the buffer now (perhaps the
+            // user reverted manually before clicking Merge).  Flash
+            // a hint and return to the main editor.
+            self.flash("No differences to review", MessageKind::Info);
+            return;
+        };
+        self.editor.enter_diff_mode(diff_state);
+        if self.config.editor.show_diff_intro {
+            self.modal_stack
+                .push(Box::new(crate::app::modal::DiffIntroModal::new()));
+        }
+        self.needs_draw = true;
+    }
+
+    /// Apply the merged result to the editor buffer and exit diff
+    /// mode.  Called from the `[Apply]` button of
+    /// [`crate::app::modal::DiffResolveConfirmModal`].  CP3 swaps the
+    /// rope in place but does NOT record a merge-revert undo entry —
+    /// that lands in CP4 alongside [`History::reset_with`].
+    pub(crate) fn apply_diff_resolution(&mut self) {
+        let Some(diff) = self.editor.diff.as_ref() else {
+            return;
+        };
+        let Some(resolved) = diff.resolved_rope() else {
+            self.flash("Diff is not fully resolved", MessageKind::Info);
+            return;
+        };
+        // Compare resolved bytes against the disk contents so we
+        // only set dirty when the merge actually diverges from disk.
+        let new_text = diff.new_buffer.contents();
+        let resolved_text = resolved.to_string();
+        let differs_from_disk = resolved_text != new_text;
+        self.editor.buffer.set_rope(resolved);
+        self.editor.cursor.offset = 0;
+        self.editor.cursor.preferred_col = 0;
+        self.editor.history = crate::document::History::new();
+        self.editor.dirty = differs_from_disk;
+        self.editor.refresh_parsed();
+        self.editor.update_cursor_block();
+        self.editor.exit_diff_mode();
+        self.flash("Diff resolved", MessageKind::Success);
+        self.needs_draw = true;
+    }
+
+    /// Exit diff mode without applying the merge.  Restores the
+    /// pre-diff buffer state (the diff's `old_rope` already equals
+    /// the editor's current buffer, so this is just a clean-up).
+    pub(crate) fn exit_diff_mode_discarding(&mut self) {
+        self.editor.exit_diff_mode();
+        // Pop the resolve-confirm modal if it's on the stack.
+        self.modal_stack
+            .remove_first::<crate::app::modal::DiffResolveConfirmModal>();
+        self.modal_stack
+            .remove_first::<crate::app::modal::DiffIntroModal>();
+        self.needs_draw = true;
     }
 
     /// The single call site for [`crate::document::Buffer::save_file`]
@@ -551,6 +846,48 @@ mod tests {
     use super::modal_wheel_delta;
     use crate::app::test_utils::make_app;
     use crate::document::Buffer;
+
+    #[test]
+    fn enter_diff_mode_with_show_intro_pushes_intro_modal() {
+        use crate::app::modal::DiffIntroModal;
+        let mut app = make_app();
+        app.editor.buffer.insert(0, "alpha\nbeta\n");
+        assert!(app.config.editor.show_diff_intro);
+        app.enter_diff_mode("alpha\nGAMMA\n".to_owned());
+        assert_eq!(app.editor.mode, crate::editor::Mode::Diff);
+        assert!(app.editor.diff.is_some());
+        assert!(
+            app.modal_stack.contains::<DiffIntroModal>(),
+            "first-time entry must push the intro modal",
+        );
+    }
+
+    #[test]
+    fn enter_diff_mode_with_intro_off_skips_intro_modal() {
+        use crate::app::modal::DiffIntroModal;
+        let mut app = make_app();
+        app.editor.buffer.insert(0, "alpha\nbeta\n");
+        app.config.editor.show_diff_intro = false;
+        app.enter_diff_mode("alpha\nGAMMA\n".to_owned());
+        assert_eq!(app.editor.mode, crate::editor::Mode::Diff);
+        assert!(!app.modal_stack.contains::<DiffIntroModal>());
+    }
+
+    #[test]
+    fn diff_accept_all_then_apply_swaps_resolved_rope() {
+        let mut app = make_app();
+        app.editor.buffer.insert(0, "alpha\nbeta\ngamma\n");
+        app.enter_diff_mode("alpha\nBETA\ngamma\n".to_owned());
+        // Dismiss the intro modal if it stacked.
+        app.modal_stack
+            .remove_first::<crate::app::modal::DiffIntroModal>();
+        // Accept everything, then apply.
+        app.dispatch_diff_action(crate::config::Action::DiffAcceptAll, 24, 80);
+        app.apply_diff_resolution();
+        assert_eq!(app.editor.mode, crate::editor::Mode::Rendered);
+        assert!(app.editor.diff.is_none());
+        assert_eq!(app.editor.buffer.contents(), "alpha\nBETA\ngamma\n");
+    }
 
     #[test]
     fn save_buffer_clears_dirty_on_success() {

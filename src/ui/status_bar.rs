@@ -27,6 +27,10 @@ pub struct StatusBarState<'a> {
     /// as ` Sel 42 ch · 3 ln ` between the filename and cursor info
     /// when present.
     pub selection_size: Option<(usize, usize)>,
+    /// `(pending, total)` hunk counts in diff mode; `None` in every
+    /// other mode.  Rendered adjacent to the mode badge as
+    /// `pending/total`.
+    pub diff_pending: Option<(usize, usize)>,
 }
 
 /// A single-row status bar widget.
@@ -46,6 +50,13 @@ impl<'a> Widget for StatusBar<'a> {
         // glance (orange = Rendered, yellow = Raw, muted = Preview).
         let mode_text = format!(" {} ", s.mode);
         let mode_span = Span::styled(mode_text.clone(), theme.status_mode_style(s.mode));
+
+        // Diff-mode pending counter, rendered adjacent to the badge.
+        let diff_text = match s.diff_pending {
+            Some((p, t)) => format!(" {}/{} ", p, t),
+            None => String::new(),
+        };
+        let diff_span = Span::styled(diff_text.clone(), theme.status_mode_diff);
 
         // Filename + modified flag
         let modified_marker = if s.modified { " [modified]" } else { "" };
@@ -78,24 +89,30 @@ impl<'a> Widget for StatusBar<'a> {
         let info_span = Span::styled(info_text, theme.status_info);
 
         // Fill gap between left and right sides.
-        let left_width = mode_text.len() + filename_span.content.len();
+        let left_width = mode_text.len() + diff_text.len() + filename_span.content.len();
         let right_width = sel_text.len() + cursor_text.len() + info_span.content.len();
         let gap = (area.width as usize)
             .saturating_sub(left_width)
             .saturating_sub(right_width);
-        let gap_span = Span::styled(" ".repeat(gap), theme.status_bar);
+        // In diff mode the whole bar shifts to the diff color so the
+        // mode change is unmissable.
+        let bar_style = if matches!(s.mode, Mode::Diff) {
+            theme.status_bar_diff
+        } else {
+            theme.status_bar
+        };
+        let gap_span = Span::styled(" ".repeat(gap), bar_style);
 
         let line = Line::from(vec![
             mode_span,
+            diff_span,
             filename_span,
             gap_span,
             sel_span,
             cursor_span,
             info_span,
         ]);
-        Paragraph::new(line)
-            .style(theme.status_bar)
-            .render(area, buf);
+        Paragraph::new(line).style(bar_style).render(area, buf);
     }
 }
 
@@ -120,6 +137,7 @@ mod tests {
                         cursor_line: None,
                         cursor_col: None,
                         selection_size: None,
+                        diff_pending: None,
                     },
                     theme,
                 };
@@ -183,6 +201,7 @@ mod tests {
                         cursor_line: Some(3),
                         cursor_col: Some(7),
                         selection_size: None,
+                        diff_pending: None,
                     },
                     theme,
                 };
@@ -219,6 +238,7 @@ mod tests {
                         cursor_line: Some(1),
                         cursor_col: Some(1),
                         selection_size: Some((42, 3)),
+                        diff_pending: None,
                     },
                     theme,
                 };

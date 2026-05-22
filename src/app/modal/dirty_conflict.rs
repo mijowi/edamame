@@ -25,7 +25,6 @@ use ratatui::Frame;
 use super::dirty_conflict_discard_confirm::DirtyConflictDiscardConfirmModal;
 use super::dirty_conflict_save_copy::DirtyConflictSaveCopyModal;
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
-use crate::app::flash::MessageKind;
 use crate::app::App;
 use crate::ui::{ModalButton, ModalResponse, ModalState, ModalView};
 
@@ -139,14 +138,13 @@ impl Modal for DirtyConflictModal {
             // close to keep the match exhaustive.
             ModalResponse::Cancelled => ModalOutcome::Continue,
             ModalResponse::ButtonPressed(0) => {
-                // [Merge] — diff mode lands in CP3.  Today, flash a
-                // placeholder and return the modal to the user so
-                // they can pick a different action.
-                ModalOutcome::ContinueAnd(Box::new(|app| {
-                    app.flash(
-                        "Diff mode coming soon — pick another option.",
-                        MessageKind::Info,
-                    );
+                // [Merge] — enter inline diff review with the
+                // already-read on-disk bytes the modal is carrying.
+                // Close this modal first so the diff view (and any
+                // intro modal stacked on top) renders cleanly.
+                let on_disk = self.on_disk_contents.clone();
+                ModalOutcome::CloseAnd(Box::new(move |app| {
+                    app.enter_diff_mode(on_disk);
                 }))
             }
             ModalResponse::ButtonPressed(1) => {
@@ -297,16 +295,16 @@ mod tests {
     }
 
     #[test]
-    fn merge_button_flashes_placeholder_and_stays_open() {
+    fn merge_button_enters_diff_mode_and_closes_modal() {
         let (mut app, _tmp) = open_with_disk_contents("external");
         // Default focus is button 0 ([Merge]).
         app.dispatch_modal_key(key(KeyCode::Enter), 24, 80);
         assert!(
-            app.modal_stack.contains::<DirtyConflictModal>(),
-            "merge placeholder must leave the modal open",
+            !app.modal_stack.contains::<DirtyConflictModal>(),
+            "merge must close the dirty-conflict modal",
         );
-        let flash = app.transient.as_ref().expect("flash recorded");
-        assert!(flash.text.contains("Diff mode coming soon"));
+        assert_eq!(app.editor.mode, crate::editor::Mode::Diff);
+        assert!(app.editor.diff.is_some(), "diff state must be initialised");
     }
 
     #[test]

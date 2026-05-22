@@ -3,6 +3,7 @@
 
 pub mod config;
 pub mod diagram;
+pub mod diff;
 pub mod document;
 pub mod editor;
 pub mod export;

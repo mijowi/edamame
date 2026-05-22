@@ -239,16 +239,29 @@ subsystem use **half-open** `[start_line, end_line)` semantics,
 where `start_line = rope.byte_to_line(byte_start)` and `end_line =
 rope.byte_to_line(byte_end_exclusive)`. `byte_end_exclusive` is the
 byte offset *after* the last byte of the range (i.e. one past the
-trailing newline of the final line). For a range that is the last
-block in the file with no trailing newline, pulldown-cmark's
-`TagEnd::*` offset still points one past the last byte; in `ropey`,
-calling `byte_to_line(rope.len_bytes())` returns
-`rope.len_lines().saturating_sub(1)` if the file ends without a
-newline, and `rope.len_lines()` if it does — both are valid
-half-open `end_line` values and no special-casing is needed in
-either case. A hunk's old-side or new-side line range intersects a
-`TableExtent` iff
-`hunk.lines.start < extent.end_line && extent.start_line <
+trailing newline of the final line).
+
+**Ropey's `byte_to_line` at the file's last byte.** In `ropey`,
+`byte_to_line(rope.len_bytes())` returns `rope.len_lines() - 1` in
+*both* the trailing-newline and no-trailing-newline cases — but the
+index points at different things:
+
+- **File ends with `\n`** (the common case for markdown):
+  `len_lines()` counts the empty trailing line, so
+  `byte_to_line(len_bytes()) == len_lines() - 1` points at that
+  empty line.  Iterating `start..end_line` then correctly covers
+  all content lines and excludes the empty trailing one.
+- **File ends without `\n`**: `byte_to_line(len_bytes())` points
+  at the *last content line* — so an `end_line` derived this way
+  is **off by one** and a `start..end_line` iteration would miss
+  that final line.  This is a known limitation pinned by
+  `tests/diff_engine.rs::ropey_line_range_invariants`.  In Phase 1
+  we accept it because edamame opens markdown files which
+  conventionally end in `\n`; revisit if no-trailing-newline files
+  become a first-class input.
+
+A hunk's old-side or new-side line range intersects a `TableExtent`
+iff `hunk.lines.start < extent.end_line && extent.start_line <
 hunk.lines.end` (standard half-open overlap test).
 
 This avoids the regex-based detector's false positives on
@@ -1718,7 +1731,7 @@ further changes.
 - **Queued-event single-slot replace** (`tests/diff_view.rs` or new `tests/diff_queue.rs`): with `editor.diff = Some(...)`, push two `AppEvent::FileChanged` events in succession; assert only one remains queued (the second overwrites the first, not appends). Then resolve the diff and assert the re-entry path is invoked exactly once with the latest-disk-read contents.
 - **Boundary-crossing delete no-ops** (extend `tests/diff_history.rs` or in `tests/editing.rs`): enter `DiffSubMode::Edit` on a hunk; position the cursor at the first char of the focused new-side range and send `Action::DeleteCharBack` — assert the rope is unchanged, the cursor stays put, and a status flash is recorded. Repeat at the last char with `Action::DeleteCharForward`. Repeat in the middle of the range to assert the normal case still works.
 - **Cursor clamp on MoveUp / MoveDown** (extend `tests/editing.rs`): enter Edit on a multi-line hunk; from the first new-side line send `Action::MoveUp` — assert `cursor.offset` is unchanged and the flash fires. From the last new-side line send `Action::MoveDown` — same. Send `MoveUp` / `MoveDown` from interior lines to assert ordinary motion still works. Also assert `MoveLeft` at the range's first offset and `MoveRight` at the range's last offset clamp identically. Run the test matrix with `visual_line_nav = true` and `false` to cover both motion algorithms (§5).
-- **Ropey line-range invariants** (`tests/diff_engine.rs`): a small unit test that pins the ropey behavior the line-range convention in §3a relies on. Construct two ropes — one with a trailing newline, one without — and assert that `rope.byte_to_line(rope.len_bytes())` returns `rope.len_lines() - 1` for the no-trailing-newline rope and `rope.len_lines()` for the trailing-newline rope. The whole half-open line-range scheme rides on this; pin it as documentation in case ropey ever changes the edge.
+- **Ropey line-range invariants** (`tests/diff_engine.rs`): a small unit test that pins the ropey behavior the line-range convention in §3a relies on. Construct two ropes — one with a trailing newline, one without — and assert that `rope.byte_to_line(rope.len_bytes())` returns `rope.len_lines() - 1` in *both* cases, plus the corresponding `len_lines()` values (3 for `"a\nb\n"`, 2 for `"a\nb"`). The two cases yield the same numeric formula but point at different lines (empty trailing line vs. last content line); see §3a for the consequence. The whole half-open line-range scheme rides on this; pin it as documentation in case ropey ever changes the edge.
 - **Hunk-merge id stability** (extend `tests/diff_history.rs`): construct an `old_rope` / `new_rope` pair that produces two distinct hunks; record a decision on the first hunk (`Accepted`); enter Edit on the second hunk and insert enough lines that the inter-hunk context gap disappears so the two hunks merge under the next recomputation. Assert: (a) the merged hunk's `HunkId` equals the prior with larger old-side overlap (§6 rule 5); (b) the merged hunk's `Decision` is the inherited prior's (not forcibly reset to `Pending`); (c) the dropped prior's `Decision` is silently discarded; (d) any `DiffOp::Decision` in the undo stack referencing the dropped `HunkId` is skipped on undo without erroring (§6 rule 4).
 
 ## 14. Implementation checkpoints
@@ -1765,7 +1778,7 @@ PR-sized unit.
 - Watcher worker exposes events on a `mpsc::Sender<WatchedChange>` rather than `mpsc::Sender<AppEvent>`; a small bridge thread in `App::spawn_event_threads` forwards them as `AppEvent::FileChanged`.  Keeps the watcher unit-testable without an `App`.
 - External-editor pause is implemented by calling `unwatch()` on suspend and `watch()` + `force_reconcile()` on resume (rather than a separate paused flag on the watcher).  Effect is identical: no organic events reach the main thread while the editor is in flight, and the forced reconcile picks up any external edits the editor made.
 
-### Checkpoint 3 — Diff engine + raw DiffView + Review decisions (no edits, no undo)
+### Checkpoint 3 — Diff engine + raw DiffView + Review decisions (no edits, no undo) ✅ DONE
 
 **New files:** `src/diff.rs`, `src/diff/engine.rs`, `src/diff/state.rs`, `src/diff/hunk.rs`, `src/ui/diff_view.rs`, `src/app/modal/diff_intro.rs`, `src/app/modal/diff_resolve_confirm.rs`, `tests/diff_engine.rs`, `tests/diff_view.rs`
 
@@ -1790,6 +1803,13 @@ PR-sized unit.
 **Tests:** `tests/diff_engine.rs` (snapshot tests), `tests/diff_view.rs` (TestBackend snapshots), modal intro flow in `tests/ui.rs`, autosave gating in `tests/editing.rs`.
 
 **Verifiable live:** full review-and-decide flow works; accept/reject each hunk, accept-all/reject-all; `Undo` is a no-op (no history yet).
+
+**CP3 deviations from the plan as written:**
+- The "per-sub-mode keymap layer" called for in §10 is implemented in CP3 as a hard-coded mapping in `src/input/mode_handler/default.rs::diff_review_handle` (Tab → DiffNext, y → DiffAcceptHunk, etc.) rather than a layered `KeyMap` lookup.  Rationale: CP3 ships Review only — there is no Edit sub-mode whose bindings would diverge from the global keymap, so the mapping is short and self-contained.  CP5 will rework this into a proper layered keymap when the Edit/Review split lands and rebinding becomes meaningful.
+- `App::dispatch_diff_action` is the diff-mode equivalent of `edit_ops::apply` — it is invoked from `dispatch_action` after `diff_safe_action` filters the action.  This is cleaner than threading every diff action through `edit_ops::apply` (where it would need to access App state to push modals / flash hints) and matches the "App owns diff-mode dispatch" framing from §10.
+- `Action::Esc` in diff Review wires straight to `Action::DiffExit` (via `diff_review_handle`) which CP3 treats as an immediate exit-and-discard.  CP4 adds the proper `DiffExitConfirmModal` two-button confirmation.
+- The diff-Review hint row in the bottom bar uses hard-coded chord labels (`Tab`, `y`, `n`, etc.) rather than `chords_from(keymap, ...)`.  This mirrors the hard-coded `diff_review_handle` mapping — when CP5 moves both to a layered keymap, both will switch to the keymap-driven helpers at the same time.
+- `EditorState::exit_diff_mode` returns the editor to `Mode::Rendered` rather than restoring the pre-diff mode.  In CP3 this is safe because the only entry path is from `DirtyConflictModal::[Merge]`, and the user typically wants to return to editing after resolving.  If a future path enters diff mode from Preview / Raw, this should be revisited.
 
 ### Checkpoint 4 — Decision undo/redo + Esc handling + event queue
 

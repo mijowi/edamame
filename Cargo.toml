@@ -131,6 +131,12 @@ notify = "8"
 # any cryptographic guarantee.
 seahash = "4"
 
+# Line-level + inline word-level diff used by the diff-mode review
+# subsystem (Phase 1 §3).  `TextDiff::from_lines` produces line hunks;
+# `InlineChange` slices each `Replace` hunk into word-level highlights
+# without us writing a tokenizer.
+similar = "2"
+
 [features]
 default = ["clipboard"]
 clipboard = ["arboard"]

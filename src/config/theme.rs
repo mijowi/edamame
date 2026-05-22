@@ -286,6 +286,28 @@ pub struct Theme {
     /// Scrollbar thumb while the user is hovering the gutter or
     /// dragging the thumb.  RGB themes blend `primary` toward `text`.
     pub scrollbar_thumb_active: Style,
+
+    // ── Diff mode (Phase 1) ───────────────────────────────────────
+    /// Full-row bg fill on add-side diff lines.  Subtle (30 %-toward
+    /// `diff_add`) so the foreground text stays legible.
+    pub diff_add_line: Style,
+    /// Full-row bg fill on delete-side diff lines.
+    pub diff_delete_line: Style,
+    /// Saturated bg + bold for word-level highlights inside an add line.
+    pub diff_add_inline: Style,
+    /// Saturated bg + bold for word-level highlights inside a delete line.
+    pub diff_delete_inline: Style,
+    /// `>` glyph marking the focused hunk in the gutter.
+    pub diff_cursor_gutter: Style,
+    /// Mode badge for `Mode::Diff`.  Mirrors `status_mode_raw` shape
+    /// but on `warning` so the diff session reads as a distinct state.
+    pub status_mode_diff: Style,
+    /// Whole status bar shifts color in diff mode so the user never
+    /// misses the mode change.
+    pub status_bar_diff: Style,
+    /// Hint bar matches status-bar hue with a softer bg so the hint
+    /// text stays readable.
+    pub hint_bar_diff: Style,
 }
 
 /// Edamame's semantic color palette.  Every theme is built from these
@@ -854,6 +876,25 @@ impl Theme {
             scrollbar_track: Style::default().fg(p.bg_muted),
             scrollbar_thumb: Style::default().fg(p.primary),
             scrollbar_thumb_active: Style::default().fg(blend(p.primary, p.text, 0.35)),
+
+            // Diff mode — line / inline / status bar / hint bar.
+            // Line bg is 30 % toward the saturated diff color, mixed
+            // with `surface` so it reads as a chrome tint rather than
+            // a saturated stripe.  Inline highlights use the
+            // saturated palette color + bold.  Falls back to plain
+            // styles on non-Rgb palettes — `blend` returns the
+            // first argument unchanged in that case, which is the
+            // best we can do without inventing a hue.
+            diff_add_line: Style::default().bg(blend(p.surface, p.diff_add, 0.30)),
+            diff_delete_line: Style::default().bg(blend(p.surface, p.diff_delete, 0.30)),
+            diff_add_inline: Style::default().bg(p.diff_add).add_modifier(bold),
+            diff_delete_inline: Style::default().bg(p.diff_delete).add_modifier(bold),
+            diff_cursor_gutter: Style::default().fg(p.primary).add_modifier(bold),
+            status_mode_diff: Style::default().bg(p.warning).fg(p.bg).add_modifier(bold),
+            status_bar_diff: Style::default().bg(p.warning).fg(p.bg),
+            hint_bar_diff: Style::default()
+                .bg(blend(p.surface_elevated, p.warning, 0.40))
+                .fg(p.text),
         }
     }
 
@@ -890,6 +931,7 @@ impl Theme {
             Preview => self.status_mode_preview,
             Rendered => self.status_mode_rendered,
             Raw => self.status_mode_raw,
+            Diff => self.status_mode_diff,
         }
     }
 

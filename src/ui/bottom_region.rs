@@ -121,6 +121,10 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
             prelude: None,
             chords: table_chords(keymap),
         },
+        Mode::Diff => HintSet {
+            prelude: None,
+            chords: diff_review_chords(),
+        },
         Mode::Rendered | Mode::Raw => {
             // Baseline edit-mode hints — Menu anchors the row so
             // the command-palette chord is always the discovery
@@ -199,6 +203,22 @@ fn chords_from(keymap: &KeyMap, entries: &[(Action, &str)]) -> Vec<HintChord> {
         .iter()
         .filter_map(|(action, label)| chord_for(keymap, action, label))
         .collect()
+}
+
+/// Diff Review hint row.  Hard-coded chords mirror the
+/// `diff_review_handle` mapping in
+/// `src/input/mode_handler/default.rs`; CP5 will move both to a
+/// shared per-sub-mode keymap.
+fn diff_review_chords() -> Vec<HintChord> {
+    vec![
+        HintChord::new("Tab".to_owned(), "Next".to_owned()),
+        HintChord::new("⇧Tab".to_owned(), "Prev".to_owned()),
+        HintChord::new("y".to_owned(), "Accept".to_owned()),
+        HintChord::new("n".to_owned(), "Reject".to_owned()),
+        HintChord::new("Y".to_owned(), "Accept all".to_owned()),
+        HintChord::new("N".to_owned(), "Reject all".to_owned()),
+        HintChord::new("Esc".to_owned(), "Exit".to_owned()),
+    ]
 }
 
 /// Build the table-context hint row.  When the four arrow-driven
@@ -857,6 +877,7 @@ mod tests {
                         cursor_line: Some(1),
                         cursor_col: Some(1),
                         selection_size: sel,
+                        diff_pending: None,
                     },
                     hint,
                     layout,

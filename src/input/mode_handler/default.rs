@@ -25,6 +25,19 @@ impl<'k> DefaultHandler<'k> {
 
 impl<'k> ModeHandler for DefaultHandler<'k> {
     fn handle(&mut self, event: KeyEvent, state: &EditorState) -> Option<Action> {
+        // Diff Review sub-mode owns the keymap.  Bare keys (`y` /
+        // `n` / `Y` / `N` / `i` / Tab / Shift-Tab / Enter / Esc) are
+        // mapped to diff actions before the global keymap gets a
+        // look-in, because the global keymap binds Tab to
+        // `InsertTab` etc.  This is the "per-sub-mode keymap layer"
+        // §10 calls for; CP3 hard-codes Review since Edit lands in
+        // CP5.
+        if state.mode == Mode::Diff {
+            if let Some(action) = diff_review_handle(&event) {
+                return Some(action);
+            }
+        }
+
         // 1. Check the keymap first (explicit bindings take priority).
         if let Some(action) = self.keymap.action_for(&event) {
             // Preview-mode guard: Ctrl-* chords must not cause an implicit
@@ -127,6 +140,34 @@ fn preview_safe_action(action: &Action) -> bool {
             // the cursor isn't drawn there anyway.
             | Action::GoToSection
     )
+}
+
+/// Map a bare key to the corresponding diff-Review action, mirroring
+/// the §9 default bind table.  Returns `None` for keys that aren't
+/// diff-specific — those fall through to the global keymap (which
+/// handles `Ctrl-Q` / `Ctrl-S` / overlay openers / scrolling
+/// uniformly across modes).
+///
+/// Hard-coded rather than read from a separate KeyMap because the
+/// review bindings need to win over the global keymap's `Tab` →
+/// `InsertTab`.  CP5 will move this to a proper layered keymap
+/// when Edit sub-mode lands and the rebind story matters.
+fn diff_review_handle(event: &KeyEvent) -> Option<Action> {
+    let plain = event.modifiers == KeyModifiers::NONE;
+    let shift = event.modifiers == KeyModifiers::SHIFT;
+    match event.code {
+        KeyCode::Tab if plain => Some(Action::DiffNext),
+        KeyCode::BackTab => Some(Action::DiffPrev),
+        KeyCode::Tab if shift => Some(Action::DiffPrev),
+        KeyCode::Char('y') if plain => Some(Action::DiffAcceptHunk),
+        KeyCode::Char('n') if plain => Some(Action::DiffRejectHunk),
+        KeyCode::Char('Y') if shift => Some(Action::DiffAcceptAll),
+        KeyCode::Char('N') if shift => Some(Action::DiffRejectAll),
+        KeyCode::Char('i') if plain => Some(Action::DiffEnterEdit),
+        KeyCode::Enter if plain => Some(Action::DiffEnterEdit),
+        KeyCode::Esc => Some(Action::DiffExit),
+        _ => None,
+    }
 }
 
 /// Does this event represent Ctrl+Backspace in some terminal's encoding?

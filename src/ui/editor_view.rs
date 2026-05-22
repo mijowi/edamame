@@ -11,6 +11,7 @@ use crate::terminal::Capabilities;
 
 use super::{
     bottom_region::{BottomRegion, HintContent},
+    diff_view::{DiffView, DiffViewState},
     image_view, link_view,
     preview::{PreviewState, PreviewView},
     raw_view::{RawView, RawViewState},
@@ -135,6 +136,9 @@ pub struct EditorViewState {
     pub preview: PreviewState,
     pub rendered: RenderedViewState,
     pub raw: RawViewState,
+    /// Diff-mode view state — rebuilt every frame in CP3, will be
+    /// memoised on hunk-list changes when CP5 lands.
+    pub diff: DiffViewState,
     /// Layout published by the most recent render so the App's mouse
     /// layer can hit-test the scrollbar gutter without re-deriving the
     /// trio.  `None` when content fits the viewport (no gutter drawn).
@@ -188,6 +192,11 @@ impl<'a> StatefulWidget for EditorView<'a> {
             match mode {
                 Mode::Preview | Mode::Rendered => self.state.parsed.line_count(),
                 Mode::Raw => self.state.buffer.line_count(),
+                // Diff mode doesn't render a line-number gutter — the
+                // interleaved old/new ropes share no consistent line
+                // numbering, and the per-hunk gutter glyph carries the
+                // "where am I" affordance instead.
+                Mode::Diff => 0,
             }
         } else {
             0
@@ -273,6 +282,20 @@ impl<'a> StatefulWidget for EditorView<'a> {
                     &mut state.raw,
                 );
             }
+            Mode::Diff => {
+                if let Some(diff) = self.state.diff.as_ref() {
+                    StatefulWidget::render(
+                        DiffView {
+                            diff,
+                            theme: self.theme,
+                            scroll: self.state.scroll,
+                        },
+                        doc_area,
+                        buf,
+                        &mut state.diff,
+                    );
+                }
+            }
         }
 
         // ── Line-number gutter paint ─────────────────────────────
@@ -303,6 +326,8 @@ impl<'a> StatefulWidget for EditorView<'a> {
                         style,
                     );
                 }
+                // Diff mode: no per-line numbering (see above).
+                Mode::Diff => {}
             }
         }
 
@@ -379,12 +404,21 @@ impl<'a> StatefulWidget for EditorView<'a> {
         let line_count = match mode {
             Mode::Preview | Mode::Rendered => self.state.parsed.line_count(),
             Mode::Raw => self.state.buffer.line_count(),
+            // Status-bar "n / N" line indicator in diff mode shows the
+            // *new-side* line count — the most useful frame of
+            // reference when reviewing.
+            Mode::Diff => self.state.buffer.line_count(),
         };
         // The canonical scroll is `EditorState::scroll` for every mode
         // (Preview's view-state mirror is updated above before render).
         let scroll = self.state.scroll;
         let selection_size = self.state.selection_size();
 
+        let diff_pending = self
+            .state
+            .diff
+            .as_ref()
+            .map(|d| (d.pending_count(), d.hunks.len()));
         let region = BottomRegion {
             status: StatusBarState {
                 mode,
@@ -395,6 +429,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                 cursor_line: Some(cursor_line + 1), // 1-indexed display
                 cursor_col: Some(cursor_col + 1),
                 selection_size,
+                diff_pending,
             },
             hint: self.hint,
             layout: self.status_bar_layout,

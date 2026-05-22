@@ -266,6 +266,10 @@ impl App {
             match self.editor.mode {
                 Mode::Preview | Mode::Rendered => self.editor.parsed.line_count(),
                 Mode::Raw => self.editor.buffer.line_count(),
+                // Diff mode doesn't paint a line-number gutter; keep
+                // the reservation at zero so `viewport_width` matches
+                // what `DiffView` actually paints into.
+                Mode::Diff => 0,
             }
         } else {
             0

@@ -155,5 +155,19 @@ pub fn theme() -> Theme {
         scrollbar_track: Style::default(),
         scrollbar_thumb: Style::default(),
         scrollbar_thumb_active: Style::default().add_modifier(Modifier::REVERSED),
+
+        // Diff mode (Phase 1) — monochrome fallback per §7.  Line bg
+        // can't be a saturated mix, so we use REVERSED on the whole
+        // line; inline highlights add BOLD on top to stand out from
+        // the line bg.  Status / hint bars in diff mode become
+        // REVERSED + BOLD so the mode shift is visible without color.
+        diff_add_line: Style::default().add_modifier(Modifier::REVERSED),
+        diff_delete_line: Style::default().add_modifier(Modifier::REVERSED),
+        diff_add_inline: Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        diff_delete_inline: Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        diff_cursor_gutter: Style::default().add_modifier(Modifier::BOLD),
+        status_mode_diff: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+        status_bar_diff: Style::default().add_modifier(Modifier::REVERSED),
+        hint_bar_diff: Style::default().add_modifier(Modifier::REVERSED),
     }
 }

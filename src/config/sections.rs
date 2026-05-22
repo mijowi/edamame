@@ -82,6 +82,11 @@ pub struct EditorConfig {
     /// timer (debounce, not throttle), so a typing burst produces at
     /// most one autosave at the end.  Default: 5000.
     pub autosave_idle_ms: u64,
+    /// When true (default), the explanatory modal shown on entering
+    /// diff-review mode is displayed.  The modal's "Don't show this
+    /// again" checkbox flips this off so subsequent reviews open
+    /// straight into the diff view.
+    pub show_diff_intro: bool,
 }
 
 /// Floor applied to `EditorConfig::max_width_cols` at every use site so a
@@ -157,6 +162,7 @@ impl Default for EditorConfig {
             big_h1: true,
             autosave_enabled: true,
             autosave_idle_ms: AUTOSAVE_IDLE_MS_DEFAULT,
+            show_diff_intro: true,
         }
     }
 }
