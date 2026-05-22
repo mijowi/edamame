@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod diagram;
+mod diff;
 mod document;
 mod editor;
 mod image;

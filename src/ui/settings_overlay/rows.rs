@@ -319,6 +319,21 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             },
         },
         RowDef {
+            label: "Diff intro",
+            description: Some("Show the explainer modal when entering diff review"),
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Cycle,
+                read: |c, _| c.editor.show_diff_intro.to_string(),
+                write_string: no_write,
+                cycle: Some(|c, _, _| {
+                    c.editor.show_diff_intro = !c.editor.show_diff_intro;
+                    true
+                }),
+                options: Some(BOOL_OPTIONS),
+            },
+        },
+        RowDef {
             label: LABEL_BIG_H1,
             description: Some("Render H1 titles as large block-character text"),
             kind: RowKind {

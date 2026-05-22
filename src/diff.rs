@@ -1,0 +1,19 @@
+//! Diff-mode subsystem (Phase 1).  Exposes:
+//!
+//! - [`engine`] — pure line + word diff over two strings; returns
+//!   [`hunk::Hunk`] sequences with stable ids.
+//! - [`state::DiffState`] — owned by `EditorState::diff` while
+//!   `Mode::Diff` is active; carries the hunk list, per-hunk
+//!   decisions, focused id, working new-side buffer, and the CP4
+//!   undo stack.
+//! - [`hunk`] — `Hunk`, `HunkKind`, `Decision`, `InlineSpan`, etc.
+
+pub mod engine;
+pub mod hunk;
+pub mod state;
+
+#[allow(unused_imports)]
+pub use engine::{compute_hunks, HunkIdAllocator};
+#[allow(unused_imports)]
+pub use hunk::{Decision, Hunk, HunkId, HunkKind, InlineSide, InlineSpan};
+pub use state::DiffState;

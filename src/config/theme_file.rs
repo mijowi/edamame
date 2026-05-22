@@ -178,6 +178,16 @@ pub struct ThemeFile {
     pub scrollbar_track: StyleSpec,
     pub scrollbar_thumb: StyleSpec,
     pub scrollbar_thumb_active: StyleSpec,
+
+    // Diff mode (Phase 1)
+    pub diff_add_line: StyleSpec,
+    pub diff_delete_line: StyleSpec,
+    pub diff_add_inline: StyleSpec,
+    pub diff_delete_inline: StyleSpec,
+    pub diff_cursor_gutter: StyleSpec,
+    pub status_mode_diff: StyleSpec,
+    pub status_bar_diff: StyleSpec,
+    pub hint_bar_diff: StyleSpec,
 }
 
 /// All theme-style fields, listed once.  Both `From<&ThemeFile> for Theme`
@@ -216,7 +226,11 @@ macro_rules! style_fields {
             normal, selection, search_highlight, active_line,
             cursor_preview, cursor_rendered, cursor_raw, cursor,
             line_number,
-            scrollbar_track, scrollbar_thumb, scrollbar_thumb_active
+            scrollbar_track, scrollbar_thumb, scrollbar_thumb_active,
+            diff_add_line, diff_delete_line,
+            diff_add_inline, diff_delete_inline,
+            diff_cursor_gutter,
+            status_mode_diff, status_bar_diff, hint_bar_diff
         }
     };
 }

@@ -161,6 +161,31 @@ pub enum Action {
     /// the scroll, Esc reverts to the original position, Enter
     /// confirms and places the cursor at the end of the heading line.
     GoToSection,
+
+    // ── Diff review (Phase 1) ──────────────────────────────────────
+    /// Advance focus to the next hunk in document order.  No decision
+    /// implied — pressing this leaves the current hunk as `Pending`.
+    DiffNext,
+    /// Retreat focus to the previous hunk in document order.
+    DiffPrev,
+    /// Accept the focused hunk (`Decision::Accepted`) and advance.
+    DiffAcceptHunk,
+    /// Reject the focused hunk (`Decision::Rejected`) and advance.
+    DiffRejectHunk,
+    /// Bulk-accept every still-`Pending` hunk in one shot.
+    DiffAcceptAll,
+    /// Bulk-reject every still-`Pending` hunk in one shot.
+    DiffRejectAll,
+    /// Enter Edit sub-mode on the focused hunk.  Wired in CP5; in CP3
+    /// this is an explicit no-op.
+    DiffEnterEdit,
+    /// Exit Edit sub-mode and return to Review.  Wired in CP5; no-op
+    /// in CP3.
+    DiffExitEdit,
+    /// Request to exit diff mode.  Routes through the exit-confirm
+    /// modal (CP4) so the user can choose between discarding decisions
+    /// and continuing to review.
+    DiffExit,
 }
 
 /// Classification used by the run loop to coalesce a burst of
@@ -249,6 +274,10 @@ action_variants! {
     ExportHtml, ReloadFromDisk, OpenInExternalEditor,
     ToggleTableButtons, InsertTable,
     GoToSection,
+    DiffNext, DiffPrev,
+    DiffAcceptHunk, DiffRejectHunk,
+    DiffAcceptAll, DiffRejectAll,
+    DiffEnterEdit, DiffExitEdit, DiffExit,
 }
 
 // ─── Key parsing ─────────────────────────────────────────────────────────────

@@ -104,6 +104,11 @@ pub fn apply(
                 Mode::Preview => Mode::Rendered,
                 Mode::Rendered => Mode::Raw,
                 Mode::Raw => Mode::Rendered,
+                // Diff mode is its own state machine — `ToggleRawMode`
+                // is filtered out by `diff_safe_action` so this arm is
+                // unreachable in normal dispatch, but stay safe and
+                // no-op rather than panic.
+                Mode::Diff => Mode::Diff,
             };
             // Raw → Rendered: if the cursor was sitting inside an HTML
             // comment (visible in Raw, invisible in Rendered), snap it to

@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 use crate::config::Theme;
+use crate::diff::DiffState;
 use crate::document::{Buffer, Cursor, EditDelta, History, ParsedDoc, Selection, VisualSelection};
 use crate::editor::state_viewport::RawVisualRowCache;
 use crate::editor::Mode;
@@ -252,6 +253,17 @@ pub struct EditorState {
     /// events queue up.  `RefCell` because `&EditorState` callers in the
     /// view layer need shared access; `EditorState` is single-threaded.
     pub(crate) raw_visual_rows: RefCell<Vec<RawVisualRowCache>>,
+    /// Inline-diff review session.  `Some` iff `mode == Mode::Diff`;
+    /// the invariant is asserted in `enter_diff_mode` /
+    /// `exit_diff_mode` and enforced indirectly by the App's
+    /// `dispatch_action` (which only emits `Mode::Diff` after
+    /// `enter_diff_mode` returns successfully).
+    pub diff: Option<DiffState>,
+    /// Scroll offset saved on `enter_diff_mode` and restored on
+    /// `exit_diff_mode`.  Diff mode resets `scroll` to 0 on entry so
+    /// the user lands at the top of the diff view; restoring on exit
+    /// returns the user to where they were in the live buffer.
+    pub pre_diff_scroll: usize,
 }
 
 /// How long the cursor must rest on a block before it is shown in raw mode.
@@ -345,6 +357,8 @@ impl EditorState {
             modal_open: false,
             terminal_focused: true,
             raw_visual_rows: RefCell::new(Vec::new()),
+            diff: None,
+            pre_diff_scroll: 0,
         };
         // Populate the cursor-block cache so the rendered view's
         // stale-map-tolerant path has correct line-range info on the
@@ -455,6 +469,37 @@ impl EditorState {
         self.cursor.offset = self.cursor.offset.min(new_len);
         self.refresh_parsed();
         self.update_cursor_block();
+    }
+
+    /// Enter diff review mode with `diff_state` as the active review.
+    /// Saves the current `scroll` so [`Self::exit_diff_mode`] can
+    /// restore it, then resets `scroll = 0` and sets
+    /// `mode = Mode::Diff`.  The caller (`App::enter_diff_mode`) is
+    /// responsible for having already verified that
+    /// `DiffState::new` returned `Some` — empty hunk lists must not
+    /// reach this entry point (§4).
+    pub fn enter_diff_mode(&mut self, diff_state: DiffState) {
+        self.pre_diff_scroll = self.scroll;
+        self.scroll = 0;
+        self.diff = Some(diff_state);
+        self.mode = Mode::Diff;
+        self.selection = None;
+        self.visual_selection = None;
+    }
+
+    /// Drop the active diff review, restore the pre-diff scroll, and
+    /// return to `Mode::Rendered`.  Used both on the resolution
+    /// happy path (after `Buffer::set_rope` swaps the merged rope
+    /// in) and on the `[Discard]` exit-confirm path (CP4).  The
+    /// caller is responsible for any buffer / cursor side effects
+    /// before this; this helper only cleans up the diff fields.
+    pub fn exit_diff_mode(&mut self) {
+        self.diff = None;
+        self.scroll = self.pre_diff_scroll;
+        self.pre_diff_scroll = 0;
+        if self.mode == Mode::Diff {
+            self.mode = Mode::Rendered;
+        }
     }
 
     /// Toggle row striping for table data rows and re-render so the

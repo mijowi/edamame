@@ -42,6 +42,18 @@ impl Buffer {
         }
     }
 
+    /// Create a buffer wrapping a pre-built rope with no associated
+    /// file.  Used by the diff subsystem (`DiffState::new`) so the
+    /// new-side text gets the same `Buffer` API as the main buffer
+    /// without re-allocating the rope from a `String`.
+    pub fn from_rope(rope: Rope) -> Self {
+        Self {
+            rope,
+            path: None,
+            version: 0,
+        }
+    }
+
     /// Load a file from disk into the buffer.
     pub fn load_file(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
@@ -215,6 +227,19 @@ impl Buffer {
     /// (char offsets, exclusive end).
     pub fn slice_to_string(&self, start: usize, end: usize) -> String {
         self.rope.slice(start..end).to_string()
+    }
+
+    /// Replace the underlying rope wholesale while preserving the
+    /// buffer's `path`.  Bumps `version` so downstream consumers
+    /// (autosave detector, raw-view visual-row cache, parsed-doc
+    /// invalidation) treat the swap as a fresh mutation.  Used by the
+    /// diff-mode resolution path to swap the merged rope in place
+    /// (Phase 1 §3, §6).  The caller is responsible for refreshing
+    /// any derived state on `EditorState` (`refresh_parsed`,
+    /// `update_cursor_block`, clamping the cursor).
+    pub fn set_rope(&mut self, rope: Rope) {
+        self.rope = rope;
+        self.version = self.version.wrapping_add(1);
     }
 }
 

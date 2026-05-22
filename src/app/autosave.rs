@@ -29,6 +29,14 @@ impl App {
     /// ([`App::notify`]) already set `needs_draw`, so the caller in
     /// `tick_timers` doesn't need to.
     pub(super) fn tick_autosave(&mut self) {
+        // Diff mode is review-in-progress; saving mid-review would
+        // clobber the on-disk file the user is reconciling against.
+        // Drop any armed timer so it doesn't fire the instant the
+        // user exits diff mode, and skip arming new ones.
+        if self.editor.mode == crate::editor::Mode::Diff {
+            self.autosave_pending_since = None;
+            return;
+        }
         let enabled = self.config.editor.autosave_enabled;
         let version = self.editor.buffer.version();
 
@@ -92,6 +100,9 @@ impl App {
     /// autosave, if any.  Contributes to [`App::next_deadline`] so the
     /// `recv_timeout` blocks exactly long enough — no idle CPU.
     pub(super) fn autosave_deadline(&self) -> Option<Instant> {
+        if self.editor.mode == crate::editor::Mode::Diff {
+            return None;
+        }
         let since = self.autosave_pending_since?;
         if !self.config.editor.autosave_enabled {
             return None;
@@ -281,6 +292,35 @@ mod tests {
         assert!(
             app.autosave_pending_since.is_some(),
             "tick_autosave must arm the debounce timer after a real edit",
+        );
+    }
+
+    #[test]
+    fn diff_mode_clears_pending_autosave_and_skips() {
+        // Diff mode is review-in-progress: an armed timer must be
+        // disarmed and no save must fire while reviewing.
+        let mut app = make_app();
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        app.editor.buffer = Buffer::for_new_file(tmp.path());
+        let window = shrink_window(&mut app);
+        dirty_edit(&mut app);
+        app.tick_autosave();
+        assert!(app.autosave_pending_since.is_some(), "armed");
+        // Flip into diff mode and let the window elapse.
+        app.editor.mode = crate::editor::Mode::Diff;
+        std::thread::sleep(window + Duration::from_millis(20));
+        app.tick_autosave();
+        assert!(
+            app.autosave_pending_since.is_none(),
+            "diff mode must clear the armed timer",
+        );
+        assert!(
+            app.editor.dirty,
+            "buffer must remain dirty (no save fired in diff mode)",
+        );
+        assert!(
+            app.autosave_deadline().is_none(),
+            "deadline suppressed in diff mode"
         );
     }
 
