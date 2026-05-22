@@ -36,6 +36,7 @@ use crate::input::mode_handler::default::DefaultHandler;
 use crate::terminal::PointerShape;
 use crate::ui::editor_view::layout_doc_with_scrollbar;
 use crate::ui::{position_for_click, position_for_drag, thumb_range, EditorView, ModalKind};
+use crate::watcher::{NotifyWatcher, WatchedEvent};
 
 use super::actions::{modal_wheel_delta, HandleEvent};
 use super::frame_timer::{MIN_FRAME_INTERVAL, RESIZE_QUIESCE};
@@ -114,6 +115,49 @@ impl App {
             }
         });
 
+        // Filesystem watcher.  Spawn even when no file is open so
+        // the wiring is uniform — `App::start_file_watcher` calls
+        // `watch()` on the active path once we know what it is.
+        // Failures are non-fatal: we log and proceed without a
+        // watcher (the user just won't see external-edit prompts).
+        //
+        // The bridge thread is only spawned on the Ok arm.  If the
+        // watcher fails to construct, `watch_tx` is dropped, the
+        // bridge would exit on its first `recv` anyway — skipping it
+        // avoids the wasted thread and keeps the failure mode tidy.
+        let (watch_tx, watch_rx) = mpsc::channel::<WatchedEvent>();
+        match NotifyWatcher::new(watch_tx) {
+            Ok(w) => {
+                self.watcher = Some(Box::new(w));
+                // Bridge thread: forwards `WatchedEvent` from the
+                // watcher worker onto the main mpsc as
+                // `AppEvent::Watcher`.  Keeping the watcher's public
+                // API generic in `mpsc::Sender<WatchedEvent>` (rather
+                // than baking `AppEvent` in) keeps the watcher
+                // unit-testable without an `App`.
+                let bridge_tx = tx.clone();
+                if let Err(e) = std::thread::Builder::new()
+                    .name("edamame-watcher-bridge".to_owned())
+                    .spawn(move || {
+                        while let Ok(ev) = watch_rx.recv() {
+                            if bridge_tx.send(AppEvent::Watcher(ev)).is_err() {
+                                break;
+                            }
+                        }
+                    })
+                {
+                    tracing::warn!(
+                        target: "watcher",
+                        error = %e,
+                        "failed to spawn watcher bridge thread",
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(target: "watcher", error = %e, "failed to construct watcher");
+            }
+        }
+
         let (resize_tx, resize_rx) = mpsc::channel::<ratatui_image::thread::ResizeRequest>();
         self.editor.images.attach_resize_sender(resize_tx);
         let tx_encoder = tx.clone();
@@ -127,6 +171,33 @@ impl App {
         });
 
         rx
+    }
+
+    /// Begin watching the currently-open file, if any.  Called once
+    /// from the run loop after [`Self::spawn_event_threads`] has
+    /// constructed the watcher.  Watcher failures are non-fatal —
+    /// the user simply won't see external-edit prompts.
+    ///
+    /// Note: there is a tiny race window between `inner.watch(parent)`
+    /// inside `FileWatcher::watch` and the worker thread receiving
+    /// `WorkerCommand::SetPath`.  An organic notify event that races
+    /// this gap sees `current_path == None` in the worker and is
+    /// dropped.  We deliberately do *not* force a reconcile here:
+    /// the just-loaded buffer contents are by definition the on-disk
+    /// state, and any change that arrived during startup would have
+    /// been part of that load.  The external-editor flow forces a
+    /// reconcile on resume because there the loaded buffer and
+    /// post-editor disk state can genuinely differ.
+    pub(super) fn start_file_watcher(&mut self) {
+        let Some(path) = self.file_path.clone() else {
+            return;
+        };
+        let Some(watcher) = self.watcher.as_mut() else {
+            return;
+        };
+        if let Err(e) = watcher.watch(&path) {
+            tracing::warn!(target: "watcher", path = %path.display(), error = %e, "watch failed");
+        }
     }
 
     /// Build the live keymap once and stash it on `self`.  Held for the
@@ -310,6 +381,77 @@ impl App {
 
     // ── Event acquisition ─────────────────────────────────────────────────────
 
+    /// Apply a non-[`AppEvent::Term`] event: image decode/encode
+    /// completion, link-open result, or watcher notification.
+    /// Centralised here so the three event-receiving sites
+    /// ([`Self::next_event`], [`Self::collect_key_burst`], and
+    /// `App::drain_pending_image_ready`) stay in lockstep when a new
+    /// variant is added — previously the same `match` arms were
+    /// inlined at all three sites and quietly drifted.
+    ///
+    /// Sets `needs_draw = true` for most variants; the exceptions are
+    /// `ProtocolReady(Err)` (FIFO rebalance only, no visual change)
+    /// and `LinkOpenResult(Ok)` (success is silent).  The caller is
+    /// responsible for draining follow-on queued image events from
+    /// `rx` if it wants to coalesce them into a single refresh.
+    ///
+    /// `Term` events are caller-specific (passthrough vs. push into
+    /// `pending_events` vs. filter for key-press batching) so they
+    /// stay at each call site rather than being routed through here.
+    pub(super) fn handle_async_event(&mut self, ev: AppEvent) {
+        match ev {
+            AppEvent::Term(_) => {
+                // Filtered out by the caller; reaching here would be a
+                // programmer error.  Logged rather than panicked to
+                // keep the run loop alive in release builds.
+                debug_assert!(false, "handle_async_event called with Term");
+                tracing::warn!(
+                    target: "app",
+                    "handle_async_event called with Term — should be filtered by caller",
+                );
+            }
+            AppEvent::ImageReady(Ok(loaded)) => {
+                self.editor.images.set_decoded_with_prebuilt(
+                    &loaded.url,
+                    loaded.image,
+                    loaded.scratch,
+                );
+                self.images_dirty = true;
+                self.needs_draw = true;
+            }
+            AppEvent::ImageReady(Err((url, message))) => {
+                tracing::debug!(target: "image", %url, %message, "image decode failed");
+                self.editor.images.set_failed(&url, message);
+                // A failure collapses the block's reserved rows to 1
+                // (see `ImageCache::reserved_rows`), so the parsed
+                // doc must be rebuilt to drop the blank rows under
+                // the placeholder.
+                self.images_dirty = true;
+                self.needs_draw = true;
+            }
+            AppEvent::ProtocolReady(Ok(resp)) => {
+                self.editor.images.apply_resize_response(resp);
+                self.needs_draw = true;
+            }
+            AppEvent::ProtocolReady(Err(err)) => {
+                tracing::debug!(target: "image", %err, "encoder request failed");
+                // Keep the pending FIFO balanced — see ImageCache.
+                self.editor.images.drop_pending_front();
+            }
+            AppEvent::LinkOpenResult(result) => {
+                if let Err(msg) = result {
+                    tracing::warn!(target: "link", error = %msg, "link open failed");
+                    self.notify(format!("Link open failed: {msg}"), ModalKind::Error);
+                    self.needs_draw = true;
+                }
+            }
+            AppEvent::Watcher(event) => {
+                self.handle_watcher_event(event);
+                self.needs_draw = true;
+            }
+        }
+    }
+
     /// Pull the next event the run loop should process.
     ///
     /// Returns:
@@ -361,46 +503,14 @@ impl App {
         };
         match recv_result {
             Ok(AppEvent::Term(e)) => Some(e),
-            Ok(AppEvent::ImageReady(Ok(loaded))) => {
-                self.editor.images.set_decoded_with_prebuilt(
-                    &loaded.url,
-                    loaded.image,
-                    loaded.scratch,
-                );
-                self.images_dirty = true;
-                self.needs_draw = true;
+            Ok(ev) => {
+                self.handle_async_event(ev);
+                // Coalesce any queued image/protocol events into a
+                // single refresh.  Drains any subsequent non-Term
+                // events too; harmless for `LinkOpenResult` /
+                // `Watcher` (which would have been handled the same
+                // way on the next loop iteration anyway).
                 self.drain_pending_image_ready(rx);
-                None
-            }
-            Ok(AppEvent::ImageReady(Err((url, message)))) => {
-                tracing::debug!(target: "image", %url, %message, "image decode failed");
-                self.editor.images.set_failed(&url, message);
-                // A failure collapses the block's reserved rows to 1
-                // (see `ImageCache::reserved_rows`), so the parsed
-                // doc must be rebuilt to drop the blank rows under
-                // the placeholder.
-                self.images_dirty = true;
-                self.needs_draw = true;
-                self.drain_pending_image_ready(rx);
-                None
-            }
-            Ok(AppEvent::ProtocolReady(Ok(resp))) => {
-                self.editor.images.apply_resize_response(resp);
-                self.needs_draw = true;
-                self.drain_pending_image_ready(rx);
-                None
-            }
-            Ok(AppEvent::ProtocolReady(Err(err))) => {
-                tracing::debug!(target: "image", %err, "encoder request failed");
-                self.editor.images.drop_pending_front();
-                self.drain_pending_image_ready(rx);
-                None
-            }
-            Ok(AppEvent::LinkOpenResult(result)) => {
-                if let Err(msg) = result {
-                    tracing::warn!(target: "link", error = %msg, "link open failed");
-                    self.notify(format!("Link open failed: {msg}"), ModalKind::Error);
-                }
                 None
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -779,36 +889,7 @@ impl App {
                         break;
                     }
                 }
-                Ok(AppEvent::ImageReady(Ok(loaded))) => {
-                    self.editor.images.set_decoded_with_prebuilt(
-                        &loaded.url,
-                        loaded.image,
-                        loaded.scratch,
-                    );
-                    self.images_dirty = true;
-                    self.needs_draw = true;
-                }
-                Ok(AppEvent::ImageReady(Err((url, message)))) => {
-                    tracing::debug!(target: "image", %url, %message, "image decode failed");
-                    self.editor.images.set_failed(&url, message);
-                    self.images_dirty = true;
-                    self.needs_draw = true;
-                }
-                Ok(AppEvent::ProtocolReady(Ok(resp))) => {
-                    self.editor.images.apply_resize_response(resp);
-                    self.needs_draw = true;
-                }
-                Ok(AppEvent::ProtocolReady(Err(err))) => {
-                    tracing::debug!(target: "image", %err, "encoder request failed");
-                    self.editor.images.drop_pending_front();
-                }
-                Ok(AppEvent::LinkOpenResult(result)) => {
-                    if let Err(msg) = result {
-                        tracing::warn!(target: "link", error = %msg, "link open failed");
-                        self.notify(format!("Link open failed: {msg}"), ModalKind::Error);
-                        self.needs_draw = true;
-                    }
-                }
+                Ok(ev) => self.handle_async_event(ev),
                 Err(_) => break,
             }
         }

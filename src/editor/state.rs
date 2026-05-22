@@ -430,6 +430,33 @@ impl EditorState {
         self.refresh_parsed();
     }
 
+    /// Replace the editor's buffer with `new_buffer` and reset every
+    /// derived field that the old buffer made stale: history, both
+    /// selection caches, the parsed-doc cache (via `refresh_parsed`),
+    /// and the cursor-block lookup.  The cursor's char offset is
+    /// clamped to the new buffer's length but otherwise preserved
+    /// best-effort, so a silent reload (clean buffer + external edit)
+    /// keeps the user roughly where they were.  Viewport scroll is
+    /// intentionally not reset — preserving it matches user expectations
+    /// when the external rewrite is small.
+    ///
+    /// This is the canonical buffer-swap entry point.  New consumers
+    /// (multi-tab switch, future diff-mode resolve, …) should call
+    /// this rather than mutating `buffer` directly and hand-resetting
+    /// derived state, so adding a new derived field is a single-edit
+    /// change instead of a hunt for every swap site.
+    pub fn replace_buffer(&mut self, new_buffer: Buffer) {
+        let new_len = new_buffer.len_chars();
+        self.buffer = new_buffer;
+        self.dirty = false;
+        self.history = History::new();
+        self.selection = None;
+        self.visual_selection = None;
+        self.cursor.offset = self.cursor.offset.min(new_len);
+        self.refresh_parsed();
+        self.update_cursor_block();
+    }
+
     /// Toggle row striping for table data rows and re-render so the
     /// change is visible on the next frame.  Wired to
     /// `config.table.row_striping` at App startup; tests use this as a

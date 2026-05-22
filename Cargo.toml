@@ -119,6 +119,18 @@ sha2 = "0.10"
 # characters (4 cells wide × 2 cells tall per glyph).
 tui-big-text = "0.8"
 
+# Cross-platform filesystem watcher.  Pinned to the current major (8.x);
+# 6→7→8 reshaped the `RecommendedWatcher` constructor and `Event` types.
+# Default features include backends for Linux (inotify), macOS (FSEvents),
+# and Windows (ReadDirectoryChanges).
+notify = "8"
+
+# Fast non-cryptographic hash for the watcher's own-write content-hash
+# filter.  Zero dependencies and sub-microsecond on typical Markdown
+# files — used to skip echoes of our own saves rather than to provide
+# any cryptographic guarantee.
+seahash = "4"
+
 [features]
 default = ["clipboard"]
 clipboard = ["arboard"]

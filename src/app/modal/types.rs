@@ -135,4 +135,13 @@ pub trait Modal {
     /// every implementor, which is true today but constrains future
     /// adapter types).
     fn as_any(&self) -> &dyn Any;
+
+    /// Mutable counterpart to [`Self::as_any`], used by
+    /// [`super::ModalStack::find_first_mut`] when a caller needs to
+    /// update a modal in place (e.g. refreshing the on-disk contents
+    /// carried by `DirtyConflictModal` after a new external write
+    /// arrives while a child reconciliation modal is open).  Same
+    /// trivial body as `as_any`; kept required for the same reason
+    /// (avoiding a `'static` supertrait bound on `Modal`).
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }

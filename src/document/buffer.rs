@@ -63,6 +63,24 @@ impl Buffer {
         }
     }
 
+    /// Rebuild a buffer from a fresh on-disk read.  Used by
+    /// `App::reload_buffer_from_disk` when an external edit replaces
+    /// the file under us.  The new buffer's `version` starts at
+    /// `previous_version.wrapping_add(1)` so the monotonic-version
+    /// invariant other consumers rely on (e.g. the autosave
+    /// edit-detection check in `tick_autosave`) is preserved across
+    /// the buffer swap.  Unlike [`Self::load_file`], the bytes come
+    /// from the caller — the watcher worker has already read them —
+    /// so there is no second disk hit and no chance of racing the
+    /// next watcher event.
+    pub fn reload(path: &Path, contents: &str, previous_version: u64) -> Self {
+        Self {
+            rope: Rope::from_str(contents),
+            path: Some(path.to_owned()),
+            version: previous_version.wrapping_add(1),
+        }
+    }
+
     /// Write the buffer contents to disk at the associated path.
     ///
     /// Returns an error if no path is set.
