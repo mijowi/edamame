@@ -1471,11 +1471,6 @@ Force wrap long lines of code in a table cell so that the table structure is not
 
 Add location in file to status line, e.g. `diff-mode-plan.md > Checkpoint 1 > Item 1`
 
-Goto section command with fuzzy search for headings
-The selected item should use the darker text fg for the selected item, like the command palette.
-What happens when a heading (+ necessary chrome/padding, etc) is wider than the terminal width?
-When the modal opens it should scroll to bring the selected heading row into view, if necessary.
-
 ---
 
 ## Edamame Acronyms
