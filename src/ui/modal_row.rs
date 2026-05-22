@@ -13,6 +13,7 @@
 //! consistent.
 
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 use crate::config::Theme;
 
@@ -78,6 +79,41 @@ pub fn format_modal_row(
             ])
         }
     }
+}
+
+/// Truncate `text` so its display width fits within `max_cells`,
+/// appending `…` to signal the cut.  Counts grapheme display cells via
+/// `unicode-width` so wide characters (CJK, emoji) consume their full
+/// column budget.
+///
+/// Edge cases:
+/// - returns the input unchanged when it already fits
+/// - returns `""` when `max_cells == 0`
+/// - returns a single `…` when `max_cells == 1` (the ellipsis itself
+///   takes one cell), or as much input as fits when no room is left
+///   for an ellipsis
+pub fn truncate_to_cells(text: &str, max_cells: usize) -> String {
+    if max_cells == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= max_cells {
+        return text.to_owned();
+    }
+    // Reserve one cell for the ellipsis; fill the rest with as many
+    // input cells as we can.
+    let budget = max_cells - 1;
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > budget {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out.push('…');
+    out
 }
 
 #[cfg(test)]
@@ -153,5 +189,36 @@ mod tests {
         let line = format_modal_row("X", "v", true, true, t, RowLayout::FixedPad(4));
         let value_span = line.spans.last().unwrap();
         assert_eq!(value_span.style, t.modal_input_focused);
+    }
+
+    #[test]
+    fn truncate_returns_input_when_it_fits() {
+        assert_eq!(truncate_to_cells("hello", 10), "hello");
+        assert_eq!(truncate_to_cells("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_appends_ellipsis_when_too_long() {
+        // 6 cells of input, budget 5 → 4 cells of input + `…`.
+        assert_eq!(truncate_to_cells("abcdef", 5), "abcd…");
+    }
+
+    #[test]
+    fn truncate_respects_wide_characters() {
+        // "漢字" is 4 display cells.  Budget 3 → reserve 1 for `…`,
+        // remaining 2 cells holds exactly the first wide char.
+        assert_eq!(truncate_to_cells("漢字", 3), "漢…");
+    }
+
+    #[test]
+    fn truncate_zero_budget_returns_empty() {
+        assert_eq!(truncate_to_cells("abc", 0), "");
+    }
+
+    #[test]
+    fn truncate_one_cell_budget_returns_just_ellipsis() {
+        // Budget = 1, content too wide: reserve 1 for `…`, can't fit
+        // any input char.
+        assert_eq!(truncate_to_cells("abc", 1), "…");
     }
 }

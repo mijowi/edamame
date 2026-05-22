@@ -160,6 +160,7 @@ impl App {
             self.needs_draw = true;
         }
         self.tick_autosave();
+        self.tick_section_jump();
         self.editor.modal_open = self.any_modal_open();
     }
 

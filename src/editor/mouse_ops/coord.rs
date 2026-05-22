@@ -176,7 +176,10 @@ pub(super) fn rendered_click_to_line_col(
     let indent = line_render::compute_hanging_indent(line);
     let rows = line_render::visual_rows_of_chars(&chars, viewport_width.max(1), indent);
     let sub = sub_row.min(rows.len().saturating_sub(1));
-    let (row_start, row_end, _) = rows.get(sub).copied().unwrap_or((0, chars.len(), chars.len()));
+    let (row_start, row_end, _) = rows
+        .get(sub)
+        .copied()
+        .unwrap_or((0, chars.len(), chars.len()));
     // Continuation rows render with `indent` blank cells of left-padding;
     // subtract them so `col=indent` maps to the first content char of the
     // sub-row, matching `paint_preview_selection`'s x_off calculation.

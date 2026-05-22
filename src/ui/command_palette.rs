@@ -16,8 +16,6 @@ mod actions;
 use self::actions::{label_for, ALL_ACTIONS};
 
 use crossterm::event::{KeyCode, KeyEvent};
-use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
-use nucleo_matcher::{Matcher, Utf32Str};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -28,8 +26,10 @@ use ratatui::{
 use crate::config::{Action, KeyMap, Theme};
 use crate::ui::content_width::max_row_width;
 use crate::ui::modal_row::{format_modal_row, RowLayout};
-use crate::ui::scroll_container::{
-    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind, ScrollContainerState,
+use crate::ui::scroll_container::ScrollContainerState;
+use crate::ui::searchable_list::{
+    draw_searchable_list_chrome, fuzzy_filter, render_searchable_list_scrollbar,
+    SearchableListChrome,
 };
 
 /// One palette row: an action plus its display label.
@@ -253,23 +253,10 @@ impl PaletteState {
                 }
             }
         } else {
-            let mut matcher = Matcher::default();
-            let pattern = Pattern::parse(&self.query, CaseMatching::Ignore, Normalization::Smart);
-            let mut scored: Vec<(usize, u32)> = Vec::new();
-            let mut buf: Vec<char> = Vec::new();
-            for (idx, entry) in self.entries.iter().enumerate() {
-                buf.clear();
-                let haystack = Utf32Str::new(&entry.label, &mut buf);
-                if let Some(score) = pattern.score(haystack, &mut matcher) {
-                    scored.push((idx, score));
-                }
-            }
-            // Higher score first; tie-break by stable label order.
-            scored.sort_by(|a, b| {
-                b.1.cmp(&a.1)
-                    .then_with(|| self.entries[a.0].label.cmp(&self.entries[b.0].label))
-            });
-            for (i, _) in scored {
+            // `entries` is already alphabetical by label, so index-
+            // order tie-breaking inside `fuzzy_filter` is equivalent
+            // to the previous explicit label-order tie-break.
+            for i in fuzzy_filter(&self.entries, &self.query, |e| e.label.as_str()) {
                 self.display_rows.push(DisplayRow::Entry(i));
             }
         }
@@ -300,116 +287,20 @@ impl<'a> StatefulWidget for PaletteView<'a> {
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         state.refresh_display();
 
-        // Content-aware sizing: width tracks the longest entry row,
-        // height tracks the display row count capped at MAX_LIST_ROWS.
-        // Pinned-top covers the input row + divider.
-        let content_width = palette_content_width(state).max(NO_MATCHES_WIDTH);
-        let row_count = state.display_rows.len().max(1) as u16;
-        let scrolling_height = row_count.min(MAX_LIST_ROWS);
-        let content = ContentSize {
-            width: content_width,
-            height: scrolling_height,
-            pinned_top: 2, // input row + divider
-            pinned_bottom: 0,
-            ..Default::default()
+        let chrome = SearchableListChrome {
+            title: "Command Palette",
+            query: &state.query,
+            content_width: palette_content_width(state).max(NO_MATCHES_WIDTH),
+            row_count: state.display_rows.len() as u16,
+            cursor_visible: self.cursor_visible,
+            theme: self.theme,
         };
-        // Centre the modal in the terminal, but anchor the top edge as if
-        // the modal were at its maximum possible height.  A naively-centred
-        // palette would shift up and down by half the height delta on every
-        // character typed; computing the y position from the max-height
-        // layout keeps the input row pinned while the modal still appears
-        // centred at its full extent.
-        let max_content = ContentSize {
-            height: MAX_LIST_ROWS,
-            ..content
-        };
-        let anchor = centered_rect_for_content(max_content, area);
-        let actual = centered_rect_for_content(content, area);
-        let max_y = area.y + area.height.saturating_sub(actual.height);
-        let modal_area = Rect {
-            x: actual.x,
-            y: anchor.y.min(max_y),
-            width: actual.width,
-            height: actual.height,
-        };
-
-        // Pre-compute layout so the title's arrow indicator reflects
-        // the post-observe scroll bounds.  Body height excludes the
-        // fixed vertical chrome budget.
-        let inner_h = modal_area
-            .height
-            .saturating_sub(crate::ui::scroll_container::VERTICAL_CHROME_ROWS);
-        let pinned_top: u16 = 2;
-        let list_height = inner_h.saturating_sub(pinned_top);
-        state
-            .scroll_state
-            .observe(state.display_rows.len() as u16, list_height);
-
-        let layout = draw_frame(
-            modal_area,
-            buf,
-            FrameOpts {
-                title: "Command Palette",
-                kind: ModalKind::Normal,
-                show_close_hint: true,
-                content,
-                theme: self.theme,
-            },
-        );
-        state.esc_button_rect = layout.esc_hit_rect;
-        let inner = layout.body;
-        if inner.height < 2 || inner.width == 0 {
+        let Some(layout) = draw_searchable_list_chrome(area, buf, chrome, &mut state.scroll_state)
+        else {
             return;
-        }
-
-        // Top row: the live input — `›` prompt + query + a static cursor
-        // glyph so the user sees where typing lands even though the
-        // palette uses a single Paragraph rather than a real text widget.
-        let input_area = Rect {
-            x: inner.x,
-            y: inner.y,
-            width: inner.width,
-            height: 1,
         };
-        // Unlike other modal inputs, the command palette's input row
-        // sits flush against the modal body — no colored bg fill —
-        // so the row reads as part of the modal rather than as a
-        // sunken text-input chip.  The `▏` cursor glyph picks up
-        // `primary` so the typing affordance still pops.
-        let prompt = Span::styled("› ", self.theme.modal_item);
-        let typed = Span::styled(state.query.clone(), self.theme.modal_item);
-        let mut spans = vec![prompt, typed];
-        if self.cursor_visible {
-            let cursor_style = ratatui::style::Style::default()
-                .fg(self.theme.palette.primary)
-                .bg(self.theme.palette.surface_elevated)
-                .add_modifier(ratatui::style::Modifier::BOLD);
-            spans.push(Span::styled("▏", cursor_style));
-        }
-        Paragraph::new(Line::from(spans))
-            .style(self.theme.modal_bg)
-            .render(input_area, buf);
-
-        // Divider between input and result list.  Same fg as the
-        // secondary chrome border; surface_elevated bg so it sits
-        // flush against the modal body.
-        let divider_style = ratatui::style::Style::default()
-            .fg(self.theme.palette.secondary)
-            .bg(self.theme.palette.surface_elevated);
-        let divider_y = inner.y + 1;
-        for x in inner.x..(inner.x + inner.width) {
-            buf[(x, divider_y)].set_symbol("─").set_style(divider_style);
-        }
-
-        // List paints into the body area below the input + divider.
-        // The scrollbar paints into the rightmost padding column
-        // returned by the frame layout — no internal gutter split.
-        let list_area = Rect {
-            x: inner.x,
-            y: inner.y + pinned_top,
-            width: inner.width,
-            height: list_height,
-        };
+        state.esc_button_rect = layout.esc_hit_rect;
+        let list_area = layout.list_area;
         if list_area.height == 0 {
             return;
         }
@@ -453,31 +344,13 @@ impl<'a> StatefulWidget for PaletteView<'a> {
             .style(self.theme.modal_bg)
             .render(list_area, buf);
 
-        if state.scroll_state.max_scroll() > 0 {
-            let bar_area = Rect {
-                x: layout.scrollbar_col,
-                y: list_area.y,
-                width: 1,
-                height: list_area.height,
-            };
-            crate::ui::scrollbar::render_for_scroll_state(
-                bar_area,
-                &state.scroll_state,
-                self.theme,
-                buf,
-            );
-        }
+        render_searchable_list_scrollbar(&layout, &state.scroll_state, self.theme, buf);
     }
 }
 
 /// Width of "(no matches)" copy, used as a floor so the modal doesn't
 /// snap narrower than the placeholder.
 const NO_MATCHES_WIDTH: u16 = 12;
-
-/// Cap on the visible list rows.  Keeps the palette compact when all
-/// actions are shown in the empty-state sectioned view.  The scroll
-/// container handles overflow.
-const MAX_LIST_ROWS: u16 = 20;
 
 /// Content-aware width for the palette body: max over `entries` of
 /// `marker(2) + label_w + 1 (gap) + chord_w`.  We size on the *whole*
@@ -527,6 +400,7 @@ const SUGGESTED_ACTIONS: &[Action] = &[
     Action::OpenSettings,
     Action::SwitchTheme,
     Action::OpenKeybinds,
+    Action::GoToSection,
     Action::InsertTable,
     Action::ToggleTableButtons,
     Action::SaveCopy,
@@ -563,9 +437,10 @@ fn section_of(action: &Action) -> &'static str {
         | Action::ToggleRawMode
         | Action::EnterEditMode
         | Action::ToggleTableButtons => "View",
-        Action::FollowLinkUnderCursor | Action::NavigateBack | Action::NavigateForward => {
-            "Navigate"
-        }
+        Action::FollowLinkUnderCursor
+        | Action::NavigateBack
+        | Action::NavigateForward
+        | Action::GoToSection => "Navigate",
         Action::TableMoveRowUp
         | Action::TableMoveRowDown
         | Action::TableMoveColumnLeft
@@ -660,6 +535,7 @@ mod tests {
                 "Open settings".to_owned(),
                 "Switch theme".to_owned(),
                 "Open keybindings".to_owned(),
+                "Go to section".to_owned(),
                 "Insert table".to_owned(),
                 "Toggle table buttons".to_owned(),
                 "Save a copy".to_owned(),
