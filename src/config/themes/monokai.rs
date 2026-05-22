@@ -17,7 +17,7 @@ pub fn palette() -> Palette {
 
         primary: rgb(0xae81ff),
         secondary: rgb(0xfd971f),
-        accent: rgb(0xf92672),
+        accent: rgb(0xff54c0),
         link: rgb(0x66d9ef),
 
         success: rgb(0xa6e22e),
