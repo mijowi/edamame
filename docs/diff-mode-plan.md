@@ -1741,7 +1741,7 @@ PR-sized unit.
 
 **Verifiable live:** application behavior is unchanged from main. This is the foundation for CP2 and is shippable on its own as a refactor PR.
 
-### Checkpoint 2 — Watcher + DirtyConflictModal (no diff mode)
+### Checkpoint 2 — Watcher + DirtyConflictModal (no diff mode) ✅ DONE
 
 **New files:** `src/watcher.rs`, `src/watcher/file_watcher.rs`, `src/watcher/debounce.rs`, `src/app/modal/dirty_conflict.rs`, `src/app/modal/dirty_conflict_discard_confirm.rs`, `tests/watcher.rs`
 
@@ -1758,6 +1758,12 @@ PR-sized unit.
 **Tests:** `tests/watcher.rs` (FakeFileWatcher debounce + tempfile integration + own-write hash echo suppression + stamp-on-accept behavior), modal button flows in `tests/ui.rs`.
 
 **Verifiable live:** edit the open file in another editor; the modal appears with three working actions.
+
+**CP2 deviations from the plan as written:**
+- A `src/app/file_changed.rs` module hosts the file-change dispatch logic (`App::handle_file_changed`, `App::reload_buffer_from_disk`) instead of inlining it into `src/app/event_loop.rs`.  The event-loop arm is a one-line call into the new module; the dispatch decision tree (hash filter → no-diff short-circuit → dirty-check) lives in its own file alongside its tests.
+- `[Save a copy]` from the dirty-conflict modal is implemented via a dedicated `DirtyConflictSaveCopyModal` (wraps `SaveCopyState` + `SaveCopyView`) rather than pushing the existing `SaveCopyModal`.  The dedicated variant carries the on-disk contents through the save path so the post-save reload is byte-identical to the watcher payload (no disk re-read race) and the parent `DirtyConflictModal` is popped on success.
+- Watcher worker exposes events on a `mpsc::Sender<WatchedChange>` rather than `mpsc::Sender<AppEvent>`; a small bridge thread in `App::spawn_event_threads` forwards them as `AppEvent::FileChanged`.  Keeps the watcher unit-testable without an `App`.
+- External-editor pause is implemented by calling `unwatch()` on suspend and `watch()` + `force_reconcile()` on resume (rather than a separate paused flag on the watcher).  Effect is identical: no organic events reach the main thread while the editor is in flight, and the forced reconcile picks up any external edits the editor made.
 
 ### Checkpoint 3 — Diff engine + raw DiffView + Review decisions (no edits, no undo)
 

@@ -70,6 +70,20 @@ impl ModalStack {
     pub fn contains<T: Modal + 'static>(&self) -> bool {
         self.inner.iter().any(|m| m.as_any().is::<T>())
     }
+
+    /// Mutable borrow of the first modal of type `T` on the stack, if
+    /// any.  Used by `App::handle_file_changed` to refresh the
+    /// `on_disk_contents` carried by a child reconciliation modal
+    /// (`DirtyConflictSaveCopyModal` / `DirtyConflictDiscardConfirmModal`)
+    /// when a fresh external write arrives before the user has
+    /// confirmed.  "First" is bottom-up — matches the order
+    /// [`Self::remove_first`] uses so the two methods pair naturally.
+    pub fn find_first_mut<T: Modal + 'static>(&mut self) -> Option<&mut T> {
+        self.inner
+            .iter_mut()
+            .find(|m| m.as_any().is::<T>())
+            .and_then(|m| m.as_any_mut().downcast_mut::<T>())
+    }
 }
 
 #[cfg(test)]
@@ -98,6 +112,9 @@ mod tests {
         fn as_any(&self) -> &dyn Any {
             self
         }
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
     }
 
     impl Modal for ModalB {
@@ -112,6 +129,9 @@ mod tests {
             ModalOutcome::Continue
         }
         fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn Any {
             self
         }
     }

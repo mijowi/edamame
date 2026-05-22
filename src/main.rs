@@ -8,6 +8,7 @@ mod input;
 mod markdown;
 mod terminal;
 mod ui;
+mod watcher;
 
 use anyhow::Result;
 use app::App;

@@ -4,6 +4,7 @@ mod actions;
 mod autosave;
 mod event_loop;
 mod external_editor;
+mod file_changed;
 mod flash;
 mod frame_timer;
 mod image_dispatch;
@@ -32,7 +33,8 @@ use crate::editor::link::LinkTarget;
 use crate::editor::{mouse_ops, EditorState};
 use crate::input::MouseDispatcher;
 use crate::terminal::{Capabilities, ColorDepth, PointerShape};
-use crate::ui::{EditorViewState, HintChord, ModalKind};
+use crate::ui::{EditorViewState, HintChord};
+use crate::watcher::{FileWatcher, WatchedEvent};
 
 pub use flash::MessageKind;
 
@@ -60,6 +62,11 @@ pub(crate) enum AppEvent {
     /// URL or non-Markdown local file.  Currently only logged; Phase 9
     /// will surface failures on the hint line.
     LinkOpenResult(std::result::Result<(), String>),
+    /// Watcher worker delivered an event for the open file.  A
+    /// `Change` is routed through the own-write content-hash filter
+    /// before being acted on; a `ReadError` is surfaced via a
+    /// dismissable warning modal.  See [`App::handle_watcher_event`].
+    Watcher(WatchedEvent),
 }
 
 /// Generic modal prompt hosted on the hint line.
@@ -260,6 +267,21 @@ pub struct App {
     /// elapses.  `None` between jumps; overwritten on every preview so
     /// only the most-recent target is kept.
     section_jump_target_scroll: Option<usize>,
+    /// Active filesystem watcher for the open file, if any.  `None`
+    /// until the run loop calls [`App::start_file_watcher`] after the
+    /// initial buffer load.  Multi-tab work later swaps this for a
+    /// per-tab map — the `Option<Box<dyn FileWatcher>>` shape is
+    /// chosen so that refactor only touches this field and the
+    /// watch / unwatch call sites.
+    pub(crate) watcher: Option<Box<dyn FileWatcher>>,
+    /// Content hash of the last-observed-on-disk bytes for the open
+    /// file.  Updated from three sources: initial load, every
+    /// successful save, and every accepted incoming `FileChanged`.
+    /// Consulted by the `FileChanged` arm to suppress echoes of our
+    /// own writes (the hash matches → drop the event silently).
+    /// `None` only during the brief window between `App::new()` and
+    /// the initial load — `Some` for any open file thereafter.
+    pub(crate) last_disk_hash: Option<u64>,
 }
 
 impl App {
@@ -323,6 +345,13 @@ impl App {
             }
             None => Buffer::new(),
         };
+        // Seed the watcher's own-write filter from the just-loaded
+        // bytes so the very first inotify event after startup (which
+        // some editors synthesize when other tools touch the file
+        // around launch time) is compared against a real hash, not
+        // `None`.  An empty `[New File]` buffer hashes to a stable
+        // value too — fine, the next on-disk change will differ.
+        let initial_disk_hash = Some(seahash::hash(buffer.contents().as_bytes()));
 
         // Pass the probed font-size through so the renderer can compute
         // aspect-aware row counts for decoded images.  Fall back to
@@ -497,6 +526,8 @@ impl App {
             autosave_last_seen_version: 0,
             section_jump_pending_since: None,
             section_jump_target_scroll: None,
+            watcher: None,
+            last_disk_hash: initial_disk_hash,
         })
     }
 
@@ -510,51 +541,15 @@ impl App {
     fn drain_pending_image_ready(&mut self, rx: &mpsc::Receiver<AppEvent>) {
         loop {
             match rx.try_recv() {
-                Ok(AppEvent::ImageReady(Ok(loaded))) => {
-                    self.editor.images.set_decoded_with_prebuilt(
-                        &loaded.url,
-                        loaded.image,
-                        loaded.scratch,
-                    );
-                    self.images_dirty = true;
-                }
-                Ok(AppEvent::ImageReady(Err((url, message)))) => {
-                    tracing::debug!(target: "image", %url, %message, "image decode failed");
-                    self.editor.images.set_failed(&url, message);
-                    // A failure collapses the block's reserved rows to 1
-                    // (see `ImageCache::reserved_rows`), so the parsed
-                    // doc must be rebuilt to drop the placeholder's
-                    // extra blank rows.
-                    self.images_dirty = true;
-                }
-                Ok(AppEvent::ProtocolReady(Ok(resp))) => {
-                    self.editor.images.apply_resize_response(resp);
-                }
-                Ok(AppEvent::ProtocolReady(Err(err))) => {
-                    tracing::debug!(target: "image", %err, "encoder request failed");
-                    // Keep the pending FIFO balanced — see ImageCache.
-                    self.editor.images.drop_pending_front();
-                }
-                Ok(AppEvent::LinkOpenResult(result)) => {
-                    // Phase 8: `open::that` finished in a worker.
-                    // Phase 9: surface failures on the hint line as a
-                    // sticky error so the user knows the click did not
-                    // result in a navigation.
-                    if let Err(msg) = result {
-                        tracing::warn!(target: "link", error = %msg, "link open failed");
-                        self.notify(format!("Link open failed: {msg}"), ModalKind::Error);
-                        self.needs_draw = true;
-                    }
-                }
-                // A Term event pulled via `try_recv` cannot be put back
-                // into the channel, so push it onto `pending_events` —
-                // the next loop iteration consults that queue before
-                // `recv_timeout` so events stay in their original order.
-                // We keep draining so queued image-ready events behind
-                // the first key aren't starved.
-                Ok(AppEvent::Term(e)) => {
-                    self.pending_events.push_back(e);
-                }
+                // A Term event pulled via `try_recv` cannot be put
+                // back into the channel, so push it onto
+                // `pending_events` — the next loop iteration consults
+                // that queue before `recv_timeout` so events stay in
+                // their original order.  We keep draining so queued
+                // image-ready events behind the first key aren't
+                // starved.
+                Ok(AppEvent::Term(e)) => self.pending_events.push_back(e),
+                Ok(ev) => self.handle_async_event(ev),
                 Err(_) => break,
             }
         }
@@ -576,6 +571,7 @@ impl App {
     pub fn run(&mut self, mut terminal: Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
         self.startup_pointer_hint();
         let rx = self.spawn_event_threads();
+        self.start_file_watcher();
         self.build_keymap_if_needed()?;
         if self.started_with_new_file {
             self.flash("[New File]", MessageKind::Info);

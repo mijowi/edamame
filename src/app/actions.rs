@@ -405,7 +405,25 @@ impl App {
     pub(super) fn save_buffer(&mut self) -> anyhow::Result<()> {
         self.editor.buffer.save_file()?;
         self.editor.dirty = false;
+        // Stamp the just-written contents so the watcher's own-write
+        // filter drops the inotify echo that our own save is about
+        // to generate.  Computed from the in-memory rope rather than
+        // re-reading disk — they are byte-identical at this point
+        // (Buffer::save_file just wrote `rope.to_string()`) and the
+        // memory read is dramatically cheaper.
+        let bytes = self.editor.buffer.contents();
+        self.set_disk_hash(bytes.as_bytes());
         Ok(())
+    }
+
+    /// Stamp the watcher's own-write filter from raw bytes.  Used by
+    /// callers that do not already have an `incoming_hash` computed
+    /// — the initial file load and the manual / autosave save paths.
+    /// The accepted-`FileChanged` arm in `file_changed.rs` writes
+    /// `last_disk_hash` directly to avoid hashing the same bytes
+    /// twice.
+    pub(crate) fn set_disk_hash(&mut self, bytes: &[u8]) {
+        self.last_disk_hash = Some(seahash::hash(bytes));
     }
 
     /// Open the settings overlay.
