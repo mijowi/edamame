@@ -94,6 +94,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
                 keymap,
                 &[
                     (Action::ShowCommandPalette, "Menu"),
+                    (Action::GoToSection, "Go to"),
                     (Action::Copy, "Copy"),
                     (Action::Quit, "Quit"),
                 ],
@@ -148,6 +149,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
             let redo_entry = state.history.can_redo().then_some((Action::Redo, "Redo"));
             let baseline = [
                 Some((Action::ShowCommandPalette, "Menu")),
+                Some((Action::GoToSection, "Go to")),
                 Some((Action::Paste, "Paste")),
                 Some((Action::Undo, "Undo")),
                 redo_entry,

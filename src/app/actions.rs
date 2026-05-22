@@ -135,6 +135,10 @@ impl App {
                 self.open_command_palette();
                 true
             }
+            Action::GoToSection => {
+                self.open_section_picker(doc_width);
+                true
+            }
             Action::ShowMarkdownCheatSheet => {
                 self.open_markdown_cheat_sheet();
                 true

@@ -96,6 +96,10 @@ impl App {
         // Autosave: wake when the idle-debounce window expires so the
         // save fires without the user having to press a key.
         push(self.autosave_deadline());
+        // Section picker: wake when the live-preview debounce expires
+        // so the viewport reposition happens even if the user has
+        // stopped pressing arrow keys.
+        push(self.section_jump_deadline());
         earliest
     }
 }

@@ -9,6 +9,7 @@ mod frame_timer;
 mod image_dispatch;
 mod nav;
 mod pointer;
+mod section_jump;
 
 #[cfg(test)]
 mod test_utils;
@@ -249,6 +250,16 @@ pub struct App {
     /// detect that an edit has happened since the previous tick and
     /// restart the debounce window.
     autosave_last_seen_version: u64,
+    /// Debounce timer for the section picker's live-preview scroll.
+    /// Set whenever the user navigates the picker; cleared once
+    /// [`Self::tick_section_jump`] fires or the modal closes.  Without
+    /// the debounce, holding `↓` on the picker would thrash the
+    /// viewport for every focus change.
+    section_jump_pending_since: Option<Instant>,
+    /// Target scroll value to apply when the section-jump debounce
+    /// elapses.  `None` between jumps; overwritten on every preview so
+    /// only the most-recent target is kept.
+    section_jump_target_scroll: Option<usize>,
 }
 
 impl App {
@@ -484,6 +495,8 @@ impl App {
             started_with_new_file,
             autosave_pending_since: None,
             autosave_last_seen_version: 0,
+            section_jump_pending_since: None,
+            section_jump_target_scroll: None,
         })
     }
 

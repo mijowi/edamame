@@ -22,6 +22,8 @@ pub mod rendered_view;
 pub mod save_copy_modal;
 pub mod scroll_container;
 pub mod scrollbar;
+pub mod searchable_list;
+pub mod section_picker;
 pub mod settings_overlay;
 pub mod status_bar;
 pub mod table_view;
@@ -49,6 +51,9 @@ pub use save_copy_modal::{default_copy_path, SaveCopyResponse, SaveCopyState, Sa
 #[allow(unused_imports)]
 pub use scrollbar::{
     position_for_click, position_for_drag, thumb_range, Scrollbar, ScrollbarMetrics,
+};
+pub use section_picker::{
+    HeadingEntry, SectionPickerResponse, SectionPickerState, SectionPickerView,
 };
 pub use settings_overlay::SettingsResponse;
 pub use settings_overlay::{SettingsState, SettingsView};

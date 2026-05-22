@@ -51,6 +51,7 @@ pub(super) const ALL_ACTIONS: &[Action] = &[
     Action::OpenGitHub,
     Action::NavigateBack,
     Action::NavigateForward,
+    Action::GoToSection,
     // Tables — surface only the structural ops.  Cell navigation
     // (Tab/Shift+Tab) doesn't make sense from a palette.
     Action::TableMoveRowUp,
@@ -96,6 +97,7 @@ pub(super) fn label_for(action: &Action) -> Option<&'static str> {
         Action::OpenGitHub => "View Edamame on GitHub",
         Action::NavigateBack => "Navigate back",
         Action::NavigateForward => "Navigate forward",
+        Action::GoToSection => "Go to section",
         Action::TableMoveRowUp => "Table: Move row up",
         Action::TableMoveRowDown => "Table: Move row down",
         Action::TableMoveColumnLeft => "Table: Move column left",

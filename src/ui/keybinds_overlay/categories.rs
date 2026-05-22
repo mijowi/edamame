@@ -42,6 +42,7 @@ pub(super) const CATEGORIES: &[(&str, &[(Action, &str)])] = &[
             (Action::MoveDocStart, "Doc start"),
             (Action::MoveDocEnd, "Doc end"),
             (Action::SelectAll, "Select all"),
+            (Action::GoToSection, "Go to section"),
         ],
     ),
     ("Links", &[(Action::FollowLinkUnderCursor, "Follow link")]),
