@@ -13,7 +13,7 @@
 use std::time::{Duration, Instant};
 
 use crate::editor::Mode;
-use crate::markdown::{ast::inlines_to_plain, Block};
+use crate::markdown::{ast::heading_plain_text, Block};
 use crate::ui::HeadingEntry;
 
 use super::App;
@@ -138,19 +138,12 @@ fn collect_heading_entries(
         let Block::Heading { level, inlines } = block else {
             continue;
         };
-        // Heading text — flatten inlines to plain text.  `inlines_to_plain`
-        // emits spaces for soft breaks and a `\n` for hard breaks, which
-        // we then collapse to a single space so the picker row stays on
-        // one visual line.
-        let text = inlines_to_plain(inlines).replace('\n', " ");
+        let text = heading_plain_text(inlines);
         let Some(range) = state.parsed.real_ranges.get(block_idx) else {
             continue;
         };
         let byte_start = range.start;
-        let buffer_line = state
-            .buffer
-            .rope()
-            .char_to_line(state.buffer.rope().byte_to_char(byte_start));
+        let buffer_line = state.buffer.byte_to_line(byte_start);
         let target_scroll = match state.mode {
             Mode::Raw => state.visual_rows_before_raw_line(buffer_line, width),
             _ => {

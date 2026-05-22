@@ -161,6 +161,21 @@ pub struct Theme {
     pub status_modified: Style,
     /// Style for the selection-size indicator (e.g. ` Sel 42 ch · 3 ln `).
     pub status_selection: Style,
+    /// Style for the `›` separator between segments of the section-path
+    /// breadcrumb (`notes.md › Checkpoint 1 › Item 1`).  Dimmed so the
+    /// segment names read as the structure and the separators recede.
+    pub status_breadcrumb_sep: Style,
+    /// Style for ancestor segments of the section-path breadcrumb —
+    /// every segment except the deepest one (e.g. `Checkpoint 1` when
+    /// the cursor is under `Item 1`).  Dimmed so the deepest segment
+    /// (rendered with `status_breadcrumb_current`) stands out as the
+    /// "you are here" anchor.
+    pub status_breadcrumb_ancestor: Style,
+    /// Style for the deepest segment of the section-path breadcrumb —
+    /// the heading whose scope directly contains the cursor.  Bold +
+    /// accent color so it reads as the active location among the
+    /// dimmed ancestor chain.
+    pub status_breadcrumb_current: Style,
 
     // ── Hint line (Phase 9) ───────────────────────────────────────
     /// Base background/foreground for the contextual hint line.
@@ -720,13 +735,23 @@ impl Theme {
                 .add_modifier(bold),
             status_mode_rendered: Style::default().bg(p.primary).fg(p.bg).add_modifier(bold),
             status_mode_raw: Style::default().bg(p.warning).fg(p.bg).add_modifier(bold),
-            status_filename: Style::default().fg(p.text).bg(p.surface),
+            // Filename rendered bold so it anchors the left side of the
+            // status bar alongside the bold accented "current section"
+            // chip on its right; the two together frame the rest of the
+            // breadcrumb chain.
+            status_filename: Style::default().fg(p.text).bg(p.surface).add_modifier(bold),
             status_info: Style::default().fg(p.primary).bg(p.surface),
             status_modified: Style::default()
                 .fg(p.warning)
                 .bg(p.surface)
                 .add_modifier(bold),
             status_selection: Style::default()
+                .fg(p.primary)
+                .bg(p.surface)
+                .add_modifier(bold),
+            status_breadcrumb_sep: Style::default().fg(p.text_muted).bg(p.surface),
+            status_breadcrumb_ancestor: Style::default().fg(p.text_muted).bg(p.surface),
+            status_breadcrumb_current: Style::default()
                 .fg(p.primary)
                 .bg(p.surface)
                 .add_modifier(bold),
