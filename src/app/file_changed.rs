@@ -109,16 +109,12 @@ impl App {
             // `DirtyConflictModal` underneath so that cancelling the
             // child returns the user to a modal whose carried bytes
             // are still in sync.
-            let has_save_copy = self
-                .modal_stack
-                .contains::<DirtyConflictSaveCopyModal>();
+            let has_save_copy = self.modal_stack.contains::<DirtyConflictSaveCopyModal>();
             let has_discard_confirm = self
                 .modal_stack
                 .contains::<DirtyConflictDiscardConfirmModal>();
             if has_save_copy || has_discard_confirm {
-                if let Some(parent) =
-                    self.modal_stack.find_first_mut::<DirtyConflictModal>()
-                {
+                if let Some(parent) = self.modal_stack.find_first_mut::<DirtyConflictModal>() {
                     parent.set_on_disk_contents(change.contents.clone());
                 }
                 if has_save_copy {
