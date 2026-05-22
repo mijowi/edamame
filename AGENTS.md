@@ -146,6 +146,8 @@ src/
                     #   re-exports RAW_REVEAL_DELAY
     state_cursor_block.rs   # cursor-block lookup + reveal jitter suppression
     state_cursor_visual.rs  # move_up_visual / move_down_visual
+    state_section_path.rs   # cursor_section_chain — heading-ancestor
+                            #   breadcrumb for the status bar
     state_viewport.rs       # scroll + viewport clamping
     table_edit.rs   # table detection + structure edits (row/col add/remove)
     table_edit_ops.rs # Action dispatch helpers for table_edit

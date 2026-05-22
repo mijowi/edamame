@@ -146,6 +146,15 @@ impl Buffer {
         self.rope.char_to_line(char_idx)
     }
 
+    /// Return the line index (0-indexed) that contains `byte_idx`.
+    /// Convenience for the common `char_to_line(byte_to_char(b))` pair —
+    /// callers that have a byte offset (block ranges, source-map
+    /// lookups) avoid the double-call and the chance of getting the
+    /// argument order wrong.
+    pub fn byte_to_line(&self, byte_idx: usize) -> usize {
+        self.rope.char_to_line(self.rope.byte_to_char(byte_idx))
+    }
+
     /// Buffer line index for the `raw_line_idx`-th line within a block
     /// whose byte range starts at `block_byte_start`.
     pub fn block_line_to_buffer_line(&self, block_byte_start: usize, raw_line_idx: usize) -> usize {

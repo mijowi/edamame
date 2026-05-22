@@ -857,6 +857,7 @@ mod tests {
                         cursor_line: Some(1),
                         cursor_col: Some(1),
                         selection_size: sel,
+                        section_path: Vec::new(),
                     },
                     hint,
                     layout,

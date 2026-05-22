@@ -1469,8 +1469,6 @@ Check that clipboard is surfaced in capabilities check
 
 Force wrap long lines of code in a table cell so that the table structure is not broken.
 
-Add location in file to status line, e.g. `diff-mode-plan.md > Checkpoint 1 > Item 1`
-
 ---
 
 ## Edamame Acronyms

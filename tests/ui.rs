@@ -28,6 +28,7 @@ fn render_status_bar(
                     cursor_line: None,
                     cursor_col: None,
                     selection_size: None,
+                    section_path: Vec::new(),
                 },
                 theme,
             };
@@ -65,13 +66,14 @@ fn status_bar_line_count() {
 #[test]
 fn status_bar_modified_flag() {
     let out = render_status_bar(Mode::Preview, "f.md", 5, true, 80);
-    assert!(out.contains("[modified]"), "got: {out:?}");
+    assert!(out.contains("f.md*"), "got: {out:?}");
+    assert!(!out.contains("[modified]"), "got: {out:?}");
 }
 
 #[test]
 fn status_bar_clean_no_modified_flag() {
     let out = render_status_bar(Mode::Preview, "f.md", 5, false, 80);
-    assert!(!out.contains("[modified]"), "got: {out:?}");
+    assert!(!out.contains("f.md*"), "got: {out:?}");
 }
 
 #[test]
@@ -1018,6 +1020,7 @@ fn status_bar_shows_cursor_position() {
                     cursor_line: Some(5),
                     cursor_col: Some(12),
                     selection_size: None,
+                    section_path: Vec::new(),
                 },
                 theme,
             };

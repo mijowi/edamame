@@ -385,6 +385,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
         let scroll = self.state.scroll;
         let selection_size = self.state.selection_size();
 
+        let section_path = self.state.cursor_section_chain();
         let region = BottomRegion {
             status: StatusBarState {
                 mode,
@@ -395,6 +396,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                 cursor_line: Some(cursor_line + 1), // 1-indexed display
                 cursor_col: Some(cursor_col + 1),
                 selection_size,
+                section_path,
             },
             hint: self.hint,
             layout: self.status_bar_layout,

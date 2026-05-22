@@ -2,4 +2,4 @@
 source: tests/ui.rs
 expression: out
 ---
- EDIT  notes.md [modified]                                         42 lines  2%
+ EDIT  notes.md*                                                   42 lines  2%

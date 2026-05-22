@@ -102,6 +102,14 @@ pub enum Inline {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/// Flatten a heading's inlines to a single-line plain text string —
+/// `inlines_to_plain` followed by collapsing hard-break `\n`s to spaces
+/// so the result fits on one row (section picker, status-bar
+/// breadcrumb).
+pub fn heading_plain_text(inlines: &[Inline]) -> String {
+    inlines_to_plain(inlines).replace('\n', " ")
+}
+
 /// Flatten inlines to a plain text string (no styling).
 pub fn inlines_to_plain(inlines: &[Inline]) -> String {
     let mut out = String::new();
