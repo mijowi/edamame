@@ -168,22 +168,45 @@ pub fn compute_hunks(old_text: &str, new_text: &str, ids: &mut HunkIdAllocator) 
         }
     }
 
-    // Third pass: row-level table sub-diff.  Hunks that intersect a
-    // table extent on either side are split into per-row hunks.
+    // Third pass: row-level table sub-diff.  A hunk fully contained
+    // within a table extent on both sides is replaced by per-row
+    // hunks covering the *whole* table (a single row-diff over the
+    // extent captures every changed row, regardless of how the
+    // line-level pass chunked them).  Because that one row-diff is
+    // complete, any *other* line-level hunk that also falls inside an
+    // already-split table is dropped — re-splitting the same extent
+    // would emit every changed row a second time (duplicate hunks →
+    // duplicated lines on resolve).
     let old_table_extents = table_line_extents(old_text);
     let new_table_extents = table_line_extents(new_text);
     let mut split: Vec<Hunk> = Vec::with_capacity(hunks.len());
+    let mut split_extent_idxs: Vec<usize> = Vec::new();
     for h in hunks.into_iter() {
+        let old_idx = find_extent_idx(&old_table_extents, &h.old_lines);
+        let new_idx = find_extent_idx(&new_table_extents, &h.new_lines);
+        let (Some(oi), Some(ni)) = (old_idx, new_idx) else {
+            // Doesn't sit inside a table on both sides — keep as-is
+            // (covers non-table hunks and boundary-straddling hunks).
+            split.push(h);
+            continue;
+        };
+        if split_extent_idxs.contains(&oi) {
+            // This table was already row-split by an earlier hunk;
+            // its changed rows are already represented.  Drop this
+            // hunk so its rows aren't emitted twice.
+            continue;
+        }
         if let Some(extra) = split_table_hunk(
-            &h,
+            &old_table_extents[oi],
+            &new_table_extents[ni],
             old_text,
             new_text,
-            &old_table_extents,
-            &new_table_extents,
             ids,
         ) {
+            split_extent_idxs.push(oi);
             split.extend(extra);
         } else {
+            // Uniformity guard tripped — keep the monolithic hunk.
             split.push(h);
         }
     }
@@ -299,28 +322,20 @@ fn table_line_extents(source: &str) -> Vec<TableExtent> {
         .collect()
 }
 
-/// Returns `Some(replacement_hunks)` when `h` falls within a table
-/// extent on either side and the row sub-diff produces more than one
-/// hunk.  Returns `None` when the hunk doesn't touch a table, or
-/// when the row-uniformity guard trips.
+/// Row-split one table, given the table's old- and new-side line
+/// extents.  Runs a single `similar` diff over the table's rows and
+/// emits one hunk per coalesced run of changed rows.  Returns `None`
+/// when the row-uniformity guard trips (non-rectangular table — the
+/// caller then keeps the monolithic hunk).  The caller is responsible
+/// for having verified, via [`find_extent_idx`], that the triggering
+/// hunk is fully contained in these extents on both sides.
 fn split_table_hunk(
-    h: &Hunk,
+    old_extent: &TableExtent,
+    new_extent: &TableExtent,
     old_text: &str,
     new_text: &str,
-    old_extents: &[TableExtent],
-    new_extents: &[TableExtent],
     ids: &mut HunkIdAllocator,
 ) -> Option<Vec<Hunk>> {
-    let old_extent = find_extent(old_extents, &h.old_lines);
-    let new_extent = find_extent(new_extents, &h.new_lines);
-    let (old_extent, new_extent) = match (old_extent, new_extent) {
-        (Some(o), Some(n)) => (o, n),
-        // A hunk that touches a table on only one side is a fan-out
-        // — out of scope for Phase 1 row diffing; render as a single
-        // monolithic Replace.
-        _ => return None,
-    };
-
     // Column-count guard: every row on each side must have the same
     // cell count, and the per-side maxima must match across sides.
     let old_rows = line_slice(old_text, old_extent.lines.clone());
@@ -441,10 +456,20 @@ fn split_table_hunk(
     Some(hunks)
 }
 
-fn find_extent<'a>(extents: &'a [TableExtent], lines: &Range<usize>) -> Option<&'a TableExtent> {
+/// Find the index of the table extent that *fully contains* `lines`.
+///
+/// Containment (not mere overlap) is required: a hunk that only
+/// partially overlaps a table — i.e. it also covers non-table lines
+/// above or below the table — must NOT be row-split, because
+/// [`split_table_hunk`] re-diffs the whole table extent and would
+/// silently drop the hunk's out-of-extent lines from its output
+/// (losing a reviewable change and corrupting the merge). Such a
+/// straddling hunk falls back to a single monolithic `Replace`
+/// instead (§3a "render as a single monolithic Replace").
+fn find_extent_idx(extents: &[TableExtent], lines: &Range<usize>) -> Option<usize> {
     extents
         .iter()
-        .find(|e| lines.start < e.lines.end && e.lines.start < lines.end)
+        .position(|e| lines.start >= e.lines.start && lines.end <= e.lines.end)
 }
 
 fn table_rows_uniform(old_rows: &[&str], new_rows: &[&str]) -> bool {

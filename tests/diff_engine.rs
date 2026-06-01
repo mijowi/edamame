@@ -5,10 +5,20 @@
 
 use edamame::diff::engine::{compute_hunks, HunkIdAllocator};
 use edamame::diff::hunk::{HunkKind, InlineSide};
+use edamame::diff::{Decision, DiffState};
 
 fn run(old: &str, new: &str) -> Vec<edamame::diff::Hunk> {
     let mut ids = HunkIdAllocator::new();
     compute_hunks(old, new, &mut ids)
+}
+
+/// Does any hunk reference `old_line` on its old side or `new_line`
+/// on its new side?  Used to assert a changed line was surfaced as a
+/// reviewable hunk rather than silently dropped.
+fn any_hunk_covers(hunks: &[edamame::diff::Hunk], old_line: usize, new_line: usize) -> bool {
+    hunks
+        .iter()
+        .any(|h| h.old_lines.contains(&old_line) || h.new_lines.contains(&new_line))
 }
 
 #[test]
@@ -105,4 +115,103 @@ fn ropey_line_range_invariants() {
     let without_nl = Rope::from_str("a\nb");
     assert_eq!(without_nl.len_lines(), 2);
     assert_eq!(without_nl.byte_to_line(without_nl.len_bytes()), 1);
+}
+
+// ─── Table row-level sub-diff (§3a) ──────────────────────────────────────────
+
+const TABLE_OLD: &str = "\
+intro paragraph\n\
+\n\
+| Name  | Score |\n\
+|-------|-------|\n\
+| alpha | 1     |\n\
+| bravo | 2     |\n\
+| gamma | 3     |\n";
+
+/// A change confined to a single table data row is split into a
+/// per-row hunk (§3a), not surfaced as one monolithic table replace.
+#[test]
+fn changed_table_row_splits_into_per_row_hunk() {
+    // Only the `bravo` row's score changes (2 → 9).
+    let new = TABLE_OLD.replace("| bravo | 2     |", "| bravo | 9     |");
+    let hunks = run(TABLE_OLD, &new);
+    assert_eq!(hunks.len(), 1, "one changed row → one hunk: {hunks:?}");
+    assert_eq!(hunks[0].kind, HunkKind::Replace);
+    // The `bravo` row is line index 5 (0: intro, 1: blank, 2: header,
+    // 3: separator, 4: alpha, 5: bravo).
+    assert_eq!(hunks[0].old_lines, 5..6);
+    assert_eq!(hunks[0].new_lines, 5..6);
+}
+
+/// Two non-adjacent changed rows yield two independent per-row hunks
+/// so the user can accept one and reject the other.
+#[test]
+fn two_changed_table_rows_yield_two_hunks() {
+    let new = TABLE_OLD
+        .replace("| alpha | 1     |", "| alpha | 7     |")
+        .replace("| gamma | 3     |", "| gamma | 8     |");
+    let hunks = run(TABLE_OLD, &new);
+    assert_eq!(hunks.len(), 2, "two non-adjacent rows → two hunks: {hunks:?}");
+    assert!(hunks.iter().all(|h| h.kind == HunkKind::Replace));
+    assert_eq!(hunks[0].old_lines, 4..5); // alpha row
+    assert_eq!(hunks[1].old_lines, 6..7); // gamma row
+}
+
+/// When the table's cell counts aren't uniform across rows/sides, the
+/// row-uniformity guard trips and the engine falls back to a single
+/// monolithic hunk rather than mis-splitting (§3a).
+#[test]
+fn non_uniform_table_falls_back_to_monolithic_hunk() {
+    // New side adds a third column to the header only, so column
+    // counts differ across rows — the uniformity guard must bail.
+    let old = "| A | B |\n|---|---|\n| 1 | 2 |\n";
+    let new = "| A | B | C |\n|---|---|\n| 1 | 2 |\n";
+    let hunks = run(old, new);
+    assert_eq!(hunks.len(), 1, "non-uniform table must not row-split: {hunks:?}");
+    assert_eq!(hunks[0].kind, HunkKind::Replace);
+    // The whole header line is the single reviewable hunk.
+    assert!(any_hunk_covers(&hunks, 0, 0));
+}
+
+/// Regression: a single diff hunk that straddles the table boundary
+/// (a non-table line *and* a table row both change, contiguously)
+/// must NOT be row-split — doing so would drop the non-table line
+/// from every hunk and silently apply it regardless of decision.
+/// See `find_extent`'s containment requirement.
+#[test]
+fn hunk_straddling_table_boundary_keeps_non_table_line() {
+    // `intro` and the table header both change, with no blank line
+    // between them, so `similar` coalesces them into one hunk.
+    let old = "intro text\n| A | B |\n|---|---|\n| 1 | 2 |\n";
+    let new = "intro CHANGED\n| A | C |\n|---|---|\n| 1 | 2 |\n";
+    let hunks = run(old, new);
+    assert!(
+        any_hunk_covers(&hunks, 0, 0),
+        "the intro-paragraph change must remain reviewable, got {hunks:?}",
+    );
+}
+
+/// End-to-end guard on the same straddling case: rejecting every hunk
+/// must reproduce the original text exactly.  Before the containment
+/// fix this returned the new intro line even on full rejection.
+#[test]
+fn straddling_boundary_reject_all_round_trips_to_old() {
+    let old = "intro text\n| A | B |\n|---|---|\n| 1 | 2 |\n";
+    let new = "intro CHANGED\n| A | C |\n|---|---|\n| 1 | 2 |\n";
+    let mut state = DiffState::new(old, new).expect("differing inputs");
+    state.bulk_decide_pending(Decision::Rejected);
+    assert_eq!(
+        state.resolved_rope().expect("all resolved").to_string(),
+        old,
+        "reject-all must reproduce the original text",
+    );
+
+    // And accept-all must reproduce the new text.
+    let mut state = DiffState::new(old, new).expect("differing inputs");
+    state.bulk_decide_pending(Decision::Accepted);
+    assert_eq!(
+        state.resolved_rope().expect("all resolved").to_string(),
+        new,
+        "accept-all must reproduce the new text",
+    );
 }

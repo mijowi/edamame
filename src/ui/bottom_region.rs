@@ -10,6 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
+    style::Style,
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
@@ -326,23 +327,33 @@ fn arrow_bundle_chord(
 /// Layout per hint: `{chord}` in `hint_chord` (the badge is exactly
 /// the chord glyph — no surrounding padding gets the badge bg), then
 /// ` {label}` in `hint_label` (a single leading space separates label
-/// from chord), then `  ` (two spaces) in `hint_bar` as the separator
+/// from chord), then `  ` (two spaces) in `bar_style` as the separator
 /// before the next hint.
-pub fn lay_out_chords(chords: &[HintChord], theme: &Theme) -> Vec<Span<'static>> {
+///
+/// `bar_style` is the hint-bar background for the active mode — normally
+/// [`Theme::hint_bar`], but [`Theme::hint_bar_diff`] while in diff mode
+/// so the inter-chord separators match the recolored bar instead of
+/// punching the default hue through every gap.
+pub fn lay_out_chords(chords: &[HintChord], theme: &Theme, bar_style: Style) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(chords.len() * 3);
     for chord in chords {
         spans.push(Span::styled(chord.chord.clone(), theme.hint_chord));
         spans.push(Span::styled(format!(" {}", chord.label), theme.hint_label));
-        spans.push(Span::styled("  ".to_string(), theme.hint_bar));
+        spans.push(Span::styled("  ".to_string(), bar_style));
     }
     spans
 }
 
 /// The hint-line widget.  Renders chords / transient / prompt onto a
-/// single row, with a trailing fill using [`Theme::hint_bar`].
+/// single row, with a trailing fill using `bar_style`.
 pub struct HintLine<'a> {
     pub content: HintContent,
     pub theme: &'a Theme,
+    /// Background style for the bar fill and inter-chord separators.
+    /// [`Theme::hint_bar`] in every mode except diff, which uses
+    /// [`Theme::hint_bar_diff`] so the recolored bar signals the mode
+    /// change (Phase 1 §7).
+    pub bar_style: Style,
 }
 
 impl<'a> Widget for HintLine<'a> {
@@ -363,7 +374,7 @@ impl<'a> Widget for HintLine<'a> {
                     let text = format!(" {}  ", prelude);
                     v.push(Span::styled(text, self.theme.hint_label));
                 }
-                v.extend(lay_out_chords(&set.chords, self.theme));
+                v.extend(lay_out_chords(&set.chords, self.theme, self.bar_style));
                 v
             }
             HintContent::Transient { text, style } => {
@@ -372,7 +383,7 @@ impl<'a> Widget for HintLine<'a> {
             HintContent::Prompt { prompt, chords } => {
                 let prompt_text = format!(" {}  ", prompt);
                 let prompt_span = Span::styled(prompt_text, self.theme.transient_warning);
-                let chord_spans = lay_out_chords(chords, self.theme);
+                let chord_spans = lay_out_chords(chords, self.theme, self.bar_style);
                 let mut v = vec![prompt_span];
                 v.extend(chord_spans);
                 v
@@ -388,11 +399,11 @@ impl<'a> Widget for HintLine<'a> {
             .sum::<usize>();
         let mut all_spans = spans;
         if used < width {
-            all_spans.push(Span::styled(" ".repeat(width - used), self.theme.hint_bar));
+            all_spans.push(Span::styled(" ".repeat(width - used), self.bar_style));
         }
 
         Paragraph::new(Line::from(all_spans))
-            .style(self.theme.hint_bar)
+            .style(self.bar_style)
             .render(area, buf);
     }
 }
@@ -436,9 +447,17 @@ impl<'a> Widget for BottomRegion<'a> {
                     .direction(Direction::Vertical)
                     .constraints([Constraint::Length(1), Constraint::Length(1)])
                     .split(area);
+                // Diff mode recolors the whole hint bar to match the
+                // status bar's mode shift (§7).
+                let bar_style = if matches!(self.status.mode, Mode::Diff) {
+                    self.theme.hint_bar_diff
+                } else {
+                    self.theme.hint_bar
+                };
                 HintLine {
                     content: self.hint,
                     theme: self.theme,
+                    bar_style,
                 }
                 .render(chunks[0], buf);
                 StatusBar {
@@ -846,7 +865,7 @@ mod tests {
             HintChord::new("^B", "Bravo"),
             HintChord::new("^C", "Charlie"),
         ];
-        let spans = lay_out_chords(&chords, theme());
+        let spans = lay_out_chords(&chords, theme(), theme().hint_bar);
         let concat: String = spans.iter().map(|s| s.content.to_string()).collect();
         assert!(concat.contains("Alpha"));
         assert!(concat.contains("Bravo"));
