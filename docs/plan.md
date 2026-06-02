@@ -1443,8 +1443,6 @@ Press keys to set chord in keybinding modal instead of typing in e.g. `Ctrl-c`
 
 Add next cell/prev cell to keybindings modal?
 
-Heading table of contents 
-
 Add support for footnotes. Add to Markdown cheat sheet.
 
 Clean up source and tests
@@ -1465,9 +1463,11 @@ Blank last line of a document doesn't seem to behave correctly
 
 A `Remove` event from the file watcher should surface a new warning modal that tells the user the file was deleted and offers to re-save the buffer to disk. Diff mode should not be entered.
 
-Check that clipboard is surfaced in capabilities check
-
 Force wrap long lines of code in a table cell so that the table structure is not broken.
+
+Lazy loading for rendering (all modes — Markdown, diff, raw)
+
+Check dependency versions to see if we should bump them up
 
 ---
 
