@@ -13,7 +13,7 @@ pub mod hunk;
 pub mod state;
 
 #[allow(unused_imports)]
-pub use engine::{compute_hunks, HunkIdAllocator};
+pub use engine::{compute, HunkIdAllocator};
 #[allow(unused_imports)]
 pub use hunk::{Decision, Hunk, HunkId, HunkKind, InlineSide, InlineSpan};
 pub use state::DiffState;

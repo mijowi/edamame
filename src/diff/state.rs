@@ -11,7 +11,7 @@ use ropey::Rope;
 
 use crate::document::{Buffer, Cursor};
 
-use super::engine::{compute_hunks, pending_decisions, HunkIdAllocator};
+use super::engine::{compute, pending_decisions, HunkIdAllocator};
 use super::hunk::{Decision, Hunk, HunkId};
 
 /// Lifecycle: see `EditorState::enter_diff_mode`.  Created with
@@ -53,6 +53,12 @@ pub struct DiffState {
     /// `BulkDecision`, `Edit`).  Empty in CP3; wired in CP4 / CP5.
     #[allow(dead_code)]
     pub history: DiffHistory,
+    /// True when at least one table couldn't be row-diffed because its
+    /// rows had uneven cell counts, so its change is surfaced as the
+    /// coarser line-level hunk(s) instead of per-row hunks (§3a).
+    /// `App::enter_diff_mode` flashes a hint on entry so the user
+    /// understands why that table isn't reviewable row-by-row.
+    pub uneven_table_fallback: bool,
 }
 
 /// CP3 placeholder for the per-diff undo stack — concrete `DiffOp`
@@ -89,7 +95,8 @@ impl DiffState {
     /// the `focused_id = hunks[0].id` invariant.
     pub fn new(old: &str, new: &str) -> Option<Self> {
         let mut ids = HunkIdAllocator::new();
-        let hunks = compute_hunks(old, new, &mut ids);
+        let computation = compute(old, new, &mut ids);
+        let hunks = computation.hunks;
         if hunks.is_empty() {
             return None;
         }
@@ -115,6 +122,7 @@ impl DiffState {
             focused_id,
             ids,
             history: DiffHistory::default(),
+            uneven_table_fallback: computation.uneven_table_fallback,
         })
     }
 
