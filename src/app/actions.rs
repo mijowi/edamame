@@ -625,10 +625,17 @@ impl App {
             self.flash("No differences to review", MessageKind::Info);
             return;
         };
+        let uneven_table_fallback = diff_state.uneven_table_fallback;
         self.editor.enter_diff_mode(diff_state);
         if self.config.editor.show_diff_intro {
             self.modal_stack
                 .push(Box::new(crate::app::modal::DiffIntroModal::new()));
+        }
+        if uneven_table_fallback {
+            self.flash(
+                "Table has uneven row widths — not split into per-row hunks",
+                MessageKind::Info,
+            );
         }
         self.needs_draw = true;
     }

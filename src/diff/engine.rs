@@ -19,7 +19,6 @@
 
 use std::ops::Range;
 
-use ropey::Rope;
 use similar::{ChangeTag, TextDiff};
 
 use crate::markdown::parse_offsets::{block_ranges_by, BlockKind};
@@ -47,6 +46,20 @@ impl HunkIdAllocator {
     }
 }
 
+/// Outcome of [`compute`]: the hunk list plus advisory warnings the
+/// UI should surface.
+#[derive(Debug, Default)]
+pub struct HunkComputation {
+    /// The hunks, in document order.
+    pub hunks: Vec<Hunk>,
+    /// At least one markdown table couldn't be row-split because its
+    /// rows had uneven cell counts; its change is kept as the original
+    /// line-level hunk(s) rather than per-row hunks, so it can't be
+    /// reviewed row-by-row (§3a).  The UI flashes a hint so the
+    /// coarse-grained hunk doesn't read like a bug.
+    pub uneven_table_fallback: bool,
+}
+
 /// Compute the hunk list for `old_text` vs `new_text`.
 ///
 /// Each returned hunk's `id` is freshly allocated via `ids`.  The
@@ -62,7 +75,7 @@ impl HunkIdAllocator {
 /// After the base diff is produced, any hunk that intersects a
 /// markdown table extent on either side is split into per-row
 /// hunks via [`split_table_hunk`].
-pub fn compute_hunks(old_text: &str, new_text: &str, ids: &mut HunkIdAllocator) -> Vec<Hunk> {
+pub fn compute(old_text: &str, new_text: &str, ids: &mut HunkIdAllocator) -> HunkComputation {
     let diff = TextDiff::from_lines(old_text, new_text);
 
     // First pass: collapse `similar`'s op groups into a stream of
@@ -159,59 +172,143 @@ pub fn compute_hunks(old_text: &str, new_text: &str, ids: &mut HunkIdAllocator) 
         ids,
     );
 
+    // Build per-side line indices once; the inline-span and table
+    // passes below slice lines and convert byte↔line offsets through
+    // these instead of rebuilding a `Rope` per hunk.
+    let old_index = LineIndex::new(old_text);
+    let new_index = LineIndex::new(new_text);
+
     // Second pass: word-level inline highlights inside `Replace`
     // hunks.  Skipped for `Insert` / `Delete` (no other side to diff
     // against) and for table hunks (handled by row-sub-diff below).
     for h in &mut hunks {
         if h.kind == HunkKind::Replace {
-            populate_inline_spans(h, old_text, new_text);
+            populate_inline_spans(h, &old_index, &new_index);
         }
     }
 
     // Third pass: row-level table sub-diff.  A hunk fully contained
-    // within a table extent on both sides is replaced by per-row
-    // hunks covering the *whole* table (a single row-diff over the
-    // extent captures every changed row, regardless of how the
-    // line-level pass chunked them).  Because that one row-diff is
-    // complete, any *other* line-level hunk that also falls inside an
-    // already-split table is dropped — re-splitting the same extent
-    // would emit every changed row a second time (duplicate hunks →
+    // within a table extent on *both* sides is a candidate for
+    // splitting that table into per-row hunks.  A single row-diff over
+    // the whole extent captures every changed row regardless of how the
+    // line-level pass chunked it, so each table is split at most once
+    // and the remaining contained hunks are dropped — re-splitting the
+    // same extent would emit every row twice (duplicate hunks →
     // duplicated lines on resolve).
-    let old_table_extents = table_line_extents(old_text);
-    let new_table_extents = table_line_extents(new_text);
-    let mut split: Vec<Hunk> = Vec::with_capacity(hunks.len());
-    let mut split_extent_idxs: Vec<usize> = Vec::new();
-    for h in hunks.into_iter() {
-        let old_idx = find_extent_idx(&old_table_extents, &h.old_lines);
-        let new_idx = find_extent_idx(&new_table_extents, &h.new_lines);
-        let (Some(oi), Some(ni)) = (old_idx, new_idx) else {
-            // Doesn't sit inside a table on both sides — keep as-is
-            // (covers non-table hunks and boundary-straddling hunks).
-            split.push(h);
-            continue;
-        };
-        if split_extent_idxs.contains(&oi) {
-            // This table was already row-split by an earlier hunk;
-            // its changed rows are already represented.  Drop this
-            // hunk so its rows aren't emitted twice.
-            continue;
-        }
-        if let Some(extra) = split_table_hunk(
-            &old_table_extents[oi],
-            &new_table_extents[ni],
-            old_text,
-            new_text,
-            ids,
-        ) {
-            split_extent_idxs.push(oi);
-            split.extend(extra);
-        } else {
-            // Uniformity guard tripped — keep the monolithic hunk.
-            split.push(h);
+    //
+    // Containment can map several contained hunks of one old table to
+    // *different* new-side extents when the table splits into two
+    // tables on the new side — i.e. a fresh header+separator appears
+    // mid-table, so the lower fragment parses as its own table (a plain
+    // paragraph wouldn't: the fragment would lose its header and not
+    // parse as a table at all).  A single extent re-diff can't represent
+    // two new tables, so such an old extent is left un-split and its
+    // hunks pass through as line-level hunks rather than being silently
+    // dropped — see `table_split_into_two_keeps_both_changes_reviewable`.
+    let old_table_extents = table_line_extents(&old_index);
+    let new_table_extents = table_line_extents(&new_index);
+
+    // Pre-scan: for each old table extent, record which new-side extent
+    // its contained hunks map to (`One` = all agree, `Conflict` = they
+    // map to different new extents).  `meta[i]` caches the per-side
+    // containment lookup for `hunks[i]` so the main loop doesn't repeat
+    // it.
+    let meta: Vec<(Option<usize>, Option<usize>)> = hunks
+        .iter()
+        .map(|h| {
+            (
+                find_extent_idx(&old_table_extents, &h.old_lines),
+                find_extent_idx(&new_table_extents, &h.new_lines),
+            )
+        })
+        .collect();
+    let mut ni_map = vec![NiMap::Unset; old_table_extents.len()];
+    for &(oi, ni) in &meta {
+        if let (Some(oi), Some(ni)) = (oi, ni) {
+            ni_map[oi] = match ni_map[oi] {
+                NiMap::Unset => NiMap::One(ni),
+                NiMap::One(prev) if prev == ni => NiMap::One(prev),
+                _ => NiMap::Conflict,
+            };
         }
     }
 
-    split
+    let mut split: Vec<Hunk> = Vec::with_capacity(hunks.len());
+    let mut split_done = vec![false; old_table_extents.len()];
+    let mut uneven_table_fallback = false;
+    for (h, &(old_idx, new_idx)) in hunks.into_iter().zip(meta.iter()) {
+        let (Some(oi), Some(ni)) = (old_idx, new_idx) else {
+            // Not inside a table on both sides — keep as-is (covers
+            // non-table hunks and boundary-straddling hunks).
+            split.push(h);
+            continue;
+        };
+        if !matches!(ni_map[oi], NiMap::One(_)) {
+            // Fragmented table (Conflict) — keep the line-level hunk so
+            // its change stays reviewable rather than being dropped.
+            split.push(h);
+            continue;
+        }
+        if split_done[oi] {
+            // Table already row-split; its rows are represented.  Drop
+            // this hunk so they aren't emitted twice.
+            continue;
+        }
+        match split_table_hunk(
+            &old_table_extents[oi],
+            &new_table_extents[ni],
+            &old_index,
+            &new_index,
+            ids,
+        ) {
+            SplitOutcome::Rows(rows) => {
+                split_done[oi] = true;
+                split.extend(rows);
+            }
+            SplitOutcome::Uneven => {
+                // Uneven cell counts — review the table as a unit.  Do
+                // NOT mark the extent done: any other contained hunks
+                // fall through here too and stay as disjoint line-level
+                // hunks (no whole-table coverage means no duplication).
+                uneven_table_fallback = true;
+                split.push(h);
+            }
+            SplitOutcome::Degenerate => {
+                // Row-diff produced nothing (defensive) — keep the
+                // monolithic hunk, same non-marking rationale as above.
+                split.push(h);
+            }
+        }
+    }
+
+    HunkComputation {
+        hunks: split,
+        uneven_table_fallback,
+    }
+}
+
+/// Pre-scan result for one old table extent: which new-side table
+/// extent its contained hunks map to.
+#[derive(Clone, Copy)]
+enum NiMap {
+    /// No hunk is contained in this extent on both sides.
+    Unset,
+    /// Every contained hunk maps to the same new extent index.
+    One(usize),
+    /// Contained hunks map to *different* new extents (the table
+    /// fragmented into several on the new side).
+    Conflict,
+}
+
+/// Result of attempting to row-split a table extent.
+enum SplitOutcome {
+    /// Per-row hunks covering the whole table.
+    Rows(Vec<Hunk>),
+    /// Rows had uneven cell counts — the caller keeps the original
+    /// line-level hunk(s) (no per-row split) and flashes the §3a hint.
+    Uneven,
+    /// Row-diff produced no hunks (defensive; shouldn't happen).
+    Degenerate,
 }
 
 /// Populate `hunk.inline` with word-level diff spans inside a
@@ -221,9 +318,9 @@ pub fn compute_hunks(old_text: &str, new_text: &str, ids: &mut HunkIdAllocator) 
 /// as `InlineSpan`s.  Lines that don't pair 1:1 across sides (e.g.
 /// the hunk has 3 old lines and 2 new lines) skip inline highlighting
 /// — the line-level bg highlight is sufficient signal.
-fn populate_inline_spans(hunk: &mut Hunk, old_text: &str, new_text: &str) {
-    let old_lines = line_slice(old_text, hunk.old_lines.clone());
-    let new_lines = line_slice(new_text, hunk.new_lines.clone());
+fn populate_inline_spans(hunk: &mut Hunk, old_index: &LineIndex, new_index: &LineIndex) {
+    let old_lines = old_index.slice(hunk.old_lines.clone());
+    let new_lines = new_index.slice(hunk.new_lines.clone());
     let pair_count = old_lines.len().min(new_lines.len());
     let mut spans = Vec::new();
     for i in 0..pair_count {
@@ -269,30 +366,68 @@ fn populate_inline_spans(hunk: &mut Hunk, old_text: &str, new_text: &str) {
     hunk.inline = spans;
 }
 
-/// Slice `text` into trimmed line strings for the range `lines`.
-/// Trailing `\n` is stripped per line; lines past the end of the
-/// rope are returned as empty strings.
-fn line_slice(text: &str, lines: Range<usize>) -> Vec<&str> {
-    if lines.start >= lines.end {
-        return Vec::new();
+/// Precomputed line-start byte offsets for a text, mirroring ropey's
+/// line model: N newlines → N+1 lines, with a final empty line when
+/// the text ends in `\n`.  Built once per side in [`compute`] so the
+/// per-hunk slicing and byte↔line conversions don't each rebuild a
+/// `Rope`.
+struct LineIndex<'a> {
+    text: &'a str,
+    /// Byte offset of the first byte of each line.  `starts.len()` is
+    /// the line count.  Strictly increasing, so [`Self::byte_to_line`]
+    /// can binary-search it.
+    starts: Vec<usize>,
+}
+
+impl<'a> LineIndex<'a> {
+    fn new(text: &'a str) -> Self {
+        let mut starts = vec![0usize];
+        for (i, b) in text.bytes().enumerate() {
+            if b == b'\n' {
+                starts.push(i + 1);
+            }
+        }
+        Self { text, starts }
     }
-    let rope = Rope::from_str(text);
-    let total = rope.len_lines();
-    let end = lines.end.min(total);
-    let start = lines.start.min(end);
-    let mut out = Vec::with_capacity(end - start);
-    for i in start..end {
-        let line_start = rope.line_to_byte(i);
-        let line_end = if i + 1 < total {
-            rope.line_to_byte(i + 1)
-        } else {
-            rope.len_bytes()
-        };
-        let raw = &text[line_start..line_end];
-        let trimmed = raw.strip_suffix('\n').unwrap_or(raw);
-        out.push(trimmed);
+
+    fn len_lines(&self) -> usize {
+        self.starts.len()
     }
-    out
+
+    /// Line index containing byte offset `byte`.  Mirrors
+    /// `Rope::byte_to_line`, including its behavior at `text.len()`
+    /// (returns `len_lines() - 1`).
+    fn byte_to_line(&self, byte: usize) -> usize {
+        match self.starts.binary_search(&byte) {
+            Ok(i) => i,
+            // `Err(0)` is impossible: `starts[0] == 0 <= byte` always.
+            Err(i) => i - 1,
+        }
+    }
+
+    /// Trimmed (no trailing `\n`) text of each line in `range`, clamped
+    /// to the available lines.  Returns an empty vec for an empty or
+    /// inverted range.
+    fn slice(&self, range: Range<usize>) -> Vec<&'a str> {
+        if range.start >= range.end {
+            return Vec::new();
+        }
+        let total = self.len_lines();
+        let end = range.end.min(total);
+        let start = range.start.min(end);
+        let mut out = Vec::with_capacity(end - start);
+        for i in start..end {
+            let line_start = self.starts[i];
+            let line_end = if i + 1 < total {
+                self.starts[i + 1]
+            } else {
+                self.text.len()
+            };
+            let raw = &self.text[line_start..line_end];
+            out.push(raw.strip_suffix('\n').unwrap_or(raw));
+        }
+        out
+    }
 }
 
 /// Extent of one table block as line indices in the source text.
@@ -302,46 +437,38 @@ struct TableExtent {
     lines: Range<usize>,
 }
 
-/// Walk `source` via [`block_ranges_by`] filtered to tables; return
-/// each table's line range.
-fn table_line_extents(source: &str) -> Vec<TableExtent> {
-    let byte_ranges = block_ranges_by(source, |kind| kind == BlockKind::Table);
-    if byte_ranges.is_empty() {
-        return Vec::new();
-    }
-    let rope = Rope::from_str(source);
-    byte_ranges
+/// Walk the indexed source via [`block_ranges_by`] filtered to tables;
+/// return each table's line range.
+fn table_line_extents(index: &LineIndex) -> Vec<TableExtent> {
+    block_ranges_by(index.text, |kind| kind == BlockKind::Table)
         .into_iter()
-        .map(|r| {
-            let start_line = rope.byte_to_line(r.start);
-            let end_line = rope.byte_to_line(r.end);
-            TableExtent {
-                lines: start_line..end_line,
-            }
+        .map(|r| TableExtent {
+            lines: index.byte_to_line(r.start)..index.byte_to_line(r.end),
         })
         .collect()
 }
 
 /// Row-split one table, given the table's old- and new-side line
 /// extents.  Runs a single `similar` diff over the table's rows and
-/// emits one hunk per coalesced run of changed rows.  Returns `None`
-/// when the row-uniformity guard trips (non-rectangular table — the
-/// caller then keeps the monolithic hunk).  The caller is responsible
+/// emits one hunk per coalesced run of changed rows.  Returns
+/// [`SplitOutcome::Uneven`] when the row-uniformity guard trips
+/// (non-rectangular table — the caller then keeps the original
+/// line-level hunk(s) and flashes a hint).  The caller is responsible
 /// for having verified, via [`find_extent_idx`], that the triggering
 /// hunk is fully contained in these extents on both sides.
 fn split_table_hunk(
     old_extent: &TableExtent,
     new_extent: &TableExtent,
-    old_text: &str,
-    new_text: &str,
+    old_index: &LineIndex,
+    new_index: &LineIndex,
     ids: &mut HunkIdAllocator,
-) -> Option<Vec<Hunk>> {
+) -> SplitOutcome {
     // Column-count guard: every row on each side must have the same
     // cell count, and the per-side maxima must match across sides.
-    let old_rows = line_slice(old_text, old_extent.lines.clone());
-    let new_rows = line_slice(new_text, new_extent.lines.clone());
+    let old_rows = old_index.slice(old_extent.lines.clone());
+    let new_rows = new_index.slice(new_extent.lines.clone());
     if !table_rows_uniform(&old_rows, &new_rows) {
-        return None;
+        return SplitOutcome::Uneven;
     }
 
     // Run `similar` over just the rows.  Decisions are per-row but
@@ -440,20 +567,20 @@ fn split_table_hunk(
     // Word-level inline highlights inside each Replace row-hunk.
     for h in &mut hunks {
         if h.kind == HunkKind::Replace {
-            populate_inline_spans(h, old_text, new_text);
+            populate_inline_spans(h, old_index, new_index);
         }
     }
 
     // If the row-diff degenerated to zero hunks (theoretically
     // unreachable — the parent hunk only got here because there was
     // a real difference inside the table extent — but worth guarding
-    // defensively), return `None` so the caller keeps the original
+    // defensively), report it so the caller keeps the original
     // monolithic hunk rather than silently dropping it.
     if hunks.is_empty() {
-        return None;
+        return SplitOutcome::Degenerate;
     }
 
-    Some(hunks)
+    SplitOutcome::Rows(hunks)
 }
 
 /// Find the index of the table extent that *fully contains* `lines`.
@@ -554,6 +681,12 @@ mod tests {
 
     fn ids() -> HunkIdAllocator {
         HunkIdAllocator::new()
+    }
+
+    /// Test convenience: the hunks of [`compute`], discarding the
+    /// advisory warnings these cases don't assert on.
+    fn compute_hunks(old: &str, new: &str, ids: &mut HunkIdAllocator) -> Vec<Hunk> {
+        compute(old, new, ids).hunks
     }
 
     #[test]

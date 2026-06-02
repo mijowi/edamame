@@ -3,13 +3,13 @@
 //! old/new pairs covering pure insert, pure delete, replace,
 //! multi-hunk, and inline-word-only changes.
 
-use edamame::diff::engine::{compute_hunks, HunkIdAllocator};
+use edamame::diff::engine::{compute, HunkIdAllocator};
 use edamame::diff::hunk::{HunkKind, InlineSide};
 use edamame::diff::{Decision, DiffState};
 
 fn run(old: &str, new: &str) -> Vec<edamame::diff::Hunk> {
     let mut ids = HunkIdAllocator::new();
-    compute_hunks(old, new, &mut ids)
+    compute(old, new, &mut ids).hunks
 }
 
 /// Does any hunk reference `old_line` on its old side or `new_line`
@@ -151,7 +151,11 @@ fn two_changed_table_rows_yield_two_hunks() {
         .replace("| alpha | 1     |", "| alpha | 7     |")
         .replace("| gamma | 3     |", "| gamma | 8     |");
     let hunks = run(TABLE_OLD, &new);
-    assert_eq!(hunks.len(), 2, "two non-adjacent rows → two hunks: {hunks:?}");
+    assert_eq!(
+        hunks.len(),
+        2,
+        "two non-adjacent rows → two hunks: {hunks:?}"
+    );
     assert!(hunks.iter().all(|h| h.kind == HunkKind::Replace));
     assert_eq!(hunks[0].old_lines, 4..5); // alpha row
     assert_eq!(hunks[1].old_lines, 6..7); // gamma row
@@ -167,7 +171,11 @@ fn non_uniform_table_falls_back_to_monolithic_hunk() {
     let old = "| A | B |\n|---|---|\n| 1 | 2 |\n";
     let new = "| A | B | C |\n|---|---|\n| 1 | 2 |\n";
     let hunks = run(old, new);
-    assert_eq!(hunks.len(), 1, "non-uniform table must not row-split: {hunks:?}");
+    assert_eq!(
+        hunks.len(),
+        1,
+        "non-uniform table must not row-split: {hunks:?}"
+    );
     assert_eq!(hunks[0].kind, HunkKind::Replace);
     // The whole header line is the single reviewable hunk.
     assert!(any_hunk_covers(&hunks, 0, 0));
@@ -213,5 +221,107 @@ fn straddling_boundary_reject_all_round_trips_to_old() {
         state.resolved_rope().expect("all resolved").to_string(),
         new,
         "accept-all must reproduce the new text",
+    );
+}
+
+/// A table that splits into two *separate* tables on the new side
+/// (a fresh header+separator appears mid-table) maps its contained
+/// hunks to different new-side extents — the `NiMap::Conflict` case.
+/// Such an extent must NOT be row-split: a single extent re-diff can't
+/// represent two new tables, and marking the extent done would drop
+/// every contained hunk after the first.  Both changed rows must stay
+/// reviewable and resolve without loss or duplication.
+#[test]
+fn table_split_into_two_keeps_both_changes_reviewable() {
+    let old = "\
+| h1 | h2 |\n\
+|----|----|\n\
+| a | 1 |\n\
+| b | 2 |\n\
+| c | 3 |\n\
+| d | 4 |\n\
+| e | 5 |\n\
+| f | 6 |\n";
+    // The new side breaks the single table into two valid tables by
+    // inserting a blank + header + separator before `d`, and changes
+    // one row in each fragment (`a`→9, `e`→9).  Each changed row is
+    // separated from the inserted header by an unchanged row so it
+    // forms its own contained hunk — the two then map to different new
+    // table extents, the condition that trips `Conflict`.
+    let new = "\
+| h1 | h2 |\n\
+|----|----|\n\
+| a | 9 |\n\
+| b | 2 |\n\
+| c | 3 |\n\
+\n\
+| h1 | h2 |\n\
+|----|----|\n\
+| d | 4 |\n\
+| e | 9 |\n\
+| f | 6 |\n";
+    let hunks = run(old, new);
+    // Both changes survive as reviewable hunks — neither is dropped by
+    // the dedup guard, and neither table is row-split.
+    assert!(
+        any_hunk_covers(&hunks, 2, 2),
+        "the `a` row change must stay reviewable: {hunks:?}",
+    );
+    assert!(
+        any_hunk_covers(&hunks, 6, 9),
+        "the `e` row change must stay reviewable: {hunks:?}",
+    );
+
+    let mut state = DiffState::new(old, new).expect("differing inputs");
+    state.bulk_decide_pending(Decision::Accepted);
+    assert_eq!(
+        state.resolved_rope().expect("all resolved").to_string(),
+        new,
+        "accept-all must reproduce the new text with no dropped or duplicated rows",
+    );
+}
+
+/// Two changed rows in one table resolve without duplicating any
+/// lines: accept-all must reproduce the new text exactly.  Guards the
+/// dedup fix — the table extent is row-split exactly once even though
+/// two line-level hunks fall inside it.
+#[test]
+fn two_changed_rows_accept_all_round_trips_without_duplication() {
+    let old = TABLE_OLD;
+    let new = TABLE_OLD
+        .replace("| alpha | 1     |", "| alpha | 7     |")
+        .replace("| gamma | 3     |", "| gamma | 8     |");
+    let mut state = DiffState::new(old, &new).expect("differing inputs");
+    state.bulk_decide_pending(Decision::Accepted);
+    assert_eq!(
+        state.resolved_rope().expect("all resolved").to_string(),
+        new,
+        "accept-all must reproduce the new text with no duplicated rows",
+    );
+}
+
+/// The uneven-row-width fallback raises the advisory flag so the UI
+/// can flash the §3a hint, and a uniform table leaves it unset.  Both
+/// sides must still parse as tables (pulldown-cmark tolerates a data
+/// row with more cells than the header by truncating it), so the
+/// uniformity guard — not table detection — is what trips here.
+#[test]
+fn uneven_table_sets_advisory_flag() {
+    let old = "| A | B |\n|---|---|\n| 1 | 2 |\n";
+    let uneven_new = "| A | B |\n|---|---|\n| 1 | 2 | 3 |\n";
+    let mut ids = HunkIdAllocator::new();
+    let result = compute(old, uneven_new, &mut ids);
+    assert!(
+        result.uneven_table_fallback,
+        "uneven table must raise the fallback flag: {:?}",
+        result.hunks,
+    );
+
+    let uniform_new = "| A | B |\n|---|---|\n| 9 | 2 |\n";
+    let mut ids = HunkIdAllocator::new();
+    let result = compute(old, uniform_new, &mut ids);
+    assert!(
+        !result.uneven_table_fallback,
+        "uniform table must not raise the fallback flag",
     );
 }
