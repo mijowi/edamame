@@ -137,6 +137,15 @@ impl Modal for DiffIntroModal {
         }
     }
 
+    fn handle_wheel(&mut self, delta: i32) {
+        // Scroll the body like every other `ModalView` modal.  The
+        // trait default is a no-op, so without this override the wheel
+        // does nothing — and this modal also repurposes Up / Down for
+        // button focus, so the wheel is the body's only scroll path on
+        // a terminal too short to show it all at once.
+        self.state.scroll_by(delta);
+    }
+
     fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
         // Footer buttons first, then the esc close hint.  Routing the
         // esc-hint click through `close_outcome()` persists the
@@ -202,7 +211,7 @@ mod tests {
     /// Render the modal once into an off-screen backend so
     /// `state.button_rects` / `esc_button_rect` get populated for the
     /// click tests.
-    fn render(modal: &mut DiffIntroModal) {
+    fn render_offscreen(modal: &mut DiffIntroModal) {
         let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
         let config = Config::default();
         let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
@@ -265,7 +274,7 @@ mod tests {
     #[test]
     fn clicking_checkbox_toggles_then_clicking_continue_closes() {
         let mut modal = DiffIntroModal::new();
-        render(&mut modal);
+        render_offscreen(&mut modal);
         let cb = modal.state.button_rects[CHECKBOX_IDX];
         let out = modal.handle_click(cb.x, cb.y);
         assert!(matches!(out, ModalOutcome::Continue));
@@ -273,7 +282,7 @@ mod tests {
 
         // Re-render so rects reflect the new label width, then click
         // Continue to close.
-        render(&mut modal);
+        render_offscreen(&mut modal);
         let cont = modal.state.button_rects[CONTINUE_IDX];
         let out = modal.handle_click(cont.x, cont.y);
         assert!(matches!(out, ModalOutcome::CloseAnd(_)));
@@ -282,7 +291,7 @@ mod tests {
     #[test]
     fn click_outside_buttons_keeps_modal_open() {
         let mut modal = DiffIntroModal::new();
-        render(&mut modal);
+        render_offscreen(&mut modal);
         let out = modal.handle_click(0, 0);
         assert!(matches!(out, ModalOutcome::Continue));
     }
