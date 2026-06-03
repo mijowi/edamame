@@ -153,6 +153,28 @@ impl DiffState {
         true
     }
 
+    /// Reset the focused hunk's decision back to `Pending`
+    /// ("undecide").  Returns `true` when a decision was actually
+    /// cleared; `false` when the hunk is already `Pending` (so the
+    /// caller can treat it as a no-op).
+    pub fn reset_focused(&mut self) -> bool {
+        let Some(idx) = self.focused_idx() else {
+            return false;
+        };
+        if self.decisions[idx] == Decision::Pending {
+            return false;
+        }
+        self.decisions[idx] = Decision::Pending;
+        true
+    }
+
+    /// The focused hunk's current decision, if focus is still valid.
+    /// Used by the hint line to show the `Reset` chord only when there
+    /// is actually a decision to undo.
+    pub fn focused_decision(&self) -> Option<Decision> {
+        self.focused_idx().map(|idx| self.decisions[idx])
+    }
+
     /// Move focus to the next still-`Pending` hunk after the focused
     /// one (wrapping).  No-op (returns `false`) when nothing else is
     /// pending, leaving focus on the current hunk.  Used by the
@@ -412,6 +434,27 @@ mod tests {
         state.decide_focused(Decision::Accepted);
         assert_eq!(state.pending_count(), 0);
         assert!(state.all_resolved());
+    }
+
+    #[test]
+    fn reset_focused_undecides_and_noops_when_pending() {
+        let mut state = DiffState::new("a\nb\n", "a\nB\n").unwrap();
+        // Fresh hunk is Pending → reset is a no-op.
+        assert_eq!(state.focused_decision(), Some(Decision::Pending));
+        assert!(
+            !state.reset_focused(),
+            "resetting a Pending hunk is a no-op"
+        );
+
+        // Decide it, then reset back to Pending.
+        state.decide_focused(Decision::Accepted);
+        assert_eq!(state.focused_decision(), Some(Decision::Accepted));
+        assert!(state.reset_focused(), "resetting a decided hunk clears it");
+        assert_eq!(state.focused_decision(), Some(Decision::Pending));
+        assert_eq!(state.pending_count(), state.hunks.len());
+
+        // And reset is once again a no-op.
+        assert!(!state.reset_focused());
     }
 
     #[test]

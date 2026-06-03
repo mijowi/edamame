@@ -58,6 +58,7 @@ pub(super) fn diff_safe_action(action: &Action) -> Option<Action> {
             | DiffRejectHunk
             | DiffAcceptAll
             | DiffRejectAll
+            | DiffResetHunk
             | DiffEnterEdit
             | DiffExitEdit
             | DiffExit
@@ -494,6 +495,17 @@ impl App {
                     self.needs_draw = true;
                 }
                 self.check_diff_resolution();
+            }
+            Action::DiffResetHunk => {
+                // Undecide the focused hunk.  Cancel any in-flight
+                // post-decision advance first so a freshly-reset hunk
+                // keeps focus instead of being skipped past.  A no-op
+                // (hunk already `Pending`) leaves everything untouched.
+                self.cancel_diff_advance();
+                let reset = self.editor.diff.as_mut().is_some_and(|d| d.reset_focused());
+                if reset {
+                    self.needs_draw = true;
+                }
             }
             Action::DiffEnterEdit | Action::DiffExitEdit => {
                 // Edit sub-mode lands in CP5; until then `i` / Enter

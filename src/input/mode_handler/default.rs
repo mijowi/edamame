@@ -163,6 +163,7 @@ fn diff_review_handle(event: &KeyEvent) -> Option<Action> {
         KeyCode::Char('n') if plain => Some(Action::DiffRejectHunk),
         KeyCode::Char('Y') if shift => Some(Action::DiffAcceptAll),
         KeyCode::Char('N') if shift => Some(Action::DiffRejectAll),
+        KeyCode::Backspace if plain => Some(Action::DiffResetHunk),
         KeyCode::Char('i') if plain => Some(Action::DiffEnterEdit),
         KeyCode::Enter if plain => Some(Action::DiffEnterEdit),
         KeyCode::Esc => Some(Action::DiffExit),
