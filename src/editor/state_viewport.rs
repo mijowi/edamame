@@ -120,7 +120,7 @@ impl EditorState {
             Mode::Diff => self
                 .diff
                 .as_ref()
-                .map(|d| crate::ui::diff_view::total_visual_rows(d, width))
+                .map(|d| d.total_visual_rows(width))
                 .unwrap_or(0),
             _ => self.parsed.total_visual_rows(width),
         }

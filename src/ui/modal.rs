@@ -76,6 +76,11 @@ pub struct ModalState {
     /// each render when the modal is dismissable; passed to
     /// [`crate::app::modal::close_if_esc_clicked`] for click hit-testing.
     pub esc_button_rect: Option<Rect>,
+    /// Absolute terminal rect of each footer button, in button order.
+    /// Set every render so modals that want clickable buttons can
+    /// hit-test a mouse click without re-deriving the centred layout.
+    /// Empty when the modal has no buttons.
+    pub button_rects: Vec<Rect>,
 }
 
 impl ModalState {
@@ -317,7 +322,10 @@ impl<'a> StatefulWidget for ModalView<'a> {
                 width: inner.width,
                 height: 1,
             };
-            render_button_row(button_area, buf, &button_labels, state.focused, self.theme);
+            state.button_rects =
+                render_button_row(button_area, buf, &button_labels, state.focused, self.theme);
+        } else {
+            state.button_rects.clear();
         }
     }
 }

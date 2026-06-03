@@ -452,18 +452,24 @@ impl App {
             Action::DiffNext => {
                 if let Some(d) = self.editor.diff.as_mut() {
                     d.advance_focus();
+                    self.editor
+                        .scroll_focused_hunk_into_view(doc_height, doc_width);
                     self.needs_draw = true;
                 }
             }
             Action::DiffPrev => {
                 if let Some(d) = self.editor.diff.as_mut() {
                     d.retreat_focus();
+                    self.editor
+                        .scroll_focused_hunk_into_view(doc_height, doc_width);
                     self.needs_draw = true;
                 }
             }
             Action::DiffAcceptHunk => {
                 if let Some(d) = self.editor.diff.as_mut() {
                     d.set_focused_decision(Decision::Accepted);
+                    self.editor
+                        .scroll_focused_hunk_into_view(doc_height, doc_width);
                     self.needs_draw = true;
                 }
                 self.check_diff_resolution();
@@ -471,6 +477,8 @@ impl App {
             Action::DiffRejectHunk => {
                 if let Some(d) = self.editor.diff.as_mut() {
                     d.set_focused_decision(Decision::Rejected);
+                    self.editor
+                        .scroll_focused_hunk_into_view(doc_height, doc_width);
                     self.needs_draw = true;
                 }
                 self.check_diff_resolution();
