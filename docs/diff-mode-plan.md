@@ -1694,7 +1694,7 @@ further changes.
 
 ## 11a. Correction — clean buffers must enter diff review, not silently reload
 
-**Status: not yet implemented.** Checkpoints 2 and 3 shipped the
+**Status: ✅ implemented in Checkpoint 6.** Checkpoints 2 and 3 shipped the
 initial-change dispatch with a clean-buffer branch that *silently
 reloads the buffer from disk* (`App::reload_buffer_from_disk` in
 `src/app/file_changed.rs`). That contradicts the core objective stated
@@ -1991,7 +1991,7 @@ PR-sized unit.
 
 **Verifiable live:** enter Edit on an add hunk, type replacement text, Esc back to Review, accept; Ctrl-Z reverses word-groups; enter Edit on a delete hunk, type replacement, accept.
 
-### Checkpoint 6 — Review-on-clean correction (§11a)
+### Checkpoint 6 — Review-on-clean correction (§11a) ✅ DONE
 
 **Modified files:** `src/app/file_changed.rs` (clean branch → `enter_diff_mode`; module + `reload_buffer_from_disk` doc comments; rewrite/extend the clean-buffer tests)
 
@@ -2009,7 +2009,7 @@ PR-sized unit.
 ---
 
 ## Possible Improvements:
-  - The DiffViewState::visual_lines cache is rebuilt every frame; CP5/CP4 could memoize on hunks change.
+  - ~~The DiffViewState::visual_lines cache is rebuilt every frame; CP5/CP4 could memoize on hunks change.~~ ✅ Done: the flat visual-line list and a per-width row-count cache now live on `DiffState` (`src/diff/layout.rs`, behind a `RefCell`), built once per layout version and shared by the renderer and the scroll arithmetic. `DiffState::invalidate_layout()` forces a rebuild after the CP5 Edit sub-mode reshapes the hunk list.
 
 ---
 
