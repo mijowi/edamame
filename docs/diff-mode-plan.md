@@ -757,8 +757,10 @@ pub enum DiffSubMode {
   bolded decision divider.
   Decision keys (`y` / `n` / `Shift-Y` / `Shift-N`) work as bare keys
   because no text is being typed. Hunk navigation: `Tab` /
-  `Shift-Tab`. Entering Edit: `Enter` or `i`. Exiting diff: `Esc`
-  (opens `DiffExitConfirmModal` if any decisions are pending).
+  `Shift-Tab`. Entering Edit: `Enter` or `i`. Exiting diff: `Esc`,
+  gated on full resolution — a no-op while hunks are still pending,
+  and opens the `DiffResolveConfirmModal` once every hunk is decided
+  (see §8/§9).
 
 - **`Edit`**. Normal text editing, **hard-clamped to the currently
   focused hunk's new-side line range**. The text cursor is visible
@@ -812,15 +814,21 @@ pub enum DiffSubMode {
 
 The status-bar mode badge renders `DIFF` in Review and `DIFF·EDIT` in
 Edit so the active sub-mode is always visible. **Adjacent to the
-badge, the status bar shows a pending-count indicator** —
-`<pending>/<total>` (e.g. `3/7`) where `pending` is the number of
-hunks whose `Decision == Pending` and `total` is `hunks.len()`. This
-gives the user a feedback loop when skipping (since `DiffNext`
-without a decision leaves the hunk as `Pending`, the indicator is
-the only signal that a hunk is being deferred rather than acted on).
-The counter updates after every decision, edit-driven recompute, and
+badge, the status bar shows a progress indicator** —
+`<resolved>/<total>` (e.g. `4/7`) where `resolved` is the number of
+hunks whose `Decision != Pending` and `total` is `hunks.len()`. It
+counts *up* as the user works: `0/n` on entry, climbing to `n/n` once
+every hunk is resolved (at which point the `DiffResolveConfirmModal`
+fires). The count-up form reads as a progress meter — how far through
+the review the user is — rather than an ambiguous countdown. It still
+gives a feedback loop when skipping: `DiffNext` without a decision
+leaves the hunk `Pending`, so the count stalls rather than advancing,
+signalling that a hunk is being deferred rather than acted on. The
+counter updates after every decision, edit-driven recompute, and
 undo/redo. Rendered with `theme.status_bar_diff` so it inherits the
-diff-mode bar color.
+diff-mode bar color. Backed by `DiffState::resolved_count()` and
+surfaced via `StatusBarState::diff_progress: Option<(resolved,
+total)>`.
 
 > **Focus de-emphasis — partially shipped.** The base view now
 > de-saturates the add/delete backgrounds on *non-focused* hunks: they
@@ -869,10 +877,10 @@ For each visible visual row, the widget emits a `Line<'static>` with:
 
 - **Unchanged context** — borrowed from `new_rope`, no `Line.style`.
 - **Delete-side lines** — from `old_rope`. `Line.style` is `theme.diff_delete_line` when the line belongs to the focused hunk, else the weaker `theme.diff_delete_line_unfocused`.
-- **Add-side lines** — from `new_rope`. `Line.style` is `theme.diff_add_line` (focused) or `theme.diff_add_line_unfocused` (non-focused), with per-`Span` overrides on the inline-changed word ranges using `theme.diff_add_inline` / `diff_delete_inline` (brighter bg + bold).
-- **Decision divider** — a synthetic line (no backing rope line) emitted at the old/new boundary of every hunk via `DiffLineSource::Decision`, so it sits below a delete-only hunk and above an insert-only one. It carries the accept/reject checkbox plus a resolved label: `[ ]` while Pending, `[✓] Accepted`, `[x] Rejected` — styled with `theme.diff_decision_pending` / `diff_decision_accepted` / `diff_decision_rejected`. It has no background fill so it reads as a break between the two sides. The checkmark/x glyphs differentiate decided hunks at a glance; `[✓]` for accept follows the checkbox convention already used in the editor, and `[x]` for reject reads as "crossed out". The asymmetry (Unicode `✓` vs ASCII `x`) is intentional — `x` is visually heavier and reads as a clear rejection. See `decision_line_text()` in `src/diff/layout.rs`.
+- **Add-side lines** — from `new_rope`. `Line.style` is `theme.diff_add_line` (focused) or `theme.diff_add_line_unfocused` (non-focused), with per-`Span` overrides on the inline-changed word ranges. The inline style is *also* focus-aware: a focused hunk uses `theme.diff_add_inline` / `diff_delete_inline` (saturated, darkened-toward-`bg`, bold), while a non-focused hunk uses the muted `theme.diff_add_inline_unfocused` / `diff_delete_inline_unfocused` (a surface-derived tint, no bold) so the changed word recedes with the rest of the dimmed hunk instead of popping. The focused full-line fill is pulled a shade darker (blended toward `bg`, see §9) so the saturated inline-change highlight has enough contrast to read against the surrounding row.
+- **Decision divider** — a synthetic line (no backing rope line) emitted at the old/new boundary of every hunk via `DiffLineSource::Decision`, so it sits below a delete-only hunk and above an insert-only one. It carries the accept/reject checkbox plus a resolved label: `[ ]` while Pending, `[Y] Accepted`, `[N] Rejected`. The `[Y]` / `[N]` glyphs spell the yes/no answer, so the checkbox reads as the decision itself. The **focused** hunk's divider uses the per-state `theme.diff_decision_pending` / `diff_decision_accepted` / `diff_decision_rejected` (a full-width `secondary`-tinted background — set as the line's base style so the trailing-cell fill paints the whole row — with the per-state fg hue: muted while Pending, green/red once resolved) plus an added bold, so it reads as the actionable strip between the two sides. A **non-focused** hunk's divider collapses to the single muted `theme.diff_decision_unfocused` (a fainter `secondary` strip, muted fg, no bold) so it recedes with the rest of the hunk; the glyph and label still convey the decision, so the per-state hue isn't needed once the hunk isn't the actionable one. See `decision_line_text()` in `src/diff/layout.rs`.
 - **Stacked order** — old (delete) lines first, then the decision divider, then new (add) lines.
-- **Focused hunk** — there is *no* gutter glyph or focus bar. Focus is shown by background intensity alone: the focused hunk's add/delete lines use `theme.diff_add_line` / `diff_delete_line` (stronger fill), while every non-focused hunk uses `theme.diff_add_line_unfocused` / `diff_delete_line_unfocused` (a fainter wash that recedes). The focused hunk's decision divider is additionally bolded. All lines start at column 0; the focused/unfocused background split — not a gutter — is the focus indicator.
+- **Focused hunk** — there is *no* gutter glyph or focus bar. Focus is shown by background intensity alone: the focused hunk's add/delete lines use `theme.diff_add_line` / `diff_delete_line` (stronger fill, itself darkened toward `bg` — see §9), while every non-focused hunk uses `theme.diff_add_line_unfocused` / `diff_delete_line_unfocused` (a fainter wash that recedes). The focused hunk's decision divider is additionally bolded. All lines start at column 0; the focused/unfocused background split — not a gutter — is the focus indicator.
 
 `render_line_from_visual` already propagates `line.style` across the
 trailing cells (the same mechanism code blocks use), so a single
@@ -1288,9 +1296,12 @@ pub struct Theme {
     pub diff_delete_line_unfocused: Style,
     pub diff_add_inline: Style,        // darkened bg, bold (word-level)
     pub diff_delete_inline: Style,
-    pub diff_decision_pending: Style,  // `[ ]` checkbox on the divider
-    pub diff_decision_accepted: Style, // `[✓] Accepted`
-    pub diff_decision_rejected: Style, // `[x] Rejected`
+    pub diff_add_inline_unfocused: Style,    // muted word-level tint, non-focused
+    pub diff_delete_inline_unfocused: Style,
+    pub diff_decision_pending: Style,  // `[ ]` checkbox on the divider (bg fill)
+    pub diff_decision_accepted: Style, // `[Y] Accepted` (bg fill)
+    pub diff_decision_rejected: Style, // `[N] Rejected` (bg fill)
+    pub diff_decision_unfocused: Style, // muted divider, non-focused (all states)
     pub status_mode_diff: Style,
     pub status_bar_diff: Style,        // saturated bg
     pub hint_bar_diff: Style,
@@ -1305,15 +1316,18 @@ independently):**
 
 | Slot | Derivation | Notes |
 |---|---|---|
-| `diff_add_line` | `Style::default().bg(blend(surface, diff_add, 0.42))` | Focused-hunk add fill; readable behind normal text fg. |
-| `diff_delete_line` | `Style::default().bg(blend(surface, diff_delete, 0.42))` | Same idea, delete side. |
+| `diff_add_line` | `Style::default().bg(blend(blend(surface, diff_add, 0.42), bg, 0.30))` | Focused-hunk add fill; readable behind normal text fg. The `0.42` blend toward `diff_add` is then pulled `0.30` back toward `bg` so the focused row sits a shade darker than the saturated `diff_add_inline` highlight — that contrast keeps within-line changes legible. |
+| `diff_delete_line` | `Style::default().bg(blend(blend(surface, diff_delete, 0.42), bg, 0.30))` | Same idea, delete side. |
 | `diff_add_line_unfocused` | `Style::default().bg(blend(surface, diff_add, 0.07))` — a much weaker tint than the 0.42 of `diff_add_line`. | Non-focused add hunks recede so the focused hunk's color stands out. |
 | `diff_delete_line_unfocused` | `Style::default().bg(blend(surface, diff_delete, 0.07))` (analogous). | Non-focused delete hunks, delete side. |
-| `diff_add_inline` | `Style::default().bg(blend(diff_add, bg, 0.35)).add_modifier(Modifier::BOLD)` | Darkened toward bg + bold for word-level highlights inside an add line, so light text keeps contrast. |
-| `diff_delete_inline` | `Style::default().bg(blend(diff_delete, bg, 0.35)).add_modifier(Modifier::BOLD)` | Darkened toward bg + bold for word-level highlights inside a delete line. |
-| `diff_decision_pending` | `Style::default().fg(palette.text_muted)` | The bare `[ ]` checkbox while the hunk is undecided — muted so resolved states read as the change. |
-| `diff_decision_accepted` | `Style::default().fg(palette.diff_add).add_modifier(Modifier::BOLD)` | `[✓] Accepted` divider; green + bold echoes the add side. |
-| `diff_decision_rejected` | `Style::default().fg(palette.diff_delete).add_modifier(Modifier::BOLD)` | `[x] Rejected` divider; red + bold echoes the delete side. The focused hunk's divider gets an extra `BOLD` at render time. |
+| `diff_add_inline` | `Style::default().bg(blend(diff_add, bg, 0.35)).add_modifier(Modifier::BOLD)` | Darkened toward bg + bold for word-level highlights inside a *focused* add line, so light text keeps contrast. |
+| `diff_delete_inline` | `Style::default().bg(blend(diff_delete, bg, 0.35)).add_modifier(Modifier::BOLD)` | Darkened toward bg + bold for word-level highlights inside a *focused* delete line. |
+| `diff_add_inline_unfocused` | `Style::default().bg(blend(surface, diff_add, 0.20))` (no bold) | Word-level add highlight on a *non-focused* hunk — a surface-derived tint (like the `_line_unfocused` washes) at 0.20 vs. the 0.07 line wash, so the changed word reads as a slightly deeper patch within the faint hunk instead of popping. |
+| `diff_delete_inline_unfocused` | `Style::default().bg(blend(surface, diff_delete, 0.20))` (no bold) | Same idea, delete side. |
+| `diff_decision_pending` | `Style::default().fg(palette.text_muted).bg(blend(surface, secondary, 0.28))` | The bare `[ ]` checkbox while the hunk is undecided — `secondary`-tinted bg fills the whole divider row; muted fg so resolved states read as the change. |
+| `diff_decision_accepted` | `Style::default().fg(palette.diff_add).bg(blend(surface, secondary, 0.28)).add_modifier(Modifier::BOLD)` | `[Y] Accepted` divider; green fg + bold echoes the add side, on the shared `secondary` strip. |
+| `diff_decision_rejected` | `Style::default().fg(palette.diff_delete).bg(blend(surface, secondary, 0.28)).add_modifier(Modifier::BOLD)` | `[N] Rejected` divider; red fg + bold echoes the delete side, on the shared `secondary` strip. The focused hunk's divider gets an extra `BOLD` at render time. The bg is set as the line's base style so the trailing-cell fill spans the full row width. The three per-state styles above apply only to the *focused* hunk. |
+| `diff_decision_unfocused` | `Style::default().fg(palette.text_muted).bg(blend(surface, secondary, 0.10))` | Single muted divider for *non-focused* hunks — a fainter `secondary` strip (0.10 vs. the focused 0.28), muted fg, no bold, no per-state hue. The `[Y]`/`[N]` glyph and label still convey the decision, so the divider can recede uniformly with the rest of the unfocused hunk. |
 | `status_mode_diff` | `Style::default().fg(palette.surface).bg(palette.warning).add_modifier(Modifier::BOLD)` | `DIFF` / `DIFF·EDIT` badge — reuses the existing `warning` palette slot so it pops against the normal-mode badge color. |
 | `status_bar_diff` | `Style::default().fg(palette.text).bg(blend(surface, diff_add, 0.22))` | Status line (bottom) gets a muted green wash, mirroring the adds-below stacking. A tint, not a fill, so the bar reads as "diff" without being mistaken for an in-document hunk and without sacrificing text legibility. |
 | `hint_bar_diff` | `Style::default().fg(palette.text).bg(blend(surface_elevated, diff_delete, 0.22))` | Hint line (top) gets a muted red wash, mirroring the deletes-above stacking. |
@@ -1334,13 +1348,15 @@ slots.
 the focused `_line` bg slots become `Style::default().add_modifier(REVERSED)`
 (swap fg/bg on the whole line), while the `_line_unfocused` slots use
 `DIM` — so the three tiers (context plain / unfocused dim / focused
-reversed) stay distinct without color; the `_inline` slots add `BOLD` on
-top of `REVERSED`. The decision divider has no color to fall back on, so
-the resolved labels plus weight carry the state: `diff_decision_pending`
-is `DIM`, and `diff_decision_accepted` / `diff_decision_rejected` are
-`BOLD` (the "Accepted" / "Rejected" text disambiguates the two). The
-status/hint diff slots fall back to `REVERSED + BOLD` so the mode
-shift is still visible without color.
+reversed) stay distinct without color; the focused `_inline` slots add
+`BOLD` on top of `REVERSED`, while the `_inline_unfocused` slots use plain
+`DIM` (matching the dimmed unfocused line). The decision divider has no
+color to fall back on, so the resolved labels plus weight carry the
+state: `diff_decision_pending` is `DIM`, and `diff_decision_accepted` /
+`diff_decision_rejected` are `BOLD` (the "Accepted" / "Rejected" text
+disambiguates the two); `diff_decision_unfocused` is `DIM`, matching the
+unfocused-line tier. The status/hint diff slots fall back to
+`REVERSED + BOLD` so the mode shift is still visible without color.
 
 ## 8. Modals
 
@@ -1350,9 +1366,17 @@ First-time explanatory modal. Uses the standard `ModalView` widget
 (not the custom welcome-modal blit approach — we don't need pill
 rows or embedded theme buttons). Title: "File changed on disk".
 Body explains the stacked-line indicator and lists the diff-mode
-keybindings. `[x] Don't show this again` checkbox rendered as a
-body line, toggled with Space (mirrors welcome modal). `Continue`
-button confirms; `Esc` also dismisses (`dismissable: true`) — this
+keybindings. A `[x] Don't show this again` checkbox sits in the footer
+row alongside `Continue`, joining the normal focus cycle (Tab /
+Shift-Tab / arrows move focus; Enter / Space toggle vs. confirm; both
+are clickable). It is a **bare** footer button — `ModalButton::bare`,
+rendered *without* the `[ … ]` wrapper that `ModalView` applies to
+ordinary buttons — so the `[ ]`/`[x]` glyph reads as the checkbox
+itself rather than as `[ [x] … ]`, mirroring the welcome modal's
+toggle. (The shared `button_row` carries the per-button `bracketed`
+flag; bare buttons skip the bracket wrapper but keep the same centring,
+gap, and click hit-testing.) `Continue` confirms; `Esc` also dismisses
+(`dismissable: true`) — this
 modal is purely informational and requires no decision from the user,
 so blocking dismissal would be needlessly hostile. Dismissing without
 toggling the checkbox keeps `show_diff_intro = true`; toggling and
@@ -1361,6 +1385,17 @@ then dismissing (via either `Continue` or `Esc`) persists the opt-out.
 Opt-out persisted as `EditorConfig::show_diff_intro: bool = true`
 in `~/.config/edamame/config.toml`, via `save_config_with_flash`.
 Settings overlay row added under `[editor]`.
+
+**Only one intro modal at a time.** A clean buffer stays clean during
+diff review, so a second (or third) external overwrite re-enters
+`enter_diff_mode` (the clean-buffer branch in `handle_file_changed`,
+§11a) and recomputes the diff against the freshest disk contents.
+Without a guard each re-entry would push another identical
+`DiffIntroModal`, forcing the user to dismiss one per overwrite. The
+push is therefore guarded on `!modal_stack.contains::<DiffIntroModal>()`
+so at most one is ever on the stack. (The re-entry itself is kept — it
+mirrors the dirty-conflict path's "always reconcile against the latest
+disk state" behavior; only the duplicate modal is suppressed.)
 
 ### `DirtyConflictModal`
 
@@ -1387,23 +1422,35 @@ a confirmation because it's the only destructive choice.
 
 ### `DiffResolveConfirmModal`
 
-Shown when the last `Pending` decision becomes non-`Pending` (i.e.
-all hunks have been decided). `ModalKind::Normal`, `dismissable:
-true`. Title: "Apply merged result?". Body: a summary line showing
-the decision counts (e.g. "3 accepted, 1 rejected, 1 edited").
-Buttons:
+`ModalKind::Normal`, `dismissable: true`. Title: "Apply merged
+result?". Body: a summary line showing the decision counts (e.g. "3
+accepted, 1 rejected, 1 edited"). Buttons:
 
 | Button | Action |
 |---|---|
 | `[Apply]` | Trigger resolution: call `resolved_rope()`, swap into `editor.buffer`, record the merge-revert entry (§6), exit diff mode, flash "Diff resolved". Primary / default-focused button. |
-| `[Keep reviewing]` | Dismiss the modal and return to diff Review with all decisions intact. The user can undo decisions, change their mind, and re-trigger the modal by re-deciding the last hunk. |
+| `[Keep reviewing]` | Dismiss the modal and return to diff Review with all decisions intact. The user can undo decisions, change their mind, and re-trigger the modal (re-decide a hunk so the final-resolution path fires again, or press `Esc` while everything is resolved). |
 
 `Esc` dismisses (equivalent to `[Keep reviewing]`). This is safe
 because the user's decisions and edits are preserved — nothing is
 lost by dismissing. The modal provides a confirmation gate that
-prevents accidental resolution from a mis-pressed `y` / `n` on the
-last hunk, and gives the user a moment to review the summary before
-committing.
+prevents accidental resolution and gives the user a moment to review
+the summary before committing.
+
+**Exactly two entry points (`App::check_diff_resolution`).** The modal
+is opened only when every hunk is decided *and* one of these fires:
+
+1. **Resolving the final hunk as an action** — a decision
+   (`DiffAcceptHunk` / `DiffRejectHunk`, via the deferred post-decision
+   advance) or a bulk `DiffAcceptAll` / `DiffRejectAll` that leaves
+   nothing `Pending`. The trigger is the *act* of deciding, not merely
+   being in a resolved state.
+2. **`Esc` (`DiffExit`) while already fully resolved** — `Esc` is gated
+   on full resolution, so it opens the modal only once every hunk is
+   decided; with pending hunks it is a no-op (see §9).
+
+Hunk navigation (`DiffNext` / `DiffPrev`) deliberately never opens it:
+tabbing among already-decided hunks must not pop the modal.
 
 ## 9. Actions and keymap
 
@@ -1431,17 +1478,19 @@ redundant keybind.
 | `Tab` / `Shift-Tab` | `DiffNext` / `DiffPrev` |
 | `y` | `DiffAcceptHunk` (accept current hunk and advance) |
 | `n` | `DiffRejectHunk` (reject current hunk and advance) |
-| `Shift-Y` | `DiffAcceptAll` (accept all remaining `Pending` hunks) |
-| `Shift-N` | `DiffRejectAll` (reject all remaining `Pending` hunks) |
+| `Shift-Y` | `DiffAcceptAll` (accept *every* hunk, overriding any prior decisions) |
+| `Shift-N` | `DiffRejectAll` (reject *every* hunk, overriding any prior decisions) |
 | `Enter` or `i` | `DiffEnterEdit` (enter Edit sub-mode on the focused hunk) |
 | *(bound to `Action::Undo` / `Action::Redo`)* | undo / redo (routed to `DiffHistory`) |
-| `Esc` | `DiffExit` (see below) |
+| `Esc` | `DiffExit` — gated on full resolution (see below); no-op while any hunk is pending |
 
 `y` / `n` over `a` / `r` follows the convention established by `git
 add -p`, `jj split`, and most terminal accept/reject prompts. With
 `Tab` / `Shift-Tab` for navigation, `y` / `n` are unambiguous bare
 keys — there is no double-duty. The on-screen decision indicators
-themselves use `[✓]` / `[x]` / `[ ]` glyphs (§5), not `[Y]`/`[N]`.
+reinforce the keys: a resolved hunk shows `[Y] Accepted` / `[N]
+Rejected` (§5), so the checkbox glyph spells the same yes/no answer
+the `y` / `n` keys record (`[ ]` while still Pending).
 
 ### Edit sub-mode binds
 
@@ -1474,7 +1523,7 @@ hint sets are built using `chords_from(keymap, &entries)` — the same
 mechanism as existing hint lines — so the displayed key labels
 reflect the user's actual keybindings and stay correct after rebinding.
 
-- **Review hint set (actions):** `DiffNext` "Next" · `DiffPrev` "Prev" · `DiffAcceptHunk` "Accept" · `DiffRejectHunk` "Reject" · `DiffAcceptAll` "Accept all" · `DiffRejectAll` "Reject all" · `DiffEnterEdit` "Edit" · `Undo` "Undo" · `DiffExit` "Exit"
+- **Review hint set (actions):** `DiffExit` "Exit" (*only when every hunk is resolved* — leads the row) · `DiffNext` "Next" · `DiffPrev` "Prev" · `DiffAcceptHunk` "Accept" · `DiffRejectHunk` "Reject" · `DiffAcceptAll` "Accept all" · `DiffRejectAll` "Reject all" · `DiffEnterEdit` "Edit" · `Undo` "Undo"
 - **Edit hint set (actions):** `DiffExitEdit` "Done" · `Undo` "Undo" · `Newline` "Newline" · `DeleteCharBack` "Delete"
 
 Both sets render against `theme.hint_bar_diff` so the strong
@@ -1482,37 +1531,47 @@ diff-mode color is preserved across both sub-modes. If the hint set
 is wider than the terminal, it silently overflows (truncated on the
 right) — matching existing behavior for all other modes.
 
-### `Esc` with unresolved or un-applied changes (Review only)
+### `Esc` in Review (current behavior)
 
-`Esc` in Review always opens `DiffExitConfirmModal` (`ModalKind::
-Warning`, dismissable, buttons `[Keep reviewing]` default +
-`[Discard]`). The body text varies by state:
+`Esc` (`DiffExit`) is **gated on full resolution** — diff mode cannot
+be exited while any hunk is still pending. It branches:
 
-- **Some hunks still `Pending`:** "You have unresolved changes.
-  Discard them and exit diff mode?"
-- **All hunks decided but resolution not yet confirmed** (the
-  `DiffResolveConfirmModal` is open or was dismissed): "You have
-  unapplied decisions. Discard them and exit diff mode?"
+- **Some hunks still `Pending`:** no-op, plus an info flash ("Resolve
+  every hunk before exiting diff mode"). Nothing is discarded and the
+  buffer is untouched; the user must decide every hunk first. (`Quit`
+  / `Ctrl+Q` remains the abandon-everything path — but it too warns
+  first via `DiffQuitConfirmModal` before discarding the review; see
+  §10.)
+- **Every hunk decided:** open the `DiffResolveConfirmModal` (entry
+  point 2 of the resolve flow, §8). A fully reviewed diff is applied
+  via an explicit `[Apply]` choice — that is the exit. From the modal,
+  `[Keep reviewing]` / `Esc` returns to Review; to leave a resolved
+  diff *without* applying any change, `Shift-N` (reject all) then
+  `[Apply]` reproduces the original text.
 
-`[Discard]` reverts `editor.buffer` to the cached `old_rope`, clears
-`editor.diff` and `editor.history`, and dismisses the resolve modal
-if it's open. `[Keep reviewing]` dismisses the exit-confirm modal
-with no other state change; the resolve modal, if it had been open,
-stays open underneath.
-
-This gives the user an always-available escape hatch — they never
-get stuck in a state where they can't exit without re-deciding
-hunks they already decided.
+This makes resolution mandatory: the user reviews every hunk before
+the buffer can change, and a stray `Esc` can neither silently discard
+a half-finished review nor silently apply a finished one.
 
 `Esc` in Edit sub-mode is intercepted *before* this path and simply
 returns to Review — it never directly triggers diff exit.
 
+The `Esc Exit` hint in the Review hint row is likewise gated: it is
+shown only once every hunk is resolved, and leads the row (first
+chord) so the now-available exit is the most prominent affordance.
+
+> **Deferred:** a dedicated `DiffExitConfirmModal` (a `[Keep reviewing]`
+> / `[Discard]` warning) so a user with a *partly* reviewed diff can
+> deliberately abandon it *without quitting the whole app*. Today the
+> only abandon path short of finishing the review is `Quit` (which now
+> warns via `DiffQuitConfirmModal`, §10, then exits the app); revisit
+> once in-diff edits (CP5) make a half-finished review more valuable.
+
 **Modal precedence.** If any modal is open (theme picker, command
-palette, intro modal, exit-confirm modal itself, etc.), modal `Esc`
-dismissal takes precedence: the topmost modal closes and the
-diff-exit confirm flow does not fire. The diff-exit confirm path
-only runs when no modal is currently open and the sub-mode is
-`Review`.
+palette, intro modal, the resolve-confirm modal itself, etc.), modal
+`Esc` dismissal takes precedence: the topmost modal closes and the
+`DiffExit` handling does not fire. The `Esc` → `DiffExit` path only
+runs when no modal is currently open and the sub-mode is `Review`.
 
 ### Keybinding overlay
 
@@ -1668,11 +1727,18 @@ overlay's display order.
 
   `diff_safe_action` takes `(action, sub_mode)` and applies these refinements. The implementation is a flat match producing `Option<Action>` — readable, exhaustive (compile error on new `Action` variants), and easy to audit.
 
-  **`Action::Quit` guard.** `Quit` is allowlisted, but it is **not** dispatched directly through `edit_ops::apply` in diff mode. Instead, `App::handle_app_action(Action::Quit)` gains a diff-aware guard: if `editor.diff.is_some()` and (any decision is non-`Pending` OR `DiffHistory::past` contains a `DiffOp::Edit`), the same `DiffExitConfirmModal` from §9 is opened (body reads "You have unresolved changes. Discard them and quit?"; buttons `[Keep reviewing]` default / `[Discard and quit]`). `[Discard and quit]` reverts to `old_rope`, exits diff mode, and re-dispatches `Action::Quit`. If no decisions are pending and no in-diff edits exist, `Quit` falls through to the normal dirty-buffer-Quit path. The reason: `editor.dirty` reflects pre-diff buffer state and does not capture in-diff work, so the standard dirty-buffer guard would silently lose the entire review.
+  **`Action::Quit` guard.** `Quit` is allowlisted, but in diff mode it is **not** dispatched through the generic dirty-buffer quit guard — `dispatch_action` checks `Mode::Diff` *before* the `editor.dirty` quit check, so the diff path always wins. The reason: `editor.dirty` reflects pre-diff buffer state and the standard guard's `[Save]` path would persist the wrong (pre-merge) contents. Instead, `dispatch_diff_action(Action::Quit)` opens a diff-specific `DiffQuitConfirmModal` (`ModalKind::Warning`, body "You are reviewing changes from disk. Quitting now discards the review and every decision you've made.", buttons `[Keep reviewing]` default / `[Discard & quit]`). A review is always unapplied work, so the warning fires whenever `editor.diff.is_some()` — the user can't accidentally drop a review (or its decisions) with a stray `Ctrl+Q`. `[Discard & quit]` calls `exit_diff_mode_discarding()` (reverting to `old_rope`) and sets `should_quit`; `[Keep reviewing]` / `Esc` returns to the review. The push is guarded so a repeated `Quit` doesn't stack a second copy.
 
 - The command palette filters its visible entries through `diff_safe_action` while in diff mode so blocked actions are not even offered (palette-invoked theme switching, settings, keybinds remain available).
 
 ## 11. File-change events while already in diff mode
+
+> **Superseded by §11b.** The deferred single-slot queue described below
+> was never implemented and is replaced by live decision-preserving
+> reconciliation (§11b): a `FileChanged` arriving mid-review is folded into
+> the existing `DiffState` immediately, carrying forward decisions on
+> unchanged hunks, rather than queued until after resolution. The text
+> below is retained for historical context.
 
 Any `AppEvent::FileChanged` received while `editor.diff.is_some()`
 is queued (single-slot — newer overwrites older) on `App`. The queued
@@ -1758,10 +1824,11 @@ only the final clean-buffer branch:
      change is still reviewed hunk by hunk. `enter_diff_mode` already
      diffs `old = buffer.contents()` (which, for a clean buffer, equals
      the last-saved / previously-observed disk content) against
-     `new = on_disk`, shows `DiffIntroModal` on first run, and falls
-     back to a "No differences to review" flash if `DiffState::new`
-     returns `None` (cannot happen after filter 3, but the guard is
-     retained defensively).
+     `new = on_disk`, shows `DiffIntroModal` on first run (guarded so a
+     repeated overwrite while already in diff review never stacks a
+     second intro modal — see §8), and falls back to a "No differences
+     to review" flash if `DiffState::new` returns `None` (cannot happen
+     after filter 3, but the guard is retained defensively).
 
 ### Concrete code changes
 
@@ -1827,6 +1894,303 @@ If a future user genuinely wants silent auto-reload of clean buffers
 setting (`editor.auto_reload_clean = false` by default) — deferred and
 out of scope here; the default must remain "always review."
 
+## 11b. Correction — live decision-preserving reconciliation while in diff mode (supersedes §11)
+
+**Status: planned (target: Checkpoint 4).** Supersedes §11's deferred-queue
+design and the wholesale-reset behavior that ships today.
+
+### The problem
+
+§11 specified that a `FileChanged` arriving while `editor.diff.is_some()`
+is *queued* (flag only, contents dropped) and reconciled only *after* the
+user finishes the current review. That mechanism was never implemented.
+What ships today is worse: `App::handle_file_changed`
+(`src/app/file_changed.rs`) has **no `editor.diff.is_some()` branch at
+all**. Because the main buffer stays clean during review (edits target
+`diff.new_buffer`, and §4a's `apply_delta` does not set `dirty`), a second
+external write falls through to the clean branch and calls
+`enter_diff_mode(new_contents)` again, which **replaces `editor.diff`
+wholesale** (`EditorState::enter_diff_mode`, `src/editor/state.rs`). Every
+accept/reject decision, the focused hunk, any in-Edit text, the scroll
+position, and the diff undo stack are **silently discarded**, and the
+review restarts at `0/n`.
+
+Neither behavior is what we want. Deferring (§11) forces the user to
+finish reviewing a now-stale diff and then re-review from scratch;
+wholesale reset throws their work away. The correct behavior — specified
+here — is to **fold the new disk state into the live review immediately,
+carrying forward every decision the user already made on hunks that did
+not change.**
+
+### Desired behavior
+
+When a fresh disk write arrives mid-review:
+
+1. Recompute the diff between the (invariant) `old_rope` and the **new**
+   disk contents.
+2. Carry each prior decision forward onto the hunk it still applies to,
+   **but only when that hunk's new-side content is byte-identical to what
+   the user already reviewed.** A hunk whose new-side target the external
+   write changed resets to `Pending` — the user must re-review the
+   now-different change, because they never saw it.
+3. Drop decisions for hunks that no longer exist (the external write
+   reverted that region to match `old_rope`, so there is nothing left to
+   decide there).
+4. Keep focus on the same hunk if it survives; otherwise land on the
+   first still-`Pending` hunk.
+5. If the new disk contents are byte-identical to `old_rope` (every change
+   was reverted), no hunks remain — exit diff mode cleanly.
+6. Flash a transient hint so the change — and any reset hunks — is never
+   silent.
+
+### Why old-side overlap is the right matching key
+
+`old_rope` is invariant for the entire life of a review (§3, §6): both the
+initial diff and every recompute run against the same pre-change text. So
+the old-side line range is a stable anchor — an external write only
+changes the *new* side. Two hunks "are the same hunk" when their old-side
+ranges overlap most (ties break by smallest `old_lines.start`); this is
+exactly the §6 rule-2 matching already relied on for in-diff edits. Note
+that the §6 matching algorithm is **not yet implemented in code** (it is
+CP5 machinery); this section delivers its matching primitive for the first
+time, and CP5's post-edit recompute then reuses it.
+
+### The crucial difference from §6's in-diff recompute
+
+§6's recompute is triggered by the **user** editing the new side, so
+carrying a decision across the reshape "matches the user's intuition that
+the hunk I accepted is still mostly the same hunk" (§6 rule 5) — keeping
+the decision is correct *because the user made the change.*
+
+An external write is the opposite: the new-side content changed **without
+the user's knowledge.** Carrying an `Accepted` decision across a new-side
+change would silently accept content the user never saw — a correctness
+hazard. Hence the extra gate in step 2: **carry the decision only when the
+matched hunk's new-side text is unchanged; otherwise reset to `Pending`.**
+That gate is the one thing this section adds on top of the §6 matching
+algorithm.
+
+### Algorithm
+
+A new method `DiffState::reconcile_with_disk(&mut self, new_disk: &str) ->
+ReconcileOutcome`:
+
+```rust
+pub enum ReconcileOutcome {
+    /// Hunks remain; still reviewing. `reset` counts hunks whose decision
+    /// was dropped back to Pending because their new-side target changed
+    /// (drives the flash wording).
+    StillReviewing { reset: usize },
+    /// new_disk == old_rope: nothing differs anymore. Caller exits diff.
+    NoChangesRemain,
+}
+
+pub fn reconcile_with_disk(&mut self, new_disk: &str) -> ReconcileOutcome {
+    // Snapshot prior state before we overwrite anything.
+    let prior_hunks     = std::mem::take(&mut self.hunks);
+    let prior_decisions = std::mem::take(&mut self.decisions);
+    let prior_new_rope  = self.new_buffer.rope().clone();
+    let prior_focused   = self.focused_id;
+
+    let old = self.old_rope.to_string();
+    let computation = compute(&old, new_disk, &mut self.ids); // reuse id allocator
+    let mut hunks = computation.hunks;
+    if hunks.is_empty() {
+        return ReconcileOutcome::NoChangesRemain;
+    }
+    let new_rope = Rope::from_str(new_disk);
+
+    let mut decisions = vec![Decision::Pending; hunks.len()];
+    let mut reset = 0;
+    for (i, h) in hunks.iter_mut().enumerate() {
+        // §6 rule-2 overlap match against the prior hunk list.
+        if let Some(p) = match_by_old_overlap(h, &prior_hunks) {
+            h.id = prior_hunks[p].id;            // inherit the stable id
+            let same_new = hunk_new_side_text(h, &new_rope)
+                        == hunk_new_side_text(&prior_hunks[p], &prior_new_rope);
+            if same_new {
+                decisions[i] = prior_decisions[p];        // carry the decision
+            } else if prior_decisions[p] != Decision::Pending {
+                reset += 1;                               // changed target → re-review
+            }
+        }
+    }
+
+    self.new_buffer.set_rope(new_rope);   // Buffer::set_rope (§3)
+    self.hunks = hunks;
+    self.decisions = decisions;
+    self.uneven_table_fallback = computation.uneven_table_fallback;
+
+    // Keep focus if it survived; else first pending, else first hunk.
+    self.focused_id = if self.hunks.iter().any(|h| h.id == prior_focused) {
+        prior_focused
+    } else {
+        self.first_pending_id().unwrap_or(self.hunks[0].id)
+    };
+
+    // An external reshape invalidates the in-diff undo history — the ropes
+    // those ops reference no longer match disk. Clear it; the external
+    // change is a hard checkpoint, not an undoable step.
+    self.history = DiffHistory::default();
+    self.invalidate_layout();
+    ReconcileOutcome::StillReviewing { reset }
+}
+```
+
+Two new reusable helpers:
+
+- `match_by_old_overlap(hunk, priors: &[Hunk]) -> Option<usize>` in
+  `src/diff/engine.rs` — the §6 rule-2 overlap match (largest old-side
+  overlap; ties → smallest `old_lines.start`; `None` on zero overlap).
+  First concrete implementation of the §6 matching primitive; CP5's
+  post-edit recompute calls the same function.
+- `hunk_new_side_text(hunk, rope) -> String` (or a borrowed slice) — the
+  hunk's new-side lines from a rope. A `Delete` hunk (empty new-side
+  range) yields `""`.
+
+### App wiring
+
+`App::handle_file_changed` (`src/app/file_changed.rs`) gains a diff-mode
+branch **before the buffer-vs-disk filter**, because in diff mode
+`editor.buffer` is the pre-diff original (`== old_rope`); the existing
+filter 2 would otherwise short-circuit a disk-reverts-to-original event as
+a "no-op" when in diff mode that event actually means "collapse the review
+and exit."
+
+```rust
+let incoming_hash = seahash::hash(change.contents.as_bytes());
+
+// 1. Own-write / no-change echo (unchanged).
+if self.last_disk_hash == Some(incoming_hash) { return; }
+
+// 2. Already reviewing: fold the new disk state into the live review.
+//    Must precede the buffer-vs-disk filter (in diff mode that filter's
+//    "disk == buffer" means "changes reverted", not "no-op").
+if self.editor.diff.is_some() {
+    self.last_disk_hash = Some(incoming_hash);   // stamp-before-dispatch
+    self.reconcile_diff_with_disk(change.contents);
+    return;
+}
+
+// 3. Buffer-vs-disk short-circuit + dirty/clean dispatch (unchanged; only
+//    reached when NOT already in diff mode).
+...
+```
+
+```rust
+fn reconcile_diff_with_disk(&mut self, new_disk: String) {
+    let outcome = self.editor.diff.as_mut()
+        .expect("guarded by diff.is_some()")
+        .reconcile_with_disk(&new_disk);
+    match outcome {
+        ReconcileOutcome::StillReviewing { reset } => {
+            self.editor.pending_focus_scroll = true;  // re-center on focus next frame
+            self.flash(
+                if reset > 0 {
+                    "File changed on disk — updated hunks reset for review"
+                } else {
+                    "File changed on disk — review updated"
+                },
+                MessageKind::Info,
+            );
+        }
+        ReconcileOutcome::NoChangesRemain => {
+            self.editor.exit_diff_mode();   // restores pre_diff_scroll, clears diff
+            self.flash("On-disk changes reverted — nothing to review", MessageKind::Info);
+        }
+    }
+}
+```
+
+The reconcile path never calls `enter_diff_mode`, so no `DiffIntroModal` is
+pushed (correct — we are already in diff). The own-write hash is stamped
+before dispatch, matching the existing stamp-before-dispatch pattern in
+`file_changed.rs`.
+
+### Edge cases and semantics
+
+- **Decision reverted externally.** If the user `Accepted` a change and the
+  external tool then reverts that region to match `old_rope`, the hunk
+  disappears and its decision is dropped. On resolution that region is
+  plain context (= `old_rope`), so the merged result reflects current
+  disk, not the vanished accept. Intended: a diff reconciles the pre-diff
+  buffer with *current* disk; there is nothing to decide about a change
+  that no longer exists.
+- **In-Edit text is discarded.** Replacing `new_buffer` with the latest
+  disk drops any unsaved Edit-sub-mode text. Acceptable: Edit is CP5 (not
+  yet implemented), and the external write is authoritative for the new
+  side. When CP5 lands, `reconcile_with_disk` must additionally force
+  `sub_mode` back to `Review` and reposition the cursor, since the Edit
+  cursor pointed into the now-replaced rope. (A future refinement could
+  three-way-merge in-flight edits; out of scope.)
+- **Undo stack cleared.** §6 rule 4 (skip stale `hunk_id`s on undo) covers
+  intra-edit reshapes, but an external rope swap is a harder break;
+  clearing `DiffHistory` is the simple, safe choice.
+- **Focus.** `focused_id` is preserved when the hunk survives; otherwise
+  focus moves to the first still-`Pending` hunk (better than the first
+  hunk — it lands the user on something needing attention).
+  `pending_focus_scroll` re-centers the viewport next frame.
+- **Progress chip.** The §4 `resolved/total` chip updates automatically:
+  carried decisions keep `resolved` high, reset hunks lower it, so the
+  user sees the count tick backward by exactly the number of hunks the
+  external write disturbed — an honest signal.
+
+### Tests
+
+- `src/diff/state.rs` units:
+  - `reconcile_preserves_decision_on_unchanged_hunk` — two hunks, accept
+    h0 / reject h1, reconcile with disk that changes only h1's region: h0
+    keeps `Accepted` and its `HunkId`; h1 → `Pending`; outcome
+    `StillReviewing { reset: 1 }`.
+  - `reconcile_resets_decision_when_new_side_changes` — accept a hunk,
+    reconcile with disk whose new-side target for that region differs →
+    `Pending`.
+  - `reconcile_drops_vanished_hunk` — reconcile with disk that reverts one
+    hunk's region to `old_rope` → that hunk gone, its decision discarded,
+    others intact.
+  - `reconcile_collapses_to_no_changes` — reconcile with `new_disk ==
+    old_rope` → `NoChangesRemain`.
+  - `reconcile_focus_survives_or_falls_back` — focused hunk survives →
+    focus kept; focused hunk vanishes → focus first pending.
+- `src/diff/engine.rs` unit: `match_by_old_overlap` largest-overlap +
+  tie-break.
+- `src/app/file_changed.rs` units:
+  - `external_change_in_diff_preserves_decisions` — enter diff, decide a
+    hunk, drive a second change through `handle_file_changed`: decision
+    preserved, still in diff mode, flash recorded, `DiffState` not
+    wholesale-reset.
+  - `external_revert_in_diff_exits_diff` — enter diff, push a change whose
+    contents equal the original buffer → exits diff mode, buffer
+    untouched.
+- **Repurpose** the existing
+  `reentering_diff_mode_does_not_stack_a_second_intro_modal`
+  (`src/app/actions.rs`): production re-entry now routes through reconcile,
+  not a second `enter_diff_mode`. Keep it as a unit test of
+  `enter_diff_mode`'s modal guard, and add the `handle_file_changed`-driven
+  preservation test above as the realistic path.
+
+### Supersedes
+
+This section replaces: §11's queued-event / `force_reconcile`-after-
+resolution mechanism; CP4's "event queue" scope item and the queued-event
+re-entry tests in §13; and the single-slot queued-event field on `App`
+(§12). The watcher's `force_reconcile()` primitive remains for the
+external-editor flow (§2) — only the in-diff deferral is removed.
+
+### Files touched
+
+- `src/app/file_changed.rs` — the `diff.is_some()` branch (before
+  filter 2) + `reconcile_diff_with_disk` + tests.
+- `src/diff/state.rs` — `reconcile_with_disk`, `ReconcileOutcome`,
+  `first_pending_id` helper, history clear + tests.
+- `src/diff/engine.rs` — `match_by_old_overlap` + `hunk_new_side_text`
+  (or place the latter in `state`/`layout`) + test.
+- Reuses, unchanged: `compute` + `HunkIdAllocator` (`engine.rs`),
+  `DiffState::ids` / `focused_idx` / `invalidate_layout`
+  (`state.rs`, `layout.rs`), `Buffer::set_rope` (§3),
+  `EditorState::exit_diff_mode` + `pending_focus_scroll` (`state.rs`),
+  `App::flash` (`flash.rs`).
+
 ## 12. Files touched
 
 **New files:**
@@ -1843,6 +2207,8 @@ out of scope here; the default must remain "always review."
   user `Esc`'s out of an in-progress diff review)
 - `src/app/modal/diff_resolve_confirm.rs` (confirmation gate before
   applying the merged result when all hunks are decided)
+- `src/app/modal/diff_quit_confirm.rs` (warn-before-discard gate when
+  `Quit` fires during an in-progress review)
 - `tests/watcher.rs`
 - `tests/diff_engine.rs`
 - `tests/diff_history.rs`
@@ -1851,7 +2217,7 @@ out of scope here; the default must remain "always review."
 **Modified files:**
 
 - `Cargo.toml` — add `seahash` for the own-write content-hash filter (§2)
-- `src/app.rs` — `AppEvent::FileChanged`, `watcher` field, `diff_paused` flag, queued-event single-slot (path only, no contents), `last_disk_hash: Option<u64>` field (§2)
+- `src/app.rs` — `AppEvent::FileChanged`, `watcher` field, `diff_paused` flag, `last_disk_hash: Option<u64>` field (§2). *(No queued-event single-slot field — §11b reconciles mid-review changes in place rather than queuing them.)*
 - `src/app/event_loop.rs` — file-change arm; own-write filter (drop incoming `FileChanged` when `seahash(contents) == last_disk_hash`, otherwise stamp the new hash before dispatching); watcher pause/resume + `force_reconcile()` call in external-editor flow and in the post-resolution queued-event re-entry (§11); deadline integration
 - `src/app/actions.rs` — rename `dispatch_palette_action` → `dispatch_action` (unified dispatcher used by both keystroke arm in `App::run` and palette path); new `App::save_buffer()` helper (the single call site for `Buffer::save_file()`); `App::handle_app_action` gains an `Action::Save` arm that routes through it; `dispatch_action` gets the `Mode::Diff` dispatch arm wrapping `edit_ops::apply` (§10); `set_disk_hash(bytes)` helper called from save / initial load / accepted FileChanged (§2)
 - `src/app/run.rs` (or wherever `App::run`'s keystroke arm lives) — collapse the inlined `handle_app_action` + `edit_ops::apply` flow to a single `self.dispatch_action(action, doc_height, doc_width)` call
@@ -1887,9 +2253,10 @@ out of scope here; the default must remain "always review."
 - **Diff history** (`tests/diff_history.rs`): sequence of accept / reject / edit / undo / redo asserts. Includes the hunk-id stability case where an edit reshapes the hunk list.
 - **Diff view rendering** (`tests/diff_view.rs`): `TestBackend` snapshot tests for the stacked old-above-new layout, the decision divider's placement at the old/new boundary (delete-only / insert-only / replace), the resolved-label text, and the inline word highlight overlay.
 - **Modal flow** (extend `tests/ui.rs`): `DirtyConflictModal` → `DiffIntroModal` → diff view; opt-out via the checkbox sets `show_diff_intro = false` in the loaded config.
+- **Single intro modal on re-entry** (`src/app/actions.rs` unit test): call `enter_diff_mode` twice in succession on a clean buffer (simulating two external overwrites) and assert `modal_stack.count::<DiffIntroModal>() == 1` — re-entry must not stack a second intro modal (§8).
 - **Autosave gating** (extend `tests/editing.rs`): set `editor.diff = Some(...)`, advance the autosave clock past `autosave_idle_ms`, assert no save fires.
 - **Own-write echo suppression** (`tests/watcher.rs`): with the content-hash filter (§2), call `App::save_buffer()`, then push a `FileChanged` whose contents equal the just-saved bytes; assert it is dropped. Push a second `FileChanged` whose contents differ by one byte; assert it is delivered. Cover the initial-load case: open a file, immediately push a `FileChanged` with identical contents, assert it is dropped (matches the just-loaded hash).
-- **Queued-event single-slot replace** (`tests/diff_view.rs` or new `tests/diff_queue.rs`): with `editor.diff = Some(...)`, push two `AppEvent::FileChanged` events in succession; assert only one remains queued (the second overwrites the first, not appends). Then resolve the diff and assert the re-entry path is invoked exactly once with the latest-disk-read contents.
+- ~~**Queued-event single-slot replace**~~ **Superseded by §11b** — there is no queue. Replaced by the reconciliation tests in §11b: `reconcile_*` units in `src/diff/state.rs` and `external_change_in_diff_preserves_decisions` / `external_revert_in_diff_exits_diff` in `src/app/file_changed.rs` (a mid-review `FileChanged` recomputes in place, preserving decisions on unchanged hunks).
 - **Boundary-crossing delete no-ops** (extend `tests/diff_history.rs` or in `tests/editing.rs`): enter `DiffSubMode::Edit` on a hunk; position the cursor at the first char of the focused new-side range and send `Action::DeleteCharBack` — assert the rope is unchanged, the cursor stays put, and a status flash is recorded. Repeat at the last char with `Action::DeleteCharForward`. Repeat in the middle of the range to assert the normal case still works.
 - **Cursor clamp on MoveUp / MoveDown** (extend `tests/editing.rs`): enter Edit on a multi-line hunk; from the first new-side line send `Action::MoveUp` — assert `cursor.offset` is unchanged and the flash fires. From the last new-side line send `Action::MoveDown` — same. Send `MoveUp` / `MoveDown` from interior lines to assert ordinary motion still works. Also assert `MoveLeft` at the range's first offset and `MoveRight` at the range's last offset clamp identically. Run the test matrix with `visual_line_nav = true` and `false` to cover both motion algorithms (§5).
 - **Ropey line-range invariants** (`tests/diff_engine.rs`): a small unit test that pins the ropey behavior the line-range convention in §3a relies on. Construct two ropes — one with a trailing newline, one without — and assert that `rope.byte_to_line(rope.len_bytes())` returns `rope.len_lines() - 1` in *both* cases, plus the corresponding `len_lines()` values (3 for `"a\nb\n"`, 2 for `"a\nb"`). The two cases yield the same numeric formula but point at different lines (empty trailing line vs. last content line); see §3a for the consequence. The whole half-open line-range scheme rides on this; pin it as documentation in case ropey ever changes the edge.
@@ -1968,7 +2335,7 @@ PR-sized unit.
 **CP3 deviations from the plan as written:**
 - The "per-sub-mode keymap layer" called for in §10 is implemented in CP3 as a hard-coded mapping in `src/input/mode_handler/default.rs::diff_review_handle` (Tab → DiffNext, y → DiffAcceptHunk, etc.) rather than a layered `KeyMap` lookup.  Rationale: CP3 ships Review only — there is no Edit sub-mode whose bindings would diverge from the global keymap, so the mapping is short and self-contained.  CP5 will rework this into a proper layered keymap when the Edit/Review split lands and rebinding becomes meaningful.
 - `App::dispatch_diff_action` is the diff-mode equivalent of `edit_ops::apply` — it is invoked from `dispatch_action` after `diff_safe_action` filters the action.  This is cleaner than threading every diff action through `edit_ops::apply` (where it would need to access App state to push modals / flash hints) and matches the "App owns diff-mode dispatch" framing from §10.
-- `Action::Esc` in diff Review wires straight to `Action::DiffExit` (via `diff_review_handle`) which CP3 treats as an immediate exit-and-discard.  CP4 adds the proper `DiffExitConfirmModal` two-button confirmation.
+- `Action::Esc` in diff Review wires straight to `Action::DiffExit` (via `diff_review_handle`).  `DiffExit` is gated on full resolution: a no-op (plus an info flash) while any hunk is still pending, or the `DiffResolveConfirmModal` once everything is decided (§8/§9).  Diff mode therefore can't be left via `Esc` until the review is complete; `Quit` (`Ctrl+Q`) is the abandon-everything path and now warns first via `DiffQuitConfirmModal` (§10) before discarding the review and quitting.  A dedicated `DiffExitConfirmModal` (deliberate-discard for the *pending* case, without quitting the app) remains deferred.
 - The diff-Review hint row in the bottom bar uses hard-coded chord labels (`Tab`, `y`, `n`, etc.) rather than `chords_from(keymap, ...)`.  This mirrors the hard-coded `diff_review_handle` mapping — when CP5 moves both to a layered keymap, both will switch to the keymap-driven helpers at the same time.
 - `EditorState::exit_diff_mode` returns the editor to `Mode::Rendered` rather than restoring the pre-diff mode.  In CP3 this is safe because the only entry path is from `DirtyConflictModal::[Merge]`, and the user typically wants to return to editing after resolving.  If a future path enters diff mode from Preview / Raw, this should be revisited.
 
@@ -1976,18 +2343,18 @@ PR-sized unit.
 
 **New files:** `src/diff/history.rs`, `src/app/modal/diff_exit_confirm.rs`, `tests/diff_history.rs`
 
-**Modified files:** `src/diff/state.rs` (wire `DiffHistory`), `src/editor/edit_ops.rs` (route `Undo`/`Redo` to `DiffHistory` in diff mode), `src/app.rs` (queued-event single-slot), `src/app/event_loop.rs` (queue + re-entry after resolution)
+**Modified files:** `src/diff/state.rs` (wire `DiffHistory`; add `reconcile_with_disk` + `ReconcileOutcome` per §11b), `src/diff/engine.rs` (`match_by_old_overlap` + `hunk_new_side_text` per §11b), `src/editor/edit_ops.rs` (route `Undo`/`Redo` to `DiffHistory` in diff mode), `src/app/file_changed.rs` (the `diff.is_some()` reconciliation branch + `reconcile_diff_with_disk` per §11b — replaces the §11 queue)
 
 **Scope:**
 - `DiffHistory` with `DiffOp::Decision` and `DiffOp::BulkDecision` only (no `Edit` variant yet).
 - `Action::Undo` / `Action::Redo` routed to `DiffHistory` while in diff mode; main `History` paused.
 - **Resolution checkpoint:** introduce the single synthetic merge-revert `EditDelta` and the `History::reset_with(EditDelta)` setter (§6). After CP4, exiting diff mode leaves `editor.history` with that single entry as its sole undo step (replacing the CP3 behavior where exit wrote nothing to history).
 - `DiffExitConfirmModal` for `Esc` with pending decisions (§9).
-- Queued `FileChanged` event re-entry: after resolution, re-enter through the standard dirty-check path (§11).
+- ~~Queued `FileChanged` event re-entry: after resolution, re-enter through the standard dirty-check path (§11).~~ **Superseded by §11b** — replaced with live decision-preserving reconciliation (`DiffState::reconcile_with_disk` + the `diff.is_some()` branch in `handle_file_changed`); no queue, no after-resolution re-entry.
 
-**Tests:** `tests/diff_history.rs` (accept/reject/bulk + undo/redo sequences), exit-confirm modal flow, queued-event re-entry.
+**Tests:** `tests/diff_history.rs` (accept/reject/bulk + undo/redo sequences), exit-confirm modal flow, and the §11b reconciliation tests (`reconcile_*` units; `external_change_in_diff_preserves_decisions`; `external_revert_in_diff_exits_diff`).
 
-**Verifiable live:** cycle accept/reject with Ctrl-Z undoing decisions; Esc prompts when hunks are pending; editing file during review queues and replays after resolution.
+**Verifiable live:** cycle accept/reject with Ctrl-Z undoing decisions; Esc prompts when hunks are pending; editing the file mid-review recomputes in place, preserving decisions on unchanged hunks and resetting only the hunks the external write touched (§11b).
 
 ### Checkpoint 5 — Edit sub-mode + clamped editing + Edit undo
 

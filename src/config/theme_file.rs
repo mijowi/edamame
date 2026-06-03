@@ -186,9 +186,12 @@ pub struct ThemeFile {
     pub diff_delete_line_unfocused: StyleSpec,
     pub diff_add_inline: StyleSpec,
     pub diff_delete_inline: StyleSpec,
+    pub diff_add_inline_unfocused: StyleSpec,
+    pub diff_delete_inline_unfocused: StyleSpec,
     pub diff_decision_pending: StyleSpec,
     pub diff_decision_accepted: StyleSpec,
     pub diff_decision_rejected: StyleSpec,
+    pub diff_decision_unfocused: StyleSpec,
     pub status_mode_diff: StyleSpec,
     pub status_bar_diff: StyleSpec,
     pub hint_bar_diff: StyleSpec,
@@ -234,7 +237,9 @@ macro_rules! style_fields {
             diff_add_line, diff_delete_line,
             diff_add_line_unfocused, diff_delete_line_unfocused,
             diff_add_inline, diff_delete_inline,
+            diff_add_inline_unfocused, diff_delete_inline_unfocused,
             diff_decision_pending, diff_decision_accepted, diff_decision_rejected,
+            diff_decision_unfocused,
             status_mode_diff, status_bar_diff, hint_bar_diff
         }
     };

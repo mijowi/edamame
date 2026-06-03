@@ -216,7 +216,7 @@ impl DiffState {
 
 /// Raw text of a diff visual line, stripped of its trailing `\n`.  For
 /// the synthetic `Decision` divider this is the checkbox plus a resolved
-/// label (`[ ]` while pending, `[✓] Accepted`, `[x] Rejected`).
+/// label (`[ ]` while pending, `[Y] Accepted`, `[N] Rejected`).
 pub fn line_text(diff: &DiffState, dvl: &DiffVisualLine) -> String {
     if dvl.source == DiffLineSource::Decision {
         let dec = dvl
@@ -239,11 +239,13 @@ pub fn line_text(diff: &DiffState, dvl: &DiffVisualLine) -> String {
 
 /// Text shown on a hunk's decision divider for a given `Decision`.
 /// Pending shows only the checkbox; resolved states append a label.
+/// The resolved glyphs spell out the yes/no answer (`[Y]` = accept,
+/// `[N]` = reject) so the checkbox reads as the decision itself.
 pub fn decision_line_text(decision: Decision) -> &'static str {
     match decision {
         Decision::Pending => "[ ]",
-        Decision::Accepted => "[✓] Accepted",
-        Decision::Rejected => "[x] Rejected",
+        Decision::Accepted => "[Y] Accepted",
+        Decision::Rejected => "[N] Rejected",
     }
 }
 

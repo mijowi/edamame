@@ -27,10 +27,11 @@ pub struct StatusBarState<'a> {
     /// as ` Sel 42 ch · 3 ln ` between the filename and cursor info
     /// when present.
     pub selection_size: Option<(usize, usize)>,
-    /// `(pending, total)` hunk counts in diff mode; `None` in every
+    /// `(resolved, total)` hunk counts in diff mode; `None` in every
     /// other mode.  Rendered adjacent to the mode badge as
-    /// `pending/total`.
-    pub diff_pending: Option<(usize, usize)>,
+    /// `resolved/total` — a progress counter that climbs from `0/n` to
+    /// `n/n` as hunks are accepted or rejected.
+    pub diff_progress: Option<(usize, usize)>,
 }
 
 /// A single-row status bar widget.
@@ -51,9 +52,9 @@ impl<'a> Widget for StatusBar<'a> {
         let mode_text = format!(" {} ", s.mode);
         let mode_span = Span::styled(mode_text.clone(), theme.status_mode_style(s.mode));
 
-        // Diff-mode pending counter, rendered adjacent to the badge.
-        let diff_text = match s.diff_pending {
-            Some((p, t)) => format!(" {}/{} ", p, t),
+        // Diff-mode progress counter, rendered adjacent to the badge.
+        let diff_text = match s.diff_progress {
+            Some((resolved, total)) => format!(" {}/{} ", resolved, total),
             None => String::new(),
         };
         let diff_span = Span::styled(diff_text.clone(), theme.status_mode_diff);
@@ -137,7 +138,7 @@ mod tests {
                         cursor_line: None,
                         cursor_col: None,
                         selection_size: None,
-                        diff_pending: None,
+                        diff_progress: None,
                     },
                     theme,
                 };
@@ -201,7 +202,7 @@ mod tests {
                         cursor_line: Some(3),
                         cursor_col: Some(7),
                         selection_size: None,
-                        diff_pending: None,
+                        diff_progress: None,
                     },
                     theme,
                 };
@@ -238,7 +239,7 @@ mod tests {
                         cursor_line: Some(1),
                         cursor_col: Some(1),
                         selection_size: Some((42, 3)),
-                        diff_pending: None,
+                        diff_progress: None,
                     },
                     theme,
                 };

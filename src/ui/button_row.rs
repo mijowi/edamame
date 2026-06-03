@@ -12,14 +12,62 @@ use ratatui::{
 
 use crate::config::Theme;
 
-/// Width in columns of a row of buttons rendered as
-/// `[ label ]  [ label ]` — each button is `label + 4` columns
-/// (one space + two brackets + one space) and adjacent buttons are
-/// separated by a 2-column gap.
-pub fn button_row_width(labels: &[&str]) -> u16 {
-    let labels_w: usize = labels.iter().map(|l| l.chars().count() + 4).sum();
-    let gaps = labels.len().saturating_sub(1) * 2;
+/// One button in a row: its label plus whether to wrap it in `[ … ]`.
+///
+/// Most buttons are bracketed (`[ Save ]`).  A *bare* button skips the
+/// wrapper — used for a checkbox toggle whose glyph already carries its
+/// own `[ ]`/`[x]`, so it doesn't render as double-bracketed
+/// (`[ [x] … ]`).
+#[derive(Debug, Clone, Copy)]
+pub struct Button<'a> {
+    pub label: &'a str,
+    pub bracketed: bool,
+}
+
+impl<'a> Button<'a> {
+    pub fn bracketed(label: &'a str) -> Self {
+        Self {
+            label,
+            bracketed: true,
+        }
+    }
+
+    /// Column width of the rendered button: bracketed buttons add 4
+    /// (one space + two brackets + one space), bare buttons are just the
+    /// label width.
+    fn width(&self) -> u16 {
+        let base = self.label.chars().count() as u16;
+        if self.bracketed {
+            base + 4
+        } else {
+            base
+        }
+    }
+
+    fn rendered(&self) -> String {
+        if self.bracketed {
+            format!("[ {} ]", self.label)
+        } else {
+            self.label.to_owned()
+        }
+    }
+}
+
+/// Width in columns of a row of [`Button`]s — each bracketed button is
+/// `label + 4` columns, each bare button is `label`, and adjacent
+/// buttons are separated by a 2-column gap.
+pub fn buttons_row_width(buttons: &[Button]) -> u16 {
+    let labels_w: usize = buttons.iter().map(|b| b.width() as usize).sum();
+    let gaps = buttons.len().saturating_sub(1) * 2;
     (labels_w + gaps) as u16
+}
+
+/// Width in columns of a row of all-bracketed buttons rendered as
+/// `[ label ]  [ label ]`.  Convenience wrapper over
+/// [`buttons_row_width`] for the common case.
+pub fn button_row_width(labels: &[&str]) -> u16 {
+    let buttons: Vec<Button> = labels.iter().map(|l| Button::bracketed(l)).collect();
+    buttons_row_width(&buttons)
 }
 
 /// Render the button row, horizontally centred in `area`, with the
@@ -37,15 +85,35 @@ pub fn render_button_row(
     focused_idx: usize,
     theme: &Theme,
 ) -> Vec<Rect> {
-    let mut spans: Vec<Span<'_>> = Vec::with_capacity(labels.len() * 2 + 1);
-    for (i, label) in labels.iter().enumerate() {
+    let buttons: Vec<Button> = labels.iter().map(|l| Button::bracketed(l)).collect();
+    render_buttons(area, buf, &buttons, focused_idx, theme)
+}
+
+/// Render a row of [`Button`]s, horizontally centred in `area`, with the
+/// button at `focused_idx` drawn in `theme.modal_button_focused` and the
+/// rest in `theme.modal_item`.  Bare buttons render their label without
+/// the `[ … ]` wrapper.
+///
+/// Returns the absolute terminal rect of each rendered button, in the
+/// same order as `buttons`, so callers that need to hit-test mouse
+/// clicks can do so without duplicating the centring arithmetic.  Single
+/// source of truth for button layout.
+pub fn render_buttons(
+    area: Rect,
+    buf: &mut Buffer,
+    buttons: &[Button],
+    focused_idx: usize,
+    theme: &Theme,
+) -> Vec<Rect> {
+    let mut spans: Vec<Span<'_>> = Vec::with_capacity(buttons.len() * 2 + 1);
+    for (i, button) in buttons.iter().enumerate() {
         let style = if i == focused_idx {
             theme.modal_button_focused
         } else {
             theme.modal_item
         };
-        spans.push(Span::styled(format!("[ {label} ]"), style));
-        if i + 1 < labels.len() {
+        spans.push(Span::styled(button.rendered(), style));
+        if i + 1 < buttons.len() {
             spans.push(Span::raw("  "));
         }
     }
@@ -55,15 +123,15 @@ pub fn render_button_row(
         .render(area, buf);
 
     // Mirror Paragraph's centred layout: total row width is
-    // button_row_width(labels), and it starts at the centred offset
-    // inside `area`.  Each button occupies `label + 4` columns
-    // ("[ label ]"), with a 2-column gap between buttons.
-    let total = button_row_width(labels);
+    // buttons_row_width(buttons), starting at the centred offset inside
+    // `area`.  Each button occupies its own width, with a 2-column gap
+    // between buttons.
+    let total = buttons_row_width(buttons);
     let start_x = area.x + area.width.saturating_sub(total) / 2;
-    let mut rects = Vec::with_capacity(labels.len());
+    let mut rects = Vec::with_capacity(buttons.len());
     let mut x = start_x;
-    for label in labels {
-        let w = label.chars().count() as u16 + 4;
+    for button in buttons {
+        let w = button.width();
         rects.push(Rect {
             x,
             y: area.y,

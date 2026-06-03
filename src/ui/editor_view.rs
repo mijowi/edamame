@@ -414,11 +414,11 @@ impl<'a> StatefulWidget for EditorView<'a> {
         let scroll = self.state.scroll;
         let selection_size = self.state.selection_size();
 
-        let diff_pending = self
+        let diff_progress = self
             .state
             .diff
             .as_ref()
-            .map(|d| (d.pending_count(), d.hunks.len()));
+            .map(|d| (d.resolved_count(), d.hunks.len()));
         let region = BottomRegion {
             status: StatusBarState {
                 mode,
@@ -429,7 +429,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                 cursor_line: Some(cursor_line + 1), // 1-indexed display
                 cursor_col: Some(cursor_col + 1),
                 selection_size,
-                diff_pending,
+                diff_progress,
             },
             hint: self.hint,
             layout: self.status_bar_layout,
