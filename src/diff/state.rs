@@ -7,12 +7,15 @@
 //! In CP3 the stack stays empty; `Action::Undo` / `Action::Redo`
 //! in diff mode are explicit no-ops until the wiring lands.
 
+use std::cell::RefCell;
+
 use ropey::Rope;
 
 use crate::document::{Buffer, Cursor};
 
 use super::engine::{compute, pending_decisions, HunkIdAllocator};
 use super::hunk::{Decision, Hunk, HunkId};
+use super::layout::DiffLayoutCache;
 
 /// Lifecycle: see `EditorState::enter_diff_mode`.  Created with
 /// `DiffState::new(old, new)`, owned by `EditorState::diff` for the
@@ -59,6 +62,10 @@ pub struct DiffState {
     /// `App::enter_diff_mode` flashes a hint on entry so the user
     /// understands why that table isn't reviewable row-by-row.
     pub uneven_table_fallback: bool,
+    /// Lazily-built flat visual-line list + per-width row-count cache
+    /// (see [`super::layout`]).  Interior-mutable so the immutable
+    /// render / scroll-query paths can populate it on first use.
+    pub(crate) layout: RefCell<DiffLayoutCache>,
 }
 
 /// CP3 placeholder for the per-diff undo stack — concrete `DiffOp`
@@ -123,6 +130,7 @@ impl DiffState {
             ids,
             history: DiffHistory::default(),
             uneven_table_fallback: computation.uneven_table_fallback,
+            layout: RefCell::new(DiffLayoutCache::default()),
         })
     }
 

@@ -17,20 +17,27 @@
 //! 3. **Stamp & dispatch.**  Update `last_disk_hash` to the
 //!    incoming bytes so any further echoes of the same content are
 //!    filtered out, then route to one of:
-//!    - Clean buffer → reload from disk silently.
+//!    - Clean buffer → enter diff review directly (never silent
+//!      reload — see §11a of the diff-mode plan).  There is no
+//!      unsaved work to reconcile, so the conflict modal is skipped,
+//!      but the change is still surfaced hunk by hunk and the buffer
+//!      is not overwritten until the user resolves.
 //!    - Dirty buffer → open the
 //!      [`super::modal::DirtyConflictModal`] so the user can
 //!      reconcile (or refresh the carried bytes on an already-open
 //!      conflict modal stack).
+//!
+//! The buffer is **never** silently reloaded/overwritten on an
+//! external change: the whole point of diff mode is that the user
+//! sees every change before it replaces what they are looking at.
+//! The only events that bypass review are genuine no-ops (filters 1
+//! and 2 above), where disk has nothing new to show.
 //!
 //! Read errors from the worker (non-UTF-8 contents, file deleted
 //! between event and read, permission denied) are surfaced through
 //! a dismissable warning modal rather than dropped silently — the
 //! user otherwise has no signal that their external-edit prompts
 //! have stopped firing for this file.
-//!
-//! CP2 stops here.  CP3 wires up the `[Merge]` button to actually
-//! enter diff mode; today it flashes the placeholder.
 
 use crate::ui::ModalKind;
 use crate::watcher::{WatchedChange, WatchedEvent};
@@ -139,14 +146,25 @@ impl App {
             self.modal_stack
                 .push(Box::new(DirtyConflictModal::new(change.contents)));
         } else {
-            self.reload_buffer_from_disk(change.contents);
+            // Clean buffer: no unsaved work to reconcile, but the
+            // change is still reviewed hunk by hunk.  The buffer is
+            // NOT silently overwritten — `enter_diff_mode` opens diff
+            // review (and `DiffIntroModal` on first run) so the user
+            // sees the external change before it replaces what they
+            // are looking at.  See §11a of the diff-mode plan.
+            self.enter_diff_mode(change.contents);
         }
     }
 
     /// Replace the in-memory buffer contents with the bytes from
-    /// the file-change event.  Used by the silent-reload path
-    /// (clean buffer) and by `DirtyConflictModal`'s `[Discard &
-    /// reload]` button once the user confirms.
+    /// the file-change event.  Both callers are explicit,
+    /// user-confirmed choices from `DirtyConflictModal` — never a
+    /// silent action: `[Discard & reload]` (after its confirmation
+    /// sub-modal) abandons the unsaved edits for the disk version, and
+    /// `[Save a copy]` writes the user's edits aside and then loads
+    /// the disk version into the buffer.  Clean-buffer external
+    /// changes do NOT come here — they enter diff review instead; see
+    /// the module docs and §11a of the diff-mode plan.
     ///
     /// The watcher worker already read the bytes; reuse them rather
     /// than re-reading from disk — a second read here would race the
@@ -158,9 +176,7 @@ impl App {
     ///
     /// Preserves cursor offset / viewport scroll best-effort: a long
     /// external rewrite may push the cursor off the end, which
-    /// [`crate::editor::EditorState::replace_buffer`] clamps.  CP3's
-    /// diff-mode entry will supersede this codepath for the merge
-    /// case.
+    /// [`crate::editor::EditorState::replace_buffer`] clamps.
     pub(crate) fn reload_buffer_from_disk(&mut self, contents: String) {
         let Some(path) = self.editor.buffer.path().map(|p| p.to_path_buf()) else {
             // Unnamed buffer — should never happen (the watcher
@@ -233,17 +249,52 @@ mod tests {
     }
 
     #[test]
-    fn external_change_with_clean_buffer_reloads_silently() {
+    fn external_change_with_clean_buffer_enters_diff() {
+        // A clean buffer is NOT silently reloaded — the external
+        // change is surfaced for review and the buffer keeps its
+        // original content until the user resolves (§11a).
         let (mut app, tmp) = app_with_temp_file("alpha");
         assert!(!app.editor.dirty);
         app.handle_file_changed(file_changed_event(tmp.path().to_path_buf(), "beta"));
         assert!(
-            !app.modal_stack.contains::<DirtyConflictModal>(),
-            "clean buffer must reload without a modal",
+            app.editor.diff.is_some(),
+            "clean buffer + external change must enter diff review",
         );
-        assert_eq!(app.editor.buffer.contents(), "beta");
+        assert_eq!(app.editor.mode, crate::editor::Mode::Diff);
+        // Clean entry skips the conflict prompt — there is no unsaved
+        // work to reconcile.
+        assert!(
+            !app.modal_stack.contains::<DirtyConflictModal>(),
+            "clean entry must not open the dirty-conflict modal",
+        );
+        // The buffer is untouched until the user resolves the diff.
+        assert_eq!(
+            app.editor.buffer.contents(),
+            "alpha",
+            "buffer must not be silently overwritten",
+        );
         // Hash was stamped to the new contents.
         assert_eq!(app.last_disk_hash, Some(seahash::hash(b"beta")));
+    }
+
+    #[test]
+    fn clean_buffer_byte_identical_disk_does_not_enter_diff() {
+        // "Clean" is not the no-op condition — "disk == buffer" is.
+        // A clean buffer whose incoming disk content equals the buffer
+        // must skip review (filter 2), not enter diff.
+        let (mut app, tmp) = app_with_temp_file("alpha");
+        assert!(!app.editor.dirty);
+        // Force last_disk_hash to differ so the own-write filter
+        // (filter 1) doesn't short-circuit first; the buffer-vs-disk
+        // filter (filter 2) is the one under test.
+        app.last_disk_hash = Some(seahash::hash(b"stale"));
+        app.handle_file_changed(file_changed_event(tmp.path().to_path_buf(), "alpha"));
+        assert!(
+            app.editor.diff.is_none(),
+            "byte-identical disk must not enter diff even with a clean buffer",
+        );
+        assert!(!app.modal_stack.contains::<DirtyConflictModal>());
+        assert_eq!(app.last_disk_hash, Some(seahash::hash(b"alpha")));
     }
 
     #[test]

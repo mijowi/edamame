@@ -5,6 +5,23 @@ the open file, and (b) a "diff mode" overlay where the user reviews,
 edits, accepts, or rejects each change inline before the merged result
 becomes the new buffer.
 
+**Core objective.** Diff mode exists to **surface every external change
+to the open file for review before it overwrites what the user is
+looking at** — it is *not* limited to reconciling unsaved-edit
+conflicts. The motivating workflow is collaboration with an AI agent (or
+any external tool) that rewrites the document on disk: the user wants to
+see, hunk by hunk, what changed, regardless of whether their own buffer
+had unsaved edits at the time. **The editor must never silently reload
+the buffer from disk and discard the prior content** — silently swapping
+in the new version is exactly the thing diff mode is meant to prevent. A
+dirty buffer adds a *conflict* on top of this (the external change races
+the user's unsaved edits), which is why the dirty path additionally
+offers the reconciliation choices in §8; but a clean buffer is *not* a
+license to skip review — it just means there is no unsaved work to
+protect, so review can begin immediately without the conflict prompt.
+See §11a for the correction to the initial-change dispatch that this
+objective requires.
+
 ## Phasing
 
 The work ships in two phases:
@@ -32,6 +49,12 @@ machinery on top.
 
 ## Goals
 
+- **Surface every external change for review.** Any on-disk change that
+  actually differs from what the user currently has in memory enters
+  diff review — clean buffer or dirty. The buffer is never silently
+  reloaded/overwritten. (The only changes that bypass review are genuine
+  no-ops: our own save echo, and writes that leave disk byte-identical
+  to the live buffer — see §2's two filters.)
 - Detect on-disk changes to the open file, debounced over a 200 ms quiet window.
 - Enter a dedicated `Mode::Diff` with strong visual signalling (status-bar / hint-bar color shift, `DIFF` mode badge, first-time explanatory modal).
 - Render stacked inline diffs: deleted lines above, added lines below, with word-level inline highlights within changed pairs.
@@ -45,6 +68,7 @@ machinery on top.
 
    | Question | Decision |
 |---|---|
+| On-disk change while buffer is **clean** | Enter diff review directly — **never** silent reload (§11a) |
 | On-disk change while buffer is dirty | Warning modal, then enter diff |
 | Autosave / Ctrl-S in diff mode | Both disabled |
 | Diff highlighting granularity | Line-level + word-level inline |
@@ -87,7 +111,7 @@ pub trait FileWatcher: Send {
     2. Every successful save — `App::save_buffer()` (the single call site for `Buffer::save_file()`, see Q1 below) stamps after `save_file()` returns `Ok`.
     3. Every accepted `AppEvent::FileChanged { contents }` — when an incoming event survives the filter (i.e. hash differs), the event-loop arm stamps the new hash *before* dispatching the change to the dirty-check / diff-entry flow.
   - The event-loop arm that handles `AppEvent::FileChanged { contents }` computes `seahash::hash(contents.as_bytes())` and drops the event iff it equals `last_disk_hash`. A match means the on-disk bytes are byte-identical to what we last observed there — either our own save echo, or a no-op write by an external tool. Either way: nothing to reconcile.
-  - **Second filter: skip diff entry when disk matches the live buffer.** Even after the own-write filter accepts the event, if `seahash(contents) == seahash(editor.buffer.contents())`, no diff would be produced (disk and in-memory buffer are byte-identical). In that case stamp `last_disk_hash` to the new value and return without entering diff mode or showing the dirty-conflict modal. This is the canonical "file was modified on disk but ends up byte-equal to what I have in memory" case (e.g. an external tool re-saved the file unchanged, or the user's edits happened to converge with an external edit). Skipping diff entry here also means `DiffState::new` is never called with a hunk list that would be empty — `enter_diff_mode` can safely assume `hunks.len() >= 1`, and `focused_id` is initialized to `hunks[0].id`.
+  - **Second filter: skip diff entry when disk matches the live buffer.** Even after the own-write filter accepts the event, if `seahash(contents) == seahash(editor.buffer.contents())`, no diff would be produced (disk and in-memory buffer are byte-identical). In that case stamp `last_disk_hash` to the new value and return without entering diff mode or showing the dirty-conflict modal. This is the canonical "file was modified on disk but ends up byte-equal to what I have in memory" case (e.g. an external tool re-saved the file unchanged, or the user's edits happened to converge with an external edit). Skipping diff entry here also means `DiffState::new` is never called with a hunk list that would be empty — `enter_diff_mode` can safely assume `hunks.len() >= 1`, and `focused_id` is initialized to `hunks[0].id`. **This filter is the *only* legitimate reason to skip review on an accepted event — it fires only when disk and the live buffer are byte-identical (nothing to show). A clean buffer whose disk content actually differs does NOT skip review; it enters diff mode like any other change (§11a). "Clean" is not a no-op condition — "disk == buffer" is.**
   - Because the hash tracks "what was last on disk" (not "what we last wrote"), the false-positive case I worried about earlier — external writer reverts disk to a prior state we'd already observed — does not arise. After the prior state was observed, `last_disk_hash` was updated to that state's hash; subsequent events that re-arrive at the same hash are correctly dropped (we already showed the user what disk looks like at that hash).
   - The hash field is `Option<u64>` only for the very brief window between `App::new()` and the initial file load. After load it is always `Some` for any open file.
 
@@ -1648,10 +1672,12 @@ events. The newly-arrived event is diffed
 against the just-merged buffer, and:
 
 - If hunks are **non-empty**, re-enters through the same path as the
-  initial file-change: if the buffer is dirty (per the conditional
-  rule in §6 — typically true after a mixed-decision resolution but
-  not when every hunk was accepted with no edits), show
-  `DirtyConflictModal`; if clean, enter diff mode directly.
+  initial file-change (post-§11a): if the buffer is dirty (per the
+  conditional rule in §6 — typically true after a mixed-decision
+  resolution but not when every hunk was accepted with no edits), show
+  `DirtyConflictModal`; if clean, enter diff mode directly. (This
+  clean → enter-diff behavior is exactly the correction §11a applies to
+  the initial-change path, so the two are now consistent.)
 - If hunks are **empty** (disk now matches the merged buffer
   byte-for-byte), the queued event is dropped and the app remains in
   normal editing mode. No modal, no flash — this is the common
@@ -1665,6 +1691,123 @@ deleted-file handling is out of scope (§2).
 
 This prevents a "diff mode forever" loop while still picking up
 further changes.
+
+## 11a. Correction — clean buffers must enter diff review, not silently reload
+
+**Status: not yet implemented.** Checkpoints 2 and 3 shipped the
+initial-change dispatch with a clean-buffer branch that *silently
+reloads the buffer from disk* (`App::reload_buffer_from_disk` in
+`src/app/file_changed.rs`). That contradicts the core objective stated
+at the top of this document: diff mode exists to surface **every**
+external change for review, and the editor must **never** silently
+overwrite the buffer with the on-disk version. The motivating case —
+an AI agent rewrites the document and the user wants to see what
+changed — is precisely the clean-buffer case (the user hasn't typed
+anything since their last save), so silently reloading throws away the
+entire point of the feature.
+
+Note this also resolves a latent internal contradiction in the plan:
+§11 already specifies that the **re-entry** path after resolution does
+"if clean, enter diff mode directly," while the **initial** path
+(CP2/CP3) silently reloads. The two paths must agree; this section
+makes the initial path match §11.
+
+### The decision tree, corrected
+
+`App::handle_file_changed` keeps both no-op filters unchanged — they
+suppress events that genuinely have nothing to review — and changes
+only the final clean-buffer branch:
+
+1. **Wrong-path drop** (unchanged): event for a file we no longer edit
+   → return.
+2. **Own-write filter** (unchanged): `incoming_hash == last_disk_hash`
+   → return. Our own save echo, or an external no-op rewrite.
+3. **Buffer-vs-disk no-op filter** (unchanged): `incoming_hash ==
+   seahash(buffer.contents())` → stamp `last_disk_hash` and return.
+   Disk is byte-identical to what the user already has; there is
+   nothing to show. **This is the only "skip review" case.**
+4. **Stamp `last_disk_hash`** (unchanged).
+5. **Dispatch (changed):**
+   - **Dirty buffer** (unchanged): push `DirtyConflictModal`
+     (or refresh the carried bytes on an already-open conflict-modal
+     stack, exactly as today). The conflict prompt still belongs here
+     because the user has unsaved edits at stake and needs the
+     `[Save a copy]` / `[Discard & reload]` / `[Keep buffer]` escape
+     hatches alongside `[Merge]`.
+   - **Clean buffer (was: `reload_buffer_from_disk`; now: enter diff
+     directly):** call `self.enter_diff_mode(change.contents)`. No
+     conflict prompt — there is no unsaved work to reconcile — but the
+     change is still reviewed hunk by hunk. `enter_diff_mode` already
+     diffs `old = buffer.contents()` (which, for a clean buffer, equals
+     the last-saved / previously-observed disk content) against
+     `new = on_disk`, shows `DiffIntroModal` on first run, and falls
+     back to a "No differences to review" flash if `DiffState::new`
+     returns `None` (cannot happen after filter 3, but the guard is
+     retained defensively).
+
+### Concrete code changes
+
+- **`src/app/file_changed.rs`**
+  - In `handle_file_changed`, replace the clean-buffer
+    `self.reload_buffer_from_disk(change.contents)` call with
+    `self.enter_diff_mode(change.contents)`.
+  - Update the module-level doc comment: the decision-tree description
+    currently ends the clean branch with "Clean buffer → reload from
+    disk silently." Change it to "Clean buffer → enter diff review
+    directly (never silent reload — see §11a of the plan)." Also drop
+    the "CP2 stops here / CP3 wires up `[Merge]`" note now that the
+    objective is corrected.
+  - `reload_buffer_from_disk` is **kept** — it still backs the dirty
+    modal's `[Discard & reload]` (after its confirmation sub-modal)
+    and `[Save a copy]` (write edits aside, then load the disk
+    version) buttons. Both are explicit, user-confirmed choices, not
+    silent actions. Update its doc comment to remove "Used by the
+    silent-reload path (clean buffer)" and state that its callers are
+    those two dirty-modal flows.
+
+- **Tests (`src/app/file_changed.rs` `#[cfg(test)]`)**
+  - `external_change_with_clean_buffer_reloads_silently` is now
+    **wrong by name and intent** — rewrite it as
+    `external_change_with_clean_buffer_enters_diff`: seed a clean
+    buffer, push a differing `FileChanged`, assert `app.editor.diff`
+    is `Some` (or `app.editor.mode == Mode::Diff`) and that the buffer
+    was **not** overwritten (it still holds the pre-change content
+    until the user resolves). Assert `last_disk_hash` was stamped to
+    the incoming bytes.
+  - Keep `disk_equal_to_buffer_skips_modal_and_stamps_hash` and
+    `own_write_echo_is_dropped` unchanged — filters 2 and 3 still
+    short-circuit.
+  - `external_change_with_dirty_buffer_opens_modal` and the
+    child-modal refresh tests are unchanged.
+  - Add a test that a clean-buffer change which is byte-identical to
+    disk (filter 3) does **not** enter diff mode, to lock the
+    "disk == buffer is the no-op, clean is not" distinction.
+
+- **`DiffIntroModal` first-run copy.** The intro modal's title is
+  "File changed on disk" (§8), which already reads correctly for the
+  clean-entry case. No copy change required, but confirm the body text
+  does not assume the user has unsaved edits.
+
+### Why the dirty path keeps its modal
+
+A clean buffer has nothing to lose, so review starts immediately. A
+dirty buffer has two divergent sets of edits (the user's unsaved work
+and the external write); `[Merge]` enters the same diff review, but the
+other three buttons exist so the user can instead set their work aside
+(`[Save a copy]`), abandon it for the disk version (`[Discard &
+reload]`), or defer (`[Keep buffer]`). Those choices are meaningless
+when the buffer is clean, which is why the clean path skips straight to
+diff. Both paths honor the invariant: **the buffer is never replaced
+without the user seeing the change first.**
+
+### Non-goal / deferred
+
+No opt-out config is added: per the objective, auto-reviewing every
+external change is the intended always-on behavior, not a preference.
+If a future user genuinely wants silent auto-reload of clean buffers
+(vim's `autoread`-style behavior), that would be an explicit opt-in
+setting (`editor.auto_reload_clean = false` by default) — deferred and
+out of scope here; the default must remain "always review."
 
 ## 12. Files touched
 
@@ -1764,7 +1907,7 @@ PR-sized unit.
 - `FileWatcher` trait + `NotifyWatcher` impl with 200 ms debounce and `force_reconcile()` (§2). Watcher worker performs all disk reads.
 - `AppEvent::FileChanged` variant; event-loop arm that handles it.
 - Own-write content-hash filter: `App::last_disk_hash`, stamped from three sources (initial load, successful save, accepted incoming `FileChanged`); consulted by the event-loop file-change arm (§2).
-- Clean buffer → silent reload from disk.
+- Clean buffer → silent reload from disk. **⚠️ Superseded by §11a — this is now recognized as wrong; the clean path must enter diff review, not silently reload. Fixed in Checkpoint 6.**
 - Dirty buffer → `DirtyConflictModal` with three working buttons: `[Save a copy]`, `[Discard & reload]` (with confirmation sub-modal), `[Keep buffer]`. The `[Merge]` button flashes "Diff mode coming soon" — it is wired in Checkpoint 3.
 - Watcher pause/resume + `force_reconcile()` around external-editor suspend.
 
@@ -1847,6 +1990,26 @@ PR-sized unit.
 **Tests:** hunk-id stability across edits, edit-then-decision interleaving, boundary-clamp assertions, delete-hunk-to-replace conversion.
 
 **Verifiable live:** enter Edit on an add hunk, type replacement text, Esc back to Review, accept; Ctrl-Z reverses word-groups; enter Edit on a delete hunk, type replacement, accept.
+
+### Checkpoint 6 — Review-on-clean correction (§11a)
+
+**Modified files:** `src/app/file_changed.rs` (clean branch → `enter_diff_mode`; module + `reload_buffer_from_disk` doc comments; rewrite/extend the clean-buffer tests)
+
+**Scope:**
+- Implement §11a: in `App::handle_file_changed`, the clean-buffer branch enters diff review (`self.enter_diff_mode(change.contents)`) instead of `reload_buffer_from_disk`. Both no-op filters (own-write, disk-equals-buffer) and the dirty `DirtyConflictModal` path are unchanged.
+- `reload_buffer_from_disk` retained solely as the `[Discard & reload]` implementation; doc comment updated.
+- Doc-comment correction in `file_changed.rs` to match the new objective.
+
+**Tests:** rewrite `external_change_with_clean_buffer_reloads_silently` → `external_change_with_clean_buffer_enters_diff` (asserts diff mode entered, buffer NOT overwritten, hash stamped); retain `own_write_echo_is_dropped` and `disk_equal_to_buffer_skips_modal_and_stamps_hash`; add a clean + byte-identical case asserting no diff entry.
+
+**Verifiable live:** with a freshly-opened (clean) file, edit it in another editor / have an agent rewrite it — diff review opens and the original on-screen content is preserved until the user resolves; nothing is silently overwritten.
+
+**Dependency note:** the clean path's `enter_diff_mode` is wired in CP3, so CP6 is a small, self-contained dispatch fix that can land any time after CP3. It does not depend on CP4/CP5.
+
+---
+
+## Possible Improvements:
+  - The DiffViewState::visual_lines cache is rebuilt every frame; CP5/CP4 could memoize on hunks change.
 
 ---
 

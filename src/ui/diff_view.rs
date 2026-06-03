@@ -16,49 +16,19 @@ use ratatui::{
     text::{Line, Span},
     widgets::StatefulWidget,
 };
-use ropey::Rope;
 
 use crate::config::Theme;
 use crate::diff::hunk::{HunkKind, InlineSide};
+use crate::diff::layout::{line_text, DiffLineSource, DiffVisualLine};
 use crate::diff::{Decision, DiffState};
-use crate::ui::line_render::{render_line_from_visual, visual_rows_of_str};
+use crate::ui::line_render::render_line_from_visual;
 
-/// One *logical* line in the diff view.  Expanded into one or more
-/// visual rows at paint time according to word-wrap; `scroll` indexes
-/// visual rows, not `DiffVisualLine` entries.
-#[derive(Debug, Clone)]
-pub struct DiffVisualLine {
-    pub source: DiffLineSource,
-    /// Line index into the originating rope (`new_rope` for `Context`
-    /// / `NewAdd`, `old_rope` for `OldDelete`).
-    pub rope_line: usize,
-    /// Index into `DiffState::hunks`, when this line belongs to a
-    /// hunk.  `None` for `Context` lines.
-    pub hunk_idx: Option<usize>,
-    /// `true` for the first line of the hunk's old-side range (for
-    /// `OldDelete`) or new-side range (for `NewAdd`).  Used to paint
-    /// the gutter glyph and decision indicator on the right cells.
-    pub first_of_hunk: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiffLineSource {
-    /// Unchanged line, borrowed from `new_rope`.
-    Context,
-    /// Delete-side line, borrowed from `old_rope`.
-    OldDelete,
-    /// Add-side line, borrowed from `new_rope`.
-    NewAdd,
-}
-
+/// Per-frame state for [`DiffView`].  The materialised line sequence
+/// and its wrapped-row counts are cached on [`DiffState`] itself (see
+/// [`crate::diff::layout`]) rather than here, so this is just the
+/// marker required by `StatefulWidget`.
 #[derive(Debug, Default)]
-pub struct DiffViewState {
-    /// Cached materialised line sequence for the active diff state.
-    /// Rebuilt whenever the hunk list changes; CP3 rebuilds every
-    /// frame for simplicity (the cost is `O(total lines)` and
-    /// negligible for typical markdown files).
-    pub visual_lines: Vec<DiffVisualLine>,
-}
+pub struct DiffViewState {}
 
 pub struct DiffView<'a> {
     pub diff: &'a DiffState,
@@ -72,127 +42,36 @@ pub struct DiffView<'a> {
 impl<'a> StatefulWidget for DiffView<'a> {
     type State = DiffViewState;
 
-    fn render(self, area: Rect, buf: &mut TuiBuf, view_state: &mut Self::State) {
+    fn render(self, area: Rect, buf: &mut TuiBuf, _view_state: &mut Self::State) {
         if area.height == 0 || area.width == 0 {
             return;
         }
         let width = area.width as usize;
-
-        view_state.visual_lines = build_visual_lines(self.diff);
-
-        // Pre-compute the wrapped visual-row offset of each
-        // `DiffVisualLine` so the scroll index can walk into the
-        // middle of a wrapped line cleanly.  We walk the list once
-        // until we exhaust `area.height`.
         let scroll = self.scroll;
-        let mut consumed_rows: usize = 0;
-        let mut idx: usize = 0;
-        let mut skip_first_subrow: usize = 0;
-        // Skip non-rendered visual rows up to `scroll`.
-        while idx < view_state.visual_lines.len() {
-            let dvl = &view_state.visual_lines[idx];
-            let text = line_text(self.diff, dvl);
-            let rows = visual_rows_of_str(&text, width.max(1)).len().max(1);
-            if consumed_rows + rows > scroll {
-                skip_first_subrow = scroll - consumed_rows;
-                break;
+
+        self.diff.with_layout(width, |lines, rc| {
+            // O(log N) jump to the line containing visual row `scroll`,
+            // plus the sub-row to skip within it — no per-line rewrap.
+            let (start_idx, mut skip_first_subrow) = rc.find_visual_row(scroll);
+
+            let mut idx = start_idx;
+            let mut visual_y: u16 = 0;
+            while idx < lines.len() && visual_y < area.height {
+                let dvl = &lines[idx];
+                let text = line_text(self.diff, dvl);
+                let line = build_line(self.diff, self.theme, dvl, &text);
+                let painted =
+                    render_line_from_visual(&line, area, buf, visual_y, true, skip_first_subrow);
+                // After the first line, never skip sub-rows again.
+                skip_first_subrow = 0;
+                if painted == 0 {
+                    break;
+                }
+                visual_y = visual_y.saturating_add(painted);
+                idx += 1;
             }
-            consumed_rows += rows;
-            idx += 1;
-        }
-
-        let mut visual_y: u16 = 0;
-        while idx < view_state.visual_lines.len() && visual_y < area.height {
-            let dvl = view_state.visual_lines[idx].clone();
-            let text = line_text(self.diff, &dvl);
-            let line = build_line(self.diff, self.theme, &dvl, &text);
-            let painted =
-                render_line_from_visual(&line, area, buf, visual_y, true, skip_first_subrow);
-            // After the first line, never skip sub-rows again.
-            skip_first_subrow = 0;
-            if painted == 0 {
-                break;
-            }
-            visual_y = visual_y.saturating_add(painted);
-            idx += 1;
-        }
-    }
-}
-
-/// Build the flat visual-line sequence for a diff state.  Walks
-/// hunks in document order; between hunks emits `Context` lines
-/// from `new_rope`, then per hunk emits `OldDelete` lines (from
-/// `old_rope`) followed by `NewAdd` lines (from `new_rope`).
-pub fn build_visual_lines(diff: &DiffState) -> Vec<DiffVisualLine> {
-    let mut out: Vec<DiffVisualLine> = Vec::new();
-    let new_rope = diff.new_buffer.rope();
-    let new_lines = new_rope.len_lines();
-    let mut new_cursor: usize = 0;
-
-    for (i, h) in diff.hunks.iter().enumerate() {
-        // Emit context up to the hunk's new-side start.
-        while new_cursor < h.new_lines.start && new_cursor < new_lines {
-            out.push(DiffVisualLine {
-                source: DiffLineSource::Context,
-                rope_line: new_cursor,
-                hunk_idx: None,
-                first_of_hunk: false,
-            });
-            new_cursor += 1;
-        }
-        // Skip over the new-side range so we don't double-emit it
-        // as context.  Even for `Delete` (new_lines empty) this is
-        // a no-op.
-        new_cursor = h.new_lines.end;
-
-        // Stacked order: deletes above, adds below.
-        let mut first = true;
-        for l in h.old_lines.clone() {
-            out.push(DiffVisualLine {
-                source: DiffLineSource::OldDelete,
-                rope_line: l,
-                hunk_idx: Some(i),
-                first_of_hunk: first,
-            });
-            first = false;
-        }
-        let mut first = true;
-        for l in h.new_lines.clone() {
-            out.push(DiffVisualLine {
-                source: DiffLineSource::NewAdd,
-                rope_line: l,
-                hunk_idx: Some(i),
-                first_of_hunk: first,
-            });
-            first = false;
-        }
-    }
-
-    // Trailing context.
-    while new_cursor < new_lines {
-        out.push(DiffVisualLine {
-            source: DiffLineSource::Context,
-            rope_line: new_cursor,
-            hunk_idx: None,
-            first_of_hunk: false,
         });
-        new_cursor += 1;
     }
-
-    out
-}
-
-/// Get the raw text of a diff visual line, stripped of trailing `\n`.
-fn line_text(diff: &DiffState, dvl: &DiffVisualLine) -> String {
-    let rope: &Rope = match dvl.source {
-        DiffLineSource::Context | DiffLineSource::NewAdd => diff.new_buffer.rope(),
-        DiffLineSource::OldDelete => &diff.old_rope,
-    };
-    if dvl.rope_line >= rope.len_lines() {
-        return String::new();
-    }
-    let raw = rope.line(dvl.rope_line).to_string();
-    raw.trim_end_matches('\n').to_owned()
 }
 
 fn build_line(diff: &DiffState, theme: &Theme, dvl: &DiffVisualLine, text: &str) -> Line<'static> {
@@ -292,20 +171,4 @@ fn build_line(diff: &DiffState, theme: &Theme, dvl: &DiffVisualLine, text: &str)
     spans.extend(body_spans);
 
     Line::from(spans).style(line_style)
-}
-
-/// Compute the total number of wrapped visual rows for the diff
-/// state at `width`.  Used by the bottom scrollbar and by viewport
-/// clamping.
-pub fn total_visual_rows(diff: &DiffState, width: usize) -> usize {
-    let lines = build_visual_lines(diff);
-    if width == 0 {
-        return lines.len();
-    }
-    let mut total = 0usize;
-    for dvl in &lines {
-        let text = line_text(diff, dvl);
-        total += visual_rows_of_str(&text, width).len().max(1);
-    }
-    total
 }

@@ -300,6 +300,15 @@ impl App {
     pub(super) fn prepare_viewport(&mut self, dims: &DocDims) {
         self.last_area_width = dims.doc_area.width;
         self.editor.set_viewport_width(dims.doc_width);
+        // Resolve a diff-entry scroll request now that the viewport
+        // height is known (it isn't at the modal-close site that enters
+        // diff mode).  One-shot: cleared after it fires.
+        if self.editor.pending_focus_scroll {
+            self.editor
+                .scroll_focused_hunk_into_view(dims.doc_height, dims.doc_width);
+            self.editor.pending_focus_scroll = false;
+            self.needs_draw = true;
+        }
         self.dispatch_visible_image_decodes(self.editor.scroll, dims.doc_height);
     }
 
