@@ -76,6 +76,7 @@ pub(super) const CATEGORIES: &[(&str, &[(Action, &str)])] = &[
             (Action::DiffRejectHunk, "Reject hunk"),
             (Action::DiffAcceptAll, "Accept all"),
             (Action::DiffRejectAll, "Reject all"),
+            (Action::DiffResetHunk, "Reset hunk"),
             (Action::DiffEnterEdit, "Edit hunk"),
             (Action::DiffExitEdit, "Exit edit"),
             (Action::DiffExit, "Exit diff"),

@@ -1,6 +1,7 @@
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
+    style::Style,
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
@@ -47,12 +48,38 @@ impl<'a> Widget for StatusBar<'a> {
         let s = &self.state;
         let theme = self.theme;
 
+        // In diff mode the whole bar shifts to the diff color so the
+        // mode change is unmissable.
+        let bar_style = if matches!(s.mode, Mode::Diff) {
+            theme.status_bar_diff
+        } else {
+            theme.status_bar
+        };
+        // In diff mode the informational spans (filename, selection,
+        // cursor, line count) carry their own `surface` background by
+        // default, which would punch the normal bar hue through the
+        // recolored diff bar.  Recolor just their backgrounds to the
+        // diff bar's bg so the whole region reads as one washed bar;
+        // their foregrounds (and the accent mode/progress badges) are
+        // left untouched.
+        let bar_bg = if matches!(s.mode, Mode::Diff) {
+            bar_style.bg
+        } else {
+            None
+        };
+        let with_bar_bg = |st: Style| match bar_bg {
+            Some(bg) => st.bg(bg),
+            None => st,
+        };
+
         // Mode badge — color swaps per-mode so each mode reads at a
         // glance (orange = Rendered, yellow = Raw, muted = Preview).
+        // Kept as an accent badge even in diff mode.
         let mode_text = format!(" {} ", s.mode);
         let mode_span = Span::styled(mode_text.clone(), theme.status_mode_style(s.mode));
 
         // Diff-mode progress counter, rendered adjacent to the badge.
+        // Also an accent badge — not washed with the bar bg.
         let diff_text = match s.diff_progress {
             Some((resolved, total)) => format!(" {}/{} ", resolved, total),
             None => String::new(),
@@ -62,7 +89,7 @@ impl<'a> Widget for StatusBar<'a> {
         // Filename + modified flag
         let modified_marker = if s.modified { " [modified]" } else { "" };
         let filename_text = format!(" {}{} ", s.filename, modified_marker);
-        let filename_span = Span::styled(filename_text, theme.status_filename);
+        let filename_span = Span::styled(filename_text, with_bar_bg(theme.status_filename));
 
         // Selection size (` Sel 42 ch · 3 ln `) — only visible when
         // there's an active selection, sits between filename and cursor.
@@ -70,14 +97,14 @@ impl<'a> Widget for StatusBar<'a> {
             Some((chars, lines)) => format!(" Sel {} ch · {} ln ", chars, lines),
             None => String::new(),
         };
-        let sel_span = Span::styled(sel_text.clone(), theme.status_selection);
+        let sel_span = Span::styled(sel_text.clone(), with_bar_bg(theme.status_selection));
 
         // Cursor position (1-indexed line:col, only in edit modes)
         let cursor_text = match (s.cursor_line, s.cursor_col) {
             (Some(l), Some(c)) => format!(" {}:{} ", l, c),
             _ => String::new(),
         };
-        let cursor_span = Span::styled(cursor_text.clone(), theme.status_info);
+        let cursor_span = Span::styled(cursor_text.clone(), with_bar_bg(theme.status_info));
 
         // Right-aligned info: line count and scroll %
         let pct = if s.line_count == 0 {
@@ -87,7 +114,7 @@ impl<'a> Widget for StatusBar<'a> {
             (visible_end.min(s.line_count) * 100) / s.line_count
         };
         let info_text = format!(" {} lines  {}% ", s.line_count, pct);
-        let info_span = Span::styled(info_text, theme.status_info);
+        let info_span = Span::styled(info_text, with_bar_bg(theme.status_info));
 
         // Fill gap between left and right sides.
         let left_width = mode_text.len() + diff_text.len() + filename_span.content.len();
@@ -95,13 +122,6 @@ impl<'a> Widget for StatusBar<'a> {
         let gap = (area.width as usize)
             .saturating_sub(left_width)
             .saturating_sub(right_width);
-        // In diff mode the whole bar shifts to the diff color so the
-        // mode change is unmissable.
-        let bar_style = if matches!(s.mode, Mode::Diff) {
-            theme.status_bar_diff
-        } else {
-            theme.status_bar
-        };
         let gap_span = Span::styled(" ".repeat(gap), bar_style);
 
         let line = Line::from(vec![

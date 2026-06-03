@@ -17,6 +17,7 @@ use ratatui::{
 
 use crate::config::keymap::format_key_compact;
 use crate::config::{Action, KeyMap, StatusBarLayout, Theme};
+use crate::diff::Decision;
 use crate::editor::{EditorState, Mode};
 
 use super::status_bar::{StatusBar, StatusBarState};
@@ -122,10 +123,17 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
             prelude: None,
             chords: table_chords(keymap),
         },
-        Mode::Diff => HintSet {
-            prelude: None,
-            chords: diff_review_chords(state.diff.as_ref().is_some_and(|d| d.all_resolved())),
-        },
+        Mode::Diff => {
+            let all_resolved = state.diff.as_ref().is_some_and(|d| d.all_resolved());
+            let focused_resolved = state.diff.as_ref().is_some_and(|d| {
+                d.focused_decision()
+                    .is_some_and(|dec| dec != Decision::Pending)
+            });
+            HintSet {
+                prelude: None,
+                chords: diff_review_chords(all_resolved, focused_resolved),
+            }
+        }
         Mode::Rendered | Mode::Raw => {
             // Baseline edit-mode hints — Menu anchors the row so
             // the command-palette chord is always the discovery
@@ -215,7 +223,7 @@ fn chords_from(keymap: &KeyMap, entries: &[(Action, &str)]) -> Vec<HintChord> {
 /// diff mode can't be exited via `Esc` while hunks are still pending
 /// (see `Action::DiffExit`), so advertising the chord before then
 /// would be misleading.
-fn diff_review_chords(all_resolved: bool) -> Vec<HintChord> {
+fn diff_review_chords(all_resolved: bool, focused_resolved: bool) -> Vec<HintChord> {
     let mut chords = Vec::new();
     if all_resolved {
         chords.push(HintChord::new("Esc".to_owned(), "Exit".to_owned()));
@@ -228,6 +236,12 @@ fn diff_review_chords(all_resolved: bool) -> Vec<HintChord> {
         HintChord::new("Y".to_owned(), "Accept all".to_owned()),
         HintChord::new("N".to_owned(), "Reject all".to_owned()),
     ]);
+    // `⌫ Reset` only makes sense once the focused hunk carries a
+    // decision — it's a no-op on a still-`Pending` hunk, so advertising
+    // it then would be misleading.
+    if focused_resolved {
+        chords.push(HintChord::new("⌫".to_owned(), "Reset".to_owned()));
+    }
     chords
 }
 
@@ -344,10 +358,24 @@ fn arrow_bundle_chord(
 /// so the inter-chord separators match the recolored bar instead of
 /// punching the default hue through every gap.
 pub fn lay_out_chords(chords: &[HintChord], theme: &Theme, bar_style: Style) -> Vec<Span<'static>> {
+    // Wash the chord-badge and label backgrounds with the active bar's
+    // bg so the whole hint row reads as one bar.  In every mode except
+    // diff this is a no-op (`hint_bar`, `hint_chord` and `hint_label`
+    // all share `surface_elevated`); in diff mode it extends the
+    // recolored `hint_bar_diff` wash across the badges instead of
+    // leaving them on the default surface.
+    let chord_style = match bar_style.bg {
+        Some(bg) => theme.hint_chord.bg(bg),
+        None => theme.hint_chord,
+    };
+    let label_style = match bar_style.bg {
+        Some(bg) => theme.hint_label.bg(bg),
+        None => theme.hint_label,
+    };
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(chords.len() * 3);
     for chord in chords {
-        spans.push(Span::styled(chord.chord.clone(), theme.hint_chord));
-        spans.push(Span::styled(format!(" {}", chord.label), theme.hint_label));
+        spans.push(Span::styled(chord.chord.clone(), chord_style));
+        spans.push(Span::styled(format!(" {}", chord.label), label_style));
         spans.push(Span::styled("  ".to_string(), bar_style));
     }
     spans
@@ -381,7 +409,11 @@ impl<'a> Widget for HintLine<'a> {
                 // so it reads as a sentence, not another chord.
                 if let Some(prelude) = &set.prelude {
                     let text = format!(" {}  ", prelude);
-                    v.push(Span::styled(text, self.theme.hint_label));
+                    let prelude_style = match self.bar_style.bg {
+                        Some(bg) => self.theme.hint_label.bg(bg),
+                        None => self.theme.hint_label,
+                    };
+                    v.push(Span::styled(text, prelude_style));
                 }
                 v.extend(lay_out_chords(&set.chords, self.theme, self.bar_style));
                 v
@@ -551,7 +583,7 @@ mod tests {
     fn diff_hint_gates_exit_on_full_resolution() {
         // Pending hunks: no `Esc Exit` hint (diff can't be exited yet),
         // and the navigation/decision chords lead the row.
-        let pending = diff_review_chords(false);
+        let pending = diff_review_chords(false, false);
         assert!(
             !pending.iter().any(|c| c.label == "Exit"),
             "Exit hint must be hidden while hunks are pending",
@@ -559,10 +591,28 @@ mod tests {
         assert_eq!(pending[0].label, "Next", "Tab/Next leads when pending");
 
         // All resolved: `Esc Exit` appears at the very start of the row.
-        let resolved = diff_review_chords(true);
+        let resolved = diff_review_chords(true, true);
         assert_eq!(resolved[0].chord, "Esc");
         assert_eq!(resolved[0].label, "Exit");
         assert!(resolved.iter().any(|c| c.label == "Next"));
+    }
+
+    #[test]
+    fn diff_reset_hint_only_when_focused_hunk_resolved() {
+        // Focused hunk still pending → no `Reset` chord (it'd be a
+        // no-op there).
+        let pending = diff_review_chords(false, false);
+        assert!(
+            !pending.iter().any(|c| c.label == "Reset"),
+            "Reset hint must be hidden while the focused hunk is pending",
+        );
+        // Focused hunk decided → `⌫ Reset` is offered.
+        let decided = diff_review_chords(false, true);
+        let reset = decided
+            .iter()
+            .find(|c| c.label == "Reset")
+            .expect("Reset hint must appear once the focused hunk is decided");
+        assert_eq!(reset.chord, "⌫");
     }
 
     #[test]

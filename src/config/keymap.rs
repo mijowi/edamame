@@ -176,6 +176,10 @@ pub enum Action {
     DiffAcceptAll,
     /// Bulk-reject every still-`Pending` hunk in one shot.
     DiffRejectAll,
+    /// Reset the focused hunk's decision back to `Pending`
+    /// ("undecide").  No-op when the hunk is already `Pending`.  Bound
+    /// to `Backspace` in Review sub-mode.
+    DiffResetHunk,
     /// Enter Edit sub-mode on the focused hunk.  Wired in CP5; in CP3
     /// this is an explicit no-op.
     DiffEnterEdit,
@@ -276,7 +280,7 @@ action_variants! {
     GoToSection,
     DiffNext, DiffPrev,
     DiffAcceptHunk, DiffRejectHunk,
-    DiffAcceptAll, DiffRejectAll,
+    DiffAcceptAll, DiffRejectAll, DiffResetHunk,
     DiffEnterEdit, DiffExitEdit, DiffExit,
 }
 
