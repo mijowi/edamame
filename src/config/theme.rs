@@ -303,13 +303,28 @@ pub struct Theme {
     pub diff_add_inline: Style,
     /// Darkened bg + bold for word-level highlights inside a delete line.
     pub diff_delete_inline: Style,
+    /// Word-level add highlight for hunks that are *not* focused — a
+    /// muted tint (no bold) so the within-line change matches the faint
+    /// `diff_add_line_unfocused` wash instead of popping at full
+    /// saturation.
+    pub diff_add_inline_unfocused: Style,
+    /// Word-level delete highlight for non-focused hunks.  See
+    /// `diff_add_inline_unfocused`.
+    pub diff_delete_inline_unfocused: Style,
     /// Decision divider while the hunk is still `Pending` (the bare
     /// `[ ]` checkbox).
     pub diff_decision_pending: Style,
-    /// Decision divider once the hunk is `Accepted` (`[✓] Accepted`).
+    /// Decision divider once the hunk is `Accepted` (`[Y] Accepted`).
     pub diff_decision_accepted: Style,
-    /// Decision divider once the hunk is `Rejected` (`[x] Rejected`).
+    /// Decision divider once the hunk is `Rejected` (`[N] Rejected`).
     pub diff_decision_rejected: Style,
+    /// Decision divider for hunks that are *not* focused — a single
+    /// muted style (fainter bg, muted fg, no bold) shared across all
+    /// three decision states so the divider recedes with the rest of
+    /// the unfocused hunk.  The `[Y]`/`[N]` glyph and the resolved label
+    /// still convey the decision, so the per-state hue isn't needed once
+    /// the hunk is no longer the actionable one.
+    pub diff_decision_unfocused: Style,
     /// Mode badge for `Mode::Diff`.  Mirrors `status_mode_raw` shape
     /// but on `warning` so the diff session reads as a distinct state.
     pub status_mode_diff: Style,
@@ -897,9 +912,21 @@ impl Theme {
             // first argument unchanged in that case, which is the
             // best we can do without inventing a hue.
             // Focused hunk: stronger fill so the active change stands
-            // out; non-focused hunks: a faint wash so they recede.
-            diff_add_line: Style::default().bg(blend(p.surface, p.diff_add, 0.42)),
-            diff_delete_line: Style::default().bg(blend(p.surface, p.diff_delete, 0.42)),
+            // out; non-focused hunks: a faint wash so they recede.  The
+            // focused fill is then pulled back toward `bg` so it sits a
+            // shade darker than the saturated inline-change highlight —
+            // that contrast is what makes within-line edits legible
+            // against the surrounding row.
+            diff_add_line: Style::default().bg(blend(
+                blend(p.surface, p.diff_add, 0.42),
+                p.bg,
+                0.30,
+            )),
+            diff_delete_line: Style::default().bg(blend(
+                blend(p.surface, p.diff_delete, 0.42),
+                p.bg,
+                0.30,
+            )),
             diff_add_line_unfocused: Style::default().bg(blend(p.surface, p.diff_add, 0.07)),
             diff_delete_line_unfocused: Style::default().bg(blend(p.surface, p.diff_delete, 0.07)),
             // Inline highlights darken the saturated diff color toward
@@ -910,9 +937,45 @@ impl Theme {
             diff_delete_inline: Style::default()
                 .bg(blend(p.diff_delete, p.bg, 0.35))
                 .add_modifier(bold),
-            diff_decision_pending: Style::default().fg(p.text_muted),
-            diff_decision_accepted: Style::default().fg(p.diff_add).add_modifier(bold),
-            diff_decision_rejected: Style::default().fg(p.diff_delete).add_modifier(bold),
+            // Unfocused inline highlights are a surface-derived tint
+            // (like the `_line_unfocused` washes) rather than the
+            // darkened-saturated focused style, and drop the bold — so a
+            // changed word reads as a slightly deeper patch within the
+            // faint hunk (0.20 vs. the 0.07 line wash) without competing
+            // with the focused hunk.
+            diff_add_inline_unfocused: Style::default().bg(blend(p.surface, p.diff_add, 0.20)),
+            diff_delete_inline_unfocused: Style::default().bg(blend(
+                p.surface,
+                p.diff_delete,
+                0.20,
+            )),
+            // Decision divider carries a full-width `secondary`-tinted
+            // background so the accept/reject checkbox reads as the
+            // actionable strip between the delete and add sides rather
+            // than a bare gap.  The fg keeps the per-state hue (muted
+            // while pending, green/red once resolved).
+            diff_decision_pending: Style::default().fg(p.text_muted).bg(blend(
+                p.surface,
+                p.secondary,
+                0.28,
+            )),
+            diff_decision_accepted: Style::default()
+                .fg(p.diff_add)
+                .bg(blend(p.surface, p.secondary, 0.28))
+                .add_modifier(bold),
+            diff_decision_rejected: Style::default()
+                .fg(p.diff_delete)
+                .bg(blend(p.surface, p.secondary, 0.28))
+                .add_modifier(bold),
+            // Unfocused divider: a fainter `secondary` strip (0.10 vs.
+            // the focused 0.28) with muted fg and no bold, so it recedes
+            // alongside the rest of the unfocused hunk instead of
+            // out-shouting it.
+            diff_decision_unfocused: Style::default().fg(p.text_muted).bg(blend(
+                p.surface,
+                p.secondary,
+                0.10,
+            )),
             status_mode_diff: Style::default().bg(p.warning).fg(p.bg).add_modifier(bold),
             // Bottom region in diff mode: a muted red wash on the hint
             // line (top) and a muted green wash on the status line

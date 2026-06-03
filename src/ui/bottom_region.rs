@@ -124,7 +124,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
         },
         Mode::Diff => HintSet {
             prelude: None,
-            chords: diff_review_chords(),
+            chords: diff_review_chords(state.diff.as_ref().is_some_and(|d| d.all_resolved())),
         },
         Mode::Rendered | Mode::Raw => {
             // Baseline edit-mode hints — Menu anchors the row so
@@ -210,16 +210,25 @@ fn chords_from(keymap: &KeyMap, entries: &[(Action, &str)]) -> Vec<HintChord> {
 /// `diff_review_handle` mapping in
 /// `src/input/mode_handler/default.rs`; CP5 will move both to a
 /// shared per-sub-mode keymap.
-fn diff_review_chords() -> Vec<HintChord> {
-    vec![
+///
+/// `Esc Exit` leads the row, but only once every hunk is resolved:
+/// diff mode can't be exited via `Esc` while hunks are still pending
+/// (see `Action::DiffExit`), so advertising the chord before then
+/// would be misleading.
+fn diff_review_chords(all_resolved: bool) -> Vec<HintChord> {
+    let mut chords = Vec::new();
+    if all_resolved {
+        chords.push(HintChord::new("Esc".to_owned(), "Exit".to_owned()));
+    }
+    chords.extend([
         HintChord::new("Tab".to_owned(), "Next".to_owned()),
         HintChord::new("⇧Tab".to_owned(), "Prev".to_owned()),
         HintChord::new("y".to_owned(), "Accept".to_owned()),
         HintChord::new("n".to_owned(), "Reject".to_owned()),
         HintChord::new("Y".to_owned(), "Accept all".to_owned()),
         HintChord::new("N".to_owned(), "Reject all".to_owned()),
-        HintChord::new("Esc".to_owned(), "Exit".to_owned()),
-    ]
+    ]);
+    chords
 }
 
 /// Build the table-context hint row.  When the four arrow-driven
@@ -536,6 +545,24 @@ mod tests {
         assert_eq!(set.chords[0].chord, "^P");
         assert_eq!(set.chords[0].label, "Menu");
         assert!(set.chords.iter().any(|c| c.label == "Quit"));
+    }
+
+    #[test]
+    fn diff_hint_gates_exit_on_full_resolution() {
+        // Pending hunks: no `Esc Exit` hint (diff can't be exited yet),
+        // and the navigation/decision chords lead the row.
+        let pending = diff_review_chords(false);
+        assert!(
+            !pending.iter().any(|c| c.label == "Exit"),
+            "Exit hint must be hidden while hunks are pending",
+        );
+        assert_eq!(pending[0].label, "Next", "Tab/Next leads when pending");
+
+        // All resolved: `Esc Exit` appears at the very start of the row.
+        let resolved = diff_review_chords(true);
+        assert_eq!(resolved[0].chord, "Esc");
+        assert_eq!(resolved[0].label, "Exit");
+        assert!(resolved.iter().any(|c| c.label == "Next"));
     }
 
     #[test]
@@ -896,7 +923,7 @@ mod tests {
                         cursor_line: Some(1),
                         cursor_col: Some(1),
                         selection_size: sel,
-                        diff_pending: None,
+                        diff_progress: None,
                     },
                     hint,
                     layout,

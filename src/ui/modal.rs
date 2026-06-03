@@ -31,7 +31,7 @@ use ratatui::{
 };
 
 use crate::config::Theme;
-use crate::ui::button_row::{button_row_width, render_button_row};
+use crate::ui::button_row::{buttons_row_width, render_buttons, Button};
 use crate::ui::scroll_container::{
     centered_rect_for_content, compute_pad_h, draw_frame, wrapped_rows, ContentSize, FrameOpts,
     ModalKind, ScrollContainerState, MAX_PAD_H, VERTICAL_CHROME_ROWS,
@@ -53,12 +53,27 @@ pub enum ModalResponse {
 #[derive(Debug, Clone)]
 pub struct ModalButton {
     pub label: String,
+    /// Whether the label is wrapped in `[ … ]` when rendered.  Bare
+    /// buttons (`bracketed = false`) are used for a checkbox toggle whose
+    /// glyph already carries its own `[ ]`/`[x]`, so it doesn't read as
+    /// double-bracketed.
+    pub bracketed: bool,
 }
 
 impl ModalButton {
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
+            bracketed: true,
+        }
+    }
+
+    /// A bare button rendered without the `[ … ]` wrapper — for a
+    /// checkbox toggle that already shows `[ ]`/`[x]` in its label.
+    pub fn bare(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            bracketed: false,
         }
     }
 }
@@ -222,8 +237,15 @@ impl<'a> StatefulWidget for ModalView<'a> {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let body_width = self.body.iter().map(|l| l.width()).max().unwrap_or(0) as u16;
-        let button_labels: Vec<&str> = self.buttons.iter().map(|b| b.label.as_str()).collect();
-        let button_width = button_row_width(&button_labels);
+        let button_specs: Vec<Button> = self
+            .buttons
+            .iter()
+            .map(|b| Button {
+                label: b.label.as_str(),
+                bracketed: b.bracketed,
+            })
+            .collect();
+        let button_width = buttons_row_width(&button_specs);
         let content_width = body_width.max(button_width);
         // Prospective modal width: content + 2*MAX_PAD_H of horizontal
         // padding, clamped to the available area.  Derive the body's
@@ -323,7 +345,7 @@ impl<'a> StatefulWidget for ModalView<'a> {
                 height: 1,
             };
             state.button_rects =
-                render_button_row(button_area, buf, &button_labels, state.focused, self.theme);
+                render_buttons(button_area, buf, &button_specs, state.focused, self.theme);
         } else {
             state.button_rects.clear();
         }

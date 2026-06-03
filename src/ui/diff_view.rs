@@ -76,8 +76,10 @@ impl<'a> StatefulWidget for DiffView<'a> {
 
 fn build_line(diff: &DiffState, theme: &Theme, dvl: &DiffVisualLine, text: &str) -> Line<'static> {
     // Decision divider: the accept/reject checkbox plus a resolved
-    // label, on its own line between the delete and add sides.  No
-    // background fill so it reads as a visual break between the two.
+    // label, on its own line between the delete and add sides.  The
+    // decision style carries a background, set on the line base so the
+    // trailing-cell fill paints the whole row — the strip reads as the
+    // actionable divider between the two sides.
     if dvl.source == DiffLineSource::Decision {
         let focused = dvl
             .hunk_idx
@@ -86,31 +88,44 @@ fn build_line(diff: &DiffState, theme: &Theme, dvl: &DiffVisualLine, text: &str)
             .hunk_idx
             .and_then(|hi| diff.decisions.get(hi).copied())
             .unwrap_or(Decision::Pending);
-        let mut style = match dec {
-            Decision::Pending => theme.diff_decision_pending,
-            Decision::Accepted => theme.diff_decision_accepted,
-            Decision::Rejected => theme.diff_decision_rejected,
+        // Unfocused dividers collapse to a single muted style that
+        // recedes with the rest of the hunk; the focused one keeps its
+        // per-state hue and is bolded so the actionable checkbox draws
+        // the eye.
+        let style = if focused {
+            let base = match dec {
+                Decision::Pending => theme.diff_decision_pending,
+                Decision::Accepted => theme.diff_decision_accepted,
+                Decision::Rejected => theme.diff_decision_rejected,
+            };
+            base.add_modifier(Modifier::BOLD)
+        } else {
+            theme.diff_decision_unfocused
         };
-        // Bold the focused hunk's checkbox so the actionable one draws
-        // the eye even though the divider carries no background.
-        if focused {
-            style = style.add_modifier(Modifier::BOLD);
-        }
-        return Line::from(Span::styled(text.to_owned(), style));
+        // Set the same style as the line base so the trailing-cell fill
+        // extends the background across the full row width.
+        return Line::from(Span::styled(text.to_owned(), style)).style(style);
     }
 
     // Delete / add / context lines.  No gutter: all start at column 0
-    // and are distinguished by background color alone.
-    let line_style = match (dvl.source, dvl.hunk_idx) {
-        (DiffLineSource::OldDelete, Some(hi)) => {
-            if diff.hunks[hi].id == diff.focused_id {
+    // and are distinguished by background color alone.  Focus selects
+    // both the full-line wash and the within-line highlight: a
+    // non-focused hunk uses the muted `_unfocused` variants of both so
+    // its changed words recede with its background instead of popping at
+    // full saturation.
+    let focused = dvl
+        .hunk_idx
+        .is_some_and(|hi| diff.hunks[hi].id == diff.focused_id);
+    let line_style = match dvl.source {
+        DiffLineSource::OldDelete if dvl.hunk_idx.is_some() => {
+            if focused {
                 theme.diff_delete_line
             } else {
                 theme.diff_delete_line_unfocused
             }
         }
-        (DiffLineSource::NewAdd, Some(hi)) => {
-            if diff.hunks[hi].id == diff.focused_id {
+        DiffLineSource::NewAdd if dvl.hunk_idx.is_some() => {
+            if focused {
                 theme.diff_add_line
             } else {
                 theme.diff_add_line_unfocused
@@ -122,8 +137,10 @@ fn build_line(diff: &DiffState, theme: &Theme, dvl: &DiffVisualLine, text: &str)
     // Build the body spans with optional inline highlights.
     let mut body_spans: Vec<Span<'static>> = Vec::new();
     let inline_bg = match dvl.source {
-        DiffLineSource::OldDelete => Some(theme.diff_delete_inline),
-        DiffLineSource::NewAdd => Some(theme.diff_add_inline),
+        DiffLineSource::OldDelete if focused => Some(theme.diff_delete_inline),
+        DiffLineSource::OldDelete => Some(theme.diff_delete_inline_unfocused),
+        DiffLineSource::NewAdd if focused => Some(theme.diff_add_inline),
+        DiffLineSource::NewAdd => Some(theme.diff_add_inline_unfocused),
         _ => None,
     };
     if let (Some(hi), Some(inline_style)) = (dvl.hunk_idx, inline_bg) {

@@ -4,7 +4,7 @@
 //! toggle — so it can persist the opt-out to
 //! `config.editor.show_diff_intro` on `[Continue]`.
 //!
-//! The opt-out is a footer button (`[ [x] Don't show again ]`)
+//! The opt-out is a bare footer toggle (`[x] Don't show this again`)
 //! alongside `[ Continue ]`, so it joins the normal focus cycle:
 //! Tab / Shift-Tab / Left / Right / Up / Down move focus between the
 //! two, Enter / Space activate the focused one (toggle vs. continue),
@@ -69,7 +69,9 @@ impl DiffIntroModal {
     fn buttons(&self) -> Vec<ModalButton> {
         let check = if self.dont_show_again { "[x]" } else { "[ ]" };
         vec![
-            ModalButton::new(format!("{check} Don't show again")),
+            // Bare (no `[ … ]` wrapper): the `[ ]`/`[x]` glyph is the
+            // checkbox, mirroring the welcome modal's toggle.
+            ModalButton::bare(format!("{check} Don't show this again")),
             ModalButton::new("Continue"),
         ]
     }

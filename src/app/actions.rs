@@ -406,20 +406,23 @@ impl App {
     pub fn dispatch_action(&mut self, action: Action, doc_height: usize, doc_width: usize) {
         let handled = self.handle_app_action(&action, doc_height, doc_width);
         if !handled {
-            if matches!(action, Action::Quit) && self.editor.dirty {
-                self.open_quit_confirm();
-                return;
-            }
-            // Diff mode owns its own dispatch.  `diff_safe_action`
-            // filters everything that isn't on the diff-mode
-            // allowlist (default-deny per §10); diff-control actions
-            // and decision keys are dispatched through
-            // `App::dispatch_diff_action`.
+            // Diff mode owns its own dispatch — checked *before* the
+            // generic dirty-buffer quit guard, because in diff mode the
+            // buffer still holds the pre-merge text, so that guard's
+            // "Save" path would persist the wrong contents.  `Quit` in
+            // diff mode routes to `dispatch_diff_action`, which opens the
+            // diff-specific `DiffQuitConfirmModal`.  `diff_safe_action`
+            // filters everything that isn't on the diff-mode allowlist
+            // (default-deny per §10).
             if self.editor.mode == crate::editor::Mode::Diff {
                 let Some(safe) = diff_safe_action(&action) else {
                     return;
                 };
                 self.dispatch_diff_action(safe, doc_height, doc_width);
+                return;
+            }
+            if matches!(action, Action::Quit) && self.editor.dirty {
+                self.open_quit_confirm();
                 return;
             }
             let dirty_before = self.editor.dirty;
@@ -450,11 +453,13 @@ impl App {
         use crate::diff::Decision;
         match action {
             Action::DiffNext => {
-                // Manual navigation supersedes any deferred auto-advance.
-                // Cancelling it drops the only path that would re-check
-                // resolution, so do that explicitly here — otherwise
-                // navigating right after deciding the last hunk would
-                // swallow the resolve-confirm modal.
+                // Manual navigation supersedes any deferred auto-advance,
+                // and never triggers the resolve-confirm flow.  That flow
+                // has exactly two entry points (see `check_diff_resolution`):
+                // resolving the final hunk (a decision action, via the
+                // deferred advance) and pressing Esc once everything is
+                // resolved.  Tabbing among already-decided hunks must not
+                // pop the modal.
                 self.cancel_diff_advance();
                 if let Some(d) = self.editor.diff.as_mut() {
                     d.advance_focus();
@@ -462,7 +467,6 @@ impl App {
                         .scroll_focused_hunk_into_view(doc_height, doc_width);
                     self.needs_draw = true;
                 }
-                self.check_diff_resolution();
             }
             Action::DiffPrev => {
                 self.cancel_diff_advance();
@@ -472,14 +476,13 @@ impl App {
                         .scroll_focused_hunk_into_view(doc_height, doc_width);
                     self.needs_draw = true;
                 }
-                self.check_diff_resolution();
             }
             Action::DiffAcceptHunk => self.decide_focused_hunk(Decision::Accepted),
             Action::DiffRejectHunk => self.decide_focused_hunk(Decision::Rejected),
             Action::DiffAcceptAll => {
                 self.cancel_diff_advance();
                 if let Some(d) = self.editor.diff.as_mut() {
-                    d.bulk_decide_pending(Decision::Accepted);
+                    d.bulk_decide(Decision::Accepted);
                     self.needs_draw = true;
                 }
                 self.check_diff_resolution();
@@ -487,7 +490,7 @@ impl App {
             Action::DiffRejectAll => {
                 self.cancel_diff_advance();
                 if let Some(d) = self.editor.diff.as_mut() {
-                    d.bulk_decide_pending(Decision::Rejected);
+                    d.bulk_decide(Decision::Rejected);
                     self.needs_draw = true;
                 }
                 self.check_diff_resolution();
@@ -498,10 +501,23 @@ impl App {
                 self.flash("Diff edit mode coming soon", MessageKind::Info);
             }
             Action::DiffExit => {
-                // CP4 wires the proper exit-confirm flow.  CP3
-                // discards in-progress decisions immediately so the
-                // user can always escape diff mode.
-                self.exit_diff_mode_discarding();
+                // Esc is gated on full resolution — diff mode cannot be
+                // exited while any hunk is still pending:
+                //  - every hunk resolved → open the apply-confirm modal
+                //    (entry point 2 of the resolve flow), so a fully
+                //    reviewed diff is applied via an explicit choice.
+                //  - anything still pending → no-op + a hint; the user
+                //    must decide every hunk before leaving (Apply on the
+                //    confirm modal is the exit, or Quit to abandon).
+                self.cancel_diff_advance();
+                if self.editor.diff.as_ref().is_some_and(|d| d.all_resolved()) {
+                    self.check_diff_resolution();
+                } else {
+                    self.flash(
+                        "Resolve every hunk before exiting diff mode",
+                        MessageKind::Info,
+                    );
+                }
             }
             Action::ScrollUp => {
                 if self.editor.scroll > 0 {
@@ -548,10 +564,20 @@ impl App {
                 self.needs_draw = true;
             }
             Action::Quit => {
-                // CP3 simplification: quit while reviewing discards
-                // the review.  CP4 adds the exit-confirm guard.
-                self.exit_diff_mode_discarding();
-                self.should_quit = true;
+                // An active diff review is unapplied work — quitting
+                // would discard the pending external change and every
+                // decision.  Warn first, mirroring the dirty-buffer
+                // quit guard; `DiffQuitConfirmModal` handles the actual
+                // discard-and-quit on confirm.  Don't stack a second
+                // copy if one is already up.
+                if !self
+                    .modal_stack
+                    .contains::<crate::app::modal::DiffQuitConfirmModal>()
+                {
+                    self.modal_stack
+                        .push(Box::new(crate::app::modal::DiffQuitConfirmModal::new()));
+                    self.needs_draw = true;
+                }
             }
             // Read-only overlay openers route through their
             // standard App-level helpers, which push the modal atop
@@ -586,12 +612,14 @@ impl App {
         }
     }
 
-    /// If every hunk has been decided, push the resolve-confirm
-    /// modal.  Called after every accept / reject / bulk action.
     /// Record an accept/reject on the focused hunk and arm the deferred
     /// advance so the user sees the decision land before focus moves on
     /// (§ diff-mode UX).  A prior pending advance is flushed first so
-    /// rapid taps walk through hunks rather than re-deciding one.
+    /// rapid taps walk through hunks rather than re-deciding one.  When
+    /// this decision resolves the final hunk, the deferred advance's
+    /// `check_diff_resolution` is what opens the confirm modal — so the
+    /// resolve flow is triggered by the *act* of deciding, not by merely
+    /// landing in a resolved state.
     fn decide_focused_hunk(&mut self, decision: crate::diff::Decision) {
         if self.diff_advance_pending_since.is_some() {
             self.apply_diff_advance();
@@ -607,6 +635,14 @@ impl App {
         }
     }
 
+    /// Push the apply-confirm modal iff every hunk has been decided.
+    /// This is the *single* place the modal is opened, and it has only
+    /// two callers so the resolve flow has exactly two entry points:
+    /// (1) `apply_diff_advance` after a decision resolves the final hunk
+    /// (including bulk accept-all / reject-all), and (2) `Action::DiffExit`
+    /// (Esc) when the diff is already fully resolved.  Hunk navigation
+    /// deliberately does *not* call this — tabbing through resolved hunks
+    /// must not re-open the modal.
     pub(crate) fn check_diff_resolution(&mut self) {
         let Some(diff) = self.editor.diff.as_ref() else {
             return;
@@ -649,7 +685,16 @@ impl App {
         };
         let uneven_table_fallback = diff_state.uneven_table_fallback;
         self.editor.enter_diff_mode(diff_state);
-        if self.config.editor.show_diff_intro {
+        // Only ever show one intro modal at a time.  A clean buffer stays
+        // clean while in diff review, so a second (or third) external
+        // overwrite re-enters this path and would otherwise stack another
+        // identical modal on top — the user then has to dismiss each one
+        // in turn.  Skip the push when one is already on the stack.
+        if self.config.editor.show_diff_intro
+            && !self
+                .modal_stack
+                .contains::<crate::app::modal::DiffIntroModal>()
+        {
             self.modal_stack
                 .push(Box::new(crate::app::modal::DiffIntroModal::new()));
         }
@@ -894,6 +939,24 @@ mod tests {
     }
 
     #[test]
+    fn reentering_diff_mode_does_not_stack_a_second_intro_modal() {
+        // A clean buffer stays clean during diff review, so a second
+        // external overwrite re-enters `enter_diff_mode`.  Only one
+        // intro modal must ever be on the stack — otherwise the user
+        // has to dismiss one per overwrite.
+        use crate::app::modal::DiffIntroModal;
+        let mut app = make_app();
+        app.editor.buffer.insert(0, "alpha\nbeta\n");
+        app.enter_diff_mode("alpha\nGAMMA\n".to_owned());
+        app.enter_diff_mode("alpha\nDELTA\n".to_owned());
+        assert_eq!(
+            app.modal_stack.count::<DiffIntroModal>(),
+            1,
+            "re-entry must not stack a second intro modal",
+        );
+    }
+
+    #[test]
     fn enter_diff_mode_with_intro_off_skips_intro_modal() {
         use crate::app::modal::DiffIntroModal;
         let mut app = make_app();
@@ -918,6 +981,114 @@ mod tests {
         assert_eq!(app.editor.mode, crate::editor::Mode::Rendered);
         assert!(app.editor.diff.is_none());
         assert_eq!(app.editor.buffer.contents(), "alpha\nBETA\ngamma\n");
+    }
+
+    /// Helper: enter diff mode against `disk`, dropping the intro modal
+    /// so it doesn't interfere with stack assertions.
+    fn app_in_diff(buffer: &str, disk: &str) -> crate::app::App {
+        let mut app = make_app();
+        app.editor.buffer.insert(0, buffer);
+        app.enter_diff_mode(disk.to_owned());
+        app.modal_stack
+            .remove_first::<crate::app::modal::DiffIntroModal>();
+        app
+    }
+
+    /// Resolve every hunk directly (no action), so a subsequent action
+    /// is the only thing under test.
+    fn resolve_all(app: &mut crate::app::App, decision: crate::diff::Decision) {
+        for d in app.editor.diff.as_mut().unwrap().decisions.iter_mut() {
+            *d = decision;
+        }
+    }
+
+    #[test]
+    fn diff_navigation_never_opens_confirm_modal_when_resolved() {
+        use crate::app::modal::DiffResolveConfirmModal;
+        use crate::config::Action;
+        use crate::diff::Decision;
+        let mut app = app_in_diff("a\nb\nc\nd\ne\n", "A\nb\nC\nd\nE\n");
+        resolve_all(&mut app, Decision::Accepted);
+        // Tab / Shift-Tab among already-resolved hunks must not pop the
+        // apply-confirm modal — navigation is not a resolve trigger.
+        app.dispatch_diff_action(Action::DiffNext, 24, 80);
+        assert!(!app.modal_stack.contains::<DiffResolveConfirmModal>());
+        app.dispatch_diff_action(Action::DiffPrev, 24, 80);
+        assert!(!app.modal_stack.contains::<DiffResolveConfirmModal>());
+        assert!(
+            app.editor.diff.is_some(),
+            "navigation must not exit diff mode"
+        );
+    }
+
+    #[test]
+    fn diff_reject_all_overrides_existing_decisions_and_confirms() {
+        use crate::app::modal::DiffResolveConfirmModal;
+        use crate::config::Action;
+        use crate::diff::Decision;
+        let mut app = app_in_diff("a\nb\nc\n", "A\nb\nC\n");
+        // Pre-resolve everything as accepted, so nothing is `Pending`.
+        resolve_all(&mut app, Decision::Accepted);
+        // Reject-all must still take effect (override all) even with no
+        // pending hunks, and open the confirm modal as a resolving action.
+        app.dispatch_diff_action(Action::DiffRejectAll, 24, 80);
+        assert!(
+            app.editor
+                .diff
+                .as_ref()
+                .unwrap()
+                .decisions
+                .iter()
+                .all(|d| *d == Decision::Rejected),
+            "reject-all must override prior accepted decisions",
+        );
+        assert!(app.modal_stack.contains::<DiffResolveConfirmModal>());
+    }
+
+    #[test]
+    fn diff_quit_warns_instead_of_discarding_immediately() {
+        use crate::app::modal::DiffQuitConfirmModal;
+        use crate::config::Action;
+        // Quit mid-review must not silently discard + quit: it pushes
+        // the diff-quit confirm modal and leaves the review intact.
+        let mut app = app_in_diff("a\nb\nc\n", "A\nb\nC\n");
+        app.dispatch_action(Action::Quit, 24, 80);
+        assert!(
+            app.modal_stack.contains::<DiffQuitConfirmModal>(),
+            "Quit in diff mode must open the discard-confirm modal",
+        );
+        assert!(!app.should_quit, "Quit must not fire before confirmation");
+        assert!(app.editor.diff.is_some(), "the review must stay active");
+
+        // A second Quit while the modal is up must not stack a duplicate.
+        app.dispatch_action(Action::Quit, 24, 80);
+        assert_eq!(app.modal_stack.count::<DiffQuitConfirmModal>(), 1);
+    }
+
+    #[test]
+    fn diff_esc_is_gated_on_full_resolution() {
+        use crate::app::modal::DiffResolveConfirmModal;
+        use crate::config::Action;
+        use crate::diff::Decision;
+
+        // Pending hunks: Esc must NOT exit or discard — the diff stays
+        // active and no confirm modal opens.
+        let mut app = app_in_diff("a\nb\nc\n", "A\nb\nC\n");
+        app.dispatch_diff_action(Action::DiffExit, 24, 80);
+        assert!(
+            app.editor.diff.is_some(),
+            "Esc with pending hunks must not exit diff mode",
+        );
+        assert!(!app.modal_stack.contains::<DiffResolveConfirmModal>());
+
+        // All resolved: Esc opens the confirm modal (the only exit path).
+        resolve_all(&mut app, Decision::Accepted);
+        app.dispatch_diff_action(Action::DiffExit, 24, 80);
+        assert!(
+            app.editor.diff.is_some(),
+            "Esc with all hunks resolved must stay in diff mode until applied",
+        );
+        assert!(app.modal_stack.contains::<DiffResolveConfirmModal>());
     }
 
     #[test]

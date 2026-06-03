@@ -1,7 +1,7 @@
 //! Deferred post-decision focus advance for diff review.
 //!
 //! When the user accepts or rejects a hunk we want them to *see* the
-//! decision land — the checkbox flipping to `[✓] Accepted` / `[x]
+//! decision land — the checkbox flipping to `[Y] Accepted` / `[N]
 //! Rejected` and the hunk's color settling — before focus jumps to the
 //! next pending hunk.  So the accept/reject handlers set the decision
 //! and arm a short timer here instead of advancing immediately; once

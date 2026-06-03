@@ -135,23 +135,23 @@ fn pending_decision_renders_open_checkbox() {
 }
 
 #[test]
-fn accepted_decision_renders_check_glyph() {
+fn accepted_decision_renders_yes_glyph() {
     let mut state = DiffState::new("a\nb\nc\n", "a\nB\nc\n").unwrap();
     state.decisions[0] = Decision::Accepted;
     let lines = render_to_strings(&state, 30, 6);
     assert!(
-        lines.iter().any(|l| l.contains('✓')),
-        "expected ✓ glyph after accepting hunk: {lines:?}",
+        lines.iter().any(|l| l.contains("[Y]")),
+        "expected [Y] glyph after accepting hunk: {lines:?}",
     );
 }
 
 #[test]
-fn rejected_decision_renders_x_glyph() {
+fn rejected_decision_renders_no_glyph() {
     let mut state = DiffState::new("a\nb\nc\n", "a\nB\nc\n").unwrap();
     state.decisions[0] = Decision::Rejected;
     let lines = render_to_strings(&state, 30, 6);
     assert!(
-        lines.iter().any(|l| l.contains("[x]")),
-        "expected [x] glyph after rejecting hunk: {lines:?}",
+        lines.iter().any(|l| l.contains("[N]")),
+        "expected [N] glyph after rejecting hunk: {lines:?}",
     );
 }

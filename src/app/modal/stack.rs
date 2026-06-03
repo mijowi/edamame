@@ -71,6 +71,13 @@ impl ModalStack {
         self.inner.iter().any(|m| m.as_any().is::<T>())
     }
 
+    /// Number of modals of type `T` currently on the stack.  Used by
+    /// tests asserting that a modal is never stacked more than once.
+    #[allow(dead_code)]
+    pub fn count<T: Modal + 'static>(&self) -> usize {
+        self.inner.iter().filter(|m| m.as_any().is::<T>()).count()
+    }
+
     /// Mutable borrow of the first modal of type `T` on the stack, if
     /// any.  Used by `App::handle_file_changed` to refresh the
     /// `on_disk_contents` carried by a child reconciliation modal

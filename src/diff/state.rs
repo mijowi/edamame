@@ -170,15 +170,17 @@ impl DiffState {
         }
     }
 
-    /// Apply `decision` to every currently-`Pending` hunk in one go.
-    /// Used by `Action::DiffAcceptAll` / `Action::DiffRejectAll`.
-    /// Decisions already non-`Pending` are left untouched so the
-    /// user's prior choices are preserved.
-    pub fn bulk_decide_pending(&mut self, decision: Decision) {
+    /// Apply `decision` to *every* hunk in one go, overriding any prior
+    /// choices.  Used by `Action::DiffAcceptAll` / `Action::DiffRejectAll`:
+    /// "accept all" / "reject all" are decisive whole-diff actions, so
+    /// they set every hunk rather than only the still-`Pending` ones.
+    /// This also keeps the keys functional once the diff is already fully
+    /// resolved — the user can flip a fully-decided diff to all-accepted
+    /// or all-rejected in a single keystroke (a per-pending-only version
+    /// would be a silent no-op in that state).
+    pub fn bulk_decide(&mut self, decision: Decision) {
         for d in &mut self.decisions {
-            if *d == Decision::Pending {
-                *d = decision;
-            }
+            *d = decision;
         }
     }
 
@@ -220,12 +222,21 @@ impl DiffState {
         true
     }
 
-    /// Number of hunks still awaiting a decision.  Status bar shows
-    /// `pending/total` via this.
+    /// Number of hunks still awaiting a decision.
     pub fn pending_count(&self) -> usize {
         self.decisions
             .iter()
             .filter(|d| **d == Decision::Pending)
+            .count()
+    }
+
+    /// Number of hunks that have been accepted or rejected.  The status
+    /// bar shows `resolved/total` via this — a progress counter that
+    /// climbs from `0/n` to `n/n` as the user works through the review.
+    pub fn resolved_count(&self) -> usize {
+        self.decisions
+            .iter()
+            .filter(|d| **d != Decision::Pending)
             .count()
     }
 
@@ -334,7 +345,7 @@ mod tests {
     #[test]
     fn accept_all_yields_new_rope() {
         let mut state = DiffState::new("a\nb\nc\n", "a\nB\nc\n").unwrap();
-        state.bulk_decide_pending(Decision::Accepted);
+        state.bulk_decide(Decision::Accepted);
         let resolved = state.resolved_rope().unwrap();
         assert_eq!(resolved.to_string(), "a\nB\nc\n");
     }
@@ -342,7 +353,7 @@ mod tests {
     #[test]
     fn reject_all_yields_old_rope() {
         let mut state = DiffState::new("a\nb\nc\n", "a\nB\nc\n").unwrap();
-        state.bulk_decide_pending(Decision::Rejected);
+        state.bulk_decide(Decision::Rejected);
         let resolved = state.resolved_rope().unwrap();
         assert_eq!(resolved.to_string(), "a\nb\nc\n");
     }
@@ -389,7 +400,7 @@ mod tests {
         let old = "a\nb\nc\nd\ne\n";
         let new = "a\nC\ne\n";
         let mut state = DiffState::new(old, new).unwrap();
-        state.bulk_decide_pending(Decision::Rejected);
+        state.bulk_decide(Decision::Rejected);
         let resolved = state.resolved_rope().unwrap();
         assert_eq!(resolved.to_string(), old);
     }
@@ -401,5 +412,15 @@ mod tests {
         state.decide_focused(Decision::Accepted);
         assert_eq!(state.pending_count(), 0);
         assert!(state.all_resolved());
+    }
+
+    #[test]
+    fn resolved_count_climbs_as_hunks_are_decided() {
+        // The status-bar chip reads `resolved/total`, so resolved_count
+        // must start at 0 and climb to the total as decisions land.
+        let mut state = DiffState::new("a\nb\n", "a\nB\n").unwrap();
+        assert_eq!(state.resolved_count(), 0);
+        state.decide_focused(Decision::Rejected);
+        assert_eq!(state.resolved_count(), state.hunks.len());
     }
 }

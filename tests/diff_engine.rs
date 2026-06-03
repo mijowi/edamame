@@ -207,7 +207,7 @@ fn straddling_boundary_reject_all_round_trips_to_old() {
     let old = "intro text\n| A | B |\n|---|---|\n| 1 | 2 |\n";
     let new = "intro CHANGED\n| A | C |\n|---|---|\n| 1 | 2 |\n";
     let mut state = DiffState::new(old, new).expect("differing inputs");
-    state.bulk_decide_pending(Decision::Rejected);
+    state.bulk_decide(Decision::Rejected);
     assert_eq!(
         state.resolved_rope().expect("all resolved").to_string(),
         old,
@@ -216,7 +216,7 @@ fn straddling_boundary_reject_all_round_trips_to_old() {
 
     // And accept-all must reproduce the new text.
     let mut state = DiffState::new(old, new).expect("differing inputs");
-    state.bulk_decide_pending(Decision::Accepted);
+    state.bulk_decide(Decision::Accepted);
     assert_eq!(
         state.resolved_rope().expect("all resolved").to_string(),
         new,
@@ -273,7 +273,7 @@ fn table_split_into_two_keeps_both_changes_reviewable() {
     );
 
     let mut state = DiffState::new(old, new).expect("differing inputs");
-    state.bulk_decide_pending(Decision::Accepted);
+    state.bulk_decide(Decision::Accepted);
     assert_eq!(
         state.resolved_rope().expect("all resolved").to_string(),
         new,
@@ -292,7 +292,7 @@ fn two_changed_rows_accept_all_round_trips_without_duplication() {
         .replace("| alpha | 1     |", "| alpha | 7     |")
         .replace("| gamma | 3     |", "| gamma | 8     |");
     let mut state = DiffState::new(old, &new).expect("differing inputs");
-    state.bulk_decide_pending(Decision::Accepted);
+    state.bulk_decide(Decision::Accepted);
     assert_eq!(
         state.resolved_rope().expect("all resolved").to_string(),
         new,
