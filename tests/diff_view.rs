@@ -64,14 +64,63 @@ fn stacked_old_above_new() {
 }
 
 #[test]
-fn focused_hunk_gutter_marks_with_arrow() {
+fn decision_divider_sits_between_delete_and_add() {
+    // Replace `b` → `B`: the checkbox divider must land on its own line
+    // between the deleted `b` and the added `B`.
     let state = DiffState::new("a\nb\nc\n", "a\nB\nc\n").unwrap();
     let lines = render_to_strings(&state, 30, 6);
-    // The `>` gutter glyph should appear on the focused hunk's
-    // first line.
+    let del = lines.iter().position(|l| l.contains('b')).expect("delete");
+    let div = lines
+        .iter()
+        .position(|l| l.contains("[ ]"))
+        .expect("divider");
+    let add = lines.iter().position(|l| l.contains('B')).expect("add");
     assert!(
-        lines.iter().any(|l| l.starts_with('>')),
-        "expected `>` glyph in gutter: {lines:?}"
+        del < div && div < add,
+        "divider must sit between delete and add: {lines:?}"
+    );
+}
+
+#[test]
+fn delete_only_hunk_puts_divider_below() {
+    // Pure deletion of `b`: divider sits below the deleted line.
+    let state = DiffState::new("a\nb\nc\n", "a\nc\n").unwrap();
+    let lines = render_to_strings(&state, 30, 6);
+    let del = lines.iter().position(|l| l.contains('b')).expect("delete");
+    let div = lines
+        .iter()
+        .position(|l| l.contains("[ ]"))
+        .expect("divider");
+    assert!(
+        div > del,
+        "divider must sit below a delete-only hunk: {lines:?}"
+    );
+}
+
+#[test]
+fn insert_only_hunk_puts_divider_above() {
+    // Pure insertion of `b`: divider sits above the added line.
+    let state = DiffState::new("a\nc\n", "a\nb\nc\n").unwrap();
+    let lines = render_to_strings(&state, 30, 6);
+    let div = lines
+        .iter()
+        .position(|l| l.contains("[ ]"))
+        .expect("divider");
+    let add = lines.iter().rposition(|l| l.contains('b')).expect("add");
+    assert!(
+        div < add,
+        "divider must sit above an insert-only hunk: {lines:?}"
+    );
+}
+
+#[test]
+fn accepted_decision_shows_label() {
+    let mut state = DiffState::new("a\nb\nc\n", "a\nB\nc\n").unwrap();
+    state.decisions[0] = Decision::Accepted;
+    let lines = render_to_strings(&state, 30, 6);
+    assert!(
+        lines.iter().any(|l| l.contains("Accepted")),
+        "expected `Accepted` label on the divider: {lines:?}"
     );
 }
 

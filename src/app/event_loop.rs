@@ -232,6 +232,7 @@ impl App {
         }
         self.tick_autosave();
         self.tick_section_jump();
+        self.tick_diff_advance();
         self.editor.modal_open = self.any_modal_open();
     }
 

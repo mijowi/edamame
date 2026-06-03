@@ -2,6 +2,7 @@ pub mod modal;
 
 mod actions;
 mod autosave;
+mod diff_advance;
 mod event_loop;
 mod external_editor;
 mod file_changed;
@@ -267,6 +268,11 @@ pub struct App {
     /// elapses.  `None` between jumps; overwritten on every preview so
     /// only the most-recent target is kept.
     section_jump_target_scroll: Option<usize>,
+    /// Set when a diff hunk is accepted/rejected: holds the focused
+    /// hunk's resolved state visible for [`diff_advance::DIFF_ADVANCE_DELAY`]
+    /// before focus auto-advances to the next pending hunk.  `None`
+    /// when no advance is pending.  See [`App::tick_diff_advance`].
+    diff_advance_pending_since: Option<Instant>,
     /// Active filesystem watcher for the open file, if any.  `None`
     /// until the run loop calls [`App::start_file_watcher`] after the
     /// initial buffer load.  Multi-tab work later swaps this for a
@@ -526,6 +532,7 @@ impl App {
             autosave_last_seen_version: 0,
             section_jump_pending_since: None,
             section_jump_target_scroll: None,
+            diff_advance_pending_since: None,
             watcher: None,
             last_disk_hash: initial_disk_hash,
         })

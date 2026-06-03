@@ -12,13 +12,13 @@
 use ratatui::{
     buffer::Buffer as TuiBuf,
     layout::Rect,
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::StatefulWidget,
 };
 
 use crate::config::Theme;
-use crate::diff::hunk::{HunkKind, InlineSide};
+use crate::diff::hunk::InlineSide;
 use crate::diff::layout::{line_text, DiffLineSource, DiffVisualLine};
 use crate::diff::{Decision, DiffState};
 use crate::ui::line_render::render_line_from_visual;
@@ -75,17 +75,48 @@ impl<'a> StatefulWidget for DiffView<'a> {
 }
 
 fn build_line(diff: &DiffState, theme: &Theme, dvl: &DiffVisualLine, text: &str) -> Line<'static> {
-    let (line_style, focused) = match (dvl.source, dvl.hunk_idx) {
-        (DiffLineSource::Context, _) => (Style::default(), false),
+    // Decision divider: the accept/reject checkbox plus a resolved
+    // label, on its own line between the delete and add sides.  No
+    // background fill so it reads as a visual break between the two.
+    if dvl.source == DiffLineSource::Decision {
+        let focused = dvl
+            .hunk_idx
+            .is_some_and(|hi| diff.hunks[hi].id == diff.focused_id);
+        let dec = dvl
+            .hunk_idx
+            .and_then(|hi| diff.decisions.get(hi).copied())
+            .unwrap_or(Decision::Pending);
+        let mut style = match dec {
+            Decision::Pending => theme.diff_decision_pending,
+            Decision::Accepted => theme.diff_decision_accepted,
+            Decision::Rejected => theme.diff_decision_rejected,
+        };
+        // Bold the focused hunk's checkbox so the actionable one draws
+        // the eye even though the divider carries no background.
+        if focused {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        return Line::from(Span::styled(text.to_owned(), style));
+    }
+
+    // Delete / add / context lines.  No gutter: all start at column 0
+    // and are distinguished by background color alone.
+    let line_style = match (dvl.source, dvl.hunk_idx) {
         (DiffLineSource::OldDelete, Some(hi)) => {
-            let focused = diff.hunks[hi].id == diff.focused_id;
-            (theme.diff_delete_line, focused)
+            if diff.hunks[hi].id == diff.focused_id {
+                theme.diff_delete_line
+            } else {
+                theme.diff_delete_line_unfocused
+            }
         }
         (DiffLineSource::NewAdd, Some(hi)) => {
-            let focused = diff.hunks[hi].id == diff.focused_id;
-            (theme.diff_add_line, focused)
+            if diff.hunks[hi].id == diff.focused_id {
+                theme.diff_add_line
+            } else {
+                theme.diff_add_line_unfocused
+            }
         }
-        _ => (Style::default(), false),
+        _ => Style::default(),
     };
 
     // Build the body spans with optional inline highlights.
@@ -138,37 +169,5 @@ fn build_line(diff: &DiffState, theme: &Theme, dvl: &DiffVisualLine, text: &str)
         body_spans.push(Span::raw(text.to_owned()));
     }
 
-    // Gutter: focused-hunk indicator + decision glyph on the first
-    // line of the hunk's "indicator" side.
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    if dvl.first_of_hunk {
-        let glyph = if focused { "> " } else { "  " };
-        spans.push(Span::styled(glyph.to_owned(), theme.diff_cursor_gutter));
-        if let Some(hi) = dvl.hunk_idx {
-            let dec = diff.decisions[hi];
-            // Show the decision indicator on the first new-side line
-            // for Insert/Replace, and on the first old-side line for
-            // Delete hunks.
-            let h = &diff.hunks[hi];
-            let want_here = match h.kind {
-                HunkKind::Delete => dvl.source == DiffLineSource::OldDelete,
-                HunkKind::Insert | HunkKind::Replace => dvl.source == DiffLineSource::NewAdd,
-            };
-            if want_here {
-                let glyph = match dec {
-                    Decision::Pending => "[ ] ",
-                    Decision::Accepted => "[✓] ",
-                    Decision::Rejected => "[x] ",
-                };
-                spans.push(Span::raw(glyph.to_owned()));
-            } else {
-                spans.push(Span::raw("    ".to_owned()));
-            }
-        }
-    } else if dvl.hunk_idx.is_some() {
-        spans.push(Span::raw("      ".to_owned()));
-    }
-    spans.extend(body_spans);
-
-    Line::from(spans).style(line_style)
+    Line::from(body_spans).style(line_style)
 }

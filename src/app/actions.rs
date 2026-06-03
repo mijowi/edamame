@@ -450,40 +450,34 @@ impl App {
         use crate::diff::Decision;
         match action {
             Action::DiffNext => {
+                // Manual navigation supersedes any deferred auto-advance.
+                // Cancelling it drops the only path that would re-check
+                // resolution, so do that explicitly here — otherwise
+                // navigating right after deciding the last hunk would
+                // swallow the resolve-confirm modal.
+                self.cancel_diff_advance();
                 if let Some(d) = self.editor.diff.as_mut() {
                     d.advance_focus();
                     self.editor
                         .scroll_focused_hunk_into_view(doc_height, doc_width);
                     self.needs_draw = true;
                 }
+                self.check_diff_resolution();
             }
             Action::DiffPrev => {
+                self.cancel_diff_advance();
                 if let Some(d) = self.editor.diff.as_mut() {
                     d.retreat_focus();
                     self.editor
                         .scroll_focused_hunk_into_view(doc_height, doc_width);
                     self.needs_draw = true;
                 }
-            }
-            Action::DiffAcceptHunk => {
-                if let Some(d) = self.editor.diff.as_mut() {
-                    d.set_focused_decision(Decision::Accepted);
-                    self.editor
-                        .scroll_focused_hunk_into_view(doc_height, doc_width);
-                    self.needs_draw = true;
-                }
                 self.check_diff_resolution();
             }
-            Action::DiffRejectHunk => {
-                if let Some(d) = self.editor.diff.as_mut() {
-                    d.set_focused_decision(Decision::Rejected);
-                    self.editor
-                        .scroll_focused_hunk_into_view(doc_height, doc_width);
-                    self.needs_draw = true;
-                }
-                self.check_diff_resolution();
-            }
+            Action::DiffAcceptHunk => self.decide_focused_hunk(Decision::Accepted),
+            Action::DiffRejectHunk => self.decide_focused_hunk(Decision::Rejected),
             Action::DiffAcceptAll => {
+                self.cancel_diff_advance();
                 if let Some(d) = self.editor.diff.as_mut() {
                     d.bulk_decide_pending(Decision::Accepted);
                     self.needs_draw = true;
@@ -491,6 +485,7 @@ impl App {
                 self.check_diff_resolution();
             }
             Action::DiffRejectAll => {
+                self.cancel_diff_advance();
                 if let Some(d) = self.editor.diff.as_mut() {
                     d.bulk_decide_pending(Decision::Rejected);
                     self.needs_draw = true;
@@ -593,6 +588,25 @@ impl App {
 
     /// If every hunk has been decided, push the resolve-confirm
     /// modal.  Called after every accept / reject / bulk action.
+    /// Record an accept/reject on the focused hunk and arm the deferred
+    /// advance so the user sees the decision land before focus moves on
+    /// (§ diff-mode UX).  A prior pending advance is flushed first so
+    /// rapid taps walk through hunks rather than re-deciding one.
+    fn decide_focused_hunk(&mut self, decision: crate::diff::Decision) {
+        if self.diff_advance_pending_since.is_some() {
+            self.apply_diff_advance();
+        }
+        let decided = self
+            .editor
+            .diff
+            .as_mut()
+            .is_some_and(|d| d.decide_focused(decision));
+        if decided {
+            self.needs_draw = true;
+            self.arm_diff_advance();
+        }
+    }
+
     pub(crate) fn check_diff_resolution(&mut self) {
         let Some(diff) = self.editor.diff.as_ref() else {
             return;
@@ -654,6 +668,7 @@ impl App {
     /// rope in place but does NOT record a merge-revert undo entry —
     /// that lands in CP4 alongside [`History::reset_with`].
     pub(crate) fn apply_diff_resolution(&mut self) {
+        self.cancel_diff_advance();
         let Some(diff) = self.editor.diff.as_ref() else {
             return;
         };
@@ -682,6 +697,7 @@ impl App {
     /// pre-diff buffer state (the diff's `old_rope` already equals
     /// the editor's current buffer, so this is just a clean-up).
     pub(crate) fn exit_diff_mode_discarding(&mut self) {
+        self.cancel_diff_advance();
         self.editor.exit_diff_mode();
         // Pop the resolve-confirm modal if it's on the stack.
         self.modal_stack
