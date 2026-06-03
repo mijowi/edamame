@@ -293,12 +293,23 @@ pub struct Theme {
     pub diff_add_line: Style,
     /// Full-row bg fill on delete-side diff lines.
     pub diff_delete_line: Style,
-    /// Saturated bg + bold for word-level highlights inside an add line.
+    /// Add-side bg for hunks that are *not* the focused one — a weaker
+    /// tint than `diff_add_line` so the focused hunk's color stands out.
+    pub diff_add_line_unfocused: Style,
+    /// Delete-side bg for non-focused hunks.  Weaker than `diff_delete_line`.
+    pub diff_delete_line_unfocused: Style,
+    /// Darkened bg + bold for word-level highlights inside an add line.
+    /// Darker than `diff_add` so light text keeps enough contrast.
     pub diff_add_inline: Style,
-    /// Saturated bg + bold for word-level highlights inside a delete line.
+    /// Darkened bg + bold for word-level highlights inside a delete line.
     pub diff_delete_inline: Style,
-    /// `>` glyph marking the focused hunk in the gutter.
-    pub diff_cursor_gutter: Style,
+    /// Decision divider while the hunk is still `Pending` (the bare
+    /// `[ ]` checkbox).
+    pub diff_decision_pending: Style,
+    /// Decision divider once the hunk is `Accepted` (`[✓] Accepted`).
+    pub diff_decision_accepted: Style,
+    /// Decision divider once the hunk is `Rejected` (`[x] Rejected`).
+    pub diff_decision_rejected: Style,
     /// Mode badge for `Mode::Diff`.  Mirrors `status_mode_raw` shape
     /// but on `warning` so the diff session reads as a distinct state.
     pub status_mode_diff: Style,
@@ -885,15 +896,35 @@ impl Theme {
             // styles on non-Rgb palettes — `blend` returns the
             // first argument unchanged in that case, which is the
             // best we can do without inventing a hue.
-            diff_add_line: Style::default().bg(blend(p.surface, p.diff_add, 0.30)),
-            diff_delete_line: Style::default().bg(blend(p.surface, p.diff_delete, 0.30)),
-            diff_add_inline: Style::default().bg(p.diff_add).add_modifier(bold),
-            diff_delete_inline: Style::default().bg(p.diff_delete).add_modifier(bold),
-            diff_cursor_gutter: Style::default().fg(p.primary).add_modifier(bold),
+            // Focused hunk: stronger fill so the active change stands
+            // out; non-focused hunks: a faint wash so they recede.
+            diff_add_line: Style::default().bg(blend(p.surface, p.diff_add, 0.42)),
+            diff_delete_line: Style::default().bg(blend(p.surface, p.diff_delete, 0.42)),
+            diff_add_line_unfocused: Style::default().bg(blend(p.surface, p.diff_add, 0.07)),
+            diff_delete_line_unfocused: Style::default().bg(blend(p.surface, p.diff_delete, 0.07)),
+            // Inline highlights darken the saturated diff color toward
+            // the bg so light foreground text keeps enough contrast.
+            diff_add_inline: Style::default()
+                .bg(blend(p.diff_add, p.bg, 0.35))
+                .add_modifier(bold),
+            diff_delete_inline: Style::default()
+                .bg(blend(p.diff_delete, p.bg, 0.35))
+                .add_modifier(bold),
+            diff_decision_pending: Style::default().fg(p.text_muted),
+            diff_decision_accepted: Style::default().fg(p.diff_add).add_modifier(bold),
+            diff_decision_rejected: Style::default().fg(p.diff_delete).add_modifier(bold),
             status_mode_diff: Style::default().bg(p.warning).fg(p.bg).add_modifier(bold),
-            status_bar_diff: Style::default().bg(p.warning).fg(p.bg),
+            // Bottom region in diff mode: a muted red wash on the hint
+            // line (top) and a muted green wash on the status line
+            // (bottom) — mirroring the deletes-above / adds-below
+            // stacking in the document.  Tints, not fills, so the bars
+            // read as "diff" without being mistaken for an in-document
+            // hunk and without sacrificing text legibility.
+            status_bar_diff: Style::default()
+                .bg(blend(p.surface, p.diff_add, 0.22))
+                .fg(p.text),
             hint_bar_diff: Style::default()
-                .bg(blend(p.surface_elevated, p.warning, 0.40))
+                .bg(blend(p.surface_elevated, p.diff_delete, 0.22))
                 .fg(p.text),
         }
     }

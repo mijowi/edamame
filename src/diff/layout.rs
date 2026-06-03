@@ -28,6 +28,7 @@ use ropey::Rope;
 use crate::document::visual_cache::VisualRowCache;
 use crate::ui::line_render::visual_rows_of_str;
 
+use super::hunk::Decision;
 use super::state::DiffState;
 
 /// One *logical* line in the diff view.  Expanded into one or more
@@ -42,10 +43,6 @@ pub struct DiffVisualLine {
     /// Index into `DiffState::hunks`, when this line belongs to a
     /// hunk.  `None` for `Context` lines.
     pub hunk_idx: Option<usize>,
-    /// `true` for the first line of the hunk's old-side range (for
-    /// `OldDelete`) or new-side range (for `NewAdd`).  Used to paint
-    /// the gutter glyph and decision indicator on the right cells.
-    pub first_of_hunk: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +53,12 @@ pub enum DiffLineSource {
     OldDelete,
     /// Add-side line, borrowed from `new_rope`.
     NewAdd,
+    /// Synthetic divider carrying the accept/reject checkbox, emitted
+    /// between a hunk's delete and add lines (so it sits below a
+    /// delete-only hunk and above an add-only one — always at the
+    /// old/new boundary).  Has no backing rope line; its text is
+    /// derived from the hunk's live `Decision`.
+    Decision,
 }
 
 /// Lazily-built layout cache stored on [`DiffState`].
@@ -93,7 +96,6 @@ impl DiffState {
                     source: DiffLineSource::Context,
                     rope_line: new_cursor,
                     hunk_idx: None,
-                    first_of_hunk: false,
                 });
                 new_cursor += 1;
             }
@@ -102,26 +104,28 @@ impl DiffState {
             // a no-op.
             new_cursor = h.new_lines.end;
 
-            // Stacked order: deletes above, adds below.
-            let mut first = true;
+            // Stacked order: deletes above, the decision divider, then
+            // adds below.  The divider always sits at the old/new
+            // boundary, so it lands below a delete-only hunk and above
+            // an add-only one.
             for l in h.old_lines.clone() {
                 out.push(DiffVisualLine {
                     source: DiffLineSource::OldDelete,
                     rope_line: l,
                     hunk_idx: Some(i),
-                    first_of_hunk: first,
                 });
-                first = false;
             }
-            let mut first = true;
+            out.push(DiffVisualLine {
+                source: DiffLineSource::Decision,
+                rope_line: 0,
+                hunk_idx: Some(i),
+            });
             for l in h.new_lines.clone() {
                 out.push(DiffVisualLine {
                     source: DiffLineSource::NewAdd,
                     rope_line: l,
                     hunk_idx: Some(i),
-                    first_of_hunk: first,
                 });
-                first = false;
             }
         }
 
@@ -131,7 +135,6 @@ impl DiffState {
                 source: DiffLineSource::Context,
                 rope_line: new_cursor,
                 hunk_idx: None,
-                first_of_hunk: false,
             });
             new_cursor += 1;
         }
@@ -211,17 +214,37 @@ impl DiffState {
     }
 }
 
-/// Raw text of a diff visual line, stripped of its trailing `\n`.
+/// Raw text of a diff visual line, stripped of its trailing `\n`.  For
+/// the synthetic `Decision` divider this is the checkbox plus a resolved
+/// label (`[ ]` while pending, `[✓] Accepted`, `[x] Rejected`).
 pub fn line_text(diff: &DiffState, dvl: &DiffVisualLine) -> String {
+    if dvl.source == DiffLineSource::Decision {
+        let dec = dvl
+            .hunk_idx
+            .and_then(|hi| diff.decisions.get(hi).copied())
+            .unwrap_or(Decision::Pending);
+        return decision_line_text(dec).to_owned();
+    }
     let rope: &Rope = match dvl.source {
         DiffLineSource::Context | DiffLineSource::NewAdd => diff.new_buffer.rope(),
         DiffLineSource::OldDelete => &diff.old_rope,
+        DiffLineSource::Decision => unreachable!("handled above"),
     };
     if dvl.rope_line >= rope.len_lines() {
         return String::new();
     }
     let raw = rope.line(dvl.rope_line).to_string();
     raw.trim_end_matches('\n').to_owned()
+}
+
+/// Text shown on a hunk's decision divider for a given `Decision`.
+/// Pending shows only the checkbox; resolved states append a label.
+pub fn decision_line_text(decision: Decision) -> &'static str {
+    match decision {
+        Decision::Pending => "[ ]",
+        Decision::Accepted => "[✓] Accepted",
+        Decision::Rejected => "[x] Rejected",
+    }
 }
 
 #[cfg(test)]
@@ -253,11 +276,11 @@ mod tests {
 
     #[test]
     fn total_visual_rows_counts_every_stacked_line() {
-        // 5 context + 1 deleted (`before`) + 1 added (`AFTER`) + 1
-        // trailing context (`tail`) + 1 empty trailing line = 9 rows,
-        // none wrapping at width 80.
+        // 5 context + 1 deleted (`before`) + 1 decision divider + 1
+        // added (`AFTER`) + 1 trailing context (`tail`) + 1 empty
+        // trailing line = 10 rows, none wrapping at width 80.
         let st = diff_with_leading_context(5);
-        assert_eq!(st.total_visual_rows(80), 9);
+        assert_eq!(st.total_visual_rows(80), 10);
     }
 
     #[test]

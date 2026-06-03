@@ -153,8 +153,8 @@ pub struct DiffState {
                                    //   (in Review it is positioned at
                                    //   the start of the focused hunk's
                                    //   new-side range but ignored for
-                                   //   rendering — the gutter glyph is
-                                   //   the focus indicator)
+                                   //   rendering — the gutter focus
+                                   //   bar is the focus indicator)
     pub hunks: Vec<Hunk>,          // recomputed after every mutation
     pub focused_id: HunkId,        // single source of truth for "which
                                    //   hunk is the user looking at"; an
@@ -752,7 +752,9 @@ pub enum DiffSubMode {
 ```
 
 - **`Review`** (default on entry). No active text cursor. Focus is on
-  the currently selected hunk, indicated by the `>` gutter glyph.
+  the currently selected hunk, indicated by its stronger add/delete
+  background fill (non-focused hunks recede to a fainter wash) and a
+  bolded decision divider.
   Decision keys (`y` / `n` / `Shift-Y` / `Shift-N`) work as bare keys
   because no text is being typed. Hunk navigation: `Tab` /
   `Shift-Tab`. Entering Edit: `Enter` or `i`. Exiting diff: `Esc`
@@ -820,19 +822,21 @@ The counter updates after every decision, edit-driven recompute, and
 undo/redo. Rendered with `theme.status_bar_diff` so it inherits the
 diff-mode bar color.
 
-> **Deferred polish — focus dimming.** A future enhancement could dim
-> all document text outside the currently focused hunk (in Review,
-> Edit, or both) to push the user's attention onto the active change.
-> Implementation-wise this would be a per-line foreground-color
-> override applied by `DiffView` to non-focused lines, gated by a
-> `theme.diff_unfocused_dim: Style` slot. Defer until the base diff
-> view ships and we can evaluate whether the strong bg colors already
-> draw the eye enough on their own. The two natural questions to
-> answer at that point: should dimming apply in Edit only (focusing
-> the *editable* region) or also in Review (focusing the *decision*
-> region)? And is per-line dimming sufficient, or should we also
-> de-saturate the diff_add / diff_delete backgrounds on non-focused
-> hunks?
+> **Focus de-emphasis — partially shipped.** The base view now
+> de-saturates the add/delete backgrounds on *non-focused* hunks: they
+> use `theme.diff_add_line_unfocused` / `diff_delete_line_unfocused`
+> (a 0.12 blend vs. the focused hunk's 0.30), so the focused hunk's
+> color stands out among several changes without any per-line
+> foreground override. This resolves the second open question below
+> ("de-saturate the bg on non-focused hunks?" — yes) in preference to
+> the originally-sketched `theme.diff_unfocused_dim` per-line fg
+> approach.
+>
+> Still deferred: dimming the *context* (unchanged) text outside the
+> focused hunk, and whether such dimming should apply in Edit only
+> (focusing the *editable* region) or also in Review (focusing the
+> *decision* region). Defer until we can evaluate whether the
+> focused/unfocused bg split already draws the eye enough on its own.
 
 ## 5. Rendering
 
@@ -864,10 +868,11 @@ re-computation.
 For each visible visual row, the widget emits a `Line<'static>` with:
 
 - **Unchanged context** — borrowed from `new_rope`, no `Line.style`.
-- **Delete-side lines** — from `old_rope`, `Line.style = Style::default().bg(theme.diff_delete_line.bg)`.
-- **Add-side lines** — from `new_rope`, `Line.style = Style::default().bg(theme.diff_add_line.bg)`, with per-`Span` overrides on the inline-changed word ranges using `theme.diff_add_inline` / `diff_delete_inline` (brighter bg + bold).
-- **Stacked order** — old lines first, then new lines (per spec)
-- **Focused hunk** — `>` gutter glyph using `theme.diff_cursor_gutter` on the first line of the hunk. Decision indicator (`[ ]` Pending, `[✓]` Accepted, `[x]` Rejected) rendered on the first new-side line of the hunk (or first old-side line for `HunkKind::Delete` hunks). The checkmark/x glyphs differentiate decided hunks from the unresolved `[ ]` at a glance; `[✓]` for accept follows the checkbox convention already used in the editor (`[x]` for checked items), and `[x]` for reject reads as "crossed out" / "nope". The asymmetry (Unicode `✓` vs ASCII `x`) is intentional — the accept glyph is the less common decision path to draw the eye, while `x` is visually heavier and reads as a clear rejection.
+- **Delete-side lines** — from `old_rope`. `Line.style` is `theme.diff_delete_line` when the line belongs to the focused hunk, else the weaker `theme.diff_delete_line_unfocused`.
+- **Add-side lines** — from `new_rope`. `Line.style` is `theme.diff_add_line` (focused) or `theme.diff_add_line_unfocused` (non-focused), with per-`Span` overrides on the inline-changed word ranges using `theme.diff_add_inline` / `diff_delete_inline` (brighter bg + bold).
+- **Decision divider** — a synthetic line (no backing rope line) emitted at the old/new boundary of every hunk via `DiffLineSource::Decision`, so it sits below a delete-only hunk and above an insert-only one. It carries the accept/reject checkbox plus a resolved label: `[ ]` while Pending, `[✓] Accepted`, `[x] Rejected` — styled with `theme.diff_decision_pending` / `diff_decision_accepted` / `diff_decision_rejected`. It has no background fill so it reads as a break between the two sides. The checkmark/x glyphs differentiate decided hunks at a glance; `[✓]` for accept follows the checkbox convention already used in the editor, and `[x]` for reject reads as "crossed out". The asymmetry (Unicode `✓` vs ASCII `x`) is intentional — `x` is visually heavier and reads as a clear rejection. See `decision_line_text()` in `src/diff/layout.rs`.
+- **Stacked order** — old (delete) lines first, then the decision divider, then new (add) lines.
+- **Focused hunk** — there is *no* gutter glyph or focus bar. Focus is shown by background intensity alone: the focused hunk's add/delete lines use `theme.diff_add_line` / `diff_delete_line` (stronger fill), while every non-focused hunk uses `theme.diff_add_line_unfocused` / `diff_delete_line_unfocused` (a fainter wash that recedes). The focused hunk's decision divider is additionally bolded. All lines start at column 0; the focused/unfocused background split — not a gutter — is the focus indicator.
 
 `render_line_from_visual` already propagates `line.style` across the
 trailing cells (the same mechanism code blocks use), so a single
@@ -1277,11 +1282,15 @@ style fields and add the diff-mode signalling slots:
 ```rust
 pub struct Theme {
     // ...
-    pub diff_add_line: Style,
-    pub diff_delete_line: Style,
-    pub diff_add_inline: Style,        // brighter bg, bold
+    pub diff_add_line: Style,          // focused-hunk add fill
+    pub diff_delete_line: Style,       // focused-hunk delete fill
+    pub diff_add_line_unfocused: Style,    // weaker tint for non-focused hunks
+    pub diff_delete_line_unfocused: Style,
+    pub diff_add_inline: Style,        // darkened bg, bold (word-level)
     pub diff_delete_inline: Style,
-    pub diff_cursor_gutter: Style,
+    pub diff_decision_pending: Style,  // `[ ]` checkbox on the divider
+    pub diff_decision_accepted: Style, // `[✓] Accepted`
+    pub diff_decision_rejected: Style, // `[x] Rejected`
     pub status_mode_diff: Style,
     pub status_bar_diff: Style,        // saturated bg
     pub hint_bar_diff: Style,
@@ -1296,14 +1305,18 @@ independently):**
 
 | Slot | Derivation | Notes |
 |---|---|---|
-| `diff_add_line` | `Style::default().bg(palette.diff_add_muted)` where `diff_add_muted` is a 30 %-saturated mix of `palette.diff_add` and `palette.surface`. | Subtle full-row bg fill; readable behind normal text fg. |
-| `diff_delete_line` | `Style::default().bg(palette.diff_delete_muted)` (analogous mix). | Same idea, delete side. |
-| `diff_add_inline` | `Style::default().bg(palette.diff_add).add_modifier(Modifier::BOLD)` | Saturated bg + bold for word-level highlights inside an add line. |
-| `diff_delete_inline` | `Style::default().bg(palette.diff_delete).add_modifier(Modifier::BOLD)` | Saturated bg + bold for word-level highlights inside a delete line. |
-| `diff_cursor_gutter` | `Style::default().fg(palette.primary).add_modifier(Modifier::BOLD)` | `>` glyph marking the focused hunk. |
+| `diff_add_line` | `Style::default().bg(blend(surface, diff_add, 0.42))` | Focused-hunk add fill; readable behind normal text fg. |
+| `diff_delete_line` | `Style::default().bg(blend(surface, diff_delete, 0.42))` | Same idea, delete side. |
+| `diff_add_line_unfocused` | `Style::default().bg(blend(surface, diff_add, 0.07))` — a much weaker tint than the 0.42 of `diff_add_line`. | Non-focused add hunks recede so the focused hunk's color stands out. |
+| `diff_delete_line_unfocused` | `Style::default().bg(blend(surface, diff_delete, 0.07))` (analogous). | Non-focused delete hunks, delete side. |
+| `diff_add_inline` | `Style::default().bg(blend(diff_add, bg, 0.35)).add_modifier(Modifier::BOLD)` | Darkened toward bg + bold for word-level highlights inside an add line, so light text keeps contrast. |
+| `diff_delete_inline` | `Style::default().bg(blend(diff_delete, bg, 0.35)).add_modifier(Modifier::BOLD)` | Darkened toward bg + bold for word-level highlights inside a delete line. |
+| `diff_decision_pending` | `Style::default().fg(palette.text_muted)` | The bare `[ ]` checkbox while the hunk is undecided — muted so resolved states read as the change. |
+| `diff_decision_accepted` | `Style::default().fg(palette.diff_add).add_modifier(Modifier::BOLD)` | `[✓] Accepted` divider; green + bold echoes the add side. |
+| `diff_decision_rejected` | `Style::default().fg(palette.diff_delete).add_modifier(Modifier::BOLD)` | `[x] Rejected` divider; red + bold echoes the delete side. The focused hunk's divider gets an extra `BOLD` at render time. |
 | `status_mode_diff` | `Style::default().fg(palette.surface).bg(palette.warning).add_modifier(Modifier::BOLD)` | `DIFF` / `DIFF·EDIT` badge — reuses the existing `warning` palette slot so it pops against the normal-mode badge color. |
-| `status_bar_diff` | `Style::default().fg(palette.surface).bg(palette.warning)` | Whole status bar shifts color in diff mode so the user can never miss the mode change. |
-| `hint_bar_diff` | `Style::default().fg(palette.surface).bg(palette.warning_muted)` where `warning_muted` is a 60 %-saturated mix of `warning` and `surface`. | Hint bar matches status bar's hue but with a softer bg so the hint text stays readable. |
+| `status_bar_diff` | `Style::default().fg(palette.text).bg(blend(surface, diff_add, 0.22))` | Status line (bottom) gets a muted green wash, mirroring the adds-below stacking. A tint, not a fill, so the bar reads as "diff" without being mistaken for an in-document hunk and without sacrificing text legibility. |
+| `hint_bar_diff` | `Style::default().fg(palette.text).bg(blend(surface_elevated, diff_delete, 0.22))` | Hint line (top) gets a muted red wash, mirroring the deletes-above stacking. |
 
 The muted/mixed variants can be computed at theme-build time
 (`Theme::from_palette`) via a small `blend(fg: Color, bg: Color, t: f32) -> Color`
@@ -1318,9 +1331,14 @@ fallback only fires for user-authored themes with non-Rgb palette
 slots.
 
 **Monochrome fallback** (`Theme::from_palette(monochrome=true)`):
-the `_line` bg slots become `Style::default().add_modifier(REVERSED)`
-(swap fg/bg on the whole line); the `_inline` slots add `BOLD` on
-top of `REVERSED`; `diff_cursor_gutter` stays as bold-`>`. The
+the focused `_line` bg slots become `Style::default().add_modifier(REVERSED)`
+(swap fg/bg on the whole line), while the `_line_unfocused` slots use
+`DIM` — so the three tiers (context plain / unfocused dim / focused
+reversed) stay distinct without color; the `_inline` slots add `BOLD` on
+top of `REVERSED`. The decision divider has no color to fall back on, so
+the resolved labels plus weight carry the state: `diff_decision_pending`
+is `DIM`, and `diff_decision_accepted` / `diff_decision_rejected` are
+`BOLD` (the "Accepted" / "Rejected" text disambiguates the two). The
 status/hint diff slots fall back to `REVERSED + BOLD` so the mode
 shift is still visible without color.
 
@@ -1867,7 +1885,7 @@ out of scope here; the default must remain "always review."
 - **Watcher** (`tests/watcher.rs`): with a `tempfile`, write the file, wait, mutate it twice within 200 ms, assert at least one `FileChanged` event arrives with the latest contents (exact event count is OS-dependent — do not assert "exactly one" in the tempfile test). Use a `FakeFileWatcher` for debounce-count assertions and non-tempfile cases to avoid filesystem flakiness.
 - **Diff engine** (`tests/diff_engine.rs`): snapshot tests (`insta::assert_debug_snapshot!`) over a handful of old/new pairs, including pure insert, pure delete, replace, multi-hunk, and inline-word-only changes.
 - **Diff history** (`tests/diff_history.rs`): sequence of accept / reject / edit / undo / redo asserts. Includes the hunk-id stability case where an edit reshapes the hunk list.
-- **Diff view rendering** (`tests/diff_view.rs`): `TestBackend` snapshot tests for the stacked old-above-new layout, the focused- hunk gutter glyph, and the inline word highlight overlay.
+- **Diff view rendering** (`tests/diff_view.rs`): `TestBackend` snapshot tests for the stacked old-above-new layout, the decision divider's placement at the old/new boundary (delete-only / insert-only / replace), the resolved-label text, and the inline word highlight overlay.
 - **Modal flow** (extend `tests/ui.rs`): `DirtyConflictModal` → `DiffIntroModal` → diff view; opt-out via the checkbox sets `show_diff_intro = false` in the loaded config.
 - **Autosave gating** (extend `tests/editing.rs`): set `editor.diff = Some(...)`, advance the autosave clock past `autosave_idle_ms`, assert no save fires.
 - **Own-write echo suppression** (`tests/watcher.rs`): with the content-hash filter (§2), call `App::save_buffer()`, then push a `FileChanged` whose contents equal the just-saved bytes; assert it is dropped. Push a second `FileChanged` whose contents differ by one byte; assert it is delivered. Cover the initial-load case: open a file, immediately push a `FileChanged` with identical contents, assert it is dropped (matches the just-loaded hash).
@@ -1934,7 +1952,7 @@ PR-sized unit.
   never called in CP3. `Action::Undo` / `Action::Redo` in diff mode
   are explicit no-ops until CP4 wires them).
 - `Mode::Diff` variant; `EditorState::enter_diff_mode()` / `exit_diff_mode()`.
-- `DiffView` raw rendering with `DiffVisualLine` model (§5): stacked old/new, gutter glyph, decision indicator on first line.
+- `DiffView` raw rendering with `DiffVisualLine` model (§5): stacked old/new with a synthetic decision divider at the boundary; focus shown by focused/unfocused background intensity (no gutter).
 - `DiffIntroModal` with opt-out checkbox (§8).
 - Wire `DirtyConflictModal`'s `[Merge]` button to enter diff mode.
 - Actions: `DiffNext`, `DiffPrev`, `DiffAcceptHunk`, `DiffRejectHunk`, `DiffAcceptAll`, `DiffRejectAll`, `DiffExit`. Review sub-mode only — no `DiffSubMode` enum yet. `DiffEnterEdit` and `DiffExitEdit` are added to the `Action` enum and keymap in this checkpoint (consistent with the "fully defined upfront" convention) but are explicit no-ops in the dispatch — they are wired in Checkpoint 5.

@@ -141,19 +141,33 @@ impl DiffState {
         self.hunks.iter().position(|h| h.id == self.focused_id)
     }
 
-    /// Set the decision for the focused hunk and advance focus to
-    /// the next `Pending` hunk (wrapping).  Returns `true` when the
-    /// decision was applied.  Used by `Action::DiffAcceptHunk` /
-    /// `Action::DiffRejectHunk`.
-    pub fn set_focused_decision(&mut self, decision: Decision) -> bool {
+    /// Set the decision for the focused hunk *without* moving focus.
+    /// The caller advances separately (after a brief reveal delay) so
+    /// the user sees the resolved checkbox land before focus jumps to
+    /// the next hunk.  Returns `true` when applied.
+    pub fn decide_focused(&mut self, decision: Decision) -> bool {
         let Some(idx) = self.focused_idx() else {
             return false;
         };
         self.decisions[idx] = decision;
-        if let Some(next) = self.next_pending_after(idx) {
-            self.focused_id = self.hunks[next].id;
-        }
         true
+    }
+
+    /// Move focus to the next still-`Pending` hunk after the focused
+    /// one (wrapping).  No-op (returns `false`) when nothing else is
+    /// pending, leaving focus on the current hunk.  Used by the
+    /// deferred post-decision advance.
+    pub fn advance_to_next_pending(&mut self) -> bool {
+        let Some(idx) = self.focused_idx() else {
+            return false;
+        };
+        match self.next_pending_after(idx) {
+            Some(next) if next != idx => {
+                self.focused_id = self.hunks[next].id;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Apply `decision` to every currently-`Pending` hunk in one go.
@@ -384,7 +398,7 @@ mod tests {
     fn pending_count_tracks_decisions() {
         let mut state = DiffState::new("a\nb\n", "a\nB\n").unwrap();
         assert_eq!(state.pending_count(), 1);
-        state.set_focused_decision(Decision::Accepted);
+        state.decide_focused(Decision::Accepted);
         assert_eq!(state.pending_count(), 0);
         assert!(state.all_resolved());
     }

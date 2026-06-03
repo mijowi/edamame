@@ -100,6 +100,9 @@ impl App {
         // so the viewport reposition happens even if the user has
         // stopped pressing arrow keys.
         push(self.section_jump_deadline());
+        // Diff review: wake to auto-advance focus after the
+        // post-decision reveal window elapses.
+        push(self.diff_advance_deadline());
         earliest
     }
 }

@@ -53,8 +53,8 @@ impl DiffIntroModal {
         vec![
             Line::raw("The file on disk has changed. edamame will now enter diff mode, in which you can review and accept or reject changes."),
             Line::raw(""),
-            Line::raw("Deleted lines appear above in red and added lines below in green."),
-            Line::raw("The focused hunk is marked with > in the gutter."),
+            Line::raw("Deleted lines appear above in red and added lines below in green, with a checkbox between them to accept or reject the change."),
+            Line::raw("The focused hunk is highlighted; the others are dimmed."),
             Line::raw(""),
             Line::raw("Keybindings:"),
             Line::raw("  Next / previous hunk:  Tab / Shift-Tab"),

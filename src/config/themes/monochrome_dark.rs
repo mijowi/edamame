@@ -163,9 +163,18 @@ pub fn theme() -> Theme {
         // REVERSED + BOLD so the mode shift is visible without color.
         diff_add_line: Style::default().add_modifier(Modifier::REVERSED),
         diff_delete_line: Style::default().add_modifier(Modifier::REVERSED),
+        // Non-focused hunks dim instead of inverting, so the three
+        // tiers (context plain / unfocused dim / focused reversed)
+        // stay distinct without color.
+        diff_add_line_unfocused: Style::default().add_modifier(Modifier::DIM),
+        diff_delete_line_unfocused: Style::default().add_modifier(Modifier::DIM),
         diff_add_inline: Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
         diff_delete_inline: Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
-        diff_cursor_gutter: Style::default().add_modifier(Modifier::BOLD),
+        // No color: the checkbox label ("Accepted" / "Rejected") plus
+        // bold/dim distinguishes the decision states.
+        diff_decision_pending: Style::default().add_modifier(Modifier::DIM),
+        diff_decision_accepted: Style::default().add_modifier(Modifier::BOLD),
+        diff_decision_rejected: Style::default().add_modifier(Modifier::BOLD),
         status_mode_diff: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
         status_bar_diff: Style::default().add_modifier(Modifier::REVERSED),
         hint_bar_diff: Style::default().add_modifier(Modifier::REVERSED),
