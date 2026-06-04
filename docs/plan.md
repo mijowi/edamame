@@ -1467,7 +1467,16 @@ Force wrap long lines of code in a table cell so that the table structure is not
 
 Lazy loading for rendering (all modes — Markdown, diff, raw)
 
-Check dependency versions to see if we should bump them up
+Implement dependency update plan
+
+Refactor modal scrolling
+Check if we can/should abstract mouse logic for modals (buttons, scrolling) into a reusable component(s)
+
+Darken edamame bg slightly
+
+Review actions and determine if any new actions should be added to the command palette. 
+
+Use Ctrl with diff mode keybinds in order to facilitate editing during review
 
 ---
 
