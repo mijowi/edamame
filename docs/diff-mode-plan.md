@@ -102,7 +102,7 @@ pub trait FileWatcher: Send {
 
 - One impl today: `NotifyWatcher` wraps `notify::RecommendedWatcher`.
 - The watcher worker thread accumulates events for 200 ms of quiet, then reads the file from disk and pushes a single `AppEvent::FileChanged { path, contents }` onto the existing mpsc. Reading happens on the worker, never on the main loop.
-- A `paused: Arc<AtomicBool>` mirrors `read_paused`. The external-editor flow flips it true before suspend and false after re-entry, then drains queued `FileChanged` events. The reconciliation read is **performed by the watcher worker thread, not on the main thread.** After setting `paused = false`, the external-editor flow calls `FileWatcher::force_reconcile()`, which signals the watcher worker (via a dedicated `force_reconcile` channel or an `AtomicBool` the worker polls between events) to perform a one-shot disk read and push one fresh `FileChanged { path, contents }` onto the mpsc, bypassing the watcher's 200 ms debounce window and its event filtering. The main thread does not block on disk I/O — it returns to the event loop immediately and picks up the resulting `FileChanged` event like any other. The watcher worker stays the single owner of disk reads for this file. The reconciliation read bypasses the debounce because the debouncer's purpose is to coalesce rapid successive OS events, and a single forced read after resume has no rapid-fire concern. This matches the worker-thread model used for queued-event re-entry in §11.
+- A `paused: Arc<AtomicBool>` mirrors `read_paused`. The external-editor flow flips it true before suspend and false after re-entry, then drains queued `FileChanged` events. The reconciliation read is **performed by the watcher worker thread, not on the main thread.** After setting `paused = false`, the external-editor flow calls `FileWatcher::force_reconcile()`, which signals the watcher worker (via a dedicated `force_reconcile` channel or an `AtomicBool` the worker polls between events) to perform a one-shot disk read and push one fresh `FileChanged { path, contents }` onto the mpsc, bypassing the watcher's 200 ms debounce window and its event filtering. The main thread does not block on disk I/O — it returns to the event loop immediately and picks up the resulting `FileChanged` event like any other. The watcher worker stays the single owner of disk reads for this file. The reconciliation read bypasses the debounce because the debouncer's purpose is to coalesce rapid successive OS events, and a single forced read after resume has no rapid-fire concern. `force_reconcile()` serves only this external-editor resume flow — mid-review disk changes are folded in live (§11b), not via a forced re-read.
 - `notify::Event` variants other than `Modify` and `Create` are ignored. In particular, `Remove` events (file deletion) do not trigger diff mode — deleted-file handling is out of scope and will be addressed separately.
 - **Own-write filter (content-hash).** A timestamp-based filter is unreliable on slow filesystems (NFS, SSHFS) where write-then-inotify latency can exceed 500 ms and on fast ones where rapid successive saves overlap the window. Instead we keep a content hash of the last-observed-on-disk file in memory and compare incoming `FileChanged` payloads against it. Concretely:
   - `App` carries `last_disk_hash: Option<u64>`, computed via `seahash` (zero-dependency, very fast — sub-µs for typical markdown files).
@@ -122,18 +122,19 @@ The hash filter state lives on `App` (option a from review). `Action::Save` is h
 
 ```
 src/diff.rs                       # facade
-src/diff/engine.rs                # compute_hunks(old: &str, new: &str)
-src/diff/state.rs                 # DiffState
-src/diff/hunk.rs                  # Hunk, HunkKind, InlineSpan, Decision
-src/diff/history.rs               # DiffHistory: per-diff undo/redo stack
+src/diff/engine.rs                # compute(old, new, &mut ids) -> HunkComputation
+src/diff/state.rs                 # DiffState (+ CP3 DiffHistory placeholder)
+src/diff/hunk.rs                  # Hunk, HunkKind, InlineSpan, Decision, HunkId
+src/diff/layout.rs                # DiffVisualLine model + per-width row cache (§5)
+src/diff/history.rs               # DiffHistory: per-diff undo/redo stack (CP4+)
 ```
 
 ```rust
 /// Stable per-hunk identifier. Monotonically allocated from
-/// `DiffState::next_hunk_id` at `DiffState::new` (initial pass) and
-/// for every fresh hunk produced by post-edit recomputation
+/// `DiffState::ids` (a `HunkIdAllocator`) at `DiffState::new` (initial
+/// pass) and for every fresh hunk produced by post-edit recomputation
 /// (§6 rule 2). IDs are never reused.
-pub struct HunkId(u64);
+pub struct HunkId(pub u64);
 
 pub struct DiffState {
     pub old_rope: Rope,            // pre-change in-memory buffer
@@ -153,8 +154,9 @@ pub struct DiffState {
                                    //   (in Review it is positioned at
                                    //   the start of the focused hunk's
                                    //   new-side range but ignored for
-                                   //   rendering — the gutter focus
-                                   //   bar is the focus indicator)
+                                   //   rendering — focus is shown by the
+                                   //   focused/unfocused background
+                                   //   intensity, not a gutter, §5)
     pub hunks: Vec<Hunk>,          // recomputed after every mutation
     pub focused_id: HunkId,        // single source of truth for "which
                                    //   hunk is the user looking at"; an
@@ -162,7 +164,14 @@ pub struct DiffState {
                                    //   post-edit hunk-list reshapes
     pub decisions: Vec<Decision>,  // parallel to `hunks`; keyed by index
     pub history: DiffHistory,      // see §6
-    next_hunk_id: u64,             // monotonic allocator for HunkId
+    pub uneven_table_fallback: bool, // ≥1 table couldn't be row-split
+                                   //   (uneven cell counts, §3a) — drives
+                                   //   the entry hint
+    pub(crate) ids: HunkIdAllocator, // monotonic HunkId allocator
+    layout: RefCell<DiffLayoutCache>, // lazily-built flat visual-line
+                                   //   list + per-width row-count cache
+                                   //   (see §5, src/diff/layout.rs)
+    // CP5 adds: pub sub_mode: DiffSubMode (§4 sub-modes)
 }
 
 pub enum Decision { Pending, Accepted, Rejected }
@@ -176,17 +185,17 @@ pub struct Hunk {
 }
 ```
 
-`DiffState::resolved_rope()` walks `hunks` in order, picking the
-old-side or new-side line range per `decisions[i]`. It is only called
-when every decision is non-`Pending` — calling it with any `Pending`
-decisions is a programming error; the function `debug_assert!`s and
-returns `Err(DiffError::PendingDecisions)` in release so a misuse
-flashes a status hint instead of crashing the TUI. When every decision becomes
-non-`Pending`, a `DiffResolveConfirmModal` is shown (see §8). On
-confirmation, the App calls `resolved_rope()`, swaps the result
-into `editor.buffer`, clears `editor.diff`, replaces
-`editor.history` with a single merge-revert entry (see §6), and
-exits diff mode.
+`DiffState::resolved_rope(&self) -> Option<Rope>` walks `hunks` in
+order, picking the old-side or new-side line range per `decisions[i]`.
+It returns `None` when any decision is still `Pending` (rather than a
+typed error or a panic), so a misuse flashes a status hint instead of
+crashing the TUI; the resolution path treats `None` as "not yet
+resolvable" and bails. When every decision becomes non-`Pending`, a
+`DiffResolveConfirmModal` is shown (see §8). On confirmation, the App
+calls `resolved_rope()`, swaps the result into `editor.buffer` via
+`Buffer::set_rope`, clears `editor.diff`, and exits diff mode. CP3
+resets `editor.history` to empty; CP4 instead replaces it with a
+single merge-revert entry (see §6).
 
 **Public setters required.** This swap-in-place needs APIs that don't
 exist today; both are introduced as part of this work:
@@ -284,25 +293,45 @@ index points at different things:
   conventionally end in `\n`; revisit if no-trailing-newline files
   become a first-class input.
 
-A hunk's old-side or new-side line range intersects a `TableExtent`
-iff `hunk.lines.start < extent.end_line && extent.start_line <
-hunk.lines.end` (standard half-open overlap test).
+A hunk is row-split only when it is **fully contained** within a
+`TableExtent` on *both* sides — i.e. `extent.start_line <=
+hunk.lines.start && hunk.lines.end <= extent.end_line` for the
+old-side extent against `old_lines` and the new-side extent against
+`new_lines` (`engine::find_extent_idx`). Containment, not mere
+overlap, is required: `split_table_hunk` re-diffs the *whole* table
+extent, so a hunk that straddles the table boundary (also covering
+non-table lines above or below) would have its out-of-extent lines
+silently dropped from the row-diff output — losing a reviewable
+change and corrupting the merge. A straddling hunk therefore stays
+a single monolithic line-level hunk instead.
 
 This avoids the regex-based detector's false positives on
 code-block content and correctly handles edge cases (empty cells,
 escape sequences, alignment markers) that a hand-rolled regex
 would miss.
 
-When `compute_hunks` produces a `Replace`, `Insert`, or `Delete`
-hunk whose old-side and/or new-side line range intersects a
-detected `TableExtent` on the respective side, the hunk enters a
-sub-diff. Crucially the test is against the *full table extent*,
-not against the hunk's contents alone — so a hunk that only spans
-data rows (with the separator outside the hunk as context) still
-triggers row-level diffing.
+When `compute` produces a `Replace`, `Insert`, or `Delete` hunk
+that is contained (per the test above) in a `TableExtent` on both
+sides, the hunk enters a sub-diff. Because the row-diff runs over
+the *full table extent* (not just the hunk's lines), a hunk that
+only spans data rows — with the header / separator outside the hunk
+as context — still triggers row-level diffing of the whole table.
 
-1. Identify the contiguous old-side and new-side table-row ranges
-   within the hunk.
+**Tables that fragment across the diff.** Several contained hunks of
+one old-side table can map to *different* new-side extents when the
+table splits into two on the new side (a fresh header + separator
+appears mid-table, so the lower fragment parses as its own table).
+A single extent re-diff cannot represent two new tables, so such an
+old extent is detected (`engine`'s per-extent `NiMap::Conflict`
+pre-scan) and left un-split: its contained hunks pass through as
+line-level hunks rather than being silently dropped. Regression:
+`table_split_into_two_keeps_both_changes_reviewable`. A table that
+maps to exactly one new-side extent (`NiMap::One`) is row-split once
+and the other contained hunks for that extent are dropped, so its
+rows aren't emitted twice.
+
+1. Take the contiguous old-side and new-side table-row ranges of the
+   *whole containing extent* (not just the triggering hunk's lines).
 2. **Column-count guard (every row, both sides).** Scan every row
    on each side (header, separator, and all data rows) and tally
    cell counts. If *any* row's cell count differs from any other
@@ -320,7 +349,7 @@ triggers row-level diffing.
    user understands why this table was not row-diffed (otherwise
    the monolithic replace reads like a bug). If every row on both
    sides has the same cell count, proceed.
-3. Run `similar::TextDiff::from_lines` over just those rows.
+3. Run `similar::TextDiff::from_lines` over the extent's rows.
 4. Split the single `Replace` hunk into per-row hunks. **Maximum
    granularity is per-row, not per-cell** — sub-row cell-level diffing
    is deferred to Phase 2. **Neighboring changed rows are coalesced
@@ -860,9 +889,8 @@ pub struct DiffView<'a> {
     pub viewport_width: usize,
 }
 
-pub struct DiffViewState {
-    pub visual_lines: Vec<DiffVisualLine>,
-}
+pub struct DiffViewState {}   // empty: the flat visual-line list lives
+                              // on DiffState's layout cache (see below)
 ```
 
 `DiffView` borrows `&DiffState` (which carries `old_rope`,
@@ -870,8 +898,11 @@ pub struct DiffViewState {
 `sub_mode`) and `&Theme`. The `EditorView` dispatch passes these
 from `state.diff.as_ref().unwrap()` and `state.theme`. `DiffViewState`
 is stored on `EditorViewState` alongside the existing `PreviewState` /
-`RenderedViewState` / `RawViewState` and rebuilt after every hunk
-re-computation.
+`RenderedViewState` / `RawViewState`, but it is now **empty**: the flat
+visual-line list and the per-width row-count cache live on `DiffState`
+itself (`src/diff/layout.rs`, behind a `RefCell`), built once per
+layout version and shared by the renderer and the scroll arithmetic.
+See the visual-row model below.
 
 For each visible visual row, the widget emits a `Line<'static>` with:
 
@@ -920,23 +951,32 @@ pub enum DiffLineSource {
     Context,     // unchanged line, borrowed from new_rope
     OldDelete,   // delete-side line, borrowed from old_rope
     NewAdd,      // add-side line, borrowed from new_rope
+    Decision,    // synthetic divider carrying the accept/reject
+                 //   checkbox at the old/new boundary; no backing
+                 //   rope line (text derived from the live Decision)
 }
 ```
 
 The sequence is built by walking hunks in order. Between hunks,
 emit `Context` lines from `new_rope`. For each hunk, emit
-`OldDelete` lines (from `old_rope[hunk.old_lines]`), then `NewAdd`
-lines (from `new_rope[hunk.new_lines]`). For `HunkKind::Insert`
-there are no `OldDelete` lines; for `HunkKind::Delete` there are no
-`NewAdd` lines.
+`OldDelete` lines (from `old_rope[hunk.old_lines]`), the synthetic
+`Decision` divider, then `NewAdd` lines (from
+`new_rope[hunk.new_lines]`). For `HunkKind::Insert` there are no
+`OldDelete` lines; for `HunkKind::Delete` there are no `NewAdd`
+lines; the `Decision` divider is always emitted, so it lands below a
+delete-only hunk and above an insert-only one.
 
-`DiffView` renders the visible window of this sequence.
-`DiffViewState` caches the full sequence and rebuilds it after every
-hunk re-computation. The rebuild is `O(total lines in file)` — for
-typical markdown files this is negligible, but if profiling shows it
-matters (e.g. very large files with many hunks edited rapidly), a
-future optimization could lazily compute only the visible window
-plus a small margin, keyed off `scroll` and viewport height.
+`DiffView` renders the visible window of this sequence. The full
+sequence is **built once and cached on `DiffState`'s layout cache**
+(`src/diff/layout.rs`), not rebuilt per frame: the layout is
+invariant for a review (decisions and focus don't change the line set
+or its wrapping), so it is memoised behind a `RefCell` together with a
+small LRU of per-width row-count prefix sums that answer
+total-row / scroll-position queries in `O(1)` / `O(log N)`. A CP5 Edit
+that reshapes the hunk list calls `DiffState::invalidate_layout()` to
+force a rebuild. The build is `O(total lines in file)` — negligible
+for typical markdown files, and now paid at most once per (layout
+version, width) rather than every event-loop iteration.
 
 **Scroll reuse.** Diff mode reuses `EditorState.scroll` — the field
 is already documented as "scroll offset in visual rows for the active
@@ -1733,48 +1773,22 @@ overlay's display order.
 
 ## 11. File-change events while already in diff mode
 
-> **Superseded by §11b.** The deferred single-slot queue described below
-> was never implemented and is replaced by live decision-preserving
-> reconciliation (§11b): a `FileChanged` arriving mid-review is folded into
-> the existing `DiffState` immediately, carrying forward decisions on
-> unchanged hunks, rather than queued until after resolution. The text
-> below is retained for historical context.
+> **Superseded by §11b — see there for the shipped design.**
 
-Any `AppEvent::FileChanged` received while `editor.diff.is_some()`
-is queued (single-slot — newer overwrites older) on `App`. The queued
-event is a flag only (path, no cached contents — the contents on the
-incoming event are dropped because they may be stale by the time the
-user finishes the review). After diff resolution completes, if a
-queued flag exists, the App calls `FileWatcher::force_reconcile()`
-(the same primitive used in the external-editor flow, §2). The
-**watcher worker thread** performs the disk read off the main thread
-and pushes a fresh `AppEvent::FileChanged { path, contents }` onto
-the mpsc, which the event-loop arm picks up like any other change
-event. This keeps the potentially slow disk read out of the UI
-thread and reuses the same code path the watcher uses for organic
-events. The newly-arrived event is diffed
-against the just-merged buffer, and:
+This section originally specified a *deferred single-slot queue*: a
+`FileChanged` arriving while `editor.diff.is_some()` would be recorded
+as a flag (contents dropped as potentially stale), and only after the
+user finished the current review would the App call
+`FileWatcher::force_reconcile()` to re-read disk and re-enter the
+diff flow. That mechanism was never implemented and is rejected: it
+forces the user to finish reviewing a now-stale diff and then
+re-review from scratch.
 
-- If hunks are **non-empty**, re-enters through the same path as the
-  initial file-change (post-§11a): if the buffer is dirty (per the
-  conditional rule in §6 — typically true after a mixed-decision
-  resolution but not when every hunk was accepted with no edits), show
-  `DirtyConflictModal`; if clean, enter diff mode directly. (This
-  clean → enter-diff behavior is exactly the correction §11a applies to
-  the initial-change path, so the two are now consistent.)
-- If hunks are **empty** (disk now matches the merged buffer
-  byte-for-byte), the queued event is dropped and the app remains in
-  normal editing mode. No modal, no flash — this is the common
-  "user accepted everything from disk, watcher echoed our own save"
-  case, and even with the own-write filter (§2) a delayed external
-  echo can still hit this path. Silent is correct.
-
-If the fresh disk read fails (file deleted or moved between queue
-time and resolution time), the queued event is silently dropped —
-deleted-file handling is out of scope (§2).
-
-This prevents a "diff mode forever" loop while still picking up
-further changes.
+§11b replaces it with **live decision-preserving reconciliation** — a
+mid-review `FileChanged` is folded into the existing `DiffState`
+immediately, carrying forward decisions on unchanged hunks. The
+`force_reconcile()` watcher primitive survives, but only for the
+external-editor resume flow (§2), not for any in-diff deferral.
 
 ## 11a. Correction — clean buffers must enter diff review, not silently reload
 
@@ -2218,7 +2232,7 @@ external-editor flow (§2) — only the in-diff deferral is removed.
 
 - `Cargo.toml` — add `seahash` for the own-write content-hash filter (§2)
 - `src/app.rs` — `AppEvent::FileChanged`, `watcher` field, `diff_paused` flag, `last_disk_hash: Option<u64>` field (§2). *(No queued-event single-slot field — §11b reconciles mid-review changes in place rather than queuing them.)*
-- `src/app/event_loop.rs` — file-change arm; own-write filter (drop incoming `FileChanged` when `seahash(contents) == last_disk_hash`, otherwise stamp the new hash before dispatching); watcher pause/resume + `force_reconcile()` call in external-editor flow and in the post-resolution queued-event re-entry (§11); deadline integration
+- `src/app/event_loop.rs` — file-change arm; own-write filter (drop incoming `FileChanged` when `seahash(contents) == last_disk_hash`, otherwise stamp the new hash before dispatching); watcher pause/resume + `force_reconcile()` call in the external-editor flow (the only `force_reconcile` caller — mid-review changes reconcile live per §11b, not via re-entry); deadline integration
 - `src/app/actions.rs` — rename `dispatch_palette_action` → `dispatch_action` (unified dispatcher used by both keystroke arm in `App::run` and palette path); new `App::save_buffer()` helper (the single call site for `Buffer::save_file()`); `App::handle_app_action` gains an `Action::Save` arm that routes through it; `dispatch_action` gets the `Mode::Diff` dispatch arm wrapping `edit_ops::apply` (§10); `set_disk_hash(bytes)` helper called from save / initial load / accepted FileChanged (§2)
 - `src/app/run.rs` (or wherever `App::run`'s keystroke arm lives) — collapse the inlined `handle_app_action` + `edit_ops::apply` flow to a single `self.dispatch_action(action, doc_height, doc_width)` call
 - `src/app/autosave.rs` — early-return when in diff mode; routes saves through `App::save_buffer()` instead of dispatching `Action::Save` via `edit_ops::apply`
@@ -2264,9 +2278,20 @@ external-editor flow (§2) — only the in-diff deferral is removed.
 
 ## 14. Implementation checkpoints
 
-Phase 1 is broken into five checkpoints. At each boundary, all tests
+Phase 1 is broken into six checkpoints. At each boundary, all tests
 pass and the app builds and runs. Each checkpoint is a self-contained
 PR-sized unit.
+
+**Current status.** CP1, CP2, CP3, and CP6 are shipped; **CP4 and CP5
+are not yet implemented.** The checkpoints are therefore out of
+execution order: CP6 (the §11a clean-buffer correction) depends only
+on CP3 and landed before CP4/CP5. What ships today is the full Review
+flow (decide / accept-all / reject-all / resolve), raw stacked
+rendering with the layout cache, the clean-and-dirty entry paths, and
+the quit-confirm guard — but **no in-diff undo/redo (CP4), no live
+mid-review reconciliation (§11b / CP4), and no Edit sub-mode (CP5).**
+`DiffHistory` / `DiffOp` exist only as CP3 placeholders, and
+`Action::Undo` / `Action::Redo` are no-ops in diff mode.
 
 ### Checkpoint 1 — Dispatcher unification + Save hoist (no watcher, no diff) ✅ DONE
 
@@ -2313,7 +2338,7 @@ PR-sized unit.
 **Modified files:** `Cargo.toml` (add `similar`), `src/editor/mode.rs` (`Mode::Diff`), `src/editor/state.rs` (`diff: Option<DiffState>`, enter/exit helpers), `src/config/keymap.rs` (new `Action` variants + default binds), `src/config/theme.rs` (diff style slots), `src/config/sections.rs` (`show_diff_intro`), `src/ui/editor_view.rs` (dispatch to `DiffView`), `src/ui/status_bar.rs` (`DIFF` badge + colored bar), `src/ui/bottom_region.rs` (`Mode::Diff` hint set), `src/ui/settings_overlay/rows.rs` (`show_diff_intro` toggle), `src/ui/keybinds_overlay/categories.rs` ("Diff Review" section), `src/app/autosave.rs` (early-return in diff mode), `src/input/mode_handler/default.rs` (diff-mode action dispatch, Save flash)
 
 **Scope:**
-- `compute_hunks` engine with line-level + inline word-level diff, including row-level table sub-diff (§3, §3a).
+- `compute` engine with line-level + inline word-level diff, including row-level table sub-diff (§3, §3a).
 - `DiffState` (without `DiffHistory` — the `history` field is
   `DiffHistory { past: vec![], future: vec![] }` and `record()` is
   never called in CP3. `Action::Undo` / `Action::Redo` in diff mode
@@ -2338,8 +2363,9 @@ PR-sized unit.
 - `Action::Esc` in diff Review wires straight to `Action::DiffExit` (via `diff_review_handle`).  `DiffExit` is gated on full resolution: a no-op (plus an info flash) while any hunk is still pending, or the `DiffResolveConfirmModal` once everything is decided (§8/§9).  Diff mode therefore can't be left via `Esc` until the review is complete; `Quit` (`Ctrl+Q`) is the abandon-everything path and now warns first via `DiffQuitConfirmModal` (§10) before discarding the review and quitting.  A dedicated `DiffExitConfirmModal` (deliberate-discard for the *pending* case, without quitting the app) remains deferred.
 - The diff-Review hint row in the bottom bar uses hard-coded chord labels (`Tab`, `y`, `n`, etc.) rather than `chords_from(keymap, ...)`.  This mirrors the hard-coded `diff_review_handle` mapping — when CP5 moves both to a layered keymap, both will switch to the keymap-driven helpers at the same time.
 - `EditorState::exit_diff_mode` returns the editor to `Mode::Rendered` rather than restoring the pre-diff mode.  In CP3 this is safe because the only entry path is from `DirtyConflictModal::[Merge]`, and the user typically wants to return to editing after resolving.  If a future path enters diff mode from Preview / Raw, this should be revisited.
+- Several files shipped in CP3 that the lists above omit: `src/diff/layout.rs` (new — the `DiffVisualLine` model + per-width row-count cache on `DiffState`, the "Possible Improvements" memoisation item brought forward), `src/app/diff_advance.rs` (new — the deferred post-decision focus advance, so a resolved checkbox is visible before focus jumps), `src/document/buffer.rs` (`Buffer::set_rope`, used by the resolution swap — §3 attributes this to §6 but it was needed in CP3), `src/app/actions.rs` (`dispatch_diff_action`, resolution path), `src/app/file_changed.rs` (wire `[Merge]` → `enter_diff_mode`), and `EditorState::pre_diff_scroll` / `pending_focus_scroll` fields on `src/editor/state.rs`.
 
-### Checkpoint 4 — Decision undo/redo + Esc handling + event queue
+### Checkpoint 4 — Decision undo/redo + Esc handling + live reconciliation (§11b)
 
 **New files:** `src/diff/history.rs`, `src/app/modal/diff_exit_confirm.rs`, `tests/diff_history.rs`
 
