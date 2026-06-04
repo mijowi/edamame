@@ -1916,8 +1916,8 @@ out of scope here; the default must remain "always review."
 
 ## 11b. Correction — live decision-preserving reconciliation while in diff mode (supersedes §11)
 
-**Status: planned (target: Checkpoint 5).** Supersedes §11's deferred-queue
-design and the wholesale-reset behavior that ships today.
+**Status: ✅ implemented (CP5).** Supersedes §11's deferred-queue
+design and the wholesale-reset behavior that previously shipped.
 
 ### The problem
 
@@ -2062,9 +2062,16 @@ Two new reusable helpers:
 
 - `match_by_old_overlap(hunk, priors: &[Hunk]) -> Option<usize>` in
   `src/diff/engine.rs` — the §6 rule-2 overlap match (largest old-side
-  overlap; ties → smallest `old_lines.start`; `None` on zero overlap).
-  First concrete implementation of the §6 matching primitive; CP6's
-  post-edit recompute calls the same function.
+  overlap; ties → smallest `old_lines.start`). First concrete
+  implementation of the §6 matching primitive; CP6's post-edit recompute
+  calls the same function. **Insert hunks** have an empty old-side range,
+  so they can't be matched by overlap length; they are instead anchored
+  by their insertion *position* (a candidate Insert matches a prior
+  Insert at the same old-side line). Without this, an accepted/rejected
+  pure insertion would lose its decision on every subsequent external
+  write — the common AI-collaboration case — which was observed in
+  testing and fixed (regression: `reconcile_preserves_accepted_insertion`,
+  `match_by_old_overlap_anchors_inserts_by_position`).
 - `hunk_new_side_text(hunk, rope) -> String` (or a borrowed slice) — the
   hunk's new-side lines from a rope. A `Delete` hunk (empty new-side
   range) yields `""`.
@@ -2156,6 +2163,27 @@ before dispatch, matching the existing stamp-before-dispatch pattern in
   carried decisions keep `resolved` high, reset hunks lower it, so the
   user sees the count tick backward by exactly the number of hunks the
   external write disturbed — an honest signal.
+- **Adjacent-insertion merge resets the decision (safe-but-coarse).**
+  Decisions are per-hunk. If the user accepts an insertion and the
+  external write then adds content on a line *immediately adjacent* to
+  it (no unchanged line between), the line-diff coalesces both into one
+  Insert hunk whose new-side text now includes the unreviewed addition.
+  The new-side-text gate therefore resets it to `Pending` — correctly,
+  since carrying the accept forward would silently accept content the
+  user never saw. The boundary is exact: an insertion separated from the
+  accepted one by **any** unchanged line (above or below) keeps its
+  decision; only directly-touching insertions merge and reset. In
+  markdown this is narrow — paragraphs, list items, and headings are
+  blank-line-separated (the blank line is unchanged context), so the
+  merge bites only on tightly-packed lines (consecutive code-block lines,
+  un-spaced list items). Preserving a partial accept across a merge would
+  require **sub-hunk (per-line) decision granularity**, which ripples
+  through resolution, rendering, navigation, and accept/reject semantics
+  and partly undercuts the "re-review changed content" guarantee — out of
+  scope for Phase 1; revisit alongside the §16 Phase-2 hunk-granularity
+  work if it proves worthwhile. (Pure insertions that land *elsewhere*
+  are preserved — see the insert-anchor matching in `match_by_old_overlap`
+  and the `reconcile_preserves_accepted_insertion` regression.)
 
 ### Tests
 
@@ -2296,17 +2324,17 @@ Phase 1 is broken into six checkpoints. At each boundary, all tests
 pass and the app builds and runs. Each checkpoint is a self-contained
 PR-sized unit.
 
-**Current status.** CP1, CP2, CP3, CP4, and the §11a clean-buffer
-correction are shipped; **CP5 and CP6 are not yet implemented.** The
+**Current status.** CP1, CP2, CP3, CP4, CP5, and the §11a clean-buffer
+correction are shipped; **CP6 is not yet implemented.** The
 §11a correction was originally scheduled as a trailing "CP6"; it
 depends only on CP3 and landed early, so it is no longer tracked as a
 numbered checkpoint (see §11a). What ships today is the full Review
 flow (decide / accept-all / reject-all / resolve), raw stacked
 rendering with the layout cache, the clean-and-dirty entry paths, the
 quit-confirm guard, the accept-all/reject-all confirmation gate (CP4),
-and the single merge-revert undo entry written on diff exit (CP4) — but
-**no live mid-review reconciliation (§11b / CP5), and no Edit sub-mode
-(CP6).**
+the single merge-revert undo entry written on diff exit (CP4), and
+live decision-preserving mid-review reconciliation (§11b / CP5) — but
+**no Edit sub-mode (CP6).**
 Decisions are deliberately **not** undoable in Review — a mis-press is
 recovered by navigating back (`Tab` / `Shift-Tab`) and re-deciding, or
 via `DiffResetHunk`. The one bulk action that navigation can't recover
@@ -2412,7 +2440,7 @@ are no-ops in Review.
 - **`DiffBulkConfirmModal` defaults focus to `[Yes]`** (index 0), matching `DiffResolveConfirmModal`'s "default to the action" convention: the user explicitly pressed accept-all / reject-all, so confirming is one Enter; an accidental flip is still caught by `Esc` / `[No]`. The modal is `ModalKind::Warning` (it overrides prior decisions). It carries the `Decision` to apply and renders an accept- vs reject-specific prompt.
 - **Double-push guard added.** `open_diff_bulk_confirm` is a no-op when a `DiffBulkConfirmModal` is already on the stack (mirrors the `DiffQuitConfirmModal` guard), so a held / repeated `Shift-Y` can't stack duplicates.
 
-### Checkpoint 5 — Live mid-review reconciliation (§11b)
+### Checkpoint 5 — Live mid-review reconciliation (§11b) ✅ DONE
 
 **New files:** *(none)*
 
@@ -2429,6 +2457,14 @@ are no-ops in Review.
 
 **Verifiable live:** while reviewing, edit the file again in another editor / have an agent rewrite it — the diff recomputes in place, decisions on unchanged hunks survive, and only the newly-changed hunks reset to pending.
 
+**CP5 deviations from the plan as written:**
+- **Reconciliation tests live in `src/app/file_changed.rs` `#[cfg(test)]`, not `tests/diff_view.rs`.** `tests/diff_view.rs` is an integration test importing only the public `edamame::` API, while the `handle_file_changed`-driven flow depends on the crate-private `app::test_utils::make_app` (same constraint noted for CP2/CP4). So `external_change_in_diff_preserves_decisions` and `external_revert_in_diff_exits_diff` are unit tests alongside the other `file_changed` tests; the pure `reconcile_*` cases and `match_by_old_overlap` are unit tests in `src/diff/state.rs` / `src/diff/engine.rs`.
+- **No `DiffHistory` clear in `reconcile_with_disk`.** The §11b code snippet ends with `self.history = DiffHistory::default()`, but `DiffHistory` and the `DiffState::history` field were fully removed in CP4 (decision undo was dropped) and don't return until CP6. CP5 therefore has nothing to clear — the method only calls `invalidate_layout()`. A comment marks where CP6 must reinstate the history clear.
+- **`hunk_new_side_text` lives in `src/diff/engine.rs`** (the plan offered `state`/`layout` as alternatives) next to `match_by_old_overlap`, since both are the shared §6 matching primitive.
+- **The diff-mode branch is numbered "filter 2" in `handle_file_changed`** (inserted between the own-write filter and the former buffer-vs-disk filter, which shifts to "3"); the module doc-comment decision tree was renumbered to match. Functionally identical to "before filter 2" as the plan specified.
+- **`reconcile_diff_with_disk` sets `self.needs_draw = true`** after dispatching (the plan snippet omitted it), matching `enter_diff_mode`'s convention so the reconcile repaints without waiting for a keypress.
+- **`reentering_diff_mode_does_not_stack_a_second_intro_modal` was left unchanged** rather than "repurposed": it already drives `enter_diff_mode` directly (not via `handle_file_changed`), so it was already a pure unit test of the modal guard. The realistic `handle_file_changed`-driven preservation test was added separately as planned.
+
 ### Checkpoint 6 — Edit sub-mode + clamped editing + Edit undo
 
 **New files:** `src/diff/history.rs` (`DiffHistory` / `DiffOp::Edit`, word-group merging — the file declared in §3; created here, since decision undo was dropped from CP4), `tests/diff_history.rs`
@@ -2443,6 +2479,7 @@ are no-ops in Review.
 - Boundary-crossing delete no-ops (`Backspace` at start, `Delete` at end) with status flash.
 - Newline insertion expands the focused hunk downward.
 - Hunk re-computation with `HunkId` stability: focused hunk preserved by construction, others matched by old-side range (§6). Reuses the `match_by_old_overlap` primitive landed in CP5.
+  - **Efficiency note — `hunk_new_side_text`.** The CP5 reconcile reuses `engine::hunk_new_side_text` (carry-vs-reset gate), and the CP6 post-edit recompute will call it on *every keystroke* to re-establish per-hunk new-side identity. Its current form does one transient heap allocation per line (`rope.line(idx).to_string()` into `out`). That's negligible at reconcile cadence (external write only) but becomes a per-frame cost in Edit. When wiring the recompute, switch it to the allocation-free `for chunk in rope.line(idx).chunks() { out.push_str(chunk); }` form — `RopeSlice::chunks()` yields `&str` segments straight into `out`, no intermediate `String`. Also consider whether the recompute needs to re-derive the whole new-side text at all, or can diff against the focused hunk's known range incrementally.
 - `DiffHistory` + `DiffOp::Edit { delta: EditDelta }` with word-group merging (§6). This is the first time `DiffHistory` exists for real — it records Edit-text ops only, never decisions.
 - Undo/Redo diff-mode dispatch (Edit sub-mode only): Edit undo applies the inverse delta + recomputes hunks (§4a, §6). Review decisions remain non-undoable.
 - `DIFF·EDIT` status badge, Edit hint set.

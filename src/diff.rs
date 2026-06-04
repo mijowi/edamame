@@ -20,4 +20,4 @@ pub use engine::{compute, HunkIdAllocator};
 pub use hunk::{Decision, Hunk, HunkId, HunkKind, InlineSide, InlineSpan};
 #[allow(unused_imports)]
 pub use layout::{DiffLineSource, DiffVisualLine};
-pub use state::DiffState;
+pub use state::{DiffState, ReconcileOutcome};

@@ -8,13 +8,20 @@
 //!    [`App::last_disk_hash`], the bytes are byte-identical to what
 //!    we last observed on disk — either our own save echo or a
 //!    no-op write by an external tool.  Drop silently.
-//! 2. **No-diff short-circuit.**  If disk bytes equal the live
+//! 2. **Already-reviewing reconcile.**  If a diff review is already
+//!    open, fold the new disk state into it in place via
+//!    `App::reconcile_diff_with_disk`, preserving decisions on
+//!    untouched hunks (§11b).  This precedes the no-diff short-circuit
+//!    because in diff mode the buffer is the pre-diff original, so
+//!    "disk == buffer" there means "all changes reverted" (exit diff),
+//!    not "no-op".
+//! 3. **No-diff short-circuit.**  If disk bytes equal the live
 //!    buffer bytes, no diff would be produced — silently stamp
 //!    `last_disk_hash` and return.  (This is the common "external
 //!    tool re-saved the file unchanged" case; doing this before the
 //!    stamp step below avoids hashing the same bytes twice when
 //!    they also happen to match the buffer.)
-//! 3. **Stamp & dispatch.**  Update `last_disk_hash` to the
+//! 4. **Stamp & dispatch.**  Update `last_disk_hash` to the
 //!    incoming bytes so any further echoes of the same content are
 //!    filtered out, then route to one of:
 //!    - Clean buffer → enter diff review directly (never silent
@@ -31,7 +38,7 @@
 //! external change: the whole point of diff mode is that the user
 //! sees every change before it replaces what they are looking at.
 //! The only events that bypass review are genuine no-ops (filters 1
-//! and 2 above), where disk has nothing new to show.
+//! and 3 above), where disk has nothing new to show.
 //!
 //! Read errors from the worker (non-UTF-8 contents, file deleted
 //! between event and read, permission denied) are surfaced through
@@ -39,9 +46,11 @@
 //! user otherwise has no signal that their external-edit prompts
 //! have stopped firing for this file.
 
+use crate::diff::ReconcileOutcome;
 use crate::ui::ModalKind;
 use crate::watcher::{WatchedChange, WatchedEvent};
 
+use super::flash::MessageKind;
 use super::modal::dirty_conflict_discard_confirm::DirtyConflictDiscardConfirmModal;
 use super::modal::dirty_conflict_save_copy::DirtyConflictSaveCopyModal;
 use super::modal::DirtyConflictModal;
@@ -89,7 +98,20 @@ impl App {
             return;
         }
 
-        // 2. Buffer-vs-disk short-circuit: no diff would be
+        // 2. Already reviewing: fold the new disk state into the live
+        //    review, preserving decisions on hunks the write didn't
+        //    touch (§11b).  This must precede the buffer-vs-disk filter
+        //    below — in diff mode `editor.buffer` is the pre-diff
+        //    original (== `old_rope`), so that filter's "disk == buffer"
+        //    actually means "all changes reverted", which here means
+        //    "collapse the review and exit", not "no-op".
+        if self.editor.diff.is_some() {
+            self.last_disk_hash = Some(incoming_hash); // stamp-before-dispatch
+            self.reconcile_diff_with_disk(change.contents);
+            return;
+        }
+
+        // 3. Buffer-vs-disk short-circuit: no diff would be
         //    produced.  Stamp and return — done before step 3 so
         //    the dirty-conflict modal is not opened for
         //    byte-identical state.
@@ -100,12 +122,12 @@ impl App {
             return;
         }
 
-        // 3a. Stamp before dispatching the change so any further
+        // 4a. Stamp before dispatching the change so any further
         //     echoes that overlap modal-open time are filtered out.
         //     Re-use the hash we already computed above.
         self.last_disk_hash = Some(incoming_hash);
 
-        // 3b. Dispatch.
+        // 4b. Dispatch.
         if self.editor.dirty {
             // If the user is already mid-flow on a prior conflict —
             // i.e. they've opened the [Save a copy] or [Discard &
@@ -154,6 +176,49 @@ impl App {
             // are looking at.  See §11a of the diff-mode plan.
             self.enter_diff_mode(change.contents);
         }
+    }
+
+    /// Fold a mid-review external write into the open diff in place
+    /// (§11b) rather than wholesale-resetting the review.  Decisions on
+    /// hunks the write did not touch are carried forward; hunks whose
+    /// new-side target changed reset to `Pending`; vanished hunks drop
+    /// their decisions.  When the write reverts every change (disk ==
+    /// `old_rope`), the review collapses and diff mode exits.
+    ///
+    /// Never calls `enter_diff_mode`, so no `DiffIntroModal` is pushed
+    /// (we are already in diff).  The own-write hash is stamped by the
+    /// caller before dispatch, matching the rest of `handle_file_changed`.
+    fn reconcile_diff_with_disk(&mut self, new_disk: String) {
+        let outcome = self
+            .editor
+            .diff
+            .as_mut()
+            .expect("guarded by diff.is_some()")
+            .reconcile_with_disk(&new_disk);
+        match outcome {
+            ReconcileOutcome::StillReviewing { reset } => {
+                // Re-center on the focused hunk next frame, when the run
+                // loop knows the viewport height.
+                self.editor.pending_focus_scroll = true;
+                self.flash(
+                    if reset > 0 {
+                        "File changed on disk — updated hunks reset for review"
+                    } else {
+                        "File changed on disk — review updated"
+                    },
+                    MessageKind::Info,
+                );
+            }
+            ReconcileOutcome::NoChangesRemain => {
+                // Restores pre_diff_scroll and clears `diff`.
+                self.editor.exit_diff_mode();
+                self.flash(
+                    "On-disk changes reverted — nothing to review",
+                    MessageKind::Info,
+                );
+            }
+        }
+        self.needs_draw = true;
     }
 
     /// Replace the in-memory buffer contents with the bytes from
@@ -337,6 +402,57 @@ mod tests {
             app.last_disk_hash,
             Some(seahash::hash(buffer_text.as_bytes()))
         );
+    }
+
+    #[test]
+    fn external_change_in_diff_preserves_decisions() {
+        use crate::diff::Decision;
+        // Clean buffer with two changeable regions.  First external
+        // write enters diff (two hunks: line 1 b→B, line 3 d→D).
+        let (mut app, tmp) = app_with_temp_file("a\nb\nc\nd\ne\n");
+        app.handle_file_changed(file_changed_event(
+            tmp.path().to_path_buf(),
+            "a\nB\nc\nD\ne\n",
+        ));
+        assert!(app.editor.diff.is_some(), "first change enters diff");
+        let diff = app.editor.diff.as_ref().unwrap();
+        assert_eq!(diff.hunks.len(), 2);
+        let h0_id = diff.hunks[0].id;
+        // Accept the first hunk.
+        app.editor.diff.as_mut().unwrap().decisions[0] = Decision::Accepted;
+        app.transient = None;
+
+        // Second external write touches only the second region (D → DD).
+        app.handle_file_changed(file_changed_event(
+            tmp.path().to_path_buf(),
+            "a\nB\nc\nDD\ne\n",
+        ));
+
+        // Still reviewing — not wholesale-reset.
+        assert!(app.editor.diff.is_some());
+        assert_eq!(app.editor.mode, crate::editor::Mode::Diff);
+        let diff = app.editor.diff.as_ref().unwrap();
+        // h0 survived with its id and its Accepted decision intact.
+        let h0 = diff.hunks.iter().position(|h| h.id == h0_id).expect("h0");
+        assert_eq!(diff.decisions[h0], Decision::Accepted);
+        // A reconcile flash was recorded.
+        assert!(app.transient.is_some(), "reconcile records a flash");
+    }
+
+    #[test]
+    fn external_revert_in_diff_exits_diff() {
+        // Enter diff, then an external write reverts disk back to the
+        // original buffer contents → the review collapses and exits.
+        let (mut app, tmp) = app_with_temp_file("a\nb\n");
+        app.handle_file_changed(file_changed_event(tmp.path().to_path_buf(), "a\nB\n"));
+        assert!(app.editor.diff.is_some(), "first change enters diff");
+
+        app.handle_file_changed(file_changed_event(tmp.path().to_path_buf(), "a\nb\n"));
+
+        assert!(app.editor.diff.is_none(), "revert exits diff mode");
+        assert_ne!(app.editor.mode, crate::editor::Mode::Diff);
+        // The buffer was never overwritten during the review.
+        assert_eq!(app.editor.buffer.contents(), "a\nb\n");
     }
 
     #[test]

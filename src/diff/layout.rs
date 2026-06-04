@@ -225,7 +225,6 @@ impl DiffState {
     /// Drop the cached layout so the next query rebuilds it.  Called
     /// after any reshape of the hunk list (e.g. a reconcile, or a
     /// future Edit mode); a cheap safety valve while the list is fixed.
-    #[allow(dead_code)]
     pub fn invalidate_layout(&self) {
         let mut cache = self.layout.borrow_mut();
         cache.lines = None;

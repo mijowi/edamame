@@ -17,9 +17,23 @@ use ropey::Rope;
 
 use crate::document::{Buffer, Cursor};
 
-use super::engine::{compute, pending_decisions, HunkIdAllocator};
+use super::engine::{
+    compute, hunk_new_side_text, match_by_old_overlap, pending_decisions, HunkIdAllocator,
+};
 use super::hunk::{Decision, Hunk, HunkId};
 use super::layout::DiffLayoutCache;
+
+/// Outcome of [`DiffState::reconcile_with_disk`] (§11b).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconcileOutcome {
+    /// Hunks remain; the user is still reviewing.  `reset` counts hunks
+    /// whose decision was dropped back to `Pending` because their
+    /// new-side target changed (drives the flash wording).
+    StillReviewing { reset: usize },
+    /// The recompute yielded no hunks (every change reverted, so the
+    /// new disk contents match `old_rope`).  The caller exits diff mode.
+    NoChangesRemain,
+}
 
 /// Lifecycle: see `EditorState::enter_diff_mode`.  Created with
 /// `DiffState::new(old, new)`, owned by `EditorState::diff` for the
@@ -52,10 +66,10 @@ pub struct DiffState {
     pub focused_id: HunkId,
     /// Monotonic id allocator — kept on the state so a follow-up
     /// recompute can mint fresh ids without colliding with
-    /// previously-issued ones.  Currently unused; preserved so the
-    /// recompute path won't need to re-thread the allocator through
-    /// every call site.
-    #[allow(dead_code)]
+    /// previously-issued ones.  Used by
+    /// [`Self::reconcile_with_disk`] when a mid-review external write
+    /// is folded in (§11b); id stability across the recompute is then
+    /// achieved by old-side overlap matching.
     pub(crate) ids: HunkIdAllocator,
     /// True when at least one table couldn't be row-diffed because its
     /// rows had uneven cell counts, so its change is surfaced as the
@@ -117,6 +131,107 @@ impl DiffState {
     /// the prior hunk).
     pub fn focused_idx(&self) -> Option<usize> {
         self.hunks.iter().position(|h| h.id == self.focused_id)
+    }
+
+    /// The id of the first still-`Pending` hunk in document order, if
+    /// any.  Used by [`Self::reconcile_with_disk`] to land focus on
+    /// something needing attention when the previously-focused hunk
+    /// vanished in a recompute.
+    pub fn first_pending_id(&self) -> Option<HunkId> {
+        self.hunks
+            .iter()
+            .zip(self.decisions.iter())
+            .find(|(_, d)| **d == Decision::Pending)
+            .map(|(h, _)| h.id)
+    }
+
+    /// Fold a fresh on-disk write into the live review **in place**
+    /// (§11b), preserving every decision the user already made on hunks
+    /// the write did not touch.
+    ///
+    /// `old_rope` is invariant for the life of the review, so the diff
+    /// is recomputed against the *new* disk contents and each new hunk
+    /// is matched to a prior one by old-side overlap
+    /// ([`match_by_old_overlap`]).  A matched hunk carries its prior
+    /// decision forward **only when its new-side text is byte-identical
+    /// to what the user already reviewed** — an external write that
+    /// changed the new side resets that hunk to `Pending`, because the
+    /// user never saw the now-different change.  Hunks that no longer
+    /// exist (the write reverted that region to `old_rope`) silently
+    /// drop their decisions.
+    ///
+    /// Returns [`ReconcileOutcome::NoChangesRemain`] when the recompute
+    /// yields no hunks (every change reverted) so the caller can exit
+    /// diff mode; otherwise [`ReconcileOutcome::StillReviewing`] carrying
+    /// the count of hunks reset for re-review.
+    ///
+    /// **`NoChangesRemain` leaves `self` in a half-cleared, invalid state**
+    /// (`hunks` / `decisions` already taken and not restored).  The only
+    /// valid response is to drop the `DiffState` / exit diff mode — never
+    /// keep reviewing after this outcome.
+    pub fn reconcile_with_disk(&mut self, new_disk: &str) -> ReconcileOutcome {
+        // Snapshot prior state before we overwrite anything.
+        let prior_hunks = std::mem::take(&mut self.hunks);
+        let prior_decisions = std::mem::take(&mut self.decisions);
+        let prior_new_rope = self.new_buffer.rope().clone();
+        let prior_focused = self.focused_id;
+
+        let old = self.old_rope.to_string();
+        let computation = compute(&old, new_disk, &mut self.ids);
+        let mut hunks = computation.hunks;
+        if hunks.is_empty() {
+            return ReconcileOutcome::NoChangesRemain;
+        }
+        let new_rope = Rope::from_str(new_disk);
+
+        let mut decisions = vec![Decision::Pending; hunks.len()];
+        let mut reset = 0usize;
+        // A prior hunk may be adopted by at most one new hunk: old-side
+        // boundaries shift when the new side changes, so a prior spanning
+        // several old lines can split into two new hunks that both overlap
+        // it.  Without this guard both would inherit the prior's id,
+        // breaking the unique-id invariant (and id-based focus nav).  The
+        // earliest (document-order) new hunk wins the prior's id and
+        // decision; any later claimant keeps its fresh id and stays Pending.
+        let mut claimed = vec![false; prior_hunks.len()];
+        for (i, h) in hunks.iter_mut().enumerate() {
+            // §6 rule-2 overlap match against the prior hunk list.
+            let Some(p) = match_by_old_overlap(h, &prior_hunks) else {
+                continue;
+            };
+            if claimed[p] {
+                continue; // prior already adopted → keep this hunk's fresh id, Pending
+            }
+            claimed[p] = true;
+            h.id = prior_hunks[p].id; // inherit the stable id
+            let same_new = hunk_new_side_text(h, &new_rope)
+                == hunk_new_side_text(&prior_hunks[p], &prior_new_rope);
+            if same_new {
+                decisions[i] = prior_decisions[p]; // carry the decision
+            } else if prior_decisions[p] != Decision::Pending {
+                reset += 1; // changed target → re-review
+            }
+        }
+
+        self.new_buffer.set_rope(new_rope);
+        self.hunks = hunks;
+        self.decisions = decisions;
+        self.uneven_table_fallback = computation.uneven_table_fallback;
+
+        // Keep focus if it survived; else the first pending hunk; else
+        // the first hunk.
+        self.focused_id = if self.hunks.iter().any(|h| h.id == prior_focused) {
+            prior_focused
+        } else {
+            self.first_pending_id().unwrap_or(self.hunks[0].id)
+        };
+
+        // The external reshape invalidates the cached layout.  (There is
+        // no in-diff undo history to clear in CP5 — decision undo was
+        // never implemented; the Edit-text `DiffHistory` arrives in CP6,
+        // and `reconcile_with_disk` will then clear it here.)
+        self.invalidate_layout();
+        ReconcileOutcome::StillReviewing { reset }
     }
 
     /// Set the decision for the focused hunk *without* moving focus.
@@ -433,6 +548,172 @@ mod tests {
 
         // And reset is once again a no-op.
         assert!(!state.reset_focused());
+    }
+
+    // ── Reconcile (§11b) ───────────────────────────────────────────
+
+    /// Find the index of the hunk with the given id, or panic.
+    fn idx_of(state: &DiffState, id: HunkId) -> usize {
+        state
+            .hunks
+            .iter()
+            .position(|h| h.id == id)
+            .expect("hunk id present")
+    }
+
+    #[test]
+    fn reconcile_preserves_decision_on_unchanged_hunk() {
+        // Two Replace hunks (line 1 b→B, line 3 d→D), separated by
+        // context line c.  Accept h0, reject h1.
+        let old = "a\nb\nc\nd\ne\n";
+        let new1 = "a\nB\nc\nD\ne\n";
+        let mut state = DiffState::new(old, new1).unwrap();
+        assert_eq!(state.hunks.len(), 2);
+        let h0_id = state.hunks[0].id;
+        let h1_id = state.hunks[1].id;
+        state.decisions[0] = Decision::Accepted;
+        state.decisions[1] = Decision::Rejected;
+
+        // External write touches only h1's region (D → DD); h0's
+        // new-side text is unchanged.
+        let new2 = "a\nB\nc\nDD\ne\n";
+        let outcome = state.reconcile_with_disk(new2);
+
+        assert_eq!(outcome, ReconcileOutcome::StillReviewing { reset: 1 });
+        // h0 keeps its id and its Accepted decision.
+        let h0 = idx_of(&state, h0_id);
+        assert_eq!(state.decisions[h0], Decision::Accepted);
+        // h1 keeps its id but its changed target reset it to Pending.
+        let h1 = idx_of(&state, h1_id);
+        assert_eq!(state.decisions[h1], Decision::Pending);
+    }
+
+    #[test]
+    fn reconcile_resets_decision_when_new_side_changes() {
+        let mut state = DiffState::new("a\nb\n", "a\nB\n").unwrap();
+        state.decisions[0] = Decision::Accepted;
+        let outcome = state.reconcile_with_disk("a\nC\n");
+        assert_eq!(outcome, ReconcileOutcome::StillReviewing { reset: 1 });
+        assert_eq!(state.decisions[0], Decision::Pending);
+    }
+
+    #[test]
+    fn reconcile_keeps_ids_unique_when_a_prior_hunk_splits() {
+        // One multi-line Replace hunk over old lines 1..4 (b,c,d →
+        // B,C,D).  Decide it.
+        let old = "a\nb\nc\nd\ne\n";
+        let new1 = "a\nB\nC\nD\ne\n";
+        let mut state = DiffState::new(old, new1).unwrap();
+        assert_eq!(state.hunks.len(), 1, "single coalesced replace hunk");
+        let prior_id = state.hunks[0].id;
+        state.decisions[0] = Decision::Accepted;
+
+        // External write reverts the middle line (c) to its original, so
+        // the prior hunk splits into two new hunks (old 1..2 and 3..4),
+        // both of which overlap the prior's 1..4 old range.
+        // The decided multi-line change reshaped into two smaller hunks
+        // whose new-side text differs from what was reviewed, so the
+        // decision resets (one reset counted).
+        let outcome = state.reconcile_with_disk("a\nB\nc\nD\ne\n");
+        assert_eq!(outcome, ReconcileOutcome::StillReviewing { reset: 1 });
+        assert_eq!(state.hunks.len(), 2, "prior hunk split in two");
+
+        // The invariant under test: both ids are distinct.  Only the
+        // earliest claimant inherits the prior id; the other keeps a
+        // freshly-allocated one — without the claimed-prior guard both
+        // would inherit `prior_id`.
+        assert_ne!(
+            state.hunks[0].id, state.hunks[1].id,
+            "split hunks must not share an id",
+        );
+        let inheritors = state.hunks.iter().filter(|h| h.id == prior_id).count();
+        assert_eq!(inheritors, 1, "exactly one hunk inherits the prior id");
+        assert_eq!(state.hunks[0].id, prior_id, "earliest claimant wins it");
+        // Both hunks are Pending: the inheritor reset (changed new-side),
+        // the fresh hunk started Pending.
+        assert_eq!(state.decisions[0], Decision::Pending);
+        assert_eq!(state.decisions[1], Decision::Pending);
+    }
+
+    #[test]
+    fn reconcile_drops_vanished_hunk() {
+        let old = "a\nb\nc\nd\ne\n";
+        let new1 = "a\nB\nc\nD\ne\n";
+        let mut state = DiffState::new(old, new1).unwrap();
+        let h0_id = state.hunks[0].id;
+        state.decisions[0] = Decision::Accepted;
+        state.decisions[1] = Decision::Rejected;
+
+        // External write reverts h1's region back to `old` (d), so only
+        // h0 remains; h1's Rejected decision is silently dropped.
+        let new2 = "a\nB\nc\nd\ne\n";
+        let outcome = state.reconcile_with_disk(new2);
+
+        assert_eq!(outcome, ReconcileOutcome::StillReviewing { reset: 0 });
+        assert_eq!(state.hunks.len(), 1);
+        assert_eq!(state.hunks[0].id, h0_id);
+        assert_eq!(state.decisions[0], Decision::Accepted);
+    }
+
+    #[test]
+    fn reconcile_preserves_accepted_insertion() {
+        // Regression: a pure Insert hunk (empty old-side range) must keep
+        // its decision across an unrelated external write.  An agent adds
+        // a block, the user accepts it, then the agent edits elsewhere —
+        // the accepted insertion must not silently revert to Pending.
+        let old = "a\nb\n";
+        let new1 = "a\nNEW\nb\n";
+        let mut state = DiffState::new(old, new1).unwrap();
+        assert_eq!(state.hunks.len(), 1);
+        assert_eq!(state.hunks[0].kind, crate::diff::HunkKind::Insert);
+        let ins_id = state.hunks[0].id;
+        state.decisions[0] = Decision::Accepted;
+
+        // External write appends a second, unrelated insertion.
+        let new2 = "a\nNEW\nb\nEXTRA\n";
+        let outcome = state.reconcile_with_disk(new2);
+
+        assert_eq!(outcome, ReconcileOutcome::StillReviewing { reset: 0 });
+        assert_eq!(state.hunks.len(), 2);
+        // The original insertion kept its id and its Accepted decision.
+        let ins = idx_of(&state, ins_id);
+        assert_eq!(state.decisions[ins], Decision::Accepted);
+        // The freshly-added insertion is Pending.
+        let other = 1 - ins;
+        assert_eq!(state.decisions[other], Decision::Pending);
+    }
+
+    #[test]
+    fn reconcile_collapses_to_no_changes() {
+        let mut state = DiffState::new("a\nb\n", "a\nB\n").unwrap();
+        // Disk reverted to the original buffer — nothing differs.
+        let outcome = state.reconcile_with_disk("a\nb\n");
+        assert_eq!(outcome, ReconcileOutcome::NoChangesRemain);
+    }
+
+    #[test]
+    fn reconcile_focus_survives_or_falls_back() {
+        let old = "a\nb\nc\nd\ne\n";
+        let new1 = "a\nB\nc\nD\ne\n";
+
+        // Focused hunk survives → focus kept.
+        let mut state = DiffState::new(old, new1).unwrap();
+        let h0_id = state.hunks[0].id;
+        assert_eq!(state.focused_id, h0_id);
+        state.reconcile_with_disk("a\nB\nc\nDD\ne\n");
+        assert_eq!(state.focused_id, h0_id, "surviving focus is kept");
+
+        // Focused hunk vanishes → focus lands on the first pending hunk.
+        let mut state = DiffState::new(old, new1).unwrap();
+        let h0_id = state.hunks[0].id;
+        let h1_id = state.hunks[1].id;
+        state.focused_id = h1_id;
+        // Revert h1's region; h1 disappears.
+        state.reconcile_with_disk("a\nB\nc\nd\ne\n");
+        assert_eq!(
+            state.focused_id, h0_id,
+            "vanished focus falls back to the first pending hunk",
+        );
     }
 
     #[test]
