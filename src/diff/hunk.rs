@@ -17,8 +17,9 @@ use std::ops::Range;
 /// `DiffState::next_hunk_id` at construction and never reused — even
 /// across hunk-list recomputations triggered by in-diff edits
 /// (Phase 1 §6 "HunkId stability").  IDs survive index shifts, so
-/// `DiffOp::Decision` and `DiffState::focused_id` can reference a
-/// specific hunk without races against recomputation.
+/// `DiffState::focused_id` (and the per-hunk decision matching across
+/// a recompute) can reference a specific hunk without races against
+/// recomputation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HunkId(pub u64);
 

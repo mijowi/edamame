@@ -480,22 +480,14 @@ impl App {
             }
             Action::DiffAcceptHunk => self.decide_focused_hunk(Decision::Accepted),
             Action::DiffRejectHunk => self.decide_focused_hunk(Decision::Rejected),
-            Action::DiffAcceptAll => {
-                self.cancel_diff_advance();
-                if let Some(d) = self.editor.diff.as_mut() {
-                    d.bulk_decide(Decision::Accepted);
-                    self.needs_draw = true;
-                }
-                self.check_diff_resolution();
-            }
-            Action::DiffRejectAll => {
-                self.cancel_diff_advance();
-                if let Some(d) = self.editor.diff.as_mut() {
-                    d.bulk_decide(Decision::Rejected);
-                    self.needs_draw = true;
-                }
-                self.check_diff_resolution();
-            }
+            // Accept-all / reject-all override *every* hunk in one
+            // keystroke, so an accidental press would wipe out a mix of
+            // careful per-hunk decisions with no way to undo it
+            // (decisions aren't on an undo stack).  Gate the bulk flip
+            // behind a confirm modal; the actual `bulk_decide` happens
+            // on confirmation via `apply_diff_bulk_decision`.
+            Action::DiffAcceptAll => self.open_diff_bulk_confirm(Decision::Accepted),
+            Action::DiffRejectAll => self.open_diff_bulk_confirm(Decision::Rejected),
             Action::DiffResetHunk => {
                 // Undecide the focused hunk.  Cancel any in-flight
                 // post-decision advance first so a freshly-reset hunk
@@ -648,6 +640,42 @@ impl App {
         }
     }
 
+    /// Open the bulk-decision confirm modal for `DiffAcceptAll` /
+    /// `DiffRejectAll`.  No-op when no diff is active or a copy of the
+    /// modal is already on the stack (so a held / repeated key can't
+    /// stack duplicates).  The decision is *not* applied here — that
+    /// waits for the user's `[Yes]` (see `apply_diff_bulk_decision`).
+    fn open_diff_bulk_confirm(&mut self, decision: crate::diff::Decision) {
+        self.cancel_diff_advance();
+        if self.editor.diff.is_none() {
+            return;
+        }
+        if self
+            .modal_stack
+            .contains::<crate::app::modal::DiffBulkConfirmModal>()
+        {
+            return;
+        }
+        self.modal_stack
+            .push(Box::new(crate::app::modal::DiffBulkConfirmModal::new(
+                decision,
+            )));
+        self.needs_draw = true;
+    }
+
+    /// Apply a confirmed bulk decision to every hunk, then route through
+    /// the normal resolution check (which opens the apply-confirm modal
+    /// once everything is decided).  Invoked from the bulk-confirm
+    /// modal's `[Yes]` callback.
+    pub(crate) fn apply_diff_bulk_decision(&mut self, decision: crate::diff::Decision) {
+        self.cancel_diff_advance();
+        if let Some(d) = self.editor.diff.as_mut() {
+            d.bulk_decide(decision);
+            self.needs_draw = true;
+        }
+        self.check_diff_resolution();
+    }
+
     /// Push the apply-confirm modal iff every hunk has been decided.
     /// This is the *single* place the modal is opened, and it has only
     /// two callers so the resolve flow has exactly two entry points:
@@ -722,10 +750,10 @@ impl App {
 
     /// Apply the merged result to the editor buffer and exit diff
     /// mode.  Called from the `[Apply]` button of
-    /// [`crate::app::modal::DiffResolveConfirmModal`].  Today this
-    /// swaps the rope in place but does NOT record a merge-revert undo
-    /// entry — that will arrive with `History::reset_with`, so one
-    /// `Undo` from normal mode can revert the whole merge.
+    /// [`crate::app::modal::DiffResolveConfirmModal`].  Records a single
+    /// coarse "merge-revert" history entry (§6) so one `Ctrl-Z` from
+    /// normal mode reverts the whole merge and one `Ctrl-Y` re-applies
+    /// it; any new edit afterwards clears the redo path as usual.
     pub(crate) fn apply_diff_resolution(&mut self) {
         self.cancel_diff_advance();
         let Some(diff) = self.editor.diff.as_ref() else {
@@ -740,10 +768,19 @@ impl App {
         let new_text = diff.new_buffer.contents();
         let resolved_text = resolved.to_string();
         let differs_from_disk = resolved_text != new_text;
+        // The pre-merge buffer is the diff's `old_rope` (entering diff
+        // mode never mutates `editor.buffer`).  Build the single
+        // synthetic delta that, on undo, restores it and, on redo,
+        // re-applies the merged text.
+        let merge_delta = crate::document::EditDelta {
+            offset: 0,
+            removed: diff.old_rope.to_string(),
+            inserted: resolved_text,
+        };
         self.editor.buffer.set_rope(resolved);
         self.editor.cursor.offset = 0;
         self.editor.cursor.preferred_col = 0;
-        self.editor.history = crate::document::History::new();
+        self.editor.history.reset_with(merge_delta);
         self.editor.dirty = differs_from_disk;
         self.editor.refresh_parsed();
         self.editor.update_cursor_block();
@@ -983,17 +1020,40 @@ mod tests {
 
     #[test]
     fn diff_accept_all_then_apply_swaps_resolved_rope() {
+        use crate::app::modal::DiffBulkConfirmModal;
         let mut app = make_app();
         app.editor.buffer.insert(0, "alpha\nbeta\ngamma\n");
         app.enter_diff_mode("alpha\nBETA\ngamma\n".to_owned());
         // Dismiss the intro modal if it stacked.
         app.modal_stack
             .remove_first::<crate::app::modal::DiffIntroModal>();
-        // Accept everything, then apply.
+        // Accept-all now opens the bulk-confirm modal rather than
+        // deciding immediately; confirm it, then apply.
         app.dispatch_diff_action(crate::config::Action::DiffAcceptAll, 24, 80);
+        assert!(app.modal_stack.contains::<DiffBulkConfirmModal>());
+        app.apply_diff_bulk_decision(crate::diff::Decision::Accepted);
         app.apply_diff_resolution();
         assert_eq!(app.editor.mode, crate::editor::Mode::Rendered);
         assert!(app.editor.diff.is_none());
+        assert_eq!(app.editor.buffer.contents(), "alpha\nBETA\ngamma\n");
+    }
+
+    #[test]
+    fn apply_diff_resolution_records_single_merge_revert_entry() {
+        use crate::config::Action;
+        let mut app = app_in_diff("alpha\nbeta\ngamma\n", "alpha\nBETA\ngamma\n");
+        resolve_all(&mut app, crate::diff::Decision::Accepted);
+        app.apply_diff_resolution();
+        assert!(app.editor.diff.is_none());
+        assert_eq!(app.editor.buffer.contents(), "alpha\nBETA\ngamma\n");
+        // Exactly one coarse undo step: the merge-revert entry.
+        assert_eq!(app.editor.history.undo_depth(), 1);
+
+        // One Undo reverts the whole merge back to the pre-merge buffer.
+        crate::editor::edit_ops::apply(&mut app.editor, Action::Undo, 24, 80);
+        assert_eq!(app.editor.buffer.contents(), "alpha\nbeta\ngamma\n");
+        // One Redo re-applies the merged result.
+        crate::editor::edit_ops::apply(&mut app.editor, Action::Redo, 24, 80);
         assert_eq!(app.editor.buffer.contents(), "alpha\nBETA\ngamma\n");
     }
 
@@ -1036,16 +1096,34 @@ mod tests {
     }
 
     #[test]
-    fn diff_reject_all_overrides_existing_decisions_and_confirms() {
-        use crate::app::modal::DiffResolveConfirmModal;
+    fn diff_reject_all_gates_behind_bulk_confirm_then_overrides() {
+        use crate::app::modal::{DiffBulkConfirmModal, DiffResolveConfirmModal};
         use crate::config::Action;
         use crate::diff::Decision;
         let mut app = app_in_diff("a\nb\nc\n", "A\nb\nC\n");
         // Pre-resolve everything as accepted, so nothing is `Pending`.
         resolve_all(&mut app, Decision::Accepted);
-        // Reject-all must still take effect (override all) even with no
-        // pending hunks, and open the confirm modal as a resolving action.
+        // Reject-all opens the bulk-confirm modal *without* yet changing
+        // any decision — the prior accepts must stay intact until the
+        // user confirms.
         app.dispatch_diff_action(Action::DiffRejectAll, 24, 80);
+        assert!(app.modal_stack.contains::<DiffBulkConfirmModal>());
+        assert!(
+            app.editor
+                .diff
+                .as_ref()
+                .unwrap()
+                .decisions
+                .iter()
+                .all(|d| *d == Decision::Accepted),
+            "bulk-confirm must not flip decisions before the user confirms",
+        );
+        // A second press must not stack a duplicate modal.
+        app.dispatch_diff_action(Action::DiffRejectAll, 24, 80);
+        assert_eq!(app.modal_stack.count::<DiffBulkConfirmModal>(), 1);
+
+        // Confirming applies the override and opens the resolve-confirm.
+        app.apply_diff_bulk_decision(Decision::Rejected);
         assert!(
             app.editor
                 .diff
@@ -1054,9 +1132,34 @@ mod tests {
                 .decisions
                 .iter()
                 .all(|d| *d == Decision::Rejected),
-            "reject-all must override prior accepted decisions",
+            "reject-all must override prior accepted decisions on confirm",
         );
         assert!(app.modal_stack.contains::<DiffResolveConfirmModal>());
+    }
+
+    #[test]
+    fn diff_bulk_confirm_dismissed_leaves_decisions_intact() {
+        use crate::app::modal::DiffBulkConfirmModal;
+        use crate::config::Action;
+        use crate::diff::Decision;
+        let mut app = app_in_diff("a\nb\nc\n", "A\nb\nC\n");
+        // Make a deliberate mix of per-hunk decisions.
+        {
+            let d = app.editor.diff.as_mut().unwrap();
+            d.decisions[0] = Decision::Accepted;
+            d.decisions[1] = Decision::Rejected;
+        }
+        let before = app.editor.diff.as_ref().unwrap().decisions.clone();
+        // Accept-all opens the gate; dismissing it (without the [Yes]
+        // callback) must leave every prior decision untouched.
+        app.dispatch_diff_action(Action::DiffAcceptAll, 24, 80);
+        assert!(app.modal_stack.contains::<DiffBulkConfirmModal>());
+        app.modal_stack.remove_first::<DiffBulkConfirmModal>();
+        assert_eq!(
+            app.editor.diff.as_ref().unwrap().decisions,
+            before,
+            "dismissing the bulk-confirm must not change any decision",
+        );
     }
 
     #[test]

@@ -101,6 +101,19 @@ impl History {
     pub fn undo_depth(&self) -> usize {
         self.undo_stack.len()
     }
+
+    /// Replace the entire history with a single undo entry.
+    ///
+    /// Clears both the undo and redo stacks, then pushes `delta` as the
+    /// sole undo step.  Used by the diff-mode resolution path to seed a
+    /// single coarse "merge-revert" entry: after a diff is applied, one
+    /// `Action::Undo` reverts the whole merge and one `Action::Redo`
+    /// re-applies it (see the diff-mode plan §6).
+    pub fn reset_with(&mut self, delta: EditDelta) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.undo_stack.push(delta);
+    }
 }
 
 /// Apply a buffer mutation that removes `remove_text` (in chars) at
@@ -118,15 +131,22 @@ fn apply_delta(buf: &mut Buffer, offset: usize, remove_text: &str, insert_text: 
     }
 }
 
-/// Try to fold `new` into `top` as part of the same word-edit group.  Returns
-/// `true` if the merge happened (and `top` was mutated in place); `false`
-/// otherwise.
+/// Try to fold `new` into `top` as part of the same contiguous edit run.
+/// Returns `true` if the merge happened (and `top` was mutated in place);
+/// `false` otherwise.
 ///
-/// Pure insertions and pure deletions merge symmetrically: the new delta must
-/// affect a single alphanumeric character that is contiguous with `top`'s
-/// existing range, and `top`'s adjacent character must also be alphanumeric.
-/// Mixed-direction edits (insert then delete, or vice versa) never merge.
-fn try_merge(top: &mut EditDelta, new: &EditDelta) -> bool {
+/// Pure insertions and pure deletions merge symmetrically on *contiguity
+/// alone*, regardless of character class — alphanumeric, punctuation, and
+/// whitespace (including `\n`) all merge as long as `new` is contiguous
+/// with `top`'s existing range.  A non-contiguous offset breaks the run,
+/// which is how an intentional cursor move naturally separates undo
+/// entries.  Mixed-direction edits (insert then delete, or vice versa)
+/// never merge.
+///
+/// `pub(crate)` so the diff-mode `DiffHistory` (CP6) can reuse this exact
+/// merge logic rather than forking a second copy that would silently
+/// drift the first time the rules are tweaked.
+pub(crate) fn try_merge(top: &mut EditDelta, new: &EditDelta) -> bool {
     if top.removed.is_empty() && new.removed.is_empty() {
         return try_merge_insertion(top, new);
     }
@@ -612,6 +632,35 @@ mod tests {
 
         h.redo(&mut b).unwrap();
         assert_eq!(b.contents(), "");
+    }
+
+    #[test]
+    fn reset_with_seeds_single_merge_revert_entry() {
+        let mut h = History::new();
+        // Pre-existing history that reset_with must blow away.
+        h.record(EditDelta {
+            offset: 0,
+            removed: "".into(),
+            inserted: "junk".into(),
+        });
+        let mut b = buf("junk");
+        let _ = h.undo(&mut b); // leave a redo entry around too
+
+        // Seed the coarse merge-revert entry: pre-merge "old" → merged.
+        h.reset_with(EditDelta {
+            offset: 0,
+            removed: "old".into(),
+            inserted: "merged".into(),
+        });
+        assert_eq!(h.undo_depth(), 1, "exactly one undo step after reset_with");
+        assert!(!h.can_redo(), "redo stack cleared by reset_with");
+
+        // One undo restores the pre-merge text; one redo re-applies.
+        let mut b = buf("merged");
+        h.undo(&mut b).unwrap();
+        assert_eq!(b.contents(), "old");
+        h.redo(&mut b).unwrap();
+        assert_eq!(b.contents(), "merged");
     }
 
     #[test]

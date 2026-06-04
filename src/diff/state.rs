@@ -1,14 +1,15 @@
 //! `DiffState` — the in-flight review session attached to
 //! `EditorState::diff` while `Mode::Diff` is active.  Owns the
 //! pre-change rope (`old_rope`), the working new-side buffer, the
-//! hunk list, per-hunk decisions, focus, and a per-diff undo stack
-//! reserved for in-diff text edits.
+//! hunk list, per-hunk decisions, and focus.
 //!
-//! The undo stack is currently unused: hunk decisions are not
-//! undoable (a mis-press is recovered by navigating back and
-//! re-deciding), and the in-diff text-editing mode that will populate
-//! the stack is not implemented yet.  `Action::Undo` / `Action::Redo`
-//! are no-ops in diff Review.
+//! There is no per-diff undo stack today: hunk decisions are
+//! deliberately not undoable (a mis-press is recovered by navigating
+//! back and re-deciding, or via `DiffResetHunk`; the accidental
+//! bulk-flip case is guarded by a confirmation modal instead), and the
+//! in-diff text-editing mode that *will* record edits — `DiffHistory`
+//! in `src/diff/history.rs` — does not land until the Edit sub-mode
+//! (CP6).  `Action::Undo` / `Action::Redo` are no-ops in diff Review.
 
 use std::cell::RefCell;
 
@@ -56,11 +57,6 @@ pub struct DiffState {
     /// every call site.
     #[allow(dead_code)]
     pub(crate) ids: HunkIdAllocator,
-    /// Per-diff undo / redo stack, reserved for in-diff text edits.
-    /// Currently always empty: decisions are not undoable, and the
-    /// Edit mode that would record edits is not implemented yet.
-    #[allow(dead_code)]
-    pub history: DiffHistory,
     /// True when at least one table couldn't be row-diffed because its
     /// rows had uneven cell counts, so its change is surfaced as the
     /// coarser line-level hunk(s) instead of per-row hunks (§3a).
@@ -71,29 +67,6 @@ pub struct DiffState {
     /// (see [`super::layout`]).  Interior-mutable so the immutable
     /// render / scroll-query paths can populate it on first use.
     pub(crate) layout: RefCell<DiffLayoutCache>,
-}
-
-/// Placeholder for the per-diff undo stack.  It will record in-diff
-/// text edits once an Edit mode lands; hunk decisions are deliberately
-/// not recorded here, as they are not undoable.
-#[derive(Debug, Default)]
-pub struct DiffHistory {
-    #[allow(dead_code)]
-    pub past: Vec<DiffOp>,
-    #[allow(dead_code)]
-    pub future: Vec<DiffOp>,
-}
-
-/// Placeholder enum for the per-diff undo stack.  An empty enum would
-/// make [`DiffHistory`]'s `Vec<DiffOp>` fields unconstructible, so a
-/// single no-op variant stands in until an in-diff Edit mode adds a
-/// real text-edit variant.  `record` is never called today, so the
-/// stack stays empty.
-#[derive(Debug, Clone)]
-pub enum DiffOp {
-    /// Intentionally unused; placeholder until the edit variant lands.
-    #[allow(dead_code)]
-    Placeholder,
 }
 
 impl DiffState {
@@ -134,7 +107,6 @@ impl DiffState {
             decisions,
             focused_id,
             ids,
-            history: DiffHistory::default(),
             uneven_table_fallback: computation.uneven_table_fallback,
             layout: RefCell::new(DiffLayoutCache::default()),
         })

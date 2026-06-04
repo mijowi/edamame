@@ -4,8 +4,7 @@
 //!   [`hunk::Hunk`] sequences with stable ids.
 //! - [`state::DiffState`] — owned by `EditorState::diff` while
 //!   `Mode::Diff` is active; carries the hunk list, per-hunk
-//!   decisions, focused id, working new-side buffer, and a per-diff
-//!   undo stack reserved for in-diff text edits.
+//!   decisions, focused id, and the working new-side buffer.
 //! - [`hunk`] — `Hunk`, `HunkKind`, `Decision`, `InlineSpan`, etc.
 //! - [`layout`] — the flat stacked visual-line model + a cached
 //!   per-width row-count table the renderer and scroll math share.

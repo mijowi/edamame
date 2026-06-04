@@ -124,7 +124,7 @@ The hash filter state lives on `App` (option a from review). `Action::Save` is h
 ```
 src/diff.rs                       # facade
 src/diff/engine.rs                # compute(old, new, &mut ids) -> HunkComputation
-src/diff/state.rs                 # DiffState (vestigial CP3 DiffHistory placeholder; dropped in CP4)
+src/diff/state.rs                 # DiffState (vestigial CP3 DiffHistory placeholder dropped in CP4 ✅)
 src/diff/hunk.rs                  # Hunk, HunkKind, InlineSpan, Decision, HunkId
 src/diff/layout.rs                # DiffVisualLine model + per-width row cache (§5)
 src/diff/history.rs               # DiffHistory: per-diff Edit-text undo stack (CP6; Edit sub-mode only)
@@ -2296,16 +2296,17 @@ Phase 1 is broken into six checkpoints. At each boundary, all tests
 pass and the app builds and runs. Each checkpoint is a self-contained
 PR-sized unit.
 
-**Current status.** CP1, CP2, CP3, and the §11a clean-buffer
-correction are shipped; **CP4, CP5, and CP6 are not yet
-implemented.** The §11a correction was originally scheduled as a
-trailing "CP6"; it depends only on CP3 and landed early, so it is no
-longer tracked as a numbered checkpoint (see §11a). What ships today
-is the full Review flow (decide / accept-all / reject-all / resolve),
-raw stacked rendering with the layout cache, the clean-and-dirty entry
-paths, and the quit-confirm guard — but **no accept-all/reject-all
-confirmation gate (CP4), no diff-exit undo entry (CP4), no live
-mid-review reconciliation (§11b / CP5), and no Edit sub-mode (CP6).**
+**Current status.** CP1, CP2, CP3, CP4, and the §11a clean-buffer
+correction are shipped; **CP5 and CP6 are not yet implemented.** The
+§11a correction was originally scheduled as a trailing "CP6"; it
+depends only on CP3 and landed early, so it is no longer tracked as a
+numbered checkpoint (see §11a). What ships today is the full Review
+flow (decide / accept-all / reject-all / resolve), raw stacked
+rendering with the layout cache, the clean-and-dirty entry paths, the
+quit-confirm guard, the accept-all/reject-all confirmation gate (CP4),
+and the single merge-revert undo entry written on diff exit (CP4) — but
+**no live mid-review reconciliation (§11b / CP5), and no Edit sub-mode
+(CP6).**
 Decisions are deliberately **not** undoable in Review — a mis-press is
 recovered by navigating back (`Tab` / `Shift-Tab`) and re-deciding, or
 via `DiffResetHunk`. The one bulk action that navigation can't recover
@@ -2388,7 +2389,7 @@ are no-ops in Review.
 - `EditorState::exit_diff_mode` returns the editor to `Mode::Rendered` rather than restoring the pre-diff mode.  In CP3 this is safe because the only entry path is from `DirtyConflictModal::[Merge]`, and the user typically wants to return to editing after resolving.  If a future path enters diff mode from Preview / Raw, this should be revisited.
 - Several files shipped in CP3 that the lists above omit: `src/diff/layout.rs` (new — the `DiffVisualLine` model + per-width row-count cache on `DiffState`, the "Possible Improvements" memoisation item brought forward), `src/app/diff_advance.rs` (new — the deferred post-decision focus advance, so a resolved checkbox is visible before focus jumps), `src/document/buffer.rs` (`Buffer::set_rope`, used by the resolution swap — §3 attributes this to §6 but it was needed in CP3), `src/app/actions.rs` (`dispatch_diff_action`, resolution path), `src/app/file_changed.rs` (wire `[Merge]` → `enter_diff_mode`), and `EditorState::pre_diff_scroll` / `pending_focus_scroll` fields on `src/editor/state.rs`.
 
-### Checkpoint 4 — Accept-all / reject-all confirmation gate + diff-exit history entry
+### Checkpoint 4 — Accept-all / reject-all confirmation gate + diff-exit history entry ✅ DONE
 
 **New files:** `src/app/modal/diff_bulk_confirm.rs` (the "Are you sure?" gate for `DiffAcceptAll` / `DiffRejectAll` — a near copy of the existing `DiffResolveConfirmModal` / `DiffQuitConfirmModal` "Are you sure?" modals)
 
@@ -2403,6 +2404,13 @@ are no-ops in Review.
 **Tests:** bulk-confirm modal flow in `tests/ui.rs` (accept-all opens the modal; `[Yes]` applies, `[No]` / `Esc` leaves decisions intact); merge-revert entry in `tests/editing.rs` (after resolution `editor.history` holds exactly one undo step; one `Undo` restores the pre-merge buffer, `Redo` re-applies the merge).
 
 **Verifiable live:** press accept-all / reject-all → confirmation prompt appears; confirm to apply, dismiss to keep current decisions. After resolving a diff, `Ctrl-Z` from normal mode reverts the entire merge and `Ctrl-Y` re-applies it.
+
+**CP4 deviations from the plan as written:**
+- **Tests live in unit-test modules, not the integration files the plan named.** `tests/ui.rs` and `tests/editing.rs` are integration tests that import only the public `edamame::` API; the App-level diff flows (`enter_diff_mode`, `dispatch_diff_action`, `apply_diff_resolution`, `apply_diff_bulk_decision`) all depend on the crate-private `app::test_utils::make_app`, mirroring the note already in `tests/watcher.rs` ("App-level semantics are exercised by unit tests"). So: the bulk-confirm flow (open / dismiss-keeps-decisions / confirm-overrides-and-resolves) and the merge-revert entry (`undo_depth == 1`; `Undo` restores the pre-merge buffer, `Redo` re-applies) are unit tests in `src/app/actions.rs`; the modal's own key handling is unit-tested in `src/app/modal/diff_bulk_confirm.rs`; and the `History::reset_with` primitive is unit-tested in `src/document/history.rs`.
+- **The CP3 `DiffHistory` / `DiffOp::Placeholder` placeholder was fully removed** (struct, enum, the `DiffState::history` field, and its init), not merely emptied — the diff facade / module docs were updated to match. `DiffHistory` proper is reintroduced in `src/diff/history.rs` in CP6.
+- **`History::record`'s docstring needed no change** — it had already been corrected (post-PR1) to describe contiguity-based merging; only `try_merge`'s docstring was stale and was rewritten. `try_merge` is now `pub(crate)` for CP6 reuse.
+- **`DiffBulkConfirmModal` defaults focus to `[Yes]`** (index 0), matching `DiffResolveConfirmModal`'s "default to the action" convention: the user explicitly pressed accept-all / reject-all, so confirming is one Enter; an accidental flip is still caught by `Esc` / `[No]`. The modal is `ModalKind::Warning` (it overrides prior decisions). It carries the `Decision` to apply and renders an accept- vs reject-specific prompt.
+- **Double-push guard added.** `open_diff_bulk_confirm` is a no-op when a `DiffBulkConfirmModal` is already on the stack (mirrors the `DiffQuitConfirmModal` guard), so a held / repeated `Shift-Y` can't stack duplicates.
 
 ### Checkpoint 5 — Live mid-review reconciliation (§11b)
 
