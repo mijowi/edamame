@@ -19,6 +19,7 @@
 
 use std::ops::Range;
 
+use ropey::Rope;
 use similar::{ChangeTag, TextDiff};
 
 use crate::markdown::parse_offsets::{block_ranges_by, BlockKind};
@@ -675,6 +676,83 @@ pub fn pending_decisions(hunks: &[Hunk]) -> Vec<Decision> {
     vec![Decision::Pending; hunks.len()]
 }
 
+/// Number of overlapping lines between two half-open line ranges
+/// (`0` when disjoint).
+fn old_range_overlap(a: &Range<usize>, b: &Range<usize>) -> usize {
+    let start = a.start.max(b.start);
+    let end = a.end.min(b.end);
+    end.saturating_sub(start)
+}
+
+/// Match `hunk` against a prior hunk list by **old-side overlap** — the
+/// §6 rule-2 stability primitive, used by both the §11b reconcile path
+/// (CP5) and CP6's post-edit recompute.
+///
+/// `old_rope` is invariant for the whole life of a review, so the
+/// old-side line range is a stable anchor: an external write (or an
+/// in-diff edit) only ever changes the *new* side.  The matched prior
+/// is the one whose `old_lines` overlaps `hunk.old_lines` most; ties
+/// break toward the smallest `old_lines.start`.
+///
+/// **Insert hunks** have an empty old-side range (`start == end`), so
+/// they overlap nothing and can't be matched by overlap length.  They
+/// are instead anchored by their *insertion point*: a candidate Insert
+/// matches a prior Insert at the same old-side position.  This keeps an
+/// accepted/rejected insertion's decision across an unrelated external
+/// write (the common AI-collaboration case — an agent adds a block, the
+/// user accepts it, then the agent edits elsewhere).  Distinct Insert
+/// hunks always sit at distinct old positions (separated by context), so
+/// the anchor is unambiguous.  An overlap match (score ≥ 1) always
+/// outranks an insertion-point match (score 0); the two never compete
+/// for the same candidate (only an empty candidate uses the latter).
+///
+/// Returns `None` when no prior matches at all.
+pub fn match_by_old_overlap(hunk: &Hunk, priors: &[Hunk]) -> Option<usize> {
+    let cand = &hunk.old_lines;
+    let cand_empty = cand.start == cand.end;
+    let mut best: Option<(usize, usize, usize)> = None; // (score, start, idx)
+    for (i, p) in priors.iter().enumerate() {
+        let po = &p.old_lines;
+        let overlap = old_range_overlap(cand, po);
+        let score = if overlap > 0 {
+            overlap
+        } else if cand_empty && po.start == po.end && po.start == cand.start {
+            // Both are Inserts at the same old-side anchor — the same
+            // insertion point.  Score 0 so any real overlap still wins.
+            0
+        } else {
+            continue;
+        };
+        let better = match best {
+            None => true,
+            Some((best_score, best_start, _)) => {
+                score > best_score || (score == best_score && po.start < best_start)
+            }
+        };
+        if better {
+            best = Some((score, po.start, i));
+        }
+    }
+    best.map(|(_, _, idx)| idx)
+}
+
+/// The hunk's new-side text — the concatenation of its `new_lines`
+/// (including trailing newlines) read from `rope`.  A `Delete` hunk
+/// has an empty new-side range and yields `""`.  Used by the reconcile
+/// gate to decide whether a matched hunk's new-side target was changed
+/// by the external write (carry the decision) or not (reset to
+/// `Pending`).
+pub fn hunk_new_side_text(hunk: &Hunk, rope: &Rope) -> String {
+    let mut out = String::new();
+    let total = rope.len_lines();
+    for line_idx in hunk.new_lines.clone() {
+        if line_idx < total {
+            out.push_str(&rope.line(line_idx).to_string());
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -728,6 +806,50 @@ mod tests {
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].kind, HunkKind::Replace);
         assert!(!hunks[0].inline.is_empty());
+    }
+
+    fn hunk_with_old(old_lines: Range<usize>) -> Hunk {
+        Hunk {
+            id: HunkId(0),
+            old_lines: old_lines.clone(),
+            new_lines: 0..0,
+            inline: Vec::new(),
+            kind: Hunk::classify(&old_lines, &(0..0)),
+        }
+    }
+
+    #[test]
+    fn match_by_old_overlap_picks_largest_overlap_and_breaks_ties() {
+        // Largest overlap wins.
+        let priors = vec![hunk_with_old(0..3), hunk_with_old(5..7)];
+        let cand = hunk_with_old(1..2);
+        assert_eq!(match_by_old_overlap(&cand, &priors), Some(0));
+
+        // Tie on overlap → smallest old_lines.start wins.
+        let priors = vec![hunk_with_old(0..4), hunk_with_old(2..6)];
+        let cand = hunk_with_old(2..4); // overlaps both by 2 lines
+        assert_eq!(match_by_old_overlap(&cand, &priors), Some(0));
+
+        // No overlap → None.
+        let priors = vec![hunk_with_old(0..2)];
+        assert_eq!(match_by_old_overlap(&hunk_with_old(10..12), &priors), None);
+        // An empty candidate (Insert) does NOT match a non-empty prior,
+        // even one whose range straddles the insertion point.
+        assert_eq!(match_by_old_overlap(&hunk_with_old(1..1), &priors), None);
+    }
+
+    #[test]
+    fn match_by_old_overlap_anchors_inserts_by_position() {
+        // Two prior Inserts at distinct old-side positions.
+        let priors = vec![hunk_with_old(1..1), hunk_with_old(3..3)];
+        // A candidate Insert at the same anchor matches that prior.
+        assert_eq!(match_by_old_overlap(&hunk_with_old(3..3), &priors), Some(1));
+        assert_eq!(match_by_old_overlap(&hunk_with_old(1..1), &priors), Some(0));
+        // An Insert at a fresh position matches nothing.
+        assert_eq!(match_by_old_overlap(&hunk_with_old(5..5), &priors), None);
+        // A real overlap outranks any insertion-point match.
+        let priors = vec![hunk_with_old(2..2), hunk_with_old(1..4)];
+        assert_eq!(match_by_old_overlap(&hunk_with_old(2..3), &priors), Some(1));
     }
 
     #[test]
