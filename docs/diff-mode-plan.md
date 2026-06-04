@@ -123,7 +123,7 @@ The hash filter state lives on `App` (option a from review). `Action::Save` is h
 ```
 src/diff.rs                       # facade
 src/diff/engine.rs                # compute(old, new, &mut ids) -> HunkComputation
-src/diff/state.rs                 # DiffState (+ CP3 DiffHistory placeholder)
+src/diff/state.rs                 # DiffState (CP3 DiffHistory placeholder; CP4 moves it to history.rs)
 src/diff/hunk.rs                  # Hunk, HunkKind, InlineSpan, Decision, HunkId
 src/diff/layout.rs                # DiffVisualLine model + per-width row cache (§5)
 src/diff/history.rs               # DiffHistory: per-diff undo/redo stack (CP4+)
@@ -655,6 +655,16 @@ point. Concretely:
 dispatch splits on sub-mode because Review only touches
 `DiffHistory` (no buffer mutation) while Edit needs the full
 `(buffer, cursor, history)` triple:
+
+> **CP-scope note.** The snippet below is the **CP5 end-state**: the
+> `DiffSubMode` / `edit_target()` / `ActiveHistory` machinery it uses
+> does not exist until CP5. **CP4 implements only the Review branch** —
+> `decision_history_mut()` → `undo_decision_only()`, with no buffer
+> mutation and no hunk recompute — and routes `Undo`/`Redo` through
+> `diff_safe_action` + `dispatch_diff_action` (`src/app/actions.rs`),
+> not the `edit_ops.rs` arm shown here. Read the `Mode::Diff` →
+> `DiffSubMode::Review` arm only when implementing CP4; the `Edit` arm
+> and the `edit_target()` plumbing land in CP5.
 
 ```rust
 Action::Undo => {
@@ -1213,9 +1223,12 @@ re-computations triggered by in-diff edits, IDs are preserved by
 
 ### Recording
 
-Every accept/reject/skip/bulk and every in-diff edit pushes a
+Every accept/reject/reset/skip/bulk and every in-diff edit pushes a
 `DiffOp` onto `past` and clears `future`. Identical to the main
-`History::record` flow.
+`History::record` flow. A reset (`Action::DiffResetHunk`, §9) flips the
+focused hunk's decision back to `Pending` and records a
+`DiffOp::Decision { before, after: Pending }`, so it is undoable like
+any other decision.
 
 ### Undo / redo dispatch
 
@@ -1505,6 +1518,7 @@ Action::DiffAcceptHunk,
 Action::DiffRejectHunk,
 Action::DiffAcceptAll,
 Action::DiffRejectAll,
+Action::DiffResetHunk,    // reset focused hunk's decision → Pending
 Action::DiffEnterEdit,    // Review → Edit on the focused hunk
 Action::DiffExitEdit,     // Edit → Review (no decision implied)
 Action::DiffExit,         // request exit of diff mode entirely
@@ -1513,7 +1527,9 @@ Action::DiffExit,         // request exit of diff mode entirely
 There is no separate "skip" action — pressing `DiffNext` without
 making a decision leaves the current hunk's `Decision` as `Pending`,
 which is exactly what "skip" would mean. Conflating them avoids a
-redundant keybind.
+redundant keybind. `DiffResetHunk` is distinct from skip: skip leaves
+an *undecided* hunk `Pending` and moves on, whereas reset returns an
+*already-decided* hunk to `Pending` without moving focus.
 
 ### Review sub-mode default binds
 
@@ -1524,6 +1540,7 @@ redundant keybind.
 | `n` | `DiffRejectHunk` (reject current hunk and advance) |
 | `Shift-Y` | `DiffAcceptAll` (accept *every* hunk, overriding any prior decisions) |
 | `Shift-N` | `DiffRejectAll` (reject *every* hunk, overriding any prior decisions) |
+| `Backspace` | `DiffResetHunk` (reset focused hunk's decision back to *Pending*; undoable) |
 | `Enter` or `i` | `DiffEnterEdit` (enter Edit sub-mode on the focused hunk) |
 | *(bound to `Action::Undo` / `Action::Redo`)* | undo / redo (routed to `DiffHistory`) |
 | `Esc` | `DiffExit` — gated on full resolution (see below); no-op while any hunk is pending |
@@ -1634,6 +1651,7 @@ users can discover and rebind them:
         (Action::DiffRejectHunk, "Reject hunk"),
         (Action::DiffAcceptAll, "Accept all"),
         (Action::DiffRejectAll, "Reject all"),
+        (Action::DiffResetHunk, "Reset hunk"),
         (Action::DiffEnterEdit, "Edit hunk"),
         (Action::DiffExitEdit, "Exit edit"),
         (Action::DiffExit, "Exit diff"),
@@ -2226,8 +2244,10 @@ external-editor flow (§2) — only the in-diff deferral is removed.
 - `src/app/modal/dirty_conflict.rs`
 - `src/app/modal/dirty_conflict_discard_confirm.rs` (second-step
   confirmation for the `Discard & reload` option)
-- `src/app/modal/diff_exit_confirm.rs` (second-step confirmation when
-  user `Esc`'s out of an in-progress diff review)
+- ~~`src/app/modal/diff_exit_confirm.rs` (second-step confirmation when
+  user `Esc`'s out of an in-progress diff review)~~ — **deferred** (§9):
+  `Esc` is gated on full resolution, so there is no partly-reviewed
+  abandon path to confirm until in-diff edits (CP5) make one worthwhile.
 - `src/app/modal/diff_resolve_confirm.rs` (confirmation gate before
   applying the merged result when all hunks are decided)
 - `src/app/modal/diff_quit_confirm.rs` (warn-before-discard gate when
@@ -2374,22 +2394,23 @@ mid-review reconciliation (§11b / CP4), and no Edit sub-mode (CP5).**
 - `EditorState::exit_diff_mode` returns the editor to `Mode::Rendered` rather than restoring the pre-diff mode.  In CP3 this is safe because the only entry path is from `DirtyConflictModal::[Merge]`, and the user typically wants to return to editing after resolving.  If a future path enters diff mode from Preview / Raw, this should be revisited.
 - Several files shipped in CP3 that the lists above omit: `src/diff/layout.rs` (new — the `DiffVisualLine` model + per-width row-count cache on `DiffState`, the "Possible Improvements" memoisation item brought forward), `src/app/diff_advance.rs` (new — the deferred post-decision focus advance, so a resolved checkbox is visible before focus jumps), `src/document/buffer.rs` (`Buffer::set_rope`, used by the resolution swap — §3 attributes this to §6 but it was needed in CP3), `src/app/actions.rs` (`dispatch_diff_action`, resolution path), `src/app/file_changed.rs` (wire `[Merge]` → `enter_diff_mode`), and `EditorState::pre_diff_scroll` / `pending_focus_scroll` fields on `src/editor/state.rs`.
 
-### Checkpoint 4 — Decision undo/redo + Esc handling + live reconciliation (§11b)
+### Checkpoint 4 — Decision undo/redo + live reconciliation (§11b)
 
-**New files:** `src/diff/history.rs`, `src/app/modal/diff_exit_confirm.rs`, `tests/diff_history.rs`
+**New files:** `src/diff/history.rs` (the `DiffHistory` / `DiffOp` types, moved out of the CP3 placeholder in `src/diff/state.rs`), `tests/diff_history.rs`
 
-**Modified files:** `src/diff/state.rs` (wire `DiffHistory`; add `reconcile_with_disk` + `ReconcileOutcome` per §11b), `src/diff/engine.rs` (`match_by_old_overlap` + `hunk_new_side_text` per §11b), `src/editor/edit_ops.rs` (route `Undo`/`Redo` to `DiffHistory` in diff mode), `src/app/file_changed.rs` (the `diff.is_some()` reconciliation branch + `reconcile_diff_with_disk` per §11b — replaces the §11 queue)
+**Modified files:** `src/diff/state.rs` (move the `DiffHistory` / `DiffOp` placeholder out to `history.rs`; record decision ops into `DiffHistory`; add `reconcile_with_disk` + `ReconcileOutcome` + `first_pending_id` per §11b), `src/diff/engine.rs` (`match_by_old_overlap` + `hunk_new_side_text` per §11b), `src/document/history.rs` (`History::reset_with`; promote `try_merge` to `pub(crate)` and fix its stale docstrings per §6), `src/app/actions.rs` (allowlist `Undo`/`Redo` in `diff_safe_action` and route them to `DiffHistory` from `dispatch_diff_action`; record `DiffAcceptHunk` / `DiffRejectHunk` / `DiffResetHunk` / `DiffAcceptAll` / `DiffRejectAll` as `DiffOp`s; the merge-revert `reset_with` in `apply_diff_resolution`), `src/app/file_changed.rs` (the `diff.is_some()` reconciliation branch + `reconcile_diff_with_disk` per §11b — replaces the §11 queue)
 
 **Scope:**
-- `DiffHistory` with `DiffOp::Decision` and `DiffOp::BulkDecision` only (no `Edit` variant yet).
-- `Action::Undo` / `Action::Redo` routed to `DiffHistory` while in diff mode; main `History` paused.
+- `DiffHistory` / `DiffOp` move into their own `src/diff/history.rs` (the CP3 placeholder currently lives in `src/diff/state.rs`); this creates the file declared in §3. `DiffOp::Decision` and `DiffOp::BulkDecision` only — no `Edit` variant yet (that is CP5).
+- **Every decision mutator records a `DiffOp`.** `DiffAcceptHunk` / `DiffRejectHunk` push `DiffOp::Decision { before, after }`; `DiffAcceptAll` / `DiffRejectAll` push `DiffOp::BulkDecision`; **`DiffResetHunk` (focused decision → `Pending`) records a `DiffOp::Decision` too, so reset is undoable like any other decision.** (`DiffResetHunk` is a shipped action — see §9 — that postdates §6's original "accept/reject/skip/bulk" enumeration.)
+- `Action::Undo` / `Action::Redo` routed to `DiffHistory` while in diff mode; main `History` paused. **CP4 implements only the Review/decision-only undo path** (`decision_history_mut()` → `undo_decision_only()`): no buffer mutation, no hunk recompute. The `DiffSubMode` / `edit_target()` / `ActiveHistory` branching shown in the §4a and §6 undo-dispatch snippets is CP5 scaffolding (sub-modes do not exist yet) — ignore it here. **Dispatch site:** add `Undo` / `Redo` to `diff_safe_action`'s allowlist (`src/app/actions.rs`) and handle them in `dispatch_diff_action`, **not** in `edit_ops.rs` — that file's `Undo`/`Redo` arms target the main `History` and are unreachable in diff mode once `diff_safe_action` gates input through the diff dispatcher.
 - **Resolution checkpoint:** introduce the single synthetic merge-revert `EditDelta` and the `History::reset_with(EditDelta)` setter (§6). After CP4, exiting diff mode leaves `editor.history` with that single entry as its sole undo step (replacing the CP3 behavior where exit wrote nothing to history).
-- `DiffExitConfirmModal` for `Esc` with pending decisions (§9).
+- **Esc / exit handling already shipped (§9) and is out of CP4 scope.** `Action::DiffExit` is gated on full resolution: pending hunks → no-op + flash; all-resolved → `DiffResolveConfirmModal`. The dedicated `DiffExitConfirmModal` for deliberately abandoning a *partly*-reviewed diff is **deferred** (§9) — CP4 does not add it.
 - ~~Queued `FileChanged` event re-entry: after resolution, re-enter through the standard dirty-check path (§11).~~ **Superseded by §11b** — replaced with live decision-preserving reconciliation (`DiffState::reconcile_with_disk` + the `diff.is_some()` branch in `handle_file_changed`); no queue, no after-resolution re-entry.
 
-**Tests:** `tests/diff_history.rs` (accept/reject/bulk + undo/redo sequences), exit-confirm modal flow, and the §11b reconciliation tests (`reconcile_*` units; `external_change_in_diff_preserves_decisions`; `external_revert_in_diff_exits_diff`).
+**Tests:** `tests/diff_history.rs` (accept/reject/**reset**/bulk + undo/redo sequences, including an undo-of-reset case), and the §11b reconciliation tests (`reconcile_*` units; `external_change_in_diff_preserves_decisions`; `external_revert_in_diff_exits_diff`).
 
-**Verifiable live:** cycle accept/reject with Ctrl-Z undoing decisions; Esc prompts when hunks are pending; editing the file mid-review recomputes in place, preserving decisions on unchanged hunks and resetting only the hunks the external write touched (§11b).
+**Verifiable live:** cycle accept/reject/reset with Ctrl-Z undoing each decision (including reset); editing the file mid-review recomputes in place, preserving decisions on unchanged hunks and resetting only the hunks the external write touched (§11b).
 
 ### Checkpoint 5 — Edit sub-mode + clamped editing + Edit undo
 
