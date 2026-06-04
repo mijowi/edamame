@@ -43,11 +43,11 @@ use super::App;
 pub(super) const NOT_YET_IMPLEMENTED: &[Action] =
     &[Action::Open, Action::ExportHtml, Action::ReloadFromDisk];
 
-/// Default-deny gate over [`Action`]s in diff mode (Phase 1 §10).
-/// Returns `Some(action)` when the action is allowed in Review
-/// sub-mode (CP3 only ships Review); `None` for everything else.
-/// CP5 will add a `(action, sub_mode)` signature so Edit-only and
-/// Review-only actions can refine the gate.
+/// Default-deny gate over [`Action`]s in diff mode.  Returns
+/// `Some(action)` when the action is allowed in Review sub-mode (the
+/// only sub-mode today); `None` for everything else.  When an in-diff
+/// Edit mode lands, this can grow a `(action, sub_mode)` signature so
+/// Edit-only and Review-only actions refine the gate.
 pub(super) fn diff_safe_action(action: &Action) -> Option<Action> {
     use Action::*;
     let allowed = matches!(
@@ -508,8 +508,9 @@ impl App {
                 }
             }
             Action::DiffEnterEdit | Action::DiffExitEdit => {
-                // Edit sub-mode lands in CP5; until then `i` / Enter
-                // and `Esc` (Edit→Review) are explicit no-ops.
+                // In-diff Edit mode is not implemented yet; until then
+                // `i` / Enter and `Esc` (Edit→Review) are explicit
+                // no-ops.
                 self.flash("Diff edit mode coming soon", MessageKind::Info);
             }
             Action::DiffExit => {
@@ -721,9 +722,10 @@ impl App {
 
     /// Apply the merged result to the editor buffer and exit diff
     /// mode.  Called from the `[Apply]` button of
-    /// [`crate::app::modal::DiffResolveConfirmModal`].  CP3 swaps the
-    /// rope in place but does NOT record a merge-revert undo entry —
-    /// that lands in CP4 alongside [`History::reset_with`].
+    /// [`crate::app::modal::DiffResolveConfirmModal`].  Today this
+    /// swaps the rope in place but does NOT record a merge-revert undo
+    /// entry — that will arrive with `History::reset_with`, so one
+    /// `Undo` from normal mode can revert the whole merge.
     pub(crate) fn apply_diff_resolution(&mut self) {
         self.cancel_diff_advance();
         let Some(diff) = self.editor.diff.as_ref() else {

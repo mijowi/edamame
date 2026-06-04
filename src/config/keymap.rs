@@ -180,15 +180,15 @@ pub enum Action {
     /// ("undecide").  No-op when the hunk is already `Pending`.  Bound
     /// to `Backspace` in Review sub-mode.
     DiffResetHunk,
-    /// Enter Edit sub-mode on the focused hunk.  Wired in CP5; in CP3
-    /// this is an explicit no-op.
+    /// Enter Edit sub-mode on the focused hunk.  In-diff editing is
+    /// not implemented yet, so this is currently an explicit no-op.
     DiffEnterEdit,
-    /// Exit Edit sub-mode and return to Review.  Wired in CP5; no-op
-    /// in CP3.
+    /// Exit Edit sub-mode and return to Review.  Currently a no-op
+    /// (in-diff editing is not implemented yet).
     DiffExitEdit,
-    /// Request to exit diff mode.  Routes through the exit-confirm
-    /// modal (CP4) so the user can choose between discarding decisions
-    /// and continuing to review.
+    /// Request to exit diff mode.  Gated on full resolution: a no-op
+    /// while any hunk is still pending, and otherwise opens the
+    /// apply-confirm modal before the merged result is written.
     DiffExit,
 }
 

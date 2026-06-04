@@ -5,8 +5,8 @@
 //! word-aware wrap match the other modes.
 //!
 //! Phase 2 (`docs/diff-mode-plan.md` §16) will upgrade this to a
-//! hybrid rendered view; CP3 keeps it raw-only so we can ship the
-//! review-and-decide flow without touching `ParsedDoc` /
+//! hybrid rendered view; for now it stays raw-only so the
+//! review-and-decide flow ships without touching `ParsedDoc` /
 //! `SourceMap`.
 
 use ratatui::{

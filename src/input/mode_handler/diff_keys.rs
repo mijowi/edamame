@@ -2,8 +2,9 @@
 //!
 //! Diff-review keys are *not* routed through the runtime [`KeyMap`]:
 //! the review bindings must win over the global keymap (e.g. `Tab` →
-//! `InsertTab`), and Edit sub-mode's layered keymap doesn't land until
-//! CP5.  Rather than hard-code the same `y` / `n` / `Tab` … mapping in
+//! `InsertTab`), and the layered keymap a future Edit sub-mode would
+//! use does not exist yet.  Rather than hard-code the same `y` / `n` /
+//! `Tab` … mapping in
 //! the input handler *and* re-spell every glyph again in the hint bar,
 //! the keybinds overlay, the decision divider, and the diff-intro
 //! modal, all of those derive from the one `DIFF_REVIEW_BINDINGS`

@@ -59,7 +59,7 @@ machinery on top.
 - Enter a dedicated `Mode::Diff` with strong visual signalling (status-bar / hint-bar color shift, `DIFF` mode badge, first-time explanatory modal).
 - Render stacked inline diffs: deleted lines above, added lines below, with word-level inline highlights within changed pairs.
 - Let the user cycle through changes, accept/reject each one individually, accept-all / reject-all, skip changes, and edit added content before accepting.
-- All accept / reject / skip / edit decisions inside diff mode are undo/redo-able through `Action::Undo` / `Action::Redo`.
+- In-diff *edits* (Edit sub-mode) are undo/redo-able through `Action::Undo` / `Action::Redo`. Hunk *decisions* are deliberately **not** undoable — a mis-press is recovered by navigating back (`Tab` / `Shift-Tab`) and re-deciding, or via `DiffResetHunk`; the only navigation-irrecoverable case (`DiffAcceptAll` / `DiffRejectAll`) is guarded by a confirmation modal instead.
 - After all changes are resolved, automatically swap the merged result into the live buffer and exit diff mode.
 - Disable autosave and `Action::Save` (`Ctrl-S` keybind and 'Save file' action in command palette) while in diff mode to avoid clobbering the on-disk file mid-review.
 - Architect the watcher so a future multi-tab refactor only has to swap `Option<Box<dyn FileWatcher>>` for a per-tab map.
@@ -73,7 +73,8 @@ machinery on top.
 | Autosave / Ctrl-S in diff mode | Both disabled |
 | Diff highlighting granularity | Line-level + word-level inline |
 | Multi-tab scope today | `FileWatcher` trait, single instance today |
-| Accept/reject undo/redo | **Required, see §6** |
+| Accept/reject undo/redo | **Dropped** — recover via navigation + re-decide / `DiffResetHunk`; bulk flips guarded by a confirm modal (CP4, §6, §14) |
+| In-diff edit undo/redo | **Required** (Edit sub-mode, CP6, see §6) |
 
 ## 1. New dependencies
 
@@ -123,10 +124,10 @@ The hash filter state lives on `App` (option a from review). `Action::Save` is h
 ```
 src/diff.rs                       # facade
 src/diff/engine.rs                # compute(old, new, &mut ids) -> HunkComputation
-src/diff/state.rs                 # DiffState (CP3 DiffHistory placeholder; CP4 moves it to history.rs)
+src/diff/state.rs                 # DiffState (vestigial CP3 DiffHistory placeholder; dropped in CP4)
 src/diff/hunk.rs                  # Hunk, HunkKind, InlineSpan, Decision, HunkId
 src/diff/layout.rs                # DiffVisualLine model + per-width row cache (§5)
-src/diff/history.rs               # DiffHistory: per-diff undo/redo stack (CP4+)
+src/diff/history.rs               # DiffHistory: per-diff Edit-text undo stack (CP6; Edit sub-mode only)
 ```
 
 ```rust
@@ -171,7 +172,7 @@ pub struct DiffState {
     layout: RefCell<DiffLayoutCache>, // lazily-built flat visual-line
                                    //   list + per-width row-count cache
                                    //   (see §5, src/diff/layout.rs)
-    // CP5 adds: pub sub_mode: DiffSubMode (§4 sub-modes)
+    // CP6 adds: pub sub_mode: DiffSubMode (§4 sub-modes)
 }
 
 pub enum Decision { Pending, Accepted, Rejected }
@@ -518,8 +519,8 @@ impl EditorState {
     /// called in `Mode::Diff` Review** — Review does not perform
     /// text edits and there is no coherent buffer to return there
     /// (the main buffer and `DiffHistory` belong to different ropes).
-    /// Use `decision_history_mut()` instead for Decision/BulkDecision
-    /// undo/redo in Review.
+    /// Review performs no undoable mutation at all (decisions are not
+    /// recorded in `DiffHistory`), so it never needs an edit target.
     pub fn edit_target(&mut self) -> EditTarget<'_> {
         match &mut self.diff {
             Some(d) if d.sub_mode == DiffSubMode::Edit => EditTarget {
@@ -545,15 +546,6 @@ impl EditorState {
                 history: ActiveHistory::Main(&mut self.history),
             },
         }
-    }
-
-    /// Accessor for Decision/BulkDecision undo/redo paths, valid in
-    /// either diff sub-mode. Returns `None` outside `Mode::Diff`.
-    /// Does not return a buffer or cursor — Decision ops do not
-    /// mutate the rope, so there is no risk of routing a write to
-    /// the wrong buffer.
-    pub fn decision_history_mut(&mut self) -> Option<&mut DiffHistory> {
-        self.diff.as_mut().map(|d| &mut d.history)
     }
 }
 ```
@@ -652,19 +644,21 @@ point. Concretely:
 **Undo / Redo in diff mode.** The Undo/Redo handlers
 (`edit_ops.rs:497–511`) bypass `apply_delta` and call
 `state.history.undo(&mut state.buffer)` directly. In diff mode the
-dispatch splits on sub-mode because Review only touches
-`DiffHistory` (no buffer mutation) while Edit needs the full
-`(buffer, cursor, history)` triple:
+dispatch splits on sub-mode: **Review is a no-op** (decisions are
+deliberately non-undoable — recover a mis-press by navigating back and
+re-deciding, or with `DiffResetHunk`), while Edit drives `DiffHistory`
+over the full `(buffer, cursor, history)` triple:
 
-> **CP-scope note.** The snippet below is the **CP5 end-state**: the
+> **CP-scope note.** The snippet below is the **CP6 end-state**: the
 > `DiffSubMode` / `edit_target()` / `ActiveHistory` machinery it uses
-> does not exist until CP5. **CP4 implements only the Review branch** —
-> `decision_history_mut()` → `undo_decision_only()`, with no buffer
-> mutation and no hunk recompute — and routes `Undo`/`Redo` through
-> `diff_safe_action` + `dispatch_diff_action` (`src/app/actions.rs`),
-> not the `edit_ops.rs` arm shown here. Read the `Mode::Diff` →
-> `DiffSubMode::Review` arm only when implementing CP4; the `Edit` arm
-> and the `edit_target()` plumbing land in CP5.
+> does not exist until CP6. **Review never undoes** — there is no
+> `DiffHistory` of decisions (that design was dropped; the accidental
+> bulk-flip case is guarded by the CP4 accept-all/reject-all confirm
+> modal instead). Until CP6 lands, `Undo` / `Redo` in `Mode::Diff` are
+> plain no-ops, gated through `diff_safe_action` +
+> `dispatch_diff_action` (`src/app/actions.rs`), never reaching the
+> `edit_ops.rs` arm shown here. Read the `DiffSubMode::Edit` arm only
+> when implementing CP6; the `Review` arm stays a no-op.
 
 ```rust
 Action::Undo => {
@@ -672,25 +666,14 @@ Action::Undo => {
         Mode::Diff => {
             let sub_mode = state.diff.as_ref().unwrap().sub_mode;
             match sub_mode {
-                DiffSubMode::Review => {
-                    // Decision/BulkDecision undo only — no buffer
-                    // mutation, no cursor move, no hunk recompute
-                    // (decisions are independent of the rope).
-                    let dh = state.decision_history_mut().unwrap();
-                    let _ = dh.undo_decision_only();
-                    // `undo_decision_only` skips DiffOp::Edit entries
-                    // (Edit ops should never appear in the stack
-                    // while in Review — Edit ops are only pushed in
-                    // DiffSubMode::Edit). debug_assert! enforces this.
-                }
+                // Decisions are non-undoable; nothing to do.
+                DiffSubMode::Review => {}
                 DiffSubMode::Edit => {
                     let t = state.edit_target();
                     let ActiveHistory::Diff(dh) = t.history else {
                         unreachable!("Edit sub-mode always yields Diff history");
                     };
                     match dh.undo(t.buffer, t.cursor) {
-                        UndoResult::Decision => {}        // no buffer mutation
-                        UndoResult::BulkDecision => {}    // no buffer mutation
                         UndoResult::Edit => {
                             // hunk recompute already triggered inside
                             // DiffHistory::undo for Edit ops
@@ -716,20 +699,15 @@ Action::Undo => {
 }
 ```
 
-`DiffHistory` gains a `undo_decision_only()` method that pops only
-`Decision` / `BulkDecision` entries from the stack and refuses
-`Edit` entries (debug-asserting they shouldn't be on the top while
-in Review). The split avoids the previous design's ambiguous
-`EditTarget` return in Review (where `buffer` and `history`
-belonged to different ropes); now Review never touches a buffer
-at all, and the type system reflects that.
+`DiffHistory` (CP6) records `DiffOp::Edit` entries only — never
+decisions — so its `undo` always carries a buffer mutation. Review
+holds no history at all, so the type system never has to reconcile a
+`buffer` and `history` that belong to different ropes.
 
-`DiffHistory::undo` returns an `UndoResult` enum indicating which
-variant was popped, so the handler knows whether to expect buffer
-mutations. For `Decision` / `BulkDecision`, only the `decisions` vec
-changes — no buffer mutation, no hunk recomputation. For `Edit`, the
-inverse delta is applied to `new_buffer`, the cursor is repositioned,
-and hunk recomputation fires. `Redo` is symmetric.
+`DiffHistory::undo` returns an `UndoResult` enum indicating whether an
+entry was popped (`Edit`) or the stack was empty (`Empty`). For `Edit`,
+the inverse delta is applied to `new_buffer`, the cursor is
+repositioned, and hunk recomputation fires. `Redo` is symmetric.
 
 **`enter_edit_if_preview` guard.** Many handlers in `edit_ops.rs`
 begin with `enter_edit_if_preview(state, viewport_height)`, which
@@ -984,7 +962,7 @@ sequence is **built once and cached on `DiffState`'s layout cache**
 invariant for a review (decisions and focus don't change the line set
 or its wrapping), so it is memoised behind a `RefCell` together with a
 small LRU of per-width row-count prefix sums that answer
-total-row / scroll-position queries in `O(1)` / `O(log N)`. A CP5 Edit
+total-row / scroll-position queries in `O(1)` / `O(log N)`. A CP6 Edit
 that reshapes the hunk list calls `DiffState::invalidate_layout()` to
 force a rebuild. The build is `O(total lines in file)` — negligible
 for typical markdown files, and now paid at most once per (layout
@@ -1102,17 +1080,29 @@ contiguous run of `NewAdd` visual rows in the `DiffVisualLine` vec,
 no offset within the clamped range can map onto `OldDelete` or
 `Context` rows.
 
-## 6. Undo / redo of accept-reject decisions and in-diff edits
+## 6. Undo / redo of in-diff edits + the resolution checkpoint
 
-The design must accommodate both *kinds* of mutation that can happen inside diff mode:
+> **Scope note (decision undo dropped).** An earlier draft of this
+> section also designed undo/redo of *decisions* (a `DiffOp::Decision`
+> / `DiffOp::BulkDecision` stack recording every accept/reject/reset).
+> That was dropped: decisions are recovered by navigation (`Tab` /
+> `Shift-Tab` + re-decide) and `DiffResetHunk`, and the one case
+> navigation can't recover — an accidental `DiffAcceptAll` /
+> `DiffRejectAll` overwriting a mix of prior decisions — is guarded by
+> a confirmation modal instead (CP4, §14). `DiffHistory` therefore
+> records **only** in-diff *edits* (CP6), and `Action::Undo` /
+> `Action::Redo` are no-ops in Review. The remainder of this section
+> covers the two things that *are* implemented: Edit-text undo (CP6)
+> and the single resolution-checkpoint history entry (CP4).
 
-1. Toggling a hunk decision (`Pending → Accepted`, `Pending →  Rejected`, `Accepted → Pending` via undo, etc.).
-2. Editing the text inside an added hunk (mutates `new_rope`, which  then forces a hunk re-computation that may shift later hunk  indices).
+The one undoable mutation inside diff mode is editing the text of a
+focused hunk (Edit sub-mode, CP6): it mutates `new_rope`, which then
+forces a hunk re-computation that may shift later hunk indices.
 
 ### `DiffHistory`
 
 A per-diff undo stack scoped to `DiffState`, independent of the main
-`History` stack:
+`History` stack, created in CP6 with the Edit sub-mode:
 
 ```rust
 pub struct DiffHistory {
@@ -1121,25 +1111,6 @@ pub struct DiffHistory {
 }
 
 pub enum DiffOp {
-    /// Change a single hunk decision.
-    /// `hunk_id` is a stable per-hunk identifier, NOT the hunk's
-    /// current vec index — in-diff edits can shift indices.
-    Decision {
-        hunk_id: HunkId,
-        before: Decision,
-        after: Decision,
-    },
-    /// Bulk decision flip (accept-all / reject-all).
-    /// Stored as a `(HunkId, Decision)` map so that one undo
-    /// restores exactly the pre-bulk state in one step, *and*
-    /// remains coherent after in-diff edits re-shape the hunk
-    /// list. Hunk ids in `before` that no longer exist at undo
-    /// time are silently dropped (same stale-id rule as
-    /// `DiffOp::Decision`).
-    BulkDecision {
-        before: Vec<(HunkId, Decision)>,
-        after: Decision,
-    },
     /// A text edit applied to `new_rope` inside a focused hunk.
     /// Reuses the existing `EditDelta` type from `document::history`
     /// so the same insert/delete primitives are reused.
@@ -1149,6 +1120,11 @@ pub enum DiffOp {
     Edit { delta: EditDelta },
 }
 ```
+
+(`DiffOp` is a single-variant enum today rather than a struct so the
+Edit-vs-future-op distinction stays explicit and the `match` sites
+read uniformly; collapse it to a struct only if no second variant ever
+appears.)
 
 `DiffHistory::record` reuses the main `History::try_merge` logic
 verbatim. Today `try_merge` is a private free function at
@@ -1169,18 +1145,16 @@ insert (resp. delete) merges into the previous delta regardless of
 character class — alphanumeric, punctuation, whitespace all merge as
 long as the new edit is contiguous with the previous one. This means
 that undoing a stretch of typing in Edit sub-mode reverses one
-"contiguous run" at a time, not one character at a time. Decision and BulkDecision ops are never
-merged. Any non-`Edit` op (`Decision`, `BulkDecision`) also breaks
-an in-progress word-group merge of `Edit` ops — if the user types in
-Edit, Escs to Review and accepts a hunk, then re-enters Edit and
-types more, the two typing sequences are separate undo groups.
-`DiffExitEdit` itself (Esc out of Edit) **also** breaks the merge
-cursor — so a typing-Esc-Enter-typing sequence produces two separate
-undo groups even with no intervening Decision op. This matches user
-intuition that "leaving the typing context" terminates the word
-group. Entering Edit on a *different* hunk (Esc → Tab → Enter)
-always starts a fresh merge group because the sub-mode transitions
-(DiffExitEdit then DiffEnterEdit) both break the merge cursor.
+"contiguous run" at a time, not one character at a time.
+`DiffExitEdit` (Esc out of Edit) breaks the merge cursor — so a
+typing-Esc-Enter-typing sequence produces two separate undo groups.
+This matches user intuition that "leaving the typing context"
+terminates the word group. Entering Edit on a *different* hunk
+(Esc → Tab → Enter) likewise starts a fresh merge group because the
+sub-mode transitions (DiffExitEdit then DiffEnterEdit) both break the
+merge cursor. (Decisions are not recorded in `DiffHistory` at all, so
+accepting/rejecting a hunk between two typing runs has no effect on
+the edit-merge cursor either way.)
 
 ### `HunkId` stability
 
@@ -1198,11 +1172,12 @@ re-computations triggered by in-diff edits, IDs are preserved by
    every prior → fresh `HunkId` with `Decision::Pending`.
 3. A prior-pass hunk that no `n` matches is considered dropped; its
    `Decision` is discarded.
-4. **Stale `Decision` / `BulkDecision` undo:** any `hunk_id` in a
-   recorded op that no longer matches a current hunk is silently
-   skipped during undo/redo. The op itself is still consumed from
-   the stack so future redo behaves consistently — it just becomes a
-   partial no-op for the stale ids.
+4. **No stale-id concern in the undo stack.** `DiffHistory` records
+   only `DiffOp::Edit`, whose `delta.offset` is an absolute `new_rope`
+   offset — it carries no `hunk_id`. So there is no "op references a
+   hunk that no longer exists" case to skip; the matching rules here
+   exist to **preserve decisions** across a recompute (reconciliation
+   §11b and post-edit recompute), not to validate undo entries.
 5. **Hunk merging.** An in-diff edit can cause two previously separate
    hunks to merge (e.g., adding lines between them until the context
    gap disappears). The merged hunk overlaps both priors; per rule
@@ -1223,34 +1198,34 @@ re-computations triggered by in-diff edits, IDs are preserved by
 
 ### Recording
 
-Every accept/reject/reset/skip/bulk and every in-diff edit pushes a
-`DiffOp` onto `past` and clears `future`. Identical to the main
-`History::record` flow. A reset (`Action::DiffResetHunk`, §9) flips the
-focused hunk's decision back to `Pending` and records a
-`DiffOp::Decision { before, after: Pending }`, so it is undoable like
-any other decision.
+Every in-diff edit (Edit sub-mode, CP6) pushes a `DiffOp::Edit` onto
+`past` and clears `future`, with the same contiguous-run merging as the
+main `History::record` flow. **Decisions are not recorded** — accept /
+reject / reset / accept-all / reject-all mutate `decisions` directly
+and are not undoable (a mis-press is recovered by navigation +
+re-decide or `DiffResetHunk`; the bulk case is guarded by the CP4
+confirm modal, §14).
 
 ### Undo / redo dispatch
 
 `Action::Undo` / `Action::Redo` in diff mode route to
-`DiffHistory::undo` / `redo` instead of `editor.history`. The main
-history is paused while in diff mode — its only post-diff entry is the
-single coarse "Resolved diff" event recorded when diff mode exits.
+`DiffHistory::undo` / `redo` (Edit ops only) instead of
+`editor.history`; in Review they are no-ops. The main history is
+paused while in diff mode — its only post-diff entry is the single
+coarse merge-revert entry recorded when diff mode exits (see
+"Resolution checkpoint" below).
 
-After undo/redo, if the new state has at least one `Pending`
-decision, diff mode stays open; if the user undoes back to the empty
-state (all `Pending`, no edits), diff mode stays open (the watcher's
-"file changed" trigger has not gone away). To leave diff mode the
-user must either decide all hunks and confirm the
-`DiffResolveConfirmModal` (§8), or trigger `Action::DiffExit`.
+Undo/redo of edits never leaves diff mode. To leave, the user either
+decides all hunks and confirms the `DiffResolveConfirmModal` (§8), or
+triggers `Action::DiffExit`.
 
 ### Edit-then-decision interaction
 
-When an `Edit` op shifts hunk offsets, subsequent decisions reference
-the post-edit hunk by `HunkId`. Undoing an `Edit` reverses the rope
-mutation and re-runs hunk computation, restoring the old hunk
-boundaries. Undoing a `Decision` does not re-run hunk computation;
-it just flips `decisions[i]`.
+When an `Edit` op shifts hunk offsets, the decision attached to each
+hunk follows it by `HunkId` across the recompute (the matching rules
+above preserve decisions even though they aren't undoable). Undoing an
+`Edit` reverses the rope mutation and re-runs hunk computation,
+restoring the old hunk boundaries; the preserved decisions ride along.
 
 ### Resolution checkpoint
 
@@ -1309,10 +1284,10 @@ landing at the document end after a "revert the whole merge" is no
 more surprising than any other coarse undo. The post-undo undo
 dispatch refreshes parsed state against the restored rope.
 
-In-diff undo/redo is fully bidirectional via `DiffHistory` while the
-review is open. Once the user resolves, `DiffHistory` is dropped and
-the main `History` takes over with the single merge-revert entry
-described above.
+In-diff *edit* undo/redo is bidirectional via `DiffHistory` while the
+review is open (CP6); decisions are not undoable. Once the user
+resolves, `DiffHistory` is dropped and the main `History` takes over
+with the single merge-revert entry described above.
 
 `editor.dirty` is set to `true` after resolution **only if the
 resolved rope differs from the on-disk content**. A cheap
@@ -1538,11 +1513,11 @@ an *undecided* hunk `Pending` and moves on, whereas reset returns an
 | `Tab` / `Shift-Tab` | `DiffNext` / `DiffPrev` |
 | `y` | `DiffAcceptHunk` (accept current hunk and advance) |
 | `n` | `DiffRejectHunk` (reject current hunk and advance) |
-| `Shift-Y` | `DiffAcceptAll` (accept *every* hunk, overriding any prior decisions) |
-| `Shift-N` | `DiffRejectAll` (reject *every* hunk, overriding any prior decisions) |
-| `Backspace` | `DiffResetHunk` (reset focused hunk's decision back to *Pending*; undoable) |
+| `Shift-Y` | `DiffAcceptAll` (accept *every* hunk; prompts a confirm modal first since it overrides any prior decisions — CP4) |
+| `Shift-N` | `DiffRejectAll` (reject *every* hunk; prompts a confirm modal first since it overrides any prior decisions — CP4) |
+| `Backspace` | `DiffResetHunk` (reset focused hunk's decision back to *Pending*) |
 | `Enter` or `i` | `DiffEnterEdit` (enter Edit sub-mode on the focused hunk) |
-| *(bound to `Action::Undo` / `Action::Redo`)* | undo / redo (routed to `DiffHistory`) |
+| *(bound to `Action::Undo` / `Action::Redo`)* | no-op in Review (decisions are non-undoable); routed to `DiffHistory` only in Edit sub-mode (CP6) |
 | `Esc` | `DiffExit` — gated on full resolution (see below); no-op while any hunk is pending |
 
 `y` / `n` over `a` / `r` follows the convention established by `git
@@ -1626,7 +1601,7 @@ chord) so the now-available exit is the most prominent affordance.
 > deliberately abandon it *without quitting the whole app*. Today the
 > only abandon path short of finishing the review is `Quit` (which now
 > warns via `DiffQuitConfirmModal`, §10, then exits the app); revisit
-> once in-diff edits (CP5) make a half-finished review more valuable.
+> once in-diff edits (CP6) make a half-finished review more valuable.
 
 **Modal precedence.** If any modal is open (theme picker, command
 palette, intro modal, the resolve-confirm modal itself, etc.), modal
@@ -1665,7 +1640,7 @@ overlay's display order. Because review actions aren't in the runtime
 chord cell for these rows is populated from `diff_hint()` rather than
 `KeyMap::first_key_for`; without that fallback every "Diff Review" row
 would render with a blank key. Rebinding them from the overlay is inert
-until CP5 moves the table into the layered keymap.
+until CP6 moves the table into the layered keymap.
 
 ## 10. Autosave + Ctrl-S in diff mode
 
@@ -1819,7 +1794,11 @@ external-editor resume flow (§2), not for any in-diff deferral.
 
 ## 11a. Correction — clean buffers must enter diff review, not silently reload
 
-**Status: ✅ implemented in Checkpoint 6.** Checkpoints 2 and 3 shipped the
+**Status: ✅ implemented (shipped after CP3, ahead of CP4–CP6).** This
+correction was briefly scheduled as a trailing "CP6," but it depends
+only on CP3 (the clean path's `enter_diff_mode` is wired there) and is
+a small, self-contained dispatch fix, so it landed early and is no
+longer tracked as a numbered checkpoint. Checkpoints 2 and 3 shipped the
 initial-change dispatch with a clean-buffer branch that *silently
 reloads the buffer from disk* (`App::reload_buffer_from_disk` in
 `src/app/file_changed.rs`). That contradicts the core objective stated
@@ -1937,7 +1916,7 @@ out of scope here; the default must remain "always review."
 
 ## 11b. Correction — live decision-preserving reconciliation while in diff mode (supersedes §11)
 
-**Status: planned (target: Checkpoint 4).** Supersedes §11's deferred-queue
+**Status: planned (target: Checkpoint 5).** Supersedes §11's deferred-queue
 design and the wholesale-reset behavior that ships today.
 
 ### The problem
@@ -1993,8 +1972,9 @@ changes the *new* side. Two hunks "are the same hunk" when their old-side
 ranges overlap most (ties break by smallest `old_lines.start`); this is
 exactly the §6 rule-2 matching already relied on for in-diff edits. Note
 that the §6 matching algorithm is **not yet implemented in code** (it is
-CP5 machinery); this section delivers its matching primitive for the first
-time, and CP5's post-edit recompute then reuses it.
+CP6 Edit-sub-mode machinery); this CP5 section delivers its matching
+primitive for the first time, and CP6's post-edit recompute then reuses
+it.
 
 ### The crucial difference from §6's in-diff recompute
 
@@ -2083,7 +2063,7 @@ Two new reusable helpers:
 - `match_by_old_overlap(hunk, priors: &[Hunk]) -> Option<usize>` in
   `src/diff/engine.rs` — the §6 rule-2 overlap match (largest old-side
   overlap; ties → smallest `old_lines.start`; `None` on zero overlap).
-  First concrete implementation of the §6 matching primitive; CP5's
+  First concrete implementation of the §6 matching primitive; CP6's
   post-edit recompute calls the same function.
 - `hunk_new_side_text(hunk, rope) -> String` (or a borrowed slice) — the
   hunk's new-side lines from a rope. A `Delete` hunk (empty new-side
@@ -2158,15 +2138,16 @@ before dispatch, matching the existing stamp-before-dispatch pattern in
   buffer with *current* disk; there is nothing to decide about a change
   that no longer exists.
 - **In-Edit text is discarded.** Replacing `new_buffer` with the latest
-  disk drops any unsaved Edit-sub-mode text. Acceptable: Edit is CP5 (not
+  disk drops any unsaved Edit-sub-mode text. Acceptable: Edit is CP6 (not
   yet implemented), and the external write is authoritative for the new
-  side. When CP5 lands, `reconcile_with_disk` must additionally force
+  side. When CP6 lands, `reconcile_with_disk` must additionally force
   `sub_mode` back to `Review` and reposition the cursor, since the Edit
   cursor pointed into the now-replaced rope. (A future refinement could
   three-way-merge in-flight edits; out of scope.)
-- **Undo stack cleared.** §6 rule 4 (skip stale `hunk_id`s on undo) covers
-  intra-edit reshapes, but an external rope swap is a harder break;
-  clearing `DiffHistory` is the simple, safe choice.
+- **Edit-undo stack cleared (CP6).** Once CP6 adds `DiffHistory` for
+  Edit-text undo, an external rope swap is a hard break for it; clearing
+  `DiffHistory` on reconcile is the simple, safe choice. (CP5 has no
+  `DiffHistory` to clear — decision undo was never implemented.)
 - **Focus.** `focused_id` is preserved when the hunk survives; otherwise
   focus moves to the first still-`Pending` hunk (better than the first
   hunk — it lands the user on something needing attention).
@@ -2213,9 +2194,9 @@ before dispatch, matching the existing stamp-before-dispatch pattern in
 ### Supersedes
 
 This section replaces: §11's queued-event / `force_reconcile`-after-
-resolution mechanism; CP4's "event queue" scope item and the queued-event
-re-entry tests in §13; and the single-slot queued-event field on `App`
-(§12). The watcher's `force_reconcile()` primitive remains for the
+resolution mechanism; the originally-planned "event queue" scope item and
+the queued-event re-entry tests in §13; and the single-slot queued-event
+field on `App` (§12). The watcher's `force_reconcile()` primitive remains for the
 external-editor flow (§2) — only the in-diff deferral is removed.
 
 ### Files touched
@@ -2247,9 +2228,11 @@ external-editor flow (§2) — only the in-diff deferral is removed.
 - ~~`src/app/modal/diff_exit_confirm.rs` (second-step confirmation when
   user `Esc`'s out of an in-progress diff review)~~ — **deferred** (§9):
   `Esc` is gated on full resolution, so there is no partly-reviewed
-  abandon path to confirm until in-diff edits (CP5) make one worthwhile.
+  abandon path to confirm until in-diff edits (CP6) make one worthwhile.
 - `src/app/modal/diff_resolve_confirm.rs` (confirmation gate before
   applying the merged result when all hunks are decided)
+- `src/app/modal/diff_bulk_confirm.rs` (CP4 — "Are you sure?" gate for
+  `DiffAcceptAll` / `DiffRejectAll`; near copy of `diff_resolve_confirm.rs`)
 - `src/app/modal/diff_quit_confirm.rs` (warn-before-discard gate when
   `Quit` fires during an in-progress review)
 - `tests/watcher.rs`
@@ -2293,7 +2276,9 @@ external-editor flow (§2) — only the in-diff deferral is removed.
 
 - **Watcher** (`tests/watcher.rs`): with a `tempfile`, write the file, wait, mutate it twice within 200 ms, assert at least one `FileChanged` event arrives with the latest contents (exact event count is OS-dependent — do not assert "exactly one" in the tempfile test). Use a `FakeFileWatcher` for debounce-count assertions and non-tempfile cases to avoid filesystem flakiness.
 - **Diff engine** (`tests/diff_engine.rs`): snapshot tests (`insta::assert_debug_snapshot!`) over a handful of old/new pairs, including pure insert, pure delete, replace, multi-hunk, and inline-word-only changes.
-- **Diff history** (`tests/diff_history.rs`): sequence of accept / reject / edit / undo / redo asserts. Includes the hunk-id stability case where an edit reshapes the hunk list.
+- **Diff history** (`tests/diff_history.rs`, CP6): sequence of edit / undo / redo asserts (Edit sub-mode only — decisions are not recorded). Includes the hunk-id stability case where an edit reshapes the hunk list.
+- **Accept-all / reject-all confirm gate** (`tests/ui.rs`, CP4): `DiffAcceptAll` opens the confirm modal; `[Yes]` applies the bulk decision; `[No]` / `Esc` dismisses with all prior per-hunk decisions intact.
+- **Merge-revert history entry** (`tests/editing.rs`, CP4): after resolving a diff, `editor.history` holds exactly one undo step; one `Undo` restores the pre-merge buffer, `Redo` re-applies the merged result.
 - **Diff view rendering** (`tests/diff_view.rs`): `TestBackend` snapshot tests for the stacked old-above-new layout, the decision divider's placement at the old/new boundary (delete-only / insert-only / replace), the resolved-label text, and the inline word highlight overlay.
 - **Modal flow** (extend `tests/ui.rs`): `DirtyConflictModal` → `DiffIntroModal` → diff view; opt-out via the checkbox sets `show_diff_intro = false` in the loaded config.
 - **Single intro modal on re-entry** (`src/app/actions.rs` unit test): call `enter_diff_mode` twice in succession on a clean buffer (simulating two external overwrites) and assert `modal_stack.count::<DiffIntroModal>() == 1` — re-entry must not stack a second intro modal (§8).
@@ -2303,7 +2288,7 @@ external-editor flow (§2) — only the in-diff deferral is removed.
 - **Boundary-crossing delete no-ops** (extend `tests/diff_history.rs` or in `tests/editing.rs`): enter `DiffSubMode::Edit` on a hunk; position the cursor at the first char of the focused new-side range and send `Action::DeleteCharBack` — assert the rope is unchanged, the cursor stays put, and a status flash is recorded. Repeat at the last char with `Action::DeleteCharForward`. Repeat in the middle of the range to assert the normal case still works.
 - **Cursor clamp on MoveUp / MoveDown** (extend `tests/editing.rs`): enter Edit on a multi-line hunk; from the first new-side line send `Action::MoveUp` — assert `cursor.offset` is unchanged and the flash fires. From the last new-side line send `Action::MoveDown` — same. Send `MoveUp` / `MoveDown` from interior lines to assert ordinary motion still works. Also assert `MoveLeft` at the range's first offset and `MoveRight` at the range's last offset clamp identically. Run the test matrix with `visual_line_nav = true` and `false` to cover both motion algorithms (§5).
 - **Ropey line-range invariants** (`tests/diff_engine.rs`): a small unit test that pins the ropey behavior the line-range convention in §3a relies on. Construct two ropes — one with a trailing newline, one without — and assert that `rope.byte_to_line(rope.len_bytes())` returns `rope.len_lines() - 1` in *both* cases, plus the corresponding `len_lines()` values (3 for `"a\nb\n"`, 2 for `"a\nb"`). The two cases yield the same numeric formula but point at different lines (empty trailing line vs. last content line); see §3a for the consequence. The whole half-open line-range scheme rides on this; pin it as documentation in case ropey ever changes the edge.
-- **Hunk-merge id stability** (extend `tests/diff_history.rs`): construct an `old_rope` / `new_rope` pair that produces two distinct hunks; record a decision on the first hunk (`Accepted`); enter Edit on the second hunk and insert enough lines that the inter-hunk context gap disappears so the two hunks merge under the next recomputation. Assert: (a) the merged hunk's `HunkId` equals the prior with larger old-side overlap (§6 rule 5); (b) the merged hunk's `Decision` is the inherited prior's (not forcibly reset to `Pending`); (c) the dropped prior's `Decision` is silently discarded; (d) any `DiffOp::Decision` in the undo stack referencing the dropped `HunkId` is skipped on undo without erroring (§6 rule 4).
+- **Hunk-merge id stability** (extend `tests/diff_history.rs`, CP6): construct an `old_rope` / `new_rope` pair that produces two distinct hunks; set a decision on the first hunk (`Accepted`); enter Edit on the second hunk and insert enough lines that the inter-hunk context gap disappears so the two hunks merge under the next recomputation. Assert: (a) the merged hunk's `HunkId` equals the prior with larger old-side overlap (§6 rule 5); (b) the merged hunk's `Decision` is the inherited prior's, carried across the recompute (not forcibly reset to `Pending`); (c) the dropped prior's `Decision` is silently discarded. (Decisions are not in the undo stack, so there is no stale-`hunk_id`-on-undo case to assert — see §6 rule 4.)
 
 ## 14. Implementation checkpoints
 
@@ -2311,16 +2296,24 @@ Phase 1 is broken into six checkpoints. At each boundary, all tests
 pass and the app builds and runs. Each checkpoint is a self-contained
 PR-sized unit.
 
-**Current status.** CP1, CP2, CP3, and CP6 are shipped; **CP4 and CP5
-are not yet implemented.** The checkpoints are therefore out of
-execution order: CP6 (the §11a clean-buffer correction) depends only
-on CP3 and landed before CP4/CP5. What ships today is the full Review
-flow (decide / accept-all / reject-all / resolve), raw stacked
-rendering with the layout cache, the clean-and-dirty entry paths, and
-the quit-confirm guard — but **no in-diff undo/redo (CP4), no live
-mid-review reconciliation (§11b / CP4), and no Edit sub-mode (CP5).**
-`DiffHistory` / `DiffOp` exist only as CP3 placeholders, and
-`Action::Undo` / `Action::Redo` are no-ops in diff mode.
+**Current status.** CP1, CP2, CP3, and the §11a clean-buffer
+correction are shipped; **CP4, CP5, and CP6 are not yet
+implemented.** The §11a correction was originally scheduled as a
+trailing "CP6"; it depends only on CP3 and landed early, so it is no
+longer tracked as a numbered checkpoint (see §11a). What ships today
+is the full Review flow (decide / accept-all / reject-all / resolve),
+raw stacked rendering with the layout cache, the clean-and-dirty entry
+paths, and the quit-confirm guard — but **no accept-all/reject-all
+confirmation gate (CP4), no diff-exit undo entry (CP4), no live
+mid-review reconciliation (§11b / CP5), and no Edit sub-mode (CP6).**
+Decisions are deliberately **not** undoable in Review — a mis-press is
+recovered by navigating back (`Tab` / `Shift-Tab`) and re-deciding, or
+via `DiffResetHunk`. The one bulk action that navigation can't recover
+(`DiffAcceptAll` / `DiffRejectAll` overwriting a mix of prior
+decisions) is guarded by a confirmation modal instead (CP4). In-diff
+undo/redo exists only for the Edit sub-mode (CP6) and operates on
+`new_rope` text, never on decisions; `Action::Undo` / `Action::Redo`
+are no-ops in Review.
 
 ### Checkpoint 1 — Dispatcher unification + Save hoist (no watcher, no diff) ✅ DONE
 
@@ -2346,7 +2339,7 @@ mid-review reconciliation (§11b / CP4), and no Edit sub-mode (CP5).**
 - `FileWatcher` trait + `NotifyWatcher` impl with 200 ms debounce and `force_reconcile()` (§2). Watcher worker performs all disk reads.
 - `AppEvent::FileChanged` variant; event-loop arm that handles it.
 - Own-write content-hash filter: `App::last_disk_hash`, stamped from three sources (initial load, successful save, accepted incoming `FileChanged`); consulted by the event-loop file-change arm (§2).
-- Clean buffer → silent reload from disk. **⚠️ Superseded by §11a — this is now recognized as wrong; the clean path must enter diff review, not silently reload. Fixed in Checkpoint 6.**
+- Clean buffer → silent reload from disk. **⚠️ Superseded by §11a — this is now recognized as wrong; the clean path must enter diff review, not silently reload. Fixed by the §11a correction (shipped after CP3).**
 - Dirty buffer → `DirtyConflictModal` with three working buttons: `[Save a copy]`, `[Discard & reload]` (with confirmation sub-modal), `[Keep buffer]`. The `[Merge]` button flashes "Diff mode coming soon" — it is wired in Checkpoint 3.
 - Watcher pause/resume + `force_reconcile()` around external-editor suspend.
 
@@ -2368,53 +2361,71 @@ mid-review reconciliation (§11b / CP4), and no Edit sub-mode (CP5).**
 
 **Scope:**
 - `compute` engine with line-level + inline word-level diff, including row-level table sub-diff (§3, §3a).
-- `DiffState` (without `DiffHistory` — the `history` field is
-  `DiffHistory { past: vec![], future: vec![] }` and `record()` is
-  never called in CP3. `Action::Undo` / `Action::Redo` in diff mode
-  are explicit no-ops until CP4 wires them).
+- `DiffState` (without a real `DiffHistory` — the `history` field is
+  a `DiffHistory { past: vec![], future: vec![] }` placeholder and
+  `record()` is never called in CP3. `Action::Undo` / `Action::Redo`
+  in Review stay no-ops permanently; the placeholder is dropped in CP4
+  and `DiffHistory` is reintroduced for Edit-text undo in CP6).
 - `Mode::Diff` variant; `EditorState::enter_diff_mode()` / `exit_diff_mode()`.
 - `DiffView` raw rendering with `DiffVisualLine` model (§5): stacked old/new with a synthetic decision divider at the boundary; focus shown by focused/unfocused background intensity (no gutter).
 - `DiffIntroModal` with opt-out checkbox (§8).
 - Wire `DirtyConflictModal`'s `[Merge]` button to enter diff mode.
-- Actions: `DiffNext`, `DiffPrev`, `DiffAcceptHunk`, `DiffRejectHunk`, `DiffAcceptAll`, `DiffRejectAll`, `DiffExit`. Review sub-mode only — no `DiffSubMode` enum yet. `DiffEnterEdit` and `DiffExitEdit` are added to the `Action` enum and keymap in this checkpoint (consistent with the "fully defined upfront" convention) but are explicit no-ops in the dispatch — they are wired in Checkpoint 5.
+- Actions: `DiffNext`, `DiffPrev`, `DiffAcceptHunk`, `DiffRejectHunk`, `DiffAcceptAll`, `DiffRejectAll`, `DiffExit`. Review sub-mode only — no `DiffSubMode` enum yet. `DiffEnterEdit` and `DiffExitEdit` are added to the `Action` enum and keymap in this checkpoint (consistent with the "fully defined upfront" convention) but are explicit no-ops in the dispatch — they are wired in Checkpoint 6.
 - Theme additions (§7), status bar + hint bar diff coloring.
 - Keybinding overlay "Diff Review" section (§9).
 - Autosave + `Action::Save` gated in diff mode; `SaveCopy` allowed (§10).
-- Resolution: when all decisions are non-`Pending`, show `DiffResolveConfirmModal` (§8). On confirmation, swap resolved rope into buffer, flash "Diff resolved", exit diff mode. Dismissing the modal returns to Review with all decisions intact. **Decision-only history is in-memory and lost on exit; resolution writes nothing to `editor.history` in CP3.** The merge-revert entry described in §6 is introduced in CP4 alongside `DiffHistory`.
+- Resolution: when all decisions are non-`Pending`, show `DiffResolveConfirmModal` (§8). On confirmation, swap resolved rope into buffer, flash "Diff resolved", exit diff mode. Dismissing the modal returns to Review with all decisions intact. **In CP3, resolution writes nothing to `editor.history`.** The merge-revert entry described in §6 is introduced in CP4.
 
 **Tests:** `tests/diff_engine.rs` (snapshot tests), `tests/diff_view.rs` (TestBackend snapshots), modal intro flow in `tests/ui.rs`, autosave gating in `tests/editing.rs`.
 
 **Verifiable live:** full review-and-decide flow works; accept/reject each hunk, accept-all/reject-all; `Undo` is a no-op (no history yet).
 
 **CP3 deviations from the plan as written:**
-- The "per-sub-mode keymap layer" called for in §10 is implemented as a hard-coded table (`DIFF_REVIEW_BINDINGS` in `src/input/mode_handler/diff_keys.rs`) rather than a layered `KeyMap` lookup — Review keys must win over the global keymap (`Tab` → `InsertTab`), and Edit's layered keymap doesn't land until CP5.  This table is the **single source of truth** for review-mode bindings: `diff_action_for()` drives the input handler (`default.rs::diff_review_handle` now just delegates to it), and `diff_hint()` feeds every place that *displays* a review key — the bottom-bar hint row, the keybinds-overlay "Diff Review" section, the focused decision-divider prompt, and the diff-intro modal — so behavior and the advertised glyphs can't drift.  (Originally CP3 hard-coded the mapping inline in `diff_review_handle` and re-spelled the glyphs in each consumer; that duplication was consolidated into this table.)  CP5 will rework the table into a proper layered keymap when the Edit/Review split lands and rebinding becomes meaningful.
+- The "per-sub-mode keymap layer" called for in §10 is implemented as a hard-coded table (`DIFF_REVIEW_BINDINGS` in `src/input/mode_handler/diff_keys.rs`) rather than a layered `KeyMap` lookup — Review keys must win over the global keymap (`Tab` → `InsertTab`), and Edit's layered keymap doesn't land until CP6.  This table is the **single source of truth** for review-mode bindings: `diff_action_for()` drives the input handler (`default.rs::diff_review_handle` now just delegates to it), and `diff_hint()` feeds every place that *displays* a review key — the bottom-bar hint row, the keybinds-overlay "Diff Review" section, the focused decision-divider prompt, and the diff-intro modal — so behavior and the advertised glyphs can't drift.  (Originally CP3 hard-coded the mapping inline in `diff_review_handle` and re-spelled the glyphs in each consumer; that duplication was consolidated into this table.)  CP6 will rework the table into a proper layered keymap when the Edit/Review split lands and rebinding becomes meaningful.
 - `App::dispatch_diff_action` is the diff-mode equivalent of `edit_ops::apply` — it is invoked from `dispatch_action` after `diff_safe_action` filters the action.  This is cleaner than threading every diff action through `edit_ops::apply` (where it would need to access App state to push modals / flash hints) and matches the "App owns diff-mode dispatch" framing from §10.
 - `Action::Esc` in diff Review wires straight to `Action::DiffExit` (via `diff_review_handle`).  `DiffExit` is gated on full resolution: a no-op (plus an info flash) while any hunk is still pending, or the `DiffResolveConfirmModal` once everything is decided (§8/§9).  Diff mode therefore can't be left via `Esc` until the review is complete; `Quit` (`Ctrl+Q`) is the abandon-everything path and now warns first via `DiffQuitConfirmModal` (§10) before discarding the review and quitting.  A dedicated `DiffExitConfirmModal` (deliberate-discard for the *pending* case, without quitting the app) remains deferred.
-- The diff-Review hint row in the bottom bar sources its chord glyphs from `diff_hint()` (the shared `diff_keys` table) rather than `chords_from(keymap, ...)`, since review keys aren't in the runtime `KeyMap`.  The labels (`Next`, `Accept`, …) stay local to the hint row — only the glyph is single-sourced.  When CP5 moves the table to a layered keymap, the hint row switches to the keymap-driven helpers.
+- The diff-Review hint row in the bottom bar sources its chord glyphs from `diff_hint()` (the shared `diff_keys` table) rather than `chords_from(keymap, ...)`, since review keys aren't in the runtime `KeyMap`.  The labels (`Next`, `Accept`, …) stay local to the hint row — only the glyph is single-sourced.  When CP6 moves the table to a layered keymap, the hint row switches to the keymap-driven helpers.
 - `EditorState::exit_diff_mode` returns the editor to `Mode::Rendered` rather than restoring the pre-diff mode.  In CP3 this is safe because the only entry path is from `DirtyConflictModal::[Merge]`, and the user typically wants to return to editing after resolving.  If a future path enters diff mode from Preview / Raw, this should be revisited.
 - Several files shipped in CP3 that the lists above omit: `src/diff/layout.rs` (new — the `DiffVisualLine` model + per-width row-count cache on `DiffState`, the "Possible Improvements" memoisation item brought forward), `src/app/diff_advance.rs` (new — the deferred post-decision focus advance, so a resolved checkbox is visible before focus jumps), `src/document/buffer.rs` (`Buffer::set_rope`, used by the resolution swap — §3 attributes this to §6 but it was needed in CP3), `src/app/actions.rs` (`dispatch_diff_action`, resolution path), `src/app/file_changed.rs` (wire `[Merge]` → `enter_diff_mode`), and `EditorState::pre_diff_scroll` / `pending_focus_scroll` fields on `src/editor/state.rs`.
 
-### Checkpoint 4 — Decision undo/redo + live reconciliation (§11b)
+### Checkpoint 4 — Accept-all / reject-all confirmation gate + diff-exit history entry
 
-**New files:** `src/diff/history.rs` (the `DiffHistory` / `DiffOp` types, moved out of the CP3 placeholder in `src/diff/state.rs`), `tests/diff_history.rs`
+**New files:** `src/app/modal/diff_bulk_confirm.rs` (the "Are you sure?" gate for `DiffAcceptAll` / `DiffRejectAll` — a near copy of the existing `DiffResolveConfirmModal` / `DiffQuitConfirmModal` "Are you sure?" modals)
 
-**Modified files:** `src/diff/state.rs` (move the `DiffHistory` / `DiffOp` placeholder out to `history.rs`; record decision ops into `DiffHistory`; add `reconcile_with_disk` + `ReconcileOutcome` + `first_pending_id` per §11b), `src/diff/engine.rs` (`match_by_old_overlap` + `hunk_new_side_text` per §11b), `src/document/history.rs` (`History::reset_with`; promote `try_merge` to `pub(crate)` and fix its stale docstrings per §6), `src/app/actions.rs` (allowlist `Undo`/`Redo` in `diff_safe_action` and route them to `DiffHistory` from `dispatch_diff_action`; record `DiffAcceptHunk` / `DiffRejectHunk` / `DiffResetHunk` / `DiffAcceptAll` / `DiffRejectAll` as `DiffOp`s; the merge-revert `reset_with` in `apply_diff_resolution`), `src/app/file_changed.rs` (the `diff.is_some()` reconciliation branch + `reconcile_diff_with_disk` per §11b — replaces the §11 queue)
+**Modified files:** `src/app/actions.rs` (route `DiffAcceptAll` / `DiffRejectAll` through the new confirm modal in `dispatch_diff_action`; the merge-revert `reset_with` in `apply_diff_resolution`), `src/document/history.rs` (`History::reset_with`; promote `try_merge` to `pub(crate)` and fix its stale docstrings per §6), `src/diff/state.rs` (drop the vestigial CP3 `DiffHistory` placeholder if still present — decision undo is not implemented; `DiffHistory` proper lands with the Edit sub-mode in CP6), `tests/ui.rs` (bulk-confirm modal flow), `tests/editing.rs` (merge-revert history entry)
 
 **Scope:**
-- `DiffHistory` / `DiffOp` move into their own `src/diff/history.rs` (the CP3 placeholder currently lives in `src/diff/state.rs`); this creates the file declared in §3. `DiffOp::Decision` and `DiffOp::BulkDecision` only — no `Edit` variant yet (that is CP5).
-- **Every decision mutator records a `DiffOp`.** `DiffAcceptHunk` / `DiffRejectHunk` push `DiffOp::Decision { before, after }`; `DiffAcceptAll` / `DiffRejectAll` push `DiffOp::BulkDecision`; **`DiffResetHunk` (focused decision → `Pending`) records a `DiffOp::Decision` too, so reset is undoable like any other decision.** (`DiffResetHunk` is a shipped action — see §9 — that postdates §6's original "accept/reject/skip/bulk" enumeration.)
-- `Action::Undo` / `Action::Redo` routed to `DiffHistory` while in diff mode; main `History` paused. **CP4 implements only the Review/decision-only undo path** (`decision_history_mut()` → `undo_decision_only()`): no buffer mutation, no hunk recompute. The `DiffSubMode` / `edit_target()` / `ActiveHistory` branching shown in the §4a and §6 undo-dispatch snippets is CP5 scaffolding (sub-modes do not exist yet) — ignore it here. **Dispatch site:** add `Undo` / `Redo` to `diff_safe_action`'s allowlist (`src/app/actions.rs`) and handle them in `dispatch_diff_action`, **not** in `edit_ops.rs` — that file's `Undo`/`Redo` arms target the main `History` and are unreachable in diff mode once `diff_safe_action` gates input through the diff dispatcher.
-- **Resolution checkpoint:** introduce the single synthetic merge-revert `EditDelta` and the `History::reset_with(EditDelta)` setter (§6). After CP4, exiting diff mode leaves `editor.history` with that single entry as its sole undo step (replacing the CP3 behavior where exit wrote nothing to history).
+- **Accept-all / reject-all confirmation modal.** `DiffAcceptAll` / `DiffRejectAll` no longer apply immediately; each pushes a dismissable confirm modal ("Apply *accept* / *reject* to all remaining hunks?") with `[Yes]` / `[No]`. Confirming applies the bulk decision; dismissing (`Esc` / `[No]`) returns to Review with all decisions intact. This is the replacement for decision undo/redo in the one case navigation can't recover — an accidental bulk flip that overwrites a mix of prior per-hunk decisions. Single-hunk mistakes are recovered by `Tab` / `Shift-Tab` + re-decide or `DiffResetHunk`, so no per-decision undo is added. Model the new modal on `DiffResolveConfirmModal` (same `ModalView` + struct-field `kind` / `dismissable` pattern, §8 / §"Modals, overlays" architectural notes).
+- **Resolution checkpoint / diff-exit history entry:** introduce the single synthetic merge-revert `EditDelta` and the `History::reset_with(EditDelta)` setter (§6). After CP4, exiting diff mode leaves `editor.history` with that single entry as its sole undo step (replacing the CP3 behavior where exit wrote nothing to history). One `Ctrl-Z` from normal editing mode then reverts the whole merge; one `Ctrl-Y` re-applies it.
+- **No decision undo/redo.** `Action::Undo` / `Action::Redo` stay no-ops in Review (the CP3 behavior is retained, not extended). The `DiffHistory` / `DiffOp` decision machinery sketched in earlier drafts is dropped; `DiffHistory` is (re)introduced for Edit-text undo only in CP6.
 - **Esc / exit handling already shipped (§9) and is out of CP4 scope.** `Action::DiffExit` is gated on full resolution: pending hunks → no-op + flash; all-resolved → `DiffResolveConfirmModal`. The dedicated `DiffExitConfirmModal` for deliberately abandoning a *partly*-reviewed diff is **deferred** (§9) — CP4 does not add it.
-- ~~Queued `FileChanged` event re-entry: after resolution, re-enter through the standard dirty-check path (§11).~~ **Superseded by §11b** — replaced with live decision-preserving reconciliation (`DiffState::reconcile_with_disk` + the `diff.is_some()` branch in `handle_file_changed`); no queue, no after-resolution re-entry.
 
-**Tests:** `tests/diff_history.rs` (accept/reject/**reset**/bulk + undo/redo sequences, including an undo-of-reset case), and the §11b reconciliation tests (`reconcile_*` units; `external_change_in_diff_preserves_decisions`; `external_revert_in_diff_exits_diff`).
+**Tests:** bulk-confirm modal flow in `tests/ui.rs` (accept-all opens the modal; `[Yes]` applies, `[No]` / `Esc` leaves decisions intact); merge-revert entry in `tests/editing.rs` (after resolution `editor.history` holds exactly one undo step; one `Undo` restores the pre-merge buffer, `Redo` re-applies the merge).
 
-**Verifiable live:** cycle accept/reject/reset with Ctrl-Z undoing each decision (including reset); editing the file mid-review recomputes in place, preserving decisions on unchanged hunks and resetting only the hunks the external write touched (§11b).
+**Verifiable live:** press accept-all / reject-all → confirmation prompt appears; confirm to apply, dismiss to keep current decisions. After resolving a diff, `Ctrl-Z` from normal mode reverts the entire merge and `Ctrl-Y` re-applies it.
 
-### Checkpoint 5 — Edit sub-mode + clamped editing + Edit undo
+### Checkpoint 5 — Live mid-review reconciliation (§11b)
 
-**Modified files:** `src/diff/state.rs` (`DiffSubMode`, sub-mode tracking, `DiffState::apply_edit`), `src/diff/hunk.rs` (`HunkId` stability logic), `src/diff/history.rs` (`DiffOp::Edit`, word-group merging), `src/editor/state.rs` (mode-aware `apply_delta` branch, `edit_target()` accessor), `src/editor/edit_ops.rs` (in-hunk edit gating, boundary-crossing delete no-ops, `DiffEnterEdit`/`DiffExitEdit`, Undo/Redo diff-mode routing), `src/ui/diff_view.rs` (Edit cursor rendering), `src/ui/status_bar.rs` (`DIFF·EDIT` badge), `src/ui/bottom_region.rs` (Edit hint set), `src/config/keymap.rs` (`DiffEnterEdit`/`DiffExitEdit` default binds)
+**New files:** *(none)*
+
+**Modified files:** `src/app/file_changed.rs` (the `diff.is_some()` reconciliation branch, ordered before filter 2, + `reconcile_diff_with_disk` per §11b — replaces the §11 deferred-queue design), `src/diff/state.rs` (`reconcile_with_disk` + `ReconcileOutcome` + `first_pending_id` per §11b), `src/diff/engine.rs` (`match_by_old_overlap` + `hunk_new_side_text` per §11b), `tests/diff_view.rs` + `src/app/file_changed.rs` `#[cfg(test)]` (reconciliation tests)
+
+**Scope:**
+- Implement §11b: an external write that lands while the user is mid-review recomputes the diff **in place** instead of wholesale-resetting it. Decisions on hunks the write did not touch are preserved (matched by old-side overlap); only hunks the write actually changed reset to `Pending`.
+- `DiffState::reconcile_with_disk` + `ReconcileOutcome` + `first_pending_id` helper.
+- `match_by_old_overlap` + `hunk_new_side_text` in the engine — the §6 `HunkId`-stability matching primitive, implemented for the first time here; CP6's post-edit recompute reuses it.
+- An external revert (disk contents == original buffer) exits diff mode with the buffer untouched.
+- Supersedes §11's queued-event re-entry entirely (no queue, no after-resolution re-entry); see §11b "Supersedes".
+
+**Tests:** `reconcile_*` units; `external_change_in_diff_preserves_decisions`; `external_revert_in_diff_exits_diff` (see §11b "Tests").
+
+**Verifiable live:** while reviewing, edit the file again in another editor / have an agent rewrite it — the diff recomputes in place, decisions on unchanged hunks survive, and only the newly-changed hunks reset to pending.
+
+### Checkpoint 6 — Edit sub-mode + clamped editing + Edit undo
+
+**New files:** `src/diff/history.rs` (`DiffHistory` / `DiffOp::Edit`, word-group merging — the file declared in §3; created here, since decision undo was dropped from CP4), `tests/diff_history.rs`
+
+**Modified files:** `src/diff/state.rs` (`DiffSubMode`, sub-mode tracking, `DiffState::apply_edit`), `src/diff/hunk.rs` (`HunkId` stability logic), `src/editor/state.rs` (mode-aware `apply_delta` branch, `edit_target()` accessor), `src/editor/edit_ops.rs` (in-hunk edit gating, boundary-crossing delete no-ops, `DiffEnterEdit`/`DiffExitEdit`, Undo/Redo diff-mode routing), `src/ui/diff_view.rs` (Edit cursor rendering), `src/ui/status_bar.rs` (`DIFF·EDIT` badge), `src/ui/bottom_region.rs` (Edit hint set), `src/config/keymap.rs` (`DiffEnterEdit`/`DiffExitEdit` default binds)
 
 **Scope:**
 - `DiffSubMode::Review` / `DiffSubMode::Edit` enum and sub-mode dispatch.
@@ -2423,31 +2434,16 @@ mid-review reconciliation (§11b / CP4), and no Edit sub-mode (CP5).**
 - Hard-clamped cursor motion within the focused hunk's new-side range.
 - Boundary-crossing delete no-ops (`Backspace` at start, `Delete` at end) with status flash.
 - Newline insertion expands the focused hunk downward.
-- Hunk re-computation with `HunkId` stability: focused hunk preserved by construction, others matched by old-side range (§6).
-- `DiffOp::Edit { delta: EditDelta }` with word-group merging (§6).
-- Undo/Redo diff-mode dispatch: Decision undo flips a flag, Edit undo applies inverse delta + recomputes hunks (§4a, §6).
+- Hunk re-computation with `HunkId` stability: focused hunk preserved by construction, others matched by old-side range (§6). Reuses the `match_by_old_overlap` primitive landed in CP5.
+- `DiffHistory` + `DiffOp::Edit { delta: EditDelta }` with word-group merging (§6). This is the first time `DiffHistory` exists for real — it records Edit-text ops only, never decisions.
+- Undo/Redo diff-mode dispatch (Edit sub-mode only): Edit undo applies the inverse delta + recomputes hunks (§4a, §6). Review decisions remain non-undoable.
 - `DIFF·EDIT` status badge, Edit hint set.
 
-**Tests:** hunk-id stability across edits, edit-then-decision interleaving, boundary-clamp assertions, delete-hunk-to-replace conversion.
+**Tests:** `tests/diff_history.rs` (Edit op + word-group merge + undo/redo sequences), hunk-id stability across edits, boundary-clamp assertions, delete-hunk-to-replace conversion.
 
 **Verifiable live:** enter Edit on an add hunk, type replacement text, Esc back to Review, accept; Ctrl-Z reverses word-groups; enter Edit on a delete hunk, type replacement, accept.
-
-### Checkpoint 6 — Review-on-clean correction (§11a) ✅ DONE
-
-**Modified files:** `src/app/file_changed.rs` (clean branch → `enter_diff_mode`; module + `reload_buffer_from_disk` doc comments; rewrite/extend the clean-buffer tests)
-
-**Scope:**
-- Implement §11a: in `App::handle_file_changed`, the clean-buffer branch enters diff review (`self.enter_diff_mode(change.contents)`) instead of `reload_buffer_from_disk`. Both no-op filters (own-write, disk-equals-buffer) and the dirty `DirtyConflictModal` path are unchanged.
-- `reload_buffer_from_disk` retained solely as the `[Discard & reload]` implementation; doc comment updated.
-- Doc-comment correction in `file_changed.rs` to match the new objective.
-
-**Tests:** rewrite `external_change_with_clean_buffer_reloads_silently` → `external_change_with_clean_buffer_enters_diff` (asserts diff mode entered, buffer NOT overwritten, hash stamped); retain `own_write_echo_is_dropped` and `disk_equal_to_buffer_skips_modal_and_stamps_hash`; add a clean + byte-identical case asserting no diff entry.
-
-**Verifiable live:** with a freshly-opened (clean) file, edit it in another editor / have an agent rewrite it — diff review opens and the original on-screen content is preserved until the user resolves; nothing is silently overwritten.
-
-**Dependency note:** the clean path's `enter_diff_mode` is wired in CP3, so CP6 is a small, self-contained dispatch fix that can land any time after CP3. It does not depend on CP4/CP5.
 
 ---
 
 ## Possible Improvements:
-  - ~~The DiffViewState::visual_lines cache is rebuilt every frame; CP5/CP4 could memoize on hunks change.~~ ✅ Done: the flat visual-line list and a per-width row-count cache now live on `DiffState` (`src/diff/layout.rs`, behind a `RefCell`), built once per layout version and shared by the renderer and the scroll arithmetic. `DiffState::invalidate_layout()` forces a rebuild after the CP5 Edit sub-mode reshapes the hunk list.
+  - ~~The DiffViewState::visual_lines cache is rebuilt every frame; a later checkpoint could memoize on hunks change.~~ ✅ Done: the flat visual-line list and a per-width row-count cache now live on `DiffState` (`src/diff/layout.rs`, behind a `RefCell`), built once per layout version and shared by the renderer and the scroll arithmetic. `DiffState::invalidate_layout()` forces a rebuild after the CP6 Edit sub-mode reshapes the hunk list.
