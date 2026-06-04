@@ -5,7 +5,7 @@
 //!
 //! | Button | Action |
 //! |---|---|
-//! | `[Merge]` | Enter diff mode (wired in CP3).  Today flashes the placeholder. |
+//! | `[Merge]` | Enter diff mode to review the on-disk change hunk by hunk. |
 //! | `[Save a copy]` | Push the [`DirtyConflictSaveCopyModal`] sibling for path entry; on confirm save the current buffer to the chosen path, then reload the on-disk contents into the editor's buffer.  Carries `<stem>.local.<ext>` as the suggested filename. |
 //! | `[Discard & reload]` | Push the [`super::DirtyConflictDiscardConfirmModal`] for a destructive-confirm step; on confirm drop the in-memory buffer and load the on-disk contents. |
 //! | `[Keep buffer]` | Close the modal; do nothing.  Buffer remains dirty.  Equivalent to the legacy "Cancel" — explicit so the user understands the consequence. |

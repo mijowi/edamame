@@ -136,8 +136,7 @@ pub struct EditorViewState {
     pub preview: PreviewState,
     pub rendered: RenderedViewState,
     pub raw: RawViewState,
-    /// Diff-mode view state — rebuilt every frame in CP3, will be
-    /// memoised on hunk-list changes when CP5 lands.
+    /// Diff-mode view state.
     pub diff: DiffViewState,
     /// Layout published by the most recent render so the App's mouse
     /// layer can hit-test the scrollbar gutter without re-deriving the

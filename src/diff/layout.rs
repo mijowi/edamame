@@ -24,8 +24,9 @@
 //! The flat line list is
 //! built once, and a small LRU of per-width prefix-sum caches
 //! ([`VisualRowCache`]) answers row-count / scroll-position queries in
-//! `O(1)` / `O(log N)`.  A future Edit sub-mode (CP5) that mutates the
-//! hunk list calls [`DiffState::invalidate_layout`] to force a rebuild.
+//! `O(1)` / `O(log N)`.  Anything that mutates the hunk list (e.g. a
+//! reconcile, or a future Edit mode) calls
+//! [`DiffState::invalidate_layout`] to force a rebuild.
 
 use ropey::Rope;
 
@@ -222,8 +223,8 @@ impl DiffState {
     }
 
     /// Drop the cached layout so the next query rebuilds it.  Called
-    /// after any reshape of the hunk list (CP5 Edit sub-mode); a
-    /// no-op-costing safety valve in CP3/CP4 where the list is fixed.
+    /// after any reshape of the hunk list (e.g. a reconcile, or a
+    /// future Edit mode); a cheap safety valve while the list is fixed.
     #[allow(dead_code)]
     pub fn invalidate_layout(&self) {
         let mut cache = self.layout.borrow_mut();

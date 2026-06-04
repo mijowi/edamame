@@ -30,9 +30,8 @@ impl<'k> ModeHandler for DefaultHandler<'k> {
         // `n` / `Y` / `N` / `i` / Tab / Shift-Tab / Enter / Esc) are
         // mapped to diff actions before the global keymap gets a
         // look-in, because the global keymap binds Tab to
-        // `InsertTab` etc.  This is the "per-sub-mode keymap layer"
-        // §10 calls for; CP3 hard-codes Review since Edit lands in
-        // CP5.
+        // `InsertTab` etc.  Review's bindings are hard-coded here;
+        // there is no Edit sub-mode yet.
         if state.mode == Mode::Diff {
             if let Some(action) = diff_review_handle(&event) {
                 return Some(action);
@@ -151,8 +150,8 @@ fn preview_safe_action(action: &Action) -> bool {
 ///
 /// Hard-coded rather than read from a separate KeyMap because the
 /// review bindings need to win over the global keymap's `Tab` →
-/// `InsertTab`.  CP5 will move this to a proper layered keymap
-/// when Edit sub-mode lands and the rebind story matters.
+/// `InsertTab`.  This could become a proper layered keymap once an
+/// Edit sub-mode lands and rebinding review keys matters.
 ///
 /// The mapping itself lives in `diff_keys::DIFF_REVIEW_BINDINGS` — the
 /// single source of truth shared with the hint bar, keybinds overlay,

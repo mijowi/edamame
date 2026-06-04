@@ -1,11 +1,14 @@
 //! `DiffState` — the in-flight review session attached to
 //! `EditorState::diff` while `Mode::Diff` is active.  Owns the
 //! pre-change rope (`old_rope`), the working new-side buffer, the
-//! hunk list, per-hunk decisions, focus, and an undo stack that
-//! lights up in CP4.
+//! hunk list, per-hunk decisions, focus, and a per-diff undo stack
+//! reserved for in-diff text edits.
 //!
-//! In CP3 the stack stays empty; `Action::Undo` / `Action::Redo`
-//! in diff mode are explicit no-ops until the wiring lands.
+//! The undo stack is currently unused: hunk decisions are not
+//! undoable (a mis-press is recovered by navigating back and
+//! re-deciding), and the in-diff text-editing mode that will populate
+//! the stack is not implemented yet.  `Action::Undo` / `Action::Redo`
+//! are no-ops in diff Review.
 
 use std::cell::RefCell;
 
@@ -26,15 +29,15 @@ pub struct DiffState {
     /// recomputations after in-diff edits run against `old_rope` and
     /// the mutated `new_buffer`.
     pub old_rope: Rope,
-    /// Working copy of the new-side text.  In CP3 this is read-only
-    /// from a user perspective (no Edit sub-mode yet) — the buffer
-    /// wrapper still exists so CP5 can route diff-Edit writes through
-    /// the same `Buffer::insert` / `Buffer::remove` API.  The text on
-    /// disk seeded this buffer at diff entry.
+    /// Working copy of the new-side text.  Today this is read-only
+    /// from a user perspective (no in-diff text editing yet) — the
+    /// buffer wrapper exists so a future Edit mode can route diff-side
+    /// writes through the same `Buffer::insert` / `Buffer::remove`
+    /// API.  The text on disk seeded this buffer at diff entry.
     pub new_buffer: Buffer,
-    /// Cursor into `new_buffer.rope()`.  Used by CP5's Edit sub-mode;
-    /// in CP3 it sits at the start of the focused hunk's new-side
-    /// range but is otherwise unread.
+    /// Cursor into `new_buffer.rope()`.  Reserved for a future in-diff
+    /// Edit mode; today it sits at the start of the focused hunk's
+    /// new-side range but is otherwise unread.
     #[allow(dead_code)]
     pub cursor: Cursor,
     /// Per-hunk diff list, ordered by document position.
@@ -42,18 +45,20 @@ pub struct DiffState {
     /// Decision per hunk; `decisions[i]` corresponds to `hunks[i]`.
     pub decisions: Vec<Decision>,
     /// Stable id of the currently focused hunk.  Stored as an id
-    /// (not an index) so it survives the index shuffle that future
-    /// in-diff edits will introduce (Phase 1 §6 "HunkId stability").
+    /// (not an index) so it survives the index shuffle a recompute can
+    /// introduce — e.g. when an external change is reconciled into the
+    /// review, or a future in-diff edit reshapes the hunk list.
     pub focused_id: HunkId,
     /// Monotonic id allocator — kept on the state so a follow-up
-    /// recompute (CP4 / CP5) can mint fresh ids without colliding
-    /// with previously-issued ones.  Unused in CP3; preserved so the
-    /// follow-up checkpoints don't need to re-thread the allocator
-    /// through every call site.
+    /// recompute can mint fresh ids without colliding with
+    /// previously-issued ones.  Currently unused; preserved so the
+    /// recompute path won't need to re-thread the allocator through
+    /// every call site.
     #[allow(dead_code)]
     pub(crate) ids: HunkIdAllocator,
-    /// Undo / redo stack for in-diff operations (`Decision`,
-    /// `BulkDecision`, `Edit`).  Empty in CP3; wired in CP4 / CP5.
+    /// Per-diff undo / redo stack, reserved for in-diff text edits.
+    /// Currently always empty: decisions are not undoable, and the
+    /// Edit mode that would record edits is not implemented yet.
     #[allow(dead_code)]
     pub history: DiffHistory,
     /// True when at least one table couldn't be row-diffed because its
@@ -68,9 +73,9 @@ pub struct DiffState {
     pub(crate) layout: RefCell<DiffLayoutCache>,
 }
 
-/// CP3 placeholder for the per-diff undo stack — concrete `DiffOp`
-/// variants and merge/undo logic land in CP4 (`Decision` /
-/// `BulkDecision`) and CP5 (`Edit`).
+/// Placeholder for the per-diff undo stack.  It will record in-diff
+/// text edits once an Edit mode lands; hunk decisions are deliberately
+/// not recorded here, as they are not undoable.
 #[derive(Debug, Default)]
 pub struct DiffHistory {
     #[allow(dead_code)]
@@ -79,13 +84,14 @@ pub struct DiffHistory {
     pub future: Vec<DiffOp>,
 }
 
-/// CP3 placeholder — the real variants (Decision, BulkDecision,
-/// Edit) land in CP4 / CP5.  An empty enum would make the field
-/// type unconstructible, but `record` is never called in CP3 so the
+/// Placeholder enum for the per-diff undo stack.  An empty enum would
+/// make [`DiffHistory`]'s `Vec<DiffOp>` fields unconstructible, so a
+/// single no-op variant stands in until an in-diff Edit mode adds a
+/// real text-edit variant.  `record` is never called today, so the
 /// stack stays empty.
 #[derive(Debug, Clone)]
 pub enum DiffOp {
-    /// Intentionally unused in CP3; placeholder for the CP4 variant.
+    /// Intentionally unused; placeholder until the edit variant lands.
     #[allow(dead_code)]
     Placeholder,
 }
@@ -135,8 +141,8 @@ impl DiffState {
     }
 
     /// Look up the focused hunk's index in `hunks` (or `None` when
-    /// `focused_id` has gone stale — possible after a CP5 recompute
-    /// drops the prior hunk).
+    /// `focused_id` has gone stale — possible after a recompute drops
+    /// the prior hunk).
     pub fn focused_idx(&self) -> Option<usize> {
         self.hunks.iter().position(|h| h.id == self.focused_id)
     }
@@ -170,7 +176,7 @@ impl DiffState {
 
     /// The focused hunk's current decision, if focus is still valid.
     /// Used by the hint line to show the `Reset` chord only when there
-    /// is actually a decision to undo.
+    /// is actually a decision to reset.
     pub fn focused_decision(&self) -> Option<Decision> {
         self.focused_idx().map(|idx| self.decisions[idx])
     }

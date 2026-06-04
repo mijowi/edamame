@@ -524,11 +524,12 @@ impl EditorState {
     }
 
     /// Drop the active diff review, restore the pre-diff scroll, and
-    /// return to `Mode::Rendered`.  Used both on the resolution
-    /// happy path (after `Buffer::set_rope` swaps the merged rope
-    /// in) and on the `[Discard]` exit-confirm path (CP4).  The
-    /// caller is responsible for any buffer / cursor side effects
-    /// before this; this helper only cleans up the diff fields.
+    /// return to `Mode::Rendered`.  Used both on the resolution happy
+    /// path (after `Buffer::set_rope` swaps the merged rope in) and on
+    /// the discard path that abandons the review without applying it
+    /// (e.g. quitting mid-review).  The caller is responsible for any
+    /// buffer / cursor side effects before this; this helper only
+    /// cleans up the diff fields.
     pub fn exit_diff_mode(&mut self) {
         self.diff = None;
         self.scroll = self.pre_diff_scroll;

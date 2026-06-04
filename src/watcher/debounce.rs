@@ -40,7 +40,7 @@ impl Debouncer {
 
     /// True when a fire is pending (regardless of whether the
     /// deadline has elapsed yet).
-    #[allow(dead_code)] // used by tests and by future CP3+ work
+    #[allow(dead_code)] // used by tests; reserved for future use
     pub fn is_pending(&self) -> bool {
         self.pending_since.is_some()
     }

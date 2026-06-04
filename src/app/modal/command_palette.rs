@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn dispatch_action_save_writes_to_disk_and_clears_dirty() {
-        // Single source of truth for the post-CP1 save flow: the
+        // Single source of truth for the unified save flow: the
         // keystroke arm (`dispatch_single_key`) and the palette modal
         // both funnel through `App::dispatch_action`, which routes
         // `Action::Save` to `handle_app_action` → `save_buffer` →
