@@ -783,7 +783,9 @@ pub enum DiffSubMode {
 - **`Review`** (default on entry). No active text cursor. Focus is on
   the currently selected hunk, indicated by its stronger add/delete
   background fill (non-focused hunks recede to a fainter wash) and a
-  bolded decision divider.
+  decision divider that gains a `>` caret and, while pending, an inline
+  `Accept [y] · Reject [n]` prompt (the glyphs sourced from the shared
+  `diff_keys` table).
   Decision keys (`y` / `n` / `Shift-Y` / `Shift-N`) work as bare keys
   because no text is being typed. Hunk navigation: `Tab` /
   `Shift-Tab`. Entering Edit: `Enter` or `i`. Exiting diff: `Esc`,
@@ -909,9 +911,9 @@ For each visible visual row, the widget emits a `Line<'static>` with:
 - **Unchanged context** — borrowed from `new_rope`, no `Line.style`.
 - **Delete-side lines** — from `old_rope`. `Line.style` is `theme.diff_delete_line` when the line belongs to the focused hunk, else the weaker `theme.diff_delete_line_unfocused`.
 - **Add-side lines** — from `new_rope`. `Line.style` is `theme.diff_add_line` (focused) or `theme.diff_add_line_unfocused` (non-focused), with per-`Span` overrides on the inline-changed word ranges. The inline style is *also* focus-aware: a focused hunk uses `theme.diff_add_inline` / `diff_delete_inline` (saturated, darkened-toward-`bg`, bold), while a non-focused hunk uses the muted `theme.diff_add_inline_unfocused` / `diff_delete_inline_unfocused` (a surface-derived tint, no bold) so the changed word recedes with the rest of the dimmed hunk instead of popping. The focused full-line fill is pulled a shade darker (blended toward `bg`, see §9) so the saturated inline-change highlight has enough contrast to read against the surrounding row.
-- **Decision divider** — a synthetic line (no backing rope line) emitted at the old/new boundary of every hunk via `DiffLineSource::Decision`, so it sits below a delete-only hunk and above an insert-only one. It carries the accept/reject checkbox plus a resolved label: `[ ]` while Pending, `[Y] Accepted`, `[N] Rejected`. The `[Y]` / `[N]` glyphs spell the yes/no answer, so the checkbox reads as the decision itself. The **focused** hunk's divider uses the per-state `theme.diff_decision_pending` / `diff_decision_accepted` / `diff_decision_rejected` (a full-width `secondary`-tinted background — set as the line's base style so the trailing-cell fill paints the whole row — with the per-state fg hue: muted while Pending, green/red once resolved) plus an added bold, so it reads as the actionable strip between the two sides. A **non-focused** hunk's divider collapses to the single muted `theme.diff_decision_unfocused` (a fainter `secondary` strip, muted fg, no bold) so it recedes with the rest of the hunk; the glyph and label still convey the decision, so the per-state hue isn't needed once the hunk isn't the actionable one. See `decision_line_text()` in `src/diff/layout.rs`.
+- **Decision divider** — a synthetic line (no backing rope line) emitted at the old/new boundary of every hunk via `DiffLineSource::Decision`, so it sits below a delete-only hunk and above an insert-only one. Its text is focus-aware (`decision_divider_text()` in `src/ui/diff_view.rs`): a **non-focused** divider is the bare checkbox plus a resolved label (`[ ]` while Pending, `[Y] Accepted`, `[N] Rejected`); the **focused** divider prepends a `>` caret and, while Pending, spells the keys inline — `> [ ] Accept [y] · Reject [n]` — with the `[y]` / `[n]` glyphs pulled from the shared `diff_keys` table via `crate::input::diff_hint` so the prompt can never name a key the handler doesn't honor. The base label glyphs (`[ ]` / `[Y]` / `[N]` / "Accepted" / "Rejected") still come from `decision_line_text()` in `src/diff/layout.rs`. Every divider also ends with a `(i/n)` position counter (1-based hunk index in document order over the total hunk count) — a separate span dimmed with `Modifier::DIM` (and the inherited bold cleared) so the index reads as quiet metadata; `DIM` rather than a muted color keeps it recessive in monochrome themes too. The counter is a *position* index, distinct from the status bar's `resolved/total` *progress* chip. The divider is a single-row status strip: it renders with `wrap = false` and is pinned to one row in the layout row cache, so the longer focused prompt never perturbs scroll math when focus moves. The background is a **neutral chrome surface**, not a `secondary` tint, so the colored foregrounds keep full contrast: the **focused** divider uses the per-state `theme.diff_decision_pending` / `diff_decision_accepted` / `diff_decision_rejected` on the heavier `surface_elevated` (set as the line's base style so the trailing-cell fill paints the whole row) plus an added bold — the focused-Pending fg is `secondary` so the inline prompt pops, the resolved states keep their green/red hue. A **non-focused** divider sits on the lighter `surface` so it recedes a step: `theme.diff_decision_unfocused` (muted fg, no bold) while Pending, and for `Accepted` / `Rejected` `build_line` keeps that background but swaps in the per-state green/red hue and adds `DIM`, so a resolved unfocused divider still signals its decision by color while staying quieter than the focused one. The hue is derived from the focused style (not the palette), so monochrome themes — where the focused style carries no color — keep a plain `DIM` strip and let the label text convey the state.
 - **Stacked order** — old (delete) lines first, then the decision divider, then new (add) lines.
-- **Focused hunk** — there is *no* gutter glyph or focus bar. Focus is shown by background intensity alone: the focused hunk's add/delete lines use `theme.diff_add_line` / `diff_delete_line` (stronger fill, itself darkened toward `bg` — see §9), while every non-focused hunk uses `theme.diff_add_line_unfocused` / `diff_delete_line_unfocused` (a fainter wash that recedes). The focused hunk's decision divider is additionally bolded. All lines start at column 0; the focused/unfocused background split — not a gutter — is the focus indicator.
+- **Focused hunk** — there is *no* gutter glyph or focus bar. Focus is shown by background intensity alone: the focused hunk's add/delete lines use `theme.diff_add_line` / `diff_delete_line` (stronger fill, itself darkened toward `bg` — see §9), while every non-focused hunk uses `theme.diff_add_line_unfocused` / `diff_delete_line_unfocused` (a fainter wash that recedes). The focused hunk's decision divider is additionally bolded and carries the `>` caret + inline prompt (see the Decision divider entry above). All lines start at column 0; the focused/unfocused background split — not a gutter — is the focus indicator for the add/delete lines, and the caret marks the focused divider even when those lines have scrolled out of view.
 
 `render_line_from_visual` already propagates `line.style` across the
 trailing cells (the same mechanism code blocks use), so a single
@@ -1391,11 +1393,13 @@ the focused `_line` bg slots become `Style::default().add_modifier(REVERSED)`
 reversed) stay distinct without color; the focused `_inline` slots add
 `BOLD` on top of `REVERSED`, while the `_inline_unfocused` slots use plain
 `DIM` (matching the dimmed unfocused line). The decision divider has no
-color to fall back on, so the resolved labels plus weight carry the
-state: `diff_decision_pending` is `DIM`, and `diff_decision_accepted` /
-`diff_decision_rejected` are `BOLD` (the "Accepted" / "Rejected" text
-disambiguates the two); `diff_decision_unfocused` is `DIM`, matching the
-unfocused-line tier. The status/hint diff slots fall back to
+color to fall back on, so the `>` caret, the inline prompt text, the
+resolved labels, and render-time `BOLD` carry the state without hue:
+`diff_decision_pending` is `DIM` (the focused divider's caret + bold +
+spelled-out prompt still distinguish it from the bare unfocused `[ ]`),
+and `diff_decision_accepted` / `diff_decision_rejected` are `BOLD` (the
+"Accepted" / "Rejected" text disambiguates the two); `diff_decision_unfocused`
+is `DIM`, matching the unfocused-line tier. The status/hint diff slots fall back to
 `REVERSED + BOLD` so the mode shift is still visible without color.
 
 ## 8. Modals
@@ -1638,7 +1642,12 @@ users can discover and rebind them:
 ```
 
 The section appears after the existing "Table" section in the
-overlay's display order.
+overlay's display order. Because review actions aren't in the runtime
+`KeyMap` (they live in the `diff_keys` table — see §10), the overlay's
+chord cell for these rows is populated from `diff_hint()` rather than
+`KeyMap::first_key_for`; without that fallback every "Diff Review" row
+would render with a blank key. Rebinding them from the overlay is inert
+until CP5 moves the table into the layered keymap.
 
 ## 10. Autosave + Ctrl-S in diff mode
 
@@ -2358,10 +2367,10 @@ mid-review reconciliation (§11b / CP4), and no Edit sub-mode (CP5).**
 **Verifiable live:** full review-and-decide flow works; accept/reject each hunk, accept-all/reject-all; `Undo` is a no-op (no history yet).
 
 **CP3 deviations from the plan as written:**
-- The "per-sub-mode keymap layer" called for in §10 is implemented in CP3 as a hard-coded mapping in `src/input/mode_handler/default.rs::diff_review_handle` (Tab → DiffNext, y → DiffAcceptHunk, etc.) rather than a layered `KeyMap` lookup.  Rationale: CP3 ships Review only — there is no Edit sub-mode whose bindings would diverge from the global keymap, so the mapping is short and self-contained.  CP5 will rework this into a proper layered keymap when the Edit/Review split lands and rebinding becomes meaningful.
+- The "per-sub-mode keymap layer" called for in §10 is implemented as a hard-coded table (`DIFF_REVIEW_BINDINGS` in `src/input/mode_handler/diff_keys.rs`) rather than a layered `KeyMap` lookup — Review keys must win over the global keymap (`Tab` → `InsertTab`), and Edit's layered keymap doesn't land until CP5.  This table is the **single source of truth** for review-mode bindings: `diff_action_for()` drives the input handler (`default.rs::diff_review_handle` now just delegates to it), and `diff_hint()` feeds every place that *displays* a review key — the bottom-bar hint row, the keybinds-overlay "Diff Review" section, the focused decision-divider prompt, and the diff-intro modal — so behavior and the advertised glyphs can't drift.  (Originally CP3 hard-coded the mapping inline in `diff_review_handle` and re-spelled the glyphs in each consumer; that duplication was consolidated into this table.)  CP5 will rework the table into a proper layered keymap when the Edit/Review split lands and rebinding becomes meaningful.
 - `App::dispatch_diff_action` is the diff-mode equivalent of `edit_ops::apply` — it is invoked from `dispatch_action` after `diff_safe_action` filters the action.  This is cleaner than threading every diff action through `edit_ops::apply` (where it would need to access App state to push modals / flash hints) and matches the "App owns diff-mode dispatch" framing from §10.
 - `Action::Esc` in diff Review wires straight to `Action::DiffExit` (via `diff_review_handle`).  `DiffExit` is gated on full resolution: a no-op (plus an info flash) while any hunk is still pending, or the `DiffResolveConfirmModal` once everything is decided (§8/§9).  Diff mode therefore can't be left via `Esc` until the review is complete; `Quit` (`Ctrl+Q`) is the abandon-everything path and now warns first via `DiffQuitConfirmModal` (§10) before discarding the review and quitting.  A dedicated `DiffExitConfirmModal` (deliberate-discard for the *pending* case, without quitting the app) remains deferred.
-- The diff-Review hint row in the bottom bar uses hard-coded chord labels (`Tab`, `y`, `n`, etc.) rather than `chords_from(keymap, ...)`.  This mirrors the hard-coded `diff_review_handle` mapping — when CP5 moves both to a layered keymap, both will switch to the keymap-driven helpers at the same time.
+- The diff-Review hint row in the bottom bar sources its chord glyphs from `diff_hint()` (the shared `diff_keys` table) rather than `chords_from(keymap, ...)`, since review keys aren't in the runtime `KeyMap`.  The labels (`Next`, `Accept`, …) stay local to the hint row — only the glyph is single-sourced.  When CP5 moves the table to a layered keymap, the hint row switches to the keymap-driven helpers.
 - `EditorState::exit_diff_mode` returns the editor to `Mode::Rendered` rather than restoring the pre-diff mode.  In CP3 this is safe because the only entry path is from `DirtyConflictModal::[Merge]`, and the user typically wants to return to editing after resolving.  If a future path enters diff mode from Preview / Raw, this should be revisited.
 - Several files shipped in CP3 that the lists above omit: `src/diff/layout.rs` (new — the `DiffVisualLine` model + per-width row-count cache on `DiffState`, the "Possible Improvements" memoisation item brought forward), `src/app/diff_advance.rs` (new — the deferred post-decision focus advance, so a resolved checkbox is visible before focus jumps), `src/document/buffer.rs` (`Buffer::set_rope`, used by the resolution swap — §3 attributes this to §6 but it was needed in CP3), `src/app/actions.rs` (`dispatch_diff_action`, resolution path), `src/app/file_changed.rs` (wire `[Merge]` → `enter_diff_mode`), and `EditorState::pre_diff_scroll` / `pending_focus_scroll` fields on `src/editor/state.rs`.
 

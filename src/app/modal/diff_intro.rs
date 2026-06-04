@@ -19,6 +19,8 @@ use ratatui::Frame;
 
 use super::types::{esc_rect_hit, Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
+use crate::config::Action;
+use crate::input::diff_hint;
 use crate::ui::{ModalButton, ModalResponse, ModalState, ModalView};
 
 /// Footer-button indices.  `[checkbox, Continue]`, Continue focused by
@@ -57,10 +59,32 @@ impl DiffIntroModal {
             Line::raw("The focused hunk is highlighted; the others are dimmed."),
             Line::raw(""),
             Line::raw("Keybindings:"),
-            Line::raw("  Next / previous hunk:  Tab / Shift-Tab"),
-            Line::raw("  Accept / reject hunk:  y / n"),
-            Line::raw("  Accept / reject all:   Y / N"),
-            Line::raw("  Exit diff mode:        Esc"),
+            // Glyphs come from the shared `diff_keys` table so this
+            // explanatory list can never teach a key the handler doesn't
+            // actually honor; the phrasing stays local to the modal.
+            Line::raw(format!(
+                "  Next / previous hunk:  {} / {}",
+                diff_hint(&Action::DiffNext),
+                diff_hint(&Action::DiffPrev),
+            )),
+            Line::raw(format!(
+                "  Accept / reject hunk:  {} / {}",
+                diff_hint(&Action::DiffAcceptHunk),
+                diff_hint(&Action::DiffRejectHunk),
+            )),
+            Line::raw(format!(
+                "  Accept / reject all:   {} / {}",
+                diff_hint(&Action::DiffAcceptAll),
+                diff_hint(&Action::DiffRejectAll),
+            )),
+            Line::raw(format!(
+                "  Undo a decision:       {}",
+                diff_hint(&Action::DiffResetHunk),
+            )),
+            Line::raw(format!(
+                "  Exit diff mode:        {}",
+                diff_hint(&Action::DiffExit),
+            )),
         ]
     }
 
@@ -296,5 +320,19 @@ mod tests {
         render_offscreen(&mut modal);
         let out = modal.handle_click(0, 0);
         assert!(matches!(out, ModalOutcome::Continue));
+    }
+
+    #[test]
+    fn body_documents_the_undo_binding() {
+        // Backspace-to-undo isn't surfaced on the hint line, so the intro
+        // modal is where the user learns it.  The glyph comes from the
+        // shared `diff_keys` table (`⌫`).
+        let modal = DiffIntroModal::new();
+        let undo_glyph = diff_hint(&Action::DiffResetHunk);
+        let has_undo = modal.body().iter().any(|line| {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            text.contains("Undo") && text.contains(undo_glyph)
+        });
+        assert!(has_undo, "intro modal must document the undo-decision key");
     }
 }

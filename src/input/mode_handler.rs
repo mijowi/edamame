@@ -4,6 +4,7 @@ use crate::config::Action;
 use crate::editor::EditorState;
 
 pub mod default;
+pub mod diff_keys;
 
 /// A keybinding handler for an input mode. Implementations can inspect
 /// the current `EditorState` (including mode) to return context-sensitive

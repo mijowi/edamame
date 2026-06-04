@@ -17,10 +17,11 @@ use ratatui::{
     widgets::StatefulWidget,
 };
 
-use crate::config::Theme;
+use crate::config::{Action, Theme};
 use crate::diff::hunk::InlineSide;
-use crate::diff::layout::{line_text, DiffLineSource, DiffVisualLine};
+use crate::diff::layout::{decision_line_text, line_text, DiffLineSource, DiffVisualLine};
 use crate::diff::{Decision, DiffState};
+use crate::input::diff_hint;
 use crate::ui::line_render::render_line_from_visual;
 
 /// Per-frame state for [`DiffView`].  The materialised line sequence
@@ -58,10 +59,13 @@ impl<'a> StatefulWidget for DiffView<'a> {
             let mut visual_y: u16 = 0;
             while idx < lines.len() && visual_y < area.height {
                 let dvl = &lines[idx];
-                let text = line_text(self.diff, dvl);
-                let line = build_line(self.diff, self.theme, dvl, &text);
+                let line = build_line(self.diff, self.theme, dvl);
+                // The decision divider is a single-row status strip
+                // (pinned to one row in the layout cache), so it renders
+                // without wrapping; every other line word-wraps.
+                let wrap = dvl.source != DiffLineSource::Decision;
                 let painted =
-                    render_line_from_visual(&line, area, buf, visual_y, true, skip_first_subrow);
+                    render_line_from_visual(&line, area, buf, visual_y, wrap, skip_first_subrow);
                 // After the first line, never skip sub-rows again.
                 skip_first_subrow = 0;
                 if painted == 0 {
@@ -74,7 +78,7 @@ impl<'a> StatefulWidget for DiffView<'a> {
     }
 }
 
-fn build_line(diff: &DiffState, theme: &Theme, dvl: &DiffVisualLine, text: &str) -> Line<'static> {
+fn build_line(diff: &DiffState, theme: &Theme, dvl: &DiffVisualLine) -> Line<'static> {
     // Decision divider: the accept/reject checkbox plus a resolved
     // label, on its own line between the delete and add sides.  The
     // decision style carries a background, set on the line base so the
@@ -88,10 +92,16 @@ fn build_line(diff: &DiffState, theme: &Theme, dvl: &DiffVisualLine, text: &str)
             .hunk_idx
             .and_then(|hi| diff.decisions.get(hi).copied())
             .unwrap_or(Decision::Pending);
-        // Unfocused dividers collapse to a single muted style that
-        // recedes with the rest of the hunk; the focused one keeps its
-        // per-state hue and is bolded so the actionable checkbox draws
-        // the eye.
+        // The focused divider keeps its per-state hue and is bolded so
+        // the actionable checkbox draws the eye.  Unfocused dividers
+        // recede onto the muted `diff_decision_unfocused` strip; a
+        // *resolved* unfocused divider keeps that background but borrows
+        // the focused state's foreground hue (green/red) and adds `DIM`,
+        // so its decision still reads by color while staying quieter than
+        // the focused one.  Deriving the hue from the focused style
+        // (rather than the palette) keeps monochrome themes correct —
+        // there the focused style carries no color, so the unfocused one
+        // stays a plain `DIM` strip and the label text conveys the state.
         let style = if focused {
             let base = match dec {
                 Decision::Pending => theme.diff_decision_pending,
@@ -100,19 +110,54 @@ fn build_line(diff: &DiffState, theme: &Theme, dvl: &DiffVisualLine, text: &str)
             };
             base.add_modifier(Modifier::BOLD)
         } else {
-            theme.diff_decision_unfocused
+            match dec {
+                Decision::Pending => theme.diff_decision_unfocused,
+                Decision::Accepted | Decision::Rejected => {
+                    let hue = if dec == Decision::Accepted {
+                        theme.diff_decision_accepted.fg
+                    } else {
+                        theme.diff_decision_rejected.fg
+                    };
+                    let mut s = theme.diff_decision_unfocused.add_modifier(Modifier::DIM);
+                    if let Some(color) = hue {
+                        s = s.fg(color);
+                    }
+                    s
+                }
+            }
         };
-        // Set the same style as the line base so the trailing-cell fill
-        // extends the background across the full row width.
-        return Line::from(Span::styled(text.to_owned(), style)).style(style);
+        // The focused divider carries a `>` caret and (while pending)
+        // an inline accept/reject prompt; unfocused dividers stay a bare
+        // checkbox / label.  A trailing `(i/n)` position counter numbers
+        // every divider in document order.  Set the line base style so
+        // the trailing-cell fill extends the muted band across the full
+        // row; the prompt span inherits it (bold and all), while the
+        // counter span dims it (and clears the inherited bold) so the
+        // index reads as quiet metadata, not part of the call to action.
+        // `DIM` rather than a muted color keeps the counter recessive in
+        // monochrome themes too, where color can't carry the hierarchy.
+        let divider = decision_divider_text(dec, focused);
+        let position = dvl.hunk_idx.map_or(0, |hi| hi + 1);
+        let total = diff.hunks.len();
+        let counter_style = Style::default()
+            .add_modifier(Modifier::DIM)
+            .remove_modifier(Modifier::BOLD);
+        let spans = vec![
+            Span::raw(divider),
+            Span::styled(format!(" ({position}/{total})"), counter_style),
+        ];
+        return Line::from(spans).style(style);
     }
 
-    // Delete / add / context lines.  No gutter: all start at column 0
+    // Delete / add / context lines pull their text from the rope; the
+    // decision branch above never needs it, so we only pay the
+    // allocation here.  No gutter: all start at column 0
     // and are distinguished by background color alone.  Focus selects
     // both the full-line wash and the within-line highlight: a
     // non-focused hunk uses the muted `_unfocused` variants of both so
     // its changed words recede with its background instead of popping at
     // full saturation.
+    let text = line_text(diff, dvl);
     let focused = dvl
         .hunk_idx
         .is_some_and(|hi| diff.hunks[hi].id == diff.focused_id);
@@ -187,4 +232,29 @@ fn build_line(diff: &DiffState, theme: &Theme, dvl: &DiffVisualLine, text: &str)
     }
 
     Line::from(body_spans).style(line_style)
+}
+
+/// Text shown on a hunk's decision divider, given its decision and
+/// whether it is the focused hunk.
+///
+/// Unfocused dividers show the bare checkbox / resolved label from
+/// [`decision_line_text`].  The focused divider gains a leading `>`
+/// caret so the active hunk is unmistakable even when its add/delete
+/// wash has scrolled out of view, and the focused *pending* divider
+/// additionally spells the accept/reject keys inline.  Those glyphs come
+/// from the shared `diff_keys` table via [`diff_hint`], so the prompt
+/// can never name a key the input handler doesn't actually honor.
+fn decision_divider_text(decision: Decision, focused: bool) -> String {
+    let base = decision_line_text(decision);
+    if !focused {
+        return base.to_owned();
+    }
+    match decision {
+        Decision::Pending => format!(
+            "> {base} Accept [{}] · Reject [{}]",
+            diff_hint(&Action::DiffAcceptHunk),
+            diff_hint(&Action::DiffRejectHunk),
+        ),
+        Decision::Accepted | Decision::Rejected => format!("> {base}"),
+    }
 }
