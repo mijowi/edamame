@@ -3,6 +3,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::config::{Action, KeyMap};
 use crate::editor::{EditorState, Mode};
 
+use super::diff_keys;
 use super::ModeHandler;
 
 /// The default (non-modal) keybinding handler.
@@ -152,23 +153,13 @@ fn preview_safe_action(action: &Action) -> bool {
 /// review bindings need to win over the global keymap's `Tab` →
 /// `InsertTab`.  CP5 will move this to a proper layered keymap
 /// when Edit sub-mode lands and the rebind story matters.
+///
+/// The mapping itself lives in `diff_keys::DIFF_REVIEW_BINDINGS` — the
+/// single source of truth shared with the hint bar, keybinds overlay,
+/// decision divider, and diff-intro modal — so behavior and the
+/// displayed glyphs can never drift.
 fn diff_review_handle(event: &KeyEvent) -> Option<Action> {
-    let plain = event.modifiers == KeyModifiers::NONE;
-    let shift = event.modifiers == KeyModifiers::SHIFT;
-    match event.code {
-        KeyCode::Tab if plain => Some(Action::DiffNext),
-        KeyCode::BackTab => Some(Action::DiffPrev),
-        KeyCode::Tab if shift => Some(Action::DiffPrev),
-        KeyCode::Char('y') if plain => Some(Action::DiffAcceptHunk),
-        KeyCode::Char('n') if plain => Some(Action::DiffRejectHunk),
-        KeyCode::Char('Y') if shift => Some(Action::DiffAcceptAll),
-        KeyCode::Char('N') if shift => Some(Action::DiffRejectAll),
-        KeyCode::Backspace if plain => Some(Action::DiffResetHunk),
-        KeyCode::Char('i') if plain => Some(Action::DiffEnterEdit),
-        KeyCode::Enter if plain => Some(Action::DiffEnterEdit),
-        KeyCode::Esc => Some(Action::DiffExit),
-        _ => None,
-    }
+    diff_keys::diff_action_for(event)
 }
 
 /// Does this event represent Ctrl+Backspace in some terminal's encoding?

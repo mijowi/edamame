@@ -311,19 +311,22 @@ pub struct Theme {
     /// Word-level delete highlight for non-focused hunks.  See
     /// `diff_add_inline_unfocused`.
     pub diff_delete_inline_unfocused: Style,
-    /// Decision divider while the hunk is still `Pending` (the bare
-    /// `[ ]` checkbox).
+    /// Decision divider for the focused hunk while still `Pending` —
+    /// the `> [ ] Accept [y] · Reject [n]` prompt.  A `secondary`
+    /// foreground (plus the caret and bold added at render time) makes
+    /// the call to action pop.
     pub diff_decision_pending: Style,
     /// Decision divider once the hunk is `Accepted` (`[Y] Accepted`).
     pub diff_decision_accepted: Style,
     /// Decision divider once the hunk is `Rejected` (`[N] Rejected`).
     pub diff_decision_rejected: Style,
-    /// Decision divider for hunks that are *not* focused — a single
-    /// muted style (fainter bg, muted fg, no bold) shared across all
-    /// three decision states so the divider recedes with the rest of
-    /// the unfocused hunk.  The `[Y]`/`[N]` glyph and the resolved label
-    /// still convey the decision, so the per-state hue isn't needed once
-    /// the hunk is no longer the actionable one.
+    /// Decision divider for hunks that are *not* focused — a recessive
+    /// chrome strip (`surface` bg, muted fg, no bold).  Used as-is while
+    /// the hunk is `Pending`; for `Accepted` / `Rejected` hunks
+    /// `build_line` keeps this background but swaps in the per-state
+    /// green/red hue and adds `DIM` (see `ui::diff_view`), so a resolved
+    /// unfocused divider still signals its decision by color while
+    /// staying dimmer than the focused one.
     pub diff_decision_unfocused: Style,
     /// Mode badge for `Mode::Diff`.  Mirrors `status_mode_raw` shape
     /// but on `warning` so the diff session reads as a distinct state.
@@ -949,33 +952,31 @@ impl Theme {
                 p.diff_delete,
                 0.20,
             )),
-            // Decision divider carries a full-width `secondary`-tinted
+            // Decision divider carries a full-width neutral chrome
             // background so the accept/reject checkbox reads as the
             // actionable strip between the delete and add sides rather
-            // than a bare gap.  The fg keeps the per-state hue (muted
-            // while pending, green/red once resolved).
-            diff_decision_pending: Style::default().fg(p.text_muted).bg(blend(
-                p.surface,
-                p.secondary,
-                0.28,
-            )),
+            // than a bare gap.  The background is a plain surface (not a
+            // `secondary` tint) so the colored foregrounds keep full
+            // contrast: the focused divider uses the heavier
+            // `surface_elevated` and a `secondary` foreground on the
+            // pending prompt (the call to action pops); the resolved
+            // states keep their green/red hue so color still encodes the
+            // decision.
+            diff_decision_pending: Style::default().fg(p.secondary).bg(p.surface_elevated),
             diff_decision_accepted: Style::default()
                 .fg(p.diff_add)
-                .bg(blend(p.surface, p.secondary, 0.28))
+                .bg(p.surface_elevated)
                 .add_modifier(bold),
             diff_decision_rejected: Style::default()
                 .fg(p.diff_delete)
-                .bg(blend(p.surface, p.secondary, 0.28))
+                .bg(p.surface_elevated)
                 .add_modifier(bold),
-            // Unfocused divider: a fainter `secondary` strip (0.10 vs.
-            // the focused 0.28) with muted fg and no bold, so it recedes
-            // alongside the rest of the unfocused hunk instead of
-            // out-shouting it.
-            diff_decision_unfocused: Style::default().fg(p.text_muted).bg(blend(
-                p.surface,
-                p.secondary,
-                0.10,
-            )),
+            // Unfocused divider: the lighter `surface` (vs. the focused
+            // `surface_elevated`) so it recedes a step while still
+            // reading as a chrome strip, with a muted fg and no bold.
+            // `build_line` derives the resolved unfocused styling from
+            // this plus the per-state hue + `DIM` (see `diff_view`).
+            diff_decision_unfocused: Style::default().fg(p.text_muted).bg(p.surface),
             status_mode_diff: Style::default().bg(p.warning).fg(p.bg).add_modifier(bold),
             // Bottom region in diff mode: a muted red wash on the hint
             // line (top) and a muted green wash on the status line

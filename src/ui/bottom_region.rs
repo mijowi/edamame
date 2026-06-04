@@ -214,33 +214,39 @@ fn chords_from(keymap: &KeyMap, entries: &[(Action, &str)]) -> Vec<HintChord> {
         .collect()
 }
 
-/// Diff Review hint row.  Hard-coded chords mirror the
-/// `diff_review_handle` mapping in
-/// `src/input/mode_handler/default.rs`; CP5 will move both to a
-/// shared per-sub-mode keymap.
+/// Diff Review hint row.  The key glyphs come from the shared
+/// `diff_keys` table (via [`crate::input::diff_hint`]) — the same source
+/// the input handler, keybinds overlay, decision divider, and
+/// diff-intro modal read — so the advertised chord can never disagree
+/// with the key that actually fires.  The labels are this row's own
+/// (terse, to fit the bar).
 ///
-/// `Esc Exit` leads the row, but only once every hunk is resolved:
+/// `Esc Exit` trails the row, and only once every hunk is resolved:
 /// diff mode can't be exited via `Esc` while hunks are still pending
 /// (see `Action::DiffExit`), so advertising the chord before then
 /// would be misleading.
 fn diff_review_chords(all_resolved: bool, focused_resolved: bool) -> Vec<HintChord> {
-    let mut chords = Vec::new();
-    if all_resolved {
-        chords.push(HintChord::new("Esc".to_owned(), "Exit".to_owned()));
-    }
-    chords.extend([
-        HintChord::new("Tab".to_owned(), "Next".to_owned()),
-        HintChord::new("⇧Tab".to_owned(), "Prev".to_owned()),
-        HintChord::new("y".to_owned(), "Accept".to_owned()),
-        HintChord::new("n".to_owned(), "Reject".to_owned()),
-        HintChord::new("Y".to_owned(), "Accept all".to_owned()),
-        HintChord::new("N".to_owned(), "Reject all".to_owned()),
-    ]);
+    let mk = |action: &Action, label: &str| {
+        HintChord::new(crate::input::diff_hint(action), label.to_owned())
+    };
+    let mut chords = vec![
+        mk(&Action::DiffNext, "Next"),
+        mk(&Action::DiffPrev, "Prev"),
+        mk(&Action::DiffAcceptHunk, "Accept"),
+        mk(&Action::DiffRejectHunk, "Reject"),
+        mk(&Action::DiffAcceptAll, "Accept all"),
+        mk(&Action::DiffRejectAll, "Reject all"),
+    ];
     // `⌫ Reset` only makes sense once the focused hunk carries a
     // decision — it's a no-op on a still-`Pending` hunk, so advertising
     // it then would be misleading.
     if focused_resolved {
-        chords.push(HintChord::new("⌫".to_owned(), "Reset".to_owned()));
+        chords.push(mk(&Action::DiffResetHunk, "Reset"));
+    }
+    // `Esc Exit` trails the row so the primary review actions lead; it
+    // appears only once the whole diff is resolved.
+    if all_resolved {
+        chords.push(mk(&Action::DiffExit, "Exit"));
     }
     chords
 }
@@ -590,11 +596,13 @@ mod tests {
         );
         assert_eq!(pending[0].label, "Next", "Tab/Next leads when pending");
 
-        // All resolved: `Esc Exit` appears at the very start of the row.
+        // All resolved: the review actions still lead, and `Esc Exit`
+        // appears at the very end of the row.
         let resolved = diff_review_chords(true, true);
-        assert_eq!(resolved[0].chord, "Esc");
-        assert_eq!(resolved[0].label, "Exit");
-        assert!(resolved.iter().any(|c| c.label == "Next"));
+        assert_eq!(resolved[0].label, "Next", "review actions lead the row");
+        let last = resolved.last().expect("non-empty row");
+        assert_eq!(last.chord, "Esc");
+        assert_eq!(last.label, "Exit");
     }
 
     #[test]

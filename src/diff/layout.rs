@@ -17,7 +17,11 @@
 //!
 //! The layout is invariant for the lifetime of a review — decisions
 //! and focus changes don't alter the line set or its wrapping — so we
-//! cache it on `DiffState` behind a `RefCell`: the flat line list is
+//! cache it on `DiffState` behind a `RefCell`.  (The focused decision
+//! divider *renders* a longer prompt than the others, but the divider
+//! is pinned to a single row in the row cache — see `with_layout` — so
+//! its row count, and thus all scroll math, stays focus-independent.)
+//! The flat line list is
 //! built once, and a small LRU of per-width prefix-sum caches
 //! ([`VisualRowCache`]) answers row-count / scroll-position queries in
 //! `O(1)` / `O(log N)`.  A future Edit sub-mode (CP5) that mutates the
@@ -169,8 +173,22 @@ impl DiffState {
             let built = {
                 let lines = cache.lines.as_ref().expect("lines built above");
                 VisualRowCache::build(lines.len(), width, |i| {
-                    let text = line_text(self, &lines[i]);
-                    visual_rows_of_str(&text, width).len()
+                    // The decision divider is a single-row status strip
+                    // that never wraps (the renderer paints it with
+                    // `wrap = false`).  Pinning it to one row here keeps
+                    // the wrap cache — and therefore every scroll
+                    // computation — independent of which hunk is focused,
+                    // even though the focused divider's text is longer
+                    // (it spells out the accept/reject prompt).  Without
+                    // the pin, focusing a hunk on a very narrow terminal
+                    // could change a divider's wrapped height and
+                    // silently desync the cached total.
+                    if lines[i].source == DiffLineSource::Decision {
+                        1
+                    } else {
+                        let text = line_text(self, &lines[i]);
+                        visual_rows_of_str(&text, width).len()
+                    }
                 })
             };
             cache.row_caches.insert(0, built);

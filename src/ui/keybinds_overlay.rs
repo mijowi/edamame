@@ -32,6 +32,7 @@ use ratatui::{
 
 use crate::config::keymap::{format_key, format_key_parseable};
 use crate::config::{Action, KeyBindingOverrides, KeyMap, KeyMapError, Theme};
+use crate::input::diff_hint;
 use crate::ui::button_row::{button_row_width, render_button_row};
 use crate::ui::content_width::{max_row_width, optional_text_width};
 use crate::ui::modal_row::{format_modal_row, RowLayout};
@@ -656,7 +657,7 @@ fn build_body_lines<'a>(state: &KeybindsState, keymap: &KeyMap, theme: &'a Theme
                 let chord = if capturing {
                     "…".to_owned()
                 } else {
-                    keymap.first_key_for(action).unwrap_or_default()
+                    display_chord(keymap, action)
                 };
                 lines.push(format_modal_row(
                     label,
@@ -670,6 +671,20 @@ fn build_body_lines<'a>(state: &KeybindsState, keymap: &KeyMap, theme: &'a Theme
         }
     }
     lines
+}
+
+/// The chord text shown for `action`.  Diff-review actions aren't in
+/// the runtime [`KeyMap`] — they're hard-bound in the shared `diff_keys`
+/// table — so their glyph comes from [`diff_hint`]; every other action
+/// reads its bound key from the keymap as usual.  Without this the
+/// "Diff Review" category would render every row with a blank key cell.
+fn display_chord(keymap: &KeyMap, action: &Action) -> String {
+    let hint = diff_hint(action);
+    if !hint.is_empty() {
+        hint.to_owned()
+    } else {
+        keymap.first_key_for(action).unwrap_or_default()
+    }
 }
 
 /// For each `rows[i]`, the body-line index where that row renders.
@@ -708,11 +723,7 @@ fn keybinds_content_width(state: &KeybindsState) -> u16 {
     let row_max = max_row_width(&state.rows, |r| match r {
         Row::Header(t) => t.chars().count() + 4, // "— x —"
         Row::Binding { action, .. } => {
-            let chord_w = state
-                .draft_keymap
-                .first_key_for(action)
-                .map(|s| s.chars().count())
-                .unwrap_or(0);
+            let chord_w = display_chord(&state.draft_keymap, action).chars().count();
             FOCUS_MARKER_WIDTH + LABEL_PAD + chord_w
         }
     });
