@@ -42,6 +42,18 @@ impl Buffer {
         }
     }
 
+    /// Create a buffer wrapping a pre-built rope with no associated
+    /// file.  Used by the diff subsystem (`DiffState::new`) so the
+    /// new-side text gets the same `Buffer` API as the main buffer
+    /// without re-allocating the rope from a `String`.
+    pub fn from_rope(rope: Rope) -> Self {
+        Self {
+            rope,
+            path: None,
+            version: 0,
+        }
+    }
+
     /// Load a file from disk into the buffer.
     pub fn load_file(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
@@ -60,6 +72,24 @@ impl Buffer {
             rope: Rope::new(),
             path: Some(path.to_owned()),
             version: 0,
+        }
+    }
+
+    /// Rebuild a buffer from a fresh on-disk read.  Used by
+    /// `App::reload_buffer_from_disk` when an external edit replaces
+    /// the file under us.  The new buffer's `version` starts at
+    /// `previous_version.wrapping_add(1)` so the monotonic-version
+    /// invariant other consumers rely on (e.g. the autosave
+    /// edit-detection check in `tick_autosave`) is preserved across
+    /// the buffer swap.  Unlike [`Self::load_file`], the bytes come
+    /// from the caller — the watcher worker has already read them —
+    /// so there is no second disk hit and no chance of racing the
+    /// next watcher event.
+    pub fn reload(path: &Path, contents: &str, previous_version: u64) -> Self {
+        Self {
+            rope: Rope::from_str(contents),
+            path: Some(path.to_owned()),
+            version: previous_version.wrapping_add(1),
         }
     }
 
@@ -206,6 +236,19 @@ impl Buffer {
     /// (char offsets, exclusive end).
     pub fn slice_to_string(&self, start: usize, end: usize) -> String {
         self.rope.slice(start..end).to_string()
+    }
+
+    /// Replace the underlying rope wholesale while preserving the
+    /// buffer's `path`.  Bumps `version` so downstream consumers
+    /// (autosave detector, raw-view visual-row cache, parsed-doc
+    /// invalidation) treat the swap as a fresh mutation.  Used by the
+    /// diff-mode resolution path to swap the merged rope in place
+    /// (Phase 1 §3, §6).  The caller is responsible for refreshing
+    /// any derived state on `EditorState` (`refresh_parsed`,
+    /// `update_cursor_block`, clamping the cursor).
+    pub fn set_rope(&mut self, rope: Rope) {
+        self.rope = rope;
+        self.version = self.version.wrapping_add(1);
     }
 }
 

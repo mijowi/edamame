@@ -43,6 +43,10 @@ impl SectionPickerModal {
 }
 
 impl Modal for SectionPickerModal {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
         let view = SectionPickerView {
             theme: ctx.theme,

@@ -15,6 +15,15 @@ pub enum Mode {
 
     /// Entire document shown as plain Markdown text. Standard text editing.
     Raw,
+
+    /// Inline diff review.  The buffer is replaced by a stacked diff
+    /// of the pre-change rope vs. the on-disk content; the user
+    /// accepts / rejects each hunk before the merged result becomes
+    /// the new buffer.  Invariant: `state.mode == Mode::Diff ⟺
+    /// state.diff.is_some()`, maintained by
+    /// [`super::EditorState::enter_diff_mode`] /
+    /// [`super::EditorState::exit_diff_mode`].
+    Diff,
 }
 
 impl fmt::Display for Mode {
@@ -23,6 +32,7 @@ impl fmt::Display for Mode {
             Mode::Preview => f.write_str("PREVIEW"),
             Mode::Rendered => f.write_str("EDIT"),
             Mode::Raw => f.write_str("RAW"),
+            Mode::Diff => f.write_str("DIFF"),
         }
     }
 }

@@ -137,6 +137,10 @@ impl App {
     /// caller decides whether the transition should record history.
     pub(super) fn load_file_into_editor(&mut self, path: PathBuf) -> Result<()> {
         let buffer = Buffer::load_file(&path)?;
+        // Stamp the watcher's own-write filter from the bytes we
+        // just read so the inotify event that some backends
+        // synthesize on `open(2)` is suppressed.
+        self.set_disk_hash(buffer.contents().as_bytes());
         let mut new_editor = EditorState::new_with_image_config(
             buffer,
             self.theme,
@@ -172,9 +176,17 @@ impl App {
         // Image cache is owned by `EditorState`, so swapping to a new
         // editor resets it — image URLs on the new doc are resolved
         // against the new base directory on the next draw.
-        self.file_path = Some(path);
+        self.file_path = Some(path.clone());
         self.view_state = EditorViewState::new();
         self.images_dirty = true;
+        // Repoint the filesystem watcher at the newly-loaded file.
+        // Best-effort: failures just leave the user without
+        // external-edit prompts on this file.
+        if let Some(w) = self.watcher.as_mut() {
+            if let Err(e) = w.watch(&path) {
+                tracing::warn!(target: "watcher", path = %path.display(), error = %e, "watch swap failed");
+            }
+        }
         Ok(())
     }
 

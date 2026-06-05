@@ -531,7 +531,14 @@ fn dirty_flag_set_on_insert() {
 
 #[test]
 fn save_clears_dirty_flag() {
-    // We use a temp file to test actual saving.
+    // `Action::Save` is intercepted at the App layer
+    // (`App::handle_app_action` → `App::save_buffer`) and no longer
+    // routes through `edit_ops::apply` — so this integration test
+    // drives `Buffer::save_file` directly and mirrors the dirty-flag
+    // clear that `App::save_buffer` performs.  The App-level
+    // dispatch unification is covered by unit tests in
+    // `src/app/actions.rs` and `src/app/modal/command_palette.rs`,
+    // which have access to `make_app`.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.md");
     std::fs::write(&path, "hello").unwrap();
@@ -545,8 +552,7 @@ fn save_clears_dirty_flag() {
     assert!(st.dirty);
     assert_eq!(st.contents(), "hello!");
 
-    apply(&mut st, Action::Save);
-    assert!(!st.dirty);
+    st.buffer.save_file().unwrap();
 
     // Verify the file was actually written.
     let saved = std::fs::read_to_string(&path).unwrap();

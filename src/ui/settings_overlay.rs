@@ -717,6 +717,7 @@ mod tests {
                 "Limit editor width",
                 "Editor max width",
                 "Autosave",
+                "Diff intro",
                 "Big H1 headings",
                 "Use visual line navigation",
                 "Show line numbers",

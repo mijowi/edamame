@@ -290,8 +290,8 @@ fn paint_row(
 ///
 /// Returns a list of `(start, end, next_start)` tuples, where:
 /// - `chars[start..end]` is the content placed on that visual row
-/// - `next_start` is the index at which the next visual row begins (may be
-///   `> end` when trailing spaces are consumed at the wrap point)
+/// - `next_start` is the index at which the next visual row begins (equal
+///   to `end` — whitespace is never consumed across the break)
 ///
 /// `width` and `indent` are cell counts; the returned indices are char
 /// indices.  `render_line_with_cursor` calls this directly to drive its
@@ -341,11 +341,7 @@ pub fn visual_rows_of_chars(
             match break_rel {
                 Some(bp) => {
                     let end = start + bp + 1;
-                    let mut next = end;
-                    while next < chars.len() && chars[next].0 == ' ' {
-                        next += 1;
-                    }
-                    (end, next)
+                    (end, end)
                 }
                 None => (window_end, window_end),
             }
@@ -649,6 +645,21 @@ mod tests {
         let line_flat = Line::from(vec![Span::raw("hello world foo bar baz")]);
         let flat = visual_rows_for_line(&line_flat, 10);
         assert!(with_marker >= flat);
+    }
+
+    #[test]
+    fn visual_rows_preserves_interior_whitespace_across_wrap() {
+        // "a              b" at width 5: the wrap happens after "a    "
+        // (5 chars).  The remaining spaces before "b" must NOT be swallowed.
+        let rows = visual_rows_of_str("a              b", 5);
+        // Row 0: "a    " (indices 0..5)
+        assert_eq!(rows[0], (0, 5, 5));
+        // Row 1: "     " (indices 5..10)
+        assert_eq!(rows[1], (5, 10, 10));
+        // Row 2: "     " (indices 10..15)
+        assert_eq!(rows[2], (10, 15, 15));
+        // Row 3: "b" (index 15..16)
+        assert_eq!(rows[3], (15, 16, 16));
     }
 
     // ── Cell-width awareness ──────────────────────────────────────
