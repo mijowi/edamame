@@ -51,10 +51,11 @@ work. Captured 2026-06-01 against the toolchain `rustc 1.94.1`.
 | resvg | 0.46.0 | 0.46 | 0.47.0 | **do not bump** — pinned to mermaid |
 | usvg | 0.46.0 | 0.46 | 0.47.0 | **do not bump** — pinned to mermaid |
 
-> **Status (implemented 2026-06-05):** Phases 1–3 done and verified
-> (`cargo build` + `cargo clippy --all-targets -- -D warnings` +
-> `cargo test`, all green). Phase 4 and the optional patches were left
-> for a future session per scope decision. See per-phase ✅ notes below.
+> **Status (implemented 2026-06-05):** **All phases done** (1–4 plus the
+> optional mermaid `=0.2.2` patch), each verified with `cargo build` +
+> `cargo clippy --all-targets -- -D warnings` + `cargo test` (2366 tests,
+> 0 failures). Only the `resvg`/`usvg`/`sha2` pins are intentionally
+> left as-is. See per-phase ✅ notes below.
 
 ## Phase 1 — lockfile drift (zero risk) ✅ done
 
@@ -157,7 +158,12 @@ compile with no source edits.
 > (incl. `save_merge_unchanged_config_preserves_file_verbatim`), all
 > green under toml_edit 0.25 — no separate manual check needed.
 
-## Phase 4 — larger, isolated upgrades (do when the changes are wanted)
+## Phase 4 — larger, isolated upgrades (do when the changes are wanted) ✅ done
+
+> **Status (implemented 2026-06-05):** both upgrades applied and
+> verified (full `cargo build` + `cargo clippy --all-targets -- -D
+> warnings` + `cargo test` — 2366 tests, 0 failures). Per-upgrade ✅
+> notes below.
 
 These are real work, not urgent. Each is self-contained.
 
@@ -178,6 +184,29 @@ Files to touch: `src/terminal/capabilities.rs`, `src/ui/image_view.rs`,
 `tests/ui.rs` `TestBackend` image renders and a manual smoke test of
 image display under each protocol.
 
+> ✅ Applied (`ratatui-image "10"`→`"11"`, resolved 11.0.3). Smaller
+> footprint than the plan estimated — only two of the four listed files
+> needed edits:
+> - **`src/ui/image_view.rs`** — `needs_resize`/`resize_encode` now take
+>   `Size`, not `Rect`. Fixed with `snap.rect.into()` (Rect→Size drops the
+>   origin); `needs_resize` also now returns `Option<Size>`.
+> - **`FontSize` (u16,u16)→struct** surfaced at the three `p.font_size()`
+>   boundaries (`src/app.rs`, `src/app/nav.rs`, `src/app/image_dispatch.rs`),
+>   not in `capabilities.rs`/`cache.rs`/`render.rs` as the plan guessed.
+>   We keep `(u16,u16)` internally and convert (`let fs = p.font_size();
+>   (fs.width, fs.height)`) at each boundary. `capabilities.rs:114`
+>   needed no change — `from_fontsize(p.font_size())` is FontSize→FontSize.
+> - The `Picker::new_protocol`/`Resize::render_area`/`Protocol::area`
+>   changes the plan listed **did not touch us** — we only use
+>   `new_resize_protocol(image)` and the `needs_resize`/`resize_encode`
+>   pair.
+> - Test-only: the nine `Picker::from_fontsize((1, 2))` calls in
+>   `cache.rs`/`render.rs` tests needed `(1, 2).into()` to build a
+>   `FontSize`.
+>
+> `tests/ui.rs` image renders all pass. Manual per-protocol smoke test
+> still recommended before release but not blocking.
+
 ### ureq 2 → 3 (moderate, fully contained)
 
 v3 is an API rewrite. `fetch_remote` (`src/image/loader.rs:188`) uses
@@ -197,6 +226,26 @@ with a `Timeouts` config, and `response.into_body().read_to_vec()` /
 - Verify with the loader's `#[cfg(test)]` tests and a manual remote-image
   fetch.
 
+> ✅ Applied (`ureq "2"`→`"3"`, `features = ["tls"]`→`default-features =
+> false, features = ["rustls"]`; resolved 3.3.0). `fetch_remote`
+> rewritten:
+> - `ureq::AgentBuilder::new().timeout_connect().timeout_read().build()`
+>   → `ureq::Agent::config_builder().timeout_connect(Some(..))
+>   .timeout_recv_response(Some(..)).timeout_recv_body(Some(..)).build()
+>   .into()` (the old single read timeout split into recv-response /
+>   recv-body phases; `Config` → `Agent` via `Into`).
+> - `response.into_reader().read_to_end()` → `response.body_mut()
+>   .read_to_vec()`. The body-read error is now a `ureq::Error`, so it
+>   routes through the existing `ImageLoadError::Http` variant instead of
+>   the old `Io` mapping — `ImageLoadError::Http`'s `Box<ureq::Error>`
+>   source type was unchanged.
+> - **No-system-OpenSSL property preserved and confirmed:** `cargo tree`
+>   shows **no `openssl-sys`**; TLS is rustls 0.23 with the **`ring`**
+>   crypto backend (not aws-lc-rs — so no cmake/aws-lc-sys build deps,
+>   addressing the plan's concern automatically).
+> - Loader `#[cfg(test)]` tests pass. Manual remote fetch still
+>   recommended before release.
+
 ## Do not touch
 
 - **resvg / usvg 0.46 → 0.47:** `mermaid-rs-renderer 0.2.2` (the latest)
@@ -208,12 +257,16 @@ with a `Timeouts` config, and `response.into_body().read_to_vec()` /
   and it is a leaf dep. No benefit; skip unless another crate forces
   `digest` 0.11.
 
-## Optional patch
+## Optional patch ✅ done
 
 - **mermaid-rs-renderer `=0.2.1` → `=0.2.2`:** 0.2.2 keeps the same
   resvg/usvg 0.46 pin, so it does not disturb the version-lock
   invariant. The `=` pin is intentional (pre-1.0, known panic bugs); a
   manual bump to `=0.2.2` is safe if its fixes are wanted.
+
+> ✅ Applied. `Cargo.lock` confirms resvg/usvg stayed at **0.46.0** (no
+> duplicate copies), mermaid-rs-renderer at 0.2.2. Diagram tests
+> (`tests/diagrams.rs` + `src/diagram` unit tests) all pass.
 
 ## Recommended order
 

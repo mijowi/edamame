@@ -367,7 +367,12 @@ impl App {
         let image_font_size = capabilities
             .image_picker
             .as_ref()
-            .map(|p| p.font_size())
+            .map(|p| {
+                // ratatui-image 11 returns a `FontSize` struct here; we
+                // carry font size as a `(width, height)` tuple internally.
+                let fs = p.font_size();
+                (fs.width, fs.height)
+            })
             .unwrap_or((10, 20));
         let mut editor = EditorState::new_with_image_config(
             buffer,

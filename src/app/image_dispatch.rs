@@ -184,7 +184,12 @@ impl App {
             .capabilities
             .image_picker
             .as_ref()
-            .map(|p| p.font_size());
+            // ratatui-image 11 returns a `FontSize` struct; we carry font
+            // size as a `(width, height)` tuple internally.
+            .map(|p| {
+                let fs = p.font_size();
+                (fs.width, fs.height)
+            });
         // Halfblocks picker + current area width let the worker render the
         // scratch buffer off the UI thread.  When either is missing
         // (terminal without image support, or first iteration before the

@@ -389,9 +389,11 @@ fn paint_native(images: &mut ImageCache, snap: &ImageLayoutSnapshot, buf: &mut T
         // takes the inner StatefulProtocol and sends it to the worker;
         // render() is a no-op while the response is in flight.  We fall
         // back to the scratch until `native_ready` flips.
-        let needs = native.needs_resize(&resize, snap.rect).is_some();
-        if let Some(new_area) = native.needs_resize(&resize, snap.rect) {
-            native.resize_encode(&resize, new_area);
+        // ratatui-image 11 takes a `Size` (size-without-position) here
+        // rather than a `Rect`; `Rect: Into<Size>` drops the origin.
+        let needs = native.needs_resize(&resize, snap.rect.into()).is_some();
+        if let Some(new_size) = native.needs_resize(&resize, snap.rect.into()) {
+            native.resize_encode(&resize, new_size);
         }
         if pair.native_ready {
             native.render(snap.rect, buf);
