@@ -185,26 +185,34 @@ fn resolve_local_path(url: &str, doc_path: Option<&Path>) -> Result<PathBuf, Ima
 }
 
 fn fetch_remote(url: &str) -> Result<Vec<u8>, ImageLoadError> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(REMOTE_TIMEOUT)
-        .timeout_read(REMOTE_TIMEOUT)
-        .build();
-    let response = agent
+    // ureq 3 replaced `AgentBuilder` with a typed config builder
+    // (`Config` → `Agent` via `Into`) and split the single read timeout
+    // into receive-response / receive-body phases.  We bound the connect
+    // and both receive phases at `REMOTE_TIMEOUT` so a slow server can't
+    // hang the decode worker.
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(REMOTE_TIMEOUT))
+        .timeout_recv_response(Some(REMOTE_TIMEOUT))
+        .timeout_recv_body(Some(REMOTE_TIMEOUT))
+        .build()
+        .into();
+    let mut response = agent
         .get(url)
         .call()
         .map_err(|source| ImageLoadError::Http {
             url: url.to_owned(),
             source: Box::new(source),
         })?;
-    let mut bytes = Vec::new();
+    // ureq 3 reads the body off the response itself; `read_to_vec`
+    // surfaces transport errors as `ureq::Error`, so they route through
+    // the same `Http` variant as the request failure above.
     response
-        .into_reader()
-        .read_to_end(&mut bytes)
-        .map_err(|source| ImageLoadError::Io {
-            path: PathBuf::from(url),
-            source,
-        })?;
-    Ok(bytes)
+        .body_mut()
+        .read_to_vec()
+        .map_err(|source| ImageLoadError::Http {
+            url: url.to_owned(),
+            source: Box::new(source),
+        })
 }
 
 fn decode(url: &str, bytes: &[u8]) -> Result<DynamicImage, ImageLoadError> {

@@ -64,7 +64,7 @@ arboard = { version = "3", optional = true, features = ["wayland-data-control"] 
 # Terminal image-protocol probing (Picker::from_query_stdio).
 # `chafa-dyn` is skipped to avoid a system-library dependency on libchafa —
 # we only use the Picker for detection, not for actual halfblock rendering.
-ratatui-image = { version = "10", default-features = false, features = ["crossterm", "image-defaults"] }
+ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults"] }
 
 # Image format decoding — transitively pulled by ratatui-image, listed
 # explicitly so `DynamicImage` and `ImageError` are reachable from our own
@@ -74,7 +74,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 
 # Blocking HTTP client for remote image fetches (Phase 7).  Uses rustls
 # (not native-tls/OpenSSL) so we have no system-library dependency.
-ureq = { version = "2", default-features = false, features = ["tls"] }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 # Cross-platform URL / file opener used by Phase 8 link navigation.
 # Shells out to `xdg-open` / `open` / `start` depending on platform — no
@@ -106,7 +106,7 @@ tempfile = "3"
 # usvg 0.46) so cargo doesn't compile two copies.  `tiny_skia` is NOT
 # listed — we use `resvg::tiny_skia::*` re-exports to guarantee the
 # version stays locked to resvg's choice.
-mermaid-rs-renderer = { version = "=0.2.1", default-features = false, features = ["png"] }
+mermaid-rs-renderer = { version = "=0.2.2", default-features = false, features = ["png"] }
 resvg = "0.46"
 usvg = "0.46"
 # `sha2` produces the synthetic cache-key URLs `diagram-mermaid-<sha>` —

@@ -537,7 +537,7 @@ mod tests {
         let mut cache = cache_with_sender();
         cache.request("a.png");
         cache.set_decoded("a.png", DynamicImage::new_rgba8(1, 1));
-        let picker = Picker::from_fontsize((1, 2));
+        let picker = Picker::from_fontsize((1, 2).into());
         assert!(cache
             .get_protocol_pair("a.png", 10, 10, Some(&picker), Some(&picker))
             .is_some());
@@ -565,7 +565,7 @@ mod tests {
         assert_eq!(cache.prebuilt_scratch_count(), 1);
 
         // Consume it via get_protocol_pair with matching dims.
-        let picker = Picker::from_fontsize((1, 2));
+        let picker = Picker::from_fontsize((1, 2).into());
         let pair = cache
             .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker))
             .expect("pair for ready image");
@@ -593,7 +593,7 @@ mod tests {
 
         // Request at a different width; scratch still produced, but via
         // sync render (not from the prebuilt map).
-        let picker = Picker::from_fontsize((1, 2));
+        let picker = Picker::from_fontsize((1, 2).into());
         let pair = cache
             .get_protocol_pair("a.png", 16, 4, Some(&picker), Some(&picker))
             .expect("pair for ready image");
@@ -623,7 +623,7 @@ mod tests {
         let mut cache = cache_with_sender();
         cache.request("a.png");
         cache.set_decoded("a.png", DynamicImage::new_rgba8(1, 1));
-        let picker = Picker::from_fontsize((1, 2));
+        let picker = Picker::from_fontsize((1, 2).into());
         cache
             .get_protocol_pair("a.png", 1, 1, Some(&picker), Some(&picker))
             .expect("pair for ready image");
@@ -645,7 +645,7 @@ mod tests {
         cache.request("a.png");
         cache.set_decoded("a.png", DynamicImage::new_rgba8(4, 4));
         // `Picker::from_fontsize` defaults to Halfblocks.
-        let picker = Picker::from_fontsize((1, 2));
+        let picker = Picker::from_fontsize((1, 2).into());
         let pair = cache
             .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker))
             .expect("pair for ready image");
@@ -663,7 +663,7 @@ mod tests {
         let mut cache = cache_with_sender();
         cache.request("b.png");
         cache.set_decoded("b.png", DynamicImage::new_rgba8(4, 4));
-        let picker = Picker::from_fontsize((1, 2));
+        let picker = Picker::from_fontsize((1, 2).into());
         assert!(cache
             .get_protocol_pair("b.png", 8, 4, Some(&picker), Some(&picker))
             .is_some());
@@ -686,7 +686,7 @@ mod tests {
         let mut cache = ImageCache::new();
         cache.request("a.png");
         cache.set_decoded("a.png", DynamicImage::new_rgba8(1, 1));
-        let picker = Picker::from_fontsize((1, 2));
+        let picker = Picker::from_fontsize((1, 2).into());
         assert!(cache
             .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker))
             .is_none());
@@ -696,7 +696,7 @@ mod tests {
     fn get_protocol_pair_returns_none_for_pending() {
         let mut cache = cache_with_sender();
         cache.request("a.png");
-        let picker = Picker::from_fontsize((1, 2));
+        let picker = Picker::from_fontsize((1, 2).into());
         assert!(cache
             .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker))
             .is_none());
@@ -712,7 +712,7 @@ mod tests {
         let mut cache = cache_with_sender();
         cache.request("a.png");
         cache.set_decoded("a.png", DynamicImage::new_rgba8(4, 4));
-        let picker = Picker::from_fontsize((1, 2));
+        let picker = Picker::from_fontsize((1, 2).into());
         cache
             .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker))
             .expect("pair built");

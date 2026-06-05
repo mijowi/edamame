@@ -151,7 +151,12 @@ impl App {
             self.capabilities
                 .image_picker
                 .as_ref()
-                .map(|p| p.font_size())
+                .map(|p| {
+                    // ratatui-image 11 returns a `FontSize` struct; we
+                    // carry font size as a `(width, height)` tuple.
+                    let fs = p.font_size();
+                    (fs.width, fs.height)
+                })
                 .unwrap_or((10, 20)),
         );
         new_editor.tab_width = self.config.editor.tab_width;

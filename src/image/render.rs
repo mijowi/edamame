@@ -116,7 +116,7 @@ mod tests {
     /// on cold path — render a uniform image through a halfblocks
     /// picker into a Buffer sized to `rect`.
     fn halfblocks_scratch(rect: Rect) -> Buffer {
-        let picker = Picker::from_fontsize((1, 2));
+        let picker = Picker::from_fontsize((1, 2).into());
         let img = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
             u32::from(rect.width) * 2,
             u32::from(rect.height) * 4,
