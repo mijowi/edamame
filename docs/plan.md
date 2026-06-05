@@ -1452,6 +1452,12 @@ Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI input
 Refactor tests
 
 edamame in-app about page
+- edamame bean ASCII art
+- edamame in big text
+- Installed version and check current version button
+- GitHub username and project homepage link (remove existing action to go to project homepage)
+- Contributor aknowledgements for this release
+- Anything else?
 
 In edit mode, text selection doesn't work correctly in wrapped table cells
 
@@ -1476,7 +1482,12 @@ Darken edamame bg slightly
 
 Review actions and determine if any new actions should be added to the command palette. 
 
+Finish diff mode plan (editing hunks in diff mode)
 Use Ctrl with diff mode keybinds in order to facilitate editing during review
+
+Remove all 'Phase N' references from code comments. We don't want to have references to temporary working plans in our comments.
+
+Finish
 
 ---
 
