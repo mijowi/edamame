@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 use crate::config::Theme;
+use crate::diff::DiffState;
 use crate::document::{Buffer, Cursor, EditDelta, History, ParsedDoc, Selection, VisualSelection};
 use crate::editor::state_viewport::RawVisualRowCache;
 use crate::editor::Mode;
@@ -252,6 +253,22 @@ pub struct EditorState {
     /// events queue up.  `RefCell` because `&EditorState` callers in the
     /// view layer need shared access; `EditorState` is single-threaded.
     pub(crate) raw_visual_rows: RefCell<Vec<RawVisualRowCache>>,
+    /// Inline-diff review session.  `Some` iff `mode == Mode::Diff`;
+    /// the invariant is asserted in `enter_diff_mode` /
+    /// `exit_diff_mode` and enforced indirectly by the App's
+    /// `dispatch_action` (which only emits `Mode::Diff` after
+    /// `enter_diff_mode` returns successfully).
+    pub diff: Option<DiffState>,
+    /// Scroll offset saved on `enter_diff_mode` and restored on
+    /// `exit_diff_mode`.  Diff mode resets `scroll` to 0 on entry so
+    /// the user lands at the top of the diff view; restoring on exit
+    /// returns the user to where they were in the live buffer.
+    pub pre_diff_scroll: usize,
+    /// Set by `enter_diff_mode`; consumed on the next frame by the run
+    /// loop (`App::prepare_viewport`) to scroll the first focused hunk
+    /// into view.  Deferred because the viewport height isn't known at
+    /// the modal-close call site where diff mode is entered.
+    pub pending_focus_scroll: bool,
 }
 
 /// How long the cursor must rest on a block before it is shown in raw mode.
@@ -345,6 +362,9 @@ impl EditorState {
             modal_open: false,
             terminal_focused: true,
             raw_visual_rows: RefCell::new(Vec::new()),
+            diff: None,
+            pre_diff_scroll: 0,
+            pending_focus_scroll: false,
         };
         // Populate the cursor-block cache so the rendered view's
         // stale-map-tolerant path has correct line-range info on the
@@ -428,6 +448,95 @@ impl EditorState {
         }
         self.theme = theme;
         self.refresh_parsed();
+    }
+
+    /// Replace the editor's buffer with `new_buffer` and reset every
+    /// derived field that the old buffer made stale: history, both
+    /// selection caches, the parsed-doc cache (via `refresh_parsed`),
+    /// and the cursor-block lookup.  The cursor's char offset is
+    /// clamped to the new buffer's length but otherwise preserved
+    /// best-effort, so a silent reload (clean buffer + external edit)
+    /// keeps the user roughly where they were.  Viewport scroll is
+    /// intentionally not reset — preserving it matches user expectations
+    /// when the external rewrite is small.
+    ///
+    /// This is the canonical buffer-swap entry point.  New consumers
+    /// (multi-tab switch, future diff-mode resolve, …) should call
+    /// this rather than mutating `buffer` directly and hand-resetting
+    /// derived state, so adding a new derived field is a single-edit
+    /// change instead of a hunt for every swap site.
+    pub fn replace_buffer(&mut self, new_buffer: Buffer) {
+        let new_len = new_buffer.len_chars();
+        self.buffer = new_buffer;
+        self.dirty = false;
+        self.history = History::new();
+        self.selection = None;
+        self.visual_selection = None;
+        self.cursor.offset = self.cursor.offset.min(new_len);
+        self.refresh_parsed();
+        self.update_cursor_block();
+    }
+
+    /// Enter diff review mode with `diff_state` as the active review.
+    /// Saves the current `scroll` so [`Self::exit_diff_mode`] can
+    /// restore it, then resets `scroll = 0` and sets
+    /// `mode = Mode::Diff`.  The caller (`App::enter_diff_mode`) is
+    /// responsible for having already verified that
+    /// `DiffState::new` returned `Some` — empty hunk lists must not
+    /// reach this entry point (§4).
+    pub fn enter_diff_mode(&mut self, diff_state: DiffState) {
+        self.pre_diff_scroll = self.scroll;
+        self.scroll = 0;
+        self.diff = Some(diff_state);
+        self.mode = Mode::Diff;
+        self.selection = None;
+        self.visual_selection = None;
+        // Defer the scroll-to-first-hunk until the next frame, when the
+        // run loop knows the viewport height.
+        self.pending_focus_scroll = true;
+    }
+
+    /// Scroll so the focused hunk is comfortably visible — a few rows
+    /// of context above it when possible.  No-op outside diff mode.
+    /// Called on entry (via the deferred `pending_focus_scroll` flag)
+    /// and after every hunk-focus change (`DiffNext` / `DiffPrev` /
+    /// accept / reject).
+    pub fn scroll_focused_hunk_into_view(&mut self, viewport_height: usize, viewport_width: usize) {
+        if viewport_height == 0 {
+            return;
+        }
+        let Some(diff) = self.diff.as_ref() else {
+            return;
+        };
+        /// Rows of context kept above the focused hunk when scrolling
+        /// it into view from off-screen.
+        const TOP_MARGIN: usize = 3;
+        let row = diff.focused_hunk_visual_row(viewport_width);
+        let total = diff.total_visual_rows(viewport_width);
+        let max_scroll = total.saturating_sub(1);
+        // Reposition only when the hunk isn't already comfortably in
+        // view: above the current top (+margin) or below the bottom.
+        let comfortably_visible =
+            row >= self.scroll + TOP_MARGIN && row < self.scroll + viewport_height;
+        if !comfortably_visible {
+            self.scroll = row.saturating_sub(TOP_MARGIN).min(max_scroll);
+        }
+    }
+
+    /// Drop the active diff review, restore the pre-diff scroll, and
+    /// return to `Mode::Rendered`.  Used both on the resolution happy
+    /// path (after `Buffer::set_rope` swaps the merged rope in) and on
+    /// the discard path that abandons the review without applying it
+    /// (e.g. quitting mid-review).  The caller is responsible for any
+    /// buffer / cursor side effects before this; this helper only
+    /// cleans up the diff fields.
+    pub fn exit_diff_mode(&mut self) {
+        self.diff = None;
+        self.scroll = self.pre_diff_scroll;
+        self.pre_diff_scroll = 0;
+        if self.mode == Mode::Diff {
+            self.mode = Mode::Rendered;
+        }
     }
 
     /// Toggle row striping for table data rows and re-render so the
@@ -1213,5 +1322,50 @@ mod tests {
         assert_eq!(state.scroll, 0);
         // Cursor stays visible at row 1 (its line is 1 line below the top).
         assert_eq!(state.cursor_screen_row(40), 1);
+    }
+
+    // ── Diff scroll-into-view ───────────────────────────────────────────
+
+    /// Entering diff mode sets `pending_focus_scroll`, and
+    /// `scroll_focused_hunk_into_view` brings an off-screen focused hunk
+    /// into view with a small top margin.
+    #[test]
+    fn scroll_focused_hunk_into_view_scrolls_offscreen_hunk_up() {
+        // 20 context lines precede the change, so the focused hunk's
+        // first row is at visual row 20 — far below a 5-row viewport.
+        let mut old = String::new();
+        for i in 0..20 {
+            old.push_str(&format!("ctx{i}\n"));
+        }
+        let mut new = old.clone();
+        old.push_str("before\n");
+        new.push_str("AFTER\n");
+        let diff = crate::diff::DiffState::new(&old, &new).unwrap();
+
+        let mut state = EditorState::new(Buffer::from_str(&old), theme());
+        state.scroll = 0;
+        state.enter_diff_mode(diff);
+        // enter_diff_mode requests a deferred scroll and zeroes scroll.
+        assert!(state.pending_focus_scroll);
+        assert_eq!(state.scroll, 0);
+
+        // Resolve it: focused row 20, top margin 3 → scroll 17.
+        state.scroll_focused_hunk_into_view(5, 80);
+        assert_eq!(state.scroll, 17);
+
+        // Idempotent: the hunk is now comfortably visible, so a second
+        // call leaves the scroll unchanged.
+        state.scroll_focused_hunk_into_view(5, 80);
+        assert_eq!(state.scroll, 17);
+    }
+
+    /// A hunk already on the first screen needs no scrolling.
+    #[test]
+    fn scroll_focused_hunk_into_view_noop_when_already_visible() {
+        let diff = crate::diff::DiffState::new("a\nB\nc\n", "a\nBB\nc\n").unwrap();
+        let mut state = EditorState::new(Buffer::from_str("a\nB\nc\n"), theme());
+        state.enter_diff_mode(diff);
+        state.scroll_focused_hunk_into_view(20, 80);
+        assert_eq!(state.scroll, 0);
     }
 }

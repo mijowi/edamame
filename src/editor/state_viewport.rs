@@ -117,6 +117,11 @@ impl EditorState {
     pub fn total_visual_rows_for_mode(&self, width: usize) -> usize {
         match self.mode {
             Mode::Raw => self.raw_total_visual_rows(width),
+            Mode::Diff => self
+                .diff
+                .as_ref()
+                .map(|d| d.total_visual_rows(width))
+                .unwrap_or(0),
             _ => self.parsed.total_visual_rows(width),
         }
     }

@@ -161,6 +161,35 @@ pub enum Action {
     /// the scroll, Esc reverts to the original position, Enter
     /// confirms and places the cursor at the end of the heading line.
     GoToSection,
+
+    // ── Diff review (Phase 1) ──────────────────────────────────────
+    /// Advance focus to the next hunk in document order.  No decision
+    /// implied — pressing this leaves the current hunk as `Pending`.
+    DiffNext,
+    /// Retreat focus to the previous hunk in document order.
+    DiffPrev,
+    /// Accept the focused hunk (`Decision::Accepted`) and advance.
+    DiffAcceptHunk,
+    /// Reject the focused hunk (`Decision::Rejected`) and advance.
+    DiffRejectHunk,
+    /// Bulk-accept every still-`Pending` hunk in one shot.
+    DiffAcceptAll,
+    /// Bulk-reject every still-`Pending` hunk in one shot.
+    DiffRejectAll,
+    /// Reset the focused hunk's decision back to `Pending`
+    /// ("undecide").  No-op when the hunk is already `Pending`.  Bound
+    /// to `Backspace` in Review sub-mode.
+    DiffResetHunk,
+    /// Enter Edit sub-mode on the focused hunk.  In-diff editing is
+    /// not implemented yet, so this is currently an explicit no-op.
+    DiffEnterEdit,
+    /// Exit Edit sub-mode and return to Review.  Currently a no-op
+    /// (in-diff editing is not implemented yet).
+    DiffExitEdit,
+    /// Request to exit diff mode.  Gated on full resolution: a no-op
+    /// while any hunk is still pending, and otherwise opens the
+    /// apply-confirm modal before the merged result is written.
+    DiffExit,
 }
 
 /// Classification used by the run loop to coalesce a burst of
@@ -249,6 +278,10 @@ action_variants! {
     ExportHtml, ReloadFromDisk, OpenInExternalEditor,
     ToggleTableButtons, InsertTable,
     GoToSection,
+    DiffNext, DiffPrev,
+    DiffAcceptHunk, DiffRejectHunk,
+    DiffAcceptAll, DiffRejectAll, DiffResetHunk,
+    DiffEnterEdit, DiffExitEdit, DiffExit,
 }
 
 // ─── Key parsing ─────────────────────────────────────────────────────────────

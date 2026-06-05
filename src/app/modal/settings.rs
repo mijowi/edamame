@@ -113,6 +113,10 @@ impl Modal for SettingsOverlayModal {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 #[cfg(test)]
@@ -151,6 +155,7 @@ mod tests {
         "Limit editor width",
         "Editor max width",
         "Autosave",
+        "Diff intro",
         "Show line numbers",
         "Show images",
         "Show diagrams",

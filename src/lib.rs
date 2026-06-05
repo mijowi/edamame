@@ -3,6 +3,7 @@
 
 pub mod config;
 pub mod diagram;
+pub mod diff;
 pub mod document;
 pub mod editor;
 pub mod export;
@@ -11,3 +12,4 @@ pub mod input;
 pub mod markdown;
 pub mod terminal;
 pub mod ui;
+pub mod watcher;

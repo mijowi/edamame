@@ -139,6 +139,10 @@ impl Modal for ImagesEnabledPromptModal {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 /// Common cleanup when the user opts out of images this session: drop

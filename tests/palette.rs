@@ -9,11 +9,8 @@
 
 use edamame::config::{Action, KeyBindingOverrides, KeyMap, Theme};
 use edamame::document::Buffer;
-use edamame::editor::{edit_ops, EditorState};
+use edamame::editor::EditorState;
 use edamame::ui::{KeybindsResponse, KeybindsState, PaletteResponse, PaletteState, SettingsState};
-
-const VP: usize = 40;
-const VW: usize = 80;
 
 fn theme() -> &'static Theme {
     // SAFETY: Box::leak intentionally produces a `&'static Theme` for
@@ -31,18 +28,23 @@ fn keymap() -> KeyMap {
 }
 
 #[test]
-fn palette_save_dispatch_produces_same_buffer_state_as_keyboard_save() {
-    // Two parallel editor states.  Edit identically; one path saves
-    // via the keyboard `Action::Save`; the other selects "Save File"
-    // from the palette.  The post-state must match exactly.
+fn palette_save_entry_resolves_to_same_action_as_keyboard_save() {
+    // `Action::Save` is intercepted at the App layer
+    // (`App::handle_app_action` → `App::save_buffer`) and no longer
+    // routes through `edit_ops::apply`.  At the integration-test
+    // level we only verify that the palette's "Save file" entry
+    // resolves to the same `Action::Save` that `Ctrl-S` does, and
+    // that a direct `Buffer::save_file` (which mirrors what
+    // `App::save_buffer` does internally) produces identical disk
+    // state from each parallel editor.  The full
+    // `App::dispatch_action` round-trip for `Action::Save` is
+    // covered by unit tests in `src/app/modal/command_palette.rs`
+    // and `src/app/actions.rs`.
     let path_keyboard = tempfile::NamedTempFile::new().unwrap();
     let path_palette = tempfile::NamedTempFile::new().unwrap();
 
     let mut keyboard_editor = state("hello world");
     let mut palette_editor = state("hello world");
-    // `save_as` writes the current contents to `path` and records the
-    // path on the Buffer.  Subsequent `Action::Save` calls will reuse
-    // it — that's the path our test assertion compares against.
     keyboard_editor
         .buffer
         .save_as(path_keyboard.path())
@@ -51,8 +53,8 @@ fn palette_save_dispatch_produces_same_buffer_state_as_keyboard_save() {
     keyboard_editor.dirty = true;
     palette_editor.dirty = true;
 
-    // Keyboard path: dispatch `Action::Save` directly.
-    edit_ops::apply(&mut keyboard_editor, Action::Save, VP, VW);
+    // Keyboard path: `Ctrl-S` resolves to `Action::Save` directly.
+    let keyboard_action = Action::Save;
 
     // Palette path: open palette, type "save f" (the trailing " f"
     // disambiguates "Save file" from "Save a copy"), press Enter.
@@ -62,15 +64,22 @@ fn palette_save_dispatch_produces_same_buffer_state_as_keyboard_save() {
         palette.handle_key(&KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     let response = palette.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let action = match response {
+    let palette_action = match response {
         PaletteResponse::Selected(a) => a,
         other => panic!("expected Selected, got {other:?}"),
     };
-    assert_eq!(action, Action::Save);
-    edit_ops::apply(&mut palette_editor, action, VP, VW);
 
-    // Both saves should have produced identical buffer state and
-    // identical on-disk content.
+    // Both paths must resolve to the same Action variant.
+    assert_eq!(palette_action, keyboard_action);
+    assert_eq!(palette_action, Action::Save);
+
+    // Mirror `App::save_buffer` on each editor so we still exercise
+    // the disk-write path that the App-level handler would invoke.
+    keyboard_editor.buffer.save_file().unwrap();
+    keyboard_editor.dirty = false;
+    palette_editor.buffer.save_file().unwrap();
+    palette_editor.dirty = false;
+
     let keyboard_disk = std::fs::read_to_string(path_keyboard.path()).unwrap();
     let palette_disk = std::fs::read_to_string(path_palette.path()).unwrap();
     assert_eq!(keyboard_disk, palette_disk);

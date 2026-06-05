@@ -160,5 +160,36 @@ pub fn theme() -> Theme {
         scrollbar_track: Style::default(),
         scrollbar_thumb: Style::default(),
         scrollbar_thumb_active: Style::default().add_modifier(Modifier::REVERSED),
+
+        // Diff mode (Phase 1) — monochrome fallback per §7.  Line bg
+        // can't be a saturated mix, so we use REVERSED on the whole
+        // line; inline highlights add BOLD on top to stand out from
+        // the line bg.  Status / hint bars in diff mode become
+        // REVERSED + BOLD so the mode shift is visible without color.
+        diff_add_line: Style::default().add_modifier(Modifier::REVERSED),
+        diff_delete_line: Style::default().add_modifier(Modifier::REVERSED),
+        // Non-focused hunks dim instead of inverting, so the three
+        // tiers (context plain / unfocused dim / focused reversed)
+        // stay distinct without color.
+        diff_add_line_unfocused: Style::default().add_modifier(Modifier::DIM),
+        diff_delete_line_unfocused: Style::default().add_modifier(Modifier::DIM),
+        diff_add_inline: Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        diff_delete_inline: Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        // Unfocused hunks dim their inline highlights too (no REVERSED,
+        // so they don't pop against the dimmed line) — matching the
+        // unfocused-line DIM tier.
+        diff_add_inline_unfocused: Style::default().add_modifier(Modifier::DIM),
+        diff_delete_inline_unfocused: Style::default().add_modifier(Modifier::DIM),
+        // No color: the checkbox label ("Accepted" / "Rejected") plus
+        // bold/dim distinguishes the decision states.
+        diff_decision_pending: Style::default().add_modifier(Modifier::DIM),
+        diff_decision_accepted: Style::default().add_modifier(Modifier::BOLD),
+        diff_decision_rejected: Style::default().add_modifier(Modifier::BOLD),
+        // Unfocused divider recedes to DIM, matching the unfocused-line
+        // tier (the label still spells the decision).
+        diff_decision_unfocused: Style::default().add_modifier(Modifier::DIM),
+        status_mode_diff: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+        status_bar_diff: Style::default().add_modifier(Modifier::REVERSED),
+        hint_bar_diff: Style::default().add_modifier(Modifier::REVERSED),
     }
 }

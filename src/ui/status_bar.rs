@@ -1,6 +1,7 @@
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
+    style::Style,
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
@@ -34,6 +35,11 @@ pub struct StatusBarState<'a> {
     /// breadcrumb after the filename.  Empty when the cursor sits
     /// before the first heading or the document has none.
     pub section_path: Vec<String>,
+    /// `(resolved, total)` hunk counts in diff mode; `None` in every
+    /// other mode.  Rendered adjacent to the mode badge as
+    /// `resolved/total` — a progress counter that climbs from `0/n` to
+    /// `n/n` as hunks are accepted or rejected.
+    pub diff_progress: Option<(usize, usize)>,
 }
 
 /// A single-row status bar widget.
@@ -65,13 +71,49 @@ impl<'a> Widget for StatusBar<'a> {
         // committed before we decide how much room remains for the
         // breadcrumb.  The breadcrumb absorbs whatever is left over
         // after subtracting the right-side info segments.
+        // In diff mode the whole bar shifts to the diff color so the
+        // mode change is unmissable.
+        let bar_style = if matches!(s.mode, Mode::Diff) {
+            theme.status_bar_diff
+        } else {
+            theme.status_bar
+        };
+        // In diff mode the informational spans (filename, selection,
+        // cursor, line count) carry their own `surface` background by
+        // default, which would punch the normal bar hue through the
+        // recolored diff bar.  Recolor just their backgrounds to the
+        // diff bar's bg so the whole region reads as one washed bar;
+        // their foregrounds (and the accent mode/progress badges) are
+        // left untouched.
+        let bar_bg = if matches!(s.mode, Mode::Diff) {
+            bar_style.bg
+        } else {
+            None
+        };
+        let with_bar_bg = |st: Style| match bar_bg {
+            Some(bg) => st.bg(bg),
+            None => st,
+        };
+
+        // Mode badge — color swaps per-mode so each mode reads at a
+        // glance (orange = Rendered, yellow = Raw, muted = Preview).
+        // Kept as an accent badge even in diff mode.
         let mode_text = format!(" {} ", s.mode);
         let mode_width = UnicodeWidthStr::width(mode_text.as_str());
         let mode_span = Span::styled(mode_text, theme.status_mode_style(s.mode));
 
+        // Diff-mode progress counter, rendered adjacent to the badge.
+        // Accent badge — not washed with the bar bg.
+        let diff_text = match s.diff_progress {
+            Some((resolved, total)) => format!(" {}/{} ", resolved, total),
+            None => String::new(),
+        };
+        let diff_width = UnicodeWidthStr::width(diff_text.as_str());
+        let diff_span = Span::styled(diff_text, theme.status_mode_diff);
+
         let filename_lead = format!(" {}", s.filename);
         let filename_width = UnicodeWidthStr::width(filename_lead.as_str());
-        let filename_span = Span::styled(filename_lead, theme.status_filename);
+        let filename_span = Span::styled(filename_lead, with_bar_bg(theme.status_filename));
 
         // `*` glued to the right edge of the filename, colored via the
         // already-defined `status_modified` slot (warning fg, bold) so
@@ -83,7 +125,8 @@ impl<'a> Widget for StatusBar<'a> {
             .modified
             .then(|| Span::styled("*".to_string(), theme.status_modified));
 
-        let left_committed_width = mode_width + filename_width + if s.modified { 1 } else { 0 };
+        let left_committed_width =
+            mode_width + diff_width + filename_width + if s.modified { 1 } else { 0 };
 
         // ── Right side (fixed) ──────────────────────────────────────
         let sel_text = match s.selection_size {
@@ -91,14 +134,14 @@ impl<'a> Widget for StatusBar<'a> {
             None => String::new(),
         };
         let sel_width = UnicodeWidthStr::width(sel_text.as_str());
-        let sel_span = Span::styled(sel_text, theme.status_selection);
+        let sel_span = Span::styled(sel_text, with_bar_bg(theme.status_selection));
 
         let cursor_text = match (s.cursor_line, s.cursor_col) {
             (Some(l), Some(c)) => format!(" {}:{} ", l, c),
             _ => String::new(),
         };
         let cursor_width = UnicodeWidthStr::width(cursor_text.as_str());
-        let cursor_span = Span::styled(cursor_text, theme.status_info);
+        let cursor_span = Span::styled(cursor_text, with_bar_bg(theme.status_info));
 
         let pct = if s.line_count == 0 {
             100
@@ -108,7 +151,7 @@ impl<'a> Widget for StatusBar<'a> {
         };
         let info_text = format!(" {} lines  {}% ", s.line_count, pct);
         let info_width = UnicodeWidthStr::width(info_text.as_str());
-        let info_span = Span::styled(info_text, theme.status_info);
+        let info_span = Span::styled(info_text, with_bar_bg(theme.status_info));
 
         let right_width = sel_width + cursor_width + info_width;
 
@@ -148,11 +191,12 @@ impl<'a> Widget for StatusBar<'a> {
             .saturating_sub(left_committed_width)
             .saturating_sub(breadcrumb_width)
             .saturating_sub(right_width);
-        let gap_span = Span::styled(" ".repeat(gap), theme.status_bar);
+        let gap_span = Span::styled(" ".repeat(gap), bar_style);
 
         // ── Assemble ────────────────────────────────────────────────
-        let mut spans: Vec<Span<'_>> = Vec::with_capacity(8 + breadcrumb_spans.len());
+        let mut spans: Vec<Span<'_>> = Vec::with_capacity(9 + breadcrumb_spans.len());
         spans.push(mode_span);
+        spans.push(diff_span);
         spans.push(filename_span);
         if let Some(m) = modified_span {
             spans.push(m);
@@ -164,7 +208,7 @@ impl<'a> Widget for StatusBar<'a> {
         spans.push(info_span);
 
         Paragraph::new(Line::from(spans))
-            .style(theme.status_bar)
+            .style(bar_style)
             .render(area, buf);
     }
 }
@@ -272,6 +316,7 @@ mod tests {
                         cursor_col: None,
                         selection_size: None,
                         section_path,
+                        diff_progress: None,
                     },
                     theme,
                 };
@@ -346,6 +391,7 @@ mod tests {
                         cursor_col: Some(7),
                         selection_size: None,
                         section_path: Vec::new(),
+                        diff_progress: None,
                     },
                     theme,
                 };
@@ -383,6 +429,7 @@ mod tests {
                         cursor_col: Some(1),
                         selection_size: Some((42, 3)),
                         section_path: Vec::new(),
+                        diff_progress: None,
                     },
                     theme,
                 };

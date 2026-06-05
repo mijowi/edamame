@@ -301,6 +301,57 @@ pub struct Theme {
     /// Scrollbar thumb while the user is hovering the gutter or
     /// dragging the thumb.  RGB themes blend `primary` toward `text`.
     pub scrollbar_thumb_active: Style,
+
+    // ── Diff mode (Phase 1) ───────────────────────────────────────
+    /// Full-row bg fill on add-side diff lines.  Subtle (30 %-toward
+    /// `diff_add`) so the foreground text stays legible.
+    pub diff_add_line: Style,
+    /// Full-row bg fill on delete-side diff lines.
+    pub diff_delete_line: Style,
+    /// Add-side bg for hunks that are *not* the focused one — a weaker
+    /// tint than `diff_add_line` so the focused hunk's color stands out.
+    pub diff_add_line_unfocused: Style,
+    /// Delete-side bg for non-focused hunks.  Weaker than `diff_delete_line`.
+    pub diff_delete_line_unfocused: Style,
+    /// Darkened bg + bold for word-level highlights inside an add line.
+    /// Darker than `diff_add` so light text keeps enough contrast.
+    pub diff_add_inline: Style,
+    /// Darkened bg + bold for word-level highlights inside a delete line.
+    pub diff_delete_inline: Style,
+    /// Word-level add highlight for hunks that are *not* focused — a
+    /// muted tint (no bold) so the within-line change matches the faint
+    /// `diff_add_line_unfocused` wash instead of popping at full
+    /// saturation.
+    pub diff_add_inline_unfocused: Style,
+    /// Word-level delete highlight for non-focused hunks.  See
+    /// `diff_add_inline_unfocused`.
+    pub diff_delete_inline_unfocused: Style,
+    /// Decision divider for the focused hunk while still `Pending` —
+    /// the `> [ ] Accept [y] · Reject [n]` prompt.  A `secondary`
+    /// foreground (plus the caret and bold added at render time) makes
+    /// the call to action pop.
+    pub diff_decision_pending: Style,
+    /// Decision divider once the hunk is `Accepted` (`[Y] Accepted`).
+    pub diff_decision_accepted: Style,
+    /// Decision divider once the hunk is `Rejected` (`[N] Rejected`).
+    pub diff_decision_rejected: Style,
+    /// Decision divider for hunks that are *not* focused — a recessive
+    /// chrome strip (`surface` bg, muted fg, no bold).  Used as-is while
+    /// the hunk is `Pending`; for `Accepted` / `Rejected` hunks
+    /// `build_line` keeps this background but swaps in the per-state
+    /// green/red hue and adds `DIM` (see `ui::diff_view`), so a resolved
+    /// unfocused divider still signals its decision by color while
+    /// staying dimmer than the focused one.
+    pub diff_decision_unfocused: Style,
+    /// Mode badge for `Mode::Diff`.  Mirrors `status_mode_raw` shape
+    /// but on `warning` so the diff session reads as a distinct state.
+    pub status_mode_diff: Style,
+    /// Whole status bar shifts color in diff mode so the user never
+    /// misses the mode change.
+    pub status_bar_diff: Style,
+    /// Hint bar matches status-bar hue with a softer bg so the hint
+    /// text stays readable.
+    pub hint_bar_diff: Style,
 }
 
 /// Edamame's semantic color palette.  Every theme is built from these
@@ -879,6 +930,91 @@ impl Theme {
             scrollbar_track: Style::default().fg(p.bg_muted),
             scrollbar_thumb: Style::default().fg(p.primary),
             scrollbar_thumb_active: Style::default().fg(blend(p.primary, p.text, 0.35)),
+
+            // Diff mode — line / inline / status bar / hint bar.
+            // Line bg is 30 % toward the saturated diff color, mixed
+            // with `surface` so it reads as a chrome tint rather than
+            // a saturated stripe.  Inline highlights use the
+            // saturated palette color + bold.  Falls back to plain
+            // styles on non-Rgb palettes — `blend` returns the
+            // first argument unchanged in that case, which is the
+            // best we can do without inventing a hue.
+            // Focused hunk: stronger fill so the active change stands
+            // out; non-focused hunks: a faint wash so they recede.  The
+            // focused fill is then pulled back toward `bg` so it sits a
+            // shade darker than the saturated inline-change highlight —
+            // that contrast is what makes within-line edits legible
+            // against the surrounding row.
+            diff_add_line: Style::default().bg(blend(
+                blend(p.surface, p.diff_add, 0.42),
+                p.bg,
+                0.30,
+            )),
+            diff_delete_line: Style::default().bg(blend(
+                blend(p.surface, p.diff_delete, 0.42),
+                p.bg,
+                0.30,
+            )),
+            diff_add_line_unfocused: Style::default().bg(blend(p.surface, p.diff_add, 0.07)),
+            diff_delete_line_unfocused: Style::default().bg(blend(p.surface, p.diff_delete, 0.07)),
+            // Inline highlights darken the saturated diff color toward
+            // the bg so light foreground text keeps enough contrast.
+            diff_add_inline: Style::default()
+                .bg(blend(p.diff_add, p.bg, 0.35))
+                .add_modifier(bold),
+            diff_delete_inline: Style::default()
+                .bg(blend(p.diff_delete, p.bg, 0.35))
+                .add_modifier(bold),
+            // Unfocused inline highlights are a surface-derived tint
+            // (like the `_line_unfocused` washes) rather than the
+            // darkened-saturated focused style, and drop the bold — so a
+            // changed word reads as a slightly deeper patch within the
+            // faint hunk (0.20 vs. the 0.07 line wash) without competing
+            // with the focused hunk.
+            diff_add_inline_unfocused: Style::default().bg(blend(p.surface, p.diff_add, 0.20)),
+            diff_delete_inline_unfocused: Style::default().bg(blend(
+                p.surface,
+                p.diff_delete,
+                0.20,
+            )),
+            // Decision divider carries a full-width neutral chrome
+            // background so the accept/reject checkbox reads as the
+            // actionable strip between the delete and add sides rather
+            // than a bare gap.  The background is a plain surface (not a
+            // `secondary` tint) so the colored foregrounds keep full
+            // contrast: the focused divider uses the heavier
+            // `surface_elevated` and a `secondary` foreground on the
+            // pending prompt (the call to action pops); the resolved
+            // states keep their green/red hue so color still encodes the
+            // decision.
+            diff_decision_pending: Style::default().fg(p.secondary).bg(p.surface_elevated),
+            diff_decision_accepted: Style::default()
+                .fg(p.diff_add)
+                .bg(p.surface_elevated)
+                .add_modifier(bold),
+            diff_decision_rejected: Style::default()
+                .fg(p.diff_delete)
+                .bg(p.surface_elevated)
+                .add_modifier(bold),
+            // Unfocused divider: the lighter `surface` (vs. the focused
+            // `surface_elevated`) so it recedes a step while still
+            // reading as a chrome strip, with a muted fg and no bold.
+            // `build_line` derives the resolved unfocused styling from
+            // this plus the per-state hue + `DIM` (see `diff_view`).
+            diff_decision_unfocused: Style::default().fg(p.text_muted).bg(p.surface),
+            status_mode_diff: Style::default().bg(p.warning).fg(p.bg).add_modifier(bold),
+            // Bottom region in diff mode: a muted red wash on the hint
+            // line (top) and a muted green wash on the status line
+            // (bottom) — mirroring the deletes-above / adds-below
+            // stacking in the document.  Tints, not fills, so the bars
+            // read as "diff" without being mistaken for an in-document
+            // hunk and without sacrificing text legibility.
+            status_bar_diff: Style::default()
+                .bg(blend(p.surface, p.diff_add, 0.22))
+                .fg(p.text),
+            hint_bar_diff: Style::default()
+                .bg(blend(p.surface_elevated, p.diff_delete, 0.22))
+                .fg(p.text),
         }
     }
 
@@ -915,6 +1051,7 @@ impl Theme {
             Preview => self.status_mode_preview,
             Rendered => self.status_mode_rendered,
             Raw => self.status_mode_raw,
+            Diff => self.status_mode_diff,
         }
     }
 

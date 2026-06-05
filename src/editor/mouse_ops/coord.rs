@@ -67,6 +67,12 @@ pub(super) fn click_to_char_offset(
         Mode::Preview | Mode::Rendered => {
             Some(rendered_click_to_offset(state, col, row, viewport_width))
         }
+        // Diff mode handles its own clicks via `DiffView` — `mouse_ops`
+        // doesn't reach this helper while `Mode::Diff` is active (a
+        // future diff-Edit mode would wire cursor placement
+        // separately).  Return None so any inadvertent call no-ops
+        // cleanly.
+        Mode::Diff => None,
     }
 }
 

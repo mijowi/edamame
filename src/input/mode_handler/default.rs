@@ -3,6 +3,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::config::{Action, KeyMap};
 use crate::editor::{EditorState, Mode};
 
+use super::diff_keys;
 use super::ModeHandler;
 
 /// The default (non-modal) keybinding handler.
@@ -25,6 +26,18 @@ impl<'k> DefaultHandler<'k> {
 
 impl<'k> ModeHandler for DefaultHandler<'k> {
     fn handle(&mut self, event: KeyEvent, state: &EditorState) -> Option<Action> {
+        // Diff Review sub-mode owns the keymap.  Bare keys (`y` /
+        // `n` / `Y` / `N` / `i` / Tab / Shift-Tab / Enter / Esc) are
+        // mapped to diff actions before the global keymap gets a
+        // look-in, because the global keymap binds Tab to
+        // `InsertTab` etc.  Review's bindings are hard-coded here;
+        // there is no Edit sub-mode yet.
+        if state.mode == Mode::Diff {
+            if let Some(action) = diff_review_handle(&event) {
+                return Some(action);
+            }
+        }
+
         // 1. Check the keymap first (explicit bindings take priority).
         if let Some(action) = self.keymap.action_for(&event) {
             // Preview-mode guard: Ctrl-* chords must not cause an implicit
@@ -127,6 +140,25 @@ fn preview_safe_action(action: &Action) -> bool {
             // the cursor isn't drawn there anyway.
             | Action::GoToSection
     )
+}
+
+/// Map a bare key to the corresponding diff-Review action, mirroring
+/// the §9 default bind table.  Returns `None` for keys that aren't
+/// diff-specific — those fall through to the global keymap (which
+/// handles `Ctrl-Q` / `Ctrl-S` / overlay openers / scrolling
+/// uniformly across modes).
+///
+/// Hard-coded rather than read from a separate KeyMap because the
+/// review bindings need to win over the global keymap's `Tab` →
+/// `InsertTab`.  This could become a proper layered keymap once an
+/// Edit sub-mode lands and rebinding review keys matters.
+///
+/// The mapping itself lives in `diff_keys::DIFF_REVIEW_BINDINGS` — the
+/// single source of truth shared with the hint bar, keybinds overlay,
+/// decision divider, and diff-intro modal — so behavior and the
+/// displayed glyphs can never drift.
+fn diff_review_handle(event: &KeyEvent) -> Option<Action> {
+    diff_keys::diff_action_for(event)
 }
 
 /// Does this event represent Ctrl+Backspace in some terminal's encoding?

@@ -3,6 +3,7 @@ pub mod button_row;
 pub mod cap_summary;
 pub mod command_palette;
 pub mod content_width;
+pub mod diff_view;
 pub mod dim;
 pub mod editor_view;
 pub mod export_theme_modal;
@@ -33,6 +34,8 @@ pub mod welcome;
 pub use bottom_region::{hint_line_for, BottomRegion, HintChord, HintContent};
 pub use cap_summary::{build_cap_lines, CapSummary};
 pub use command_palette::{PaletteResponse, PaletteState, PaletteView};
+#[allow(unused_imports)]
+pub use diff_view::{DiffView, DiffViewState};
 pub use editor_view::{EditorView, EditorViewState};
 pub use export_theme_modal::{ExportThemeResponse, ExportThemeState, ExportThemeView};
 pub use gutter::split_gutter;

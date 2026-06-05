@@ -10,12 +10,14 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
+    style::Style,
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
 
 use crate::config::keymap::format_key_compact;
 use crate::config::{Action, KeyMap, StatusBarLayout, Theme};
+use crate::diff::Decision;
 use crate::editor::{EditorState, Mode};
 
 use super::status_bar::{StatusBar, StatusBarState};
@@ -121,6 +123,17 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
             prelude: None,
             chords: table_chords(keymap),
         },
+        Mode::Diff => {
+            let all_resolved = state.diff.as_ref().is_some_and(|d| d.all_resolved());
+            let focused_resolved = state.diff.as_ref().is_some_and(|d| {
+                d.focused_decision()
+                    .is_some_and(|dec| dec != Decision::Pending)
+            });
+            HintSet {
+                prelude: None,
+                chords: diff_review_chords(all_resolved, focused_resolved),
+            }
+        }
         Mode::Rendered | Mode::Raw => {
             // Baseline edit-mode hints — Menu anchors the row so
             // the command-palette chord is always the discovery
@@ -199,6 +212,43 @@ fn chords_from(keymap: &KeyMap, entries: &[(Action, &str)]) -> Vec<HintChord> {
         .iter()
         .filter_map(|(action, label)| chord_for(keymap, action, label))
         .collect()
+}
+
+/// Diff Review hint row.  The key glyphs come from the shared
+/// `diff_keys` table (via [`crate::input::diff_hint`]) — the same source
+/// the input handler, keybinds overlay, decision divider, and
+/// diff-intro modal read — so the advertised chord can never disagree
+/// with the key that actually fires.  The labels are this row's own
+/// (terse, to fit the bar).
+///
+/// `Esc Exit` trails the row, and only once every hunk is resolved:
+/// diff mode can't be exited via `Esc` while hunks are still pending
+/// (see `Action::DiffExit`), so advertising the chord before then
+/// would be misleading.
+fn diff_review_chords(all_resolved: bool, focused_resolved: bool) -> Vec<HintChord> {
+    let mk = |action: &Action, label: &str| {
+        HintChord::new(crate::input::diff_hint(action), label.to_owned())
+    };
+    let mut chords = vec![
+        mk(&Action::DiffNext, "Next"),
+        mk(&Action::DiffPrev, "Prev"),
+        mk(&Action::DiffAcceptHunk, "Accept"),
+        mk(&Action::DiffRejectHunk, "Reject"),
+        mk(&Action::DiffAcceptAll, "Accept all"),
+        mk(&Action::DiffRejectAll, "Reject all"),
+    ];
+    // `⌫ Reset` only makes sense once the focused hunk carries a
+    // decision — it's a no-op on a still-`Pending` hunk, so advertising
+    // it then would be misleading.
+    if focused_resolved {
+        chords.push(mk(&Action::DiffResetHunk, "Reset"));
+    }
+    // `Esc Exit` trails the row so the primary review actions lead; it
+    // appears only once the whole diff is resolved.
+    if all_resolved {
+        chords.push(mk(&Action::DiffExit, "Exit"));
+    }
+    chords
 }
 
 /// Build the table-context hint row.  When the four arrow-driven
@@ -306,23 +356,47 @@ fn arrow_bundle_chord(
 /// Layout per hint: `{chord}` in `hint_chord` (the badge is exactly
 /// the chord glyph — no surrounding padding gets the badge bg), then
 /// ` {label}` in `hint_label` (a single leading space separates label
-/// from chord), then `  ` (two spaces) in `hint_bar` as the separator
+/// from chord), then `  ` (two spaces) in `bar_style` as the separator
 /// before the next hint.
-pub fn lay_out_chords(chords: &[HintChord], theme: &Theme) -> Vec<Span<'static>> {
+///
+/// `bar_style` is the hint-bar background for the active mode — normally
+/// [`Theme::hint_bar`], but [`Theme::hint_bar_diff`] while in diff mode
+/// so the inter-chord separators match the recolored bar instead of
+/// punching the default hue through every gap.
+pub fn lay_out_chords(chords: &[HintChord], theme: &Theme, bar_style: Style) -> Vec<Span<'static>> {
+    // Wash the chord-badge and label backgrounds with the active bar's
+    // bg so the whole hint row reads as one bar.  In every mode except
+    // diff this is a no-op (`hint_bar`, `hint_chord` and `hint_label`
+    // all share `surface_elevated`); in diff mode it extends the
+    // recolored `hint_bar_diff` wash across the badges instead of
+    // leaving them on the default surface.
+    let chord_style = match bar_style.bg {
+        Some(bg) => theme.hint_chord.bg(bg),
+        None => theme.hint_chord,
+    };
+    let label_style = match bar_style.bg {
+        Some(bg) => theme.hint_label.bg(bg),
+        None => theme.hint_label,
+    };
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(chords.len() * 3);
     for chord in chords {
-        spans.push(Span::styled(chord.chord.clone(), theme.hint_chord));
-        spans.push(Span::styled(format!(" {}", chord.label), theme.hint_label));
-        spans.push(Span::styled("  ".to_string(), theme.hint_bar));
+        spans.push(Span::styled(chord.chord.clone(), chord_style));
+        spans.push(Span::styled(format!(" {}", chord.label), label_style));
+        spans.push(Span::styled("  ".to_string(), bar_style));
     }
     spans
 }
 
 /// The hint-line widget.  Renders chords / transient / prompt onto a
-/// single row, with a trailing fill using [`Theme::hint_bar`].
+/// single row, with a trailing fill using `bar_style`.
 pub struct HintLine<'a> {
     pub content: HintContent,
     pub theme: &'a Theme,
+    /// Background style for the bar fill and inter-chord separators.
+    /// [`Theme::hint_bar`] in every mode except diff, which uses
+    /// [`Theme::hint_bar_diff`] so the recolored bar signals the mode
+    /// change (Phase 1 §7).
+    pub bar_style: Style,
 }
 
 impl<'a> Widget for HintLine<'a> {
@@ -341,9 +415,13 @@ impl<'a> Widget for HintLine<'a> {
                 // so it reads as a sentence, not another chord.
                 if let Some(prelude) = &set.prelude {
                     let text = format!(" {}  ", prelude);
-                    v.push(Span::styled(text, self.theme.hint_label));
+                    let prelude_style = match self.bar_style.bg {
+                        Some(bg) => self.theme.hint_label.bg(bg),
+                        None => self.theme.hint_label,
+                    };
+                    v.push(Span::styled(text, prelude_style));
                 }
-                v.extend(lay_out_chords(&set.chords, self.theme));
+                v.extend(lay_out_chords(&set.chords, self.theme, self.bar_style));
                 v
             }
             HintContent::Transient { text, style } => {
@@ -352,7 +430,7 @@ impl<'a> Widget for HintLine<'a> {
             HintContent::Prompt { prompt, chords } => {
                 let prompt_text = format!(" {}  ", prompt);
                 let prompt_span = Span::styled(prompt_text, self.theme.transient_warning);
-                let chord_spans = lay_out_chords(chords, self.theme);
+                let chord_spans = lay_out_chords(chords, self.theme, self.bar_style);
                 let mut v = vec![prompt_span];
                 v.extend(chord_spans);
                 v
@@ -368,11 +446,11 @@ impl<'a> Widget for HintLine<'a> {
             .sum::<usize>();
         let mut all_spans = spans;
         if used < width {
-            all_spans.push(Span::styled(" ".repeat(width - used), self.theme.hint_bar));
+            all_spans.push(Span::styled(" ".repeat(width - used), self.bar_style));
         }
 
         Paragraph::new(Line::from(all_spans))
-            .style(self.theme.hint_bar)
+            .style(self.bar_style)
             .render(area, buf);
     }
 }
@@ -416,9 +494,17 @@ impl<'a> Widget for BottomRegion<'a> {
                     .direction(Direction::Vertical)
                     .constraints([Constraint::Length(1), Constraint::Length(1)])
                     .split(area);
+                // Diff mode recolors the whole hint bar to match the
+                // status bar's mode shift (§7).
+                let bar_style = if matches!(self.status.mode, Mode::Diff) {
+                    self.theme.hint_bar_diff
+                } else {
+                    self.theme.hint_bar
+                };
                 HintLine {
                     content: self.hint,
                     theme: self.theme,
+                    bar_style,
                 }
                 .render(chunks[0], buf);
                 StatusBar {
@@ -497,6 +583,44 @@ mod tests {
         assert_eq!(set.chords[0].chord, "^P");
         assert_eq!(set.chords[0].label, "Menu");
         assert!(set.chords.iter().any(|c| c.label == "Quit"));
+    }
+
+    #[test]
+    fn diff_hint_gates_exit_on_full_resolution() {
+        // Pending hunks: no `Esc Exit` hint (diff can't be exited yet),
+        // and the navigation/decision chords lead the row.
+        let pending = diff_review_chords(false, false);
+        assert!(
+            !pending.iter().any(|c| c.label == "Exit"),
+            "Exit hint must be hidden while hunks are pending",
+        );
+        assert_eq!(pending[0].label, "Next", "Tab/Next leads when pending");
+
+        // All resolved: the review actions still lead, and `Esc Exit`
+        // appears at the very end of the row.
+        let resolved = diff_review_chords(true, true);
+        assert_eq!(resolved[0].label, "Next", "review actions lead the row");
+        let last = resolved.last().expect("non-empty row");
+        assert_eq!(last.chord, "Esc");
+        assert_eq!(last.label, "Exit");
+    }
+
+    #[test]
+    fn diff_reset_hint_only_when_focused_hunk_resolved() {
+        // Focused hunk still pending → no `Reset` chord (it'd be a
+        // no-op there).
+        let pending = diff_review_chords(false, false);
+        assert!(
+            !pending.iter().any(|c| c.label == "Reset"),
+            "Reset hint must be hidden while the focused hunk is pending",
+        );
+        // Focused hunk decided → `⌫ Reset` is offered.
+        let decided = diff_review_chords(false, true);
+        let reset = decided
+            .iter()
+            .find(|c| c.label == "Reset")
+            .expect("Reset hint must appear once the focused hunk is decided");
+        assert_eq!(reset.chord, "⌫");
     }
 
     #[test]
@@ -826,7 +950,7 @@ mod tests {
             HintChord::new("^B", "Bravo"),
             HintChord::new("^C", "Charlie"),
         ];
-        let spans = lay_out_chords(&chords, theme());
+        let spans = lay_out_chords(&chords, theme(), theme().hint_bar);
         let concat: String = spans.iter().map(|s| s.content.to_string()).collect();
         assert!(concat.contains("Alpha"));
         assert!(concat.contains("Bravo"));
@@ -858,6 +982,7 @@ mod tests {
                         cursor_col: Some(1),
                         selection_size: sel,
                         section_path: Vec::new(),
+                        diff_progress: None,
                     },
                     hint,
                     layout,
