@@ -51,7 +51,12 @@ work. Captured 2026-06-01 against the toolchain `rustc 1.94.1`.
 | resvg | 0.46.0 | 0.46 | 0.47.0 | **do not bump** — pinned to mermaid |
 | usvg | 0.46.0 | 0.46 | 0.47.0 | **do not bump** — pinned to mermaid |
 
-## Phase 1 — lockfile drift (zero risk)
+> **Status (implemented 2026-06-05):** Phases 1–3 done and verified
+> (`cargo build` + `cargo clippy --all-targets -- -D warnings` +
+> `cargo test`, all green). Phase 4 and the optional patches were left
+> for a future session per scope decision. See per-phase ✅ notes below.
+
+## Phase 1 — lockfile drift (zero risk) ✅ done
 
 Five patch releases already satisfy the existing version requirements;
 only `Cargo.lock` is stale. No `Cargo.toml` edit, no API change.
@@ -64,7 +69,12 @@ cargo update -p pulldown-cmark -p tracing-appender \
 (Equivalently a plain `cargo update`, which also refreshes transitive
 crates.) Verify with `cargo build && cargo test`.
 
-## Phase 2 — cheap manifest bumps (low risk)
+> ✅ Applied. Bumped open 5.3.4→5.3.5, pulldown-cmark 0.13.3→0.13.4,
+> tracing-appender 0.2.4→0.2.5, unicode-segmentation 1.13.2→1.13.3,
+> unicode-width 0.2.0→0.2.2. Also pulled in a new transitive `symlink
+> 0.1.0` (dependency of `open`). Build + full test suite green.
+
+## Phase 2 — cheap manifest bumps (low risk) ✅ done
 
 ### crossterm 0.28 → 0.29 (recommended)
 
@@ -88,7 +98,20 @@ internal (`dirs-sys` 0.4 → 0.5). Change `dirs = "5"` → `"6"` and build.
 Verify the whole phase with `cargo build && cargo clippy --all-targets
 -- -D warnings && cargo test`.
 
-## Phase 3 — toml / toml_edit (low–moderate risk, move together)
+> ✅ Applied. ratatui feature `crossterm_0_28`→`crossterm_0_29`,
+> `crossterm "0.28"`→`"0.29"`, `dirs "5"`→`"6"`. Build + clippy + full
+> tests green; no source edits needed.
+>
+> **Note on the payoff:** the *build* now compiles only crossterm 0.29
+> (confirmed via `cargo tree`), so the duplicate-copy waste is gone as
+> intended. However, an inactive `crossterm 0.28.1` entry *remains in
+> `Cargo.lock`*: `ratatui-crossterm` declares both crossterm 0.28 and
+> 0.29 as optional deps, and cargo records optional deps in the lock
+> regardless of feature activation. This entry is not compiled and
+> cannot be pruned by `cargo update`. (A stray `windows-sys 0.59.0`
+> orphan *was* pruned as a side effect.)
+
+## Phase 3 — toml / toml_edit (low–moderate risk, move together) ✅ done
 
 `toml` 1.x requires `toml_edit` ≥ 0.23, so both bump in one step:
 
@@ -115,6 +138,24 @@ compile with no source edits.
   manually confirm `Config::save` still preserves comments in
   `~/.config/edamame/config.toml`.
 - **Payoff:** TOML 1.1 parse support and several parser panic fixes.
+
+> ✅ Applied. `toml "0.8"`→`"1"`, `toml_edit "0.22"`→`"0.25"`.
+>
+> **Deviation from plan:** the plan predicted "no source edits". One was
+> required. In toml 1.x `toml::Deserializer::new` parses eagerly and now
+> returns `Result<Self, Error>` (and is itself deprecated in favor of
+> `Deserializer::parse`). `src/config/readers.rs:32` constructed it
+> directly and fed it to `serde_ignored::deserialize`, which no longer
+> type-checks. Fixed by switching to `toml::Deserializer::parse(raw)?`
+> — parse errors now surface at construction rather than during the
+> serde walk; behavior is otherwise unchanged. This is the only
+> `toml`/`toml_edit` call site that broke; the `toml_edit`
+> `Value`/`Table`/`DocumentMut`/`ArrayOfTables` surface in
+> `config.rs`/`sections.rs` compiled unchanged, as the plan predicted.
+>
+> Comment-preservation is covered by `config.rs::save_merge_*` tests
+> (incl. `save_merge_unchanged_config_preserves_file_verbatim`), all
+> green under toml_edit 0.25 — no separate manual check needed.
 
 ## Phase 4 — larger, isolated upgrades (do when the changes are wanted)
 
