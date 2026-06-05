@@ -16,8 +16,8 @@ path = "src/lib.rs"
 # TUI framework and terminal backend.  The `serde` feature is enabled so
 # `ratatui::style::Color` deserializes from strings ("red", "#ff00aa", "42")
 # directly inside our `ThemeFile` TOML layer.
-ratatui = { version = "0.30", features = ["serde", "crossterm_0_28", "unstable-rendered-line-info"] }
-crossterm = "0.28"
+ratatui = { version = "0.30", features = ["serde", "crossterm_0_29", "unstable-rendered-line-info"] }
+crossterm = "0.29"
 
 # Markdown parsing
 pulldown-cmark = "0.13"
@@ -27,19 +27,19 @@ ropey = "1.6"
 
 # Config serialization
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1"
 # Format-preserving TOML parser.  Used by `Config::save` to surgically
 # update values in the user's `config.toml` while preserving comments,
 # blank lines, and section ordering — the shipped reference config is
 # heavily annotated, and a serde round-trip would nuke that.
-toml_edit = "0.22"
+toml_edit = "0.25"
 # Detects unknown keys during deserialization so the config loader can
 # surface "unrecognized field" warnings without forcing `deny_unknown_fields`
 # on the structs (we want forward-compat for theme files, not strictness).
 serde_ignored = "0.1"
 
 # Platform paths (XDG_CONFIG_HOME etc.)
-dirs = "5"
+dirs = "6"
 
 # Error handling
 thiserror = "2"

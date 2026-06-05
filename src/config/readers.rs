@@ -29,7 +29,10 @@ where
     T: serde::de::Deserialize<'de>,
 {
     let mut unknown: Vec<String> = Vec::new();
-    let de = toml::Deserializer::new(raw);
+    // toml 1.x parses eagerly in `Deserializer::parse`, returning a
+    // `Result`; a malformed document surfaces here rather than during
+    // the `serde_ignored::deserialize` walk below.
+    let de = toml::Deserializer::parse(raw)?;
     let value = serde_ignored::deserialize(de, |path| unknown.push(path.to_string()))?;
     Ok((value, unknown))
 }
