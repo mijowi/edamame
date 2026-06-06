@@ -1,4 +1,4 @@
-//! Smoke tests for the raw DiffView (Phase 1 §5).  Renders a small
+//! Smoke tests for the raw DiffView (§5).  Renders a small
 //! diff into a `TestBackend` and asserts the stacked old-above-new
 //! layout, the focused-hunk gutter glyph, and the decision indicator
 //! glyphs all reach the output buffer.

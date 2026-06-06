@@ -2,7 +2,7 @@
 ///
 /// These construct an `EditorState`, dispatch sequences of `Action`s, then
 /// assert on buffer content and cursor position. They serve as TDD anchors for
-/// Phase 1 functionality: insert, delete, newline, undo, redo, cursor movement,
+/// core editing functionality: insert, delete, newline, undo, redo, cursor movement,
 /// mode transitions, save, and clipboard.
 use edamame::config::{Action, Theme};
 use edamame::document::Buffer;
@@ -719,7 +719,7 @@ fn raw_mode_insert_pipe_is_literal_not_escaped() {
     assert!(!st.contents().contains(r"\|"));
 }
 
-// ── Phase 7: Image block navigation and source-map stability ─────────────────
+// ── Image block navigation and source-map stability ──────────────────────────
 
 #[test]
 fn cursor_traverses_image_block_as_one_line() {
@@ -792,7 +792,7 @@ fn editor_state_tracks_image_block_urls_in_parsed_doc() {
 
 #[test]
 fn image_cache_survives_reparse_on_unrelated_edit() {
-    // Phase 7 architectural invariant: the decoded-image cache lives on
+    // Architectural invariant: the decoded-image cache lives on
     // EditorState::images (URL-keyed) rather than ParsedDoc, so editing
     // text elsewhere in the document does not invalidate expensive
     // image decodes / protocol encodings.
@@ -824,7 +824,7 @@ fn image_cache_survives_reparse_on_unrelated_edit() {
     assert_eq!(st.parsed.image_blocks[0].url, "cat.png");
 }
 
-// ── HTML comment hiding (Phase 12) ──────────────────────────────────────────
+// ── HTML comment hiding ───────────────────────────────────────────────────────
 
 /// Pressing Down from the line immediately preceding a hidden HTML comment
 /// must skip over the comment's source bytes: the comment block has zero

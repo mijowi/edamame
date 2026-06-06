@@ -161,7 +161,7 @@ pub fn theme() -> Theme {
         scrollbar_thumb: Style::default(),
         scrollbar_thumb_active: Style::default().add_modifier(Modifier::REVERSED),
 
-        // Diff mode (Phase 1) — monochrome fallback per §7.  Line bg
+        // Diff mode — monochrome fallback per §7.  Line bg
         // can't be a saturated mix, so we use REVERSED on the whole
         // line; inline highlights add BOLD on top to stand out from
         // the line bg.  Status / hint bars in diff mode become

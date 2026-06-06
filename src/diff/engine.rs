@@ -13,7 +13,7 @@
 //! - Stable [`HunkId`] allocation through a caller-supplied counter
 //!   (see `DiffState::compute_initial` / `recompute_after_edit`).
 //!
-//! Phase 1 keeps inline word-level highlights restricted to text
+//! Inline word-level highlights are currently restricted to text
 //! lines outside table cells; the renderer surfaces them through
 //! [`crate::diff::hunk::InlineSpan`].
 
@@ -29,7 +29,7 @@ use super::hunk::{Decision, Hunk, HunkId, HunkKind, InlineSide, InlineSpan};
 /// Allocator for [`HunkId`] values.  Held by `DiffState` so re-
 /// computations after in-diff edits can mint fresh ids without
 /// reusing old ones — id stability across recomputes is then
-/// achieved by old-side overlap matching (Phase 1 §6).
+/// achieved by old-side overlap matching (§6).
 #[derive(Debug, Default, Clone)]
 pub struct HunkIdAllocator {
     next: u64,

@@ -29,7 +29,7 @@ pub enum PreflightError {
 /// `"html"` yields `notes/guide.html`.
 ///
 /// `source.with_extension(...)` preserves the parent directory and
-/// replaces the final extension, matching the Phase 16 "output next to
+/// replaces the final extension, matching the "output next to
 /// the source" behaviour.
 pub fn target_for_source(source: &Path, extension: &str) -> PathBuf {
     source.with_extension(extension)

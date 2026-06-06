@@ -73,7 +73,7 @@ pub enum Action {
     // ── Table editing ──────────────────────────────────────────────
     // Cell navigation. Tab/Shift+Tab/Enter outside a table retain their
     // normal behaviour; edit_ops redirects them when the cursor is inside
-    // a table (Phase 2 implementation).
+    // a table.
     TableNextCell,
     TablePrevCell,
     TableNextRow,
@@ -95,7 +95,7 @@ pub enum Action {
     // as the canonical way to get multi-line cells).  Outside a table it
     // falls through to `Newline`.
     TableInsertBreak,
-    // ── Link navigation (Phase 8) ──────────────────────────────────
+    // ── Link navigation ────────────────────────────────────────────
     /// Follow the link at the cursor's rope offset (if any).  In
     /// Preview mode users reach links via mouse click; in Rendered /
     /// Raw mode this action is the keyboard equivalent.  Handled by
@@ -162,7 +162,7 @@ pub enum Action {
     /// confirms and places the cursor at the end of the heading line.
     GoToSection,
 
-    // ── Diff review (Phase 1) ──────────────────────────────────────
+    // ── Diff review ────────────────────────────────────────────────
     /// Advance focus to the next hunk in document order.  No decision
     /// implied — pressing this leaves the current hunk as `Pending`.
     DiffNext,
@@ -526,7 +526,7 @@ pub fn format_key_parseable(ev: &KeyEvent) -> Option<String> {
 }
 
 /// Render `ev` as a human-readable key string roughly matching what
-/// [`parse_key`] accepts.  Used by the Phase 9 cheat-sheet popover to
+/// [`parse_key`] accepts.  Used by the cheat-sheet popover to
 /// display bindings; the inverse of `parse_key` is good enough here
 /// even if it's not strictly round-tripping (e.g. we emit `Ctrl-C`
 /// rather than `ctrl+c` for readability).
@@ -554,7 +554,7 @@ pub fn format_key(ev: &KeyEvent) -> String {
 pub struct KeyBindingOverrides(pub HashMap<String, String>);
 
 impl KeyBindingOverrides {
-    /// Persist the overrides to `path` as TOML.  Used by the Phase 10
+    /// Persist the overrides to `path` as TOML.  Used by the
     /// keybinds overlay so a rebind takes effect immediately and
     /// survives the next startup.  Returns the underlying I/O / TOML
     /// error verbatim — callers typically log + flash on failure
@@ -603,7 +603,7 @@ impl KeyMap {
     /// Return the first key (in insertion order, which HashMap does not
     /// guarantee but is fine for an approximate lookup) bound to
     /// `action`, formatted as a human-readable string.  Used by the
-    /// Phase 9 cheat-sheet popover to surface the current binding for
+    /// cheat-sheet popover to surface the current binding for
     /// each known action.  When multiple keys are bound, only one is
     /// returned — callers that need every binding should iterate
     /// `bindings()` themselves.
@@ -627,7 +627,7 @@ impl KeyMap {
     /// Rebind `action` to `new_key` (parsed from `parse_key`-style
     /// syntax).  If `new_key` is already bound to a *different*
     /// action, returns `Err` and leaves the keymap unchanged — that's
-    /// the conflict-detection contract from Phase 10's keybinds
+    /// the conflict-detection contract from the keybinds
     /// overlay.  On success, the overrides table is updated to keep
     /// the on-disk shape in sync with the in-memory keymap.
     ///
@@ -755,7 +755,7 @@ impl KeyMap {
         // List
         bind!("ctrl+space", Action::ToggleCheckbox);
 
-        // Table editing (Phase 2) — org-mode-style Alt+Arrow scheme.
+        // Table editing — org-mode-style Alt+Arrow scheme.
         // Arrow direction = operation direction; Shift promotes "reorder" to
         // "insert" on that side. Cell navigation (Tab / Shift+Tab / Enter) is
         // handled via context dispatch in edit_ops when the cursor is inside
@@ -780,7 +780,7 @@ impl KeyMap {
         // Shift+Enter behaviour (same as Enter) applies.
         bind!("shift+enter", Action::TableInsertBreak);
 
-        // Phase 8 — link navigation.  Alt+Left / Alt+Right are NOT bound to
+        // Link navigation.  Alt+Left / Alt+Right are NOT bound to
         // NavigateBack/NavigateForward here: those keys remain bound to
         // TableMoveColumnLeft / TableMoveColumnRight so tables keep their
         // column-reorder semantics, and the `App` dispatches them to
@@ -789,9 +789,9 @@ impl KeyMap {
         // keybindings config.
         bind!("ctrl+enter", Action::FollowLinkUnderCursor);
 
-        // Phase 10 — command palette.  Ctrl-P is the primary chord
+        // Command palette.  Ctrl-P is the primary chord
         // (also surfaced on the bottom-region hint line as `^P Menu`).
-        // The other Phase 10 actions (`ShowMarkdownCheatSheet`,
+        // The other palette actions (`ShowMarkdownCheatSheet`,
         // `OpenSettings`, `OpenKeybinds`, `OpenConfigFolder`,
         // `ExportHtml`, `ReloadFromDisk`) are intentionally unbound:
         // they are reached only via the palette, so the user can
@@ -804,7 +804,7 @@ impl KeyMap {
         // the application, never consumed as input).
         bind!("ctrl+g", Action::GoToSection);
 
-        // Phase 15 — graduation chord for the Insert Table command.
+        // Graduation chord for the Insert Table command.
         // Tables can't be authored from Rendered mode without this
         // flow, so a discoverable keybind sits next to the palette
         // entry.

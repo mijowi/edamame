@@ -1,4 +1,4 @@
-//! Link target classification for Phase 8 clickable-link navigation.
+//! Link target classification for clickable-link navigation.
 //!
 //! `LinkTarget` divides the raw `url` string on an `Inline::Link` into one
 //! of three categories so the App can pick the right dispatch path:

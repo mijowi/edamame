@@ -37,7 +37,7 @@ pub struct Renderer<'t> {
     /// renderer falls back to `image_max_height` whenever this returns
     /// `None`, so pre-decode layout is stable.
     image_row_override: Option<ImageRowOverride<'t>>,
-    /// Phase 13 — when true, alternating data rows in tables are filled
+    /// When true, alternating data rows in tables are filled
     /// with `Theme::table_row_even` / `Theme::table_row_odd`.  Off by
     /// default; opt-in via `config.table.row_striping`.
     pub(super) row_striping: bool,
@@ -1129,7 +1129,7 @@ mod tests {
     /// A multi-row data row whose cell contains styled inlines
     /// (e.g. `**bold**` or `` `code` ``) must preserve the inline
     /// styling on every wrapped sub-line.  Plain-text rendering would
-    /// drop the bold/code spans — Phase 13's inline-aware wrap keeps
+    /// drop the bold/code spans — the inline-aware wrap keeps
     /// them.
     #[test]
     fn table_multirow_cell_preserves_inline_styles() {
@@ -1273,7 +1273,7 @@ mod tests {
         assert!(name.style.add_modifier.contains(Modifier::UNDERLINED));
     }
 
-    // ── HTML comment hiding (Phase 12) ────────────────────────────────────
+    // ── HTML comment hiding ───────────────────────────────────────────────
 
     #[test]
     fn block_level_html_comment_renders_zero_lines() {

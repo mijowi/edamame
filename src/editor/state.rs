@@ -172,14 +172,14 @@ pub struct EditorState {
     /// alone, so `build_snapshots` can reuse the previous frame's
     /// geometry.
     pub parsed_version: u64,
-    /// Phase 6 live-preview scratch for the column-resize drag.  When
+    /// Live-preview scratch for the column-resize drag.  When
     /// `Some((table_byte_start, widths))`, the table whose first row begins
     /// at `table_byte_start` renders with `widths` applied as a
     /// `user_widths` override — without touching the buffer.  Cleared on
     /// release (when the drag commits via `write_column_widths`) or on any
     /// non-resize action that invalidates the drag.
     pub live_table_widths: Option<(usize, Vec<Option<usize>>)>,
-    /// Phase 13 — propagated from `config.table.row_striping`.  Controls
+    /// Propagated from `config.table.row_striping`.  Controls
     /// whether the renderer fills alternating data rows with
     /// `Theme::table_row_even` / `Theme::table_row_odd`.  Set by the App
     /// at construction time and re-read on every `refresh_parsed`.
@@ -189,7 +189,7 @@ pub struct EditorState {
     /// pixel size).  Set by the App at construction time and re-read on
     /// every `refresh_parsed`.
     pub big_h1: bool,
-    /// Phase 13 — most-recently observed terminal column width, fed
+    /// Most-recently observed terminal column width, fed
     /// into `Renderer::with_viewport_width` on every `refresh_parsed`
     /// so the min-max proportional column-width algorithm adapts to
     /// the user's actual viewport.  Set to a sensible 80 default until
@@ -198,14 +198,14 @@ pub struct EditorState {
     /// `refresh_parsed`) so call-sites that don't know the width — e.g.
     /// undo/redo, paste, file load — pick up the cached value.
     pub viewport_width: usize,
-    /// Phase 13 — set on the Release event of a column-border drag, this
+    /// Set on the Release event of a column-border drag, this
     /// flags the App to either commit the in-progress `live_table_widths`
     /// (writing the `tui-columns` comment to the buffer) or open the
     /// width-injection warning modal.  Carries the `table_byte_start` of
     /// the table whose widths are pending.  Cleared by
     /// [`commit_pending_column_widths`] / [`cancel_pending_column_widths`].
     pub pending_column_widths_commit: Option<usize>,
-    /// Phase 8 — mouse-ops and edit-ops set this when a click / keypress
+    /// Mouse-ops and edit-ops set this when a click / keypress
     /// requests a link be followed.  The App consumes it on the next
     /// loop iteration and dispatches to its own navigation stack /
     /// worker threads.  Storing the intent on `EditorState` keeps

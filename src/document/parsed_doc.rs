@@ -112,7 +112,7 @@ pub struct ParsedDoc {
     /// independently.
     pub image_blocks: Vec<ImageBlockInfo>,
     /// GFM-slug → rendered-line-index map for every `Block::Heading`
-    /// in the document.  Consumed by Phase 8's `#anchor` navigation —
+    /// in the document.  Consumed by `#anchor` navigation —
     /// `LinkTarget::Anchor(slug)` dispatches against this table.
     ///
     /// Slugs follow the GitHub Flavored Markdown algorithm: lowercase,
@@ -176,7 +176,7 @@ impl ParsedDoc {
 
     /// Like [`build`], but applies a live `user_widths` override to the
     /// table whose first row begins at `live_table_widths.0`.  Used by
-    /// Phase 6's column-resize drag to preview widths without writing the
+    /// the column-resize drag to preview widths without writing the
     /// `tui-columns` comment to the buffer on every mouse-move event.
     ///
     /// `image_row_override` is an optional URL → row-count callback used
@@ -314,8 +314,8 @@ impl ParsedDoc {
         }
 
         // Real blocks, each followed by any blank lines in the gap after it.
-        // Consume `rendered_lines` by move via an iterator: prior to
-        // Phase 15 this loop indexed into the Vec and `.clone()`'d each
+        // Consume `rendered_lines` by move via an iterator: this loop
+        // previously indexed into the Vec and `.clone()`'d each
         // `Line<'static>`, which deep-copies every span's Cow and is
         // measurable on large documents.  Sequential consumption means
         // we can drain the source vector directly.
@@ -623,7 +623,7 @@ fn uniquify_slug(base: &str, counts: &mut HashMap<String, usize>) -> String {
 
 /// Pair AST blocks with their byte ranges and splice a `user_widths` override
 /// onto the `Block::Table` whose range starts at `override_start`.  Used by
-/// Phase 6's column-resize drag to preview widths without buffer mutation.
+/// the column-resize drag to preview widths without buffer mutation.
 fn apply_live_table_widths(
     blocks: &mut [crate::markdown::ast::Block],
     real_ranges: &[Range<usize>],
@@ -1055,7 +1055,7 @@ mod tests {
         }
     }
 
-    // ── HTML-comment hiding (Phase 12) ───────────────────────────────────
+    // ── HTML-comment hiding ──────────────────────────────────────────────
 
     /// A block-level HTML comment contributes zero rendered lines — its
     /// `per_block_own` count must be 0 so navigation can detect the block
@@ -1091,7 +1091,7 @@ mod tests {
 
     /// The trailing `tui-columns` comment is absorbed into the preceding
     /// table by `merge_trailing_tui_columns_comments`.  Regression guard
-    /// after the Phase 12 parser refactor changed the variant the merge
+    /// after the parser refactor changed the variant the merge
     /// function looks for.
     #[test]
     fn tui_columns_still_absorbed_through_parsed_doc() {

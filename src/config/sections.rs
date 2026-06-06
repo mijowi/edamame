@@ -193,12 +193,12 @@ impl Default for ModalConfig {
 /// to `false` when `capabilities.mouse` is absent so persisted config
 /// stays faithful to what the user actually sees.
 ///
-/// `row_striping` (Phase 13): when true, alternating data rows are filled
+/// `row_striping`: when true, alternating data rows are filled
 /// with `Theme::table_row_even` / `Theme::table_row_odd` to aid visual
 /// scanning on wide tables.  Off by default so users who prefer plain
 /// borders see no change.
 ///
-/// `warn_on_width_injection` (Phase 13): when true, the first column-border
+/// `warn_on_width_injection`: when true, the first column-border
 /// drag on a table without a `<!-- tui-columns: [...] -->` comment opens a
 /// modal warning that committing the resize will inject the comment into
 /// the Markdown source.  Set false (either via the modal's "Continue and
@@ -317,7 +317,7 @@ impl Default for DiagramsConfig {
     }
 }
 
-/// Export configuration (Phase 16).
+/// Export configuration.
 ///
 /// HTML is the single built-in export target; it doubles as the intermediate
 /// format for user-defined custom commands that produce PDF, DOCX, etc. by
@@ -347,7 +347,7 @@ pub struct HtmlExportConfig {
     /// is fully self-contained.  Default: false (keeps output compact and
     /// portable alongside the asset directory).
     pub inline_images: bool,
-    /// Phase 17 — when true (the default), fenced ```mermaid code blocks
+    /// When true (the default), fenced ```mermaid code blocks
     /// are rendered to inline SVG via `mermaid-rs-renderer` and wrapped
     /// in a `<figure class="mermaid-diagram">`.  On render failure the
     /// block falls back to `<pre><code class="language-mermaid">` so the

@@ -174,7 +174,7 @@ impl App {
                 self.navigate_forward(doc_height, doc_width);
                 true
             }
-            // Phase 10 — palette + configuration overlays.
+            // Palette + configuration overlays.
             Action::ShowCommandPalette => {
                 self.open_command_palette();
                 true
@@ -818,7 +818,7 @@ impl App {
     ///   ([`super::modal::QuitConfirmModal`])
     /// - save-before-launch in the external-editor flow
     ///   ([`App::open_current_file_in_editor`])
-    /// - future post-merge diff resolution (Phase 1 §6)
+    /// - future post-merge diff resolution
     ///
     /// Callers are responsible for their own success / failure UX
     /// (toast vs. error modal vs. silent autosave flash); this helper

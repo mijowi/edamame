@@ -1,10 +1,10 @@
-//! Raw stacked diff view (Phase 1 §5).  Renders a flat sequence of
+//! Raw stacked diff view.  Renders a flat sequence of
 //! [`DiffVisualLine`] entries — interleaving unchanged context with
 //! per-hunk old-above-new pairs — to ratatui via the shared
 //! [`crate::ui::line_render`] helper so the trailing-cell bg fill and
 //! word-aware wrap match the other modes.
 //!
-//! Phase 2 (`docs/diff-mode-plan.md` §16) will upgrade this to a
+//! A future iteration (`docs/diff-mode-plan.md` §16) will upgrade this to a
 //! hybrid rendered view; for now it stays raw-only so the
 //! review-and-decide flow ships without touching `ParsedDoc` /
 //! `SourceMap`.

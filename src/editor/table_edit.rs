@@ -759,14 +759,14 @@ fn collect_raw(info: &TableInfo) -> String {
     info.rows.iter().map(format_row_with_nl).collect()
 }
 
-// ─── Phase 15 — table insertion ──────────────────────────────────────────────
+// ─── Table insertion ─────────────────────────────────────────────────────────
 
 /// True when the line of `source` containing byte `cursor_byte` is blank —
 /// i.e. consists of nothing but whitespace.  `cursor_byte` past the last
 /// byte of `source` is treated as belonging to the final line; a buffer
 /// that doesn't end with `\n` therefore reports `false` for cursors at
 /// EOF when the final line carries content (the "file ends without
-/// trailing newline" case the Phase 15 pre-flight catches).
+/// trailing newline" case the pre-flight catches).
 pub fn cursor_line_is_blank(source: &str, cursor_byte: usize) -> bool {
     let bytes = source.as_bytes();
     let pos = cursor_byte.min(bytes.len());
@@ -775,7 +775,7 @@ pub fn cursor_line_is_blank(source: &str, cursor_byte: usize) -> bool {
     source[start..end].trim().is_empty()
 }
 
-/// Phase 15 — emit a fresh GFM pipe table at the cursor, assuming the
+/// Emit a fresh GFM pipe table at the cursor, assuming the
 /// pre-flight has already verified the cursor is on a blank line.
 ///
 /// Returns `(delta, cursor_byte)` where `cursor_byte` is the post-edit
@@ -1140,7 +1140,7 @@ mod tests {
         assert_eq!(column_for_offset(row, 10), 1); // inside second cell
     }
 
-    // ── Phase 15 — `insert_table` and `cursor_line_is_blank` ─────────────────
+    // ── `insert_table` and `cursor_line_is_blank` ───────────────────────────
 
     #[test]
     fn cursor_line_is_blank_recognises_empty_and_whitespace_lines() {

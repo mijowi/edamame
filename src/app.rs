@@ -59,9 +59,9 @@ pub(crate) enum AppEvent {
     /// popped and the placeholder stays visible until a subsequent
     /// frame re-enqueues the encode.
     ProtocolReady(Result<ratatui_image::thread::ResizeResponse, ratatui_image::errors::Errors>),
-    /// Phase 8 — worker-thread report that `open::that` finished on a
-    /// URL or non-Markdown local file.  Currently only logged; Phase 9
-    /// will surface failures on the hint line.
+    /// Worker-thread report that `open::that` finished on a
+    /// URL or non-Markdown local file.  Currently only logged; a later
+    /// change will surface failures on the hint line.
     LinkOpenResult(std::result::Result<(), String>),
     /// Watcher worker delivered an event for the open file.  A
     /// `Change` is routed through the own-write content-hash filter
@@ -74,7 +74,7 @@ pub(crate) enum AppEvent {
 /// The `handler` fn is the single callback invoked when one of the chord keys
 /// is pressed — it receives the triggering `KeyCode` so the same prompt type
 /// can host multiple-button flows.
-#[allow(dead_code)] // first consumer lands in Phase 11
+#[allow(dead_code)] // first consumer lands later
 pub struct HintPrompt {
     pub prompt: String,
     pub chords: Vec<HintChord>,
@@ -111,8 +111,8 @@ pub struct App {
     mouse: MouseDispatcher,
     /// Active drag target, set on mouse-down and read by each subsequent
     /// `Drag` event.  `DragTarget::TextSelection` covers normal click-drag
-    /// text selection (the Phase 5 fallthrough); the other variants carry
-    /// Phase 6's table-specific row / column / border drags.  Cleared on
+    /// text selection (the text-selection fallthrough); the other variants carry
+    /// the table-specific row / column / border drags.  Cleared on
     /// `Release`.
     drag_target: Option<mouse_ops::DragTarget>,
     /// True when the most recent mouse-move landed inside the editor's
@@ -154,7 +154,7 @@ pub struct App {
     /// Initialized to `true` so the first iteration paints the opening
     /// frame.  Without this gate, the 60 ms `recv_timeout` would fire a
     /// full redraw ~17 times per second even with no input — the
-    /// dominant cause of idle CPU prior to Phase 15.
+    /// dominant cause of idle CPU previously.
     needs_draw: bool,
     /// When `Some`, a `Resize` burst is in progress and draws are
     /// suppressed until this instant passes.  Each subsequent Resize
@@ -189,19 +189,19 @@ pub struct App {
     /// Resize sandwiched between two keystrokes is still processed
     /// between them.
     pending_events: VecDeque<Event>,
-    /// Phase 8 back-stack: `NavigateBack` pops the most-recent entry
+    /// Back-stack: `NavigateBack` pops the most-recent entry
     /// and restores it.  A new link-follow clears `nav_forward`
     /// (browser semantics).
     nav_back: Vec<NavEntry>,
-    /// Phase 8 forward-stack: `NavigateBack` pushes the current state
+    /// Forward-stack: `NavigateBack` pushes the current state
     /// here so `NavigateForward` can redo the navigation.
     nav_forward: Vec<NavEntry>,
-    /// Phase 8 — target of the link currently under the mouse
+    /// Target of the link currently under the mouse
     /// pointer, updated on every `MouseEventKind::Moved` event.
-    /// Phase 9 will render this (plus the link's `title`) on the hint
+    /// A later change will render this (plus the link's `title`) on the hint
     /// line.  Until then the field is wired through but not displayed.
     hovered_link: Option<LinkTarget>,
-    /// Phase 9 — transient message overlayed on the hint line.  Non-
+    /// Transient message overlayed on the hint line.  Non-
     /// error kinds auto-expire after `config.editor.transient_ms`;
     /// errors stick until dismissed.  Set by [`App::flash`] from any
     /// code path that wants a one-shot notification.
@@ -236,7 +236,7 @@ pub struct App {
     /// neovim was an OSC 11 background-color response).
     /// Initialized in [`Self::run`] alongside the read-thread spawn.
     read_paused: Option<Arc<AtomicBool>>,
-    /// Phase 9 — active hint-line prompt (first consumer is Phase 11).
+    /// Active hint-line prompt (first consumer lands later).
     /// Renders in place of the default hint chords; Escape dismisses.
     hint_prompt: Option<HintPrompt>,
     /// Active stack of trait-based modals.  Adding a modal is one
@@ -476,7 +476,7 @@ impl App {
             modal_stack.push(Box::new(m));
         }
 
-        // Phase 17 — warm the diagram pipeline's font caches off the
+        // Warm the diagram pipeline's font caches off the
         // critical path.  Two caches load fonts on first call:
         //   * `mermaid_rs_renderer`'s internal fontdb (for text layout
         //     metrics during SVG generation),

@@ -67,7 +67,7 @@ pub struct HtmlExportOptions {
     /// Value inserted into the `<title>` element.  When `None`, a
     /// sensible fallback (`"Document"`) is used.
     pub title: Option<String>,
-    /// Phase 17 — when true (the default), fenced ```mermaid code blocks
+    /// When true (the default), fenced ```mermaid code blocks
     /// are rendered to inline SVG and wrapped in
     /// `<figure class="mermaid-diagram">`.  Falls back to the usual
     /// `<pre><code class="language-mermaid">` on render failure so the
@@ -95,7 +95,7 @@ impl Default for HtmlExportOptions {
 /// both block-level (`Event::Html`) and inline (`Event::InlineHtml`) —
 /// are filtered out before serialization so attacker-controlled Markdown
 /// cannot inject `<script>` tags or other executable content into the
-/// exported file (Phase 15 overlap).
+/// exported file.
 pub fn render_html(markdown: &str, opts: &HtmlExportOptions) -> Result<String> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);

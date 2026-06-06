@@ -243,7 +243,7 @@ impl Buffer {
     /// (autosave detector, raw-view visual-row cache, parsed-doc
     /// invalidation) treat the swap as a fresh mutation.  Used by the
     /// diff-mode resolution path to swap the merged rope in place
-    /// (Phase 1 §3, §6).  The caller is responsible for refreshing
+    /// (§3, §6).  The caller is responsible for refreshing
     /// any derived state on `EditorState` (`refresh_parsed`,
     /// `update_cursor_block`, clamping the cursor).
     pub fn set_rope(&mut self, rope: Rope) {

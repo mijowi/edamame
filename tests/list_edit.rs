@@ -1,4 +1,4 @@
-//! Integration tests for Phase 3 — smart list editing.
+//! Integration tests for smart list editing.
 //!
 //! These tests construct an `EditorState` around a buffer that contains a
 //! Markdown list, dispatch a sequence of `Action`s via `edit_ops::apply`, and

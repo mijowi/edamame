@@ -1,4 +1,4 @@
-//! Phase 13 column-width-injection warning.  Shown the first time a
+//! Column-width-injection warning.  Shown the first time a
 //! user commits a column-border drag on a table without an existing
 //! `<!-- tui-columns: ... -->` comment.  Buttons:
 //!   0 → `Continue` — write the comment for this table; ask again next time.

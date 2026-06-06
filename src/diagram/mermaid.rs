@@ -3,7 +3,7 @@
 //! The public entry points are `render_mermaid_svg` (used by the HTML
 //! exporter, which wants SVG strings inline) and `resolve_mermaid` (used
 //! by the App decode worker, which wants a `LoadedImage` ready for the
-//! existing Phase 7 cache).  Both share `render_mermaid_svg_core` which
+//! existing image cache).  Both share `render_mermaid_svg_core` which
 //! wraps the third-party renderer in `catch_unwind` — `mermaid-rs-renderer`
 //! 0.2.1 has several known panic bugs (invalid hex colors, empty
 //! subgraphs, over-wide sequence labels) and a panicking worker thread
@@ -66,7 +66,7 @@ pub fn warm_fontdb() {
     });
 }
 
-/// Source for a diagram block.  Only `Mermaid` ships in Phase 17; the
+/// Source for a diagram block.  Only `Mermaid` currently ships; the
 /// enum exists so future backends (PlantUML, Graphviz/DOT, D2) can be
 /// added without rewiring `ImageBlockInfo`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -76,7 +76,7 @@ pub enum DiagramSource {
 
 /// Errors reported by the diagram pipeline.  The renderer / rasteriser /
 /// decoder each have their own variant so the hint line can surface a
-/// specific failure mode (deferred to Phase 9 follow-up).  The variants
+/// specific failure mode.  The variants
 /// carry owned `String` messages rather than source-chained errors so
 /// `DiagramError` stays `Send + Sync` and can be shipped back through
 /// the App's mpsc channel.
@@ -115,7 +115,7 @@ pub fn render_mermaid_svg(source: &str) -> Result<String, DiagramError> {
 }
 
 /// Render a mermaid source all the way to a `LoadedImage`, suitable for
-/// dropping straight into the Phase 7 image cache.
+/// dropping straight into the image cache.
 ///
 /// * `url` — the synthetic cache-key URL already computed by the caller
 ///   (typically from `ParsedDoc::image_blocks[i].url`).  Carried on the

@@ -1,4 +1,4 @@
-//! `LinkView` — per-frame layout snapshot for Phase 8 clickable-link hit
+//! `LinkView` — per-frame layout snapshot for clickable-link hit
 //! testing.
 //!
 //! Analogous to `ui::table_view` and `ui::image_view`: the renderer still
@@ -7,8 +7,7 @@
 //! corresponding rendered lines to record the screen rect each link
 //! occupies.  The snapshots are stored on `RenderedViewState` /
 //! `PreviewState` so the next mouse event can hit-test against them —
-//! the same pattern Phase 6 uses for table handles and Phase 7 for
-//! images.
+//! the same pattern used for table handles and images.
 //!
 //! The snapshots are AST-backed: we walk `Block::Heading`, `Paragraph`,
 //! `List`, `Table`, and `BlockQuote` to extract every `Inline::Link` in
@@ -45,10 +44,10 @@ pub struct LinkLayoutSnapshot {
     /// build time so every click path consults the same answer).
     pub target: LinkTarget,
     /// Raw URL from the Markdown source, preserved for hover tooltips
-    /// (Phase 9) and for error messages on open failure.
+    /// and for error messages on open failure.
     pub url: String,
     /// The optional link title (Markdown: `[text](url "title")`).
-    /// Surfaced as a hover tooltip by Phase 9.
+    /// Surfaced as a hover tooltip.
     pub title: Option<String>,
 }
 
@@ -113,7 +112,7 @@ pub fn build_snapshots(state: &EditorState, area: Rect, scroll: usize) -> Vec<Li
     // `ParsedDoc` retains the post-processed AST (`blocks`) and the
     // matching byte ranges (`real_ranges`) from the last re-parse, so
     // we pair AST link occurrences with rendered-line geometry without
-    // a per-frame parse of the full buffer.  Prior to Phase 15 this
+    // a per-frame parse of the full buffer.  Previously this
     // function called `buffer.contents()` + `markdown::parse()` +
     // `top_level_block_ranges()` on every draw — a dominant hotspot on
     // large documents.

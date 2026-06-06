@@ -1,4 +1,4 @@
-//! Phase 10 — fuzzy-searchable command palette.
+//! Fuzzy-searchable command palette.
 //!
 //! The palette is a centred modal with a single-line input on top of a
 //! scrollable list of matched actions.  When the input is empty, all
@@ -75,7 +75,7 @@ pub struct PaletteState {
     /// Index into `display_rows` pointing at a [`DisplayRow::Entry`].
     pub focused: usize,
     /// All entries the palette can possibly show, regardless of query.
-    /// The Phase 10 set is built once from the active [`KeyMap`] in
+    /// The set is built once from the active [`KeyMap`] in
     /// [`PaletteState::open`] — there is no reason to rebuild on every
     /// keystroke since the action surface is static.
     pub entries: Vec<PaletteEntry>,

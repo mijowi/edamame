@@ -88,7 +88,7 @@ impl App {
         );
         push(self.last_scroll_at.map(|t| t + SCROLL_QUIESCE));
         push(self.resize_quiesce_at);
-        // Phase 9: wake in time to expire a transient hint-line
+        // Wake in time to expire a transient hint-line
         // message so the hint reverts to chords even if the user
         // isn't typing.
         push(self.transient_deadline());

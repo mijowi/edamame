@@ -603,13 +603,13 @@ pub fn apply(
         // `Action::Save` is intercepted by `App::handle_app_action`
         // before this dispatch is reached — see `App::save_buffer`
         // for the single call site of `Buffer::save_file`.
-        // ── Phase 3 — list editing ───────────────────────────────
+        // ── List editing ─────────────────────────────────────────
         Action::ToggleCheckbox => {
             enter_edit_if_preview(state, viewport_height);
             list_toggle_checkbox(state);
         }
 
-        // ── Phase 2 — table editing ───────────────────────────────
+        // ── Table editing ────────────────────────────────────────
         Action::TableNextCell => {
             enter_edit_if_preview(state, viewport_height);
             if cursor_in_table(state) {
@@ -1086,7 +1086,7 @@ pub fn paste_text(
     state.ensure_cursor_visible(viewport_height, viewport_width);
 }
 
-/// Phase 15 — wrapper around [`table_edit::insert_table`] that mutates
+/// Wrapper around [`table_edit::insert_table`] that mutates
 /// `EditorState` and lands the cursor in the new table's first header
 /// cell.  The caller is expected to have run the blank-line pre-flight
 /// already (the App-level handler does this before opening the modal),

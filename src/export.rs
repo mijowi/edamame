@@ -1,11 +1,11 @@
-//! Phase 16 — document export.
+//! Document export.
 //!
 //! HTML is the single built-in export target and doubles as the intermediate
 //! format for user-configured custom exports (PDF, DOCX, …) that pipe the
 //! generated HTML through an external tool such as `weasyprint` or `pandoc`.
 //!
 //! The module is deliberately UI-agnostic: every public function is callable
-//! from the future Phase 10 command palette without that code needing to
+//! from the command palette without that code needing to
 //! understand the export pipeline.  Long-running work (rendering or shelling
 //! out to a converter) always runs on a background thread and reports
 //! completion through a caller-supplied `FnOnce` closure.

@@ -95,7 +95,7 @@ impl Modal for InsertTableModal {
 
 #[cfg(test)]
 mod tests {
-    //! Phase 15 — exercise the App-level Insert Table flow: pre-flight
+    //! Exercise the App-level Insert Table flow: pre-flight
     //! blank-line guard, modal lifecycle, and the resulting buffer +
     //! cursor state after Insert.
 

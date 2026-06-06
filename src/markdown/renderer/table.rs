@@ -183,7 +183,7 @@ impl<'t> Renderer<'t> {
     /// of rendered lines (shorter cells emit blank-padded continuation
     /// lines so the surrounding `│` borders stay vertically aligned).
     ///
-    /// Phase 13: wrap is *inline-aware* — each cell's `Vec<Inline>` is
+    /// Wrap is *inline-aware* — each cell's `Vec<Inline>` is
     /// flattened to a per-char `(char, style)` sequence, wrapped on
     /// whitespace boundaries, then re-grouped into styled spans for
     /// each rendered sub-line.  Bold / italic / code spans preserved

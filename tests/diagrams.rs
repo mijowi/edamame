@@ -1,4 +1,4 @@
-//! Phase 17 — integration tests for mermaid diagram support.
+//! Integration tests for mermaid diagram support.
 //!
 //! These exercise the end-to-end plumbing that turns a ```mermaid
 //! fenced block into a `Block::ImageBlock` in `ParsedDoc::image_blocks`,

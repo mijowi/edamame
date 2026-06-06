@@ -36,8 +36,8 @@ pub struct RenderedViewState {
     /// columns, borders, and buttons of the table under the pointer.
     pub table_snapshots: Vec<TableLayoutSnapshot>,
     /// Snapshots of every visible `Block::ImageBlock`, captured at the end
-    /// of the last render.  Phase 7 uses them as the hit-test surface
-    /// for images (click detection); future phases may add expand /
+    /// of the last render.  Used as the hit-test surface
+    /// for images (click detection); future work may add expand /
     /// open UX.
     pub image_snapshots: Vec<ImageLayoutSnapshot>,
     /// Cache key for `image_snapshots`: `(scroll, area, parsed_version)`.
@@ -46,7 +46,7 @@ pub struct RenderedViewState {
     /// geometry scan when nothing that affects image layout has changed.
     pub image_snapshots_key: Option<(usize, Rect, u64)>,
     /// Snapshots of every visible Markdown link, captured at the end of
-    /// the last render.  Used by Phase 8's mouse dispatch to hit-test
+    /// the last render.  Used by the mouse dispatch to hit-test
     /// against link spans — plain click in Preview or Ctrl-click in
     /// Rendered/Raw fires `FollowLink`.
     pub link_snapshots: Vec<LinkLayoutSnapshot>,
@@ -79,13 +79,13 @@ pub struct RenderedView<'a> {
     /// second is false), so terminals without mouse reporting never
     /// show inert glyphs.
     ///
-    /// Phase 13: buttons only paint on the table that contains the
+    /// Buttons only paint on the table that contains the
     /// cursor — moving the cursor out of the table hides them so they
     /// never compete with the rendered content during navigation.  The
     /// gating is enforced by `paint_handles_for_cursor_table` in
     /// `table_view`.
     pub show_table_buttons: bool,
-    /// Phase 13 — when `Some`, an in-progress table drag is highlighted
+    /// When `Some`, an in-progress table drag is highlighted
     /// after the handles are painted.  `None` when no relevant drag is
     /// active.
     pub drop_indicator: Option<crate::ui::table_view::DropIndicator>,
@@ -186,7 +186,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // block.  For tables the rendered layout is: top border, header
         // (one or more lines), thick separator (alignment row), then
         // (data row(s), thin separator)*, and finally the bottom border.
-        // Phase 13: cells may now wrap, so any single TableInfo row can
+        // Cells may now wrap, so any single TableInfo row can
         // span multiple rendered sub-lines.  Use the box-drawing-glyph
         // classifier to find the FIRST sub-line of the target row — the
         // raw-text replacement always lands on that line.  We must
@@ -830,7 +830,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             first_sub_row = 0;
         }
 
-        // Phase 6: build per-frame snapshots of every visible table, then
+        // Build per-frame snapshots of every visible table, then
         // paint the row/column-button glyphs over the rendered content.
         // The snapshots are retained on `RenderedViewState` so the next
         // mouse event can hit-test against them.  The cached variant
@@ -838,7 +838,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // version, AND
         // the show-handles flag all match the previous frame.
         //
-        // Phase 13: handles paint only on the table the cursor is
+        // Handles paint only on the table the cursor is
         // currently inside — keeps the affordance visible during the
         // table-edit interaction without competing with surrounding
         // content during ordinary navigation.  Snapshots are still
@@ -874,7 +874,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             );
         }
 
-        // Phase 7: build per-frame snapshots of every visible image block.
+        // Build per-frame snapshots of every visible image block.
         // Image painting itself happens in `EditorView::render` (after this
         // widget returns) because it needs mutable access to the cache.
         // The `_cached` variant skips the O(lines × images) scan when
@@ -888,12 +888,12 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             &mut view_state.image_snapshots_key,
         );
 
-        // Phase 8: build link snapshots for mouse hit-testing.  Cached
+        // Build link snapshots for mouse hit-testing.  Cached
         // by `(scroll, area, parsed_version)` — rebuilt only when
         // something that affects link layout actually changed.  The
         // uncached walk calls `visual_rows_for_line` for every visible
         // line, which is O(chars) per line and dominated idle CPU on
-        // large documents prior to Phase 15.
+        // large documents.
         link_view::build_snapshots_cached(
             self.state,
             area,

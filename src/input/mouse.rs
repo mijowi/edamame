@@ -21,7 +21,7 @@ pub const MULTI_CLICK_WINDOW: Duration = Duration::from_millis(400);
 
 /// Default lines scrolled per wheel tick when no `config.editor.mouse_scroll_lines`
 /// override is supplied.  One-line steps are the finest granularity the terminal
-/// can report and preserve the Phase 5 rule that scrolling does not move the
+/// can report and preserve the rule that scrolling does not move the
 /// cursor.  Users can configure a coarser step (2 or 3) for a snappier feel.
 pub const DEFAULT_WHEEL_STEP: usize = 1;
 
@@ -34,7 +34,7 @@ pub enum MouseAction {
     /// Single left-button click at `(col, row)`.  Places the cursor, clears
     /// any selection, and becomes the anchor for a subsequent drag.  The
     /// `modifiers` are the crossterm `KeyModifiers` in effect during the
-    /// click — used by Phase 8 to distinguish plain clicks (cursor
+    /// click — used to distinguish plain clicks (cursor
     /// placement) from `Ctrl`-clicks (follow link).
     Click {
         col: u16,

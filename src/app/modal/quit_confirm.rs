@@ -108,7 +108,7 @@ impl Modal for QuitConfirmModal {
 
 #[cfg(test)]
 mod tests {
-    //! Phase 9 — App-level wiring for the quit-confirm modal.  Driving
+    //! App-level wiring for the quit-confirm modal.  Driving
     //! `App::open_quit_confirm` and `App::dispatch_modal_key` directly
     //! exercises both the push and the per-button outcome without
     //! standing up the event loop.

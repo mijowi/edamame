@@ -47,13 +47,11 @@
 //! word-wrapped onto multiple visual rows.  The row height is the maximum
 //! wrap count across all cells in that row.
 //!
-//! # Phase 2 status
+//! # Status
 //!
-//! This module is fully implemented and unit-tested in Phase 2, but its
-//! consumers (the `TableView` widget, mouse column-resize, and
-//! column-width-comment round-tripping) land in Phase 6.  Until then the
-//! items below are intentionally unreferenced by production code, hence the
-//! module-level `allow(dead_code)`.
+//! This module is fully implemented and unit-tested.  Some items below may be
+//! intentionally unreferenced by production code, hence the module-level
+//! `allow(dead_code)`.
 
 use ratatui::text::Line;
 use unicode_width::UnicodeWidthStr;
@@ -407,8 +405,8 @@ pub fn format_column_widths_comment(widths: &[Option<usize>]) -> String {
 
 // ── Pipe position / cell-range helpers ──────────────────────────────────────
 //
-// These were originally private to `src/ui/rendered_view.rs`; Phase 6 lifts
-// them here so `TableView`'s mouse hit-testing and `RenderedView`'s cell-
+// These were originally private to `src/ui/rendered_view.rs`; they were lifted
+// here so `TableView`'s mouse hit-testing and `RenderedView`'s cell-
 // scoped raw reveal share one implementation.  They operate purely on the
 // raw table row text and the rendered `Line` produced by the markdown
 // renderer — no editor-state coupling.

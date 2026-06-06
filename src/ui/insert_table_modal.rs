@@ -1,4 +1,4 @@
-//! Phase 15 — rows/columns prompt for `Action::InsertTable`.
+//! Rows/columns prompt for `Action::InsertTable`.
 //!
 //! A small focused modal: two numeric fields ("Rows", "Columns") above
 //! an Insert / Cancel button row.  Tab / Shift-Tab and Up / Down move

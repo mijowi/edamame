@@ -10,13 +10,13 @@ use crate::config::Action;
 /// modal palette (the cursor's already moved by the time the user
 /// clicks `Move Right`).
 pub(super) const ALL_ACTIONS: &[Action] = &[
-    // Phase 10 entries (palette-only).  `OpenConfigFolder` is no
+    // Palette-only entries.  `OpenConfigFolder` is no
     // longer surfaced here — it lives on the first row of the
     // settings overlay (the "Open Config folder" entry), which is
     // where users go to discover config-file locations.  Surfacing
     // it twice was redundant and made the palette noisier.
-    // `ReloadFromDisk` is dropped from the palette until Phase 11
-    // implements it; today it would just flash a "see Phase 11" hint
+    // `ReloadFromDisk` is dropped from the palette until it is
+    // implemented; today it would just flash a "not yet implemented" hint
     // and add nothing.
     Action::ShowMarkdownCheatSheet,
     Action::OpenSettings,

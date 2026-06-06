@@ -1,4 +1,4 @@
-//! Phase 10 — settings overlay.
+//! Settings overlay.
 //!
 //! Friendly, curated subset of `config.toml` editable in-place.  The
 //! overlay is intentionally narrower than the file: anything that's
