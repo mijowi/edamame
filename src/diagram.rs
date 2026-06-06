@@ -1,7 +1,7 @@
-//! Phase 17 — diagram rendering.
+//! Diagram rendering.
 //!
 //! Turns fenced ```mermaid``` code blocks into images that flow through
-//! the Phase 7 image pipeline (AST `Block::ImageBlock` → decode worker →
+//! the image pipeline (AST `Block::ImageBlock` → decode worker →
 //! URL-keyed `ImageCache` → per-frame overlay).  Mermaid diagrams get a
 //! synthetic URL of the form `diagram-mermaid-<sha256(source)>` so the
 //! cache reuses renders across reparses while keystrokes inside a block

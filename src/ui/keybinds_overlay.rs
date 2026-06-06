@@ -1,4 +1,4 @@
-//! Phase 10 — keybindings overlay.
+//! Keybindings overlay.
 //!
 //! Combined view + editor for keybindings.  Rows are grouped into
 //! categories (Editor, Navigation, Links, List, Table, …) so the user
@@ -1176,9 +1176,8 @@ mod tests {
 
     #[test]
     fn excluded_actions_are_not_rows() {
-        // PgUp / PgDown were removed from the overlay per the
-        // Phase 10 review — confirm both via the Action set the row
-        // builder produces.
+        // PgUp / PgDown were removed from the overlay — confirm both
+        // via the Action set the row builder produces.
         let rows = build_rows();
         for excluded in [Action::ScrollPageUp, Action::ScrollPageDown] {
             for row in &rows {

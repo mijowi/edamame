@@ -1,7 +1,7 @@
 //! Terminal capability detection.
 //!
-//! Phase 4 probes the terminal for features the editor uses or will use in
-//! later phases: color depth, mouse support, the image protocol supported
+//! Probes the terminal for features the editor uses: color depth, mouse
+//! support, the image protocol supported
 //! by the emulator (sixel / kitty / iterm2 / halfblocks), whether the locale
 //! advertises full Unicode support, and whether the kitty keyboard
 //! enhancement protocol is available.
@@ -62,13 +62,13 @@ pub struct Capabilities {
     /// is not supported.
     pub image_protocol: Option<ImageProtocol>,
     /// The `Picker` instance returned by `ratatui_image`'s startup probe.
-    /// Retained (Phase 7) so image rendering can reuse the already-probed
+    /// Retained so image rendering can reuse the already-probed
     /// configuration instead of re-running `Picker::from_query_stdio` on
     /// every cold image load.  `None` iff `image_protocol` is also `None`.
     pub image_picker: Option<Picker>,
     /// A second `Picker` forced to `ProtocolType::Halfblocks`, built from
     /// the same font-size reported by the native picker (no extra stdin
-    /// probe).  Used by the Phase 7 halfblocks-fallback path: during
+    /// probe).  Used by the halfblocks-fallback path: during
     /// partial visibility or active scrolling on non-Kitty terminals, we
     /// render via halfblocks (which is position-independent and cheap to
     /// cell-copy) and upgrade back to the native protocol once the image
@@ -257,7 +257,7 @@ fn detect_unicode_full() -> bool {
 }
 
 /// Ask `ratatui_image` to probe for an image protocol.  Returns the detected
-/// protocol and the `Picker` instance; the Picker is retained (Phase 7) and
+/// protocol and the `Picker` instance; the Picker is retained and
 /// passed through to the image-rendering layer so cold image loads reuse
 /// the already-probed configuration.
 ///

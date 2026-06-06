@@ -1,4 +1,4 @@
-//! Phase 8 link-following and back/forward navigation extracted from
+//! Link-following and back/forward navigation extracted from
 //! `app.rs` in Step 2 of `refactor-app.md`.
 //!
 //! Owns:

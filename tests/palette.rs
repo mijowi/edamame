@@ -1,4 +1,4 @@
-//! Phase 10 — integration tests for the command palette and
+//! Integration tests for the command palette and
 //! configuration overlays.
 //!
 //! These bypass the live event loop: they construct an `EditorState`

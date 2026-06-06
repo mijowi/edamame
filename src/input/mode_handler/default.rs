@@ -104,7 +104,7 @@ fn preview_safe_action(action: &Action) -> bool {
             | Action::ScrollPageDown
             | Action::ScrollToTop
             | Action::ScrollToBottom
-            // Phase 10 — overlay-opening actions are read-only:
+            // Overlay-opening actions are read-only:
             // they pop a modal that absorbs subsequent input.
             // Suppressing them in Preview would leave Ctrl-P unable
             // to launch the command palette while the user is just
@@ -124,7 +124,7 @@ fn preview_safe_action(action: &Action) -> bool {
             // editing mode.
             | Action::OpenInExternalEditor
             | Action::ToggleTableButtons
-            // Phase 15 — `InsertTable` is allowed from Preview so
+            // `InsertTable` is allowed from Preview so
             // the default Ctrl+Shift+T chord opens the rows/columns
             // modal without requiring the user to enter edit mode
             // first.  The modal itself absorbs subsequent input;

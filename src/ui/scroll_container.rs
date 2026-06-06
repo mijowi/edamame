@@ -156,7 +156,7 @@ impl ScrollContainerState {
     /// Handle Up/Down/PgUp/PgDn/Home/End as scroll keys.  Returns
     /// `true` if the key was consumed.
     ///
-    /// Used by `ModalView` (text bodies, no focus concept).  Phase 10
+    /// Used by `ModalView` (text bodies, no focus concept).  Focusable
     /// overlays should use [`Self::handle_paging_key`] instead so that
     /// Up/Down remain available for focus moves.
     pub fn handle_scroll_key(&mut self, key: &crossterm::event::KeyEvent) -> bool {

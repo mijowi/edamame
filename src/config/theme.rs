@@ -177,7 +177,7 @@ pub struct Theme {
     /// dimmed ancestor chain.
     pub status_breadcrumb_current: Style,
 
-    // ── Hint line (Phase 9) ───────────────────────────────────────
+    // ── Hint line ─────────────────────────────────────────────────
     /// Base background/foreground for the contextual hint line.
     pub hint_bar: Style,
     /// Chord glyph style (e.g. the `^C` in `^C Copy`).  Contrasting
@@ -187,7 +187,7 @@ pub struct Theme {
     /// surrounding hint_bar fill.
     pub hint_label: Style,
 
-    // ── Transient messages (Phase 9) ──────────────────────────────
+    // ── Transient messages ────────────────────────────────────────
     /// Neutral notification style — e.g. `Copied`, `Saved`.
     pub transient_info: Style,
     /// Success notification style — e.g. `Autosaved`.
@@ -302,7 +302,7 @@ pub struct Theme {
     /// dragging the thumb.  RGB themes blend `primary` toward `text`.
     pub scrollbar_thumb_active: Style,
 
-    // ── Diff mode (Phase 1) ───────────────────────────────────────
+    // ── Diff mode ─────────────────────────────────────────────────
     /// Full-row bg fill on add-side diff lines.  Subtle (30 %-toward
     /// `diff_add`) so the foreground text stays legible.
     pub diff_add_line: Style,

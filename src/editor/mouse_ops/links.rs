@@ -6,7 +6,7 @@ use super::coord::{click_to_char_offset, rendered_line_at_row, span_at_col_has_m
 
 /// If `(col, row)` falls on a Markdown link, return its classified
 /// [`LinkTarget`].  Used by the App to stash the currently hovered
-/// link on `App::hovered_link` so Phase 9 can surface the target on
+/// link on `App::hovered_link` so it can surface the target on
 /// the hint line.
 pub fn hovered_link_target(
     state: &EditorState,
@@ -175,7 +175,7 @@ fn index_for_row(state: &EditorState, row: usize) -> Option<usize> {
 ///
 /// Kept deliberately simple: operates on the raw line (no AST re-parse), so
 /// autolinks (`<url>`), reference links (`[text][id]`), and nested link
-/// constructs are not detected.  Phase 8 may upgrade this to a proper
+/// constructs are not detected.  A later change may upgrade this to a proper
 /// per-block hit-test registry once link opening is implemented.
 pub fn link_at_offset(source: &str, click_byte: usize) -> Option<String> {
     let click_byte = click_byte.min(source.len());

@@ -1,4 +1,4 @@
-//! Phase 9 — bottom status region.
+//! Bottom status region.
 //!
 //! Composes the contextual [`HintLine`] on top of the persistent
 //! [`StatusBar`].  The hint line adapts to the cursor's context
@@ -395,7 +395,7 @@ pub struct HintLine<'a> {
     /// Background style for the bar fill and inter-chord separators.
     /// [`Theme::hint_bar`] in every mode except diff, which uses
     /// [`Theme::hint_bar_diff`] so the recolored bar signals the mode
-    /// change (Phase 1 §7).
+    /// change.
     pub bar_style: Style,
 }
 
@@ -543,7 +543,7 @@ fn cursor_on_task_item(state: &EditorState) -> bool {
 }
 
 /// True when the cursor sits inside a `[text](url)` link on the
-/// current line.  Reuses the Phase 8 `link_at_offset` scan that
+/// current line.  Reuses the `link_at_offset` scan that
 /// `mouse_ops` and `App::resolve_link_at_cursor` use, so hint
 /// visibility and the actual `FollowLinkUnderCursor` dispatch agree
 /// on what counts as a link.

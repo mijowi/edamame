@@ -778,7 +778,7 @@ mod tests {
         assert!(matches!(&blocks[0], Block::Paragraph { .. }));
     }
 
-    // ── HTML comment promotion (Phase 12) ─────────────────────────────────
+    // ── HTML comment promotion ────────────────────────────────────────────
 
     #[test]
     fn block_level_html_comment_promotes_to_html_comment() {
@@ -804,7 +804,7 @@ mod tests {
         // An isolated `<!-- tui-columns -->` outside any table is still a
         // comment — no table to absorb it into — so it should survive as a
         // `Block::HtmlComment` (which the renderer hides).  Regression guard
-        // for the "Tasks — Phase 6 specialisation" bullet.
+        // for the trailing-comment specialisation case.
         let blocks = parse("<!-- tui-columns: [10, 20, 30] -->\n\nSome text.\n");
         assert!(
             matches!(&blocks[0], Block::HtmlComment(_)),

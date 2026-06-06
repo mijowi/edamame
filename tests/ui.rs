@@ -339,7 +339,7 @@ fn rendered_view_selection_in_table_cell_does_not_spill_into_borders() {
 
 #[test]
 fn rendered_view_selection_inside_cursors_own_cell_survives_cell_overlay() {
-    // Regression for the Phase 5 issue: after click-drag selection within a
+    // Regression for the issue: after click-drag selection within a
     // table cell (or a double-/triple-click that lands the cursor inside its
     // own cell) the highlight used to vanish because the cell overlay
     // repainted the cell's rendered cells with raw text, clobbering whatever
@@ -579,7 +579,7 @@ fn table_view_paints_row_and_column_handles_when_enabled() {
     );
 }
 
-/// Phase 13 — for a multi-row data row whose cell wrapped to two
+/// For a multi-row data row whose cell wrapped to two
 /// rendered sub-lines, exactly ONE `⠿` row-handle glyph paints (on
 /// the row's first sub-line).  Painting on every wrapped sub-line
 /// reads as visual noise without making the row easier to grab.
@@ -643,7 +643,7 @@ fn table_view_paints_one_row_handle_per_logical_row() {
     );
 }
 
-/// Phase 13 — when the cursor enters a *wrapped* table cell, the
+/// When the cursor enters a *wrapped* table cell, the
 /// rendered table layout (including the row's wrap continuation
 /// sub-lines) must stay intact.  Pre-fix behaviour collapsed the
 /// row to a single line of raw markdown like
@@ -731,7 +731,7 @@ fn rendered_view_wrapped_cell_keeps_table_layout_when_cursor_inside() {
     assert!(found_bottom, "bottom border must still render");
 }
 
-/// Phase 13 — when a cell's raw markdown is too wide for the
+/// When a cell's raw markdown is too wide for the
 /// rendered cell (e.g. `**_words_**` in a column whose auto-fit is
 /// keyed off the rendered "words"), the cell horizontally scrolls to
 /// keep the cursor's chunk visible.  The user must see *raw* chars
@@ -806,7 +806,7 @@ fn rendered_view_wrapped_cell_shows_raw_markdown_chunk() {
     );
 }
 
-/// Phase 13 — buttons paint only on the table the cursor is inside.
+/// Buttons paint only on the table the cursor is inside.
 /// With the cursor parked in a paragraph above a table, the table's
 /// buttons must be invisible; moving the cursor onto the table
 /// reveals them.  Snapshots are still captured for hit-testing in
@@ -1040,7 +1040,7 @@ fn status_bar_shows_cursor_position() {
     assert!(out.contains("5:12"), "got: {out:?}");
 }
 
-// ── Phase 13: row striping and drop indicators ──────────────────────────────
+// ── Row striping and drop indicators ────────────────────────────────────────
 
 /// With `row_striping = true`, alternating data rows pick up
 /// `Theme::table_row_even` / `Theme::table_row_odd` as their background.

@@ -28,7 +28,7 @@ pub struct PreviewState {
     /// When the tuple matches the current frame, the snapshot vector is
     /// reused instead of rebuilt.
     pub image_snapshots_key: Option<(usize, ratatui::layout::Rect, u64)>,
-    /// Phase 8 — link layout snapshots populated in `EditorView::render`
+    /// Link layout snapshots populated in `EditorView::render`
     /// so preview-mode mouse clicks can hit-test against link spans.
     pub link_snapshots: Vec<super::LinkLayoutSnapshot>,
     /// Cache key for `link_snapshots`: `(scroll, area, parsed_version)`.

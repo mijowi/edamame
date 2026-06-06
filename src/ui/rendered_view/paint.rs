@@ -164,7 +164,7 @@ pub(super) fn paint_selection_overlay(
     let sub_idx_in_block = rendered_line_idx.saturating_sub(rendered_span.start);
     let is_table = table_edit::is_table_block(block_text);
     let raw_line_idx = if is_table {
-        // Phase 13: tables can have multi-line headers / data rows when
+        // Tables can have multi-line headers / data rows when
         // cell content wraps.  Use the box-drawing-glyph classifier
         // instead of a fixed alternating-line pattern so the selection
         // highlight maps onto the right raw row regardless of wrap.

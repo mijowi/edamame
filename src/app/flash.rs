@@ -178,7 +178,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    //! Phase 9 — exercise the transient-message mechanics directly
+    //! Exercise the transient-message mechanics directly
     //! against an `App` instance, bypassing the event loop.  Builds use
     //! [`Capabilities::default`] and the default config; no terminal is
     //! ever acquired.

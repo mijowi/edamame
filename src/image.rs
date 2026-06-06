@@ -1,4 +1,4 @@
-//! Image loading and caching for Phase 7.
+//! Image loading and caching.
 //!
 //! This module is the document-layer half of image rendering: resolving
 //! URLs to decoded `DynamicImage`s.  The UI-layer half — turning a

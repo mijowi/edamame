@@ -33,7 +33,7 @@ pub(super) const VIEWPORT_DISPATCH_MARGIN: usize = 80;
 ///
 /// Returns `ImageBlockInfo` clones rather than just URLs because the
 /// dispatcher needs to branch on `info.source` to tell diagram blocks
-/// apart from regular images (Phase 17).
+/// apart from regular images.
 pub(super) fn infos_in_viewport_window(
     image_blocks: &[crate::document::ImageBlockInfo],
     source_map: &crate::document::SourceMap,

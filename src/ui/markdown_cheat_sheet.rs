@@ -17,7 +17,7 @@
 //! editor's dark fill bleed through the modal.
 //!
 //! Tables and footnotes are intentionally absent: tables have a
-//! dedicated insert/edit flow (see Phase 15) so hand-coding the
+//! dedicated insert/edit flow so hand-coding the
 //! pipe-grid form is rarely useful, and footnotes are not yet
 //! implemented in the renderer.
 
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn cheat_sheet_excludes_unsupported_or_redundant_sections() {
-        // Tables are surfaced through Phase 2 / Phase 15 dedicated
+        // Tables are surfaced through dedicated
         // editing flows, not hand-coded markdown.  Footnotes are not
         // yet implemented in the renderer.  Both must stay out of the
         // cheat sheet so users aren't pointed at syntax we don't

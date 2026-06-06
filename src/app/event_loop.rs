@@ -789,8 +789,8 @@ impl App {
         let desired = if in_doc {
             let rel_col = mouse_event.column - dims.doc_area.x;
             let rel_row = mouse_event.row - dims.doc_area.y;
-            // Phase 8: also record the hovered link target (or clear
-            // it) for the hint-line tooltip that Phase 9 surfaces.
+            // Also record the hovered link target (or clear
+            // it) for the hint-line tooltip that the hint line surfaces.
             // Keeping this update in the pointer-shape path means it
             // fires on every mouse-move, tracking the hover in real
             // time without an extra scan.
@@ -834,13 +834,13 @@ impl App {
             if self.editor.scroll != scroll_before {
                 self.mark_scrolling();
             }
-            // Phase 8: mouse click may have requested a link follow.
+            // Mouse click may have requested a link follow.
             // Consume it before the preview-state sync below so the
             // navigation runs first.
             if let Some(target) = self.editor.pending_link_follow.take() {
                 self.follow_link(target, dims.doc_height, dims.doc_width);
             }
-            // Phase 13: a column-border drag release sets
+            // A column-border drag release sets
             // `pending_column_widths_commit`; either commit straight
             // through or open the warning modal depending on config +
             // table state.

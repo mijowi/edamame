@@ -1,5 +1,5 @@
 //! `ImageView` — per-frame layout snapshot and post-render overlay for
-//! Phase 7 image blocks.
+//! image blocks.
 //!
 //! Analogous to `ui::table_view`: the renderer still emits plain rendered
 //! lines for each `Block::ImageBlock` (an `[Image: alt]` placeholder on

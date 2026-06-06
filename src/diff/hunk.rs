@@ -16,7 +16,7 @@ use std::ops::Range;
 /// Stable per-hunk identifier.  Monotonically allocated from
 /// `DiffState::next_hunk_id` at construction and never reused — even
 /// across hunk-list recomputations triggered by in-diff edits
-/// (Phase 1 §6 "HunkId stability").  IDs survive index shifts, so
+/// (§6 "HunkId stability").  IDs survive index shifts, so
 /// `DiffState::focused_id` (and the per-hunk decision matching across
 /// a recompute) can reference a specific hunk without races against
 /// recomputation.
@@ -52,7 +52,7 @@ pub enum HunkKind {
 /// new-side text.  The span is expressed as a char range within the
 /// concatenated old-side (resp. new-side) text of the hunk.
 ///
-/// Phase 1 wires the inline spans through the engine and renderer
+/// The engine wires the inline spans through to the renderer
 /// but does not yet split table-row sub-hunks below the row level;
 /// for `Insert` and `Delete` hunks the vec is empty.
 #[derive(Debug, Clone, PartialEq, Eq)]

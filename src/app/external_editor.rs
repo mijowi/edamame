@@ -270,7 +270,7 @@ impl App {
 
         let Some(editor) = editor else {
             // No shell editor — fall back to the OS handler.  This
-            // is the same path Phase 8 link-following uses, so the
+            // is the same path link-following uses, so the
             // user sees consistent behaviour whether $EDITOR is set
             // or not.
             self.spawn_open_worker(path.display().to_string());

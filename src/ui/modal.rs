@@ -20,7 +20,7 @@
 //!
 //! Scroll arithmetic, frame rendering, content-aware sizing, and the
 //! arrow indicator all live in [`crate::ui::scroll_container`] so the
-//! Phase 10 overlays (palette, settings, keybinds) share the same
+//! overlays (palette, settings, keybinds) share the same
 //! mechanics — see that module for the underlying primitives.
 
 use ratatui::{

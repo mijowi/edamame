@@ -1,4 +1,4 @@
-//! Halfblocks partial-render helper for Phase 7's progressive-enhancement
+//! Halfblocks partial-render helper for the progressive-enhancement
 //! scheme.
 //!
 //! Native terminal-graphics protocols (Sixel, Kitty, iTerm2) encode the

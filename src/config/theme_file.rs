@@ -136,12 +136,12 @@ pub struct ThemeFile {
     pub status_breadcrumb_ancestor: StyleSpec,
     pub status_breadcrumb_current: StyleSpec,
 
-    // Hint line (Phase 9)
+    // Hint line
     pub hint_bar: StyleSpec,
     pub hint_chord: StyleSpec,
     pub hint_label: StyleSpec,
 
-    // Transient messages (Phase 9)
+    // Transient messages
     pub transient_info: StyleSpec,
     pub transient_success: StyleSpec,
     pub transient_warning: StyleSpec,
@@ -182,7 +182,7 @@ pub struct ThemeFile {
     pub scrollbar_thumb: StyleSpec,
     pub scrollbar_thumb_active: StyleSpec,
 
-    // Diff mode (Phase 1)
+    // Diff mode
     pub diff_add_line: StyleSpec,
     pub diff_delete_line: StyleSpec,
     pub diff_add_line_unfocused: StyleSpec,

@@ -239,7 +239,7 @@ fn walk_rendered_rows(
 ///
 /// For blocks with inline formatting (`**bold**` rendering as `bold`), the
 /// rendered column may diverge slightly from the raw column.  Given the
-/// Phase 1 reveal semantics turn the cursor's line into raw text within
+/// reveal semantics turn the cursor's line into raw text within
 /// `RAW_REVEAL_DELAY`, the click lands at an approximate position that the
 /// user can refine with a second click if needed.
 pub fn rendered_sub_line_to_offset(

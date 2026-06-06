@@ -1,4 +1,4 @@
-//! Integration tests for Phase 2 — table editing.
+//! Integration tests for table editing.
 //!
 //! These tests construct an `EditorState` around a buffer that contains a GFM
 //! table, dispatch a sequence of `Action`s via `edit_ops::apply`, and assert

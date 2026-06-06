@@ -2,7 +2,7 @@
 //! rendering needed for mouse-driven row/column drag, column resize,
 //! and row/column delete.
 //!
-//! Phase 6 deliberately does NOT introduce a standalone `StatefulWidget` for
+//! This module deliberately does NOT introduce a standalone `StatefulWidget` for
 //! tables.  The rendered table lines continue to flow through `ParsedDoc`'s
 //! pre-rendered line list so scroll, wrap, and cell-scoped raw reveal keep
 //! working unchanged.  What this module owns is the mouse-facing half of the
@@ -10,7 +10,7 @@
 //!
 //!   1. **`TableLayoutSnapshot`** — a per-frame record of where each table's
 //!      columns and data rows sit on screen, plus the optional row-handle
-//!      column and column-handle row introduced by Phase 6.
+//!      column and column-handle row.
 //!   2. **`hit_test`** — pure `(col, row)` → `TableHit` lookup on a snapshot.
 //!   3. **`paint_handles`** — writes the `≡` / `⇔` glyphs into the buffer
 //!      after the normal line-render pass has drawn the surrounding content.
@@ -47,7 +47,7 @@ pub const DROP_COL_GLYPH: char = '┃';
 /// Column-resize glyph — `⇔` (U+21D4, left-right arrow).  Painted on each
 /// interior `│` of the header row so the user has a visible, hoverable
 /// resize target — but clicks on any part of the interior border (the pipe
-/// and the two columns adjacent to it, within the Phase 6 `±1` tolerance)
+/// and the two columns adjacent to it, within the `±1` tolerance)
 /// still drive a resize.
 pub const COLUMN_RESIZE_GLYPH: char = '⇔';
 /// Delete-handle glyph — `✕` (U+2715).  Painted on the table's outer
@@ -558,7 +558,7 @@ pub fn build_snapshots(
 /// row — `build_snapshots` for hit-testing, `mouse_ops::rendered_sub_line_to_offset`
 /// for click-to-cell mapping.
 ///
-/// Phase 13: replaces the fixed-pattern `table_sub_to_row_idx` math
+/// Replaces the fixed-pattern `table_sub_to_row_idx` math
 /// because multi-row data rows (cells that wrapped) can occupy any
 /// number of consecutive `│`-prefixed lines, breaking the old
 /// alternating-line assumption.
@@ -591,7 +591,7 @@ pub enum TableSubLineKind {
 /// `lines` is the slice of rendered lines that make up the table block
 /// (i.e. the slice of `parsed.lines[own.start..own.end]`).
 ///
-/// Phase 13: when `config.table.row_striping` is on, the renderer
+/// When `config.table.row_striping` is on, the renderer
 /// emits a *blank* `│ ... │ ... │` line in place of the `├─┼─┤` rule
 /// between data rows.  We detect those by spotting a `│`-prefixed
 /// line whose only chars are `│` and whitespace, immediately after a
@@ -689,7 +689,7 @@ fn is_blank_stripe_line(line: &Line<'_>) -> bool {
 ///   * `⠿` on the centre of each column's top-border cell (column-reorder),
 ///   * `⇔` on each interior `│` in the header row (column-resize).
 ///
-/// Phase 13: when `cursor_table_start` is `Some(byte)`, handles paint
+/// When `cursor_table_start` is `Some(byte)`, handles paint
 /// only on the snapshot whose `table_byte_start` matches — i.e. the
 /// table the cursor is currently inside.  Pass `None` to paint on every
 /// visible table (the legacy, always-on behaviour used by tests).
@@ -1344,7 +1344,7 @@ mod tests {
         assert_eq!(kinds[6], TableSubLineKind::DataRow { row: 1, sub: 0 });
     }
 
-    /// Phase 13 — the renderer's `blank_table_separator` line uses
+    /// The renderer's `blank_table_separator` line uses
     /// NBSP-padded cells, distinguishing it from a wrap-continuation
     /// line whose short cells are ASCII-space-padded.  classify must
     /// recognise the NBSP-padded `│ … │ … │` line as ThinSeparator

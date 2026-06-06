@@ -21,7 +21,7 @@ use super::{
 };
 
 /// Top-level editor widget. Lays out the document area and the
-/// Phase 9 bottom region (persistent status line plus optional
+/// bottom region (persistent status line plus optional
 /// contextual hint line), then delegates rendering to the appropriate
 /// sub-view based on mode.
 pub struct EditorView<'a> {
@@ -33,13 +33,13 @@ pub struct EditorView<'a> {
     /// unit tests default to `false` so they don't paint the gutter glyphs
     /// over their assertions.
     pub show_table_buttons: bool,
-    /// Phase 13 — when `Some`, an in-progress table drag is active and
+    /// When `Some`, an in-progress table drag is active and
     /// the painter overlays the destination separator with the
     /// `Theme::table_drop_indicator` highlight after the handle glyphs.
     /// `None` when no relevant drag is in flight.
     pub table_drop_indicator: Option<crate::ui::table_view::DropIndicator>,
     /// Detected terminal capabilities — threaded through for the
-    /// Phase 7 image overlay.  Without `capabilities.image_protocol`
+    /// image overlay.  Without `capabilities.image_protocol`
     /// (and `image_picker`), `image_view::paint_images` is a no-op and
     /// the `[Image: alt]` placeholder stays visible.
     pub capabilities: &'a Capabilities,
@@ -52,9 +52,9 @@ pub struct EditorView<'a> {
     /// back to halfblocks rendering to avoid flickering re-encode on
     /// every frame.  Always `false` in tests that don't exercise scroll.
     pub is_scrolling: bool,
-    /// Phase 9 — bottom-region layout (two-line or compact).
+    /// Bottom-region layout (two-line or compact).
     pub status_bar_layout: StatusBarLayout,
-    /// Phase 9 — what the hint line should display for this frame.
+    /// What the hint line should display for this frame.
     /// Ignored in compact mode.
     pub hint: HintContent,
     /// When true, the document area is capped to `max_width_cols` and
@@ -158,7 +158,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
     type State = EditorViewState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        // Split into document area + bottom region.  Phase 9: two rows
+        // Split into document area + bottom region.  Two rows
         // by default (hint line + status line), one in compact mode.
         let bottom_h = BottomRegion::height(self.status_bar_layout);
         let chunks = Layout::default()
@@ -235,7 +235,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                     &mut state.preview.image_snapshots,
                     &mut state.preview.image_snapshots_key,
                 );
-                // Phase 8 — link snapshots for preview-mode click
+                // Link snapshots for preview-mode click
                 // dispatch.  Cached alongside the image snapshots so
                 // idle redraws skip the full block walk.
                 link_view::build_snapshots_cached(

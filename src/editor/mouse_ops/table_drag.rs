@@ -150,10 +150,10 @@ pub(super) fn resize_widths(
 }
 
 /// Commit a row-drag release: swap the source row to the hover destination
-/// via a chain of adjacent-swap `EditDelta`s.  Note that Phase 2's
+/// via a chain of adjacent-swap `EditDelta`s.  Note that
 /// `table_edit::swap_rows` only supports adjacent swaps, so we apply
 /// `|row_idx - hover_row_idx|` of them in the right direction.  Each swap
-/// lands in history as its own undo step — acceptable for Phase 6; a future
+/// lands in history as its own undo step — acceptable for now; a future
 /// pass can coalesce them into one delta.
 pub(super) fn commit_row_drag(
     state: &mut EditorState,
@@ -202,7 +202,7 @@ pub(super) fn commit_row_drag(
 /// iteration — whether to call [`EditorState::commit_pending_column_widths`]
 /// directly or stage a width-injection warning modal first.
 ///
-/// Phase 13 split this out of `mouse_ops::apply` so `config.table.warn_on_width_injection`
+/// This was split out of `mouse_ops::apply` so `config.table.warn_on_width_injection`
 /// can intercept the commit without dragging config plumbing into the mouse layer.
 pub(super) fn commit_column_border_drag(state: &mut EditorState, table_byte_start: usize) {
     // Only flag a pending commit when the live preview actually targets

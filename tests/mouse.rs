@@ -1,4 +1,4 @@
-//! Integration tests for Phase 5 mouse support.
+//! Integration tests for mouse support.
 //!
 //! Verifies that mouse click/drag/scroll/checkbox handling works end-to-end
 //! against a real `EditorState` and the `mouse_ops::apply` entry point used
@@ -670,12 +670,12 @@ fn link_at_offset_detection_works_via_public_api() {
     assert_eq!(mouse_ops::link_at_offset(src, 1), None);
 }
 
-// ── Phase 6: table drag flows ───────────────────────────────────────────────
+// ── Table drag flows ────────────────────────────────────────────────────────
 
 use edamame::ui::table_view::TableLayoutSnapshot;
 
 /// Build a snapshot for a table whose first row begins at `table_byte_start`,
-/// sized to simulate what the Phase 6 `build_snapshots` function would have
+/// sized to simulate what the `build_snapshots` function would have
 /// produced.  We fabricate the snapshot directly rather than driving it
 /// through a full render, because the headless `TestBackend` renderer isn't
 /// wired up in these mouse tests and the drag-flow logic is exercised
@@ -814,7 +814,7 @@ fn column_border_drag_writes_tui_columns_comment() {
         VW,
     );
 
-    // Phase 13: Release no longer auto-commits — it stages a pending
+    // Release no longer auto-commits — it stages a pending
     // commit that the App resolves (via the warning modal or directly).
     // Tests bypass the App by calling the commit method themselves.
     assert!(st.has_pending_column_widths());
@@ -1090,7 +1090,7 @@ fn row_reorder_leaves_cursor_off_persisted_comment_line() {
     );
 }
 
-// ── Phase 8: clickable links and navigation ────────────────────────────────
+// ── Clickable links and navigation ──────────────────────────────────────────
 
 use edamame::editor::link::LinkTarget;
 
@@ -1304,7 +1304,7 @@ fn link_target_parse_classifies_inputs_correctly() {
     );
 }
 
-// ── Phase 13: column-width injection guard ──────────────────────────────────
+// ── Column-width injection guard ────────────────────────────────────────────
 
 /// On a table without a `tui-columns` comment, the Release of a column-
 /// border drag stages a pending commit but does NOT yet write the
