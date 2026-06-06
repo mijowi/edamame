@@ -15,9 +15,6 @@ pub(super) const ALL_ACTIONS: &[Action] = &[
     // settings overlay (the "Open Config folder" entry), which is
     // where users go to discover config-file locations.  Surfacing
     // it twice was redundant and made the palette noisier.
-    // `ReloadFromDisk` is dropped from the palette until it is
-    // implemented; today it would just flash a "not yet implemented" hint
-    // and add nothing.
     Action::ShowMarkdownCheatSheet,
     Action::OpenSettings,
     Action::SwitchTheme,

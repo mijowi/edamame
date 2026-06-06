@@ -135,8 +135,6 @@ pub enum Action {
     /// Palette entry for the built-in HTML exporter.  Wired
     /// up here so the palette's `Suggested` list can reference it.
     ExportHtml,
-    /// Re-reads the file from disk, discarding in-memory edits.
-    ReloadFromDisk,
     /// Save the current buffer and open it in `$VISUAL` / `$EDITOR`
     /// (falling back to the OS handler).  Reuses the same suspend /
     /// resume flow the settings overlay uses for `config.toml`.  The
@@ -275,7 +273,7 @@ action_variants! {
     NavigateBack, NavigateForward,
     ShowCommandPalette, ShowMarkdownCheatSheet,
     OpenSettings, OpenKeybinds, OpenConfigFolder, SwitchTheme, CreateCustomTheme,
-    ExportHtml, ReloadFromDisk, OpenInExternalEditor,
+    ExportHtml, OpenInExternalEditor,
     ToggleTableButtons, InsertTable,
     GoToSection,
     DiffNext, DiffPrev,
@@ -793,7 +791,7 @@ impl KeyMap {
         // (also surfaced on the bottom-region hint line as `^P Menu`).
         // The other palette actions (`ShowMarkdownCheatSheet`,
         // `OpenSettings`, `OpenKeybinds`, `OpenConfigFolder`,
-        // `ExportHtml`, `ReloadFromDisk`) are intentionally unbound:
+        // `ExportHtml`) are intentionally unbound:
         // they are reached only via the palette, so the user can
         // search-and-execute without memorising a chord per overlay.
         bind!("ctrl+p", Action::ShowCommandPalette);
