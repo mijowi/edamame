@@ -46,6 +46,8 @@
 //! user otherwise has no signal that their external-edit prompts
 //! have stopped firing for this file.
 
+use std::path::PathBuf;
+
 use crate::diff::ReconcileOutcome;
 use crate::ui::ModalKind;
 use crate::watcher::{WatchedChange, WatchedEvent};
@@ -53,7 +55,7 @@ use crate::watcher::{WatchedChange, WatchedEvent};
 use super::flash::MessageKind;
 use super::modal::dirty_conflict_discard_confirm::DirtyConflictDiscardConfirmModal;
 use super::modal::dirty_conflict_save_copy::DirtyConflictSaveCopyModal;
-use super::modal::DirtyConflictModal;
+use super::modal::{DirtyConflictModal, FileDeletedModal, FileDeletedSaveAsModal};
 use super::App;
 
 impl App {
@@ -63,6 +65,7 @@ impl App {
     pub(crate) fn handle_watcher_event(&mut self, event: WatchedEvent) {
         match event {
             WatchedEvent::Change(change) => self.handle_file_changed(change),
+            WatchedEvent::Removed { path } => self.handle_file_removed(path),
             WatchedEvent::ReadError { path, error } => {
                 // Drop errors for files we are no longer editing.
                 // The worker may have an in-flight read queued from
@@ -81,6 +84,39 @@ impl App {
         }
     }
 
+    /// Handle the watched file disappearing from disk.  Unlike an
+    /// external *change*, a deletion never enters diff review — there
+    /// is nothing on disk to diff against — so any open diff is
+    /// collapsed first, then a [`FileDeletedModal`] offers to re-save
+    /// the buffer (the only remaining copy of its contents).
+    ///
+    /// The modal appears regardless of the dirty flag: even an
+    /// unmodified buffer is now the sole copy once the file is gone.
+    pub(crate) fn handle_file_removed(&mut self, path: PathBuf) {
+        // Drop deletions for files we are no longer editing — a stale
+        // in-flight read from before a file switch.
+        if self.file_path.as_deref() != Some(path.as_path()) {
+            return;
+        }
+        // Idempotent: a second deletion signal (e.g. a forced
+        // reconcile) must not stack a duplicate modal — neither the
+        // prompt itself nor its `[Save as…]` path-entry child (which
+        // closes the prompt before opening, so the prompt alone is not
+        // enough to detect an in-progress save-as flow).
+        if self.modal_stack.contains::<FileDeletedModal>()
+            || self.modal_stack.contains::<FileDeletedSaveAsModal>()
+        {
+            return;
+        }
+        // A diff review compares against a file that no longer exists;
+        // collapse it (restoring pre-diff scroll) before prompting.
+        if self.editor.diff.is_some() {
+            self.exit_diff_mode_discarding();
+        }
+        self.modal_stack.push(Box::new(FileDeletedModal::new(path)));
+        self.needs_draw = true;
+    }
+
     /// Dispatch a single successful read from the watcher.  See
     /// module docs for the decision tree.
     pub(crate) fn handle_file_changed(&mut self, change: WatchedChange) {
@@ -90,6 +126,27 @@ impl App {
         if self.file_path.as_deref() != Some(change.path.as_path()) {
             return;
         }
+
+        // The user is mid-`[Save as…]` after a deletion: they have
+        // already committed to writing their buffer out as the
+        // resolution, so an external recreate must not yank that prompt
+        // away or — worse — enter diff review behind it.  Skip the
+        // change entirely; completing the save-as re-points the buffer
+        // and the write reads back as an own-write.  (`handle_file_removed`
+        // makes the symmetric choice, treating an open save-as child as
+        // an in-progress deletion flow.)
+        if self.modal_stack.contains::<FileDeletedSaveAsModal>() {
+            return;
+        }
+
+        // The file is back on disk.  If a `FileDeletedModal` is still
+        // open from an earlier deletion, its "the buffer is the only
+        // copy" premise no longer holds — tear it down before reviewing
+        // the change so diff mode is never entered behind it.  (Without
+        // this, a delete-then-recreate sequence would push the read
+        // through to `enter_diff_mode` below while the modal still sat
+        // on the stack.)
+        self.modal_stack.remove_first::<FileDeletedModal>();
 
         let incoming_hash = seahash::hash(change.contents.as_bytes());
 
@@ -453,6 +510,151 @@ mod tests {
         assert_ne!(app.editor.mode, crate::editor::Mode::Diff);
         // The buffer was never overwritten during the review.
         assert_eq!(app.editor.buffer.contents(), "a\nb\n");
+    }
+
+    #[test]
+    fn deletion_opens_file_deleted_modal_for_clean_buffer() {
+        use crate::app::modal::FileDeletedModal;
+        // Even a clean (unmodified) buffer prompts — once the file is
+        // gone the in-memory copy is the only one left.
+        let (mut app, tmp) = app_with_temp_file("alpha");
+        assert!(!app.editor.dirty);
+        app.handle_file_removed(tmp.path().to_path_buf());
+        assert!(
+            app.modal_stack.contains::<FileDeletedModal>(),
+            "deletion must surface the file-deleted modal",
+        );
+        // Deletion never enters diff review.
+        assert!(app.editor.diff.is_none());
+        assert_ne!(app.editor.mode, crate::editor::Mode::Diff);
+    }
+
+    #[test]
+    fn deletion_is_idempotent() {
+        use crate::app::modal::FileDeletedModal;
+        let (mut app, tmp) = app_with_temp_file("alpha");
+        let base = app.modal_stack.len();
+        app.handle_file_removed(tmp.path().to_path_buf());
+        app.handle_file_removed(tmp.path().to_path_buf());
+        assert_eq!(
+            app.modal_stack.len() - base,
+            1,
+            "a repeated deletion signal must not stack duplicate modals",
+        );
+        assert!(app.modal_stack.contains::<FileDeletedModal>());
+    }
+
+    #[test]
+    fn deletion_for_other_path_is_ignored() {
+        use crate::app::modal::FileDeletedModal;
+        let (mut app, _tmp) = app_with_temp_file("alpha");
+        app.handle_file_removed(PathBuf::from("/nonexistent/other.md"));
+        assert!(!app.modal_stack.contains::<FileDeletedModal>());
+    }
+
+    #[test]
+    fn deletion_during_diff_exits_diff_and_prompts() {
+        use crate::app::modal::FileDeletedModal;
+        // Enter diff via an external change, then delete the file: the
+        // diff collapses and the deletion modal takes over.
+        let (mut app, tmp) = app_with_temp_file("a\nb\n");
+        app.handle_file_changed(file_changed_event(tmp.path().to_path_buf(), "a\nB\n"));
+        assert!(app.editor.diff.is_some(), "first change enters diff");
+
+        app.handle_file_removed(tmp.path().to_path_buf());
+        assert!(app.editor.diff.is_none(), "deletion must exit diff mode");
+        assert_ne!(app.editor.mode, crate::editor::Mode::Diff);
+        assert!(app.modal_stack.contains::<FileDeletedModal>());
+    }
+
+    #[test]
+    fn deletion_during_diff_clears_orphaned_diff_modals() {
+        use crate::app::modal::{DiffQuitConfirmModal, FileDeletedModal};
+        // User is mid-review with the diff-quit confirmation open, then
+        // the file is deleted.  Exiting the diff must tear down the now
+        // meaningless quit-confirm so it can't fire from underneath the
+        // file-deleted modal.
+        let (mut app, tmp) = app_with_temp_file("a\nb\n");
+        app.handle_file_changed(file_changed_event(tmp.path().to_path_buf(), "a\nB\n"));
+        assert!(app.editor.diff.is_some());
+        app.modal_stack.push(Box::new(DiffQuitConfirmModal::new()));
+
+        app.handle_file_removed(tmp.path().to_path_buf());
+
+        assert!(
+            !app.modal_stack.contains::<DiffQuitConfirmModal>(),
+            "the orphaned diff-quit confirmation must be removed",
+        );
+        assert!(app.modal_stack.contains::<FileDeletedModal>());
+    }
+
+    #[test]
+    fn deletion_is_idempotent_across_save_as_flow() {
+        use crate::app::modal::{FileDeletedModal, FileDeletedSaveAsModal};
+        // A second deletion signal that arrives while the user is in
+        // the `[Save as…]` path-entry child (the prompt itself is
+        // closed) must not stack a fresh prompt on top of it.
+        let (mut app, tmp) = app_with_temp_file("alpha");
+        app.handle_file_removed(tmp.path().to_path_buf());
+        // Simulate the user picking `[Save as…]`: the prompt closes and
+        // the path-entry modal opens in its place.
+        app.modal_stack.remove_first::<FileDeletedModal>();
+        app.modal_stack
+            .push(Box::new(FileDeletedSaveAsModal::new("x".into())));
+        let base = app.modal_stack.len();
+
+        app.handle_file_removed(tmp.path().to_path_buf());
+
+        assert_eq!(app.modal_stack.len(), base, "must not stack a duplicate prompt");
+        assert!(!app.modal_stack.contains::<FileDeletedModal>());
+        assert!(app.modal_stack.contains::<FileDeletedSaveAsModal>());
+    }
+
+    #[test]
+    fn recreate_while_deleted_modal_open_dismisses_it_and_reviews() {
+        use crate::app::modal::FileDeletedModal;
+        // File deleted (prompt open), then recreated externally with
+        // new contents.  The prompt's "only copy" premise is void, so
+        // it is torn down and the change enters normal diff review —
+        // never behind the modal.
+        let (mut app, tmp) = app_with_temp_file("a\nb\n");
+        app.handle_file_removed(tmp.path().to_path_buf());
+        assert!(app.modal_stack.contains::<FileDeletedModal>());
+
+        app.handle_file_changed(file_changed_event(tmp.path().to_path_buf(), "a\nB\n"));
+
+        assert!(
+            !app.modal_stack.contains::<FileDeletedModal>(),
+            "the file-deleted prompt must be dismissed once the file returns",
+        );
+        assert!(app.editor.diff.is_some(), "the recreate enters diff review");
+    }
+
+    #[test]
+    fn recreate_during_save_as_does_not_enter_diff_behind_it() {
+        use crate::app::modal::{FileDeletedModal, FileDeletedSaveAsModal};
+        // File deleted, user picks `[Save as…]` (prompt closed, path
+        // entry open), then the file is recreated externally.  The
+        // user has committed to saving their buffer out, so the change
+        // must be skipped — never entering diff review behind the open
+        // save-as path entry.
+        let (mut app, tmp) = app_with_temp_file("a\nb\n");
+        app.handle_file_removed(tmp.path().to_path_buf());
+        app.modal_stack.remove_first::<FileDeletedModal>();
+        app.modal_stack
+            .push(Box::new(FileDeletedSaveAsModal::new("x".into())));
+
+        app.handle_file_changed(file_changed_event(tmp.path().to_path_buf(), "a\nB\n"));
+
+        assert!(
+            app.modal_stack.contains::<FileDeletedSaveAsModal>(),
+            "the save-as path entry must stay open",
+        );
+        assert!(
+            app.editor.diff.is_none(),
+            "an external recreate must not enter diff mode behind save-as",
+        );
+        assert_ne!(app.editor.mode, crate::editor::Mode::Diff);
     }
 
     #[test]

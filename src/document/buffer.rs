@@ -108,8 +108,8 @@ impl Buffer {
     }
 
     /// Save to an explicit path and update the buffer's associated path.
-    /// Used by integration tests in `tests/`.
-    #[allow(dead_code)]
+    /// Used by [`crate::app::App::save_buffer_as`] (the file-deleted
+    /// "Save as…" flow) and integration tests in `tests/`.
     pub fn save_as(&mut self, path: &Path) -> Result<()> {
         let content = self.rope.to_string();
         std::fs::write(path, &content)
