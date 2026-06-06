@@ -22,6 +22,9 @@ use edamame::watcher::{Debouncer, FileWatcher, NotifyWatcher, WatchedChange, Wat
 fn expect_change(ev: WatchedEvent) -> WatchedChange {
     match ev {
         WatchedEvent::Change(c) => c,
+        WatchedEvent::Removed { path } => {
+            panic!("expected Change, got Removed on {}", path.display())
+        }
         WatchedEvent::ReadError { path, error } => {
             panic!(
                 "expected Change, got ReadError on {}: {error}",

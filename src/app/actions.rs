@@ -795,11 +795,19 @@ impl App {
     pub(crate) fn exit_diff_mode_discarding(&mut self) {
         self.cancel_diff_advance();
         self.editor.exit_diff_mode();
-        // Pop the resolve-confirm modal if it's on the stack.
+        // Tear down every diff-specific modal: the diff they refer to
+        // is gone, so leaving one buried (e.g. behind the file-deleted
+        // modal when the file vanishes mid-review) would let a stale
+        // confirmation fire against no diff.  `remove_first` is a no-op
+        // for any not present, so this is safe from every caller.
         self.modal_stack
             .remove_first::<crate::app::modal::DiffResolveConfirmModal>();
         self.modal_stack
             .remove_first::<crate::app::modal::DiffIntroModal>();
+        self.modal_stack
+            .remove_first::<crate::app::modal::DiffBulkConfirmModal>();
+        self.modal_stack
+            .remove_first::<crate::app::modal::DiffQuitConfirmModal>();
         self.needs_draw = true;
     }
 
@@ -835,6 +843,35 @@ impl App {
         // memory read is dramatically cheaper.
         let bytes = self.editor.buffer.contents();
         self.set_disk_hash(bytes.as_bytes());
+        Ok(())
+    }
+
+    /// Save the buffer to a new path and adopt it as the buffer's
+    /// home.  Used by the file-deleted "Save as…" flow
+    /// ([`crate::app::modal::FileDeletedSaveAsModal`]): the original
+    /// file is gone, so writing the rope elsewhere should re-point the
+    /// buffer, the App's `file_path`, and the filesystem watcher at the
+    /// new location rather than leaving them bound to the deleted path.
+    ///
+    /// Mirrors [`Self::save_buffer`]'s post-write bookkeeping (clear
+    /// dirty, stamp the own-write hash) and additionally re-points the
+    /// watcher — best-effort, matching [`Self::load_file_into_editor`].
+    pub(super) fn save_buffer_as(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
+        self.editor.buffer.save_as(path)?;
+        self.editor.dirty = false;
+        self.file_path = Some(path.to_owned());
+        let bytes = self.editor.buffer.contents();
+        self.set_disk_hash(bytes.as_bytes());
+        if let Some(w) = self.watcher.as_mut() {
+            if let Err(e) = w.watch(path) {
+                tracing::warn!(
+                    target: "watcher",
+                    path = %path.display(),
+                    error = %e,
+                    "watch swap failed after save-as",
+                );
+            }
+        }
         Ok(())
     }
 

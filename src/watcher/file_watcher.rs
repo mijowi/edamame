@@ -19,6 +19,7 @@
 //! in-place writes and atomic-replace saves; the worker filters
 //! events back down to the target path by matching `event.paths`.
 
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
@@ -48,16 +49,24 @@ pub struct WatchedChange {
 }
 
 /// Events surfaced on the worker → main channel.  `Change` is the
-/// happy path; `ReadError` is delivered when the worker tried to
-/// read the watched file after a debounce fire (or forced reconcile)
-/// and the read failed — most commonly the file was replaced with
-/// non-UTF-8 bytes, was deleted between the inotify event and the
-/// read, or hit a permissions error.  The App surfaces these as a
-/// dismissable warning modal so the failure is visible to the user
-/// instead of being silently dropped in the worker log.
+/// happy path; `Removed` signals the watched file no longer exists at
+/// read time; `ReadError` is delivered when the read failed for any
+/// other reason.
+///
+/// `Removed` and `ReadError` are both produced by the same
+/// post-debounce read in [`do_read_and_send`].  The deletion case is
+/// split out so the App can offer to re-save the buffer rather than
+/// just flashing a generic "could not read" warning.  Crucially, this
+/// is decided at *read* time, not when the raw `notify` event arrives:
+/// atomic-rename saves (the reason we watch the parent directory) emit
+/// a `Remove` of the old inode immediately followed by a `Create`, so
+/// by the time the 200 ms debounce window fires the file exists again
+/// and reads normally as `Change`.  Only a genuine deletion with no
+/// recreate is still missing at read time and surfaces as `Removed`.
 #[derive(Debug, Clone)]
 pub enum WatchedEvent {
     Change(WatchedChange),
+    Removed { path: PathBuf },
     ReadError { path: PathBuf, error: String },
 }
 
@@ -136,7 +145,15 @@ impl NotifyWatcher {
         let inner =
             notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
                 Ok(ev) => {
-                    if matches!(ev.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                    // `Remove` is forwarded alongside `Modify` / `Create`
+                    // so a deletion records into the debouncer like any
+                    // other event; the worker's post-debounce read then
+                    // distinguishes a genuine deletion from an
+                    // atomic-rename replace (see [`WatchedEvent`]).
+                    if matches!(
+                        ev.kind,
+                        EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+                    ) {
                         let _ = cb_tx.send(WorkerCommand::Event(ev));
                     }
                 }
@@ -297,11 +314,12 @@ fn event_matches_path(event: &notify::Event, target: &Path) -> bool {
         .any(|p| p.file_name() == Some(target_name))
 }
 
-/// Read `path` from disk and push the result onto `event_tx`.  On
-/// failure (non-UTF-8 contents, file deleted between the inotify
-/// event and the read, permission denied, …) emit a
-/// [`WatchedEvent::ReadError`] so the App can surface the failure
-/// to the user instead of silently dropping it in the worker log.
+/// Read `path` from disk and push the result onto `event_tx`.  A
+/// missing file (`ErrorKind::NotFound`) is reported as
+/// [`WatchedEvent::Removed`] so the App can offer to re-save the
+/// buffer; every other failure (non-UTF-8 contents, permission
+/// denied, …) becomes a [`WatchedEvent::ReadError`] so the App can
+/// surface it instead of silently dropping it in the worker log.
 fn do_read_and_send(path: &Path, event_tx: &mpsc::Sender<WatchedEvent>) {
     match std::fs::read_to_string(path) {
         Ok(contents) => {
@@ -309,6 +327,16 @@ fn do_read_and_send(path: &Path, event_tx: &mpsc::Sender<WatchedEvent>) {
                 path: path.to_owned(),
                 contents,
             }));
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            tracing::info!(
+                target: "watcher",
+                path = %path.display(),
+                "watched file no longer exists",
+            );
+            let _ = event_tx.send(WatchedEvent::Removed {
+                path: path.to_owned(),
+            });
         }
         Err(err) => {
             tracing::warn!(
@@ -339,6 +367,9 @@ mod tests {
     fn expect_change(ev: WatchedEvent) -> WatchedChange {
         match ev {
             WatchedEvent::Change(c) => c,
+            WatchedEvent::Removed { path } => {
+                panic!("expected Change, got Removed on {}", path.display())
+            }
             WatchedEvent::ReadError { path, error } => {
                 panic!(
                     "expected Change, got ReadError on {}: {error}",
@@ -486,12 +517,43 @@ mod tests {
             .expect("read error must be delivered");
         match ev {
             WatchedEvent::ReadError { path: p, .. } => assert_eq!(p, path),
+            WatchedEvent::Removed { path: p } => {
+                panic!("expected ReadError, got Removed on {}", p.display())
+            }
             WatchedEvent::Change(c) => {
                 panic!(
                     "expected ReadError, got Change with {} bytes",
                     c.contents.len()
                 )
             }
+        }
+    }
+
+    #[test]
+    fn watcher_emits_removed_on_deletion() {
+        // Deleting the watched file (with no recreate) yields a
+        // `Removed` event, distinct from `ReadError`.  Driven through
+        // `force_reconcile` so the test does not depend on inotify
+        // delivery timing for the deletion event itself.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("file.md");
+        std::fs::write(&path, "doomed").expect("seed");
+
+        let (tx, rx) = mpsc::channel::<WatchedEvent>();
+        let mut w = NotifyWatcher::new(tx).expect("build watcher");
+        w.watch(&path).expect("watch");
+        std::thread::sleep(Duration::from_millis(80));
+        while rx.try_recv().is_ok() {}
+
+        std::fs::remove_file(&path).expect("delete");
+        w.force_reconcile().expect("reconcile");
+
+        let ev = rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("removal must be delivered");
+        match ev {
+            WatchedEvent::Removed { path: p } => assert_eq!(p, path),
+            other => panic!("expected Removed, got {other:?}"),
         }
     }
 }
