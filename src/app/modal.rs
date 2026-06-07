@@ -6,6 +6,7 @@
 //! popping returns it.  Each modal implementation lives in its own
 //! file under `src/app/modal/`.
 
+pub mod chrome;
 pub mod stack;
 pub mod types;
 

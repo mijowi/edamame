@@ -17,11 +17,12 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::Frame;
 
-use super::types::{esc_rect_hit, Modal, ModalKind, ModalOutcome, ModalRenderCtx};
+use super::chrome::ModalChrome;
+use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
 use crate::config::Action;
 use crate::input::diff_hint;
-use crate::ui::{ModalButton, ModalResponse, ModalState, ModalView};
+use crate::ui::{ModalButton, ModalResponse};
 
 /// Footer-button indices.  `[checkbox, Continue]`, Continue focused by
 /// default so a bare Enter proceeds.
@@ -30,24 +31,20 @@ const CONTINUE_IDX: usize = 1;
 const NUM_BUTTONS: usize = 2;
 
 pub struct DiffIntroModal {
-    state: ModalState,
+    chrome: ModalChrome,
     /// Live state of the "Don't show again" toggle.  `false` means the
     /// modal will fire again on the next diff entry; `true` writes
     /// `config.editor.show_diff_intro = false` on confirm.
     dont_show_again: bool,
-    kind: ModalKind,
-    dismissable: bool,
 }
 
 impl DiffIntroModal {
     pub fn new() -> Self {
-        let mut state = ModalState::new();
-        state.focused = CONTINUE_IDX;
+        let mut chrome = ModalChrome::new(ModalKind::Normal, true);
+        chrome.state.focused = CONTINUE_IDX;
         Self {
-            state,
+            chrome,
             dont_show_again: false,
-            kind: ModalKind::Normal,
-            dismissable: true,
         }
     }
 
@@ -105,10 +102,21 @@ impl DiffIntroModal {
     fn activate(&mut self, idx: usize) -> ModalOutcome {
         if idx == CHECKBOX_IDX {
             self.dont_show_again = !self.dont_show_again;
-            self.state.focused = CHECKBOX_IDX;
+            self.chrome.state.focused = CHECKBOX_IDX;
             ModalOutcome::Continue
         } else {
             self.close_outcome()
+        }
+    }
+
+    /// Map a resolved response to an outcome.  Shared by the key and
+    /// click paths: activating a button toggles or continues, Esc /
+    /// esc-click persists the opt-out and closes.
+    fn resolve(&mut self, response: ModalResponse) -> ModalOutcome {
+        match response {
+            ModalResponse::Continue => ModalOutcome::Continue,
+            ModalResponse::ButtonPressed(idx) => self.activate(idx),
+            ModalResponse::Cancelled => self.close_outcome(),
         }
     }
 }
@@ -123,15 +131,8 @@ impl Modal for DiffIntroModal {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
         let body = self.body();
         let buttons = self.buttons();
-        let view = ModalView::new(
-            "Entering diff mode",
-            &body,
-            &buttons,
-            ctx.theme,
-            self.kind,
-            self.dismissable,
-        );
-        frame.render_stateful_widget(view, area, &mut self.state);
+        self.chrome
+            .render(frame, area, ctx, "Entering diff mode", &body, &buttons);
     }
 
     fn handle_key(
@@ -151,54 +152,39 @@ impl Modal for DiffIntroModal {
             } else {
                 NUM_BUTTONS - 1
             };
-            self.state.focused = (self.state.focused + step) % NUM_BUTTONS;
+            let focused = &mut self.chrome.state.focused;
+            *focused = (*focused + step) % NUM_BUTTONS;
             return ModalOutcome::Continue;
         }
         // Tab / Shift-Tab / Left / Right cycle focus; Enter / Space / y
         // activate the focused button; Esc / n cancel.
-        match self.state.handle_key(&key, NUM_BUTTONS, self.dismissable) {
-            ModalResponse::Continue => ModalOutcome::Continue,
-            ModalResponse::ButtonPressed(idx) => self.activate(idx),
-            ModalResponse::Cancelled => self.close_outcome(),
-        }
+        let response = self.chrome.on_key(&key, NUM_BUTTONS);
+        self.resolve(response)
     }
 
     fn handle_wheel(&mut self, delta: i32) {
-        // Scroll the body like every other `ModalView` modal.  The
-        // trait default is a no-op, so without this override the wheel
-        // does nothing — and this modal also repurposes Up / Down for
-        // button focus, so the wheel is the body's only scroll path on
-        // a terminal too short to show it all at once.
-        self.state.scroll_by(delta);
+        // Scroll the body like every other `ModalView` modal.  This
+        // modal also repurposes Up / Down for button focus, so the
+        // wheel is the body's only scroll path on a terminal too short
+        // to show it all at once.
+        self.chrome.on_wheel(delta);
     }
 
     fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
-        // Footer buttons first, then the esc close hint.  Routing the
-        // esc-hint click through `close_outcome()` persists the
-        // `dont_show_again` toggle just like Esc / [Continue].
-        if let Some(rect) = self.state.button_rects.get(CHECKBOX_IDX).copied() {
-            if esc_rect_hit(Some(rect), col, row) {
-                return self.activate(CHECKBOX_IDX);
-            }
-        }
-        if let Some(rect) = self.state.button_rects.get(CONTINUE_IDX).copied() {
-            if esc_rect_hit(Some(rect), col, row) {
-                return self.activate(CONTINUE_IDX);
-            }
-        }
-        if esc_rect_hit(self.state.esc_button_rect, col, row) {
-            self.close_outcome()
-        } else {
-            ModalOutcome::Continue
-        }
+        // The chrome hit-tests both footer buttons (checkbox + Continue)
+        // and the esc hint; routing all three through `resolve` keeps a
+        // checkbox click a toggle and an esc-hint click a persist-and-
+        // close, matching the keyboard paths.
+        let response = self.chrome.on_click(col, row);
+        self.resolve(response)
     }
 
     fn kind(&self) -> ModalKind {
-        self.kind
+        self.chrome.kind()
     }
 
     fn dismissable(&self) -> bool {
-        self.dismissable
+        self.chrome.dismissable()
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -256,7 +242,7 @@ mod tests {
 
     #[test]
     fn focus_starts_on_continue() {
-        assert_eq!(DiffIntroModal::new().state.focused, CONTINUE_IDX);
+        assert_eq!(DiffIntroModal::new().chrome.state.focused, CONTINUE_IDX);
     }
 
     #[test]
@@ -265,13 +251,13 @@ mod tests {
         let mut modal = DiffIntroModal::new();
         // Down: Continue → checkbox.
         modal.handle_key(key(KeyCode::Down), &mut app, 40, 80);
-        assert_eq!(modal.state.focused, CHECKBOX_IDX);
+        assert_eq!(modal.chrome.state.focused, CHECKBOX_IDX);
         // Up: checkbox → Continue.
         modal.handle_key(key(KeyCode::Up), &mut app, 40, 80);
-        assert_eq!(modal.state.focused, CONTINUE_IDX);
+        assert_eq!(modal.chrome.state.focused, CONTINUE_IDX);
         // Tab cycles as well.
         modal.handle_key(key(KeyCode::Tab), &mut app, 40, 80);
-        assert_eq!(modal.state.focused, CHECKBOX_IDX);
+        assert_eq!(modal.chrome.state.focused, CHECKBOX_IDX);
     }
 
     #[test]
@@ -301,7 +287,7 @@ mod tests {
     fn clicking_checkbox_toggles_then_clicking_continue_closes() {
         let mut modal = DiffIntroModal::new();
         render_offscreen(&mut modal);
-        let cb = modal.state.button_rects[CHECKBOX_IDX];
+        let cb = modal.chrome.state.button_rects[CHECKBOX_IDX];
         let out = modal.handle_click(cb.x, cb.y);
         assert!(matches!(out, ModalOutcome::Continue));
         assert!(modal.dont_show_again, "checkbox click must toggle");
@@ -309,7 +295,7 @@ mod tests {
         // Re-render so rects reflect the new label width, then click
         // Continue to close.
         render_offscreen(&mut modal);
-        let cont = modal.state.button_rects[CONTINUE_IDX];
+        let cont = modal.chrome.state.button_rects[CONTINUE_IDX];
         let out = modal.handle_click(cont.x, cont.y);
         assert!(matches!(out, ModalOutcome::CloseAnd(_)));
     }

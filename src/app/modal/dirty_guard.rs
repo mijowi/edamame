@@ -12,20 +12,19 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::Frame;
 
+use super::chrome::ModalChrome;
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
-use crate::ui::{ModalButton, ModalResponse, ModalState, ModalView};
+use crate::ui::{ModalButton, ModalResponse};
 
 pub struct DirtyGuardModal {
     body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
-    state: ModalState,
+    chrome: ModalChrome,
     /// The destination that was about to be followed when the guard
     /// fired.  Restored to the App via the close callback after Save
     /// or Discard.
     pending: PathBuf,
-    kind: ModalKind,
-    dismissable: bool,
 }
 
 impl DirtyGuardModal {
@@ -40,41 +39,25 @@ impl DirtyGuardModal {
         Self {
             body,
             buttons: vec![ModalButton::new("Save"), ModalButton::new("Discard")],
-            state: ModalState::new(),
+            chrome: ModalChrome::new(ModalKind::Warning, true),
             pending,
-            kind: ModalKind::Warning,
-            dismissable: true,
         }
     }
-}
 
-impl Modal for DirtyGuardModal {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
-        let view = ModalView::new(
-            "Unsaved changes",
-            &self.body,
-            &self.buttons,
-            ctx.theme,
-            self.kind,
-            self.dismissable,
-        );
-        frame.render_stateful_widget(view, area, &mut self.state);
-    }
-
-    fn handle_key(
-        &mut self,
-        key: KeyEvent,
-        _app: &mut App,
-        doc_height: usize,
-        doc_width: usize,
-    ) -> ModalOutcome {
-        match self
-            .state
-            .handle_key(&key, self.buttons.len(), self.dismissable)
-        {
+    /// Map a resolved response to an outcome.  Shared by the key and
+    /// click paths so a mouse click on a button behaves exactly like
+    /// pressing it.
+    ///
+    /// The cursor-visibility calls read the cached doc dimensions from
+    /// `App` (`last_doc_height` / `last_doc_width`) rather than taking
+    /// them as parameters: `Modal::handle_click` has no live `DocDims`
+    /// to thread in, so both paths share the same App-sourced values.
+    fn resolve(&mut self, response: ModalResponse) -> ModalOutcome {
+        match response {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled => ModalOutcome::CloseAnd(Box::new(move |app| {
-                app.editor.ensure_cursor_visible(doc_height, doc_width);
+                let (h, w) = (app.last_doc_height, app.last_doc_width);
+                app.editor.ensure_cursor_visible(h, w);
             })),
             ModalResponse::ButtonPressed(idx) => {
                 let pending = std::mem::take(&mut self.pending);
@@ -86,32 +69,59 @@ impl Modal for DirtyGuardModal {
                                 tracing::warn!(target: "link", error = %e, "save-before-navigate failed");
                             }
                         }
-                        app.editor.ensure_cursor_visible(doc_height, doc_width);
+                        let (h, w) = (app.last_doc_height, app.last_doc_width);
+                        app.editor.ensure_cursor_visible(h, w);
                     })),
                     _ => ModalOutcome::CloseAnd(Box::new(move |app| {
                         app.editor.dirty = false;
                         app.navigate_to_file(pending);
-                        app.editor.ensure_cursor_visible(doc_height, doc_width);
+                        let (h, w) = (app.last_doc_height, app.last_doc_width);
+                        app.editor.ensure_cursor_visible(h, w);
                     })),
                 }
             }
         }
     }
+}
+
+impl Modal for DirtyGuardModal {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
+        self.chrome.render(
+            frame,
+            area,
+            ctx,
+            "Unsaved changes",
+            &self.body,
+            &self.buttons,
+        );
+    }
+
+    fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        _app: &mut App,
+        _doc_height: usize,
+        _doc_width: usize,
+    ) -> ModalOutcome {
+        let response = self.chrome.on_key(&key, self.buttons.len());
+        self.resolve(response)
+    }
 
     fn handle_wheel(&mut self, delta: i32) {
-        self.state.scroll_by(delta);
+        self.chrome.on_wheel(delta);
     }
 
     fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
-        super::types::close_if_esc_clicked(self.state.esc_button_rect, col, row)
+        let response = self.chrome.on_click(col, row);
+        self.resolve(response)
     }
 
     fn kind(&self) -> ModalKind {
-        self.kind
+        self.chrome.kind()
     }
 
     fn dismissable(&self) -> bool {
-        self.dismissable
+        self.chrome.dismissable()
     }
 
     fn as_any(&self) -> &dyn Any {

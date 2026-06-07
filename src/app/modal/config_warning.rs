@@ -11,17 +11,16 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::Frame;
 
+use super::chrome::ModalChrome;
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
 use crate::config::{ConfigWarning, WarningKind};
-use crate::ui::{ModalButton, ModalResponse, ModalState, ModalView};
+use crate::ui::{ModalButton, ModalResponse};
 
 pub struct ConfigWarningModal {
     pub(crate) body: Vec<Line<'static>>,
     pub(crate) buttons: Vec<ModalButton>,
-    pub(crate) state: ModalState,
-    kind: ModalKind,
-    dismissable: bool,
+    chrome: ModalChrome,
 }
 
 impl ConfigWarningModal {
@@ -85,24 +84,21 @@ impl ConfigWarningModal {
         Some(Self {
             body,
             buttons: Vec::new(),
-            state: ModalState::new(),
-            kind: ModalKind::Warning,
-            dismissable: true,
+            chrome: ModalChrome::new(ModalKind::Warning, true),
         })
     }
 }
 
 impl Modal for ConfigWarningModal {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
-        let view = ModalView::new(
+        self.chrome.render(
+            frame,
+            area,
+            ctx,
             "Config warnings",
             &self.body,
             &self.buttons,
-            ctx.theme,
-            self.kind,
-            self.dismissable,
         );
-        frame.render_stateful_widget(view, area, &mut self.state);
     }
 
     fn handle_key(
@@ -112,29 +108,29 @@ impl Modal for ConfigWarningModal {
         _doc_height: usize,
         _doc_width: usize,
     ) -> ModalOutcome {
-        match self
-            .state
-            .handle_key(&key, self.buttons.len(), self.dismissable)
-        {
+        match self.chrome.on_key(&key, self.buttons.len()) {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled | ModalResponse::ButtonPressed(_) => ModalOutcome::Close,
         }
     }
 
     fn handle_wheel(&mut self, delta: i32) {
-        self.state.scroll_by(delta);
+        self.chrome.on_wheel(delta);
     }
 
     fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
-        super::types::close_if_esc_clicked(self.state.esc_button_rect, col, row)
+        match self.chrome.on_click(col, row) {
+            ModalResponse::Continue => ModalOutcome::Continue,
+            ModalResponse::Cancelled | ModalResponse::ButtonPressed(_) => ModalOutcome::Close,
+        }
     }
 
     fn kind(&self) -> ModalKind {
-        self.kind
+        self.chrome.kind()
     }
 
     fn dismissable(&self) -> bool {
-        self.dismissable
+        self.chrome.dismissable()
     }
 
     fn as_any(&self) -> &dyn Any {

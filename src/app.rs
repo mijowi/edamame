@@ -180,6 +180,14 @@ pub struct App {
     /// width — images render inside the doc area, so the scratch must
     /// match the doc width or the first paint resizes anyway.
     last_area_width: u16,
+    /// Most recent document-area dimensions, cached each frame in
+    /// [`App::prepare_viewport`].  Modal click handlers (`fn
+    /// handle_click`) don't receive the live `DocDims` the keystroke
+    /// path does, so callbacks that need them — e.g. the dirty-guard
+    /// re-scrolling the cursor into view after navigating — read the
+    /// last-known values from here instead.  `0` until the first frame.
+    pub(crate) last_doc_height: usize,
+    pub(crate) last_doc_width: usize,
     /// FIFO of terminal events pulled off the channel ahead of time —
     /// either by `drain_pending_image_ready` (which uses `try_recv` and
     /// can't put events back) or by `drain_pending_key_events` (which
@@ -517,6 +525,8 @@ impl App {
             last_scroll_at: None,
             last_draw_at: None,
             last_area_width: 0,
+            last_doc_height: 0,
+            last_doc_width: 0,
             images_dirty: false,
             needs_draw: true,
             resize_quiesce_at: None,

@@ -38,6 +38,17 @@ use crate::ui::scroll_container::{
 };
 use crate::ui::scrollbar;
 
+/// True when `(col, row)` falls inside `r`.  Shared by the footer-button
+/// and `esc`-hint hit-tests in [`ModalState`].
+fn rect_contains(r: Rect, col: u16, row: u16) -> bool {
+    col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
+}
+
+/// [`rect_contains`] over an optional rect — `None` never matches.
+fn rect_contains_opt(r: Option<Rect>, col: u16, row: u16) -> bool {
+    r.is_some_and(|r| rect_contains(r, col, row))
+}
+
 /// The outcome of a key event handed to the modal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModalResponse {
@@ -108,6 +119,37 @@ impl ModalState {
     /// goes through `scroll_state.handle_scroll_key` directly.
     pub fn scroll_by(&mut self, delta: i32) {
         self.scroll_state.scroll_by(delta);
+    }
+
+    /// Index of the footer button whose last-rendered rect contains
+    /// `(col, row)`, or `None` if the click misses every button (or no
+    /// button has been rendered yet).  `button_rects` is refreshed each
+    /// render in button order, so the returned index lines up with the
+    /// `ModalButton` slice and with `ModalResponse::ButtonPressed`.
+    pub fn button_at(&self, col: u16, row: u16) -> Option<usize> {
+        self.button_rects
+            .iter()
+            .position(|r| rect_contains(*r, col, row))
+    }
+
+    /// Translate a left-click at `(col, row)` into the same
+    /// [`ModalResponse`] the keyboard path produces, so mouse and
+    /// keyboard resolve a modal identically.  A footer button takes
+    /// priority; failing that, the `esc` close affordance cancels (only
+    /// when `dismissable`); otherwise the click is a no-op `Continue`.
+    ///
+    /// This is the single definition of footer-button click hit-testing
+    /// — every `ModalView`-backed modal routes through it, so buttons
+    /// are clickable everywhere without each modal re-deriving the
+    /// centred layout.
+    pub fn handle_click(&self, col: u16, row: u16, dismissable: bool) -> ModalResponse {
+        if let Some(idx) = self.button_at(col, row) {
+            return ModalResponse::ButtonPressed(idx);
+        }
+        if dismissable && rect_contains_opt(self.esc_button_rect, col, row) {
+            return ModalResponse::Cancelled;
+        }
+        ModalResponse::Continue
     }
 
     /// Update focus/response in response to a key event.
@@ -636,6 +678,59 @@ mod tests {
             state.scroll_state.last_total,
             state.scroll_state.last_visible,
         );
+    }
+
+    // ── Click hit-testing ────────────────────────────────────────────────
+
+    fn render_two_button_modal(state: &mut ModalState) {
+        let backend = TestBackend::new(60, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let body = vec![Line::raw("Pick one.")];
+        let buttons = vec![ModalButton::new("Ok"), ModalButton::new("Cancel")];
+        terminal
+            .draw(|frame| {
+                let m = ModalView::new("Notice", &body, &buttons, theme(), ModalKind::Normal, true);
+                frame.render_stateful_widget(m, frame.area(), state);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn button_at_maps_click_to_footer_button_index() {
+        let mut state = ModalState::new();
+        render_two_button_modal(&mut state);
+        assert_eq!(state.button_rects.len(), 2);
+        // A click in the middle of each rendered button rect resolves to
+        // that button's index.
+        for (idx, rect) in state.button_rects.clone().iter().enumerate() {
+            let col = rect.x + rect.width / 2;
+            assert_eq!(state.button_at(col, rect.y), Some(idx));
+        }
+        // A click on the body (above the button row) hits no button.
+        assert_eq!(state.button_at(0, 0), None);
+    }
+
+    #[test]
+    fn handle_click_prefers_button_then_esc_then_continue() {
+        let mut state = ModalState::new();
+        render_two_button_modal(&mut state);
+        let btn = state.button_rects[1];
+        assert_eq!(
+            state.handle_click(btn.x + btn.width / 2, btn.y, true),
+            ModalResponse::ButtonPressed(1),
+        );
+        let esc = state.esc_button_rect.expect("esc rect populated");
+        assert_eq!(
+            state.handle_click(esc.x, esc.y, true),
+            ModalResponse::Cancelled,
+        );
+        // The same esc click is inert when the modal isn't dismissable.
+        assert_eq!(
+            state.handle_click(esc.x, esc.y, false),
+            ModalResponse::Continue
+        );
+        // A click on empty chrome resolves to Continue.
+        assert_eq!(state.handle_click(0, 0, true), ModalResponse::Continue);
     }
 
     #[test]

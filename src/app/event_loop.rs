@@ -300,6 +300,8 @@ impl App {
     /// entered the window.
     pub(super) fn prepare_viewport(&mut self, dims: &DocDims) {
         self.last_area_width = dims.doc_area.width;
+        self.last_doc_height = dims.doc_height;
+        self.last_doc_width = dims.doc_width;
         self.editor.set_viewport_width(dims.doc_width);
         // Resolve a diff-entry scroll request now that the viewport
         // height is known (it isn't at the modal-close site that enters
