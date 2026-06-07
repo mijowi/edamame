@@ -1866,3 +1866,62 @@ fn intra_mermaid_line_move_does_not_rearm_reveal_timer() {
         "leaving the mermaid block re-arms the reveal timer",
     );
 }
+
+// ── Regression: image-block sub-row must not poison the inline-map cache ─────
+
+#[test]
+fn click_on_reserved_image_row_does_not_poison_inline_map_cache() {
+    // A `Block::ImageBlock` reserves many rendered rows (`image_max_height`)
+    // for its single source line, and its byte range can absorb a trailing
+    // blank line.  Translating a click on one of the reserved rows used to
+    // read the rendered sub-row as a raw source-line index, landing on a
+    // phantom empty raw line and caching an empty `InlineColMap` for the
+    // buffer line of *whatever content follows the image*
+    // (`image_line + sub_idx`).  Painting that content line under a selection
+    // then re-queried the cache with the real line text and tripped the
+    // char-count assertion in `ParsedDoc::inline_map`.  See the
+    // `is_image_block` clamp in `mouse_ops::coord` (the click path that
+    // poisoned the cache here); `rendered_view::paint` is independently safe
+    // via its `raw_line_idx >= raw_lines.len()` bounds check.
+    use edamame::document::Selection;
+    use edamame::ui::{RenderedView, RenderedViewState};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let theme = theme();
+    let long = "Paragraph with a very long line that keeps going on and on past wrap width here.";
+    let src = format!("![Mona](https://example.com/a.png)\n\n{long}\n");
+    let mut st = EditorState::new(Buffer::from_str(&src), theme);
+    st.mode = Mode::Rendered;
+
+    // Click on a reserved row of the image (row 2, below the placeholder).
+    let mut mouse = MouseDispatcher::new();
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    if let Some(a) = mouse.dispatch(click_event(2, 2), area()) {
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+    }
+
+    // Select the whole document so the paragraph below the image paints under
+    // the selection overlay, re-querying its inline map.
+    let total = st.buffer.len_chars();
+    st.selection = Some(Selection {
+        anchor: 0,
+        active: total,
+    });
+    st.cursor.offset = 0;
+
+    let backend = TestBackend::new(80, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &st,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+}

@@ -460,6 +460,24 @@ impl ParsedDoc {
         })
     }
 
+    /// True when `block_idx` is a `Block::ImageBlock` (a real image *or* a
+    /// promoted diagram).  Such a block has a single source line — the
+    /// `![alt](url)` / fenced-diagram opener — but reserves *many* rendered
+    /// rows (`image_max_height`).  Callers that translate a rendered
+    /// sub-row back to a raw source line must not use the sub-row index
+    /// directly: the block's byte range can also absorb a trailing blank
+    /// line, so a naive `sub_idx` lands on a phantom empty raw line and
+    /// addresses the wrong buffer line.  `mouse_ops::coord` guards against
+    /// this by pinning every reserved row to raw line 0; the selection
+    /// overlay in `rendered_view::paint` instead relies on its
+    /// `raw_line_idx >= raw_lines.len()` bounds check to skip painting
+    /// reserved rows entirely.
+    pub fn is_image_block(&self, block_idx: usize) -> bool {
+        self.image_blocks
+            .iter()
+            .any(|info| info.block_idx == block_idx)
+    }
+
     // ── Inline column map cache ────────────────────────────────────────────
 
     /// Lazily-built bidirectional char-column map for `buffer_line_idx`.
