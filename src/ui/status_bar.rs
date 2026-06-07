@@ -26,10 +26,6 @@ pub struct StatusBarState<'a> {
     pub cursor_line: Option<usize>,
     /// Cursor column (1-indexed, `None` in Preview mode).
     pub cursor_col: Option<usize>,
-    /// Active selection size as `(char_count, line_count)`.  Rendered
-    /// as ` Sel 42 ch · 3 ln ` between the filename and cursor info
-    /// when present.
-    pub selection_size: Option<(usize, usize)>,
     /// Heading-ancestor chain of the cursor's current position, in
     /// document order (shallowest → deepest).  Renders as a `›`-joined
     /// breadcrumb after the filename.  Empty when the cursor sits
@@ -44,7 +40,7 @@ pub struct StatusBarState<'a> {
 
 /// A single-row status bar widget.
 ///
-/// Layout: ` [mode]  filename[*?] › section › ...   sel  cursor  N lines  Z% `
+/// Layout: ` [mode]  filename[*?] › section › ...   cursor  N lines  Z% `
 pub struct StatusBar<'a> {
     pub state: StatusBarState<'a>,
     pub theme: &'a Theme,
@@ -129,13 +125,6 @@ impl<'a> Widget for StatusBar<'a> {
             mode_width + diff_width + filename_width + if s.modified { 1 } else { 0 };
 
         // ── Right side (fixed) ──────────────────────────────────────
-        let sel_text = match s.selection_size {
-            Some((chars, lines)) => format!(" Sel {} ch · {} ln ", chars, lines),
-            None => String::new(),
-        };
-        let sel_width = UnicodeWidthStr::width(sel_text.as_str());
-        let sel_span = Span::styled(sel_text, with_bar_bg(theme.status_selection));
-
         let cursor_text = match (s.cursor_line, s.cursor_col) {
             (Some(l), Some(c)) => format!(" {}:{} ", l, c),
             _ => String::new(),
@@ -153,7 +142,7 @@ impl<'a> Widget for StatusBar<'a> {
         let info_width = UnicodeWidthStr::width(info_text.as_str());
         let info_span = Span::styled(info_text, with_bar_bg(theme.status_info));
 
-        let right_width = sel_width + cursor_width + info_width;
+        let right_width = cursor_width + info_width;
 
         // ── Breadcrumb (fits into whatever's left) ──────────────────
         //
@@ -203,7 +192,6 @@ impl<'a> Widget for StatusBar<'a> {
         }
         spans.extend(breadcrumb_spans);
         spans.push(gap_span);
-        spans.push(sel_span);
         spans.push(cursor_span);
         spans.push(info_span);
 
@@ -314,7 +302,6 @@ mod tests {
                         scroll: 0,
                         cursor_line: None,
                         cursor_col: None,
-                        selection_size: None,
                         section_path,
                         diff_progress: None,
                     },
@@ -389,7 +376,6 @@ mod tests {
                         scroll: 0,
                         cursor_line: Some(3),
                         cursor_col: Some(7),
-                        selection_size: None,
                         section_path: Vec::new(),
                         diff_progress: None,
                     },
@@ -409,44 +395,6 @@ mod tests {
             })
             .collect();
         assert!(output.contains("3:7"), "output was: {:?}", output);
-    }
-
-    #[test]
-    fn shows_selection_size_when_present() {
-        let theme = Box::leak(Box::new(Theme::default()));
-        let backend = TestBackend::new(80, 1);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                let bar = StatusBar {
-                    state: StatusBarState {
-                        mode: Mode::Rendered,
-                        filename: "f.md",
-                        line_count: 10,
-                        modified: false,
-                        scroll: 0,
-                        cursor_line: Some(1),
-                        cursor_col: Some(1),
-                        selection_size: Some((42, 3)),
-                        section_path: Vec::new(),
-                        diff_progress: None,
-                    },
-                    theme,
-                };
-                frame.render_widget(bar, frame.area());
-            })
-            .unwrap();
-        let output: String = (0..80u16)
-            .map(|x| {
-                terminal
-                    .backend()
-                    .buffer()
-                    .cell((x, 0))
-                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
-            })
-            .collect();
-        assert!(output.contains("Sel 42 ch"), "output was: {:?}", output);
-        assert!(output.contains("3 ln"), "output was: {:?}", output);
     }
 
     #[test]

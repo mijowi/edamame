@@ -970,12 +970,7 @@ mod tests {
 
     // ── BottomRegion rendering ────────────────────────────────────
 
-    fn render_region(
-        width: u16,
-        layout: StatusBarLayout,
-        hint: HintContent,
-        sel: Option<(usize, usize)>,
-    ) -> String {
+    fn render_region(width: u16, layout: StatusBarLayout, hint: HintContent) -> String {
         let t = theme();
         let height = BottomRegion::height(layout);
         let backend = TestBackend::new(width, height);
@@ -991,7 +986,6 @@ mod tests {
                         scroll: 0,
                         cursor_line: Some(1),
                         cursor_col: Some(1),
-                        selection_size: sel,
                         section_path: Vec::new(),
                         diff_progress: None,
                     },
@@ -1026,7 +1020,7 @@ mod tests {
     #[test]
     fn two_line_mode_renders_both_rows() {
         let set = chord_set(vec![HintChord::new("^S", "Save")]);
-        let out = render_region(40, StatusBarLayout::TwoLine, HintContent::Chords(set), None);
+        let out = render_region(40, StatusBarLayout::TwoLine, HintContent::Chords(set));
         assert!(out.contains("Save"), "out: {out}");
         assert!(out.contains("test.md"), "out: {out}");
     }
@@ -1034,7 +1028,7 @@ mod tests {
     #[test]
     fn compact_mode_omits_hint_line() {
         let set = chord_set(vec![HintChord::new("^S", "Save")]);
-        let out = render_region(40, StatusBarLayout::Compact, HintContent::Chords(set), None);
+        let out = render_region(40, StatusBarLayout::Compact, HintContent::Chords(set));
         assert!(!out.contains("Save"), "out: {out}");
         assert!(out.contains("test.md"), "out: {out}");
     }
@@ -1048,7 +1042,6 @@ mod tests {
                 text: "Copied".to_owned(),
                 style: Theme::default().transient_info,
             },
-            None,
         );
         assert!(out.contains("Copied"), "out: {out}");
         // Chords shouldn't bleed through.
@@ -1065,23 +1058,9 @@ mod tests {
                 prompt: "File changed on disk.".to_owned(),
                 chords,
             },
-            None,
         );
         assert!(out.contains("File changed"), "out: {out}");
         assert!(out.contains("Reload"), "out: {out}");
-    }
-
-    #[test]
-    fn selection_size_renders_in_two_line() {
-        let set = chord_set(vec![HintChord::new("^S", "Save")]);
-        let out = render_region(
-            80,
-            StatusBarLayout::TwoLine,
-            HintContent::Chords(set),
-            Some((42, 3)),
-        );
-        assert!(out.contains("Sel 42 ch"), "out: {out}");
-        assert!(out.contains("3 ln"), "out: {out}");
     }
 
     #[test]
@@ -1090,7 +1069,7 @@ mod tests {
             prelude: Some("Press any key to edit".to_owned()),
             chords: vec![HintChord::new("^P", "Menu")],
         };
-        let out = render_region(80, StatusBarLayout::TwoLine, HintContent::Chords(set), None);
+        let out = render_region(80, StatusBarLayout::TwoLine, HintContent::Chords(set));
         let first_line = out.lines().next().unwrap();
         let prelude_idx = first_line.find("Press any key").unwrap();
         let menu_idx = first_line.find("^P").unwrap();

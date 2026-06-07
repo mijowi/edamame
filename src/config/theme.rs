@@ -159,8 +159,6 @@ pub struct Theme {
     pub status_filename: Style,
     pub status_info: Style,
     pub status_modified: Style,
-    /// Style for the selection-size indicator (e.g. ` Sel 42 ch · 3 ln `).
-    pub status_selection: Style,
     /// Style for the `›` separator between segments of the section-path
     /// breadcrumb (`notes.md › Checkpoint 1 › Item 1`).  Dimmed so the
     /// segment names read as the structure and the separators recede.
@@ -791,13 +789,12 @@ impl Theme {
             // chip on its right; the two together frame the rest of the
             // breadcrumb chain.
             status_filename: Style::default().fg(p.text).bg(p.surface).add_modifier(bold),
-            status_info: Style::default().fg(p.primary).bg(p.surface),
+            // Positional reference data (cursor pos, line count, %).
+            // Muted on purpose so the lone primary accent on the bar is
+            // the current-section breadcrumb — the two no longer compete.
+            status_info: Style::default().fg(p.text_muted).bg(p.surface),
             status_modified: Style::default()
                 .fg(p.warning)
-                .bg(p.surface)
-                .add_modifier(bold),
-            status_selection: Style::default()
-                .fg(p.primary)
                 .bg(p.surface)
                 .add_modifier(bold),
             status_breadcrumb_sep: Style::default().fg(p.text_muted).bg(p.surface),
