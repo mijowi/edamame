@@ -261,6 +261,17 @@ pub fn rendered_sub_line_to_offset(
     let is_table = table_edit::is_table_block(block_text);
     let raw_line_idx = if is_table {
         table_raw_line_idx(state, &block, block_text)
+    } else if state.parsed.is_image_block(block.idx) && !state.parsed.is_mermaid_block(block.idx) {
+        // A real `![alt](url)` image reserves many rendered rows for its
+        // single source line, but only the placeholder row carries text.
+        // Mapping a reserved row through `sub_idx` would index a phantom
+        // empty raw line (the block range can absorb a trailing blank) and
+        // poison the inline-map cache for an unrelated buffer line, so pin
+        // every reserved row to raw line 0.  Mermaid blocks are excluded:
+        // their reveal overlay paints the raw source 1:1 onto the reserved
+        // rows, so `sub_idx` IS the correct source line there — and the
+        // mermaid branch below consumes `line_text` derived from it.
+        0
     } else {
         block.sub_idx
     };
