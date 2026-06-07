@@ -1026,7 +1026,7 @@ Tabs, multi-file CLI, and the file picker were originally bundled here but are d
 **Acceptance criteria:** `Ctrl-P` opens a fuzzy-searchable action palette.  Opening the palette with no input shows a curated suggestions list rather than a full action dump.  The markdown cheat sheet is one palette entry away.  The settings overlay edits `config.toml` in place with live feedback.  The keybinds overlay edits `keybindings.toml` with conflict detection.
 
 **Known follow-ups (deferred to their own phases):**
-- `Action::ExportHtml` and `Action::ReloadFromDisk` currently flash an info hint pointing at Phases 16 and 11 respectively.  Wiring them to actual implementations is owned by those phases.
+- `Action::ExportHtml` currently flashes an info hint pointing at Phase 16.  Wiring it to an actual implementation is owned by that phase.  (`Action::ReloadFromDisk` was removed entirely: clean-buffer external changes already enter diff review rather than silently reloading, so a manual "reload from disk" action had no remaining use case.)
 - `Insert Table` will join the suggested list when Phase 15 introduces the action.
 
 **Post-merge hardening:**
@@ -1439,17 +1439,13 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 ## Miscellaneous Issues / Features
 
-Press keys to set chord in keybinding modal instead of typing in e.g. `Ctrl-c`
-
 Add next cell/prev cell to keybindings modal?
 
 Add support for footnotes. Add to Markdown cheat sheet.
 
-Clean up source and tests
+Refactor/clean up source and tests
 
 Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
-
-Refactor tests
 
 edamame in-app about page
 - edamame bean ASCII art
@@ -1461,33 +1457,34 @@ edamame in-app about page
 
 In edit mode, text selection doesn't work correctly in wrapped table cells
 
-Should we add bold+italic actions and hints for selection contextual hint?
-
-Find and replace
+Find/search and replace
 
 Blank last line of a document doesn't seem to behave correctly
-
-A `Remove` event from the file watcher should surface a new warning modal that tells the user the file was deleted and offers to re-save the buffer to disk. Diff mode should not be entered.
 
 Force wrap long lines of code in a table cell so that the table structure is not broken.
 
 Lazy loading for rendering (all modes — Markdown, diff, raw)
 
-Implement dependency update plan
-
-Refactor modal scrolling
-Check if we can/should abstract mouse logic for modals (buttons, scrolling) into a reusable component(s)
-
-Darken edamame bg slightly
-
-Review actions and determine if any new actions should be added to the command palette. 
-
 Finish diff mode plan (editing hunks in diff mode)
 Use Ctrl with diff mode keybinds in order to facilitate editing during review
 
-Remove all 'Phase N' references from code comments. We don't want to have references to temporary working plans in our comments.
+DO THESE BEFORE VIM:
+- Update breadcrumb in preview mode with invisible cursor
 
-Finish
+Panic when selection contains an image
+```
+edamame main  ❯ ./target/debug/edamame docs/test.md
+
+thread 'main' (2602953) panicked at src/document/parsed_doc.rs:489:9:
+assertion `left == right` failed: InlineColMap: raw_line char count mismatch for buffer line 49
+  left: 141
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+Remove `Sel N ch` from status bar when characters are selected. It takes up too much space for the little value provided.
+
+In the status bar, we need to distinguish the current heading section from the right-side info (cursor location, line count, document %). Both are styled with `Palette::primary`. We should either change the color of the right-side info or add a separator.
 
 ---
 
