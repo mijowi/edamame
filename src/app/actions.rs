@@ -40,8 +40,7 @@ use super::App;
 /// sync — an entry left here after a real handler lands will never
 /// fire (the explicit arm wins), but the stale entry is misleading
 /// to future readers of this list.
-pub(super) const NOT_YET_IMPLEMENTED: &[Action] =
-    &[Action::Open, Action::ExportHtml];
+pub(super) const NOT_YET_IMPLEMENTED: &[Action] = &[Action::Open, Action::ExportHtml];
 
 /// Default-deny gate over [`Action`]s in diff mode.  Returns
 /// `Some(action)` when the action is allowed in Review sub-mode (the

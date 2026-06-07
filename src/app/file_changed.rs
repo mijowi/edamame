@@ -605,7 +605,11 @@ mod tests {
 
         app.handle_file_removed(tmp.path().to_path_buf());
 
-        assert_eq!(app.modal_stack.len(), base, "must not stack a duplicate prompt");
+        assert_eq!(
+            app.modal_stack.len(),
+            base,
+            "must not stack a duplicate prompt"
+        );
         assert!(!app.modal_stack.contains::<FileDeletedModal>());
         assert!(app.modal_stack.contains::<FileDeletedSaveAsModal>());
     }
