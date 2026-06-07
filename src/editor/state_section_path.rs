@@ -31,7 +31,35 @@ impl EditorState {
     /// buffer mutations.
     pub fn cursor_section_chain(&self) -> Vec<String> {
         let cursor_line = self.buffer.char_to_line(self.cursor.offset);
+        self.section_chain_for_buffer_line(cursor_line)
+    }
 
+    /// The heading-ancestor chain anchored on the top of the viewport
+    /// rather than the cursor.  Used in Preview mode, where the cursor
+    /// is hidden and doesn't track the scroll position: the top visible
+    /// rendered line is mapped back to a source byte (via the
+    /// `source_map`) and then to a buffer line, so the breadcrumb stays
+    /// in sync with what the user is reading.  A scroll position past the
+    /// last rendered line (which shouldn't normally happen — the viewport
+    /// clamps it) is pinned to the last line so the breadcrumb tracks the
+    /// deepest visible section rather than resetting to the document root.
+    /// Falls back to the first buffer line when there is no source mapping
+    /// at all (e.g. an empty document).
+    pub fn scroll_section_chain(&self) -> Vec<String> {
+        let map = &self.parsed.source_map;
+        let last_line = map.rendered_line_count().saturating_sub(1);
+        let rendered_line = self.scroll.min(last_line);
+        let line = map
+            .original_byte_for_rendered_line(rendered_line)
+            .map(|byte| self.buffer.byte_to_line(byte))
+            .unwrap_or(0);
+        self.section_chain_for_buffer_line(line)
+    }
+
+    /// Shared implementation behind [`cursor_section_chain`] and
+    /// [`scroll_section_chain`]: collect the heading chain enclosing
+    /// `anchor_line` (a buffer line index).
+    fn section_chain_for_buffer_line(&self, anchor_line: usize) -> Vec<String> {
         let mut at_or_before: Vec<(HeadingLevel, String)> = Vec::new();
         for (block_idx, block) in self.parsed.blocks.iter().enumerate() {
             let Block::Heading { level, inlines } = block else {
@@ -41,9 +69,9 @@ impl EditorState {
                 continue;
             };
             let buffer_line = self.buffer.byte_to_line(range.start);
-            if buffer_line > cursor_line {
+            if buffer_line > anchor_line {
                 // Blocks are in document order — every later heading is
-                // past the cursor.
+                // past the anchor line.
                 break;
             }
             at_or_before.push((*level, heading_plain_text(inlines)));
@@ -151,6 +179,27 @@ mod tests {
         assert_eq!(
             st.cursor_section_chain(),
             vec!["Top".to_string(), "Deep".to_string()]
+        );
+    }
+
+    /// In Preview, the breadcrumb follows the scroll position, not the
+    /// (frozen) cursor.  Scrolling the top of the viewport into a deeper
+    /// section updates the chain even though the cursor stays at offset 0.
+    #[test]
+    fn scroll_chain_follows_viewport_top() {
+        let src = "# A\n\n## B\n\nbody\n";
+        // Cursor parked on the top heading line — its chain is just "A".
+        let st = state_from(src, 0);
+        assert_eq!(st.cursor_section_chain(), vec!["A".to_string()]);
+
+        // Scroll so the top visible rendered line is the "body" block.
+        let body_byte = src.find("body").unwrap();
+        let body_line = st.parsed.source_map.rendered_lines_for_byte(body_byte).start;
+        let mut st = st;
+        st.scroll = body_line;
+        assert_eq!(
+            st.scroll_section_chain(),
+            vec!["A".to_string(), "B".to_string()]
         );
     }
 

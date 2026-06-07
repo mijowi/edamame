@@ -412,7 +412,13 @@ impl<'a> StatefulWidget for EditorView<'a> {
         // (Preview's view-state mirror is updated above before render).
         let scroll = self.state.scroll;
 
-        let section_path = self.state.cursor_section_chain();
+        // In Preview the cursor is hidden and frozen, so anchor the
+        // breadcrumb on the top of the viewport (consistent with the
+        // scroll-percent indicator); every other mode follows the cursor.
+        let section_path = match mode {
+            Mode::Preview => self.state.scroll_section_chain(),
+            _ => self.state.cursor_section_chain(),
+        };
         let diff_progress = self
             .state
             .diff

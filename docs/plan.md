@@ -1468,24 +1468,6 @@ Lazy loading for rendering (all modes — Markdown, diff, raw)
 Finish diff mode plan (editing hunks in diff mode)
 Use Ctrl with diff mode keybinds in order to facilitate editing during review
 
-DO THESE BEFORE VIM:
-- Update breadcrumb in preview mode with invisible cursor
-
-Panic when selection contains an image
-```
-edamame main  ❯ ./target/debug/edamame docs/test.md
-
-thread 'main' (2602953) panicked at src/document/parsed_doc.rs:489:9:
-assertion `left == right` failed: InlineColMap: raw_line char count mismatch for buffer line 49
-  left: 141
- right: 0
-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-```
-
-Remove `Sel N ch` from status bar when characters are selected. It takes up too much space for the little value provided.
-
-In the status bar, we need to distinguish the current heading section from the right-side info (cursor location, line count, document %). Both are styled with `Palette::primary`. We should either change the color of the right-side info or add a separator.
-
 ---
 
 ## Edamame Acronyms

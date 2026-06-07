@@ -119,8 +119,6 @@ impl SourceMap {
     }
 
     /// Total number of rendered lines tracked by this map.
-    /// Used by integration tests in `tests/source_map.rs`.
-    #[allow(dead_code)]
     pub fn rendered_line_count(&self) -> usize {
         self.rendered_to_block.len()
     }
