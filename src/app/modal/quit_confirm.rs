@@ -10,16 +10,15 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::Frame;
 
+use super::chrome::ModalChrome;
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
-use crate::ui::{ModalButton, ModalResponse, ModalState, ModalView};
+use crate::ui::{ModalButton, ModalResponse};
 
 pub struct QuitConfirmModal {
     body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
-    state: ModalState,
-    kind: ModalKind,
-    dismissable: bool,
+    chrome: ModalChrome,
 }
 
 impl QuitConfirmModal {
@@ -35,37 +34,15 @@ impl QuitConfirmModal {
         Self {
             body,
             buttons: vec![ModalButton::new("Save"), ModalButton::new("Discard")],
-            state: ModalState::new(),
-            kind: ModalKind::Warning,
-            dismissable: true,
+            chrome: ModalChrome::new(ModalKind::Warning, true),
         }
     }
-}
 
-impl Modal for QuitConfirmModal {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
-        let view = ModalView::new(
-            "Unsaved changes",
-            &self.body,
-            &self.buttons,
-            ctx.theme,
-            self.kind,
-            self.dismissable,
-        );
-        frame.render_stateful_widget(view, area, &mut self.state);
-    }
-
-    fn handle_key(
-        &mut self,
-        key: KeyEvent,
-        _app: &mut App,
-        _doc_height: usize,
-        _doc_width: usize,
-    ) -> ModalOutcome {
-        match self
-            .state
-            .handle_key(&key, self.buttons.len(), self.dismissable)
-        {
+    /// Map a resolved response to an outcome.  Shared by the key and
+    /// click paths so a mouse click on a button behaves exactly like
+    /// pressing it.
+    fn resolve(&mut self, response: ModalResponse) -> ModalOutcome {
+        match response {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled => ModalOutcome::Close,
             ModalResponse::ButtonPressed(0) => {
@@ -80,21 +57,46 @@ impl Modal for QuitConfirmModal {
             ModalResponse::ButtonPressed(_) => ModalOutcome::Close,
         }
     }
+}
+
+impl Modal for QuitConfirmModal {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
+        self.chrome.render(
+            frame,
+            area,
+            ctx,
+            "Unsaved changes",
+            &self.body,
+            &self.buttons,
+        );
+    }
+
+    fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        _app: &mut App,
+        _doc_height: usize,
+        _doc_width: usize,
+    ) -> ModalOutcome {
+        let response = self.chrome.on_key(&key, self.buttons.len());
+        self.resolve(response)
+    }
 
     fn handle_wheel(&mut self, delta: i32) {
-        self.state.scroll_by(delta);
+        self.chrome.on_wheel(delta);
     }
 
     fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
-        super::types::close_if_esc_clicked(self.state.esc_button_rect, col, row)
+        let response = self.chrome.on_click(col, row);
+        self.resolve(response)
     }
 
     fn kind(&self) -> ModalKind {
-        self.kind
+        self.chrome.kind()
     }
 
     fn dismissable(&self) -> bool {
-        self.dismissable
+        self.chrome.dismissable()
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -171,7 +173,7 @@ mod tests {
             .modal_stack
             .top_mut()
             .and_then(|m| m.as_any().downcast_ref::<QuitConfirmModal>())
-            .and_then(|m| m.state.esc_button_rect)
+            .and_then(|m| m.chrome.state.esc_button_rect)
             .expect("esc rect populated after render");
 
         // Click outside the rect first — modal stays open.
@@ -194,5 +196,51 @@ mod tests {
         app.dispatch_modal_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 40, 80);
         assert!(!app.modal_stack.contains::<QuitConfirmModal>());
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn click_on_discard_button_quits() {
+        // Fix A end-to-end: a left-click on the rendered `[ Discard ]`
+        // footer button drives the same Discard outcome as Tab+Enter,
+        // through the real pop-dispatch-push click router.  Before the
+        // shared chrome hit-tested footer buttons, this click was a
+        // no-op.
+        use crate::app::modal::types::ModalRenderCtx;
+        use crate::config::{Config, Theme};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = make_app();
+        app.editor.dirty = true;
+        app.open_quit_confirm();
+
+        let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
+        let config = Config::default();
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                let ctx = ModalRenderCtx {
+                    theme,
+                    config: &config,
+                    cursor_visible: false,
+                };
+                let area = frame.area();
+                if let Some(top) = app.modal_stack.top_mut() {
+                    top.render(frame, area, &ctx);
+                }
+            })
+            .unwrap();
+
+        // Button index 1 is [ Discard ]; click its centre.
+        let rect = app
+            .modal_stack
+            .top_mut()
+            .and_then(|m| m.as_any().downcast_ref::<QuitConfirmModal>())
+            .map(|m| m.chrome.state.button_rects[1])
+            .expect("button rects populated after render");
+        app.dispatch_modal_click(rect.x + rect.width / 2, rect.y);
+
+        assert!(!app.modal_stack.contains::<QuitConfirmModal>());
+        assert!(app.should_quit, "clicking Discard must quit");
     }
 }

@@ -14,18 +14,17 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::Frame;
 
+use super::chrome::ModalChrome;
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
 use crate::terminal::Capabilities;
-use crate::ui::{build_cap_lines, CapSummary, ModalButton, ModalResponse, ModalState, ModalView};
+use crate::ui::{build_cap_lines, CapSummary, ModalButton, ModalResponse};
 
 pub struct TerminalCapabilitiesModal {
     summary: CapSummary,
     fingerprint: String,
     buttons: Vec<ModalButton>,
-    state: ModalState,
-    kind: ModalKind,
-    dismissable: bool,
+    chrome: ModalChrome,
 }
 
 impl TerminalCapabilitiesModal {
@@ -41,9 +40,7 @@ impl TerminalCapabilitiesModal {
             summary: CapSummary::from_caps(caps),
             fingerprint,
             buttons: vec![],
-            state: ModalState::new(),
-            kind: ModalKind::Normal,
-            dismissable: true,
+            chrome: ModalChrome::new(ModalKind::Normal, true),
         })
     }
 
@@ -55,6 +52,16 @@ impl TerminalCapabilitiesModal {
                 app.save_config_with_flash("failed to persist terminal capabilities notice");
             }
         }))
+    }
+
+    /// Map a resolved response to an outcome.  Shared by the key and
+    /// click paths: both Esc/esc-click and any button dismiss the
+    /// notice and record this terminal's fingerprint as seen.
+    fn resolve(&self, response: ModalResponse) -> ModalOutcome {
+        match response {
+            ModalResponse::Continue => ModalOutcome::Continue,
+            ModalResponse::Cancelled | ModalResponse::ButtonPressed(_) => self.record_outcome(),
+        }
     }
 }
 
@@ -75,15 +82,14 @@ impl Modal for TerminalCapabilitiesModal {
                 "Items marked ✗ will be disabled or degraded automatically.",
             ));
         }
-        let view = ModalView::new(
+        self.chrome.render(
+            frame,
+            area,
+            ctx,
             "Terminal capabilities",
             &body,
             &self.buttons,
-            ctx.theme,
-            self.kind,
-            self.dismissable,
         );
-        frame.render_stateful_widget(view, area, &mut self.state);
     }
 
     fn handle_key(
@@ -93,33 +99,25 @@ impl Modal for TerminalCapabilitiesModal {
         _doc_height: usize,
         _doc_width: usize,
     ) -> ModalOutcome {
-        match self
-            .state
-            .handle_key(&key, self.buttons.len(), self.dismissable)
-        {
-            ModalResponse::Continue => ModalOutcome::Continue,
-            ModalResponse::Cancelled | ModalResponse::ButtonPressed(_) => self.record_outcome(),
-        }
+        let response = self.chrome.on_key(&key, self.buttons.len());
+        self.resolve(response)
     }
 
     fn handle_wheel(&mut self, delta: i32) {
-        self.state.scroll_by(delta);
+        self.chrome.on_wheel(delta);
     }
 
     fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
-        if super::types::esc_rect_hit(self.state.esc_button_rect, col, row) {
-            self.record_outcome()
-        } else {
-            ModalOutcome::Continue
-        }
+        let response = self.chrome.on_click(col, row);
+        self.resolve(response)
     }
 
     fn kind(&self) -> ModalKind {
-        self.kind
+        self.chrome.kind()
     }
 
     fn dismissable(&self) -> bool {
-        self.dismissable
+        self.chrome.dismissable()
     }
 
     fn as_any(&self) -> &dyn Any {

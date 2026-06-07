@@ -10,30 +10,41 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::Frame;
 
+use super::chrome::ModalChrome;
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
-use crate::ui::{ModalButton, ModalResponse, ModalState, ModalView};
+use crate::ui::{ModalButton, ModalResponse};
 
 pub struct DiffResolveConfirmModal {
-    state: ModalState,
+    chrome: ModalChrome,
     buttons: Vec<ModalButton>,
     summary: String,
-    kind: ModalKind,
-    dismissable: bool,
 }
 
 impl DiffResolveConfirmModal {
     pub fn new(accepted: usize, rejected: usize) -> Self {
         let summary = format!("{accepted} accepted, {rejected} rejected");
         Self {
-            state: ModalState::new(),
+            chrome: ModalChrome::new(ModalKind::Normal, true),
             buttons: vec![
                 ModalButton::new("Apply"),
                 ModalButton::new("Keep reviewing"),
             ],
             summary,
-            kind: ModalKind::Normal,
-            dismissable: true,
+        }
+    }
+
+    /// Map a resolved response to an outcome.  Shared by the key and
+    /// click paths so a mouse click on a button behaves exactly like
+    /// pressing it.
+    fn resolve(&self, response: ModalResponse) -> ModalOutcome {
+        match response {
+            ModalResponse::Continue => ModalOutcome::Continue,
+            ModalResponse::Cancelled => ModalOutcome::Close,
+            ModalResponse::ButtonPressed(0) => {
+                ModalOutcome::CloseAnd(Box::new(|app| app.apply_diff_resolution()))
+            }
+            ModalResponse::ButtonPressed(_) => ModalOutcome::Close,
         }
     }
 }
@@ -47,15 +58,14 @@ impl Modal for DiffResolveConfirmModal {
             Line::raw(""),
             Line::raw("Apply the merged result to your buffer?"),
         ];
-        let view = ModalView::new(
+        self.chrome.render(
+            frame,
+            area,
+            ctx,
             "Apply merged result?",
             &body,
             &self.buttons,
-            ctx.theme,
-            self.kind,
-            self.dismissable,
         );
-        frame.render_stateful_widget(view, area, &mut self.state);
     }
 
     fn handle_key(
@@ -65,33 +75,25 @@ impl Modal for DiffResolveConfirmModal {
         _doc_height: usize,
         _doc_width: usize,
     ) -> ModalOutcome {
-        match self
-            .state
-            .handle_key(&key, self.buttons.len(), self.dismissable)
-        {
-            ModalResponse::Continue => ModalOutcome::Continue,
-            ModalResponse::Cancelled => ModalOutcome::Close,
-            ModalResponse::ButtonPressed(0) => {
-                ModalOutcome::CloseAnd(Box::new(|app| app.apply_diff_resolution()))
-            }
-            ModalResponse::ButtonPressed(_) => ModalOutcome::Close,
-        }
+        let response = self.chrome.on_key(&key, self.buttons.len());
+        self.resolve(response)
     }
 
     fn handle_wheel(&mut self, delta: i32) {
-        self.state.scroll_by(delta);
+        self.chrome.on_wheel(delta);
     }
 
     fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
-        super::types::close_if_esc_clicked(self.state.esc_button_rect, col, row)
+        let response = self.chrome.on_click(col, row);
+        self.resolve(response)
     }
 
     fn kind(&self) -> ModalKind {
-        self.kind
+        self.chrome.kind()
     }
 
     fn dismissable(&self) -> bool {
-        self.dismissable
+        self.chrome.dismissable()
     }
 
     fn as_any(&self) -> &dyn Any {

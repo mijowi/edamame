@@ -16,10 +16,11 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::Frame;
 
+use super::chrome::ModalChrome;
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
 use crate::diff::Decision;
-use crate::ui::{ModalButton, ModalResponse, ModalState, ModalView};
+use crate::ui::{ModalButton, ModalResponse};
 
 /// `[Yes, No]` — `Yes` is default-focused so the common case (the user
 /// meant to bulk-decide) is a single confirming Enter, while `Esc` /
@@ -27,14 +28,12 @@ use crate::ui::{ModalButton, ModalResponse, ModalState, ModalView};
 const YES_IDX: usize = 0;
 
 pub struct DiffBulkConfirmModal {
-    state: ModalState,
+    chrome: ModalChrome,
     buttons: Vec<ModalButton>,
     /// The decision to apply to every hunk on confirmation.
     decision: Decision,
     title: String,
     body_line: String,
-    kind: ModalKind,
-    dismissable: bool,
 }
 
 impl DiffBulkConfirmModal {
@@ -57,43 +56,20 @@ impl DiffBulkConfirmModal {
             ),
         };
         Self {
-            state: ModalState::new(),
+            chrome: ModalChrome::new(ModalKind::Warning, true),
             buttons: vec![ModalButton::new("Yes"), ModalButton::new("No")],
             decision,
             title,
             body_line,
-            kind: ModalKind::Warning,
-            dismissable: true,
         }
     }
-}
 
-impl Modal for DiffBulkConfirmModal {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
-        let body = vec![Line::raw(self.body_line.clone())];
-        let view = ModalView::new(
-            &self.title,
-            &body,
-            &self.buttons,
-            ctx.theme,
-            self.kind,
-            self.dismissable,
-        );
-        frame.render_stateful_widget(view, area, &mut self.state);
-    }
-
-    fn handle_key(
-        &mut self,
-        key: KeyEvent,
-        _app: &mut App,
-        _doc_height: usize,
-        _doc_width: usize,
-    ) -> ModalOutcome {
+    /// Map a resolved response to an outcome.  Shared by the key and
+    /// click paths so a mouse click on a button behaves exactly like
+    /// pressing it.
+    fn resolve(&self, response: ModalResponse) -> ModalOutcome {
         let decision = self.decision;
-        match self
-            .state
-            .handle_key(&key, self.buttons.len(), self.dismissable)
-        {
+        match response {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled => ModalOutcome::Close,
             ModalResponse::ButtonPressed(YES_IDX) => {
@@ -103,21 +79,41 @@ impl Modal for DiffBulkConfirmModal {
             ModalResponse::ButtonPressed(_) => ModalOutcome::Close,
         }
     }
+}
+
+impl Modal for DiffBulkConfirmModal {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
+        let body = vec![Line::raw(self.body_line.clone())];
+        self.chrome
+            .render(frame, area, ctx, &self.title, &body, &self.buttons);
+    }
+
+    fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        _app: &mut App,
+        _doc_height: usize,
+        _doc_width: usize,
+    ) -> ModalOutcome {
+        let response = self.chrome.on_key(&key, self.buttons.len());
+        self.resolve(response)
+    }
 
     fn handle_wheel(&mut self, delta: i32) {
-        self.state.scroll_by(delta);
+        self.chrome.on_wheel(delta);
     }
 
     fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
-        super::types::close_if_esc_clicked(self.state.esc_button_rect, col, row)
+        let response = self.chrome.on_click(col, row);
+        self.resolve(response)
     }
 
     fn kind(&self) -> ModalKind {
-        self.kind
+        self.chrome.kind()
     }
 
     fn dismissable(&self) -> bool {
-        self.dismissable
+        self.chrome.dismissable()
     }
 
     fn as_any(&self) -> &dyn Any {

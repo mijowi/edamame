@@ -22,18 +22,17 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::Frame;
 
+use super::chrome::ModalChrome;
 use super::dirty_conflict_discard_confirm::DirtyConflictDiscardConfirmModal;
 use super::dirty_conflict_save_copy::DirtyConflictSaveCopyModal;
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
-use crate::ui::{ModalButton, ModalResponse, ModalState, ModalView};
+use crate::ui::{ModalButton, ModalResponse};
 
 pub struct DirtyConflictModal {
     body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
-    state: ModalState,
-    kind: ModalKind,
-    dismissable: bool,
+    chrome: ModalChrome,
     /// On-disk contents already read by the watcher worker.  Held
     /// here so the button callbacks can reload without re-reading
     /// (and racing the next watcher event).  `pub(crate)` so the
@@ -59,9 +58,7 @@ impl DirtyConflictModal {
                 ModalButton::new("Discard & reload"),
                 ModalButton::new("Keep buffer"),
             ],
-            state: ModalState::new(),
-            kind: ModalKind::Warning,
-            dismissable: false,
+            chrome: ModalChrome::new(ModalKind::Warning, false),
             on_disk_contents,
         }
     }
@@ -108,30 +105,12 @@ pub(crate) fn local_copy_path(original: Option<&Path>) -> String {
     absolute.display().to_string()
 }
 
-impl Modal for DirtyConflictModal {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
-        let view = ModalView::new(
-            "File changed on disk",
-            &self.body,
-            &self.buttons,
-            ctx.theme,
-            self.kind,
-            self.dismissable,
-        );
-        frame.render_stateful_widget(view, area, &mut self.state);
-    }
-
-    fn handle_key(
-        &mut self,
-        key: KeyEvent,
-        _app: &mut App,
-        _doc_height: usize,
-        _doc_width: usize,
-    ) -> ModalOutcome {
-        match self
-            .state
-            .handle_key(&key, self.buttons.len(), self.dismissable)
-        {
+impl DirtyConflictModal {
+    /// Map a resolved response to an outcome.  Shared by the key and
+    /// click paths so a mouse click on a button behaves exactly like
+    /// pressing it.
+    fn resolve(&mut self, response: ModalResponse) -> ModalOutcome {
+        match response {
             ModalResponse::Continue => ModalOutcome::Continue,
             // The modal is non-dismissable (no `Cancelled` path
             // reaches here), but handle it defensively as a no-op
@@ -177,21 +156,46 @@ impl Modal for DirtyConflictModal {
             ModalResponse::ButtonPressed(_) => ModalOutcome::Close,
         }
     }
+}
+
+impl Modal for DirtyConflictModal {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
+        self.chrome.render(
+            frame,
+            area,
+            ctx,
+            "File changed on disk",
+            &self.body,
+            &self.buttons,
+        );
+    }
+
+    fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        _app: &mut App,
+        _doc_height: usize,
+        _doc_width: usize,
+    ) -> ModalOutcome {
+        let response = self.chrome.on_key(&key, self.buttons.len());
+        self.resolve(response)
+    }
 
     fn handle_wheel(&mut self, delta: i32) {
-        self.state.scroll_by(delta);
+        self.chrome.on_wheel(delta);
     }
 
     fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
-        super::types::close_if_esc_clicked(self.state.esc_button_rect, col, row)
+        let response = self.chrome.on_click(col, row);
+        self.resolve(response)
     }
 
     fn kind(&self) -> ModalKind {
-        self.kind
+        self.chrome.kind()
     }
 
     fn dismissable(&self) -> bool {
-        self.dismissable
+        self.chrome.dismissable()
     }
 
     fn as_any(&self) -> &dyn Any {
