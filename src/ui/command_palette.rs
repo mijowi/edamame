@@ -431,6 +431,8 @@ fn section_of(action: &Action) -> &'static str {
         | Action::Cut
         | Action::Paste
         | Action::SelectAll
+        | Action::BoldSelection
+        | Action::ItalicizeSelection
         | Action::ToggleCheckbox
         | Action::InsertTable => "Edit",
         Action::ExitToPreview

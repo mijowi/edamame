@@ -45,6 +45,13 @@ pub enum Action {
     Cut,
     Copy,
     Paste,
+    // ── Formatting ─────────────────────────────────────────────────
+    /// Wrap the selection in `**…**` (or unwrap it if it is exactly
+    /// bold already).  No-op without a non-empty, single-line selection.
+    BoldSelection,
+    /// Wrap the selection in `*…*` (or unwrap it if it is exactly italic
+    /// already).  No-op without a non-empty, single-line selection.
+    ItalicizeSelection,
     // ── Selection ──────────────────────────────────────────────────
     SelectLeft,
     SelectRight,
@@ -258,6 +265,7 @@ action_variants! {
     InsertTab, Newline,
     DeleteCharBack, DeleteCharForward, DeleteWordBack, DeleteWordForward, DeleteLine,
     Cut, Copy, Paste,
+    BoldSelection, ItalicizeSelection,
     SelectLeft, SelectRight, SelectUp, SelectDown, SelectAll,
     Undo, Redo,
     Save, SaveCopy, Open,
@@ -734,6 +742,15 @@ impl KeyMap {
         bind!("ctrl+c", Action::Copy);
         bind!("ctrl+x", Action::Cut);
         bind!("ctrl+v", Action::Paste);
+
+        // Formatting — wrap the selection in bold / italic markers.
+        // NOTE: Ctrl-i is historically identical to Tab and Ctrl-b to
+        // ASCII 0x02; both are only delivered as distinct chords when the
+        // kitty keyboard protocol is active (edamame requests it in
+        // `terminal::setup`).  On terminals without it, Ctrl-i inserts a
+        // Tab and Ctrl-b no-ops — the command palette is the fallback.
+        bind!("ctrl+b", Action::BoldSelection);
+        bind!("ctrl+i", Action::ItalicizeSelection);
 
         // File operations
         bind!("ctrl+s", Action::Save);
