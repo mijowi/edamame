@@ -411,7 +411,6 @@ impl<'a> StatefulWidget for EditorView<'a> {
         // The canonical scroll is `EditorState::scroll` for every mode
         // (Preview's view-state mirror is updated above before render).
         let scroll = self.state.scroll;
-        let selection_size = self.state.selection_size();
 
         let section_path = self.state.cursor_section_chain();
         let diff_progress = self
@@ -428,7 +427,6 @@ impl<'a> StatefulWidget for EditorView<'a> {
                 scroll,
                 cursor_line: Some(cursor_line + 1), // 1-indexed display
                 cursor_col: Some(cursor_col + 1),
-                selection_size,
                 section_path,
                 diff_progress,
             },

@@ -131,7 +131,6 @@ pub struct ThemeFile {
     pub status_filename: StyleSpec,
     pub status_info: StyleSpec,
     pub status_modified: StyleSpec,
-    pub status_selection: StyleSpec,
     pub status_breadcrumb_sep: StyleSpec,
     pub status_breadcrumb_ancestor: StyleSpec,
     pub status_breadcrumb_current: StyleSpec,
@@ -223,7 +222,7 @@ macro_rules! style_fields {
             table_handle, table_handle_delete,
             status_bar,
             status_mode_preview, status_mode_rendered, status_mode_raw,
-            status_filename, status_info, status_modified, status_selection,
+            status_filename, status_info, status_modified,
             status_breadcrumb_sep, status_breadcrumb_ancestor, status_breadcrumb_current,
             hint_bar, hint_chord, hint_label,
             transient_info, transient_success, transient_warning, transient_error,
@@ -370,7 +369,6 @@ mod tests {
         check!(status_filename);
         check!(status_info);
         check!(status_modified);
-        check!(status_selection);
         check!(status_breadcrumb_sep);
         check!(status_breadcrumb_ancestor);
         check!(status_breadcrumb_current);
@@ -630,7 +628,6 @@ bold = true
         check!(status_filename);
         check!(status_info);
         check!(status_modified);
-        check!(status_selection);
         check!(status_breadcrumb_sep);
         check!(status_breadcrumb_ancestor);
         check!(status_breadcrumb_current);

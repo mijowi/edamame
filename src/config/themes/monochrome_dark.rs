@@ -98,7 +98,6 @@ pub fn theme() -> Theme {
         status_filename: Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
         status_info: Style::default().add_modifier(Modifier::REVERSED),
         status_modified: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
-        status_selection: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
         status_breadcrumb_sep: Style::default().add_modifier(Modifier::REVERSED | Modifier::DIM),
         status_breadcrumb_ancestor: Style::default()
             .add_modifier(Modifier::REVERSED | Modifier::DIM),
