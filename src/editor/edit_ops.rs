@@ -1,5 +1,5 @@
 use crate::config::Action;
-use crate::document::{next_grapheme_offset, prev_grapheme_offset, EditDelta, Selection};
+use crate::document::{next_grapheme_offset, prev_grapheme_offset, Buffer, EditDelta, Selection};
 use crate::editor::list_edit::{self, ListInfo};
 use crate::editor::table_edit;
 use crate::editor::table_edit_ops::{
@@ -599,6 +599,10 @@ pub fn apply(
             }
         }
 
+        // ── Formatting ────────────────────────────────────────────
+        Action::BoldSelection => toggle_wrap(state, "**"),
+        Action::ItalicizeSelection => toggle_wrap(state, "*"),
+
         // ── File operations ───────────────────────────────────────
         // `Action::Save` is intercepted by `App::handle_app_action`
         // before this dispatch is reached — see `App::save_buffer`
@@ -950,6 +954,117 @@ fn delete_selection_text(state: &mut EditorState, sel: &Selection) {
             inserted: String::new(),
         });
     }
+}
+
+/// Wrap the active selection in `marker` (`**` for bold, `*` for italic),
+/// or unwrap it when the selection is already exactly that emphasis.
+/// Re-selects the inner text afterward so wraps can be chained (e.g. bold
+/// then italic).  No-op without a non-empty selection — which is the case
+/// in Preview mode, where the live selection is `None`.
+///
+/// Three unwrap/wrap shapes are recognized:
+/// * inner markers included — `**x**` selected → `x`;
+/// * markers just outside the selection — `x` selected within `**x**` → `x`;
+/// * otherwise plain wrap — `x` → `**x**`.
+///
+/// Selections that span a block boundary (contain a newline) are refused:
+/// CommonMark emphasis can't cross a blank line, so wrapping them would
+/// only emit literal asterisks.  Selections that *contain* other inline
+/// formatting are wrapped verbatim — handling those correctly needs an
+/// AST-aware transform, which is out of scope for this convenience action.
+fn toggle_wrap(state: &mut EditorState, marker: &str) {
+    let Some(sel) = state.selection else {
+        return;
+    };
+    let (start, end) = sel.range();
+    let end = end.min(state.buffer.len_chars());
+    if start >= end {
+        return;
+    }
+    let text = state.buffer.slice_to_string(start, end);
+    if text.contains('\n') {
+        return;
+    }
+
+    // Markers are ASCII, so byte length == char count — the same value is
+    // valid for both rope-char offsets and `&str` byte slicing.
+    let mlen = marker.len();
+
+    let (remove_start, removed, inserted, inner_start, inner_len) =
+        if is_marker_wrapped(&text, marker) {
+            // Selection includes the markers: `**x**` → `x`.
+            let inner = text[mlen..text.len() - mlen].to_string();
+            let n = inner.chars().count();
+            (start, text, inner, start, n)
+        } else if outside_wrapped(&state.buffer, start, end, marker) {
+            // Markers sit just outside the selection: `x` within `**x**` → `x`.
+            let removed = state.buffer.slice_to_string(start - mlen, end + mlen);
+            let n = text.chars().count();
+            (start - mlen, removed, text, start - mlen, n)
+        } else {
+            // Plain wrap: `x` → `**x**`.
+            let n = text.chars().count();
+            let inserted = format!("{marker}{text}{marker}");
+            (start, text, inserted, start + mlen, n)
+        };
+
+    state.apply_delta(EditDelta {
+        offset: remove_start,
+        removed,
+        inserted,
+    });
+
+    let inner_end = inner_start + inner_len;
+    state.selection = Some(Selection {
+        anchor: inner_start,
+        active: inner_end,
+    });
+    state.cursor.offset = inner_end;
+}
+
+/// True when `text` is *exactly* `marker…marker` with no further `marker`
+/// in between.  For italic (`*`) the bold case (`**…**`) is rejected so
+/// toggling italic over bold text wraps it rather than stripping one of the
+/// two bold markers.  The interior-marker check keeps a selection that
+/// merely *starts and ends* with emphasis — e.g. `**a** and **b**` — from
+/// being mis-unwrapped into malformed markdown; it falls through to a
+/// verbatim wrap instead.
+fn is_marker_wrapped(text: &str, marker: &str) -> bool {
+    let mlen = marker.len();
+    if text.len() < 2 * mlen || !text.starts_with(marker) || !text.ends_with(marker) {
+        return false;
+    }
+    if marker == "*" && (text.starts_with("**") || text.ends_with("**")) {
+        return false;
+    }
+    // Reject interior markers — `**x**` unwraps, but `**a** and **b**` must not.
+    !text[mlen..text.len() - mlen].contains(marker)
+}
+
+/// True when the buffer has `marker` immediately outside `[start, end)` on
+/// both sides — i.e. the selection's inner text is already wrapped.  For
+/// italic (`*`) the bold case (`**…**`) is rejected, mirroring
+/// [`is_marker_wrapped`].
+fn outside_wrapped(buf: &Buffer, start: usize, end: usize, marker: &str) -> bool {
+    let mlen = marker.len();
+    if start < mlen || end + mlen > buf.len_chars() {
+        return false;
+    }
+    if buf.slice_to_string(start - mlen, start) != marker
+        || buf.slice_to_string(end, end + mlen) != marker
+    {
+        return false;
+    }
+    if marker == "*" {
+        // A `*` immediately beyond the candidate marker means the real
+        // markers are `**` (bold), not `*` (italic).
+        let bold_before = start >= 2 && buf.slice_to_string(start - 2, start - 1) == "*";
+        let bold_after = end + 2 <= buf.len_chars() && buf.slice_to_string(end + 1, end + 2) == "*";
+        if bold_before || bold_after {
+            return false;
+        }
+    }
+    true
 }
 
 /// Write `text` to the OS clipboard (best-effort via arboard AND OSC 52)

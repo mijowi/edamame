@@ -28,6 +28,17 @@
 # Undo                   = "ctrl+z"
 # Redo                   = "ctrl+y"
 
+# ── Formatting ────────────────────────────────────────────────────────────────
+# Wrap the selected text in bold / italic markers (toggles back off if the
+# selection is already exactly bold / italic).
+#
+# Heads-up: Ctrl-i shares an encoding with Tab, and Ctrl-b with ASCII 0x02, on
+# terminals that lack the kitty keyboard protocol — there Ctrl-i inserts a Tab
+# and Ctrl-b does nothing. Rebind to e.g. "ctrl+shift+b" / "ctrl+shift+i" if
+# yours is affected, or run the actions from the command palette (Ctrl-P).
+# BoldSelection          = "ctrl+b"
+# ItalicizeSelection     = "ctrl+i"
+
 # ── View ──────────────────────────────────────────────────────────────────────
 # ToggleRawMode          = "ctrl+`"
 

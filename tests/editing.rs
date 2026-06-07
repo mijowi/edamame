@@ -1108,3 +1108,118 @@ fn move_right_in_raw_mode_steps_over_grapheme() {
     apply(&mut st, Action::MoveRight);
     assert_eq!(st.cursor.offset, 8); // landed past the whole grapheme
 }
+
+// ── Bold / italic formatting ──────────────────────────────────────────────────
+
+fn select(st: &mut EditorState, anchor: usize, active: usize) {
+    use edamame::document::Selection;
+    st.selection = Some(Selection { anchor, active });
+    st.cursor.offset = active;
+}
+
+#[test]
+fn bold_wraps_selection_and_reselects_inner() {
+    let mut st = state("hello world");
+    st.mode = Mode::Rendered;
+    select(&mut st, 6, 11); // "world"
+    apply(&mut st, Action::BoldSelection);
+    assert_eq!(st.contents(), "hello **world**");
+    // Inner text stays selected (now shifted past the opening markers) so a
+    // follow-up format can be chained.
+    let sel = st.selection.expect("selection retained");
+    assert_eq!(sel.range(), (8, 13));
+    assert_eq!(sel.selected_text(&st.buffer), "world");
+}
+
+#[test]
+fn italic_wraps_selection() {
+    let mut st = state("hello world");
+    st.mode = Mode::Rendered;
+    select(&mut st, 6, 11);
+    apply(&mut st, Action::ItalicizeSelection);
+    assert_eq!(st.contents(), "hello *world*");
+}
+
+#[test]
+fn bold_then_italic_chains() {
+    let mut st = state("hello world");
+    st.mode = Mode::Rendered;
+    select(&mut st, 6, 11);
+    apply(&mut st, Action::BoldSelection);
+    apply(&mut st, Action::ItalicizeSelection);
+    assert_eq!(st.contents(), "hello ***world***");
+}
+
+#[test]
+fn bold_toggles_off_when_selection_includes_markers() {
+    let mut st = state("hello **world**");
+    st.mode = Mode::Rendered;
+    select(&mut st, 6, 15); // "**world**"
+    apply(&mut st, Action::BoldSelection);
+    assert_eq!(st.contents(), "hello world");
+    assert_eq!(st.selection.unwrap().range(), (6, 11));
+}
+
+#[test]
+fn bold_strips_markers_just_outside_selection() {
+    let mut st = state("hello **world**");
+    st.mode = Mode::Rendered;
+    select(&mut st, 8, 13); // inner "world" only
+    apply(&mut st, Action::BoldSelection);
+    assert_eq!(st.contents(), "hello world");
+    assert_eq!(st.selection.unwrap().range(), (6, 11));
+}
+
+#[test]
+fn italic_over_bold_wraps_rather_than_strips() {
+    // Italic must not mistake bold's `**` markers for its own `*` and strip
+    // one layer — it wraps, producing bold+italic.
+    let mut st = state("**bar**");
+    st.mode = Mode::Rendered;
+    select(&mut st, 2, 5); // inner "bar"
+    apply(&mut st, Action::ItalicizeSelection);
+    assert_eq!(st.contents(), "***bar***");
+}
+
+#[test]
+fn bold_without_selection_is_noop() {
+    let mut st = state("hello");
+    st.mode = Mode::Rendered;
+    apply(&mut st, Action::BoldSelection);
+    assert_eq!(st.contents(), "hello");
+}
+
+#[test]
+fn bold_refuses_multiline_selection() {
+    // Emphasis can't span a block boundary; a multi-line selection is left
+    // untouched rather than producing literal asterisks.
+    let mut st = state("foo\nbar");
+    st.mode = Mode::Rendered;
+    select(&mut st, 0, 7);
+    apply(&mut st, Action::BoldSelection);
+    assert_eq!(st.contents(), "foo\nbar");
+}
+
+#[test]
+fn bold_with_interior_markers_wraps_not_unwraps() {
+    // A selection that merely starts and ends with `**` but has more emphasis
+    // inside must not be mis-unwrapped (which would strip only the outer pair
+    // and emit malformed markdown). It is wrapped verbatim instead.
+    let mut st = state("**a** and **b**");
+    st.mode = Mode::Rendered;
+    select(&mut st, 0, 15);
+    apply(&mut st, Action::BoldSelection);
+    assert_eq!(st.contents(), "****a** and **b****");
+}
+
+#[test]
+fn bold_wraps_mixed_selection_verbatim() {
+    // A selection that already contains inline formatting is wrapped as-is —
+    // AST-aware merging is intentionally out of scope for this convenience
+    // action.
+    let mut st = state("foo **x** baz");
+    st.mode = Mode::Rendered;
+    select(&mut st, 0, 13);
+    apply(&mut st, Action::BoldSelection);
+    assert_eq!(st.contents(), "**foo **x** baz**");
+}

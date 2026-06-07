@@ -26,6 +26,8 @@ pub(super) const CATEGORIES: &[(&str, &[(Action, &str)])] = &[
             (Action::Copy, "Copy"),
             (Action::Cut, "Cut"),
             (Action::Paste, "Paste"),
+            (Action::BoldSelection, "Bold selection"),
+            (Action::ItalicizeSelection, "Italicize selection"),
             (Action::Undo, "Undo"),
             (Action::Redo, "Redo"),
             (Action::Quit, "Quit"),

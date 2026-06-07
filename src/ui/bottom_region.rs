@@ -116,6 +116,12 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
                     // how the table-context row replaces the row
                     // wholesale rather than prepending to it.
                     (Action::Paste, "Paste"),
+                    // Bold / italic wrap the selection; they only make
+                    // sense with one active, so they ride this row
+                    // rather than the baseline.  Dropped automatically
+                    // if the user has unbound them.
+                    (Action::BoldSelection, "Bold"),
+                    (Action::ItalicizeSelection, "Italic"),
                 ],
             ),
         },
@@ -646,6 +652,11 @@ mod tests {
             !labels.contains(&"Copy"),
             "Copy must stay hidden without an active selection"
         );
+        // Bold / Italic are selection-gated too.
+        assert!(
+            !labels.contains(&"Bold") && !labels.contains(&"Italic"),
+            "Bold/Italic must stay hidden without an active selection"
+        );
         // Plain paragraph has no link, so "Open link" must not appear.
         assert!(
             !labels.contains(&"Open link"),
@@ -775,8 +786,8 @@ mod tests {
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(
             labels,
-            vec!["Cut", "Copy", "Paste"],
-            "active selection must replace the baseline row with Cut/Copy/Paste only"
+            vec!["Cut", "Copy", "Paste", "Bold", "Italic"],
+            "active selection must replace the baseline row with the selection chords only"
         );
     }
 
@@ -795,7 +806,7 @@ mod tests {
                 .iter()
                 .map(|c| c.label.clone())
                 .collect::<Vec<_>>(),
-            vec!["Cut", "Copy", "Paste"]
+            vec!["Cut", "Copy", "Paste", "Bold", "Italic"]
         );
         // Clearing the selection must drop the row back to the
         // baseline edit-mode chords with Menu leading.

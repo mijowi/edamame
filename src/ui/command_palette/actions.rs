@@ -35,6 +35,9 @@ pub(super) const ALL_ACTIONS: &[Action] = &[
     Action::Copy,
     Action::Cut,
     Action::Paste,
+    // Formatting.
+    Action::BoldSelection,
+    Action::ItalicizeSelection,
     // Selection / mode.
     Action::SelectAll,
     Action::ExitToPreview,
@@ -84,6 +87,8 @@ pub(super) fn label_for(action: &Action) -> Option<&'static str> {
         Action::Copy => "Copy",
         Action::Cut => "Cut",
         Action::Paste => "Paste",
+        Action::BoldSelection => "Bold selection",
+        Action::ItalicizeSelection => "Italicize selection",
         Action::SelectAll => "Select all",
         Action::ExitToPreview => "Exit to preview",
         Action::ToggleRawMode => "Toggle raw mode",
