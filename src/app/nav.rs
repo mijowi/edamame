@@ -1,5 +1,4 @@
-//! Link-following and back/forward navigation extracted from
-//! `app.rs` in Step 2 of `refactor-app.md`.
+//! Link-following and back/forward navigation
 //!
 //! Owns:
 //! - The [`NavEntry`] back/forward stack record.
