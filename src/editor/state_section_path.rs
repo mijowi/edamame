@@ -194,7 +194,11 @@ mod tests {
 
         // Scroll so the top visible rendered line is the "body" block.
         let body_byte = src.find("body").unwrap();
-        let body_line = st.parsed.source_map.rendered_lines_for_byte(body_byte).start;
+        let body_line = st
+            .parsed
+            .source_map
+            .rendered_lines_for_byte(body_byte)
+            .start;
         let mut st = st;
         st.scroll = body_line;
         assert_eq!(
