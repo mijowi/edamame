@@ -129,6 +129,8 @@ src/
   editor.rs         # facade — re-exports EditorState, Mode, RAW_REVEAL_DELAY
   editor/
     edit_ops.rs     # Action → EditorState mutations (cursor, buffer, history)
+    footnote_edit.rs # pure footnote edit primitives: scan, auto-number
+                    #   insert, renumber (by first reference), delete
     link.rs         # LinkTarget enum + URL/path classification
     list_edit.rs    # facade
     list_edit/
@@ -139,6 +141,7 @@ src/
     mouse_ops/
       checkbox.rs     # task-list checkbox hit-test + toggle
       coord.rs        # screen (row, col) → rope offset translation
+      footnotes.rs    # footnote_at_offset hit-test ([^label] ref / def)
       links.rs        # link_at_offset source-scan (raw [..](..) parser)
       selection.rs    # click / drag / scroll selection logic
       table_drag.rs   # column-divider drag for table resize
@@ -236,6 +239,7 @@ src/
 tests/
   diagrams.rs       # Mermaid block detection + render pipeline
   editing.rs        # EditorState action sequences → buffer/cursor asserts
+  footnotes.rs      # footnote edit primitives + mouse-follow path
   list_edit.rs      # list continuation, renumber, checkbox toggle
   mouse.rs          # mouse click / drag / scroll / checkbox
   palette.rs        # command palette filtering + selection

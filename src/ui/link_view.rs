@@ -281,7 +281,7 @@ fn collect_links_from_block(block: &Block, out: &mut Vec<(String, Option<String>
         Block::Heading { inlines, .. } | Block::Paragraph { inlines } => {
             collect_links_from_inlines(inlines, out);
         }
-        Block::BlockQuote { blocks } => {
+        Block::BlockQuote { blocks } | Block::FootnoteDefinition { blocks, .. } => {
             for inner in blocks {
                 collect_links_from_block(inner, out);
             }
@@ -327,6 +327,7 @@ fn collect_links_from_inlines(inlines: &[Inline], out: &mut Vec<(String, Option<
             | Inline::Code(_)
             | Inline::Image { .. }
             | Inline::HtmlComment(_)
+            | Inline::FootnoteReference { .. }
             | Inline::SoftBreak
             | Inline::HardBreak => {}
         }

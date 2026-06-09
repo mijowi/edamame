@@ -337,3 +337,86 @@ fn snapshot_horizontal_rule() {
     let output: Vec<String> = lines.iter().map(line_text).collect();
     insta::assert_debug_snapshot!(output);
 }
+
+// ── Footnotes ────────────────────────────────────────────────────────────────
+
+#[test]
+fn footnote_reference_renders_as_superscript() {
+    let lines = render("Claim.[^1]\n\n[^1]: Source.\n");
+    let text: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+    // The reference collapses `[^1]` to a superscript-parenthesized marker
+    // `⁽¹⁾`; the raw `[^1]` syntax is gone.
+    assert!(text.contains("⁽¹⁾"), "expected ⁽¹⁾ marker, got: {text:?}");
+    assert!(
+        !text.contains("[^1]"),
+        "raw reference syntax leaked: {text:?}"
+    );
+}
+
+#[test]
+fn adjacent_footnote_references_are_each_parenthesized() {
+    // `[^1][^2]` must render as two distinct markers `⁽¹⁾⁽²⁾`, not an
+    // ambiguous `¹²`.
+    let lines = render("Two.[^1][^2]\n\n[^1]: one.\n\n[^2]: two.\n");
+    let para = line_text(&lines[0]);
+    assert!(para.contains("⁽¹⁾⁽²⁾"), "expected ⁽¹⁾⁽²⁾, got: {para:?}");
+}
+
+#[test]
+fn footnote_definition_renders_with_back_link_and_number() {
+    let lines = render("Claim.[^1]\n\n[^1]: The source text.\n");
+    let def_line = lines
+        .iter()
+        .map(line_text)
+        .find(|t| t.contains("The source text."))
+        .expect("definition line missing");
+    // The `  <label>.  ` leader (two leading spaces, raw label, period, two
+    // trailing spaces — the rendered marker never diverges from the source
+    // label) and the trailing `↩` back-link glyph at the very end.
+    assert!(
+        def_line.starts_with("  1.  "),
+        "expected `  <label>.  ` leader: {def_line:?}"
+    );
+    assert!(
+        def_line.trim_end().ends_with('↩'),
+        "expected trailing back-link glyph: {def_line:?}"
+    );
+    // The glyph follows the body text, not the leader.
+    let body_pos = def_line.find("The source text.").expect("body");
+    let glyph_pos = def_line.find('↩').expect("glyph");
+    assert!(
+        glyph_pos > body_pos,
+        "glyph should be after the body: {def_line:?}"
+    );
+}
+
+#[test]
+fn footnote_marker_matches_raw_label_without_renumbering() {
+    // `[^3]` referenced before `[^1]` must keep their raw labels in the
+    // rendered superscripts — no display resequencing.
+    let lines = render("A[^3] B[^1]\n\n[^1]: one.\n\n[^3]: three.\n");
+    let para = line_text(&lines[0]);
+    let pos3 = para.find('³').expect("³ marker");
+    let pos1 = para.find('¹').expect("¹ marker");
+    assert!(
+        pos3 < pos1,
+        "markers follow source order, not a remap: {para:?}"
+    );
+}
+
+#[test]
+fn footnotes_render_in_place_not_only_at_end() {
+    // A definition written mid-document renders where it appears, before
+    // the following paragraph.
+    let lines = render("A.[^1]\n\n[^1]: Mid.\n\nLater paragraph.\n");
+    let texts: Vec<String> = lines.iter().map(line_text).collect();
+    let def_idx = texts.iter().position(|t| t.contains("Mid.")).expect("def");
+    let later_idx = texts
+        .iter()
+        .position(|t| t.contains("Later paragraph."))
+        .expect("later");
+    assert!(
+        def_idx < later_idx,
+        "definition should render before the later paragraph: {texts:?}"
+    );
+}

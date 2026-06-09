@@ -119,6 +119,14 @@ pub struct ParsedDoc {
     /// strip characters not in `[a-z0-9 -]`, replace runs of whitespace
     /// with `-`, uniquify with a `-N` suffix on collisions.
     pub heading_anchors: HashMap<String, usize>,
+    /// Footnote-label → rendered-line-index map for every
+    /// `Block::FootnoteDefinition` in the document.  Consumed by
+    /// footnote navigation — following a `[^label]` reference scrolls to
+    /// the definition's first rendered line via this table (the footnote
+    /// analogue of [`heading_anchors`](Self::heading_anchors)).  The key
+    /// is the raw label as written (`"1"`, `"note"`), not the rendered
+    /// number.
+    pub footnote_anchors: HashMap<String, usize>,
     /// Lazy per-(ParsedDoc, viewport-width) cache of `visual_rows_for_line`
     /// results.  Populated on first query per frame and reused across
     /// scroll-only frames so the snapshot builders (`link_view`,
@@ -322,6 +330,7 @@ impl ParsedDoc {
         let mut rendered_iter = rendered_lines.into_iter();
         let mut image_blocks = Vec::new();
         let mut heading_anchors: HashMap<String, usize> = HashMap::new();
+        let mut footnote_anchors: HashMap<String, usize> = HashMap::new();
         let mut anchor_counts: HashMap<String, usize> = HashMap::new();
         for (i, &count) in real_per_block_counts.iter().enumerate() {
             let idx = all_original.len();
@@ -350,6 +359,11 @@ impl ParsedDoc {
                 // heading's first line will land (before we push the
                 // block's own lines below).
                 heading_anchors.insert(slug, lines.len());
+            }
+            // Record footnote anchors (label → first rendered line of the
+            // definition) so a `[^label]` reference can scroll here.
+            if let Block::FootnoteDefinition { label, .. } = &blocks[i] {
+                footnote_anchors.insert(label.clone(), lines.len());
             }
             for _ in 0..count {
                 if let Some(line) = rendered_iter.next() {
@@ -433,6 +447,7 @@ impl ParsedDoc {
             per_block_own: all_per_block_own,
             image_blocks,
             heading_anchors,
+            footnote_anchors,
             visual_rows: RefCell::new(Vec::new()),
             inline_maps: (0..line_count).map(|_| OnceCell::new()).collect(),
         }
@@ -961,6 +976,26 @@ mod tests {
         assert!(doc.heading_anchors.contains_key("foo"));
         assert!(doc.heading_anchors.contains_key("foo-1"));
         assert!(doc.heading_anchors.contains_key("foo-2"));
+    }
+
+    #[test]
+    fn footnote_anchors_map_label_to_definition_line() {
+        let src = "Intro.[^1]\n\nMiddle.\n\n[^1]: The note.\n";
+        let doc = ParsedDoc::build(src, theme(), true, 40);
+        let &line = doc
+            .footnote_anchors
+            .get("1")
+            .expect("footnote_anchors should contain label '1'");
+        // The recorded line is the definition's first rendered line.
+        let rendered = doc.lines[line]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(
+            rendered.contains("The note."),
+            "anchor line should be the definition, got: {rendered:?}"
+        );
     }
 
     #[test]

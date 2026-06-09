@@ -83,6 +83,51 @@ pub(super) fn follow_link_at_click(
         state.pending_link_follow = Some(LinkTarget::parse(&url, base_dir.as_deref()));
         return true;
     }
+    // Footnote reference / definition leader.  The rendered superscript
+    // and the `  N.  ` leader both map (via the 1:1 raw-column coordinate)
+    // onto the `[^label]` / `[^label]:` source bytes, so the raw scan
+    // resolves both without rendered-span bookkeeping.
+    if let Some(target) = super::footnotes::footnote_at_offset(&source, click_byte) {
+        state.pending_link_follow = Some(target);
+        return true;
+    }
+    // The definition's trailing `↩` glyph is appended chrome with no raw
+    // byte, so it needs the rendered-line hit-test rather than the scan.
+    if let Some(target) = super::footnotes::back_link_glyph_at_click(state, col, row) {
+        state.pending_link_follow = Some(target);
+        return true;
+    }
+    false
+}
+
+/// Like [`follow_link_at_click`] but for footnotes only.  Used by the
+/// Rendered-mode plain-click path so a click on a footnote marker or a
+/// definition back-link follows it without requiring Ctrl (matching
+/// Preview), while plain clicks elsewhere still place the cursor.  Links
+/// are deliberately NOT handled here — a plain click on a link in an
+/// editing mode places the cursor; only Ctrl-click opens it.
+pub(super) fn follow_footnote_at_click(
+    state: &mut EditorState,
+    col: u16,
+    row: u16,
+    viewport_width: usize,
+) -> bool {
+    // Trailing `↩` glyph first — it has no raw byte, so the offset-based
+    // scan below would miss it (mapping past the body text).
+    if let Some(target) = super::footnotes::back_link_glyph_at_click(state, col, row) {
+        state.pending_link_follow = Some(target);
+        return true;
+    }
+    let Some(offset) = click_to_char_offset(state, col as usize, row as usize, viewport_width)
+    else {
+        return false;
+    };
+    let source = state.buffer.contents();
+    let click_byte = state.buffer.rope().char_to_byte(offset);
+    if let Some(target) = super::footnotes::footnote_at_offset(&source, click_byte) {
+        state.pending_link_follow = Some(target);
+        return true;
+    }
     false
 }
 
@@ -190,7 +235,8 @@ pub fn link_at_offset(source: &str, click_byte: usize) -> Option<String> {
     let bytes = line.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'[' {
+        // A backslash-escaped `\[` is literal text, not a link opener.
+        if bytes[i] == b'[' && !crate::editor::footnote_edit::is_escaped(bytes, i) {
             // Find matching `]`.  Brackets are balanced to support nested
             // `[text containing [inner]]` constructs.
             let mut depth = 1usize;

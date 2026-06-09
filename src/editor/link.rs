@@ -33,6 +33,16 @@ pub enum LinkTarget {
     /// fragments (`url = "#"`) are still classified as `Anchor("")` —
     /// the caller decides whether to treat them as no-ops.
     Anchor(String),
+    /// A footnote reference `[^label]` — follow jumps to the matching
+    /// definition.  The inner string is the raw label (`"1"`, `"note"`).
+    /// Not produced by [`LinkTarget::parse`]; constructed by the footnote
+    /// source scanner.
+    Footnote(String),
+    /// A footnote definition's back-link — follow returns to the
+    /// reference the reader came from (or, if they scrolled here
+    /// directly, the footnote's first reference).  The inner string is
+    /// the raw label.
+    FootnoteBack(String),
 }
 
 impl LinkTarget {

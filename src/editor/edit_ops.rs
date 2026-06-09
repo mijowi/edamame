@@ -1,5 +1,6 @@
 use crate::config::Action;
 use crate::document::{next_grapheme_offset, prev_grapheme_offset, Buffer, EditDelta, Selection};
+use crate::editor::footnote_edit;
 use crate::editor::list_edit::{self, ListInfo};
 use crate::editor::table_edit;
 use crate::editor::table_edit_ops::{
@@ -1221,6 +1222,64 @@ pub fn insert_table_at_cursor(
     let (byte_delta, cursor_target) = table_edit::insert_table(&source, cursor_byte, rows, cols);
     apply_byte_delta(state, byte_delta, cursor_target);
     state.ensure_cursor_visible(viewport_height, viewport_width);
+}
+
+/// Insert an auto-numbered `[^N]` footnote reference at the cursor.  Only
+/// the reference is inserted — the user writes the definition wherever
+/// they want.  Until a matching `[^N]:` definition exists the marker
+/// renders as literal text (CommonMark treats an undefined reference as
+/// plain text).
+pub fn insert_footnote_at_cursor(
+    state: &mut EditorState,
+    viewport_height: usize,
+    viewport_width: usize,
+) {
+    enter_edit_if_preview(state, viewport_height);
+    let source = state.buffer.contents();
+    let cursor_byte = cursor_byte(state);
+    let (delta, cursor_target) = footnote_edit::insert_footnote(&source, cursor_byte);
+    apply_byte_delta(state, delta, cursor_target);
+    state.ensure_cursor_visible(viewport_height, viewport_width);
+}
+
+/// Re-sequence all numeric footnotes into order-of-first-reference.  Named
+/// labels are left untouched.  Returns `false` (no edit) when nothing
+/// needs renumbering.
+pub fn renumber_footnotes(
+    state: &mut EditorState,
+    viewport_height: usize,
+    viewport_width: usize,
+) -> bool {
+    let source = state.buffer.contents();
+    let Some(delta) = footnote_edit::renumber_footnotes(&source) else {
+        return false;
+    };
+    let cursor_target = cursor_byte(state);
+    apply_byte_delta(state, delta, cursor_target);
+    state.ensure_cursor_visible(viewport_height, viewport_width);
+    true
+}
+
+/// Delete the footnote at the cursor — every reference plus its definition
+/// line — and renumber the remainder, as one undoable edit.  Returns
+/// `false` when the cursor isn't on a footnote.
+pub fn delete_footnote_at_cursor(
+    state: &mut EditorState,
+    viewport_height: usize,
+    viewport_width: usize,
+) -> bool {
+    let source = state.buffer.contents();
+    let cursor_byte = cursor_byte(state);
+    let Some(label) = footnote_edit::label_at(&source, cursor_byte) else {
+        return false;
+    };
+    let Some(delta) = footnote_edit::delete_footnote(&source, &label) else {
+        return false;
+    };
+    let cursor_target = delta.offset;
+    apply_byte_delta(state, delta, cursor_target);
+    state.ensure_cursor_visible(viewport_height, viewport_width);
+    true
 }
 
 /// Set the cursor to a specific byte offset in the buffer.  Clamps to

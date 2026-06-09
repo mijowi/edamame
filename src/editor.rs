@@ -1,4 +1,5 @@
 pub mod edit_ops;
+pub mod footnote_edit;
 pub mod link;
 pub mod list_edit;
 pub mod mode;

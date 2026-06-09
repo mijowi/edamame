@@ -63,6 +63,17 @@ pub enum Block {
         alt: String,
         url: String,
     },
+    /// A footnote definition (`[^label]: body`).  Rendered in place
+    /// wherever it appears in the source (pulldown-cmark emits it at its
+    /// source position, not reordered to the document end).  The renderer
+    /// shows the raw `label` as the definition's leading marker plus a
+    /// back-link affordance — the rendered number never diverges from the
+    /// source.  Sequencing the *raw* labels is the job of the
+    /// `RenumberFootnotes` action, not the renderer.
+    FootnoteDefinition {
+        label: String,
+        blocks: Vec<Block>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,6 +107,15 @@ pub enum Inline {
     /// other inlines render normally.  Stored with delimiters included so
     /// callers can round-trip the raw text if needed.
     HtmlComment(String),
+    /// An inline footnote reference (`[^label]`).  The renderer shows the
+    /// raw `label` as a superscript marker (digits become superscript
+    /// glyphs), so the rendered marker never diverges from the source.
+    /// pulldown-cmark only emits a reference when a matching definition
+    /// exists — an undefined `[^x]` stays literal text, so this variant
+    /// always has a definition.
+    FootnoteReference {
+        label: String,
+    },
     SoftBreak,
     HardBreak,
 }
@@ -126,6 +146,9 @@ pub fn inlines_to_plain(inlines: &[Inline]) -> String {
             Inline::Link { text, .. } => out.push_str(&inlines_to_plain(text)),
             Inline::Image { alt, .. } => out.push_str(alt),
             Inline::HtmlComment(_) => {}
+            // Footnote markers are chrome, not prose — omit them from plain
+            // text so they don't pollute heading slugs or breadcrumbs.
+            Inline::FootnoteReference { .. } => {}
             Inline::SoftBreak => out.push(' '),
             Inline::HardBreak => out.push('\n'),
         }

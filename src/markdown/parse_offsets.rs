@@ -21,6 +21,7 @@ pub enum BlockKind {
     HtmlBlock,
     Rule,
     HtmlLeaf,
+    FootnoteDefinition,
 }
 
 fn tag_kind(tag: &Tag<'_>) -> Option<BlockKind> {
@@ -32,6 +33,7 @@ fn tag_kind(tag: &Tag<'_>) -> Option<BlockKind> {
         Tag::List(_) => BlockKind::List,
         Tag::Table(_) => BlockKind::Table,
         Tag::HtmlBlock => BlockKind::HtmlBlock,
+        Tag::FootnoteDefinition(_) => BlockKind::FootnoteDefinition,
         _ => return None,
     })
 }
@@ -45,6 +47,7 @@ fn tag_end_kind(tag_end: &TagEnd) -> Option<BlockKind> {
         TagEnd::List(_) => BlockKind::List,
         TagEnd::Table => BlockKind::Table,
         TagEnd::HtmlBlock => BlockKind::HtmlBlock,
+        TagEnd::FootnoteDefinition => BlockKind::FootnoteDefinition,
         _ => return None,
     })
 }
@@ -136,8 +139,67 @@ pub fn top_level_block_ranges(source: &str) -> Vec<Range<usize>> {
                 | BlockKind::HtmlBlock
                 | BlockKind::Rule
                 | BlockKind::HtmlLeaf
+                | BlockKind::FootnoteDefinition
         )
     })
+}
+
+/// Byte range of every `[^label]: …` footnote definition in `source`,
+/// paired with its raw label, in document order.
+///
+/// Unlike a single-line scan, the range covers the definition's *full*
+/// extent — the leader line plus any indented continuation lines and
+/// nested blocks pulldown-cmark folds into the definition. Callers
+/// deleting a footnote use this so the whole definition is removed, not
+/// just its first physical line (which would orphan the continuation as
+/// an indented code block).
+///
+/// A malformed source with two `[^label]:` leaders for the same label
+/// yields one entry per definition; pulldown-cmark renders only the
+/// first, but callers that delete should remove every leader, so all are
+/// returned.
+pub fn footnote_definition_ranges(source: &str) -> Vec<(String, Range<usize>)> {
+    let options = Options::ENABLE_TABLES
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_SMART_PUNCTUATION;
+
+    let mut ranges: Vec<(String, Range<usize>)> = Vec::new();
+    let mut depth: usize = 0;
+    // (label, start byte) for the depth-0 definition currently open, if
+    // the depth-0 block we entered was a footnote definition. Depth-0
+    // blocks never overlap, so a single slot suffices.
+    let mut open: Option<(String, usize)> = None;
+
+    for (event, byte_range) in Parser::new_ext(source, options).into_offset_iter() {
+        match &event {
+            Event::Start(tag) => {
+                if let Tag::FootnoteDefinition(label) = tag {
+                    if depth == 0 {
+                        open = Some((label.to_string(), byte_range.start));
+                    }
+                }
+                if tag_kind(tag).is_some() {
+                    depth += 1;
+                }
+            }
+            Event::End(tag_end) => {
+                if tag_end_kind(tag_end).is_some() && depth > 0 {
+                    depth -= 1;
+                    if depth == 0 {
+                        if let Some((label, start)) = open.take() {
+                            let end = advance_past_newline(source, byte_range.end);
+                            ranges.push((label, start..end));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    ranges
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -192,5 +254,33 @@ mod tests {
         let src = "---\n";
         let ranges = top_level_block_ranges(src);
         assert_eq!(ranges.len(), 1);
+    }
+
+    #[test]
+    fn footnote_definition_is_its_own_block() {
+        // A footnote definition between two paragraphs must get its own
+        // byte range so the block↔range pairing in `ParsedDoc` stays 1:1.
+        // pulldown-cmark emits the definition at its source position.
+        let src = "Intro.[^1]\n\n[^1]: The note.\n\nAfter.\n";
+        let ranges = top_level_block_ranges(src);
+        assert_eq!(ranges.len(), 3, "expected 3 blocks, got: {ranges:?}");
+        assert!(src[ranges[0].clone()].contains("Intro."));
+        assert!(src[ranges[1].clone()].contains("[^1]: The note."));
+        assert!(src[ranges[2].clone()].contains("After."));
+    }
+
+    #[test]
+    fn footnote_definition_range_covers_multiline_body() {
+        // The range must span the leader line plus the indented
+        // continuation, so a delete removes the whole definition.
+        let src = "A[^1]\n\n[^1]: first line\n    continuation line\n\nAfter.\n";
+        let defs = footnote_definition_ranges(src);
+        assert_eq!(defs.len(), 1);
+        let (label, range) = &defs[0];
+        assert_eq!(label, "1");
+        let text = &src[range.clone()];
+        assert!(text.contains("first line"), "got: {text:?}");
+        assert!(text.contains("continuation line"), "got: {text:?}");
+        assert!(!text.contains("After."), "should not absorb the next block");
     }
 }

@@ -1441,15 +1441,13 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 Add next cell/prev cell to keybindings modal?
 
-Add support for footnotes. Add to Markdown cheat sheet.
-
 Refactor/clean up source and tests
 
 Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
 
 edamame in-app about page
 - edamame bean ASCII art
-- edamame in big text
+- edamame acronyms 
 - Installed version and check current version button
 - GitHub username and project homepage link (remove existing action to go to project homepage)
 - Contributor aknowledgements for this release
@@ -1467,6 +1465,10 @@ Lazy loading for rendering (all modes — Markdown, diff, raw)
 
 Finish diff mode plan (editing hunks in diff mode)
 Use Ctrl with diff mode keybinds in order to facilitate editing during review
+
+Show link in hint line on mouse hover or cursor placement
+
+Clicking outside the end of a footnote definition hits the back-link. Instead, this should place the cursor at the end of the line, and only clicking the back-link glyph itself should follow the link.
 
 ---
 

@@ -196,6 +196,67 @@ impl<'t> Renderer<'t> {
             Block::ImageBlock { alt, url } => {
                 self.render_image_block(alt, url, out);
             }
+            Block::FootnoteDefinition { label, blocks } => {
+                self.render_footnote_definition(label, blocks, out);
+            }
+        }
+    }
+
+    // ── Footnote definition ───────────────────────────────────────
+    //
+    // Rendered in place wherever it appears in the source as:
+    //
+    //   1.  definition body text… ↩
+    //
+    // The leader `  <label>.  ` (two spaces, the raw label — matching the
+    // superscript markers, never renumbered for display — a period, then
+    // two spaces) is column-width-matched to the raw `[^<label>]: ` leader
+    // it replaces, so the 1:1 rendered↔raw column mapping holds across the
+    // body and a click anywhere on the leader resolves to the definition's
+    // source bytes (the back-link).  The trailing `↩` glyph (with a space
+    // before it) is the visible back-link affordance — clicking it returns
+    // to the reference the reader followed (or, if they scrolled here
+    // directly, jumps to the footnote's first reference); being appended
+    // chrome with no raw byte, the mouse layer hit-tests it on the rendered
+    // line directly (`mouse_ops::footnotes::back_link_glyph_at_click`).
+    // Continuation lines are indented to align under the body text.
+
+    fn render_footnote_definition(
+        &self,
+        label: &str,
+        blocks: &[Block],
+        out: &mut Vec<Line<'static>>,
+    ) {
+        let mut body: Vec<Line<'static>> = Vec::new();
+        for b in blocks {
+            self.render_block(b, &mut body, "");
+        }
+        let leader = format!("  {label}.  ");
+        let cont_indent = " ".repeat(leader.chars().count());
+        // Space + return glyph, appended at the very end of the definition.
+        let back = " ↩";
+
+        if body.is_empty() {
+            out.push(Line::from(vec![
+                Span::styled(leader, self.theme.footnote),
+                Span::styled(back.to_string(), self.theme.footnote),
+            ]));
+            return;
+        }
+
+        let last = body.len() - 1;
+        for (i, line) in body.into_iter().enumerate() {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            if i == 0 {
+                spans.push(Span::styled(leader.clone(), self.theme.footnote));
+            } else {
+                spans.push(Span::styled(cont_indent.clone(), self.theme.footnote));
+            }
+            spans.extend(line.spans);
+            if i == last {
+                spans.push(Span::styled(back.to_string(), self.theme.footnote));
+            }
+            out.push(Line::from(spans));
         }
     }
 
@@ -579,6 +640,11 @@ impl<'t> Renderer<'t> {
                 IMAGE_PREFIX.chars().count() + name_width + 2
             }
             Inline::HtmlComment(_) => 0,
+            // Footnote reference renders as a superscript-parenthesized
+            // marker of the raw label — one column per character.
+            Inline::FootnoteReference { label } => {
+                superscript_reference_marker(label).chars().count()
+            }
             Inline::SoftBreak | Inline::HardBreak => 1,
         }
     }
@@ -674,6 +740,17 @@ impl<'t> Renderer<'t> {
                 Vec::new()
             }
 
+            Inline::FootnoteReference { label } => {
+                // Superscript-parenthesized marker of the raw label in the
+                // footnote chrome color (`[^1]` → `⁽¹⁾`).  The `[^label]`
+                // source bytes back this single rendered span; `InlineColMap`
+                // accounts for the width difference.
+                vec![Span::styled(
+                    superscript_reference_marker(label),
+                    base.patch(self.theme.footnote),
+                )]
+            }
+
             Inline::SoftBreak => vec![Span::raw(" ")],
 
             Inline::HardBreak => {
@@ -683,6 +760,37 @@ impl<'t> Renderer<'t> {
             }
         }
     }
+}
+
+/// The inline footnote-reference marker: the raw label wrapped in
+/// superscript parentheses (`1` → `⁽¹⁾`, `note` → `⁽note⁾`).  The
+/// parentheses keep the marker unambiguous when references are adjacent
+/// (`[^1][^2]` → `⁽¹⁾⁽²⁾`) and never diverge from the raw label.  HTML
+/// export uses the `[N]` bracket convention instead (via the bundled CSS).
+pub(crate) fn superscript_reference_marker(label: &str) -> String {
+    format!("⁽{}⁾", superscript_label(label))
+}
+
+/// Convert a footnote label's digits to Unicode superscript glyphs
+/// (`12` → `¹²`); any other characters (named labels like `note`) pass
+/// through unchanged.
+pub(crate) fn superscript_label(label: &str) -> String {
+    label
+        .chars()
+        .map(|c| match c {
+            '0' => '⁰',
+            '1' => '¹',
+            '2' => '²',
+            '3' => '³',
+            '4' => '⁴',
+            '5' => '⁵',
+            '6' => '⁶',
+            '7' => '⁷',
+            '8' => '⁸',
+            '9' => '⁹',
+            other => other,
+        })
+        .collect()
 }
 
 /// Convert one row of a freshly-painted ratatui `Buffer` into a styled

@@ -434,7 +434,10 @@ fn section_of(action: &Action) -> &'static str {
         | Action::BoldSelection
         | Action::ItalicizeSelection
         | Action::ToggleCheckbox
-        | Action::InsertTable => "Edit",
+        | Action::InsertTable
+        | Action::InsertFootnote
+        | Action::DeleteFootnote
+        | Action::RenumberFootnotes => "Edit",
         Action::ExitToPreview
         | Action::ToggleRawMode
         | Action::EnterEditMode

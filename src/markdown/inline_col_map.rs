@@ -32,11 +32,22 @@ impl InlineColMap {
                 Event::Text(_) => walk.push_text(raw_line, range),
                 Event::Code(s) => walk.push_code(&s, range),
                 Event::SoftBreak | Event::HardBreak => walk.push_break(range.start),
+                // No `Event::FootnoteReference` arm: this map is built per
+                // line, so a reference line carries no definition and
+                // pulldown-cmark emits the literal `[^label]` as `Text`
+                // (split into `[`, `^label`, `]`).  Those land in the map as
+                // literal chars; `collapse_footnote_refs` then drops the `^`
+                // entry so the marker occupies `⁽label⁾`-many rendered
+                // columns — matching the document renderer (which, having
+                // the definition, emits the superscript via
+                // `renderer::superscript_reference_marker`) so `rendered_len`
+                // agrees and selection projection stays exact line-wide.
                 _ => {}
             }
         }
 
-        let rendered_to_raw = walk.finish();
+        let mut rendered_to_raw = walk.finish();
+        collapse_footnote_refs(raw_line, &mut rendered_to_raw);
         let rendered_len = rendered_to_raw.len().saturating_sub(1);
 
         // Build the inverse map (raw char idx -> rendered char idx).
@@ -186,6 +197,61 @@ impl CharMapWalk {
         self.map.push(self.total_chars);
         self.map
     }
+}
+
+// ── Footnote-reference collapse ───────────────────────────────────────────────
+
+/// Collapse every `[^label]` reference in `raw_line` from its literal
+/// 4+ rendered columns down to the renderer's `⁽label⁾` marker, in place
+/// on the forward map.
+///
+/// The literal reference maps `[`, `^`, label chars, `]` 1:1 (pulldown
+/// emits them as `Text`).  The renderer instead emits `⁽` + superscript
+/// label + `⁾` — same width *minus the `^`*.  So the only structural
+/// difference is the dropped `^`: removing its forward-map entry leaves
+/// each surviving entry (`[`→`⁽`, label digits→superscripts, `]`→`⁾`)
+/// pointing at the correct raw char, and shrinks the rendered count to
+/// match `renderer::superscript_reference_marker`.
+///
+/// `rendered_to_raw` stores raw *char* indices, so the `^` positions are
+/// computed as char indices too (labels and `[^` are ASCII, but earlier
+/// content on the line may be multi-byte).
+fn collapse_footnote_refs(raw_line: &str, rendered_to_raw: &mut Vec<usize>) {
+    let caret_chars = footnote_ref_caret_char_indices(raw_line);
+    if caret_chars.is_empty() {
+        return;
+    }
+    rendered_to_raw.retain(|&raw_char| !caret_chars.contains(&raw_char));
+}
+
+/// Char indices of the `^` in every `[^label]` reference on `raw_line`
+/// (non-empty label, no embedded `]`/newline).  Definition leaders
+/// (`[^label]:`) collapse the same way for column-mapping purposes — only
+/// their body text is selectable and it sits past the marker — so they're
+/// included.  Mirrors `footnote_edit::scan`'s recognition rule.
+fn footnote_ref_caret_char_indices(raw_line: &str) -> Vec<usize> {
+    let bytes = raw_line.as_bytes();
+    let mut carets = Vec::new();
+    let mut char_idx = 0usize; // char index of byte `i`
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'[' && bytes.get(i + 1) == Some(&b'^') {
+            let mut j = i + 2;
+            while j < bytes.len() && bytes[j] != b']' && bytes[j] != b'\n' {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b']' && j > i + 2 {
+                // `^` is the char right after `[` (char_idx + 1).
+                carets.push(char_idx + 1);
+            }
+        }
+        i += 1;
+        // Advance the char counter only on UTF-8 char boundaries.
+        if raw_line.is_char_boundary(i) {
+            char_idx += 1;
+        }
+    }
+    carets
 }
 
 #[cfg(test)]
@@ -471,6 +537,52 @@ mod tests {
         // Off-by-one too — any mismatch fails.
         assert_eq!(map.raw_to_rendered_checked(0, 11), None);
         assert_eq!(map.raw_to_rendered_checked(0, 9), None);
+    }
+
+    #[test]
+    fn footnote_reference_line_matches_renderer_and_projects_exactly() {
+        // The walker now collapses `[^1]` to the renderer's `⁽¹⁾` marker, so
+        // `rendered_len` matches the renderer's actual output and
+        // `raw_to_rendered_checked` accepts the line — exact projection, no
+        // 1:1 fallback.
+        let map = InlineColMap::build("see[^1] here");
+        let actual_rendered = "see⁽¹⁾ here".chars().count(); // 11
+        assert_eq!(map.rendered_len(), actual_rendered);
+        assert_eq!(map.raw_to_rendered_checked(0, actual_rendered), Some(0));
+
+        // Raw "see[^1] here": s0 e1 e2 [3 ^4 15 ]6 ' '7 h8 …
+        // Rendered "see⁽¹⁾ here": s0 e1 e2 ⁽3 ¹4 ⁾5 ' '6 h7 …
+        // The `[` (raw 3) projects to `⁽` (rendered 3); the digit `1`
+        // (raw 5) to `¹` (rendered 4); the text after the marker stays
+        // aligned (raw 8 `h` → rendered 7).
+        assert_eq!(map.raw_to_rendered(3), 3);
+        assert_eq!(map.raw_to_rendered(5), 4);
+        assert_eq!(map.raw_to_rendered(8), 7);
+        // The skipped `^` (raw 4) forward-fills to the digit's rendered idx.
+        assert_eq!(map.raw_to_rendered(4), 4);
+    }
+
+    #[test]
+    fn footnote_reference_round_trips() {
+        let map = InlineColMap::build("a[^12]b");
+        // Rendered "a⁽¹²⁾b" = 6 chars.
+        assert_eq!(map.rendered_len(), 6);
+        for rendered_col in 0..map.rendered_len() {
+            let raw_col = map.rendered_to_raw(rendered_col);
+            assert_eq!(
+                map.raw_to_rendered(raw_col),
+                rendered_col,
+                "round-trip failed at rendered col {rendered_col}",
+            );
+        }
+    }
+
+    #[test]
+    fn named_footnote_reference_collapses_brackets_only() {
+        // A named label passes through unchanged inside `⁽…⁾`, so only the
+        // `[^` and `]` collapse: `[^note]` (7 raw) → `⁽note⁾` (6 rendered).
+        let map = InlineColMap::build("x[^note]y");
+        assert_eq!(map.rendered_len(), "x⁽note⁾y".chars().count());
     }
 
     #[test]

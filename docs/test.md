@@ -31,6 +31,12 @@ Block quote
 [File link](./plan.md)
 
 [Heading link](#escape-characters)
+ 
+This sentence has two footnotes.[^1][^2]
+
+This sentence also references the first footnote.[^1]
+
+[^2]: Definition for second footnote
 
 ![Me underwater in USVI](/home/mjw/Pictures/me.jpg)
 
@@ -62,6 +68,8 @@ Another Heading 1
   - [x] Checked item with empty list item below
   - [ ] 
 - [x] Completed item with `foo() {}` inline code
+
+This sentence also references the first footnote.[^1]
 
 Two horizontal rules
 
@@ -133,5 +141,7 @@ fn setup_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
 \&ouml; not a character entity
 
 The quick brown fox jumped over the lazy dog.
+
+[^1]: This is the footnote.
 
 This is the last line of the document.
