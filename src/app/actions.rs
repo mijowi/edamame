@@ -270,6 +270,37 @@ impl App {
                 self.needs_draw = true;
                 true
             }
+            Action::InsertFootnote => {
+                crate::editor::edit_ops::insert_footnote_at_cursor(
+                    &mut self.editor,
+                    doc_height,
+                    doc_width,
+                );
+                self.needs_draw = true;
+                true
+            }
+            Action::DeleteFootnote => {
+                if !crate::editor::edit_ops::delete_footnote_at_cursor(
+                    &mut self.editor,
+                    doc_height,
+                    doc_width,
+                ) {
+                    self.flash("Cursor is not on a footnote", MessageKind::Info);
+                }
+                self.needs_draw = true;
+                true
+            }
+            Action::RenumberFootnotes => {
+                if !crate::editor::edit_ops::renumber_footnotes(
+                    &mut self.editor,
+                    doc_height,
+                    doc_width,
+                ) {
+                    self.flash("Footnotes already in order", MessageKind::Info);
+                }
+                self.needs_draw = true;
+                true
+            }
             Action::SaveCopy => {
                 self.open_save_copy_modal();
                 self.needs_draw = true;

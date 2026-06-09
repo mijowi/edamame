@@ -1223,3 +1223,62 @@ fn bold_wraps_mixed_selection_verbatim() {
     apply(&mut st, Action::BoldSelection);
     assert_eq!(st.contents(), "**foo **x** baz**");
 }
+
+// ── Footnotes ────────────────────────────────────────────────────────────────
+
+fn put_cursor(st: &mut EditorState, byte: usize) {
+    st.cursor.offset = st.buffer.rope().byte_to_char(byte);
+}
+
+#[test]
+fn insert_footnote_auto_numbers_and_undoes_atomically() {
+    let mut st = state("Claim.\n\n[^1]: prior note.\n");
+    st.mode = Mode::Rendered;
+    put_cursor(&mut st, "Claim.".len());
+    edit_ops::insert_footnote_at_cursor(&mut st, VP, VW);
+    assert!(
+        st.contents().starts_with("Claim.[^2]"),
+        "got: {:?}",
+        st.contents()
+    );
+    apply(&mut st, Action::Undo);
+    assert!(
+        st.contents().starts_with("Claim.\n"),
+        "got: {:?}",
+        st.contents()
+    );
+}
+
+#[test]
+fn renumber_footnotes_action_reorders_by_reference() {
+    let mut st = state("A[^2] B[^1]\n\n[^2]: two\n[^1]: one\n");
+    st.mode = Mode::Rendered;
+    let changed = edit_ops::renumber_footnotes(&mut st, VP, VW);
+    assert!(changed);
+    assert_eq!(st.contents(), "A[^1] B[^2]\n\n[^1]: two\n[^2]: one\n");
+    // No-op when already sequential.
+    assert!(!edit_ops::renumber_footnotes(&mut st, VP, VW));
+}
+
+#[test]
+fn delete_footnote_action_removes_renumbers_and_undoes_atomically() {
+    let original = "A[^1] B[^2]\n\n[^1]: one\n[^2]: two\n";
+    let mut st = state(original);
+    st.mode = Mode::Rendered;
+    put_cursor(&mut st, 1); // on the `[` of `[^1]`
+    let removed = edit_ops::delete_footnote_at_cursor(&mut st, VP, VW);
+    assert!(removed);
+    assert_eq!(st.contents(), "A B[^1]\n\n[^1]: two\n");
+    // The whole delete+renumber reverses in a single undo.
+    apply(&mut st, Action::Undo);
+    assert_eq!(st.contents(), original);
+}
+
+#[test]
+fn delete_footnote_off_a_footnote_is_noop() {
+    let mut st = state("plain text\n");
+    st.mode = Mode::Rendered;
+    put_cursor(&mut st, 3);
+    assert!(!edit_ops::delete_footnote_at_cursor(&mut st, VP, VW));
+    assert_eq!(st.contents(), "plain text\n");
+}

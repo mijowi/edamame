@@ -18,12 +18,33 @@ use crate::ui::EditorViewState;
 
 use super::App;
 
+/// Where a [`NavEntry`] restores to.
+///
+/// Back/forward navigation spans two kinds of destination under the same
+/// `NavigateBack` / `NavigateForward` actions:
+///   * [`NavDest::File`] — a (possibly different) file to load into the
+///     editor before restoring scroll/cursor/mode.  Cross-file restores
+///     pass through the dirty guard.
+///   * [`NavDest::InDocument`] — a position within the *currently loaded*
+///     document (footnote-reference follow, `#heading` anchor jump, and
+///     the footnote back-link).  No reload, no dirty guard.  Carries no
+///     path, so it records history even for an unsaved `[No file]` buffer.
+///     `footnote` names the footnote whose reference was followed to leave
+///     this position (`None` for heading-anchor jumps), so a definition's
+///     back-link can tell "I arrived by following *this* footnote" from an
+///     unrelated in-document jump sitting on the stack.
+#[derive(Debug, Clone)]
+pub(super) enum NavDest {
+    File(PathBuf),
+    InDocument { footnote: Option<String> },
+}
+
 /// One entry on [`App::nav_back`] / [`App::nav_forward`] — records
 /// enough state to restore the exact scroll / cursor / mode we were in
-/// when we left a particular document.
+/// when we left a particular position.
 #[derive(Debug, Clone)]
 pub(super) struct NavEntry {
-    pub(super) path: PathBuf,
+    pub(super) dest: NavDest,
     pub(super) scroll: usize,
     pub(super) cursor_offset: usize,
     pub(super) mode: Mode,
@@ -55,6 +76,11 @@ impl App {
             .rope()
             .char_to_byte(self.editor.cursor.offset);
         let source = self.editor.buffer.contents();
+        // Footnote syntax is unambiguous (`[^…]` with no `(url)`), so check
+        // it before the `[text](url)` scan.
+        if let Some(target) = mouse_ops::footnote_at_offset(&source, cursor_byte) {
+            return Some(target);
+        }
         let url = mouse_ops::link_at_offset(&source, cursor_byte)?;
         let base_dir = self.file_path.as_deref().and_then(|p| p.parent());
         Some(LinkTarget::parse(&url, base_dir))
@@ -71,6 +97,12 @@ impl App {
             }
             LinkTarget::Anchor(slug) => {
                 self.scroll_to_heading(&slug, doc_height, doc_width);
+            }
+            LinkTarget::Footnote(label) => {
+                self.follow_footnote_reference(&label, doc_height, doc_width);
+            }
+            LinkTarget::FootnoteBack(label) => {
+                self.follow_footnote_back_link(&label, doc_height, doc_width);
             }
             LinkTarget::LocalFile(path) => {
                 if is_markdown_path(&path) {
@@ -97,10 +129,21 @@ impl App {
         let Some(&line_idx) = self.editor.parsed.heading_anchors.get(slug) else {
             return;
         };
+        // Record where we jumped from so `NavigateBack` returns to the
+        // link — heading-anchor jumps are now back-navigable, unified with
+        // footnote navigation under the same in-document nav model.  Tagged
+        // `None`: a heading jump isn't a footnote follow.
+        self.record_in_doc_jump(None);
+        self.scroll_to_rendered_line(line_idx, doc_height, doc_width);
+    }
+
+    /// Scroll so rendered line `line_idx` sits at the viewport top; in
+    /// editing modes also move the cursor onto that line's first source
+    /// byte so subsequent edits operate there.  Does NOT record nav
+    /// history — callers push the origin first.
+    fn scroll_to_rendered_line(&mut self, line_idx: usize, doc_height: usize, doc_width: usize) {
         self.editor.scroll = self.editor.parsed.visual_rows_before(line_idx, doc_width);
         if self.editor.mode != Mode::Preview {
-            // Move cursor to the heading's first byte so subsequent
-            // keyboard edits operate on that block.
             if let Some(byte) = self
                 .editor
                 .parsed
@@ -116,11 +159,83 @@ impl App {
         self.mark_scrolling();
     }
 
+    /// Follow a footnote *reference* `[^label]` to its definition,
+    /// recording the origin so the definition's back-link (or
+    /// `NavigateBack`) returns here.  No-op when the label has no
+    /// definition in the current document.
+    pub(super) fn follow_footnote_reference(
+        &mut self,
+        label: &str,
+        doc_height: usize,
+        doc_width: usize,
+    ) {
+        let Some(&line_idx) = self.editor.parsed.footnote_anchors.get(label) else {
+            return;
+        };
+        // Tag the origin with this label so the definition's back-link can
+        // recognize it as *this* footnote's follow.
+        self.record_in_doc_jump(Some(label.to_string()));
+        self.scroll_to_rendered_line(line_idx, doc_height, doc_width);
+    }
+
+    /// Follow a footnote definition's back-link.  When the reader arrived
+    /// by following the reference, the in-document back entry returns them
+    /// to that exact spot; when they scrolled to the definition directly
+    /// (no in-document origin recorded), jump to the footnote's first
+    /// reference instead.
+    pub(super) fn follow_footnote_back_link(
+        &mut self,
+        label: &str,
+        doc_height: usize,
+        doc_width: usize,
+    ) {
+        // Use the nav stack only when the top entry records following
+        // *this* footnote — otherwise an unrelated heading jump (or another
+        // footnote) on the stack would warp the reader to the wrong place.
+        let top_is_this_footnote = matches!(
+            self.nav_back.last().map(|e| &e.dest),
+            Some(NavDest::InDocument { footnote: Some(l) }) if l == label
+        );
+        if top_is_this_footnote {
+            self.navigate_back(doc_height, doc_width);
+            return;
+        }
+        // Reached directly (or via a different jump): go to the first
+        // reference of this footnote.
+        if let Some(line_idx) = self.first_reference_line(label) {
+            self.record_in_doc_jump(None);
+            self.scroll_to_rendered_line(line_idx, doc_height, doc_width);
+        }
+    }
+
+    /// Rendered-line index of the first `[^label]` *reference* (not the
+    /// `[^label]:` definition) in the current buffer, if any.
+    fn first_reference_line(&self, label: &str) -> Option<usize> {
+        let source = self.editor.buffer.contents();
+        let needle = format!("[^{label}]");
+        let mut from = 0;
+        while let Some(rel) = source[from..].find(&needle) {
+            let at = from + rel;
+            let after = at + needle.len();
+            if source.as_bytes().get(after) != Some(&b':') {
+                return Some(
+                    self.editor
+                        .parsed
+                        .source_map
+                        .rendered_lines_for_byte(at)
+                        .start,
+                );
+            }
+            from = after;
+        }
+        None
+    }
+
     /// Push the current (file, scroll, cursor, mode) onto `nav_back`
     /// and load `path` into the editor.  Clears `nav_forward` to match
     /// browser semantics.
     pub(super) fn navigate_to_file(&mut self, path: PathBuf) {
-        let entry = self.current_nav_entry();
+        let entry = self.current_file_entry();
         if let Err(err) = self.load_file_into_editor(path.clone()) {
             tracing::warn!(target: "link", path = %path.display(), error = %err, "failed to load linked file");
             return;
@@ -194,16 +309,40 @@ impl App {
         Ok(())
     }
 
-    /// Snapshot the editor's current nav state.  Returns `None` when
-    /// there's no associated file path — we can't push an entry we
-    /// can't restore.
-    pub(super) fn current_nav_entry(&self) -> Option<NavEntry> {
+    /// Snapshot the editor's current position as a *file* nav entry.
+    /// Returns `None` when there's no associated file path — we can't
+    /// reload an entry we can't name.  Used when navigating *away* from
+    /// the current file to a different one.
+    pub(super) fn current_file_entry(&self) -> Option<NavEntry> {
         self.file_path.clone().map(|path| NavEntry {
-            path,
+            dest: NavDest::File(path),
             scroll: self.editor.scroll,
             cursor_offset: self.editor.cursor.offset,
             mode: self.editor.mode,
         })
+    }
+
+    /// Snapshot the editor's current position as an *in-document* nav
+    /// entry.  Always available (no path needed), so in-document jumps
+    /// record history even in an unsaved `[No file]` buffer.  `footnote`
+    /// tags which footnote (if any) is being followed away from here.
+    pub(super) fn current_in_doc_entry(&self, footnote: Option<String>) -> NavEntry {
+        NavEntry {
+            dest: NavDest::InDocument { footnote },
+            scroll: self.editor.scroll,
+            cursor_offset: self.editor.cursor.offset,
+            mode: self.editor.mode,
+        }
+    }
+
+    /// Push the current position onto `nav_back` as an in-document entry
+    /// and clear `nav_forward` (browser semantics) — the shared prelude
+    /// for every in-document jump (heading anchor, footnote follow,
+    /// footnote back-link).  `footnote` is the label being followed, or
+    /// `None` for a heading-anchor jump.
+    pub(super) fn record_in_doc_jump(&mut self, footnote: Option<String>) {
+        self.nav_back.push(self.current_in_doc_entry(footnote));
+        self.nav_forward.clear();
     }
 
     /// Pop `nav_back` (if any), push the current state onto
@@ -213,10 +352,9 @@ impl App {
         let Some(dest) = self.nav_back.pop() else {
             return;
         };
-        if self.editor.dirty {
+        if let Some(target) = self.cross_file_dirty_target(&dest) {
             // Dirty guard path: restore the popped entry onto the back
             // stack (so Cancel is a true no-op) and prompt the user.
-            let target = dest.path.clone();
             self.nav_back.push(dest);
             self.open_dirty_guard(target);
             return;
@@ -228,13 +366,28 @@ impl App {
         let Some(dest) = self.nav_forward.pop() else {
             return;
         };
-        if self.editor.dirty {
-            let target = dest.path.clone();
+        if let Some(target) = self.cross_file_dirty_target(&dest) {
             self.nav_forward.push(dest);
             self.open_dirty_guard(target);
             return;
         }
         self.navigate_to_entry(dest, doc_height, doc_width, /*forward=*/ true);
+    }
+
+    /// Returns the path to guard on when restoring `dest` would switch
+    /// away from a dirty buffer to a *different* file.  In-document
+    /// restores and same-file restores never lose unsaved edits, so they
+    /// bypass the dirty guard entirely.
+    fn cross_file_dirty_target(&self, dest: &NavEntry) -> Option<PathBuf> {
+        if !self.editor.dirty {
+            return None;
+        }
+        match &dest.dest {
+            NavDest::File(path) if self.file_path.as_deref() != Some(path.as_path()) => {
+                Some(path.clone())
+            }
+            _ => None,
+        }
     }
 
     /// Shared back/forward dispatch: push the current state onto the
@@ -247,10 +400,31 @@ impl App {
         doc_width: usize,
         forward: bool,
     ) {
-        let current = self.current_nav_entry();
-        if let Err(err) = self.load_file_into_editor(dest.path.clone()) {
-            tracing::warn!(target: "link", path = %dest.path.display(), error = %err, "nav load failed");
-            return;
+        // A `File` destination naming a *different* file is the only case
+        // that reloads the buffer; same-file `File` entries and every
+        // `InDocument` entry restore in place.
+        let reload_path = match &dest.dest {
+            NavDest::File(path) if self.file_path.as_deref() != Some(path.as_path()) => {
+                Some(path.clone())
+            }
+            _ => None,
+        };
+
+        // Snapshot where we are now for the opposite stack.  If this
+        // restore reloads a different file, returning here needs a file
+        // entry (so the reverse navigation reloads); otherwise an
+        // in-document entry suffices and also works for `[No file]`.
+        let current = if reload_path.is_some() {
+            self.current_file_entry()
+        } else {
+            Some(self.current_in_doc_entry(None))
+        };
+
+        if let Some(path) = reload_path {
+            if let Err(err) = self.load_file_into_editor(path.clone()) {
+                tracing::warn!(target: "link", path = %path.display(), error = %err, "nav load failed");
+                return;
+            }
         }
         if let Some(e) = current {
             if forward {
@@ -259,7 +433,7 @@ impl App {
                 self.nav_forward.push(e);
             }
         }
-        // Restore the saved scroll / cursor / mode on the loaded doc.
+        // Restore the saved scroll / cursor / mode.
         self.editor.scroll = dest.scroll.min(
             self.editor
                 .total_visual_rows_for_mode(doc_width)
@@ -268,7 +442,13 @@ impl App {
         self.editor.cursor.offset = dest.cursor_offset.min(self.editor.buffer.len_chars());
         self.editor.mode = dest.mode;
         self.editor.update_cursor_block();
-        self.editor.ensure_cursor_visible(doc_height, doc_width);
+        // Preview decouples scroll from the cursor (jumps move the
+        // viewport without the cursor), so the restored scroll is
+        // authoritative there.  In editing modes the cursor drives, so
+        // keep it on-screen — mirroring `scroll_to_heading`.
+        if self.editor.mode != Mode::Preview {
+            self.editor.ensure_cursor_visible(doc_height, doc_width);
+        }
     }
 
     /// Show the three-button `Save / Discard / Cancel` modal for the
@@ -283,5 +463,156 @@ impl App {
             .unwrap_or_else(|| "current file".to_owned());
         self.modal_stack
             .push(Box::new(modal::DirtyGuardModal::new(&display, pending)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::test_utils::app_with_buffer;
+
+    const H: usize = 20;
+    const W: usize = 80;
+
+    #[test]
+    fn heading_anchor_jump_records_history_and_back_returns() {
+        // A document with a heading near the bottom so jumping to it
+        // actually changes the scroll offset.
+        let src =
+            "Intro paragraph.\n\n".to_string() + &"filler\n\n".repeat(30) + "## Target\n\nEnd.\n";
+        let mut app = app_with_buffer(&src, 0);
+        assert_eq!(app.editor.scroll, 0);
+        assert!(app.nav_back.is_empty());
+
+        app.scroll_to_heading("target", H, W);
+        let jumped = app.editor.scroll;
+        assert!(jumped > 0, "jump should move the viewport");
+        assert_eq!(app.nav_back.len(), 1, "jump should record one back entry");
+        assert!(matches!(app.nav_back[0].dest, NavDest::InDocument { .. }));
+
+        // Back returns to the original position without a reload (same
+        // buffer), and populates the forward stack.
+        app.navigate_back(H, W);
+        assert_eq!(
+            app.editor.scroll, 0,
+            "back should restore the origin scroll"
+        );
+        assert!(app.nav_back.is_empty());
+        assert_eq!(app.nav_forward.len(), 1);
+
+        // Forward re-applies the jump.
+        app.navigate_forward(H, W);
+        assert_eq!(
+            app.editor.scroll, jumped,
+            "forward should re-apply the jump"
+        );
+    }
+
+    #[test]
+    fn footnote_reference_follow_jumps_to_definition_and_back_returns() {
+        let src = "Intro[^1] text.\n\n".to_string()
+            + &"filler\n\n".repeat(30)
+            + "[^1]: The definition.\n";
+        let mut app = app_with_buffer(&src, 0);
+        assert_eq!(app.editor.scroll, 0);
+
+        app.follow_footnote_reference("1", H, W);
+        let jumped = app.editor.scroll;
+        assert!(jumped > 0, "follow should scroll to the definition");
+        assert_eq!(app.nav_back.len(), 1);
+        assert!(matches!(app.nav_back[0].dest, NavDest::InDocument { .. }));
+
+        // The definition's back-link returns to the reference.
+        app.follow_footnote_back_link("1", H, W);
+        assert_eq!(
+            app.editor.scroll, 0,
+            "back-link should return to the reference"
+        );
+    }
+
+    #[test]
+    fn footnote_back_link_falls_back_to_first_reference_when_no_origin() {
+        // Reach the definition by scrolling, not by following — there is no
+        // in-document origin, so the back-link jumps to the first reference.
+        let src = "Intro[^1] text.\n\n".to_string()
+            + &"filler\n\n".repeat(30)
+            + "[^1]: The definition.\n";
+        let mut app = app_with_buffer(&src, 0);
+        // Simulate having scrolled to the bottom manually.
+        app.editor.scroll = app.editor.total_visual_rows_for_mode(W).saturating_sub(1);
+        assert!(app.nav_back.is_empty());
+
+        app.follow_footnote_back_link("1", H, W);
+        assert_eq!(
+            app.editor.scroll, 0,
+            "fallback should jump to the first reference near the top"
+        );
+        assert_eq!(app.nav_back.len(), 1, "fallback records its own origin");
+    }
+
+    #[test]
+    fn back_link_ignores_unrelated_heading_jump_on_stack() {
+        // Jump to a heading, then (without following a reference) scroll to
+        // the footnote definition and activate its back-link.  The heading
+        // jump on the stack top must NOT be consumed — the back-link falls
+        // back to the footnote's first reference instead.
+        let src = "Ref[^1] here.\n\n## Section\n\n".to_string()
+            + &"filler\n\n".repeat(30)
+            + "[^1]: The definition.\n";
+        let mut app = app_with_buffer(&src, 0);
+        app.scroll_to_heading("section", H, W);
+        let heading_scroll = app.editor.scroll;
+        assert_eq!(app.nav_back.len(), 1);
+
+        app.follow_footnote_back_link("1", H, W);
+        // Correct (fallback to first reference) grows nav_back to 2 and
+        // leaves nav_forward empty.  The bug (consuming the heading entry
+        // via navigate_back) would instead pop to len 1 and push forward.
+        assert_eq!(
+            app.nav_back.len(),
+            2,
+            "heading entry retained; back-link recorded its own origin"
+        );
+        assert!(
+            app.nav_forward.is_empty(),
+            "fallback must not consume the heading entry into nav_forward"
+        );
+        let _ = heading_scroll;
+    }
+
+    #[test]
+    fn resolve_link_at_cursor_classifies_footnote_reference() {
+        let src = "Body[^1] more.\n\n[^1]: def.\n";
+        let mut app = app_with_buffer(src, 0);
+        // Put the cursor inside the `[^1]` marker.
+        let at = src.find("[^1]").unwrap() + 1;
+        app.editor.cursor.offset = app.editor.buffer.rope().byte_to_char(at);
+        assert_eq!(
+            app.resolve_link_at_cursor(),
+            Some(LinkTarget::Footnote("1".into()))
+        );
+    }
+
+    #[test]
+    fn in_document_back_skips_dirty_guard() {
+        // Even with a dirty buffer, an in-document back/forward must not
+        // open the dirty guard modal (no file switch → no data loss).
+        let src = "Top.\n\n".to_string() + &"filler\n\n".repeat(30) + "## Here\n\nEnd.\n";
+        let mut app = app_with_buffer(&src, 0);
+        app.scroll_to_heading("here", H, W);
+        assert_eq!(app.nav_back.len(), 1);
+        assert!(matches!(app.nav_back[0].dest, NavDest::InDocument { .. }));
+        app.editor.dirty = true;
+
+        // Compare against the pre-existing modal count (App::new may seed a
+        // startup modal) — the in-document back must add none.
+        let modals_before = app.modal_stack.len();
+        app.navigate_back(H, W);
+        assert_eq!(
+            app.modal_stack.len(),
+            modals_before,
+            "in-document back must not raise the dirty guard"
+        );
+        assert_eq!(app.editor.scroll, 0);
     }
 }

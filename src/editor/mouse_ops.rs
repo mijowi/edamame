@@ -7,10 +7,12 @@
 
 mod checkbox;
 mod coord;
+mod footnotes;
 mod links;
 mod selection;
 mod table_drag;
 
+pub use footnotes::footnote_at_offset;
 pub use links::{hovered_link_target, link_at_offset};
 pub use selection::visual_selection_to_rendered_text;
 
@@ -26,7 +28,7 @@ use self::coord::{
     click_to_char_offset, rendered_click_to_line_col, rendered_line_at_row,
     span_at_col_has_modifier,
 };
-use self::links::follow_link_at_click;
+use self::links::{follow_footnote_at_click, follow_link_at_click};
 use self::selection::{
     expand_selection_to_inline_markers, select_line_at_cursor, select_word_at_cursor,
     word_range_around,
@@ -155,6 +157,13 @@ pub fn hit_test_clickable(
     }
     let _ = visual_col;
 
+    // Footnote definition's trailing `↩` back-link glyph — appended chrome
+    // with no raw byte, so it needs the rendered-line hit-test (the leader
+    // and reference markers are covered by the source scan below).
+    if footnotes::back_link_glyph_at_click(state, col, row).is_some() {
+        return true;
+    }
+
     // Link: check whether the rendered span at `c` was emitted with the
     // `link_text` style.  The renderer is the only producer of UNDERLINED +
     // Cyan spans, so the presence of the UNDERLINED modifier is a reliable
@@ -170,6 +179,13 @@ pub fn hit_test_clickable(
     if let Some(offset) = click_to_char_offset(state, c, r, viewport_width) {
         let source = state.buffer.contents();
         let click_byte = state.buffer.rope().char_to_byte(offset);
+        // Footnote reference marker (the superscript) or a definition's
+        // back-link leader.  Both are styled but not underlined, so they
+        // need the same source-scan the click-follow path uses — keeping
+        // hover and click consistent.
+        if footnotes::footnote_at_offset(&source, click_byte).is_some() {
+            return true;
+        }
         if let Some(info) = list_edit::find_list_at(&source, click_byte) {
             if let Some(item_idx) = list_edit::cursor_item_idx(&info, click_byte) {
                 let item = &info.items[item_idx];
@@ -357,6 +373,18 @@ pub fn apply(
             if modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
                 && follow_link_at_click(state, col, row, viewport_width)
             {
+                return;
+            }
+            // Rendered mode: a plain click on a footnote marker or a
+            // definition back-link follows it (matching Preview), without
+            // needing Ctrl.  Scoped to Rendered — in Raw mode the markers
+            // are literal editable text, so a plain click there places the
+            // cursor (Ctrl-click still follows via the block above).
+            if state.mode == Mode::Rendered
+                && follow_footnote_at_click(state, col, row, viewport_width)
+            {
+                *drag_target = None;
+                state.drag_in_progress = false;
                 return;
             }
             // hit-test the click against every visible table's
@@ -952,6 +980,20 @@ mod tests {
         assert_eq!(link_at_offset(src, 40), None);
         // Click before the opening bracket.
         assert_eq!(link_at_offset(src, 1), None);
+    }
+
+    #[test]
+    fn link_at_offset_ignores_escaped_bracket() {
+        // `\[text](url)` is escaped literal text — not a clickable link.
+        let src = r"See \[the docs](https://example.com) for more.";
+        // Click inside what would have been the link text.
+        assert_eq!(link_at_offset(src, 9), None);
+        // A doubled backslash leaves the link live (`\\` then a real `[`).
+        let live = r"See \\[the docs](https://example.com) end";
+        assert_eq!(
+            link_at_offset(live, 9),
+            Some("https://example.com".to_owned())
+        );
     }
 
     #[test]

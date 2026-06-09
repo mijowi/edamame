@@ -404,6 +404,30 @@ mod tests {
     }
 
     #[test]
+    fn footnotes_render_with_bracket_convention() {
+        // The reference markup is the `<sup class="footnote-reference">…`
+        // that the bundled CSS targets to add `[ ]` brackets, and the
+        // bracket pseudo-element rules ship in the builtin stylesheet.
+        let opts = HtmlExportOptions {
+            stylesheet: Stylesheet::Builtin,
+            ..HtmlExportOptions::default()
+        };
+        let html = render_html("Claim.[^1]\n\n[^1]: Source.\n", &opts).unwrap();
+        assert!(
+            html.contains("<sup class=\"footnote-reference\"><a href=\"#1\">1</a></sup>"),
+            "expected footnote-reference markup, got:\n{html}"
+        );
+        assert!(
+            html.contains("sup.footnote-reference a::before { content: \"[\"; }"),
+            "builtin CSS must add the opening bracket"
+        );
+        assert!(
+            html.contains("sup.footnote-reference a::after { content: \"]\"; }"),
+            "builtin CSS must add the closing bracket"
+        );
+    }
+
+    #[test]
     fn stylesheet_from_config_value_parses() {
         assert!(matches!(
             Stylesheet::from_config_value("builtin"),

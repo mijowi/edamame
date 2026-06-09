@@ -55,6 +55,16 @@
 # NavigateBack           = ""
 # NavigateForward        = ""
 
+# ── Footnotes ─────────────────────────────────────────────────────────────────
+# Footnote actions have no default key — run them from the command palette
+# (Ctrl-P) or bind a chord here. InsertFootnote drops an auto-numbered `[^N]`
+# reference at the cursor; DeleteFootnote removes the footnote at the cursor
+# (every reference plus its definition) and renumbers; RenumberFootnotes
+# re-sequences all numeric footnotes into order of first reference.
+# InsertFootnote         = ""
+# DeleteFootnote         = ""
+# RenumberFootnotes      = ""
+
 # ── Table — cell navigation ──────────────────────────────────────────────────
 # TablePrevCell          = "shift+tab"
 #

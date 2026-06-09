@@ -101,6 +101,9 @@ where
                     blocks.push(Block::Html(html.into_string()));
                 }
             }
+            Some(Event::Start(Tag::FootnoteDefinition(_))) => {
+                blocks.push(parse_footnote_definition_block(events));
+            }
 
             // Inline content at block level: tight lists emit Text/Code
             // directly inside Item without a Paragraph wrapper.
@@ -170,6 +173,26 @@ where
     let inner = parse_blocks(events);
     consume_end(events);
     Block::BlockQuote { blocks: inner }
+}
+
+/// Consume `Start(FootnoteDefinition(label)) … End(FootnoteDefinition)`,
+/// parsing the definition body as a nested block sequence (mirrors
+/// `parse_blockquote_block`).
+fn parse_footnote_definition_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block
+where
+    I: Iterator<Item = Event<'a>>,
+{
+    let label = match events.next() {
+        Some(Event::Start(Tag::FootnoteDefinition(l))) => l.into_string(),
+        // Defensive: the caller only invokes us after peeking the Start.
+        _ => String::new(),
+    };
+    let inner = parse_blocks(events);
+    consume_end(events);
+    Block::FootnoteDefinition {
+        label,
+        blocks: inner,
+    }
 }
 
 fn parse_code_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block
@@ -511,6 +534,16 @@ where
                 inlines.push(Inline::Image {
                     alt,
                     url: dest_url.into_string(),
+                });
+            }
+
+            // Footnote reference (`[^label]`).  pulldown-cmark only emits
+            // this when a matching definition exists.  The raw label is
+            // rendered verbatim (digits superscripted) — no display
+            // renumbering.
+            Event::FootnoteReference(label) => {
+                inlines.push(Inline::FootnoteReference {
+                    label: label.into_string(),
                 });
             }
 
@@ -1005,6 +1038,79 @@ mod tests {
                 } => assert_eq!(items.len(), 1),
                 other => panic!("group not split correctly: {other:?}"),
             }
+        }
+    }
+
+    // ── Footnotes ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn footnote_reference_and_definition_parse() {
+        let blocks = parse("Text.[^1]\n\n[^1]: The note.\n");
+        // First block: paragraph carrying the reference.
+        match &blocks[0] {
+            Block::Paragraph { inlines } => {
+                assert!(
+                    inlines.iter().any(
+                        |i| matches!(i, Inline::FootnoteReference { label, .. } if label == "1")
+                    ),
+                    "inlines: {inlines:?}"
+                );
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+        // Last block: the definition.
+        assert!(
+            blocks
+                .iter()
+                .any(|b| matches!(b, Block::FootnoteDefinition { label, .. } if label == "1")),
+            "blocks: {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn footnote_labels_are_preserved_verbatim() {
+        // The parser stores raw labels and does NOT remap them to display
+        // numbers — rendered markers never diverge from the source.  `3` is
+        // referenced before `1`, but each keeps its own label.
+        let src = "First[^3] then[^1].\n\n[^1]: one.\n\n[^3]: three.\n";
+        let blocks = parse(src);
+        let mut ref_labels: Vec<String> = Vec::new();
+        for b in &blocks {
+            if let Block::Paragraph { inlines } = b {
+                for i in inlines {
+                    if let Inline::FootnoteReference { label } = i {
+                        ref_labels.push(label.clone());
+                    }
+                }
+            }
+        }
+        assert_eq!(ref_labels, vec!["3".to_string(), "1".to_string()]);
+        // Definitions keep their raw labels too.
+        let def_labels: Vec<String> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::FootnoteDefinition { label, .. } => Some(label.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(def_labels, vec!["1".to_string(), "3".to_string()]);
+    }
+
+    #[test]
+    fn undefined_footnote_reference_stays_literal_text() {
+        // pulldown-cmark only emits a FootnoteReference when a matching
+        // definition exists; `[^x]` with no definition is literal text.
+        let blocks = parse("A dangling[^x] marker.\n");
+        match &blocks[0] {
+            Block::Paragraph { inlines } => {
+                assert!(
+                    !inlines
+                        .iter()
+                        .any(|i| matches!(i, Inline::FootnoteReference { .. })),
+                    "undefined ref should not parse as a footnote: {inlines:?}"
+                );
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
         }
     }
 

@@ -16,10 +16,9 @@
 //! terminal repaints the cell with the default background and lets the
 //! editor's dark fill bleed through the modal.
 //!
-//! Tables and footnotes are intentionally absent: tables have a
-//! dedicated insert/edit flow so hand-coding the
-//! pipe-grid form is rarely useful, and footnotes are not yet
-//! implemented in the renderer.
+//! Tables are intentionally absent: they have a dedicated insert/edit
+//! flow so hand-coding the pipe-grid form is rarely useful.  Footnotes
+//! ARE listed — references and definitions are rendered and navigable.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -122,6 +121,19 @@ pub fn body_lines(theme: &Theme) -> Vec<Line<'static>> {
     out.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("[website](https://example.com)", theme.link_text),
+    ]));
+    out.push(blank());
+
+    // ── Footnotes ─────────────────────────────────────────────────────
+    out.push(section(theme, "Footnotes"));
+    out.push(Line::from(vec![
+        Span::raw("  Reference a note"),
+        Span::styled("[^1]", theme.footnote),
+    ]));
+    out.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("[^1]:", theme.footnote),
+        Span::raw(" The footnote definition (written anywhere)."),
     ]));
     out.push(blank());
 
@@ -293,6 +305,8 @@ mod tests {
         assert!(s.contains("Mermaid"));
         assert!(s.contains("Links"));
         assert!(s.contains("Images"));
+        assert!(s.contains("Footnotes"));
+        assert!(s.contains("[^1]"));
         // Header anchor + local file + http examples in the Links section.
         assert!(s.contains("#heading-anchor"));
         assert!(s.contains("./notes.md"));
@@ -300,20 +314,26 @@ mod tests {
     }
 
     #[test]
-    fn cheat_sheet_excludes_unsupported_or_redundant_sections() {
-        // Tables are surfaced through dedicated
-        // editing flows, not hand-coded markdown.  Footnotes are not
-        // yet implemented in the renderer.  Both must stay out of the
-        // cheat sheet so users aren't pointed at syntax we don't
-        // honour.
+    fn cheat_sheet_excludes_tables_but_includes_footnotes() {
+        // Tables are surfaced through dedicated editing flows, not
+        // hand-coded markdown, so they stay out of the sheet.  Footnotes
+        // ARE rendered and navigable now, so they must appear.
         let theme = Theme::default();
         let s = joined(&theme);
         assert!(
             !s.contains("Tables"),
             "Tables should not appear in the cheat sheet"
         );
-        assert!(!s.contains("Footnotes"), "Footnotes should not appear");
-        assert!(!s.contains("[^"), "footnote markers should not appear");
+        assert!(s.contains("Footnotes"), "Footnotes section should appear");
+        assert!(s.contains("[^"), "footnote markers should appear");
+    }
+
+    #[test]
+    fn cheat_sheet_footnote_markers_use_footnote_style() {
+        let theme = Theme::default();
+        let lines = body_lines(&theme);
+        let marker = find_span(&lines, "[^1]").expect("footnote reference span");
+        assert_eq!(marker.style, theme.footnote);
     }
 
     #[test]

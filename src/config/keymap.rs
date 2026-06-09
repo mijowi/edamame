@@ -158,6 +158,16 @@ pub enum Action {
     /// a blank line; the App-level handler flashes an error
     /// when that pre-flight fails.
     InsertTable,
+    /// Insert an auto-numbered `[^N]` footnote reference at the cursor
+    /// (the next integer past the highest existing numeric footnote).
+    /// The user writes the matching definition wherever they want.
+    InsertFootnote,
+    /// Delete the footnote at the cursor — all of its references plus the
+    /// definition — and renumber the remaining numeric footnotes.
+    DeleteFootnote,
+    /// Re-sequence every numeric footnote into order of first reference
+    /// (GFM); named labels are left untouched.
+    RenumberFootnotes,
     /// Open the edamame GitHub repository.
     OpenGitHub,
     /// Open the fuzzy-searchable heading list ("Go to section").  Lets
@@ -283,6 +293,7 @@ action_variants! {
     OpenSettings, OpenKeybinds, OpenConfigFolder, SwitchTheme, CreateCustomTheme,
     ExportHtml, OpenInExternalEditor,
     ToggleTableButtons, InsertTable,
+    InsertFootnote, DeleteFootnote, RenumberFootnotes,
     GoToSection,
     DiffNext, DiffPrev,
     DiffAcceptHunk, DiffRejectHunk,
