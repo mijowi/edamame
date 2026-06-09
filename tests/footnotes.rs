@@ -237,6 +237,60 @@ fn rendered_mode_plain_click_on_trailing_glyph_follows() {
 }
 
 #[test]
+fn rendered_mode_click_on_space_before_glyph_follows() {
+    // The space we render before the `↩` (the `" ↩"` chrome) is part of the
+    // back-link hit zone.
+    let mut st = state("First line.\n\nBody[^1] more.\n\n[^1]: the note.\n");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 0;
+    let row = row_containing(&st, "the note.");
+    let width = st.parsed.lines[row as usize]
+        .spans
+        .iter()
+        .map(|s| s.content.chars().count())
+        .sum::<usize>();
+    let space_col = (width - 2) as u16; // cell before the trailing glyph
+    let action = MouseAction::Click {
+        col: space_col,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    let mut drag = None;
+    mouse_ops::apply(&mut st, action, &mut drag, &[], VP, VW);
+    assert_eq!(
+        st.pending_link_follow,
+        Some(LinkTarget::FootnoteBack("1".into())),
+        "the space before the glyph should follow"
+    );
+}
+
+#[test]
+fn rendered_mode_click_past_glyph_places_cursor_not_follow() {
+    // Clicking in the blank area beyond the glyph must place the cursor at
+    // line end, not follow the back-link.
+    let mut st = state("First line.\n\nBody[^1] more.\n\n[^1]: the note.\n");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 0;
+    let row = row_containing(&st, "the note.");
+    let width = st.parsed.lines[row as usize]
+        .spans
+        .iter()
+        .map(|s| s.content.chars().count())
+        .sum::<usize>();
+    let action = MouseAction::Click {
+        col: (width + 5) as u16, // well past the glyph
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    let mut drag = None;
+    mouse_ops::apply(&mut st, action, &mut drag, &[], VP, VW);
+    assert_eq!(
+        st.pending_link_follow, None,
+        "a click past the glyph should not follow the back-link"
+    );
+}
+
+#[test]
 fn rendered_mode_plain_click_on_text_places_cursor_not_follow() {
     // A plain click on ordinary text in Rendered mode must NOT follow — it
     // places the cursor as usual.

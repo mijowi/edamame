@@ -72,8 +72,9 @@ pub fn footnote_at_offset(source: &str, byte: usize) -> Option<LinkTarget> {
 /// [`footnote_at_offset`]'s raw scan can't resolve it (that path handles
 /// the `  N.  ` leader, which IS column-matched to the `[^N]:` source).
 /// This rendered-line check covers the trailing glyph as a second
-/// affordance.  The click column must be at or past the glyph (it is the
-/// last cell of the line, so there's nothing beyond it to confuse).
+/// affordance.  The hit zone is exactly the glyph and the single space we
+/// render before it (`" ↩"`); a click *past* the glyph (in the blank area
+/// beyond the line) places the cursor at line end instead of following.
 pub(super) fn back_link_glyph_at_click(
     state: &EditorState,
     col: u16,
@@ -82,7 +83,8 @@ pub(super) fn back_link_glyph_at_click(
     let (line, _) = rendered_line_at_row(state, row as usize)?;
     let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
     let glyph_col = total.checked_sub(1)?;
-    if (col as usize) < glyph_col {
+    let col = col as usize;
+    if col != glyph_col && col != glyph_col.saturating_sub(1) {
         return None;
     }
     // Cheap guard before the source lookup: the last rendered char must be

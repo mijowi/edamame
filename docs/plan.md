@@ -1468,8 +1468,6 @@ Use Ctrl with diff mode keybinds in order to facilitate editing during review
 
 Show link in hint line on mouse hover or cursor placement
 
-Clicking outside the end of a footnote definition hits the back-link. Instead, this should place the cursor at the end of the line, and only clicking the back-link glyph itself should follow the link.
-
 ---
 
 ## Edamame Acronyms
