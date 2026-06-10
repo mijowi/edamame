@@ -168,8 +168,10 @@ pub enum Action {
     /// Re-sequence every numeric footnote into order of first reference
     /// (GFM); named labels are left untouched.
     RenumberFootnotes,
-    /// Open the edamame GitHub repository.
-    OpenGitHub,
+    /// Show the About edamame popover: bean art, rotating acronym
+    /// tagline, version info (installed + latest GitHub release),
+    /// author credit, and a button that opens the project homepage.
+    ShowAbout,
     /// Open the fuzzy-searchable heading list ("Go to section").  Lets
     /// the user jump the viewport to any heading in the document; the
     /// pick is live-previewed (debounced) so holding ↓ doesn't thrash
@@ -287,9 +289,9 @@ action_variants! {
     TableInsertColumnLeft, TableInsertColumnRight,
     TableDeleteRow, TableDeleteColumn,
     TableInsertBreak,
-    FollowLinkUnderCursor, OpenGitHub,
+    FollowLinkUnderCursor,
     NavigateBack, NavigateForward,
-    ShowCommandPalette, ShowMarkdownCheatSheet,
+    ShowCommandPalette, ShowMarkdownCheatSheet, ShowAbout,
     OpenSettings, OpenKeybinds, OpenConfigFolder, SwitchTheme, CreateCustomTheme,
     ExportHtml, OpenInExternalEditor,
     ToggleTableButtons, InsertTable,
@@ -818,8 +820,8 @@ impl KeyMap {
         // Command palette.  Ctrl-P is the primary chord
         // (also surfaced on the bottom-region hint line as `^P Menu`).
         // The other palette actions (`ShowMarkdownCheatSheet`,
-        // `OpenSettings`, `OpenKeybinds`, `OpenConfigFolder`,
-        // `ExportHtml`) are intentionally unbound:
+        // `ShowAbout`, `OpenSettings`, `OpenKeybinds`,
+        // `OpenConfigFolder`, `ExportHtml`) are intentionally unbound:
         // they are reached only via the palette, so the user can
         // search-and-execute without memorising a chord per overlay.
         bind!("ctrl+p", Action::ShowCommandPalette);

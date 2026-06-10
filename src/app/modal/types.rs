@@ -5,6 +5,7 @@
 //! `ModalStack` that owns these as `Box<dyn Modal>` and dispatches input.
 
 use std::any::Any;
+use std::time::Instant;
 
 use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
@@ -125,6 +126,16 @@ pub trait Modal {
     #[allow(dead_code)]
     fn dismissable(&self) -> bool {
         true
+    }
+
+    /// Earliest wall-clock instant at which this modal needs a redraw
+    /// to advance time-driven content (a spinner, a rotating tagline).
+    /// Aggregated into the run loop's blocking deadline via
+    /// [`super::ModalStack::next_deadline`]; the loop wakes then,
+    /// redraws, and the modal derives its new frame from elapsed time.
+    /// Default `None` — static modals never force a wake-up.
+    fn next_deadline(&self) -> Option<Instant> {
+        None
     }
 
     /// Type-erased self-reference, used by [`super::ModalStack`] for

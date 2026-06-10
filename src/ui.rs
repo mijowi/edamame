@@ -1,3 +1,4 @@
+pub mod about;
 pub mod bottom_region;
 pub mod button_row;
 pub mod cap_summary;

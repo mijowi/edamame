@@ -1445,14 +1445,6 @@ Refactor/clean up source and tests
 
 Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
 
-edamame in-app about page
-- edamame bean ASCII art
-- edamame acronyms 
-- Installed version and check current version button
-- GitHub username and project homepage link (remove existing action to go to project homepage)
-- Contributor aknowledgements for this release
-- Anything else?
-
 In edit mode, text selection doesn't work correctly in wrapped table cells
 
 Find/search and replace

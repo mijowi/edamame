@@ -12,6 +12,7 @@ mod image_dispatch;
 mod nav;
 mod pointer;
 mod section_jump;
+mod update_check;
 
 #[cfg(test)]
 mod test_utils;
@@ -68,6 +69,11 @@ pub(crate) enum AppEvent {
     /// before being acted on; a `ReadError` is surfaced via a
     /// dismissable warning modal.  See [`App::handle_watcher_event`].
     Watcher(WatchedEvent),
+    /// Worker-thread report from the GitHub latest-release check
+    /// spawned when the About modal first opens.  `Ok(tag_name)` on
+    /// success; `Err(message)` is logged and rendered as
+    /// "unavailable".  See [`update_check`].
+    ReleaseCheckResult(std::result::Result<String, String>),
 }
 
 /// Generic modal prompt hosted on the hint line.
@@ -296,6 +302,14 @@ pub struct App {
     /// `None` only during the brief window between `App::new()` and
     /// the initial load — `Some` for any open file thereafter.
     pub(crate) last_disk_hash: Option<u64>,
+    /// Session cache of the GitHub release check shown on the About
+    /// page: `None` until the first fetch resolves, then `Available` /
+    /// `Failed` for the rest of the process so reopening About never
+    /// re-hits the network.
+    latest_release: Option<update_check::ReleaseStatus>,
+    /// True while a release-check worker is in flight, so closing and
+    /// reopening the About modal can't spawn a duplicate request.
+    release_check_in_flight: bool,
 }
 
 impl App {
@@ -550,6 +564,8 @@ impl App {
             diff_advance_pending_since: None,
             watcher: None,
             last_disk_hash: initial_disk_hash,
+            latest_release: None,
+            release_check_in_flight: false,
         })
     }
 

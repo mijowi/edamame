@@ -71,6 +71,7 @@ pub(super) fn diff_safe_action(action: &Action) -> Option<Action> {
             | Quit
             | ShowCommandPalette
             | ShowMarkdownCheatSheet
+            | ShowAbout
             | OpenSettings
             | OpenKeybinds
             | SwitchTheme
@@ -150,9 +151,8 @@ impl App {
                 }
                 true
             }
-            Action::OpenGitHub => {
-                const EDAMAME_GITHUB_URL: &str = "https://github.com/gorgonian/edamame";
-                self.spawn_open_worker(EDAMAME_GITHUB_URL.to_string());
+            Action::ShowAbout => {
+                self.open_about_modal();
                 true
             }
             Action::NavigateBack => {
@@ -403,6 +403,32 @@ impl App {
             .push(Box::new(modal::CheatSheetModal::new(self.theme)));
     }
 
+    /// Open the About page.  Spawns the GitHub release check on the
+    /// first open of the session; later opens reuse the cached result
+    /// (or the still-pending state — the in-flight guard prevents a
+    /// duplicate request when the modal is closed and reopened before
+    /// the worker reports back).
+    pub fn open_about_modal(&mut self) {
+        if self.modal_stack.contains::<modal::AboutModal>() {
+            return;
+        }
+        let status = self
+            .latest_release
+            .clone()
+            .unwrap_or(crate::app::update_check::ReleaseStatus::Pending);
+        if status == crate::app::update_check::ReleaseStatus::Pending
+            && !self.release_check_in_flight
+        {
+            if let Some(tx) = self.app_tx.clone() {
+                crate::app::update_check::spawn_release_check(tx);
+                self.release_check_in_flight = true;
+            }
+        }
+        self.modal_stack
+            .push(Box::new(modal::AboutModal::new(status)));
+        self.needs_draw = true;
+    }
+
     /// Open the fuzzy-searchable command palette.
     pub fn open_command_palette(&mut self) {
         let keymap = self.ensure_keymap_clone();
@@ -622,6 +648,9 @@ impl App {
             }
             Action::ShowMarkdownCheatSheet => {
                 self.open_markdown_cheat_sheet();
+            }
+            Action::ShowAbout => {
+                self.open_about_modal();
             }
             Action::OpenSettings => {
                 self.open_settings_overlay();

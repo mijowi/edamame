@@ -103,6 +103,9 @@ impl App {
         // Diff review: wake to auto-advance focus after the
         // post-decision reveal window elapses.
         push(self.diff_advance_deadline());
+        // Animated modals (e.g. the About page's spinner / rotating
+        // tagline): wake when the next time-driven frame is due.
+        push(self.modal_stack.next_deadline());
         earliest
     }
 }
