@@ -465,6 +465,24 @@ impl App {
                 self.handle_watcher_event(event);
                 self.needs_draw = true;
             }
+            AppEvent::ReleaseCheckResult(result) => {
+                self.release_check_in_flight = false;
+                let status = match result {
+                    Ok(tag) => super::update_check::ReleaseStatus::Available(tag),
+                    Err(msg) => {
+                        tracing::debug!(target: "about", %msg, "release check failed");
+                        super::update_check::ReleaseStatus::Failed
+                    }
+                };
+                self.latest_release = Some(status.clone());
+                if let Some(about) = self
+                    .modal_stack
+                    .find_first_mut::<crate::app::modal::AboutModal>()
+                {
+                    about.set_release(status);
+                }
+                self.needs_draw = true;
+            }
         }
     }
 

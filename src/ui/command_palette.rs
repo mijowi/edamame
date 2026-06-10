@@ -407,7 +407,7 @@ const SUGGESTED_ACTIONS: &[Action] = &[
     Action::ExportHtml,
     Action::OpenInExternalEditor,
     Action::ShowMarkdownCheatSheet,
-    Action::OpenGitHub,
+    Action::ShowAbout,
 ];
 
 /// True when `action` is part of the curated suggested list.
@@ -462,7 +462,7 @@ fn section_of(action: &Action) -> &'static str {
         | Action::CreateCustomTheme
         | Action::ShowMarkdownCheatSheet
         | Action::OpenInExternalEditor
-        | Action::OpenGitHub => "Tools",
+        | Action::ShowAbout => "Tools",
         _ => "Other",
     }
 }
@@ -547,7 +547,7 @@ mod tests {
                 "Export HTML".to_owned(),
                 "Open current file in system editor".to_owned(),
                 "Show Markdown cheat sheet".to_owned(),
-                "View Edamame on GitHub".to_owned()
+                "About edamame".to_owned()
             ]
         );
     }

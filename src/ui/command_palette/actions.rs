@@ -16,6 +16,7 @@ pub(super) const ALL_ACTIONS: &[Action] = &[
     // where users go to discover config-file locations.  Surfacing
     // it twice was redundant and made the palette noisier.
     Action::ShowMarkdownCheatSheet,
+    Action::ShowAbout,
     Action::OpenSettings,
     Action::SwitchTheme,
     Action::CreateCustomTheme,
@@ -51,7 +52,6 @@ pub(super) const ALL_ACTIONS: &[Action] = &[
     Action::ToggleCheckbox,
     // Navigation (link / nav stack).
     Action::FollowLinkUnderCursor,
-    Action::OpenGitHub,
     Action::NavigateBack,
     Action::NavigateForward,
     Action::GoToSection,
@@ -102,7 +102,7 @@ pub(super) fn label_for(action: &Action) -> Option<&'static str> {
         Action::Quit => "Quit",
         Action::ToggleCheckbox => "Toggle checkbox",
         Action::FollowLinkUnderCursor => "Follow link under cursor",
-        Action::OpenGitHub => "View Edamame on GitHub",
+        Action::ShowAbout => "About edamame",
         Action::NavigateBack => "Navigate back",
         Action::NavigateForward => "Navigate forward",
         Action::GoToSection => "Go to section",

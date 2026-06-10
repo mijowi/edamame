@@ -46,6 +46,14 @@ impl ModalStack {
         self.inner.is_empty()
     }
 
+    /// Earliest [`Modal::next_deadline`] across the whole stack, for
+    /// the run loop's blocking-deadline aggregation.  Every modal is
+    /// consulted — not just the topmost — so an animated modal buried
+    /// under a transient overlay resumes seamlessly when revealed.
+    pub fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.inner.iter().filter_map(|m| m.next_deadline()).min()
+    }
+
     #[allow(dead_code)] // used by tests in this module
     pub fn len(&self) -> usize {
         self.inner.len()

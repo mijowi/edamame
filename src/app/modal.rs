@@ -10,6 +10,7 @@ pub mod chrome;
 pub mod stack;
 pub mod types;
 
+pub mod about;
 pub mod command_palette;
 pub mod config_warning;
 pub mod diagrams_enabled;
@@ -45,6 +46,7 @@ pub use stack::ModalStack;
 pub use types::ModalKind;
 pub use types::{Modal, ModalOutcome, ModalRenderCtx};
 
+pub use about::AboutModal;
 pub use command_palette::CommandPaletteModal;
 pub use config_warning::ConfigWarningModal;
 pub use diagrams_enabled::DiagramsEnabledPromptModal;
