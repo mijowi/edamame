@@ -626,7 +626,7 @@ point. Concretely:
 | Function | File | Diff-mode behavior | Why |
 |---|---|---|---|
 | `mouse_ops::apply` | `mouse_ops.rs` | Dispatches based on action; the table below covers each branch. | Top-level entry. |
-| `selection::handle_click` (cursor placement) | `mouse_ops/selection.rs` | **Edit only.** In Edit, places the text cursor within the focused hunk's new-side range (clamps via `clamp_to_focused_hunk`, §5). In Review, no-op (Review has no text cursor). | Cursor outside the hunk would break the clamp invariant; cursor in Review is meaningless. |
+| `selection::handle_click` (cursor placement) | `mouse_ops/selection.rs` | **Edit only. ** In Edit, places the text cursor within the focused hunk's new-side range (clamps via `clamp_to_focused_hunk`, §5). In Review, no-op (Review has no text cursor). | Cursor outside the hunk would break the clamp invariant; cursor in Review is meaningless. |
 | `selection::handle_drag` | `mouse_ops/selection.rs` | **Edit only.** Extends selection within the focused hunk; drag past the hunk edge clamps to the edge (does not flash, mouse drags routinely cross the edge). In Review, no-op. | Same rationale. |
 | `selection::select_word_at_cursor`, `select_line_at_cursor` (double/triple click) | `mouse_ops/selection.rs` | **Edit only**, clamped to hunk. Review: no-op. | Reads `state.buffer` to walk word/line boundaries — must read `new_buffer` in Edit; meaningless in Review. The simplest correct path is to route the `&state.buffer` reads through `edit_target().buffer` only in these two functions (they are the cleanest candidates because they don't transitively call into list/table code). |
 | `selection::scroll_by_mouse`, `set_scroll_absolute` | `mouse_ops.rs` | Allowed in both sub-modes; reads `EditorState::scroll` only, not the buffer. | Already buffer-agnostic. |
@@ -768,18 +768,7 @@ pub enum DiffSubMode {
 }
 ```
 
-- **`Review`** (default on entry). No active text cursor. Focus is on
-  the currently selected hunk, indicated by its stronger add/delete
-  background fill (non-focused hunks recede to a fainter wash) and a
-  decision divider that gains a `>` caret and, while pending, an inline
-  `Accept [y] · Reject [n]` prompt (the glyphs sourced from the shared
-  `diff_keys` table).
-  Decision keys (`y` / `n` / `Shift-Y` / `Shift-N`) work as bare keys
-  because no text is being typed. Hunk navigation: `Tab` /
-  `Shift-Tab`. Entering Edit: `Enter` or `i`. Exiting diff: `Esc`,
-  gated on full resolution — a no-op while hunks are still pending,
-  and opens the `DiffResolveConfirmModal` once every hunk is decided
-  (see §8/§9).
+- **`Review`** (default on entry). No active text cursor. Focus is on the currently selected hunk, indicated by its stronger add/delete background fill (non-focused hunks recede to a fainter wash) and a decision divider that gains a `>` caret and, while pending, an inline `Accept [y] · Reject [n]` prompt (the glyphs sourced from the shared `diff_keys` table). Decision keys (`y` / `n` / `Shift-Y` / `Shift-N`) work as bare keys because no text is being typed. Hunk navigation: `Tab` / `Shift-Tab`. Entering Edit: `Enter` or `i`. Exiting diff: `Esc`, gated on full resolution — a no-op while hunks are still pending, and opens the `DiffResolveConfirmModal` once every hunk is decided (see §8/§9).
 
 - **`Edit`**. Normal text editing, **hard-clamped to the currently
   focused hunk's new-side line range**. The text cursor is visible
@@ -1044,13 +1033,7 @@ different motion algorithm — it adds only the clamp described next.
    }
    ```
 
-   After every cursor-motion computation, the handler calls
-   `clamp_to_focused_hunk(...)`. If the clamped offset differs from
-   the *pre-move* offset, the user moved within the hunk (OK). If
-   the clamped offset equals the *pre-move* offset (i.e. the move
-   tried to escape and was snapped back to where it started),
-   flash "Esc to leave hunk" and write the (unchanged) clamped
-   offset.
+   After every cursor-motion computation, the handler calls `clamp_to_focused_hunk(...)`. If the clamped offset differs from the *pre-move* offset, the user moved within the hunk (OK). If the clamped offset equals the *pre-move* offset (i.e. the move tried to escape and was snapped back to where it started), flash "Esc to leave hunk" and write the (unchanged) clamped offset.
 
    This single clamp handles all motion actions — `MoveUp` /
    `MoveDown` (visual or rope-line, per the setting), `MoveLeft` /
