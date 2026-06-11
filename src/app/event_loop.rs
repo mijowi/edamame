@@ -806,16 +806,14 @@ impl App {
             && mouse_event.column < dims.doc_area.x + dims.doc_area.width
             && mouse_event.row >= dims.doc_area.y
             && mouse_event.row < dims.doc_area.y + dims.doc_area.height;
+        // Also record the hovered link's URL (or clear it) for the
+        // hint-line tooltip.  Keeping this update in the pointer-shape
+        // path means it fires on every mouse-move, tracking the hover
+        // in real time without an extra scan.
+        self.refresh_hovered_link(&mouse_event, in_doc, dims);
         let desired = if in_doc {
             let rel_col = mouse_event.column - dims.doc_area.x;
             let rel_row = mouse_event.row - dims.doc_area.y;
-            // Also record the hovered link target (or clear
-            // it) for the hint-line tooltip that the hint line surfaces.
-            // Keeping this update in the pointer-shape path means it
-            // fires on every mouse-move, tracking the hover in real
-            // time without an extra scan.
-            self.hovered_link =
-                mouse_ops::hovered_link_target(&self.editor, rel_col, rel_row, dims.doc_width);
             if mouse_ops::hit_test_clickable(
                 &self.editor,
                 rel_col,
@@ -828,7 +826,6 @@ impl App {
                 PointerShape::Text
             }
         } else {
-            self.hovered_link = None;
             PointerShape::Default
         };
         self.update_pointer_shape(desired);
@@ -866,6 +863,31 @@ impl App {
             // table state.
             self.handle_pending_column_widths();
             self.needs_draw = true;
+            // The action just applied may have scrolled the view,
+            // edited the line, or navigated to another file — any of
+            // which can change or remove the link under the stationary
+            // pointer.  Recompute against the post-action state so the
+            // hint-line URL doesn't go stale until the next mouse-move.
+            self.refresh_hovered_link(&mouse_event, in_doc, dims);
+        }
+    }
+
+    /// Recompute `hovered_link` for the pointer position carried by
+    /// `mouse_event`, clearing it when the pointer is outside the doc
+    /// area.  Sets `needs_draw` only on a hover *change* — Moved events
+    /// otherwise skip the draw gate, and repainting every move would be
+    /// wasted work while the pointer slides along one link.
+    fn refresh_hovered_link(&mut self, mouse_event: &MouseEvent, in_doc: bool, dims: &DocDims) {
+        let hovered = if in_doc {
+            let rel_col = mouse_event.column - dims.doc_area.x;
+            let rel_row = mouse_event.row - dims.doc_area.y;
+            mouse_ops::hovered_link_url(&self.editor, rel_col, rel_row, dims.doc_width)
+        } else {
+            None
+        };
+        if hovered != self.hovered_link {
+            self.hovered_link = hovered;
+            self.needs_draw = true;
         }
     }
 
@@ -894,6 +916,14 @@ impl App {
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
         rx: &mpsc::Receiver<AppEvent>,
     ) {
+        // Any keypress dismisses the hovered-link tooltip: the edit or
+        // mode switch it triggers can move or remove the link under the
+        // stationary pointer, and nothing else would refresh the hover
+        // until the next mouse-move.  Mirrors browsers hiding the
+        // status-bar URL once the user starts typing.
+        if self.hovered_link.take().is_some() {
+            self.needs_draw = true;
+        }
         let mut batch: Vec<Event> = vec![event];
         self.collect_key_burst(rx, &mut batch);
         self.dispatch_key_batch(batch, dims, terminal, rx);
@@ -1149,5 +1179,70 @@ fn drop_indicator_for(
         mouse_ops::DragTarget::TableColumnBorder { .. }
         | mouse_ops::DragTarget::TextSelection { .. }
         | mouse_ops::DragTarget::Scrollbar { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+
+    use crate::app::test_utils::app_with_buffer;
+
+    use super::DocDims;
+
+    fn dims() -> DocDims {
+        DocDims {
+            doc_height: 10,
+            doc_width: 60,
+            doc_area: Rect::new(0, 0, 60, 10),
+        }
+    }
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn wheel_scroll_refreshes_link_hover_under_stationary_pointer() {
+        let mut app = app_with_buffer(
+            "[docs](https://example.com)\nplain text line\nmore plain text\n",
+            0,
+        );
+        app.capabilities.mouse = true;
+        let dims = dims();
+
+        // Hover the link on the first rendered line.
+        app.dispatch_mouse_event(mouse(MouseEventKind::Moved, 2, 0), &dims);
+        assert_eq!(app.hovered_link.as_deref(), Some("https://example.com"));
+
+        // Wheel-scroll one line without moving the pointer: the link
+        // scrolls away and a plain line lands under the cursor.  The
+        // hover must track the post-scroll state, not show the old URL
+        // until the next mouse-move.
+        app.dispatch_mouse_event(mouse(MouseEventKind::ScrollDown, 2, 0), &dims);
+        assert!(
+            app.hovered_link.is_none(),
+            "hover must refresh after a mouse action scrolls the view"
+        );
+    }
+
+    #[test]
+    fn pointer_leaving_doc_area_clears_hover() {
+        let mut app = app_with_buffer("[docs](https://example.com)\n", 0);
+        app.capabilities.mouse = true;
+        let dims = dims();
+
+        app.dispatch_mouse_event(mouse(MouseEventKind::Moved, 2, 0), &dims);
+        assert!(app.hovered_link.is_some());
+
+        // Move below the doc area (e.g. onto the status bar).
+        app.dispatch_mouse_event(mouse(MouseEventKind::Moved, 2, 10), &dims);
+        assert!(app.hovered_link.is_none());
     }
 }

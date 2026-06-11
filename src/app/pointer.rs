@@ -12,7 +12,12 @@ impl App {
         if self.last_pointer_shape == shape {
             return;
         }
-        set_pointer_shape(shape);
+        // `set_pointer_shape` writes the escape straight to stdout,
+        // which libtest does not capture — unit tests driving mouse
+        // events would spray OSC 22 bytes into the test output.
+        if !cfg!(test) {
+            set_pointer_shape(shape);
+        }
         self.last_pointer_shape = shape;
     }
 }
