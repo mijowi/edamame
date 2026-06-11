@@ -83,6 +83,13 @@ impl EditorState {
         if self.drag_in_progress {
             return false;
         }
+        // An active search flow keeps the document fully rendered:
+        // tabbing through matches must not flip blocks between
+        // rendered and raw under the highlights, and typing is
+        // disabled for the duration of the flow anyway.
+        if self.search.is_some() {
+            return false;
+        }
         match self.cursor_block_entered_at {
             None => true,
             Some(t) => t.elapsed() >= RAW_REVEAL_DELAY,

@@ -1447,30 +1447,9 @@ Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI input
 
 In edit mode, text selection doesn't work correctly in wrapped table cells
 
-Find/search and replace
-
 Blank last line of a document doesn't seem to behave correctly
 
 Force wrap long lines of code in a table cell so that the table structure is not broken.
 
-Lazy loading for rendering (all modes — Markdown, diff, raw)
-
 Finish diff mode plan (editing hunks in diff mode)
 Use Ctrl with diff mode keybinds in order to facilitate editing during review
-
----
-
-## Edamame Acronyms
-- Enough Developers Are Making A Markdown Editor
-- Engineered Despite Already Many Available Markdown Editors
-- Enterprise-Driven Architecture for Markdown Authoring/Management System
-- Ergonomic, Dependency-Averse Markdown Authoring Made Easy
-- 'Ello, Doesn't Anyone's Mum 'Ave More Eggs
-- Embarassingly Duplicative, Absolutely Mediocre, Amateur Markdown Editor
-- Exceptionally Derivative And Mostly Awful Markdown Editor
-- Error: Data Already Mangled — Another Markdown Editor
-- Eventually, Developers All Make A Markdown Editor
-- Every Damn Agent's Markdown Annoys Me Endlessly
-- Even Dad And Mom Are Markdown Editing
-- Extremely Disappointed At Many Aggravating Markdown Editors
-- Ego Demands Acrimoniously Making A Markdown Editor

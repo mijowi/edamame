@@ -233,6 +233,7 @@ impl App {
         self.tick_autosave();
         self.tick_section_jump();
         self.tick_diff_advance();
+        self.tick_search_advance();
         self.editor.modal_open = self.any_modal_open();
     }
 
@@ -307,8 +308,12 @@ impl App {
         // height is known (it isn't at the modal-close site that enters
         // diff mode).  One-shot: cleared after it fires.
         if self.editor.pending_focus_scroll {
+            // The flag is shared by diff entry and the search flow;
+            // each scroll helper no-ops when its session isn't active.
             self.editor
                 .scroll_focused_hunk_into_view(dims.doc_height, dims.doc_width);
+            self.editor
+                .scroll_focused_match_into_view(dims.doc_height, dims.doc_width);
             self.editor.pending_focus_scroll = false;
             self.needs_draw = true;
         }
@@ -798,6 +803,20 @@ impl App {
             return;
         }
 
+        // During a search flow only viewport movement is allowed —
+        // clicks and drags would relocate the cursor or start a
+        // selection underneath the flow's own focus management.
+        // Mirrors the keyboard gate in `search_safe_action`.  `Moved`
+        // events stay live for pointer-shape tracking.
+        if self.editor.search.is_some()
+            && !matches!(
+                mouse_event.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::Moved
+            )
+        {
+            return;
+        }
+
         // Pointer-shape feedback: over a clickable element ask the
         // terminal for a pointing-hand cursor; otherwise I-beam.  Event
         // column/row are in terminal coords — translate to doc-relative
@@ -1017,6 +1036,12 @@ impl App {
             if self.editor.selection.is_some()
                 || self.drag_target.is_some()
                 || self.editor.mode == crate::editor::Mode::Preview
+                // The search flow blocks buffer edits via the
+                // `search_safe_action` gate inside `dispatch_action`;
+                // the coalesced insert/delete runs below bypass that
+                // dispatch entirely, so an autorepeat burst must not
+                // be allowed to extend a run mid-flow.
+                || self.editor.search.is_some()
             {
                 continue;
             }

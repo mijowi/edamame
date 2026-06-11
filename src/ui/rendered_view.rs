@@ -20,8 +20,10 @@ use self::cell_overlay::{compute_cell_chunk_overlay, compute_wrapped_cell_overla
 use self::list_marker::list_raw_col_to_rendered_col;
 use self::paint::{
     make_code_styled_body_line, make_raw_line_with_selection, overlay_raw_cell,
-    paint_selection_overlay,
+    paint_byte_range_overlay,
 };
+
+pub(crate) use self::paint::paint_search_overlays;
 use self::raw_text::{cursor_position_in_block, raw_line_byte_start, raw_source_lines};
 
 /// State for the `RenderedView` widget.
@@ -807,7 +809,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     && !mermaid_revealed
                     && !wrapped_revealed
                 {
-                    paint_selection_overlay(
+                    paint_byte_range_overlay(
                         editor,
                         buf,
                         area,
@@ -817,7 +819,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         virtual_idx,
                         sa,
                         sb,
-                        self.theme,
+                        self.theme.selection,
                     );
                 }
             }

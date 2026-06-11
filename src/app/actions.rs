@@ -85,6 +85,49 @@ pub(super) fn diff_safe_action(action: &Action) -> Option<Action> {
     }
 }
 
+/// Default-deny gate over [`Action`]s while a search flow is active.
+/// Returns `Some(action)` for the search-flow actions themselves plus
+/// the read-only / always-safe set (scrolling, overlay openers, save,
+/// quit, undo/redo of in-flow replaces); `None` for everything else —
+/// most operations are unavailable for the duration of the flow,
+/// mirroring diff mode.
+pub(super) fn search_safe_action(action: &Action) -> Option<Action> {
+    use Action::*;
+    let allowed = matches!(
+        action,
+        OpenSearch
+            | SearchNext
+            | SearchPrev
+            | SearchReplace
+            | SearchReplaceAll
+            | SearchExit
+            | ScrollUp
+            | ScrollDown
+            | ScrollPageUp
+            | ScrollPageDown
+            | ScrollToTop
+            | ScrollToBottom
+            | Undo
+            | Redo
+            | Save
+            | SaveCopy
+            | Quit
+            | ShowCommandPalette
+            | ShowMarkdownCheatSheet
+            | ShowAbout
+            | OpenSettings
+            | OpenKeybinds
+            | SwitchTheme
+            | CreateCustomTheme
+            | OpenConfigFolder
+    );
+    if allowed {
+        Some(action.clone())
+    } else {
+        None
+    }
+}
+
 /// True when the editor's cursor sits inside a table block.  Mirrors
 /// the check used by `edit_ops::cursor_in_table`; re-implemented here
 /// to keep the App free of a cross-module private dep.
@@ -180,6 +223,10 @@ impl App {
             }
             Action::GoToSection => {
                 self.open_section_picker(doc_width);
+                true
+            }
+            Action::OpenSearch => {
+                self.open_search_modal();
                 true
             }
             Action::ShowMarkdownCheatSheet => {
@@ -461,6 +508,21 @@ impl App {
     /// guard, `edit_ops::apply`, scroll tracking, post-action flashes,
     /// and pending link-follow draining are sequenced.
     pub fn dispatch_action(&mut self, action: Action, doc_height: usize, doc_width: usize) {
+        // Search flow owns its own dispatch — gated *before*
+        // `handle_app_action` (unlike diff) so app-level actions that
+        // mutate the buffer or navigate away (insert table, footnotes,
+        // link follow, …) can't fire mid-flow.  `search_safe_action`
+        // default-denies everything off the allowlist; allowed
+        // app-level openers are re-routed inside
+        // `dispatch_search_action`.
+        if self.editor.search.is_some() {
+            let Some(safe) = search_safe_action(&action) else {
+                self.flash_action_unavailable("search");
+                return;
+            };
+            self.dispatch_search_action(safe, doc_height, doc_width);
+            return;
+        }
         let handled = self.handle_app_action(&action, doc_height, doc_width);
         if !handled {
             // Diff mode owns its own dispatch — checked *before* the
@@ -473,6 +535,7 @@ impl App {
             // (default-deny per §10).
             if self.editor.mode == crate::editor::Mode::Diff {
                 let Some(safe) = diff_safe_action(&action) else {
+                    self.flash_action_unavailable("diff review");
                     return;
                 };
                 self.dispatch_diff_action(safe, doc_height, doc_width);
@@ -498,6 +561,62 @@ impl App {
         }
     }
 
+    /// Shared free-scroll arms for the diff and search flow
+    /// dispatchers: the viewport moves without dragging the cursor
+    /// along (unlike `edit_ops` scrolling, which keeps the cursor
+    /// visible).  Returns `true` when `action` was a scroll action and
+    /// was handled here.
+    pub(super) fn dispatch_flow_scroll(
+        &mut self,
+        action: &Action,
+        doc_height: usize,
+        doc_width: usize,
+    ) -> bool {
+        match action {
+            Action::ScrollUp => {
+                if self.editor.scroll > 0 {
+                    self.editor.scroll = self.editor.scroll.saturating_sub(1);
+                    self.mark_scrolling();
+                    self.needs_draw = true;
+                }
+            }
+            Action::ScrollDown => {
+                let total = self.editor.total_visual_rows_for_mode(doc_width);
+                let max = total.saturating_sub(1);
+                if self.editor.scroll < max {
+                    self.editor.scroll += 1;
+                    self.mark_scrolling();
+                    self.needs_draw = true;
+                }
+            }
+            Action::ScrollPageUp => {
+                self.editor.scroll = self.editor.scroll.saturating_sub(doc_height.max(1));
+                self.mark_scrolling();
+                self.needs_draw = true;
+            }
+            Action::ScrollPageDown => {
+                let total = self.editor.total_visual_rows_for_mode(doc_width);
+                let max = total.saturating_sub(1);
+                self.editor.scroll = (self.editor.scroll + doc_height.max(1)).min(max);
+                self.mark_scrolling();
+                self.needs_draw = true;
+            }
+            Action::ScrollToTop => {
+                self.editor.scroll = 0;
+                self.mark_scrolling();
+                self.needs_draw = true;
+            }
+            Action::ScrollToBottom => {
+                let total = self.editor.total_visual_rows_for_mode(doc_width);
+                self.editor.scroll = total.saturating_sub(doc_height.max(1));
+                self.mark_scrolling();
+                self.needs_draw = true;
+            }
+            _ => return false,
+        }
+        true
+    }
+
     /// Dispatch a single action while `Mode::Diff` is active.  The
     /// caller has already passed `action` through
     /// [`diff_safe_action`] so unsupported actions never arrive here.
@@ -508,6 +627,9 @@ impl App {
         doc_width: usize,
     ) {
         use crate::diff::Decision;
+        if self.dispatch_flow_scroll(&action, doc_height, doc_width) {
+            return;
+        }
         match action {
             Action::DiffNext => {
                 // Manual navigation supersedes any deferred auto-advance,
@@ -579,46 +701,6 @@ impl App {
                         MessageKind::Info,
                     );
                 }
-            }
-            Action::ScrollUp => {
-                if self.editor.scroll > 0 {
-                    self.editor.scroll -= 1;
-                    self.mark_scrolling();
-                    self.needs_draw = true;
-                }
-            }
-            Action::ScrollDown => {
-                let total = self.editor.total_visual_rows_for_mode(doc_width);
-                let max = total.saturating_sub(1);
-                if self.editor.scroll < max {
-                    self.editor.scroll += 1;
-                    self.mark_scrolling();
-                    self.needs_draw = true;
-                }
-            }
-            Action::ScrollPageUp => {
-                self.editor.scroll = self.editor.scroll.saturating_sub(doc_height.max(1));
-                self.mark_scrolling();
-                self.needs_draw = true;
-            }
-            Action::ScrollPageDown => {
-                let total = self.editor.total_visual_rows_for_mode(doc_width);
-                let max = total.saturating_sub(1);
-                self.editor.scroll = (self.editor.scroll + doc_height.max(1)).min(max);
-                self.mark_scrolling();
-                self.needs_draw = true;
-            }
-            Action::ScrollToTop => {
-                self.editor.scroll = 0;
-                self.mark_scrolling();
-                self.needs_draw = true;
-            }
-            Action::ScrollToBottom => {
-                let total = self.editor.total_visual_rows_for_mode(doc_width);
-                let max = total.saturating_sub(doc_height.max(1));
-                self.editor.scroll = max;
-                self.mark_scrolling();
-                self.needs_draw = true;
             }
             Action::SaveCopy => {
                 self.open_save_copy_modal();
@@ -774,6 +856,10 @@ impl App {
     /// `DirtyConflictModal` was carrying.  Push the intro modal first
     /// when the user hasn't opted out (§8).
     pub(crate) fn enter_diff_mode(&mut self, on_disk: String) {
+        // A search flow can't survive into diff review — the diff view
+        // replaces the document and its resolution will swap the
+        // buffer out from under the match list.
+        self.exit_search_flow();
         let old = self.editor.buffer.contents();
         let Some(diff_state) = crate::diff::DiffState::new(&old, &on_disk) else {
             // Edge case: the dirty-conflict modal was opened against
@@ -1170,6 +1256,16 @@ mod tests {
         for d in app.editor.diff.as_mut().unwrap().decisions.iter_mut() {
             *d = decision;
         }
+    }
+
+    #[test]
+    fn diff_denied_action_flashes_not_available() {
+        use crate::config::Action;
+        let mut app = app_in_diff("old text\n", "new text\n");
+        app.dispatch_action(Action::InsertChar('x'), 24, 80);
+        let text = app.transient.as_ref().map(|t| t.text.clone());
+        assert_eq!(text.as_deref(), Some("Not available during diff review"));
+        assert_eq!(app.editor.mode, crate::editor::Mode::Diff);
     }
 
     #[test]

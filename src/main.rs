@@ -7,6 +7,7 @@ mod editor;
 mod image;
 mod input;
 mod markdown;
+mod search;
 mod terminal;
 mod ui;
 mod watcher;

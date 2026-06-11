@@ -297,6 +297,15 @@ impl<'a> StatefulWidget for EditorView<'a> {
             }
         }
 
+        // ── Search-match overlay (Preview + Rendered modes) ───────
+        // Painted as a post-pass over the rendered cells; both views
+        // walk `parsed.lines` with the same wrap so one overlay walk
+        // serves both.  Raw mode paints its highlights inline in
+        // `RawView`.  No-op outside an active search flow.
+        if matches!(mode, Mode::Preview | Mode::Rendered) {
+            super::rendered_view::paint_search_overlays(self.state, buf, doc_area, self.theme);
+        }
+
         // ── Line-number gutter paint ─────────────────────────────
         if let Some(ga) = gutter_area {
             let scroll = self.state.scroll;
@@ -424,6 +433,12 @@ impl<'a> StatefulWidget for EditorView<'a> {
             .diff
             .as_ref()
             .map(|d| (d.resolved_count(), d.hunks.len()));
+        let search_progress = self
+            .state
+            .search
+            .as_ref()
+            .filter(|s| !s.matches.is_empty())
+            .map(|s| (s.focused_idx + 1, s.matches.len()));
         let region = BottomRegion {
             status: StatusBarState {
                 mode,
@@ -435,6 +450,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                 cursor_col: Some(cursor_col + 1),
                 section_path,
                 diff_progress,
+                search_progress,
             },
             hint: self.hint,
             layout: self.status_bar_layout,

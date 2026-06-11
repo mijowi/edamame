@@ -256,10 +256,12 @@ can return to them once the visual language settles.
   tint" but no concrete fg/bg has been picked. The `RenderedView`
   isn't yet painting any active-line band either — a future patch
   needs both the palette assignment and the renderer pass.
-- **Search / find-in-document.** `theme.search_highlight` is in place
-  (`secondary` bg, `bg` fg) for when the find feature lands. The find
-  UI itself (input chrome, match counter, surrounding status banner)
-  is not specified.
+- **Search / find-in-document.** Implemented: the focused match paints
+  with `theme.selection` and every other match with
+  `theme.selection_muted` (the selection hue washed toward `surface`),
+  so the search flow reuses the selection language instead of
+  introducing a new hue. `theme.status_mode_search` styles the
+  status-bar match counter badge.
 - **Footnote / reference markers.** `theme.footnote` is in place
   (`secondary` fg) but the renderer doesn't emit footnote markers
   yet. Once `pulldown-cmark`'s footnote inlines surface, hook the

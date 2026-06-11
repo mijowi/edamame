@@ -673,18 +673,23 @@ fn build_body_lines<'a>(state: &KeybindsState, keymap: &KeyMap, theme: &'a Theme
     lines
 }
 
-/// The chord text shown for `action`.  Diff-review actions aren't in
-/// the runtime [`KeyMap`] — they're hard-bound in the shared `diff_keys`
-/// table — so their glyph comes from [`diff_hint`]; every other action
-/// reads its bound key from the keymap as usual.  Without this the
-/// "Diff Review" category would render every row with a blank key cell.
+/// The chord text shown for `action`.  Diff-review and search-flow
+/// actions aren't in the runtime [`KeyMap`] — they're hard-bound in
+/// the shared `diff_keys` / `search_keys` tables — so their glyph
+/// comes from [`diff_hint`] / [`crate::search::search_hint`]; every
+/// other action reads its bound key from the keymap as usual.
+/// Without this the "Diff Review" and "Search" categories would
+/// render most rows with a blank key cell.
 fn display_chord(keymap: &KeyMap, action: &Action) -> String {
     let hint = diff_hint(action);
     if !hint.is_empty() {
-        hint.to_owned()
-    } else {
-        keymap.first_key_for(action).unwrap_or_default()
+        return hint.to_owned();
     }
+    let hint = crate::search::search_hint(action);
+    if !hint.is_empty() {
+        return hint.to_owned();
+    }
+    keymap.first_key_for(action).unwrap_or_default()
 }
 
 /// For each `rows[i]`, the body-line index where that row renders.
@@ -785,6 +790,22 @@ mod tests {
 
     fn open() -> KeybindsState {
         KeybindsState::open(&keymap(), &KeyBindingOverrides::default())
+    }
+
+    #[test]
+    fn hard_bound_flow_actions_display_their_table_glyphs() {
+        // Diff-review and search-flow actions aren't in the runtime
+        // keymap; their chord cells must come from the shared hint
+        // tables instead of rendering blank.
+        let km = keymap();
+        assert_eq!(display_chord(&km, &Action::DiffAcceptHunk), "y");
+        assert_eq!(display_chord(&km, &Action::SearchNext), "Tab");
+        assert_eq!(display_chord(&km, &Action::SearchPrev), "⇧Tab");
+        assert_eq!(display_chord(&km, &Action::SearchReplace), "r");
+        assert_eq!(display_chord(&km, &Action::SearchReplaceAll), "a");
+        assert_eq!(display_chord(&km, &Action::SearchExit), "Esc");
+        // The opener is a normal keymap binding, formatted for display.
+        assert_eq!(display_chord(&km, &Action::OpenSearch), "Ctrl-F");
     }
 
     #[test]

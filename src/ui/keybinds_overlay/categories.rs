@@ -48,6 +48,17 @@ pub(super) const CATEGORIES: &[(&str, &[(Action, &str)])] = &[
         ],
     ),
     ("Links", &[(Action::FollowLinkUnderCursor, "Follow link")]),
+    (
+        "Search",
+        &[
+            (Action::OpenSearch, "Search / replace"),
+            (Action::SearchNext, "Next match"),
+            (Action::SearchPrev, "Prev match"),
+            (Action::SearchReplace, "Replace match"),
+            (Action::SearchReplaceAll, "Replace all"),
+            (Action::SearchExit, "Exit search"),
+        ],
+    ),
     ("List", &[(Action::ToggleCheckbox, "Toggle checkbox")]),
     (
         "Table",

@@ -170,6 +170,15 @@ impl App {
         }
     }
 
+    /// Flash shown when a modal flow's default-deny gate drops an
+    /// action — shared by diff review and the search flow so a denied
+    /// keypress gets the same "why did nothing happen" feedback in
+    /// both.  `flow` names the flow ("search", "diff review").
+    pub(super) fn flash_action_unavailable(&mut self, flow: &str) {
+        self.flash(format!("Not available during {flow}"), MessageKind::Info);
+        self.needs_draw = true;
+    }
+
     /// Persist `config.toml` and flash a `Configuration updated`
     /// notification on success.  Centralises the save-and-notify
     /// pattern so every caller (capability suppression, remote-image

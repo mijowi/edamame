@@ -166,7 +166,8 @@ pub struct ThemeFile {
     // General
     pub normal: StyleSpec,
     pub selection: StyleSpec,
-    pub search_highlight: StyleSpec,
+    pub selection_muted: StyleSpec,
+    pub status_mode_search: StyleSpec,
     pub active_line: StyleSpec,
     pub cursor_preview: StyleSpec,
     pub cursor_rendered: StyleSpec,
@@ -233,7 +234,8 @@ macro_rules! style_fields {
             modal_item_selected, modal_item_selected_unfocused, modal_item_selected_hint,
             modal_description, modal_section_heading,
             modal_input_unfocused, modal_input_focused, modal_button_focused,
-            normal, selection, search_highlight, active_line,
+            normal, selection, selection_muted,
+            status_mode_search, active_line,
             cursor_preview, cursor_rendered, cursor_raw, cursor,
             line_number,
             scrollbar_track, scrollbar_thumb, scrollbar_thumb_active,
@@ -396,7 +398,8 @@ mod tests {
         check!(modal_button_focused);
         check!(normal);
         check!(selection);
-        check!(search_highlight);
+        check!(selection_muted);
+        check!(status_mode_search);
         check!(active_line);
         check!(cursor_preview);
         check!(cursor_rendered);
@@ -655,7 +658,8 @@ bold = true
         check!(modal_button_focused);
         check!(normal);
         check!(selection);
-        check!(search_highlight);
+        check!(selection_muted);
+        check!(status_mode_search);
         check!(cursor_preview);
         check!(cursor_rendered);
         check!(cursor_raw);

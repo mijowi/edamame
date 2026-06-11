@@ -145,7 +145,12 @@ pub fn theme() -> Theme {
 
         normal: Style::default(),
         selection: Style::default().add_modifier(Modifier::REVERSED),
-        search_highlight: Style::default().add_modifier(Modifier::REVERSED),
+        // Non-focused search matches dim instead of inverting, so the
+        // three tiers (plain text / muted match / `selection`-reversed
+        // focused match) stay distinct without color — the same
+        // tiering the diff unfocused styles use.
+        selection_muted: Style::default().add_modifier(Modifier::DIM),
+        status_mode_search: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
         active_line: Style::default(),
         cursor_preview: Style::default().add_modifier(Modifier::REVERSED),
         cursor_rendered: Style::default().add_modifier(Modifier::REVERSED),
