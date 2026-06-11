@@ -1394,6 +1394,101 @@ mod tests {
         );
     }
 
+    /// A long inline code span no longer pins its column wide: the cell's
+    /// `min` is the breakable floor, so the table compresses to the
+    /// viewport and the code span hard-splits across rendered rows.
+    #[test]
+    fn table_breaks_long_inline_code_to_fit_viewport() {
+        let src = "| id | code |\n\
+                   |----|------|\n\
+                   | 1 | `some_extremely_long_identifier_name` |\n";
+        let lines = renderer().with_viewport_width(30).render(&parse(src));
+        for line in &lines {
+            assert!(
+                line.width() <= 30,
+                "table must compress to the viewport; overflowing line: {:?}",
+                line_text(line)
+            );
+        }
+        // The code span is split — no single line holds it whole — but no
+        // characters are lost across the break.
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t.contains("some_extremely_long_identifier_name")),
+            "code span should hard-split across rows: {texts:#?}"
+        );
+        let squashed: String = texts
+            .join("")
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '│')
+            .collect();
+        assert!(
+            squashed.contains("some_extremely_long_identifier_name"),
+            "split must preserve every character in order: {texts:#?}"
+        );
+    }
+
+    /// The code span's pad cells (the rendered stand-ins for the raw
+    /// backticks) must survive wrapping: a code token starting a wrap
+    /// row keeps its leading pad, and the final chunk keeps the
+    /// trailing pad.  They render as NBSP so the wrap tokenizer can't
+    /// trim them like inter-word spaces.
+    #[test]
+    fn table_code_span_pads_survive_wrap_breaks() {
+        let src = "| intro `breakable_code_name` | x |\n\
+                   |---|---|\n\
+                   | a | b |\n";
+        let lines = renderer().with_viewport_width(25).render(&parse(src));
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("\u{00A0}breakable_")),
+            "code chunk starting a wrap row must keep its leading pad: {texts:#?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("code_name\u{00A0}")),
+            "final code chunk must keep its trailing pad: {texts:#?}"
+        );
+    }
+
+    /// Long link labels are breakable the same way code spans are.
+    #[test]
+    fn table_breaks_long_link_to_fit_viewport() {
+        let src = "| id | link |\n\
+                   |----|------|\n\
+                   | 1 | [see-the-full-reference-document-here](https://example.com) |\n";
+        let lines = renderer().with_viewport_width(30).render(&parse(src));
+        for line in &lines {
+            assert!(
+                line.width() <= 30,
+                "table must compress to the viewport; overflowing line: {:?}",
+                line_text(line)
+            );
+        }
+    }
+
+    /// Prose policy is unchanged: a long plain word is never broken — the
+    /// table overflows the viewport horizontally instead.
+    #[test]
+    fn table_never_breaks_long_prose_word() {
+        let src = "| id | word |\n\
+                   |----|------|\n\
+                   | 1 | someextremelylongunbrokenword |\n";
+        let lines = renderer().with_viewport_width(30).render(&parse(src));
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("someextremelylongunbrokenword")),
+            "prose word must stay intact on one row: {texts:#?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.width() > 30),
+            "table should overflow rather than break prose"
+        );
+    }
+
     #[test]
     fn ordered_list_right_aligns_numbers_when_double_digit() {
         let mut src = String::new();
