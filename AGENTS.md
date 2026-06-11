@@ -179,11 +179,16 @@ src/
   markdown/
     ast.rs          # Block, Inline, ListItem enums; inlines_to_plain()
     inline_col_map.rs # InlineColMap: raw byte ↔ rendered visual column
-    parse_offsets.rs  # (byte_start, byte_end) spans from pulldown-cmark
-    parser.rs       # pulldown-cmark → Vec<Block>; promotes images / diagrams /
-                    #   html comments to their own blocks; splits lists on blanks
+    parse_offsets.rs  # (byte_start, byte_end) spans from pulldown-cmark;
+                    #   RangeTracker incremental depth-0 scanner
+    parser.rs       # pulldown-cmark → Vec<Block>; parse_raw_with_ranges
+                    #   (single-pass blocks + ranges); promotes images /
+                    #   diagrams / html comments to their own blocks;
+                    #   splits lists on blanks
     parser/
       post_pass.rs  # promotion / splitting transforms
+    render_cache.rs # RenderCache: block-level render memoization keyed by
+                    #   Block value + render-settings fingerprint
     renderer.rs     # Renderer<'t>: Vec<Block> → Vec<Line<'static>>
     renderer/
       list.rs, table.rs, util.rs  # block-specific render helpers
@@ -301,6 +306,8 @@ These decisions are easy to break if you don't know they exist.
 - **Virtual blocks for blank lines.** `ParsedDoc::build` synthesises a one-byte block for every blank line in the source (leading, between-block, and trailing). The cursor lands on each blank line as its own block, and the blank line is preserved in `RenderedView` even when the surrounding cursor block is replaced with raw text. Don't reintroduce `parse_offsets::covering_ranges` for the cursor mapping — it absorbs blank-line bytes into adjacent blocks and breaks navigation.
 - **`per_block_own` vs. extended ranges.** `ParsedDoc` tracks both per-block *own* rendered line counts (for the raw-replacement region in `RenderedView`) and *extended* covering ranges (for cursor lookup). Mixing them up causes gap blank lines to collapse when the cursor enters the previous block.
 - **Jitter-suppression reveal.** `EditorState::cursor_block_revealed()` returns false during a 120 ms `RAW_REVEAL_DELAY` after the cursor enters a new *buffer line* (not block). `RenderedView` keeps the block fully rendered and draws an inverted-cell cursor indicator at `(cursor_col, cursor_row)` until the delay elapses. The app loop uses `rx.recv_timeout(60 ms)` so the redraw fires without a keypress.
+- **Single-pass parse.** `ParsedDoc::build` gets blocks AND top-level byte ranges from one `parse_raw_with_ranges` call — a `parse_offsets::RangeTracker` observes the same offset-iterator events the AST builder consumes, so blocks↔ranges stay 1:1 by construction. Don't reintroduce a second `top_level_block_ranges` pass alongside `parse_raw`; the two-pass pairing cost a full extra pulldown-cmark parse per reparse (see docs/perf-benchmark-plan.md).
+- **Block-level render memoization.** `EditorState` owns a `markdown::RenderCache` threaded into every `refresh_parsed`; blocks whose AST value is unchanged reuse their rendered lines (a clone) instead of re-rendering. The cache key is the `Block` value itself plus a render-settings fingerprint (theme address, viewport width, striping, big-H1, …) — keying by AST, not source bytes, is what keeps live table-width drags and post-pass mutations correct (a mutated block simply misses). `Block::ImageBlock` is never cached because its row count tracks the image decode cache, which changes without an AST change. Eviction is by document membership per build, like the image-cache GC. If you add a `Renderer` knob that changes rendered output, add it to `RenderSettings` or stale cache hits will paint with the old setting.
 - **Single shared `line_render` module.** `PreviewView` and `RenderedView` both call `ui::line_render`. The trailing-cell background fill and word-aware wrap live there. If you change one view's wrap or fill, change the shared function — don't fork it.
 - **NBSP padding in code blocks.** Blank lines inside fenced code blocks use U+00A0 (NBSP) padding, not regular spaces. This works around a ratatui `WordWrapper` (`trim: false`) bug where an all-whitespace line produces an extra empty visual row. Don't "simplify" this back to spaces.
 - **Word-group undo merging.** `History::record` merges single alphanumeric inserts into the previous delta when offsets are contiguous. Cursor moves break the group naturally (next insert lands at a different offset). It's still delta-based, not snapshot-based.

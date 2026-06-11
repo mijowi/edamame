@@ -7,6 +7,7 @@ use crate::document::{Buffer, Cursor, EditDelta, History, ParsedDoc, Selection, 
 use crate::editor::state_viewport::RawVisualRowCache;
 use crate::editor::Mode;
 use crate::image::ImageCache;
+use crate::markdown::RenderCache;
 
 // ── Cursor blink ─────────────────────────────────────────────────────
 
@@ -269,6 +270,14 @@ pub struct EditorState {
     /// into view.  Deferred because the viewport height isn't known at
     /// the modal-close call site where diff mode is entered.
     pub pending_focus_scroll: bool,
+    /// Block-level render memoization threaded into every
+    /// `refresh_parsed`.  Blocks whose AST is unchanged since the previous
+    /// reparse reuse their rendered lines instead of re-rendering — the
+    /// renderer was the dominant pipeline cost for table-heavy and mixed
+    /// documents (see docs/perf-benchmark-plan.md).  Keyed by block value
+    /// plus a render-settings fingerprint, so theme / width / striping
+    /// changes clear it automatically.
+    render_cache: RenderCache,
 }
 
 /// How long the cursor must rest on a block before it is shown in raw mode.
@@ -365,6 +374,7 @@ impl EditorState {
             diff: None,
             pre_diff_scroll: 0,
             pending_focus_scroll: false,
+            render_cache: RenderCache::default(),
         };
         // Populate the cursor-block cache so the rendered view's
         // stale-map-tolerant path has correct line-range info on the
@@ -686,6 +696,7 @@ impl EditorState {
             self.viewport_width,
             self.big_h1,
             self.diagrams_enabled,
+            Some(&mut self.render_cache),
         );
         self.parsed_version = self.parsed_version.wrapping_add(1);
         self.parsed_dirty = false;

@@ -52,69 +52,106 @@ fn tag_end_kind(tag_end: &TagEnd) -> Option<BlockKind> {
     })
 }
 
-/// Walk `source`'s pulldown-cmark events at depth zero, recording the
-/// byte range of every block whose [`BlockKind`] satisfies `keep`.
-///
-/// Used by [`top_level_block_ranges`] (covers all block kinds) and by
-/// the diff subsystem's table-extent scan (filters to `Table` only).
-/// Centralizing the depth-tracking + trailing-newline logic in one
-/// place keeps every block scanner honest about the same edge cases.
-pub fn block_ranges_by<F>(source: &str, mut keep: F) -> Vec<Range<usize>>
-where
-    F: FnMut(BlockKind) -> bool,
-{
-    let options = Options::ENABLE_TABLES
-        | Options::ENABLE_FOOTNOTES
-        | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_SMART_PUNCTUATION;
+/// The pulldown-cmark option set shared by every parse in the crate.
+/// The AST parse ([`crate::markdown::parse_raw`]) and the offset scans
+/// here MUST use the same options — block boundaries shift between
+/// option sets, and `ParsedDoc` relies on a 1:1 blocks↔ranges pairing.
+pub(crate) const PARSE_OPTIONS: Options = Options::ENABLE_TABLES
+    .union(Options::ENABLE_FOOTNOTES)
+    .union(Options::ENABLE_STRIKETHROUGH)
+    .union(Options::ENABLE_TASKLISTS)
+    .union(Options::ENABLE_SMART_PUNCTUATION);
 
-    let mut ranges: Vec<Range<usize>> = Vec::new();
-    let mut depth: usize = 0;
-    let mut block_start: usize = 0;
+/// Incremental depth-zero block-range scanner.  Feed it every
+/// `(event, byte_range)` pair from an `into_offset_iter()` parse in
+/// order via [`observe`](Self::observe); it records the byte range of
+/// each depth-zero block whose [`BlockKind`] satisfies `keep`.
+///
+/// Exists as a struct (rather than only the [`block_ranges_by`] loop)
+/// so [`crate::markdown::parser::parse_raw_with_ranges`] can collect
+/// ranges as a side effect of the single AST-building parse instead of
+/// running a second full pulldown-cmark pass.
+pub struct RangeTracker<F> {
+    keep: F,
+    depth: usize,
+    block_start: usize,
     // The kind we opened at depth==0 — recorded only when `keep`
     // accepted it, so depth tracking still increments through
     // nested-block descents but we don't emit a range on close.
-    let mut open_kept: bool = false;
+    open_kept: bool,
+    ranges: Vec<Range<usize>>,
+}
 
-    for (event, byte_range) in Parser::new_ext(source, options).into_offset_iter() {
-        match &event {
+impl<F: FnMut(BlockKind) -> bool> RangeTracker<F> {
+    pub fn new(keep: F) -> Self {
+        Self {
+            keep,
+            depth: 0,
+            block_start: 0,
+            open_kept: false,
+            ranges: Vec::new(),
+        }
+    }
+
+    pub fn observe(&mut self, source: &str, event: &Event<'_>, byte_range: &Range<usize>) {
+        match event {
             Event::Start(tag) => {
                 if let Some(kind) = tag_kind(tag) {
-                    if depth == 0 {
-                        block_start = byte_range.start;
-                        open_kept = keep(kind);
+                    if self.depth == 0 {
+                        self.block_start = byte_range.start;
+                        self.open_kept = (self.keep)(kind);
                     }
-                    depth += 1;
+                    self.depth += 1;
                 }
             }
             Event::End(tag_end) => {
-                if tag_end_kind(tag_end).is_some() && depth > 0 {
-                    depth -= 1;
-                    if depth == 0 && open_kept {
+                if tag_end_kind(tag_end).is_some() && self.depth > 0 {
+                    self.depth -= 1;
+                    if self.depth == 0 && self.open_kept {
                         let end = advance_past_newline(source, byte_range.end);
-                        ranges.push(block_start..end);
-                        open_kept = false;
+                        self.ranges.push(self.block_start..end);
+                        self.open_kept = false;
                     }
                 }
             }
             Event::Rule => {
-                if depth == 0 && keep(BlockKind::Rule) {
+                if self.depth == 0 && (self.keep)(BlockKind::Rule) {
                     let end = advance_past_newline(source, byte_range.end);
-                    ranges.push(byte_range.start..end);
+                    self.ranges.push(byte_range.start..end);
                 }
             }
             Event::Html(_) => {
-                if depth == 0 && keep(BlockKind::HtmlLeaf) {
+                if self.depth == 0 && (self.keep)(BlockKind::HtmlLeaf) {
                     let end = advance_past_newline(source, byte_range.end);
-                    ranges.push(byte_range.start..end);
+                    self.ranges.push(byte_range.start..end);
                 }
             }
             _ => {}
         }
     }
 
-    ranges
+    pub fn into_ranges(self) -> Vec<Range<usize>> {
+        self.ranges
+    }
+}
+
+/// Walk `source`'s pulldown-cmark events at depth zero, recording the
+/// byte range of every block whose [`BlockKind`] satisfies `keep`.
+///
+/// Used by the diff subsystem's table-extent scan (filters to `Table`
+/// only) and by [`top_level_block_ranges`] (covers all block kinds).
+/// Centralizing the depth-tracking + trailing-newline logic in
+/// [`RangeTracker`] keeps every block scanner honest about the same
+/// edge cases.
+pub fn block_ranges_by<F>(source: &str, keep: F) -> Vec<Range<usize>>
+where
+    F: FnMut(BlockKind) -> bool,
+{
+    let mut tracker = RangeTracker::new(keep);
+    for (event, byte_range) in Parser::new_ext(source, PARSE_OPTIONS).into_offset_iter() {
+        tracker.observe(source, &event, &byte_range);
+    }
+    tracker.into_ranges()
 }
 
 /// Extract the byte range of each top-level block in `source`.
@@ -126,6 +163,12 @@ where
 ///
 /// Nested blocks (e.g. paragraphs inside blockquotes) are NOT listed
 /// separately — only the outermost container's range is recorded.
+///
+/// The editor pipeline gets its ranges from
+/// [`crate::markdown::parser::parse_raw_with_ranges`] (same tracker, one
+/// parse); this stays as the standalone entry point for module tests and
+/// the pipeline benchmarks.
+#[allow(dead_code)]
 pub fn top_level_block_ranges(source: &str) -> Vec<Range<usize>> {
     block_ranges_by(source, |kind| {
         matches!(
@@ -159,11 +202,7 @@ pub fn top_level_block_ranges(source: &str) -> Vec<Range<usize>> {
 /// first, but callers that delete should remove every leader, so all are
 /// returned.
 pub fn footnote_definition_ranges(source: &str) -> Vec<(String, Range<usize>)> {
-    let options = Options::ENABLE_TABLES
-        | Options::ENABLE_FOOTNOTES
-        | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_SMART_PUNCTUATION;
+    let options = PARSE_OPTIONS;
 
     let mut ranges: Vec<(String, Range<usize>)> = Vec::new();
     let mut depth: usize = 0;
