@@ -806,6 +806,86 @@ fn rendered_view_wrapped_cell_shows_raw_markdown_chunk() {
     );
 }
 
+/// When an in-line edit shrinks a wrapped cell's raw text so it wraps
+/// to FEWER chunks than the row's rendered height (the parse is still
+/// the pre-edit one during the deferral window), the leftover rendered
+/// sub-lines of the cell must be wiped — not left showing a stale tail
+/// of the de-rendered wrap.
+#[test]
+fn rendered_view_wrapped_cell_wipes_stale_tail_when_raw_shrinks() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let src = "| a | b |\n|---|---|\n| x | `breakable_code_name` words |\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    state.set_viewport_width(24);
+    // Cursor inside the code span of the wrapped cell.
+    let target = src.find("breakable").unwrap();
+    state.cursor.offset = state.buffer.rope().byte_to_char(target);
+    state.update_cursor_block();
+    state.cursor_block_entered_at =
+        Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+
+    let backend = TestBackend::new(24, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    let draw = |terminal: &mut Terminal<TestBackend>,
+                state: &EditorState,
+                view_state: &mut RenderedViewState| {
+        terminal
+            .draw(|frame| {
+                let view = RenderedView {
+                    drop_indicator: None,
+                    state,
+                    theme,
+                    show_table_buttons: false,
+                };
+                frame.render_stateful_widget(view, frame.area(), &mut *view_state);
+            })
+            .unwrap();
+    };
+    let rows_text = |terminal: &Terminal<TestBackend>| -> Vec<String> {
+        let buf = terminal.backend().buffer().clone();
+        (0..10u16)
+            .map(|y| {
+                (0..24u16)
+                    .map(|x| {
+                        buf.cell((x, y))
+                            .and_then(|c| c.symbol().chars().next())
+                            .unwrap_or(' ')
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+
+    // Sanity: the fixture wraps — the cell's second wrap chunk
+    // ("code_name") is on screen before the edit.
+    draw(&mut terminal, &state, &mut view_state);
+    assert!(
+        rows_text(&terminal).iter().any(|r| r.contains("code_name")),
+        "fixture must wrap the code cell across sub-lines",
+    );
+
+    // Shrink the cell in the buffer WITHOUT reparsing — mirrors the
+    // in-line-edit deferral window where the rendered row height is
+    // still the pre-edit parse's.  `breakable_code_name` → `break`.
+    let cut_start = src.find("able_code_name").unwrap();
+    state
+        .buffer
+        .remove(cut_start, cut_start + "able_code_name".len());
+
+    draw(&mut terminal, &state, &mut view_state);
+    let rows = rows_text(&terminal);
+    assert!(
+        !rows.iter().any(|r| r.contains("code_name")),
+        "stale wrap tail must be wiped from the de-rendered cell: {rows:#?}",
+    );
+}
+
 /// Buttons paint only on the table the cursor is inside.
 /// With the cursor parked in a paragraph above a table, the table's
 /// buttons must be invisible; moving the cursor onto the table

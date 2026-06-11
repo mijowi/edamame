@@ -10,6 +10,7 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 
 use crate::config::Theme;
+use crate::markdown::table_layout::preferred_cut;
 
 /// One character from a styled sequence, tagged with the style its
 /// source span carried.  Used by the table renderer's inline-aware
@@ -21,16 +22,28 @@ pub(super) struct StyledChar {
     pub(super) style: Style,
 }
 
+/// Whitespace that wrapping may break at or drop — i.e. everything
+/// `char::is_whitespace` matches EXCEPT NBSP (U+00A0).  Table cells use
+/// NBSP for the code-span pad cells (the rendered stand-ins for the raw
+/// backticks; see `Renderer::cell_styled_chars`), and those must travel
+/// with the code token across wrap breaks instead of being trimmed like
+/// an inter-word space.
+pub(super) fn is_soft_break_space(ch: char) -> bool {
+    ch.is_whitespace() && ch != '\u{00A0}'
+}
+
 /// Tokenize a styled char sequence into runs of leading-whitespace +
 /// non-whitespace, mirroring `split_soft`.  A token always begins with
 /// any whitespace that preceded its non-whitespace tail; chained
 /// whitespace continues the same token until the next word boundary.
+/// NBSP counts as a word char (`is_soft_break_space`), so code-span
+/// pads bind to their code token.
 fn tokenize_styled(chars: &[StyledChar]) -> Vec<Vec<StyledChar>> {
     let mut tokens: Vec<Vec<StyledChar>> = Vec::new();
     let mut tok: Vec<StyledChar> = Vec::new();
     let mut in_ws = true;
     for c in chars {
-        if c.ch.is_whitespace() {
+        if is_soft_break_space(c.ch) {
             if !in_ws && !tok.is_empty() {
                 tokens.push(std::mem::take(&mut tok));
             }
@@ -88,10 +101,11 @@ pub(super) fn wrap_styled_chars(chars: &[StyledChar], width: usize) -> Vec<Vec<S
             rows.push(std::mem::take(&mut current));
             // Drop leading whitespace of the wrapped token before
             // placing it on the new row — matches `wrap_cell`'s
-            // `trim_start` behaviour.
+            // `trim_start` behaviour.  NBSP pads survive the trim so a
+            // code span starting the new row keeps its leading pad cell.
             let trimmed: Vec<StyledChar> = token
                 .iter()
-                .skip_while(|c| c.ch.is_whitespace())
+                .skip_while(|c| is_soft_break_space(c.ch))
                 .copied()
                 .collect();
             let tw = trimmed.len();
@@ -116,16 +130,22 @@ pub(super) fn wrap_styled_chars(chars: &[StyledChar], width: usize) -> Vec<Vec<S
 }
 
 /// Hard-split a token whose char-count exceeds `width` into chunks
-/// of size ≤ `width`.  Counterpart of `table_layout::hard_split`
-/// for styled sequences.
+/// of size ≤ `width`, preferring to break just after a punctuation
+/// character (`table_layout::is_break_after`) in the trailing half of
+/// each chunk.  Counterpart of `table_layout::hard_split` for styled
+/// sequences.
 fn hard_split_styled(token: &[StyledChar], width: usize) -> Vec<Vec<StyledChar>> {
     if width == 0 || token.is_empty() {
         return vec![token.to_vec()];
     }
     let mut rows = Vec::new();
-    for chunk in token.chunks(width) {
-        rows.push(chunk.to_vec());
+    let mut rest = token;
+    while rest.len() > width {
+        let cut = preferred_cut(width, |i| rest[i].ch);
+        rows.push(rest[..cut].to_vec());
+        rest = &rest[cut..];
     }
+    rows.push(rest.to_vec());
     rows
 }
 
@@ -150,16 +170,6 @@ pub(super) fn extend_with_styled_chars(out: &mut Vec<Span<'static>>, chars: &[St
     if !buf.is_empty() {
         out.push(Span::styled(buf, current_style));
     }
-}
-
-/// Number of characters in the longest whitespace-delimited word in `text`.
-/// Used by the table renderer to compute a column's `min` — the floor below
-/// which `compute_widths` would have to break a word to fit.
-pub(super) fn longest_word_chars(text: &str) -> usize {
-    text.split_whitespace()
-        .map(|w| w.chars().count())
-        .max()
-        .unwrap_or(0)
 }
 
 /// Truncate `text` to at most `width` character cells.  Used by the table

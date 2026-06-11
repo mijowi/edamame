@@ -1,15 +1,97 @@
 //! `Block::Table` rendering: per-cell width metrics → `compute_widths` →
 //! per-row inline-aware wrap → bordered output.
 
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::markdown::ast::{inlines_to_plain, Inline};
+use crate::markdown::ast::Inline;
 use crate::markdown::renderer::util::{
-    extend_with_styled_chars, longest_word_chars, truncate_to_width, wrap_styled_chars, StyledChar,
+    extend_with_styled_chars, is_soft_break_space, link_fallback, truncate_to_width,
+    wrap_styled_chars, StyledChar,
 };
 use crate::markdown::renderer::Renderer;
 use crate::markdown::table_layout::{self, MIN_COL_WIDTH};
+
+/// Floor contribution of a cell token that contains *breakable* content —
+/// inline code or link text.  Those tokens may hard-split across rendered
+/// rows (preferring punctuation break points), so they don't pin the
+/// column to their full length the way a prose word does.  8 keeps split
+/// chunks readable while letting code/link columns shrink well below the
+/// token's natural width; `compute_widths`' slack distribution still
+/// widens them whenever the viewport has room.
+const BREAKABLE_MIN_WIDTH: usize = 8;
+
+/// Per-cell `min` width for `compute_widths`: the longest run of
+/// non-whitespace characters that cannot be broken across rendered rows.
+///
+/// Prose words are unbreakable, matching the layout policy ("never break
+/// a prose word to fit").  Tokens containing inline-code or link content
+/// are breakable: the wrap stage hard-splits them at character boundaries,
+/// so such a token contributes at most [`BREAKABLE_MIN_WIDTH`] — but never
+/// less than its longest contiguous *unbreakable* (prose) run, so a prose
+/// fragment glued to a code span keeps its word intact.
+fn cell_min_width(inlines: &[Inline]) -> usize {
+    let mut chars: Vec<(char, bool)> = Vec::new();
+    flatten_breakable_chars(inlines, false, &mut chars);
+
+    let mut best = 0usize;
+    for token in chars.split(|&(ch, _)| is_soft_break_space(ch)) {
+        if token.is_empty() {
+            continue;
+        }
+        let len = token.len();
+        let contribution = if token.iter().any(|&(_, breakable)| breakable) {
+            let longest_prose_run = token
+                .split(|&(_, breakable)| breakable)
+                .map(<[(char, bool)]>::len)
+                .max()
+                .unwrap_or(0);
+            longest_prose_run.max(len.min(BREAKABLE_MIN_WIDTH))
+        } else {
+            len
+        };
+        best = best.max(contribution);
+    }
+    best
+}
+
+/// Flatten a cell's inline tree to `(char, breakable)` pairs, mirroring
+/// `inlines_to_plain`'s traversal.  `Inline::Code` content and link text
+/// (or the URL/filename fallback shown for empty bracket text) are marked
+/// breakable; everything else inherits `breakable` from its enclosing
+/// context (so code nested in a link stays breakable, prose stays not).
+fn flatten_breakable_chars(inlines: &[Inline], breakable: bool, out: &mut Vec<(char, bool)>) {
+    for inline in inlines {
+        match inline {
+            Inline::Text(t) => out.extend(t.chars().map(|c| (c, breakable))),
+            Inline::Bold(inner)
+            | Inline::Italic(inner)
+            | Inline::Strikethrough(inner)
+            | Inline::Highlight(inner) => flatten_breakable_chars(inner, breakable, out),
+            Inline::Code(c) => {
+                // Mirror the rendered form: one pad cell on each side
+                // (NBSP in table cells — see `cell_styled_chars`), both
+                // breakable like the code itself.
+                out.push(('\u{00A0}', true));
+                out.extend(c.chars().map(|c| (c, true)));
+                out.push(('\u{00A0}', true));
+            }
+            Inline::Link { text, url, .. } => {
+                let before = out.len();
+                flatten_breakable_chars(text, true, out);
+                if out.len() == before {
+                    // Empty bracket text renders as the URL / filename
+                    // fallback — measure what's actually painted.
+                    out.extend(link_fallback(url).chars().map(|c| (c, true)));
+                }
+            }
+            Inline::Image { alt, .. } => out.extend(alt.chars().map(|c| (c, false))),
+            Inline::HtmlComment(_) | Inline::FootnoteReference { .. } => {}
+            Inline::SoftBreak => out.push((' ', false)),
+            Inline::HardBreak => out.push(('\n', false)),
+        }
+    }
+}
 
 impl<'t> Renderer<'t> {
     pub(super) fn render_table(
@@ -24,10 +106,11 @@ impl<'t> Renderer<'t> {
             return;
         }
 
-        // Per-cell `max` (rendered char width) and `min` (longest word in
-        // plain-text form).  Headers participate in the column metrics
-        // alongside data rows because a long header word should also keep
-        // the column from collapsing past its widest bound.
+        // Per-cell `max` (rendered char width) and `min` (longest
+        // unbreakable token — see `cell_min_width`).  Headers participate
+        // in the column metrics alongside data rows because a long header
+        // word should also keep the column from collapsing past its widest
+        // bound.
         let mut cell_max_widths: Vec<Vec<usize>> = Vec::with_capacity(rows.len() + 1);
         let mut cell_min_widths: Vec<Vec<usize>> = Vec::with_capacity(rows.len() + 1);
         let header_max: Vec<usize> = headers
@@ -38,7 +121,7 @@ impl<'t> Renderer<'t> {
         let header_min: Vec<usize> = headers
             .iter()
             .take(col_count)
-            .map(|c| longest_word_chars(&inlines_to_plain(c)))
+            .map(|c| cell_min_width(c))
             .collect();
         cell_max_widths.push(header_max);
         cell_min_widths.push(header_min);
@@ -52,7 +135,7 @@ impl<'t> Renderer<'t> {
             cell_min_widths.push(
                 row.iter()
                     .take(col_count)
-                    .map(|c| longest_word_chars(&inlines_to_plain(c)))
+                    .map(|c| cell_min_width(c))
                     .collect(),
             );
         }
@@ -259,13 +342,112 @@ impl<'t> Renderer<'t> {
     /// span / link / etc.) so the wrapped output preserves formatting
     /// across line breaks.
     fn cell_styled_chars(&self, cell_inlines: &[Inline], default_style: Style) -> Vec<StyledChar> {
+        // `render_inline` emits each code span as a single ` code ` span —
+        // the pad spaces are the rendered stand-ins for the raw backticks.
+        // Inside a wrapping table cell those pads must travel with the
+        // code token: left as ASCII spaces they'd be trimmed at a wrap
+        // break (leading pad) or ride off with the following token
+        // (trailing pad), gluing the code background to the border or a
+        // neighbouring word.  Convert them to NBSP, which the wrap
+        // tokenizer treats as a word char (`is_soft_break_space`).  Code
+        // spans are recognized by style: `render_inline` paints them with
+        // exactly `theme.code_span` (or the dim + CROSSED_OUT variant) and
+        // nothing else uses those styles.
+        let code_style = self.theme.code_span;
+        let code_dim_style = self.theme.code_span_dim.add_modifier(Modifier::CROSSED_OUT);
         let mut out: Vec<StyledChar> = Vec::new();
         for span in self.render_inlines(cell_inlines, default_style) {
             let style = span.style;
+            let start = out.len();
             for ch in span.content.chars() {
                 out.push(StyledChar { ch, style });
             }
+            if style == code_style || style == code_dim_style {
+                if out.get(start).is_some_and(|c| c.ch == ' ') {
+                    out[start].ch = '\u{00A0}';
+                }
+                if out.last().is_some_and(|c| c.ch == ' ') {
+                    out.last_mut().unwrap().ch = '\u{00A0}';
+                }
+            }
         }
         out
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(s: &str) -> Inline {
+        Inline::Text(s.to_owned())
+    }
+
+    #[test]
+    fn cell_min_width_prose_uses_longest_word() {
+        let cell = vec![text("a couple of ordinary words")];
+        assert_eq!(cell_min_width(&cell), "ordinary".chars().count());
+    }
+
+    #[test]
+    fn cell_min_width_long_code_span_is_breakable() {
+        let cell = vec![Inline::Code("really_long_function_name()".to_owned())];
+        assert_eq!(cell_min_width(&cell), BREAKABLE_MIN_WIDTH);
+    }
+
+    #[test]
+    fn cell_min_width_short_code_span_counts_content_plus_pads() {
+        // Rendered form is `␣ok␣` (NBSP pads standing in for the
+        // backticks) — 4 cells, below the breakable floor.
+        let cell = vec![Inline::Code("ok".to_owned())];
+        assert_eq!(cell_min_width(&cell), 4);
+    }
+
+    #[test]
+    fn cell_min_width_prose_word_beside_code_token_wins() {
+        // The prose word is its own token and longer than the breakable
+        // floor — it stays the column's min.
+        let cell = vec![
+            text("unbreakableprose "),
+            Inline::Code("very_long_identifier_here".to_owned()),
+        ];
+        assert_eq!(cell_min_width(&cell), "unbreakableprose".chars().count());
+    }
+
+    #[test]
+    fn cell_min_width_mixed_token_keeps_prose_run_intact() {
+        // Prose glued to a code span forms one token; the floor must not
+        // drop below the prose run so a hard split can't shred the word.
+        let cell = vec![text("unbreakableprose"), Inline::Code("x".to_owned())];
+        assert_eq!(cell_min_width(&cell), "unbreakableprose".chars().count());
+    }
+
+    #[test]
+    fn cell_min_width_link_text_is_breakable() {
+        let cell = vec![Inline::Link {
+            text: vec![text("a-very-long-link-label-indeed")],
+            url: "https://example.com".to_owned(),
+            title: None,
+        }];
+        assert_eq!(cell_min_width(&cell), BREAKABLE_MIN_WIDTH);
+    }
+
+    #[test]
+    fn cell_min_width_empty_link_text_measures_url_fallback() {
+        // Empty bracket text renders as the URL fallback — long, so capped
+        // at the breakable floor.
+        let cell = vec![Inline::Link {
+            text: vec![],
+            url: "https://example.com/some/long/path".to_owned(),
+            title: None,
+        }];
+        assert_eq!(cell_min_width(&cell), BREAKABLE_MIN_WIDTH);
+    }
+
+    #[test]
+    fn cell_min_width_empty_cell_is_zero() {
+        assert_eq!(cell_min_width(&[]), 0);
     }
 }

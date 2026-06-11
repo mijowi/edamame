@@ -108,12 +108,14 @@ pub(super) struct WrappedCellOverlay {
     /// Sub-line index in `editor.parsed.lines` of the cell's row's
     /// first rendered sub.
     pub(super) row_first_line_idx: usize,
-    /// Per-chunk overlay info — one entry per wrap chunk that fits
-    /// within the row's rendered height.  Index `i` is painted on
+    /// Per-chunk overlay info — one entry per rendered sub-line of the
+    /// row.  Index `i` is painted on
     /// `editor.parsed.lines[row_first_line_idx + i]`.  Each entry is
     /// already shaped for `overlay_raw_cell` (rendered_start shifted
     /// for continuation chunks, cursor_in_cell only on the cursor's
-    /// chunk).
+    /// chunk).  When the raw text wraps to fewer chunks than the row's
+    /// rendered height, the trailing entries are blank (`raw_text`
+    /// empty) so the painter wipes the cell's stale rendered tail.
     pub(super) subs: Vec<CellOverlay>,
     /// Index within `subs` that contains the cursor.
     pub(super) cursor_sub: usize,
@@ -268,6 +270,28 @@ pub(super) fn compute_wrapped_cell_overlay(
             raw_text: chunk_text.clone(),
             cursor_in_cell,
             raw_cell_byte_start,
+        });
+    }
+
+    // The raw cell can wrap to FEWER chunks than the row has rendered
+    // sub-lines — the styled wrap and the raw wrap break differently
+    // (rendered code pads vs raw backticks), and an in-line edit can
+    // shrink the raw text while the rendered row height is still the
+    // pre-edit parse's.  Pad with blank overlays so `overlay_raw_cell`
+    // wipes the cell's area on those leftover sub-lines; without this,
+    // the de-rendered cell's stale rendered wrap tail stays on screen
+    // below the raw chunks.
+    let cell_end_byte = raw_row_byte_at
+        .get(raw_cell_end_char)
+        .copied()
+        .unwrap_or(raw_row.len());
+    while subs.len() < row_height {
+        subs.push(CellOverlay {
+            rendered_start: cell_rendered_start,
+            rendered_end: cell_rendered_end,
+            raw_text: String::new(),
+            cursor_in_cell: None,
+            raw_cell_byte_start: cell_end_byte,
         });
     }
 

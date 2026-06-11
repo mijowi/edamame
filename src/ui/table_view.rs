@@ -668,7 +668,9 @@ pub fn classify_table_sub_lines(lines: &[Line<'_>]) -> Vec<TableSubLineKind> {
 /// lines explicitly do *not* qualify, so the wrap-continuation line
 /// of a multi-row data row (whose short cells emit `format!(" {}{} ",
 /// "", " ".repeat(pad))` — ASCII spaces only) cannot be misidentified
-/// as a separator.
+/// as a separator.  Data rows may also carry NBSP from code-span pad
+/// cells, but they always sit alongside the renderer's ASCII cell
+/// padding, which disqualifies the line here.
 fn is_blank_stripe_line(line: &Line<'_>) -> bool {
     let mut saw_nbsp = false;
     for c in line.spans.iter().flat_map(|s| s.content.chars()) {

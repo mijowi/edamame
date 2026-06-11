@@ -34,7 +34,11 @@
 //!    short / numeric columns stay at their `max` since their `min == max`.
 //!
 //! 4. **Below sum(min)**: every column drops to its `min` and the table
-//!    overflows the viewport horizontally — never break a word to fit.
+//!    overflows the viewport horizontally — never break a *prose* word to
+//!    fit.  Code spans and links are the exception: the renderer reports a
+//!    reduced `min` for cells containing them (see
+//!    `renderer::table::cell_min_width`), so those cells hard-split across
+//!    rows instead of forcing the column wide.
 //!
 //! 5. **User overrides**: any column with a `Some(w)` entry in
 //!    `user_widths` is pinned to `w` (clamped to `MIN_COL_WIDTH`); pinned
@@ -333,27 +337,81 @@ fn split_soft(text: &str) -> Vec<String> {
 }
 
 /// Hard-split a single word across rows of width `width`, by terminal-cell
-/// width.  Never returns an empty `Vec`.
+/// width.  Prefers to break just after a punctuation character
+/// ([`is_break_after`]) in the trailing half of each row, so identifiers,
+/// paths, and URLs split at `_` / `.` / `/` / … instead of mid-word.
+/// Never returns an empty `Vec`.
 fn hard_split(word: &str, width: usize) -> Vec<String> {
     let mut rows = Vec::new();
-    let mut cur = String::new();
+    let mut cur: Vec<char> = Vec::new();
     let mut cur_w = 0usize;
     for ch in word.chars() {
         let cw = UnicodeWidthStr::width(ch.to_string().as_str());
         if cur_w + cw > width && !cur.is_empty() {
-            rows.push(std::mem::take(&mut cur));
-            cur_w = 0;
+            let cut = preferred_cut(cur.len(), |i| cur[i]);
+            rows.push(cur[..cut].iter().collect());
+            cur.drain(..cut);
+            cur_w = cur
+                .iter()
+                .map(|c| UnicodeWidthStr::width(c.to_string().as_str()))
+                .sum();
         }
         cur.push(ch);
         cur_w += cw;
     }
     if !cur.is_empty() {
-        rows.push(cur);
+        rows.push(cur.iter().collect());
     }
     if rows.is_empty() {
         rows.push(String::new());
     }
     rows
+}
+
+/// Characters a hard-split prefers to break *after*.  Tuned for the token
+/// shapes that actually force narrow tables — code identifiers
+/// (`snake_case`, `kebab-case`, `method().chains`), file paths, and URLs.
+pub fn is_break_after(ch: char) -> bool {
+    matches!(
+        ch,
+        '_' | '-'
+            | '.'
+            | ','
+            | ';'
+            | ':'
+            | '/'
+            | '\\'
+            | '('
+            | ')'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '='
+            | '&'
+            | '?'
+            | '#'
+            | '@'
+    )
+}
+
+/// Pick the cut index for a hard-split chunk of `len` elements whose chars
+/// are exposed via `char_at`.  Scans the trailing half of the chunk for the
+/// last break-friendly character ([`is_break_after`]) and cuts just after
+/// it; falls back to a full-width cut (`len`) when none exists.  Limiting
+/// the scan to the trailing half guarantees every emitted row keeps at
+/// least half its width, so a punctuation-dense token can't degenerate
+/// into confetti rows.  Shared by [`hard_split`] and the styled-char
+/// counterpart in `renderer::util`.
+pub fn preferred_cut(len: usize, char_at: impl Fn(usize) -> char) -> usize {
+    let lookback = len / 2;
+    for back in 0..lookback {
+        let i = len - 1 - back;
+        if is_break_after(char_at(i)) {
+            return i + 1;
+        }
+    }
+    len
 }
 
 // ── Column-width comment parsing ────────────────────────────────────────────
@@ -707,6 +765,29 @@ mod tests {
         }
         let joined: String = rows.join("");
         assert_eq!(joined, "supercalifragilistic");
+    }
+
+    #[test]
+    fn wrap_cell_hard_split_prefers_punctuation_break() {
+        // Width 10; "really_long_name" would naively cut at char 10
+        // ("really_lon"), but the `_` at index 6 sits inside the trailing
+        // half, so the cut lands just after it.
+        let rows = wrap_cell("really_long_name", 10);
+        assert_eq!(rows, vec!["really_", "long_name"]);
+    }
+
+    #[test]
+    fn wrap_cell_hard_split_falls_back_to_full_width_without_punctuation() {
+        let rows = wrap_cell("abcdefghijklmnop", 10);
+        assert_eq!(rows, vec!["abcdefghij", "klmnop"]);
+    }
+
+    #[test]
+    fn preferred_cut_ignores_punctuation_in_leading_half() {
+        // `_` at index 1 is outside the trailing-half scan window of a
+        // 10-char chunk — full-width cut.
+        let chunk: Vec<char> = "a_bcdefghi".chars().collect();
+        assert_eq!(preferred_cut(chunk.len(), |i| chunk[i]), chunk.len());
     }
 
     #[test]
