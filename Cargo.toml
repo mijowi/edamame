@@ -146,8 +146,16 @@ clipboard = ["arboard"]
 insta = { version = "1", features = ["ron"] }
 # Property-based testing
 proptest = "1"
+# Parse/render pipeline benchmarks (see docs/perf-benchmark-plan.md).
+# Criterion runs benches in release mode by default, which matters — the
+# dev profile below is tuned for compile speed, not runtime speed.
+criterion = "0.5"
 # Note: `tempfile` is a runtime dep (used by export/custom.rs); no separate
 # dev-dependency entry is needed — dev code can import it the same way.
+
+[[bench]]
+name = "pipeline"
+harness = false
 
 [profile.dev]
 incremental = false

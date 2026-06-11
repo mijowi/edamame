@@ -9,9 +9,9 @@ use crate::diagram::DiagramSource;
 use crate::document::visual_cache::VisualRowCache;
 use crate::document::SourceMap;
 use crate::markdown::{
-    inlines_to_plain, parse_offsets, parse_raw, promote_diagram_code_blocks, promote_html_comments,
+    inlines_to_plain, parse_raw_with_ranges, promote_diagram_code_blocks, promote_html_comments,
     promote_image_paragraphs, split_lists_on_blank_lines, Block, ImageRowOverride, InlineColMap,
-    Renderer,
+    RenderCache, Renderer,
 };
 
 /// Setext heading style detected from raw block source.  `None` for ATX
@@ -179,6 +179,7 @@ impl ParsedDoc {
             80,
             false,
             true,
+            None,
         )
     }
 
@@ -212,18 +213,22 @@ impl ParsedDoc {
         // so a user who declined the diagrams prompt (or set
         // `[diagrams].enabled = "never"`) sees the original code.
         promote_diagrams: bool,
+        // Optional block-level render memoization, owned by `EditorState`
+        // and threaded through every reparse so unchanged blocks reuse
+        // their previously rendered lines.  `None` (tests, one-shot
+        // builds) renders every block from scratch.
+        render_cache: Option<&mut RenderCache>,
     ) -> Self {
-        // 1. Extract top-level block byte ranges.
-        let mut real_ranges = parse_offsets::top_level_block_ranges(source);
+        // 1+2. Parse into raw AST and extract top-level block byte ranges
+        //    in a single pulldown-cmark pass (blocks match `real_ranges`
+        //    1:1 — the `tui-columns` comment post-pass hasn't run yet).
+        //    The merge pass MUST run before the live-widths override:
+        //    merging checks for `user_widths: None`, so applying the
+        //    override first would prevent the Html comment block from
+        //    being absorbed and the comment would flash into the rendered
+        //    view between drag events.
+        let (mut blocks, mut real_ranges) = parse_raw_with_ranges(source);
         let total_bytes = source.len();
-
-        // 2. Parse into raw AST (blocks here match `real_ranges` 1:1 — the
-        //    `tui-columns` comment post-pass hasn't run yet).  The merge pass
-        //    MUST run before the live-widths override: merging checks for
-        //    `user_widths: None`, so applying the override first would
-        //    prevent the Html comment block from being absorbed and the
-        //    comment would flash into the rendered view between drag events.
-        let mut blocks = parse_raw(source);
         // Split top-level lists across blank-line gaps so `1. a\n\n1. b\n`
         // renders as two ordered lists rather than one merged list (and so
         // `Enter`-twice on a list item produces a clean visual split).
@@ -266,7 +271,10 @@ impl ParsedDoc {
         if let Some(override_fn) = image_row_override {
             renderer = renderer.with_image_row_override(override_fn);
         }
-        let (rendered_lines, real_per_block_counts) = renderer.render_with_counts(&blocks);
+        let (rendered_lines, real_per_block_counts) = match render_cache {
+            Some(cache) => renderer.render_with_counts_cached(&blocks, cache),
+            None => renderer.render_with_counts(&blocks),
+        };
 
         // 4. Build the final line list and source-map structures.  Each blank
         //    line in the source becomes its own "virtual block" owning a single
@@ -926,6 +934,7 @@ mod tests {
             80,
             false,
             true,
+            None,
         );
         for line in &doc.lines {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();

@@ -17,7 +17,9 @@ use edamame::markdown::{promote_diagram_code_blocks, Block};
 /// any overrides.  Produces the same structure the live App would see.
 fn build_parsed(source: &str) -> ParsedDoc {
     let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
-    ParsedDoc::build_with_overrides(source, theme, false, 12, None, None, false, 80, false, true)
+    ParsedDoc::build_with_overrides(
+        source, theme, false, 12, None, None, false, 80, false, true, None,
+    )
 }
 
 // ── Parser promotion ──────────────────────────────────────────────────────

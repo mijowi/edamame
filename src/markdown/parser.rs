@@ -5,21 +5,22 @@ pub use post_pass::{
     promote_image_paragraphs, split_lists_on_blank_lines,
 };
 
-use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use std::ops::Range;
+
+use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
 
 use super::ast::{inlines_to_plain, Block, Inline, ListItem};
 use super::parse_offsets;
 
 /// Parse a Markdown string into a list of `Block` AST nodes.
 pub fn parse(text: &str) -> Vec<Block> {
-    let mut blocks = parse_raw(text);
     // Split top-level lists across blank-line gaps so two consecutive
     // ordered/bullet lists separated by a blank line render as separate
     // lists rather than one continuous one.  Operating on a transient
     // ranges vector — `parse` doesn't expose ranges to callers — keeps
     // callers like the help overlay rendering with the same semantics
     // as the editor pipeline.
-    let mut ranges = parse_offsets::top_level_block_ranges(text);
+    let (mut blocks, mut ranges) = parse_raw_with_ranges(text);
     split_lists_on_blank_lines(&mut blocks, &mut ranges, text);
     // Promote pure-comment `Block::Html` entries to `Block::HtmlComment` BEFORE
     // the tui-columns merge runs so the merge can find the comment by its new
@@ -39,16 +40,44 @@ pub fn parse(text: &str) -> Vec<Block> {
 /// top_level_block_ranges` in a 1:1 correspondence must use this and apply
 /// [`attach_trailing_tui_columns_comments`] themselves after any range-aware
 /// mutations.
+///
+/// The editor pipeline uses [`parse_raw_with_ranges`] instead (one parse
+/// for blocks AND ranges); this stays as the ranges-free entry point for
+/// module tests and the pipeline benchmarks.
+#[allow(dead_code)]
 pub fn parse_raw(text: &str) -> Vec<Block> {
-    let options = Options::ENABLE_TABLES
-        | Options::ENABLE_FOOTNOTES
-        | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_SMART_PUNCTUATION;
-
-    let parser = Parser::new_ext(text, options);
+    let parser = Parser::new_ext(text, parse_offsets::PARSE_OPTIONS);
     let mut events = parser.peekable();
     parse_blocks(&mut events)
+}
+
+/// Like [`parse_raw`], but also returns the top-level byte range of each
+/// block — equivalent to pairing `parse_raw` with
+/// [`parse_offsets::top_level_block_ranges`], in a **single**
+/// pulldown-cmark pass instead of two.  The ranges are collected by a
+/// [`parse_offsets::RangeTracker`] observing the same offset-iterator
+/// events the AST builder consumes, so blocks and ranges stay 1:1 by
+/// construction.
+///
+/// This is the editor pipeline's parse entry point (`ParsedDoc::build`);
+/// see docs/perf-benchmark-plan.md — the second full parse cost ~35% of
+/// the prose-document pipeline before the merge.
+pub fn parse_raw_with_ranges(text: &str) -> (Vec<Block>, Vec<Range<usize>>) {
+    let mut tracker = parse_offsets::RangeTracker::new(|_| true);
+    let mut events = Parser::new_ext(text, parse_offsets::PARSE_OPTIONS)
+        .into_offset_iter()
+        .map(|(event, byte_range)| {
+            tracker.observe(text, &event, &byte_range);
+            event
+        })
+        .peekable();
+    let blocks = parse_blocks(&mut events);
+    // `parse_blocks` stops at the top-level end-of-stream, which normally
+    // exhausts the iterator — but drain defensively so the tracker has
+    // seen every event before we take its ranges.
+    while events.next().is_some() {}
+    drop(events);
+    (blocks, tracker.into_ranges())
 }
 
 // ─── Block parsing ────────────────────────────────────────────────────────────
@@ -596,6 +625,20 @@ mod tests {
     use super::*;
     use crate::markdown::ast::{Block, Inline};
     use pulldown_cmark::HeadingLevel;
+
+    /// `parse_raw_with_ranges` must produce exactly what the old two-pass
+    /// pairing produced: `parse_raw`'s blocks and
+    /// `parse_offsets::top_level_block_ranges`'s ranges, 1:1.
+    #[test]
+    fn merged_parse_matches_two_pass_parse() {
+        let src = "# Title\n\nA paragraph with **bold**.\n\n- item one\n- item two\n\n\
+                   ```rust\nfn x() {}\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n\
+                   > quoted\n\n---\n\nRef.[^1]\n\n[^1]: A note.\n\n<!-- a comment -->\n";
+        let (blocks, ranges) = parse_raw_with_ranges(src);
+        assert_eq!(blocks, parse_raw(src));
+        assert_eq!(ranges, parse_offsets::top_level_block_ranges(src));
+        assert_eq!(blocks.len(), ranges.len(), "blocks↔ranges must stay 1:1");
+    }
 
     #[test]
     fn parse_heading() {

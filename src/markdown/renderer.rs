@@ -13,6 +13,7 @@ use crate::config::Theme;
 
 use self::util::{link_fallback, link_style_for};
 use super::ast::{inlines_to_plain, Block, Inline};
+use super::render_cache::{RenderCache, RenderSettings};
 
 const IMAGE_PREFIX: &str = "Image: ";
 
@@ -128,6 +129,53 @@ impl<'t> Renderer<'t> {
             counts.push(lines.len() - before);
         }
 
+        (lines, counts)
+    }
+
+    /// Like [`render_with_counts`](Self::render_with_counts), but memoizes
+    /// each block's rendered lines in `cache` so blocks unchanged since the
+    /// previous build cost a clone instead of a re-render.  See
+    /// [`RenderCache`] for the keying and eviction rules.
+    pub fn render_with_counts_cached(
+        &self,
+        blocks: &[Block],
+        cache: &mut RenderCache,
+    ) -> (Vec<Line<'static>>, Vec<usize>) {
+        let mut prev = cache.begin_build(RenderSettings {
+            theme_addr: self.theme as *const Theme as usize,
+            viewport_width: self.viewport_width,
+            code_wrap: self.code_wrap,
+            image_max_height: self.image_max_height,
+            row_striping: self.row_striping,
+            big_h1: self.big_h1,
+        });
+
+        let mut lines = Vec::new();
+        let mut counts = Vec::with_capacity(blocks.len());
+        for block in blocks {
+            let before = lines.len();
+            // ImageBlock row counts depend on the decode cache (the row
+            // override), which changes without the AST changing — never
+            // cache them.  They render as cheap placeholder fills.
+            if matches!(block, Block::ImageBlock { .. }) {
+                self.render_block(block, &mut lines, "");
+            } else if let Some(hit) = cache.entries.get(block) {
+                // Duplicate of a block already rendered this build.
+                lines.extend(hit.iter().cloned());
+            } else if let Some((key, hit)) = prev.remove_entry(block) {
+                lines.extend(hit.iter().cloned());
+                cache.entries.insert(key, hit);
+            } else {
+                self.render_block(block, &mut lines, "");
+                cache
+                    .entries
+                    .insert(block.clone(), lines[before..].to_vec());
+            }
+            counts.push(lines.len() - before);
+        }
+
+        // `prev` drops here: entries whose block no longer appears in the
+        // document are evicted.
         (lines, counts)
     }
 
@@ -902,6 +950,78 @@ mod tests {
     fn render(md: &str) -> Vec<Line<'static>> {
         let blocks = parse(md);
         renderer().render(&blocks)
+    }
+
+    // ── Render cache ──────────────────────────────────────────────────
+
+    /// The memoized path must be output-identical to the uncached path,
+    /// both on a cold cache (all misses) and a warm one (all hits).
+    #[test]
+    fn cached_render_matches_uncached() {
+        let src = "# Title\n\nSome **bold** prose.\n\n- a\n- b\n\n\
+                   | x | y |\n|---|---|\n| 1 | 2 |\n\n```\ncode\n```\n";
+        let blocks = parse(src);
+        let r = renderer().with_viewport_width(60).with_row_striping(true);
+        let (plain_lines, plain_counts) = r.render_with_counts(&blocks);
+
+        let mut cache = RenderCache::default();
+        let cold = r.render_with_counts_cached(&blocks, &mut cache);
+        let warm = r.render_with_counts_cached(&blocks, &mut cache);
+        assert_eq!(cold.0, plain_lines);
+        assert_eq!(cold.1, plain_counts);
+        assert_eq!(warm.0, plain_lines);
+        assert_eq!(warm.1, plain_counts);
+    }
+
+    /// Entries for blocks no longer in the document are evicted, and a
+    /// duplicate block is served from a single entry.
+    #[test]
+    fn cache_evicts_dropped_blocks_and_shares_duplicates() {
+        let r = renderer();
+        let mut cache = RenderCache::default();
+
+        let first = parse("alpha\n\nbeta\n\nalpha\n");
+        assert_eq!(first.len(), 3, "two duplicates plus one distinct block");
+        r.render_with_counts_cached(&first, &mut cache);
+        assert_eq!(cache.entries.len(), 2, "duplicates share one entry");
+
+        let second = parse("beta\n\ngamma\n");
+        r.render_with_counts_cached(&second, &mut cache);
+        assert_eq!(cache.entries.len(), 2);
+        assert!(!cache.entries.keys().any(
+            |b| matches!(b, Block::Paragraph { inlines } if inlines_to_plain(inlines) == "alpha")
+        ));
+    }
+
+    /// A settings change (here: viewport width) must invalidate the whole
+    /// cache — a stale-width hit would render rules/tables at the wrong
+    /// width.
+    #[test]
+    fn cache_cleared_on_settings_change() {
+        let blocks = parse("---\n");
+        let mut cache = RenderCache::default();
+
+        let narrow = renderer().with_viewport_width(40);
+        let (narrow_lines, _) = narrow.render_with_counts_cached(&blocks, &mut cache);
+
+        let wide = renderer().with_viewport_width(120);
+        let (wide_lines, _) = wide.render_with_counts_cached(&blocks, &mut cache);
+
+        assert_ne!(narrow_lines, wide_lines, "rule must re-render at new width");
+        assert_eq!(wide_lines, wide.render(&blocks));
+    }
+
+    /// Image blocks are never cached — their row count tracks the decode
+    /// cache, not the AST.
+    #[test]
+    fn image_blocks_bypass_cache() {
+        let blocks = vec![Block::ImageBlock {
+            alt: "a".into(),
+            url: "img.png".into(),
+        }];
+        let mut cache = RenderCache::default();
+        renderer().render_with_counts_cached(&blocks, &mut cache);
+        assert!(cache.entries.is_empty());
     }
 
     #[test]

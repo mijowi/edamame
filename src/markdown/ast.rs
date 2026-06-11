@@ -5,7 +5,7 @@ use pulldown_cmark::HeadingLevel;
 // `Block::CodeBlock` and `Block::BlockQuote` are intentional Markdown
 // terminology, not stuttering.
 #[allow(clippy::enum_variant_names)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Block {
     Heading {
         level: HeadingLevel,
@@ -76,7 +76,7 @@ pub enum Block {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ListItem {
     pub blocks: Vec<Block>,
     /// `Some(true)` = checked, `Some(false)` = unchecked, `None` = not a task item.
@@ -85,7 +85,7 @@ pub struct ListItem {
 
 // ─── Inline nodes ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Inline {
     Text(String),
     Bold(Vec<Inline>),
