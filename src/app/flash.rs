@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::KeyBindingOverrides;
 use crate::config::KeyMap;
-use crate::ui::{hint_line_for, HintContent, ModalKind};
+use crate::ui::{hint_line_for, HintContent, HintSet, ModalKind};
 
 use super::modal::{Modal, NoticeModal};
 use super::App;
@@ -113,6 +113,18 @@ impl App {
                 text: msg.text.clone(),
                 style,
             };
+        }
+        // Hovered-link tooltip: while the mouse pointer rests on a link
+        // the hint row shows its raw URL (browser-status-bar style),
+        // replacing the chord row.  A prelude with no chords reuses the
+        // Chords rendering path — plain `hint_label` text on the bar.
+        // Sits below Prompt and Transient so a `Saved` flash or a
+        // file-changed prompt is never masked by an idle hover.
+        if let Some(url) = self.hovered_link.as_ref() {
+            return HintContent::Chords(HintSet {
+                prelude: Some(url.clone()),
+                chords: Vec::new(),
+            });
         }
         // Look up chord glyphs against the live KeyMap so any rebind
         // applied via the keybinds overlay shows up in the hint line
@@ -317,6 +329,44 @@ mod tests {
         match app.hint_content() {
             HintContent::Transient { text, .. } => assert_eq!(text, "Copied"),
             other => panic!("expected Transient, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hovered_link_replaces_chord_row_with_url() {
+        let mut app = make_app();
+        app.hovered_link = Some("https://example.com".to_owned());
+        match app.hint_content() {
+            HintContent::Chords(set) => {
+                assert_eq!(set.prelude.as_deref(), Some("https://example.com"));
+                assert!(
+                    set.chords.is_empty(),
+                    "hover tooltip must replace the chord row, not prefix it"
+                );
+            }
+            other => panic!("expected Chords with URL prelude, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transient_outranks_hovered_link() {
+        let mut app = make_app();
+        app.hovered_link = Some("https://example.com".to_owned());
+        app.flash("Saved", MessageKind::Success);
+        match app.hint_content() {
+            HintContent::Transient { text, .. } => assert_eq!(text, "Saved"),
+            other => panic!("transient must mask the hover tooltip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clearing_hover_restores_chords() {
+        let mut app = make_app();
+        app.hovered_link = Some("./notes.md".to_owned());
+        app.hovered_link = None;
+        match app.hint_content() {
+            HintContent::Chords(set) => assert!(!set.chords.is_empty()),
+            other => panic!("expected default chord row, got {other:?}"),
         }
     }
 

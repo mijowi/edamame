@@ -1269,17 +1269,26 @@ fn click_on_non_link_text_does_not_set_pending_follow() {
 }
 
 #[test]
-fn hovered_link_target_returns_url_on_link_hover() {
+fn hovered_link_url_returns_raw_url_on_link_hover() {
     let st = state("See [docs](https://example.com) for more.\n");
-    let target = mouse_ops::hovered_link_target(&st, 5, 0, VW);
-    assert!(matches!(target, Some(LinkTarget::Url(ref u)) if u == "https://example.com"));
+    let url = mouse_ops::hovered_link_url(&st, 5, 0, VW);
+    assert_eq!(url.as_deref(), Some("https://example.com"));
 }
 
 #[test]
-fn hovered_link_target_none_outside_link_span() {
+fn hovered_link_url_keeps_relative_path_as_written() {
+    // The hint line shows what the author wrote — no base-dir
+    // resolution to an absolute path.
+    let st = state("See [notes](./notes.md) for more.\n");
+    let url = mouse_ops::hovered_link_url(&st, 5, 0, VW);
+    assert_eq!(url.as_deref(), Some("./notes.md"));
+}
+
+#[test]
+fn hovered_link_url_none_outside_link_span() {
     let st = state("See [docs](https://example.com) for more.\n");
     // Col 0 is the leading 'S', not a link.
-    assert!(mouse_ops::hovered_link_target(&st, 0, 0, VW).is_none());
+    assert!(mouse_ops::hovered_link_url(&st, 0, 0, VW).is_none());
 }
 
 #[test]

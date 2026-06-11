@@ -4,27 +4,29 @@ use crate::ui::line_render;
 
 use super::coord::{click_to_char_offset, rendered_line_at_row, span_at_col_has_modifier};
 
-/// If `(col, row)` falls on a Markdown link, return its classified
-/// [`LinkTarget`].  Used by the App to stash the currently hovered
-/// link on `App::hovered_link` so it can surface the target on
-/// the hint line.
-pub fn hovered_link_target(
+/// If `(col, row)` falls on a Markdown link, return its raw URL string
+/// exactly as written in the source.  Used by the App to stash the
+/// currently hovered link on `App::hovered_link` so the hint line can
+/// surface it while the pointer rests on the link.  The raw string is
+/// kept (rather than a classified [`LinkTarget`]) because the hint line
+/// shows what the author wrote — `./notes.md`, not the base-dir-resolved
+/// absolute path.
+///
+/// Deliberately has no raw-scan fallback (unlike `follow_link_at_click`):
+/// during the raw-reveal window the cursor block shows the literal
+/// `[text](url)` source, so the URL is already on screen and a hint-line
+/// echo would be redundant.
+pub fn hovered_link_url(
     state: &EditorState,
     col: u16,
     row: u16,
     viewport_width: usize,
-) -> Option<LinkTarget> {
+) -> Option<String> {
     let (line, _) = rendered_line_at_row(state, row as usize)?;
     if !span_at_col_has_modifier(&line, col as usize, ratatui::style::Modifier::UNDERLINED) {
         return None;
     }
-    let url = link_url_for_click(state, col as usize, row as usize, viewport_width)?;
-    let base_dir = state
-        .buffer
-        .path()
-        .and_then(|p| p.parent())
-        .map(|p| p.to_owned());
-    Some(LinkTarget::parse(&url, base_dir.as_deref()))
+    link_url_for_click(state, col as usize, row as usize, viewport_width)
 }
 
 /// If `(col, row)` lands on a Markdown link, set

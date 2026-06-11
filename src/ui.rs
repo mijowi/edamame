@@ -32,7 +32,7 @@ pub mod table_view;
 pub mod theme_picker;
 pub mod welcome;
 
-pub use bottom_region::{hint_line_for, BottomRegion, HintChord, HintContent};
+pub use bottom_region::{hint_line_for, BottomRegion, HintChord, HintContent, HintSet};
 pub use cap_summary::{build_cap_lines, CapSummary};
 pub use command_palette::{PaletteResponse, PaletteState, PaletteView};
 #[allow(unused_imports)]

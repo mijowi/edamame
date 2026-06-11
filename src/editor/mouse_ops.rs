@@ -13,7 +13,7 @@ mod selection;
 mod table_drag;
 
 pub use footnotes::footnote_at_offset;
-pub use links::{hovered_link_target, link_at_offset};
+pub use links::{hovered_link_url, link_at_offset};
 pub use selection::visual_selection_to_rendered_text;
 
 use crate::document::{Selection, VisualSelection};

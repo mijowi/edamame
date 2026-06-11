@@ -1458,8 +1458,6 @@ Lazy loading for rendering (all modes — Markdown, diff, raw)
 Finish diff mode plan (editing hunks in diff mode)
 Use Ctrl with diff mode keybinds in order to facilitate editing during review
 
-Show link in hint line on mouse hover or cursor placement
-
 ---
 
 ## Edamame Acronyms

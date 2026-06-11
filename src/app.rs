@@ -31,7 +31,6 @@ use ratatui::Terminal;
 
 use crate::config::{Config, ConfigWarning, KeyBindingOverrides, KeyMap, Theme, ThemeFile};
 use crate::document::Buffer;
-use crate::editor::link::LinkTarget;
 use crate::editor::{mouse_ops, EditorState};
 use crate::input::MouseDispatcher;
 use crate::terminal::{Capabilities, ColorDepth, PointerShape};
@@ -210,11 +209,13 @@ pub struct App {
     /// Forward-stack: `NavigateBack` pushes the current state
     /// here so `NavigateForward` can redo the navigation.
     nav_forward: Vec<NavEntry>,
-    /// Target of the link currently under the mouse
-    /// pointer, updated on every `MouseEventKind::Moved` event.
-    /// A later change will render this (plus the link's `title`) on the hint
-    /// line.  Until then the field is wired through but not displayed.
-    hovered_link: Option<LinkTarget>,
+    /// Raw URL of the link currently under the mouse pointer (as
+    /// written in the source), updated on every `MouseEventKind::Moved`
+    /// event.  While `Some`, the hint line replaces its chord row with
+    /// the URL — browser-status-bar style.  Only Preview and Rendered
+    /// produce hovers: the hit-test keys on UNDERLINED link spans,
+    /// which Raw mode never renders.
+    hovered_link: Option<String>,
     /// Transient message overlayed on the hint line.  Non-
     /// error kinds auto-expire after `config.editor.transient_ms`;
     /// errors stick until dismissed.  Set by [`App::flash`] from any
