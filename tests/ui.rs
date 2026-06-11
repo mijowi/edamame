@@ -29,6 +29,7 @@ fn render_status_bar(
                     cursor_col: None,
                     section_path: Vec::new(),
                     diff_progress: None,
+                    search_progress: None,
                 },
                 theme,
             };
@@ -1021,6 +1022,7 @@ fn status_bar_shows_cursor_position() {
                     cursor_col: Some(12),
                     section_path: Vec::new(),
                     diff_progress: None,
+                    search_progress: None,
                 },
                 theme,
             };

@@ -445,7 +445,8 @@ fn section_of(action: &Action) -> &'static str {
         Action::FollowLinkUnderCursor
         | Action::NavigateBack
         | Action::NavigateForward
-        | Action::GoToSection => "Navigate",
+        | Action::GoToSection
+        | Action::OpenSearch => "Navigate",
         Action::TableMoveRowUp
         | Action::TableMoveRowDown
         | Action::TableMoveColumnLeft

@@ -307,6 +307,11 @@ impl App {
         };
         let previous_version = self.editor.buffer.version();
         let new_buffer = crate::document::Buffer::reload(&path, &contents, previous_version);
+        // Tear down any active search flow at the App level first so
+        // the deferred-advance timer is cancelled along with the
+        // session (`replace_buffer` would drop the session anyway,
+        // but would leave the timer armed).
+        self.exit_search_flow();
         self.editor.replace_buffer(new_buffer);
         // New contents may reference different image links; mark the
         // image cache for reconciliation on the next loop iteration

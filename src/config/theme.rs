@@ -262,9 +262,15 @@ pub struct Theme {
     /// stays legible.
     pub selection: Style,
 
-    /// Find-in-document highlight — distinct from `selection` so search
-    /// hits remain visible even when one of them is currently selected.
-    pub search_highlight: Style,
+    /// Muted variant of `selection`: a washed-out version of the same
+    /// hue, used for non-focused search matches so the current match
+    /// (painted with `selection` itself) stands out among its
+    /// siblings.
+    pub selection_muted: Style,
+
+    /// Status-bar match counter (`i/n`) badge while a search flow is
+    /// active.  Mirrors `status_mode_diff`'s accent-badge shape.
+    pub status_mode_search: Style,
 
     /// Background style applied to the cursor's current line.  Default
     /// is `Style::default()` (no tint) — the active-line highlight is a
@@ -895,10 +901,19 @@ impl Theme {
             // color-coded content stays legible inside the highlight.
             selection: Style::default().bg(p.accent).fg(p.text),
 
-            // Search highlight: `secondary` bg, `bg` fg — distinct
-            // from selection so a search hit inside the selection
-            // still reads as a hit.
-            search_highlight: Style::default().bg(p.secondary).fg(p.bg),
+            // Muted selection: the selection hue washed toward the
+            // surface so non-focused search matches recede behind the
+            // `selection`-painted current match.
+            selection_muted: Style::default()
+                .bg(blend(p.surface, p.accent, 0.45))
+                .fg(p.text),
+
+            // Search match-counter badge — secondary accent so it
+            // reads apart from the warning-hued diff badge.
+            status_mode_search: Style::default()
+                .bg(p.secondary)
+                .fg(p.bg)
+                .add_modifier(Modifier::BOLD),
 
             // Active-line highlight is deferred — leave the field in
             // place so themes can opt in.

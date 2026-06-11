@@ -194,6 +194,13 @@ src/
       list.rs, table.rs, util.rs  # block-specific render helpers
     table_layout.rs # column-width measurement and packed-comment hints
 
+  search.rs         # facade
+  search/
+    search_keys.rs  # hard-bound search-flow key table (search_action_for,
+                    #   search_hint) — mirrors input/mode_handler/diff_keys.rs
+    state.rs        # SearchState: query / replace terms, match byte ranges,
+                    #   focused index, buffer-version freshness
+
   terminal.rs       # facade
   terminal/
     capabilities.rs # Capabilities, ColorDepth, ImageProtocol;
@@ -243,6 +250,7 @@ src/
 
 tests/
   diagrams.rs       # Mermaid block detection + render pipeline
+  search.rs         # search-flow lifecycle, hint row, highlight painting
   editing.rs        # EditorState action sequences → buffer/cursor asserts
   footnotes.rs      # footnote edit primitives + mouse-follow path
   list_edit.rs      # list continuation, renumber, checkbox toggle
@@ -314,6 +322,15 @@ These decisions are easy to break if you don't know they exist.
 - **Visual line navigation.** `move_up_visual` / `move_down_visual` (in `editor/state_cursor_visual.rs`) and `line_render::render_line` must use the same wrap algorithm (`visual_rows_of_str` / `sub_line_of_col`). Otherwise the cursor lands in a different column than where it appears on screen.
 - **Action enum is the full surface.** Every action lives in `config/keymap.rs::Action`. Keybindings stay stable even when a feature is in flight; unimplemented variants are no-ops in `edit_ops` until wired up.
 - **Clipboard is feature-gated.** `arboard` is behind the `clipboard` Cargo feature (on by default). When disabled, copy/cut/paste use the in-process kill-ring only. Tests assert against the kill-ring, not the OS clipboard, to avoid cross-test races. On Wayland the `wayland-data-control` feature is required for read access — without it `Clipboard::new()` returns `Err`.
+
+### Search and replace
+
+- **The search flow is gated on `EditorState::search.is_some()`, not a `Mode` variant.** Unlike diff (which replaces the whole view), search keeps the document rendering in the current view mode with match highlights painted on top, so adding a `Mode::Search` would force an "effective view mode" indirection through every render-dispatch site. The flow is enforced at three choke points instead: `DefaultHandler::handle` intercepts the hard-bound flow keys (`search::search_keys`, same table-driven pattern as `diff_keys`), `App::dispatch_action` default-denies everything off the `search_safe_action` allowlist *before* `handle_app_action` runs, and `dispatch_mouse_event` drops all mouse input except wheel scroll and pointer moves. A denied action flashes "Not available during search" via `App::flash_action_unavailable` — the same helper the diff gate uses ("Not available during diff review") — so a dead keypress always explains itself. If you add a new buffer-mutating app-level action, it is denied during search automatically; add it to `search_safe_action` only if it is genuinely read-only.
+- **Match freshness is version-keyed.** `SearchState` stores byte ranges valid for the `Buffer::version()` they were computed against; every in-flow mutation path (replace, replace-all, undo, redo) calls `EditorState::ensure_search_fresh` afterwards. The render layer additionally clamps each range against the live source so a stale list can never panic — but don't rely on that: a new mutation path must refresh. Wholesale content swaps (`replace_buffer`, diff entry) drop the session entirely.
+- **Replace keeps the reveal beat.** A single replace goes through `EditorState::apply_delta` (one undo delta) plus an immediate `flush_parsed_if_dirty` — the overlays and match recompute need fresh source-map ranges on the next frame, so don't let the in-line-edit deferral stand. It then refocuses past the inserted bytes (so a replacement containing the query can't trap the flow on one site) and arms `search_advance` (mirror of `diff_advance`) so the cursor jumps to the next match only after a 350 ms reveal. Replace-all is a single coarse `EditDelta` recorded onto the normal history stack — prior undo history is preserved, unlike the diff merge's `reset_with`.
+- **A replace flow leaves Preview.** Preview is browse-only, so `App::enter_search_flow` transitions Preview → Rendered when the replace field was filled (mirroring the first keystroke of a normal edit). Navigate-only flows, and zero-match queries that never enter the flow, leave the mode untouched.
+- **Raw reveal is suppressed during search.** `cursor_block_revealed()` returns false while the flow is active so blocks don't flip between rendered and raw under the highlights as the user tabs through matches.
+- **Highlight painting is shared.** Rendered + Preview matches paint through `paint_search_overlays` → `paint_byte_range_overlay` (the generalized former `paint_selection_overlay`) called from `EditorView` as a post-pass; Raw mode paints per-char inside `RawView`. The focused match uses `theme.selection`, all others the muted `theme.selection_muted` variant. The painter's block-kind prefix shifts (heading space prefix, code-block pad cell) resolve the block via `ParsedDoc::real_block_for_byte` — never index `parsed.blocks` with a `source_map` block index; the source map's index space counts blank-line virtual blocks, so the two diverge in any document with blank lines.
 
 ### Keyboard and mouse input
 

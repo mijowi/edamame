@@ -38,6 +38,18 @@ impl<'k> ModeHandler for DefaultHandler<'k> {
             }
         }
 
+        // The search flow owns its keys the same way: Tab / Shift-Tab /
+        // `r` / `a` / Esc map to search actions before the global
+        // keymap gets a look-in (which would otherwise turn Tab into
+        // `InsertTab` and Esc into `ExitToPreview`).  Unmatched keys
+        // fall through; anything that resolves to a disallowed action
+        // is then dropped by the App's `search_safe_action` gate.
+        if state.search.is_some() {
+            if let Some(action) = crate::search::search_action_for(&event) {
+                return Some(action);
+            }
+        }
+
         // 1. Check the keymap first (explicit bindings take priority).
         if let Some(action) = self.keymap.action_for(&event) {
             // Preview-mode guard: Ctrl-* chords must not cause an implicit
@@ -140,6 +152,10 @@ fn preview_safe_action(action: &Action) -> bool {
             // motion that Enter applies is benign in Preview because
             // the cursor isn't drawn there anyway.
             | Action::GoToSection
+            // `OpenSearch` opens the search/replace modal — read-only
+            // with respect to the buffer until the user confirms, so
+            // Ctrl+F works while just browsing in Preview.
+            | Action::OpenSearch
     )
 }
 

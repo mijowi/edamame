@@ -42,6 +42,14 @@ impl<'a> StatefulWidget for RawView<'a> {
         let sel_style = self.theme.selection;
         let selection_range = self.state.selection.map(|s| s.range());
 
+        let search_matches: &[std::ops::Range<usize>] = self
+            .state
+            .search
+            .as_ref()
+            .map_or(&[], |s| s.matches.as_slice());
+        let focused_match = self.state.search.as_ref().map(|s| s.focused_idx);
+        let rope_len_bytes = self.state.buffer.rope().len_bytes();
+
         let mut vis_row: usize = 0;
         let (mut buf_line, mut first_sub_row) = self
             .state
@@ -70,6 +78,43 @@ impl<'a> StatefulWidget for RawView<'a> {
                 }
             });
 
+            // Search-match highlights on this line, as `(start_col,
+            // end_col, style)` char ranges.  The query can't contain a
+            // newline, so every match sits inside one buffer line.
+            // Byte offsets are clamped against the live rope so a
+            // stale list (one frame after a content swap) skips
+            // rather than panics.
+            let mut line_highlights: Vec<(usize, usize, ratatui::style::Style)> = Vec::new();
+            if !search_matches.is_empty() {
+                let line_start_byte = self
+                    .state
+                    .buffer
+                    .rope()
+                    .char_to_byte(line_start_char.min(self.state.buffer.len_chars()));
+                let line_end_byte = line_start_byte + raw.len();
+                let first = search_matches.partition_point(|m| m.end <= line_start_byte);
+                for (i, m) in search_matches.iter().enumerate().skip(first) {
+                    if m.start >= line_end_byte {
+                        break;
+                    }
+                    // Matches are sorted and all needle-length, so
+                    // `m.end` is monotone: the first range past the
+                    // line end (or past the live rope, for a stale
+                    // list) means every later one is too.
+                    if m.end > rope_len_bytes || m.end > line_end_byte {
+                        break;
+                    }
+                    let start_col = raw[..m.start - line_start_byte].chars().count();
+                    let end_col = raw[..m.end - line_start_byte].chars().count();
+                    let style = if Some(i) == focused_match {
+                        self.theme.selection
+                    } else {
+                        self.theme.selection_muted
+                    };
+                    line_highlights.push((start_col, end_col, style));
+                }
+            }
+
             let display_line = raw_display_line(
                 raw,
                 if buf_line == cursor_line && cursor_visible {
@@ -78,6 +123,7 @@ impl<'a> StatefulWidget for RawView<'a> {
                     None
                 },
                 line_sel_cols,
+                &line_highlights,
                 cursor_style,
                 sel_style,
             );
@@ -104,6 +150,7 @@ fn raw_display_line(
     raw: &str,
     cursor_col: Option<usize>,
     selection: Option<(usize, usize)>,
+    highlights: &[(usize, usize, ratatui::style::Style)],
     cursor_style: ratatui::style::Style,
     selection_style: ratatui::style::Style,
 ) -> Line<'static> {
@@ -118,7 +165,14 @@ fn raw_display_line(
             break;
         }
         let in_selection = matches!(selection, Some((s, e)) if i >= s && i < e);
-        let style = if cursor_at == i && in_selection {
+        // Search-match highlight for this column, if any.  Applied
+        // under the cursor but over the selection, mirroring the
+        // rendered view's overlay order.
+        let highlight = highlights
+            .iter()
+            .find(|(s, e, _)| i >= *s && i < *e)
+            .map(|(_, _, st)| *st);
+        let mut style = if cursor_at == i && in_selection {
             cursor_style.patch(selection_style)
         } else if cursor_at == i {
             cursor_style
@@ -127,6 +181,11 @@ fn raw_display_line(
         } else {
             ratatui::style::Style::default()
         };
+        if cursor_at != i {
+            if let Some(h) = highlight {
+                style = style.patch(h);
+            }
+        }
         spans.push(Span::styled(chars[i].to_string(), style));
     }
     Line::from(spans)

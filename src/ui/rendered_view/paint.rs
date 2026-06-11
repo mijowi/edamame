@@ -105,17 +105,19 @@ pub(super) fn make_code_styled_body_line(
     Line::from(spans).style(base)
 }
 
-/// Post-render pass: paint the theme's selection background on top of the
-/// rendered cells for a given rendered line, if that line's block is part of
-/// the active selection.
+/// Post-render pass: paint `style` on top of the rendered cells of a
+/// given rendered line for the source byte range `[sel_start_byte,
+/// sel_end_byte)`, if that range touches the line's block.  Shared by
+/// the selection overlay (`theme.selection`) and the search-match
+/// overlays (`theme.selection` / `selection_muted`).
 ///
 /// Computes the raw byte range of *this specific rendered line* within its
 /// block (by splitting the block's raw text on newlines), intersects with the
-/// selection byte range, and highlights only the rendered cols that
-/// correspond to selected bytes.  Falls back to "whole line" highlight for
+/// requested byte range, and highlights only the rendered cols that
+/// correspond to covered bytes.  Falls back to "whole line" highlight for
 /// blocks where the per-line mapping can't be determined cleanly.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn paint_selection_overlay(
+pub(super) fn paint_byte_range_overlay(
     editor: &EditorState,
     buf: &mut TuiBuf,
     area: Rect,
@@ -125,7 +127,7 @@ pub(super) fn paint_selection_overlay(
     rendered_line_idx: usize,
     sel_start_byte: usize,
     sel_end_byte: usize,
-    theme: &Theme,
+    style: Style,
 ) {
     let Some(block_byte) = editor
         .parsed
@@ -229,6 +231,18 @@ pub(super) fn paint_selection_overlay(
     let inline_map = editor.parsed.inline_map(buffer_line_idx, raw_line);
     let actual_rendered: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
 
+    // Block-kind-aware prefix adjustments: headings render behind a
+    // level-deep space prefix and code blocks behind a single leading
+    // pad cell, both invisible to the inline collapse map (which only
+    // models inline markup).  Without the shift, the fallback paths
+    // below paint one or more cells to the left of the actual text.
+    // Looked up via `real_block_for_byte` — a source-map block index
+    // must NOT be used against `parsed.blocks` (its index space counts
+    // blank-line virtual blocks, so the two diverge in any document
+    // with blank lines).  `line_sel_start` is a byte inside the
+    // covered text, so it lands inside the block's real range.
+    let block_kind = editor.parsed.real_block_for_byte(line_sel_start);
+
     let (rend_start, rend_end) = if is_table {
         let Some(rs) = table_raw_col_to_rendered_col(raw_line, line, start_raw_col) else {
             return;
@@ -237,6 +251,39 @@ pub(super) fn paint_selection_overlay(
             return;
         };
         (rs, re)
+    } else if let Some(crate::markdown::Block::CodeBlock { fenced, .. }) = block_kind {
+        // Code body rows render the raw text 1:1 behind one leading
+        // pad cell.  Fence rows (the ` lang ` label and the closing
+        // placeholder) render unrelated text — skip rather than paint
+        // a speculative highlight on them.  Indented (non-fenced)
+        // blocks additionally drop the up-to-4-space indent that
+        // pulldown-cmark strips from the content.
+        if *fenced && (raw_line_idx == 0 || raw_line_idx + 1 == raw_lines.len()) {
+            return;
+        }
+        let stripped = if *fenced {
+            0
+        } else {
+            code_indent_strip_chars(raw_line)
+        };
+        let map_col = |c: usize| c.saturating_sub(stripped) + 1;
+        (map_col(start_raw_col), map_col(end_raw_col))
+    } else if let Some(crate::markdown::Block::Heading { level, .. }) = block_kind {
+        // Headings render as a level-deep space prefix plus the
+        // collapsed inline content; shift the mapped cols right by the
+        // prefix.  A length mismatch (big-H1 rows, the setext
+        // underline, smart-punctuation collapse) skips the highlight
+        // instead of falling back to raw cols, which would be
+        // off-by-prefix.
+        let prefix = heading_prefix_width(*level);
+        let content_rendered = actual_rendered.saturating_sub(prefix);
+        match (
+            inline_map.raw_to_rendered_checked(start_raw_col, content_rendered),
+            inline_map.raw_to_rendered_checked(end_raw_col, content_rendered),
+        ) {
+            (Some(rs), Some(re)) => (rs + prefix, re + prefix),
+            _ => return,
+        }
     } else if let (Some(rs), Some(re)) = (
         list_raw_col_to_rendered_col(raw_line, line, start_raw_col),
         list_raw_col_to_rendered_col(raw_line, line, end_raw_col),
@@ -278,16 +325,119 @@ pub(super) fn paint_selection_overlay(
         return;
     }
     paint_cols_on_line(
-        line,
-        buf,
-        area,
-        y_start,
-        rows_used,
-        skip_rows,
-        rend_start,
-        rend_end,
-        theme.selection,
+        line, buf, area, y_start, rows_used, skip_rows, rend_start, rend_end, style,
     );
+}
+
+/// Rendered-cell width of the space prefix the renderer puts in front
+/// of a heading's inline content (one cell per level — see
+/// `Renderer::render_heading`).
+fn heading_prefix_width(level: pulldown_cmark::HeadingLevel) -> usize {
+    use pulldown_cmark::HeadingLevel::*;
+    match level {
+        H1 => 1,
+        H2 => 2,
+        H3 => 3,
+        H4 => 4,
+        H5 => 5,
+        H6 => 6,
+    }
+}
+
+/// Leading chars pulldown-cmark strips from an indented code block's
+/// raw line before it lands in `Block::CodeBlock::content`: one tab,
+/// or up to four spaces.
+fn code_indent_strip_chars(raw_line: &str) -> usize {
+    if raw_line.starts_with('\t') {
+        return 1;
+    }
+    raw_line.chars().take(4).take_while(|c| *c == ' ').count()
+}
+
+/// Post-render pass: paint every visible search match over the
+/// rendered document.  Called by `EditorView` after the Preview /
+/// Rendered widget render — both walk `parsed.lines` with the same
+/// wrap, so one overlay walk serves both view modes.  The focused
+/// match gets the full `theme.selection` treatment; all others recede
+/// onto the muted `theme.selection_muted` wash.  No-op outside a
+/// search flow.
+///
+/// Every range is clamped against the live source (`partition_point`
+/// bounds + the byte-length guard) so a stale match list — possible
+/// for one frame after an external content swap — skips rather than
+/// panics.
+pub(crate) fn paint_search_overlays(
+    editor: &EditorState,
+    buf: &mut TuiBuf,
+    area: Rect,
+    theme: &Theme,
+) {
+    let Some(search) = editor.search.as_ref() else {
+        return;
+    };
+    if search.matches.is_empty() || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let source_len = editor.buffer.rope().len_bytes();
+    let width = area.width as usize;
+    let (mut line_idx, mut first_sub_row) =
+        editor.rendered_line_at_visual_row(editor.scroll, width.max(1));
+    let mut vis_y: u16 = 0;
+    while vis_y < area.height {
+        if line_idx >= editor.parsed.lines.len() {
+            break;
+        }
+        let rows = editor
+            .parsed
+            .visual_rows_for_line_at(line_idx, width)
+            .max(1);
+        let painted = rows
+            .saturating_sub(first_sub_row)
+            .min((area.height - vis_y) as usize);
+        if painted == 0 {
+            break;
+        }
+        let block_range = editor
+            .parsed
+            .source_map
+            .original_byte_for_rendered_line(line_idx)
+            .and_then(|b| editor.parsed.source_map.original_range_for_byte(b));
+        if let Some(block_range) = block_range {
+            // Matches are sorted; jump to the first that could touch
+            // this block and stop at the first past it.
+            let start = search
+                .matches
+                .partition_point(|m| m.end <= block_range.start);
+            for (i, m) in search.matches.iter().enumerate().skip(start) {
+                if m.start >= block_range.end {
+                    break;
+                }
+                if m.end > source_len {
+                    continue;
+                }
+                let style = if i == search.focused_idx {
+                    theme.selection
+                } else {
+                    theme.selection_muted
+                };
+                paint_byte_range_overlay(
+                    editor,
+                    buf,
+                    area,
+                    vis_y,
+                    painted as u16,
+                    first_sub_row,
+                    line_idx,
+                    m.start,
+                    m.end,
+                    style,
+                );
+            }
+        }
+        vis_y += painted as u16;
+        line_idx += 1;
+        first_sub_row = 0;
+    }
 }
 
 /// Paint `sel_bg` onto the rendered cells for rendered char cols in

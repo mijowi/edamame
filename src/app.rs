@@ -11,6 +11,7 @@ mod frame_timer;
 mod image_dispatch;
 mod nav;
 mod pointer;
+mod search;
 mod section_jump;
 mod update_check;
 
@@ -288,6 +289,11 @@ pub struct App {
     /// before focus auto-advances to the next pending hunk.  `None`
     /// when no advance is pending.  See [`App::tick_diff_advance`].
     diff_advance_pending_since: Option<Instant>,
+    /// Set when a search-flow replace lands: keeps the replacement
+    /// visible for [`search::SEARCH_ADVANCE_DELAY`] before focus
+    /// auto-advances to the next match.  `None` when no advance is
+    /// pending.  See [`App::tick_search_advance`].
+    search_advance_pending_since: Option<Instant>,
     /// Active filesystem watcher for the open file, if any.  `None`
     /// until the run loop calls [`App::start_file_watcher`] after the
     /// initial buffer load.  Multi-tab work later swaps this for a
@@ -563,6 +569,7 @@ impl App {
             section_jump_pending_since: None,
             section_jump_target_scroll: None,
             diff_advance_pending_since: None,
+            search_advance_pending_since: None,
             watcher: None,
             last_disk_hash: initial_disk_hash,
             latest_release: None,

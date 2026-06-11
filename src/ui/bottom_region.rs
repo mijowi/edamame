@@ -89,6 +89,33 @@ pub enum HintContent {
 /// don't work against the raw source — the user is editing the plain
 /// Markdown and `Tab` / `⌥↑↓` insert characters or do nothing.
 pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
+    // An active search flow replaces the row wholesale, whatever the
+    // view mode — only the flow keys work while it's active.  The
+    // Replace / Replace-all chords appear only in the replace flow
+    // (non-empty replace field).
+    if let Some(search) = state.search.as_ref() {
+        let mut chords = search_flow_chords(search.is_replace_flow());
+        // In the replace flow, surface the undo/redo chords (looked up
+        // from the live keymap, like every non-hard-bound hint) right
+        // before the trailing `Esc Exit` so a mis-replace is visibly
+        // recoverable without leaving the flow.  Redo is gated on
+        // `can_redo`, mirroring the baseline edit row.
+        if search.is_replace_flow() {
+            let exit_idx = chords.len().saturating_sub(1);
+            if state.history.can_redo() {
+                if let Some(c) = chord_for(keymap, &Action::Redo, "Redo") {
+                    chords.insert(exit_idx, c);
+                }
+            }
+            if let Some(c) = chord_for(keymap, &Action::Undo, "Undo") {
+                chords.insert(exit_idx, c);
+            }
+        }
+        return HintSet {
+            prelude: None,
+            chords,
+        };
+    }
     match state.mode {
         Mode::Preview => HintSet {
             prelude: Some("Press any key to edit".to_owned()),
@@ -97,6 +124,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
                 &[
                     (Action::ShowCommandPalette, "Menu"),
                     (Action::GoToSection, "Go to"),
+                    (Action::OpenSearch, "Find"),
                     (Action::Copy, "Copy"),
                     (Action::Quit, "Quit"),
                 ],
@@ -169,6 +197,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
             let baseline = [
                 Some((Action::ShowCommandPalette, "Menu")),
                 Some((Action::GoToSection, "Go to")),
+                Some((Action::OpenSearch, "Find")),
                 Some((Action::Paste, "Paste")),
                 Some((Action::Undo, "Undo")),
                 redo_entry,
@@ -254,6 +283,28 @@ fn diff_review_chords(all_resolved: bool, focused_resolved: bool) -> Vec<HintCho
     if all_resolved {
         chords.push(mk(&Action::DiffExit, "Exit"));
     }
+    chords
+}
+
+/// Search-flow hint row.  Key glyphs come from the shared
+/// `search::search_keys` table (via [`crate::search::search_hint`]) —
+/// the same source the input handler reads — so the advertised chord
+/// can never disagree with the key that actually fires.  `r Replace`
+/// and `a Replace all` ride the row only in the replace flow; `Esc
+/// Exit` trails so the navigation chords lead.
+fn search_flow_chords(is_replace: bool) -> Vec<HintChord> {
+    let mk = |action: &Action, label: &str| {
+        HintChord::new(crate::search::search_hint(action), label.to_owned())
+    };
+    let mut chords = vec![
+        mk(&Action::SearchNext, "Next"),
+        mk(&Action::SearchPrev, "Prev"),
+    ];
+    if is_replace {
+        chords.push(mk(&Action::SearchReplace, "Replace"));
+        chords.push(mk(&Action::SearchReplaceAll, "Replace all"));
+    }
+    chords.push(mk(&Action::SearchExit, "Exit"));
     chords
 }
 
@@ -988,6 +1039,7 @@ mod tests {
                         cursor_col: Some(1),
                         section_path: Vec::new(),
                         diff_progress: None,
+                        search_progress: None,
                     },
                     hint,
                     layout,

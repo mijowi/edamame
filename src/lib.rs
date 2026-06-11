@@ -10,6 +10,7 @@ pub mod export;
 pub mod image;
 pub mod input;
 pub mod markdown;
+pub mod search;
 pub mod terminal;
 pub mod ui;
 pub mod watcher;

@@ -8,6 +8,7 @@ use crate::editor::state_viewport::RawVisualRowCache;
 use crate::editor::Mode;
 use crate::image::ImageCache;
 use crate::markdown::RenderCache;
+use crate::search::SearchState;
 
 // ── Cursor blink ─────────────────────────────────────────────────────
 
@@ -270,6 +271,13 @@ pub struct EditorState {
     /// into view.  Deferred because the viewport height isn't known at
     /// the modal-close call site where diff mode is entered.
     pub pending_focus_scroll: bool,
+    /// Active search-and-replace flow.  Unlike `diff`, an active search
+    /// does NOT change `mode` — the document keeps rendering in the
+    /// current view mode with match highlights painted on top.  The
+    /// flow is gated on `search.is_some()`: the input handler
+    /// intercepts the flow keys (`search::search_keys`) and the App's
+    /// `search_safe_action` default-denies everything else.
+    pub search: Option<SearchState>,
     /// Block-level render memoization threaded into every
     /// `refresh_parsed`.  Blocks whose AST is unchanged since the previous
     /// reparse reuse their rendered lines instead of re-rendering — the
@@ -374,6 +382,7 @@ impl EditorState {
             diff: None,
             pre_diff_scroll: 0,
             pending_focus_scroll: false,
+            search: None,
             render_cache: RenderCache::default(),
         };
         // Populate the cursor-block cache so the rendered view's
@@ -476,6 +485,11 @@ impl EditorState {
     /// derived state, so adding a new derived field is a single-edit
     /// change instead of a hunt for every swap site.
     pub fn replace_buffer(&mut self, new_buffer: Buffer) {
+        // A wholesale content swap invalidates any active search flow;
+        // drop the session rather than re-anchoring matches against
+        // unrelated text.  (No scroll restore — the pre-search offset
+        // belongs to the old contents.)
+        self.search = None;
         let new_len = new_buffer.len_chars();
         self.buffer = new_buffer;
         self.dirty = false;
@@ -546,6 +560,84 @@ impl EditorState {
         self.pre_diff_scroll = 0;
         if self.mode == Mode::Diff {
             self.mode = Mode::Rendered;
+        }
+    }
+
+    /// Start a search flow with `search_state` as the active session.
+    /// Clears any selection (the flow paints its own highlights) and
+    /// defers the scroll-to-first-match to the next frame via
+    /// `pending_focus_scroll`, mirroring `enter_diff_mode`.  Unlike
+    /// diff, `mode` is untouched — the document keeps rendering in the
+    /// current view mode.
+    pub fn enter_search(&mut self, search_state: SearchState) {
+        self.search = Some(search_state);
+        self.selection = None;
+        self.visual_selection = None;
+        self.pending_focus_scroll = true;
+        self.ensure_search_fresh();
+    }
+
+    /// Drop the active search flow and restore the pre-search scroll.
+    /// No-op when no flow is active.
+    pub fn exit_search(&mut self) {
+        if let Some(s) = self.search.take() {
+            self.scroll = s.pre_search_scroll;
+        }
+    }
+
+    /// Recompute the search match list if the buffer has changed since
+    /// it was built (replace, undo, redo).  No-op outside a search
+    /// flow or when the list is already fresh.
+    pub fn ensure_search_fresh(&mut self) {
+        let version = self.buffer.version();
+        let Some(s) = self.search.as_mut() else {
+            return;
+        };
+        if s.is_fresh(version) {
+            return;
+        }
+        // Materialize the source only when a recompute is actually due —
+        // `contents()` copies the whole rope into a `String`, and this
+        // runs on every match-navigation keypress.
+        let source = self.buffer.contents();
+        s.ensure_fresh(&source, version);
+    }
+
+    /// Place the cursor at the start of the focused search match.
+    /// Keeps the exit position meaningful and drives the standard
+    /// scroll / cursor-row machinery.  No-op when the flow has no
+    /// matches.
+    pub fn sync_cursor_to_search_focus(&mut self) {
+        let Some(range) = self.search.as_ref().and_then(|s| s.focused_range()) else {
+            return;
+        };
+        let total_bytes = self.buffer.rope().len_bytes();
+        let byte = range.start.min(total_bytes);
+        self.cursor.offset = self.buffer.rope().byte_to_char(byte);
+        self.cursor.preferred_col = self.cursor.cell_col(&self.buffer);
+        self.update_cursor_block();
+    }
+
+    /// Scroll so the focused search match is comfortably visible — a
+    /// few rows of context above it when possible.  Mirrors
+    /// [`Self::scroll_focused_hunk_into_view`]; the cursor has already
+    /// been synced to the match, so its visual row is the target.
+    pub fn scroll_focused_match_into_view(
+        &mut self,
+        viewport_height: usize,
+        viewport_width: usize,
+    ) {
+        if viewport_height == 0 || self.search.is_none() {
+            return;
+        }
+        const TOP_MARGIN: usize = 3;
+        let row = self.cursor_visual_row(viewport_width);
+        let total = self.total_visual_rows_for_mode(viewport_width);
+        let max_scroll = total.saturating_sub(1);
+        let comfortably_visible =
+            row >= self.scroll + TOP_MARGIN && row < self.scroll + viewport_height;
+        if !comfortably_visible {
+            self.scroll = row.saturating_sub(TOP_MARGIN).min(max_scroll);
         }
     }
 

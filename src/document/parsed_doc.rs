@@ -472,6 +472,22 @@ impl ParsedDoc {
         self.per_block_own.get(block_idx).copied().unwrap_or(0)
     }
 
+    /// The post-processed [`Block`] whose *real* byte range contains
+    /// `byte`, or `None` for bytes on blank lines.  Unlike
+    /// `source_map.block_for_byte`, whose index space counts the
+    /// blank-line virtual blocks, this searches `real_ranges` directly
+    /// — the two index spaces diverge by one per preceding blank line,
+    /// so a source-map index must never be used against `blocks`.
+    pub fn real_block_for_byte(&self, byte: usize) -> Option<&Block> {
+        let idx = self.real_ranges.partition_point(|r| r.end <= byte);
+        let range = self.real_ranges.get(idx)?;
+        if byte >= range.start && byte < range.end {
+            self.blocks.get(idx)
+        } else {
+            None
+        }
+    }
+
     /// True when `block_idx` is a synthetic `Block::ImageBlock` produced
     /// from a mermaid fenced code block.  Mermaid blocks share the
     /// "reveal the entire raw source on cursor entry" affordance with
