@@ -228,7 +228,7 @@ pub(super) fn paint_byte_range_overlay(
     let buffer_line_idx = editor
         .buffer
         .block_line_to_buffer_line(block_range.start, raw_line_idx);
-    let inline_map = editor.parsed.inline_map(buffer_line_idx, raw_line);
+    let inline_map = editor.inline_map_for(buffer_line_idx, raw_line);
     let actual_rendered: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
 
     // Block-kind-aware prefix adjustments: headings render behind a

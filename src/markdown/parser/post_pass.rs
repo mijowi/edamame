@@ -175,9 +175,9 @@ pub fn attach_trailing_tui_columns_comments(blocks: &mut Vec<Block>) {
     }
 }
 
-/// Post-pass: split each top-level `Block::List` whose source contains a
-/// blank line outside any fenced code block between consecutive top-level
-/// items.  pulldown-cmark per CommonMark merges blank-separated items
+/// Post-pass: split each top-level `Block::List` in which a top-level
+/// item is directly preceded by a blank line outside any fenced code
+/// block.  pulldown-cmark per CommonMark merges blank-separated items
 /// into a single loose list, but for editor purposes we want every
 /// inter-item blank to be visible as its own line in the rendered output
 /// — so each blank-separated run of items becomes its own
@@ -211,18 +211,25 @@ pub fn split_lists_on_blank_lines(
         let list_src = &source[list_range.clone()];
         let item_offsets = top_level_item_offsets(list_src);
 
-        // Identify split points: indices `k > 0` where item k is preceded
-        // in the source by at least one blank line that isn't sitting
-        // inside a fenced code block.
-        let mut split_indices: Vec<usize> = Vec::new();
+        // Identify split points: indices `k > 0` where item k is directly
+        // preceded by a run of blank lines that isn't sitting inside a
+        // fenced code block.  Blank lines *interior* to the previous item
+        // (e.g. before a nested code block, or between its paragraphs) are
+        // not separators — only a blank run that touches item k's marker
+        // line splits the list.  Each split records where that blank run
+        // starts so the previous group's range can extend over the full
+        // multi-line content of its last item.
+        let mut split_points: Vec<(usize, usize)> = Vec::new();
         for k in 1..item_offsets.len() {
             let prev_line_end = line_end_in_str(list_src, item_offsets[k - 1]);
             let between_start = (prev_line_end + 1).min(item_offsets[k]);
-            if has_blank_line_outside_code(list_src, between_start, item_offsets[k]) {
-                split_indices.push(k);
+            if let Some(gap_start) =
+                separator_blank_run_start(list_src, between_start, item_offsets[k])
+            {
+                split_points.push((k, gap_start));
             }
         }
-        if split_indices.is_empty() {
+        if split_points.is_empty() {
             i += 1;
             continue;
         }
@@ -251,9 +258,9 @@ pub fn split_lists_on_blank_lines(
             continue;
         }
 
-        // Build group boundaries: [0, split_indices..., items.len()].
+        // Build group boundaries: [0, split points..., items.len()].
         let mut group_first: Vec<usize> = vec![0];
-        group_first.extend(split_indices.iter().copied());
+        group_first.extend(split_points.iter().map(|&(k, _)| k));
         let mut group_last_exclusive: Vec<usize> = group_first[1..].to_vec();
         group_last_exclusive.push(all_items.len());
 
@@ -274,17 +281,17 @@ pub fn split_lists_on_blank_lines(
             let first_item_idx = group_first[g_idx];
             let group_start_in_src = item_offsets[first_item_idx];
 
-            // The group's source ends just after the natural newline of its
-            // last item's first line.  This leaves the blank-line bytes
-            // between groups uncovered — `parsed_doc` then treats them as
-            // virtual blank-line blocks, the same way it does for any other
-            // gap between top-level blocks.  The final group always extends
-            // to the original list range's end so trailing newlines stay
+            // The group's source ends where the separator blank run before
+            // the next group starts, so multi-line item content (nested
+            // paragraphs, code blocks) stays covered by the group's range.
+            // Only the separator blank-line bytes between groups are left
+            // uncovered — `parsed_doc` then treats them as virtual
+            // blank-line blocks, the same way it does for any other gap
+            // between top-level blocks.  The final group always extends to
+            // the original list range's end so trailing newlines stay
             // accounted for.
             let group_end_in_src = if g_idx + 1 < group_count {
-                let last_item_idx = group_last_exclusive[g_idx] - 1;
-                let last_line_end = line_end_in_str(list_src, item_offsets[last_item_idx]);
-                (last_line_end + 1).min(list_src.len())
+                split_points[g_idx].1
             } else {
                 list_src.len()
             };
@@ -350,18 +357,22 @@ fn line_end_in_str(s: &str, start: usize) -> usize {
     p
 }
 
-/// Detect whether the byte range `[start, end)` of `s` contains at least
-/// one blank line that is not inside a fenced code block.
-/// [`split_lists_on_blank_lines`] uses this to decide whether the gap
-/// between two list items contains user-visible whitespace — the
-/// post-pass then splits the parent list at that point so the gap shows
-/// up as a rendered blank line.  Blank lines that fall between an
-/// opening and closing `` ``` ``/`~~~` fence are ignored, so a code
-/// block embedded in a list item never fragments its enclosing list.
-fn has_blank_line_outside_code(s: &str, start: usize, end: usize) -> bool {
+/// Byte offset within `s` where the run of blank lines *directly
+/// preceding* `end` starts, scanning `[start, end)` line by line.
+/// [`split_lists_on_blank_lines`] uses this to decide whether the next
+/// item is separated from the previous one by user-visible whitespace —
+/// the post-pass then splits the parent list there so the gap shows up
+/// as a rendered blank line.  Returns `None` when the line directly
+/// above `end` isn't blank: blank lines interior to the previous item's
+/// content (before a nested code block, between its paragraphs) are not
+/// separators.  Blank lines that fall between an opening and closing
+/// `` ``` ``/`~~~` fence are ignored, so a code block embedded in a list
+/// item never fragments its enclosing list.
+fn separator_blank_run_start(s: &str, start: usize, end: usize) -> Option<usize> {
     let bytes = s.as_bytes();
     let mut pos = start;
     let mut fence: Option<(char, usize)> = None;
+    let mut run_start: Option<usize> = None;
     while pos < end {
         let mut le = pos;
         while le < end && bytes[le] != b'\n' {
@@ -372,14 +383,18 @@ fn has_blank_line_outside_code(s: &str, start: usize, end: usize) -> bool {
             if is_closing_fence(line, fence_char, min_count) {
                 fence = None;
             }
+            run_start = None;
         } else if let Some((c, count)) = parse_opening_fence(line) {
             fence = Some((c, count));
+            run_start = None;
         } else if line.chars().all(char::is_whitespace) {
-            return true;
+            run_start.get_or_insert(pos);
+        } else {
+            run_start = None;
         }
         pos = if le < end { le + 1 } else { le };
     }
-    false
+    run_start
 }
 
 /// Recognise an opening fenced-code-block marker.  Returns the fence

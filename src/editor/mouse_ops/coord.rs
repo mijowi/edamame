@@ -345,14 +345,14 @@ pub fn rendered_sub_line_to_offset(
             .buffer
             .block_line_to_buffer_line(block.range.start, raw_line_idx);
         let stripped = line_text.strip_suffix('\n').unwrap_or(line_text);
-        let inline_map = state.parsed.inline_map(buffer_line_idx, stripped);
+        let inline_map = state.inline_map_for(buffer_line_idx, stripped);
         non_table_click_to_raw_col(
             rendered_line,
             line_text,
             col,
             sub_row_within_line,
             viewport_width,
-            inline_map,
+            &inline_map,
         )
     };
 
