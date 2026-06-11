@@ -737,8 +737,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                             .buffer
                             .block_line_to_buffer_line(br.start, cursor_raw_line);
                         editor
-                            .parsed
-                            .inline_map(buffer_line_idx, raw_text)
+                            .inline_map_for(buffer_line_idx, raw_text)
                             .raw_to_rendered_checked(cursor_col, actual_rendered)
                     });
                     let visual_col = if let Some(w) = &wrapped_cell {

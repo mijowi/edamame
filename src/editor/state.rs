@@ -585,6 +585,32 @@ impl EditorState {
         }
     }
 
+    /// Bidirectional raw↔rendered char-column map for `raw_line`, cached
+    /// per buffer line.  This is the only sanctioned way to reach
+    /// `ParsedDoc::inline_map`: the per-line cache is keyed by index
+    /// alone, so initializing it with text that isn't the canonical
+    /// content of `buffer_line_idx` poisons the entry for every later
+    /// caller (blocks whose byte range starts mid-line, rendered sub-rows
+    /// past a block's raw line count, out-of-bounds indices).  When
+    /// `raw_line` doesn't match the buffer line exactly, an uncached map
+    /// is built instead — column math against the caller's slice stays
+    /// correct and the cache stays canonical.
+    pub fn inline_map_for(
+        &self,
+        buffer_line_idx: usize,
+        raw_line: &str,
+    ) -> std::borrow::Cow<'_, crate::markdown::InlineColMap> {
+        let canonical = self
+            .buffer
+            .line(buffer_line_idx)
+            .is_some_and(|s| s.trim_end_matches('\n') == raw_line);
+        if canonical {
+            std::borrow::Cow::Borrowed(self.parsed.inline_map(buffer_line_idx, raw_line))
+        } else {
+            std::borrow::Cow::Owned(crate::markdown::InlineColMap::build(raw_line))
+        }
+    }
+
     /// Recompute the search match list if the buffer has changed since
     /// it was built (replace, undo, redo).  No-op outside a search
     /// flow or when the list is already fresh.
@@ -1072,6 +1098,30 @@ mod tests {
 
     fn theme() -> &'static Theme {
         Box::leak(Box::new(Theme::default()))
+    }
+
+    /// `inline_map_for` must not let a non-canonical `(index, text)`
+    /// pair poison the per-buffer-line `InlineColMap` cache.  Mouse
+    /// hit-testing can derive a raw line that doesn't match the buffer
+    /// line (rendered sub-rows past a block's raw line count, block
+    /// ranges starting mid-line); such calls get a local map, and the
+    /// later canonical call still sees the correct cached entry.
+    #[test]
+    fn inline_map_for_does_not_poison_cache_with_noncanonical_text() {
+        let state = EditorState::new(Buffer::from_str("hello **world**\nsecond line\n"), theme());
+
+        // Wrong text for line 1 (it belongs to line 0) — must be served
+        // by a locally built map, leaving the cache untouched.
+        let wrong = state.inline_map_for(1, "hello **world**");
+        assert_eq!(wrong.raw_len(), 15);
+
+        // Canonical call for line 1 still maps its real content.
+        let right = state.inline_map_for(1, "second line");
+        assert_eq!(right.raw_len(), 11);
+
+        // Out-of-bounds index must not panic.
+        let oob = state.inline_map_for(99, "anything");
+        assert_eq!(oob.raw_len(), 8);
     }
 
     /// When `images_enabled == false`, every image block collapses to

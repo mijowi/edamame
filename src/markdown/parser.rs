@@ -1084,6 +1084,59 @@ mod tests {
         }
     }
 
+    #[test]
+    fn interior_blank_without_separator_blank_does_not_split() {
+        // A blank line interior to an item's content (here between the
+        // item's first paragraph and its continuation) is not an
+        // inter-item separator — the next marker line sits directly
+        // after the continuation, so the list must stay whole.  The old
+        // any-blank-in-between scan split here and truncated the first
+        // group's range to its first line, leaving the continuation
+        // bytes uncovered.
+        let blocks = parse("- a\n\n  cont\n- b\n");
+        let lists: Vec<&Block> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::List { .. }))
+            .collect();
+        assert_eq!(lists.len(), 1, "got {blocks:?}");
+        match lists[0] {
+            Block::List { items, .. } => assert_eq!(items.len(), 2),
+            other => panic!("expected single list with 2 items, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn split_group_range_covers_multi_line_item_content() {
+        // Regression for the InlineColMap cache-poisoning panic: an item
+        // whose content spans several lines (interior blank + nested
+        // fenced code block) followed by a blank-separated second item
+        // used to split with the first group's byte range truncated to
+        // the item's *first line*.  All of the item's continuation bytes
+        // were left uncovered, so `parsed_doc` synthesized dozens of
+        // virtual blank-line blocks under a List block that still
+        // rendered the full content — and mouse hit-testing then paired
+        // wrong (buffer line, raw text) values.  The first group's range
+        // must end at the separator blank before the second item, not at
+        // its own first newline.
+        let src = "1. **first** item\n   continuation\n\n   ```rust\n   let x = 1;\n   ```\n\n2. second\n";
+        let (mut blocks, mut ranges) = parse_raw_with_ranges(src);
+        split_lists_on_blank_lines(&mut blocks, &mut ranges, src);
+        let lists: Vec<(usize, &Block)> = blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| matches!(b, Block::List { .. }))
+            .collect();
+        assert_eq!(lists.len(), 2, "got {blocks:?}");
+        let first_range = &ranges[lists[0].0];
+        let separator_start = src.find("\n\n2. second").unwrap() + 1;
+        assert_eq!(
+            first_range.end, separator_start,
+            "first group must cover the full item content up to the separator blank"
+        );
+        let second_range = &ranges[lists[1].0];
+        assert_eq!(second_range.start, src.find("2. second").unwrap());
+    }
+
     // ── Footnotes ─────────────────────────────────────────────────────────
 
     #[test]

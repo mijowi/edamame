@@ -524,17 +524,21 @@ impl ParsedDoc {
     /// the map is built from `raw_line` and cached.
     ///
     /// **Contract:** `raw_line` must be the canonical content for
-    /// `buffer_line_idx` in the *current* `ParsedDoc` generation.  The cache
-    /// is keyed only by index, so if a caller passes a different `raw_line`
-    /// for an already-initialized index the stale map is returned silently
-    /// (the `chars().count()` debug-assert catches differing-length cases
-    /// but not equal-length content drift).  `ParsedDoc` is rebuilt on every
-    /// buffer mutation, so all live callers satisfy this naturally —
-    /// don't reuse a `ParsedDoc` across edits.
+    /// `buffer_line_idx` in the *current* `ParsedDoc` generation, and the
+    /// index must be in-bounds.  The cache is keyed only by index, so a
+    /// non-canonical `raw_line` for an already-initialized index returns
+    /// the stale map silently — and worse, initializing an entry with
+    /// non-canonical text poisons it for every later (correct) caller.
+    /// `ParsedDoc` is rebuilt on every buffer mutation, so canonical
+    /// callers stay valid across a generation — don't reuse a `ParsedDoc`
+    /// across edits.
     ///
-    /// `buffer_line_idx` must be in-bounds.  Callers derive it from a live
-    /// `block.range.start` via `Buffer::block_line_to_buffer_line`, which
-    /// always produces a valid index for a fresh `ParsedDoc`.
+    /// Callers that derive `(buffer_line_idx, raw_line)` from block byte
+    /// ranges can't guarantee canonicality (ranges starting mid-line,
+    /// rendered sub-rows past a block's raw line count) — go through
+    /// `EditorState::inline_map_for`, which verifies the pair against the
+    /// live buffer and serves a local uncached map on mismatch, instead
+    /// of calling this directly.
     pub fn inline_map(&self, buffer_line_idx: usize, raw_line: &str) -> &InlineColMap {
         debug_assert!(
             buffer_line_idx < self.inline_maps.len(),
