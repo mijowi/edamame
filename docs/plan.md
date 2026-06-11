@@ -1439,17 +1439,23 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 
 ## Miscellaneous Issues / Features
 
-Add next cell/prev cell to keybindings modal?
+- Add next cell/prev cell to keybindings modal?
 
-Refactor/clean up source and tests
+- Refactor/clean up source and tests
 
-Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
+- Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
 
-In edit mode, text selection doesn't work correctly in wrapped table cells
+- Blank last line of a document doesn't seem to behave correctly
 
-Blank last line of a document doesn't seem to behave correctly
-
-Force wrap long lines of code in a table cell so that the table structure is not broken.
-
-Finish diff mode plan (editing hunks in diff mode)
+- Finish diff mode plan (editing hunks in diff mode)
 Use Ctrl with diff mode keybinds in order to facilitate editing during review
+
+- Remove inline code one-cell horizontal padding?
+
+- Force break within long inline code in a table cell so that tables with code can be narrower without breaking.
+
+- Text selection with click and drag should be per-cell in preview and hybrid edit modes. If selection began in a table cell, the selection should be limited to that cell and wrap to multiple lines. The triple click behavior in hybrid edit mode works as desired—it selects the entire contents of that cell. Triple clicking in preview mode selects one visual line of the table, ignoring wrapping.
+
+- Fix inline code in a table not wrapping when de-rendered for editing
+
+- Update these default settings: show table buttons (true), autosave (false)
