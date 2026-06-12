@@ -46,8 +46,8 @@
 
 ### Editing
 
-| Crate | Version | Purpose |
-|---|---|---|
+| Crate | Version |
+|---|---|
 | `ratatui-textarea` | latest (ratatui org fork) | Text editing widget — used for UI input elements—not for editing the document
 | `arboard` | 3.x | OS clipboard read/write (Phase 1); WSL fallback via `clip.exe`/`powershell` |
 
@@ -1452,10 +1452,6 @@ Use Ctrl with diff mode keybinds in order to facilitate editing during review
 
 - Remove inline code one-cell horizontal padding?
 
-- Force break within long inline code in a table cell so that tables with code can be narrower without breaking.
-
 - Text selection with click and drag should be per-cell in preview and hybrid edit modes. If selection began in a table cell, the selection should be limited to that cell and wrap to multiple lines. The triple click behavior in hybrid edit mode works as desired—it selects the entire contents of that cell. Triple clicking in preview mode selects one visual line of the table, ignoring wrapping.
 
-- Fix inline code in a table not wrapping when de-rendered for editing
-
-- Update these default settings: show table buttons (true), autosave (false)
+- Udpdate welcome modal to include diff mode

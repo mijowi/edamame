@@ -160,7 +160,7 @@ impl Default for EditorConfig {
             max_width_enabled: false,
             max_width_cols: 100,
             big_h1: true,
-            autosave_enabled: true,
+            autosave_enabled: false,
             autosave_idle_ms: AUTOSAVE_IDLE_MS_DEFAULT,
             show_diff_intro: true,
         }
