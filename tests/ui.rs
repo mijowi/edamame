@@ -1679,3 +1679,76 @@ fn mermaid_block_reveals_full_raw_source_on_cursor_entry() {
         );
     }
 }
+
+/// Drag-selection highlight must paint on a wrapped cell's continuation
+/// sub-line while the drag is still in progress.  During a drag the raw
+/// reveal is suppressed (`drag_in_progress`), so the generic byte-range
+/// overlay is the only painter — before the fix it skipped continuation
+/// sub-lines and the highlight only appeared after mouse release.
+#[test]
+fn rendered_view_drag_selection_paints_wrapped_cell_continuation() {
+    use edamame::config::Theme;
+    use edamame::document::{Buffer, Selection};
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
+    let src = "| Name | Notes |\n|---|---|\n| a | This is a very long note that wraps |\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    // Re-render at the test viewport's width so the Notes column actually
+    // wraps into separate rendered sub-lines (the default 80-col render
+    // fits the whole cell on one line and only soft-wraps on screen).
+    state.set_viewport_width(28);
+
+    // Select the whole long cell's content; mid-drag state.
+    let sel_start = src.find("This").unwrap();
+    let sel_end = sel_start + src[sel_start..].find(" |\n").unwrap();
+    let rope = state.buffer.rope();
+    state.selection = Some(Selection {
+        anchor: rope.byte_to_char(sel_start),
+        active: rope.byte_to_char(sel_end),
+    });
+    state.cursor.offset = rope.byte_to_char(sel_end);
+    state.update_cursor_block();
+    state.drag_in_progress = true; // mouse button still down — reveal suppressed
+
+    let backend = TestBackend::new(28, 12);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                drop_indicator: None,
+                state: &state,
+                theme,
+                show_table_buttons: false,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |y: u16| -> String {
+        (0..28u16)
+            .map(|x| {
+                buf.cell((x, y))
+                    .and_then(|c| c.symbol().chars().next())
+                    .unwrap_or(' ')
+            })
+            .collect()
+    };
+
+    // Find the continuation sub-line: the row showing the final chunk
+    // ("wraps") of the wrapped cell.
+    let cont_y = (0..12u16)
+        .find(|&y| row_text(y).contains("wraps"))
+        .expect("wrapped continuation row visible");
+    let x = row_text(cont_y).find("wraps").unwrap() as u16;
+    let cell = buf.cell((x, cont_y)).expect("cell in bounds");
+    assert_eq!(
+        cell.style().bg,
+        theme.selection.bg,
+        "selection background must paint on the wrapped continuation row mid-drag"
+    );
+}
