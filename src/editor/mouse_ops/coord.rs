@@ -1,5 +1,6 @@
 use ratatui::text::Line;
 
+use crate::document::CellBand;
 use crate::editor::table_edit;
 use crate::editor::{EditorState, Mode};
 use crate::markdown::table_layout;
@@ -259,8 +260,13 @@ pub fn rendered_sub_line_to_offset(
         .unwrap_or("");
 
     let is_table = table_edit::is_table_block(block_text);
+    // For tables, `table_sub` is the wrap-chunk index of the clicked
+    // rendered sub-line within its logical row (0 elsewhere).
+    let mut table_sub = 0usize;
     let raw_line_idx = if is_table {
-        table_raw_line_idx(state, &block, block_text)
+        let (raw_idx, sub) = table_raw_line_idx(state, &block, block_text);
+        table_sub = sub;
+        raw_idx
     } else if state.parsed.is_image_block(block.idx) && !state.parsed.is_mermaid_block(block.idx) {
         // A real `![alt](url)` image reserves many rendered rows for its
         // single source line, but only the placeholder row carries text.
@@ -339,7 +345,8 @@ pub fn rendered_sub_line_to_offset(
         // user clicked on.
         let row_width = line_row_width(rendered_line, sub_row_within_line);
         let clamped_col = col.min(row_width);
-        table_click_to_raw_col(line_text, rendered_line, clamped_col).unwrap_or(clamped_col)
+        table_click_to_raw_col(line_text, rendered_line, clamped_col, table_sub)
+            .unwrap_or(clamped_col)
     } else {
         let buffer_line_idx = state
             .buffer
@@ -396,10 +403,16 @@ fn locate_block(state: &EditorState, rendered_line_idx: usize) -> Option<BlockLo
 }
 
 /// Translate a click on a table block's rendered sub-line to the raw
-/// `info.rows[..]` row index.  Classifies the rendered line by its
-/// leading box-drawing glyph rather than the alternating-line pattern,
-/// because data rows may span multiple rendered lines after cell-wrap.
-fn table_raw_line_idx(state: &EditorState, block: &BlockLocation, block_text: &str) -> usize {
+/// `info.rows[..]` row index plus the wrap-chunk index within that row
+/// (which of the row's rendered sub-lines was clicked — 0 for the first).
+/// Classifies the rendered line by its leading box-drawing glyph rather
+/// than the alternating-line pattern, because data rows may span multiple
+/// rendered lines after cell-wrap.
+fn table_raw_line_idx(
+    state: &EditorState,
+    block: &BlockLocation,
+    block_text: &str,
+) -> (usize, usize) {
     use crate::ui::table_view::TableSubLineKind;
     let block_lines = state
         .parsed
@@ -408,9 +421,10 @@ fn table_raw_line_idx(state: &EditorState, block: &BlockLocation, block_text: &s
         .unwrap_or(&[]);
     let kinds = crate::ui::table_view::classify_table_sub_lines(block_lines);
     match kinds.get(block.sub_idx) {
-        Some(TableSubLineKind::TopBorder) | Some(TableSubLineKind::Header { .. }) => 0,
-        Some(TableSubLineKind::ThickSeparator) => HEADER_ROWS,
-        Some(TableSubLineKind::DataRow { row, .. }) => row + HEADER_ROWS,
+        Some(TableSubLineKind::TopBorder) => (0, 0),
+        Some(TableSubLineKind::Header { sub }) => (0, *sub),
+        Some(TableSubLineKind::ThickSeparator) => (HEADER_ROWS, 0),
+        Some(TableSubLineKind::DataRow { row, sub }) => (row + HEADER_ROWS, *sub),
         Some(TableSubLineKind::ThinSeparator) => {
             // A separator click snaps to the data row immediately
             // preceding it.  Walk back through `kinds` to find it.
@@ -425,7 +439,7 @@ fn table_raw_line_idx(state: &EditorState, block: &BlockLocation, block_text: &s
                     }
                 })
                 .unwrap_or(0);
-            row + HEADER_ROWS
+            (row + HEADER_ROWS, 0)
         }
         Some(TableSubLineKind::BottomBorder) | None => {
             // Bottom border or out-of-range — snap to the last data
@@ -433,7 +447,7 @@ fn table_raw_line_idx(state: &EditorState, block: &BlockLocation, block_text: &s
             // (header + alignment).  Tables always have at least one
             // data row for `is_table_block` to be true.
             let last_data = block_text.split('\n').count().saturating_sub(HEADER_ROWS);
-            last_data.max(HEADER_ROWS)
+            (last_data.max(HEADER_ROWS), 0)
         }
     }
 }
@@ -633,12 +647,21 @@ fn raw_col_to_buffer_char(
 /// - clicks on trailing padding land just past the last non-whitespace char
 ///   in the raw cell so the cursor never jumps into the next cell.
 ///
+/// `sub` is the wrap-chunk index of the clicked rendered sub-line within
+/// its logical table row: a wrapped cell renders one chunk per sub-line,
+/// so the click's column maps into the chunk shown on that sub-line, not
+/// the start of the cell.  The chunk layout is computed over the *raw*
+/// cell text while the renderer wraps marker-stripped chars, so the
+/// mapping is approximate for styled cells — consistent with the
+/// documented "click-to-offset is approximate" policy.
+///
 /// Returns `None` when the line doesn't parse as a table row (alignment
 /// separator, border) — caller falls back to the default char-by-char map.
 fn table_click_to_raw_col(
     raw_line: &str,
     rendered_line: &Line<'_>,
     rendered_col: usize,
+    sub: usize,
 ) -> Option<usize> {
     let raw_pipes = table_layout::raw_pipe_positions(raw_line);
     let rendered_pipes = table_layout::rendered_pipe_positions(rendered_line);
@@ -665,7 +688,6 @@ fn table_click_to_raw_col(
 
     // Clamp the click into the rendered cell's span so clicks on the opening
     // pipe land at the start of the cell's content.
-    let _ = rend_cell_end;
     let clicked = rendered_col.max(rend_cell_start);
     let rend_offset_in_cell = clicked.saturating_sub(rend_cell_start);
 
@@ -679,19 +701,135 @@ fn table_click_to_raw_col(
         .count();
     let content_chars = raw_chars.len().saturating_sub(raw_leading + raw_trailing);
 
+    // Which chunk of the cell's wrapped content does this sub-line show?
+    // The rendered cell span is `│` + space + content (width w) + space,
+    // so the content width is the span length minus the two pad spaces.
+    let cell_width = rend_cell_end.saturating_sub(rend_cell_start + 2).max(1);
+    let trimmed: String = raw_chars[raw_leading..raw_leading + content_chars]
+        .iter()
+        .collect();
+    let chunks = table_layout::wrap_cell_with_indices(&trimmed, cell_width);
+    // A cell shorter than the row's tallest cell shows blank padding on
+    // the extra sub-lines — map those to the end of the cell's content.
+    let (chunk_start, chunk_len) = chunks
+        .get(sub)
+        .map(|(start, text)| (*start, text.chars().count()))
+        .unwrap_or((content_chars, 0));
+
     // The renderer always emits exactly one leading space before the cell
     // content (see `render_table_row`).  A click on that leading space should
-    // land on the first raw content char; clicks past the content's last
-    // non-whitespace char clamp to "just past last content char" so the
-    // cursor never jumps into the next cell via trailing padding.
+    // land on the first char of this sub-line's chunk; clicks past the
+    // chunk's last char clamp to "just past last chunk char" so the cursor
+    // never jumps into the next cell (or the next chunk) via trailing
+    // padding.
     let raw_offset_in_cell = if rend_offset_in_cell <= 1 {
-        raw_leading
+        raw_leading + chunk_start
     } else {
         let content_col = rend_offset_in_cell - 1;
-        raw_leading + content_col.min(content_chars)
+        raw_leading + chunk_start + content_col.min(chunk_len)
     };
 
-    Some(raw_cell_start + raw_offset_in_cell)
+    Some(raw_cell_start + raw_offset_in_cell.min(raw_chars.len()))
+}
+
+/// The table-cell band under a Preview click at `(rendered_line_idx, col)`:
+/// the inclusive rendered-line range of the cell's logical table row plus
+/// the half-open char-column range of the cell's content area.  Returns
+/// `None` when the click isn't on a header or data sub-line of a table —
+/// callers keep the regular full-line selection behavior.
+pub(super) fn preview_table_cell_band(
+    state: &EditorState,
+    rendered_line_idx: usize,
+    col: usize,
+) -> Option<CellBand> {
+    use crate::ui::table_view::TableSubLineKind;
+    let block = locate_block(state, rendered_line_idx)?;
+    let source = state.buffer.contents();
+    let block_text = source.get(block.range.start..block.range.end.min(source.len()))?;
+    if !table_edit::is_table_block(block_text) {
+        return None;
+    }
+    let block_lines = state
+        .parsed
+        .lines
+        .get(block.rendered_span.start..block.rendered_span.end.min(state.parsed.lines.len()))?;
+    let kinds = crate::ui::table_view::classify_table_sub_lines(block_lines);
+
+    // Only header and data sub-lines carry cell content; borders and
+    // separators fall back to full-line selection.
+    let same_row = |k: &TableSubLineKind| match (kinds.get(block.sub_idx), k) {
+        (Some(TableSubLineKind::Header { .. }), TableSubLineKind::Header { .. }) => true,
+        (
+            Some(TableSubLineKind::DataRow { row: clicked, .. }),
+            TableSubLineKind::DataRow { row, .. },
+        ) => row == clicked,
+        _ => false,
+    };
+    if !kinds.get(block.sub_idx).is_some_and(&same_row) {
+        return None;
+    }
+
+    // Contiguous run of sub-lines belonging to the same logical row.
+    let mut first = block.sub_idx;
+    while first > 0 && same_row(&kinds[first - 1]) {
+        first -= 1;
+    }
+    let mut last = block.sub_idx;
+    while last + 1 < kinds.len() && same_row(&kinds[last + 1]) {
+        last += 1;
+    }
+
+    // Column band of the clicked cell: the renderer emits `│` + space +
+    // content + space per cell, so cell `i`'s content area is
+    // `[pipes[i] + 2, pipes[i + 1] - 1)`.
+    let pipes = table_layout::rendered_pipe_positions(&state.parsed.lines[rendered_line_idx]);
+    if pipes.len() < 2 {
+        return None;
+    }
+    let col_count = pipes.len() - 1;
+    let cell_idx = (0..col_count)
+        .find(|&i| col < pipes[i + 1])
+        .unwrap_or(col_count - 1);
+    let cols = (pipes[cell_idx] + 2, (pipes[cell_idx + 1]).saturating_sub(1));
+    if cols.0 >= cols.1 {
+        return None;
+    }
+    Some(CellBand {
+        lines: (
+            block.rendered_span.start + first,
+            block.rendered_span.start + last,
+        ),
+        cols,
+    })
+}
+
+/// The buffer char range of the table cell containing `char_offset`, used
+/// to clamp Rendered-mode drag selection to the cell where the drag began.
+/// Returns `None` when the offset isn't inside a header/data cell of a
+/// table (including alignment rows, which carry no selectable content).
+pub(super) fn table_cell_char_range_at(
+    state: &EditorState,
+    char_offset: usize,
+) -> Option<(usize, usize)> {
+    let source = state.buffer.contents();
+    let byte = state
+        .buffer
+        .rope()
+        .char_to_byte(char_offset.min(state.buffer.len_chars()));
+    let info = table_edit::find_table_at(&source, byte)?;
+    let (row_idx, col_idx) = table_edit::cursor_cell(&info, byte)?;
+    let row = info.rows.get(row_idx)?;
+    if row.kind == table_edit::RowKind::Alignment {
+        return None;
+    }
+    let cell = row.cells.get(col_idx)?;
+    let start_byte = row.start + cell.content_start;
+    let end_byte = row.start + cell.content_end;
+    let rope = state.buffer.rope();
+    Some((
+        rope.byte_to_char(start_byte.min(source.len())),
+        rope.byte_to_char(end_byte.min(source.len())),
+    ))
 }
 
 /// Width in cells of visual sub-row `sub_row` of the rendered line.  Clicks

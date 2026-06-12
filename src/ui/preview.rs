@@ -69,6 +69,10 @@ impl<'a> StatefulWidget for PreviewView<'a> {
         // the full viewport width — both on their last (wrapped) visual row
         // and on short lines within a wider terminal.
         let sel_range = state.selection.map(|s| s.range());
+        // A cell-banded selection (started inside a table cell) limits the
+        // painted span on every line to the cell's column band instead of
+        // running to the line edges.
+        let band_cols = state.selection.and_then(|s| s.band).map(|b| b.cols);
         let sel_style = state.selection_style;
         let width = area.width as usize;
         let (mut line_idx, mut first_sub_row) = line_at_visual_row(self.lines, self.scroll, width);
@@ -90,11 +94,18 @@ impl<'a> StatefulWidget for PreviewView<'a> {
             // each sub-row so trailing padding isn't highlighted.
             if let Some(((s_line, s_col), (e_line, e_col))) = sel_range {
                 if line_idx >= s_line && line_idx <= e_line {
-                    let start_col = if line_idx == s_line { s_col } else { 0 };
+                    let start_col = if line_idx == s_line {
+                        s_col
+                    } else {
+                        band_cols.map_or(0, |c| c.0)
+                    };
                     let end_col = if line_idx == e_line {
                         e_col
                     } else {
-                        line.spans.iter().map(|s| s.content.chars().count()).sum()
+                        band_cols.map_or_else(
+                            || line.spans.iter().map(|s| s.content.chars().count()).sum(),
+                            |c| c.1,
+                        )
                     };
                     paint_preview_selection(
                         line, buf, area, vis_y, rows_used, width, skip_rows, start_col, end_col,

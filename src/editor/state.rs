@@ -426,8 +426,14 @@ impl EditorState {
                 };
                 let full: String = line.spans.iter().flat_map(|s| s.content.chars()).collect();
                 let row_len = full.chars().count();
-                let col_start = if row == sr { sc } else { 0 };
-                let col_end = if row == er { ec.min(row_len) } else { row_len };
+                let mut col_start = if row == sr { sc } else { 0 };
+                let mut col_end = if row == er { ec.min(row_len) } else { row_len };
+                // A cell-banded selection counts only the cell's column
+                // band on each row, matching what copy extracts.
+                if let Some(band) = vs.band {
+                    col_start = col_start.max(band.cols.0);
+                    col_end = col_end.min(band.cols.1.min(row_len));
+                }
                 chars += col_end.saturating_sub(col_start);
                 lines += 1;
             }
