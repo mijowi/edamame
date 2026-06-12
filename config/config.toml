@@ -63,8 +63,8 @@ appearance = "dark"
 # inactivity. Only buffers with an associated file path autosave; an
 # unnamed buffer (e.g. `edamame` with no filename) is never written.
 # A successful autosave flashes "Autosaved" on the hint line.
-# Default: true.
-# autosave_enabled = true
+# Default: false.
+# autosave_enabled = false
 
 # Idle window (ms) the user must stop editing for before the pending
 # dirty buffer is autosaved. Every keystroke resets the timer, so a

@@ -121,10 +121,12 @@ mod tests {
     use crate::document::Buffer;
     use crate::editor::edit_ops;
 
-    /// Force the autosave debounce window to a known short value so
-    /// tests can advance past it with `sleep`.  Returns the configured
-    /// duration so callers can `sleep` for it + a small jitter.
+    /// Enable autosave (off by default) and force the debounce window to
+    /// a known short value so tests can advance past it with `sleep`.
+    /// Returns the configured duration so callers can `sleep` for it + a
+    /// small jitter.
     fn shrink_window(app: &mut App) -> Duration {
+        app.config.editor.autosave_enabled = true;
         app.config.editor.autosave_idle_ms = 25;
         Duration::from_millis(25)
     }
@@ -165,6 +167,7 @@ mod tests {
         // eligible.  Use `tempfile` to keep the test hermetic.
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         app.editor.buffer = Buffer::for_new_file(tmp.path());
+        app.config.editor.autosave_enabled = true;
         dirty_edit(&mut app);
         app.tick_autosave();
         assert!(
@@ -274,6 +277,7 @@ mod tests {
         let mut app = make_app();
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         app.editor.buffer = Buffer::for_new_file(tmp.path());
+        app.config.editor.autosave_enabled = true;
         // Move out of Preview so InsertChar actually types instead of
         // just switching modes.
         app.editor.mode = crate::editor::Mode::Rendered;
