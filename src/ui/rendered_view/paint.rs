@@ -165,6 +165,9 @@ pub(super) fn paint_byte_range_overlay(
         .rendered_lines_for_byte(block_range.start);
     let sub_idx_in_block = rendered_line_idx.saturating_sub(rendered_span.start);
     let is_table = table_edit::is_table_block(block_text);
+    // Wrap-chunk index of a table sub-line within its logical row: a
+    // wrapped cell shows chunk `table_sub` of its content on this line.
+    let mut table_sub = 0usize;
     let raw_line_idx = if is_table {
         // Tables can have multi-line headers / data rows when
         // cell content wraps.  Use the box-drawing-glyph classifier
@@ -178,12 +181,16 @@ pub(super) fn paint_byte_range_overlay(
             .unwrap_or(&[]);
         let kinds = crate::ui::table_view::classify_table_sub_lines(block_lines);
         match kinds.get(sub_idx_in_block) {
-            Some(crate::ui::table_view::TableSubLineKind::Header { sub: 0 }) => 0,
-            Some(crate::ui::table_view::TableSubLineKind::DataRow { row, sub: 0 }) => row + 2,
-            // Continuation sub-lines, separators, and borders don't carry
-            // a 1:1 raw-byte mapping, so we skip the highlight rather
-            // than paint a speculative one that would look wrong against
-            // the wrapped text.
+            Some(crate::ui::table_view::TableSubLineKind::Header { sub }) => {
+                table_sub = *sub;
+                0
+            }
+            Some(crate::ui::table_view::TableSubLineKind::DataRow { row, sub }) => {
+                table_sub = *sub;
+                row + 2
+            }
+            // Separators and borders don't carry a raw-byte mapping —
+            // skip the highlight rather than paint a speculative one.
             _ => return,
         }
     } else {
@@ -244,6 +251,24 @@ pub(super) fn paint_byte_range_overlay(
     let block_kind = editor.parsed.real_block_for_byte(line_sel_start);
 
     let (rend_start, rend_end) = if is_table {
+        if table_sub > 0 {
+            // Continuation sub-line of a wrapped row: each cell shows
+            // wrap chunk `table_sub` of its content, so the highlight is
+            // the per-cell intersection of the selected raw cols with
+            // that chunk — one segment per cell.
+            for (rs, re) in crate::markdown::table_layout::table_raw_col_range_to_rendered_segments(
+                raw_line,
+                line,
+                start_raw_col,
+                end_raw_col,
+                table_sub,
+            ) {
+                paint_cols_on_line(
+                    line, buf, area, y_start, rows_used, skip_rows, rs, re, style,
+                );
+            }
+            return;
+        }
         let Some(rs) = table_raw_col_to_rendered_col(raw_line, line, start_raw_col) else {
             return;
         };

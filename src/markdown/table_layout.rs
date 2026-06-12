@@ -549,6 +549,68 @@ pub fn table_raw_col_to_rendered_col(
     Some(rend_cell_start + rend_offset_in_cell.min(rend_cell_width))
 }
 
+/// Map a raw char-column range on a table row to the rendered char-column
+/// segments visible on wrap-chunk `sub` of that row's rendered sub-lines.
+/// Cells wrap independently, so each cell contributes at most one segment:
+/// the intersection of `[raw_start, raw_end)` with the raw columns of the
+/// chunk that cell shows on sub-line `sub`.  Used by the selection /
+/// search overlay painter for the continuation sub-lines of wrapped rows,
+/// where the first-chunk mapping of [`table_raw_col_to_rendered_col`]
+/// doesn't apply.  Chunk layout is computed over the raw cell text while
+/// the renderer wraps marker-stripped chars, so segments are approximate
+/// for styled cells.  Returns no segments when the pipe sequences don't
+/// match (alignment row, border).
+pub fn table_raw_col_range_to_rendered_segments(
+    raw_row: &str,
+    rendered_line: &Line<'_>,
+    raw_start: usize,
+    raw_end: usize,
+    sub: usize,
+) -> Vec<(usize, usize)> {
+    let raw_pipes = raw_pipe_positions(raw_row);
+    let rendered_pipes = rendered_pipe_positions(rendered_line);
+    if raw_pipes.len() < 2 || rendered_pipes.len() != raw_pipes.len() {
+        return Vec::new();
+    }
+    let col_count = raw_pipes.len() - 1;
+    let raw_chars: Vec<char> = raw_row.chars().collect();
+    let mut out = Vec::new();
+    for i in 0..col_count {
+        let raw_cell_start = raw_pipes[i] + 1;
+        let raw_cell_end = raw_pipes[i + 1];
+        let cell_chars = &raw_chars[raw_cell_start..raw_cell_end];
+        let leading = cell_chars.iter().take_while(|c| c.is_whitespace()).count();
+        let trailing = cell_chars
+            .iter()
+            .rev()
+            .take_while(|c| c.is_whitespace())
+            .count();
+        let content_len = cell_chars.len().saturating_sub(leading + trailing);
+        let trimmed: String = cell_chars[leading..leading + content_len].iter().collect();
+        // Rendered cell = `│` + space + content (width w) + space.
+        let width = rendered_pipes[i + 1]
+            .saturating_sub(rendered_pipes[i] + 3)
+            .max(1);
+        let chunks = wrap_cell_with_indices(&trimmed, width);
+        let Some((chunk_start, chunk_text)) = chunks.get(sub) else {
+            continue;
+        };
+        let lo_raw = raw_cell_start + leading + chunk_start;
+        let hi_raw = lo_raw + chunk_text.chars().count();
+        let s = raw_start.max(lo_raw);
+        let e = raw_end.min(hi_raw);
+        if s >= e {
+            continue;
+        }
+        let rend_chunk_start = rendered_pipes[i] + 2;
+        out.push((
+            rend_chunk_start + (s - lo_raw),
+            rend_chunk_start + (e - lo_raw),
+        ));
+    }
+    out
+}
+
 /// Metadata for overlaying a raw cell on top of a rendered table row.
 ///
 /// The `rendered_start..rendered_end` char range spans the cell's content area
@@ -875,6 +937,29 @@ mod tests {
         let raw = "| a | b |";
         let rendered = line_with("│ a │ b │");
         assert_eq!(table_raw_col_to_rendered_col(raw, &rendered, 2), Some(1));
+    }
+
+    #[test]
+    fn rendered_segments_map_continuation_chunk() {
+        // Cell 1 ("alpha bravo") wraps at width 5 into ["alpha", "bravo"];
+        // sub-line 1 shows "bravo", whose raw cols are 12..17.
+        let raw = "| x | alpha bravo |";
+        let rendered = line_with("│   │ bravo │");
+        let segs = table_raw_col_range_to_rendered_segments(raw, &rendered, 13, 16, 1);
+        // Raw cols 13..16 ("rav") sit 1..4 chars into the chunk, whose
+        // rendered content starts at col 6.
+        assert_eq!(segs, vec![(7, 10)]);
+        // Cell 0 has no second chunk, so a range inside it yields nothing.
+        assert!(table_raw_col_range_to_rendered_segments(raw, &rendered, 2, 3, 1).is_empty());
+        // Past the last chunk: no segments.
+        assert!(table_raw_col_range_to_rendered_segments(raw, &rendered, 13, 16, 2).is_empty());
+    }
+
+    #[test]
+    fn rendered_segments_empty_on_pipe_mismatch() {
+        let raw = "| a | b |";
+        let rendered = line_with("├───┼───┤");
+        assert!(table_raw_col_range_to_rendered_segments(raw, &rendered, 2, 3, 0).is_empty());
     }
 
     #[test]
