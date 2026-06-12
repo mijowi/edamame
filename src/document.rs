@@ -12,5 +12,5 @@ pub use cursor::Cursor;
 pub use graphemes::{next_grapheme_offset, prev_grapheme_offset};
 pub use history::{EditDelta, History};
 pub use parsed_doc::{detect_setext, ImageBlockInfo, ParsedDoc};
-pub use selection::{Selection, VisualSelection};
+pub use selection::{CellBand, Selection, VisualSelection};
 pub use source_map::SourceMap;

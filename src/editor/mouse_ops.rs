@@ -25,8 +25,8 @@ use crate::ui::table_view::{TableHit, TableLayoutSnapshot};
 
 use self::checkbox::toggle_checkbox_at;
 use self::coord::{
-    click_to_char_offset, rendered_click_to_line_col, rendered_line_at_row,
-    span_at_col_has_modifier,
+    click_to_char_offset, preview_table_cell_band, rendered_click_to_line_col,
+    rendered_line_at_row, span_at_col_has_modifier, table_cell_char_range_at,
 };
 use self::links::{follow_footnote_at_click, follow_link_at_click};
 use self::selection::{
@@ -50,8 +50,15 @@ use self::table_drag::{
 /// into whatever commit the `Release` produces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DragTarget {
-    /// Plain text selection anchored at a buffer char offset.
-    TextSelection { anchor: usize },
+    /// Plain text selection anchored at a buffer char offset.  `cell` is
+    /// `Some((start, end))` when the drag began inside a table cell in
+    /// Rendered mode — `Drag` clamps the active end into that char range so
+    /// the selection never escapes the cell.  Computed once at mouse-down
+    /// (the buffer can't mutate mid-drag).
+    TextSelection {
+        anchor: usize,
+        cell: Option<(usize, usize)>,
+    },
     /// Row-handle drag in the table that begins at `table_byte_start`.
     /// `row_idx` is a `TableInfo` row index (≥ 2 — header and alignment
     /// aren't draggable).  Tracked across mouse-move events; the release
@@ -226,15 +233,27 @@ fn apply_preview_action(
             }
             match rendered_click_to_line_col(state, col as usize, row as usize, viewport_width) {
                 Some((line_idx, char_col)) => {
+                    // A click inside a table cell pins the selection to that
+                    // cell: the band constrains drag extension, painting,
+                    // and copy to the cell's column range.
+                    let band = preview_table_cell_band(state, line_idx, char_col);
+                    let char_col = match band {
+                        Some(b) => char_col.clamp(b.cols.0, b.cols.1),
+                        None => char_col,
+                    };
                     state.visual_selection = Some(VisualSelection {
                         anchor: (line_idx, char_col),
                         active: (line_idx, char_col),
+                        band,
                     });
                     // The `anchor: 0` is unused by Preview's Drag arm
                     // (which extends the visual selection, not a rope
                     // selection) — it only needs to be `Some(_)` so the
                     // Drag arm below doesn't no-op.
-                    *drag_target = Some(DragTarget::TextSelection { anchor: 0 });
+                    *drag_target = Some(DragTarget::TextSelection {
+                        anchor: 0,
+                        cell: None,
+                    });
                     state.drag_in_progress = true;
                 }
                 None => {
@@ -247,29 +266,53 @@ fn apply_preview_action(
                 rendered_click_to_line_col(state, col as usize, row as usize, viewport_width)
             {
                 if let Some((s, e)) = preview_word_range(state, line_idx, char_col) {
-                    state.visual_selection = Some(VisualSelection {
-                        anchor: (line_idx, s),
-                        active: (line_idx, e),
-                    });
+                    state.visual_selection =
+                        Some(VisualSelection::span((line_idx, s), (line_idx, e)));
                 }
             }
             *drag_target = None;
             state.drag_in_progress = false;
         }
         MouseAction::TripleClick { col, row, .. } => {
-            if let Some((line_idx, _)) =
+            if let Some((line_idx, char_col)) =
                 rendered_click_to_line_col(state, col as usize, row as usize, viewport_width)
             {
-                let end_col = state
-                    .parsed
-                    .lines
-                    .get(line_idx)
-                    .map(|l| l.spans.iter().map(|s| s.content.chars().count()).sum())
-                    .unwrap_or(0);
-                state.visual_selection = Some(VisualSelection {
-                    anchor: (line_idx, 0),
-                    active: (line_idx, end_col),
-                });
+                if let Some(b) = preview_table_cell_band(state, line_idx, char_col) {
+                    // Triple-click inside a table cell selects the whole
+                    // cell: every wrapped sub-line of its row, limited to
+                    // the cell's column band, ending at the last sub-line's
+                    // trimmed content end (mirrors Rendered-mode
+                    // `select_line_at_cursor`).
+                    let end_col = state
+                        .parsed
+                        .lines
+                        .get(b.lines.1)
+                        .map(|l| {
+                            let cell: String = l
+                                .spans
+                                .iter()
+                                .flat_map(|s| s.content.chars())
+                                .skip(b.cols.0)
+                                .take(b.cols.1 - b.cols.0)
+                                .collect();
+                            b.cols.0 + cell.trim_end().chars().count()
+                        })
+                        .unwrap_or(b.cols.1);
+                    state.visual_selection = Some(VisualSelection {
+                        anchor: (b.lines.0, b.cols.0),
+                        active: (b.lines.1, end_col),
+                        band: Some(b),
+                    });
+                } else {
+                    let end_col = state
+                        .parsed
+                        .lines
+                        .get(line_idx)
+                        .map(|l| l.spans.iter().map(|s| s.content.chars().count()).sum())
+                        .unwrap_or(0);
+                    state.visual_selection =
+                        Some(VisualSelection::span((line_idx, 0), (line_idx, end_col)));
+                }
             }
             *drag_target = None;
             state.drag_in_progress = false;
@@ -278,16 +321,17 @@ fn apply_preview_action(
             if drag_target.is_none() {
                 return;
             }
-            if let Some(active) =
+            if let Some(mut active) =
                 rendered_click_to_line_col(state, col as usize, row as usize, viewport_width)
             {
                 if let Some(sel) = state.visual_selection.as_mut() {
+                    if let Some(b) = sel.band {
+                        active.0 = active.0.clamp(b.lines.0, b.lines.1);
+                        active.1 = active.1.clamp(b.cols.0, b.cols.1);
+                    }
                     sel.active = active;
                 } else {
-                    state.visual_selection = Some(VisualSelection {
-                        anchor: active,
-                        active,
-                    });
+                    state.visual_selection = Some(VisualSelection::span(active, active));
                 }
             }
         }
@@ -553,6 +597,14 @@ pub fn apply(
                 state.ensure_cursor_visible(viewport_height, viewport_width);
                 *drag_target = Some(DragTarget::TextSelection {
                     anchor: state.cursor.offset,
+                    // A drag that begins inside a table cell stays confined
+                    // to that cell (Rendered mode only — Raw shows the
+                    // pipes, so free selection is correct there).
+                    cell: if state.mode == Mode::Rendered {
+                        table_cell_char_range_at(state, state.cursor.offset)
+                    } else {
+                        None
+                    },
                 });
                 // Mouse button is down — suppress raw reveal for the block
                 // under the cursor so the user's click anchor stays visually
@@ -600,12 +652,19 @@ pub fn apply(
             }
         }
         MouseAction::Drag { col, row } => match drag_target {
-            Some(DragTarget::TextSelection { anchor }) => {
+            Some(DragTarget::TextSelection { anchor, cell }) => {
                 let anchor = *anchor;
+                let cell = *cell;
                 if let Some(offset) =
                     click_to_char_offset(state, col as usize, row as usize, viewport_width)
                 {
-                    let active = offset.min(state.buffer.len_chars());
+                    let mut active = offset.min(state.buffer.len_chars());
+                    // A drag anchored in a table cell never leaves it: drags
+                    // onto other rows, other cells, or off the table clamp
+                    // to the cell's content range.
+                    if let Some((lo, hi)) = cell {
+                        active = active.clamp(lo, hi);
+                    }
                     state.cursor.offset = active;
                     state.cursor.preferred_col = state.current_visual_col(viewport_width);
                     state.selection = Some(Selection { anchor, active });
@@ -868,7 +927,13 @@ mod tests {
         // "Hello world" — clicking col 6 lands on 'w'.
         assert_eq!(state.cursor.offset, 6);
         assert_eq!(state.selection, None);
-        assert_eq!(target, Some(DragTarget::TextSelection { anchor: 6 }));
+        assert_eq!(
+            target,
+            Some(DragTarget::TextSelection {
+                anchor: 6,
+                cell: None
+            })
+        );
     }
 
     #[test]

@@ -95,7 +95,10 @@ fn click_on_paragraph_in_rendered_mode_places_cursor() {
     assert_eq!(st.cursor.offset, 7); // start of "world!"
     assert_eq!(
         anchor,
-        Some(mouse_ops::DragTarget::TextSelection { anchor: 7 })
+        Some(mouse_ops::DragTarget::TextSelection {
+            anchor: 7,
+            cell: None
+        })
     );
 }
 
@@ -478,8 +481,10 @@ fn drag_release_expands_selection_to_enclosing_markers() {
     });
     // Simulate the mouse release that follows the drag.  `drag_anchor` is
     // Some(...) during drag; Release doesn't touch it otherwise.
-    let mut anchor: Option<mouse_ops::DragTarget> =
-        Some(mouse_ops::DragTarget::TextSelection { anchor: 0 });
+    let mut anchor: Option<mouse_ops::DragTarget> = Some(mouse_ops::DragTarget::TextSelection {
+        anchor: 0,
+        cell: None,
+    });
     mouse_ops::apply(&mut st, MouseAction::Release, &mut anchor, &[], VP, VW);
 
     // Expected: selection expands to include the `*…*` markers → raw `*cat*`.
@@ -502,8 +507,10 @@ fn drag_release_expands_double_markers_to_strong() {
         anchor: 8,
         active: 12,
     });
-    let mut anchor: Option<mouse_ops::DragTarget> =
-        Some(mouse_ops::DragTarget::TextSelection { anchor: 0 });
+    let mut anchor: Option<mouse_ops::DragTarget> = Some(mouse_ops::DragTarget::TextSelection {
+        anchor: 0,
+        cell: None,
+    });
     mouse_ops::apply(&mut st, MouseAction::Release, &mut anchor, &[], VP, VW);
     let sel = st.selection.unwrap();
     let (s, e) = sel.range();
@@ -1933,4 +1940,243 @@ fn click_on_reserved_image_row_does_not_poison_inline_map_cache() {
             frame.render_stateful_widget(view, frame.area(), &mut view_state);
         })
         .unwrap();
+}
+
+// ── Cell-constrained table selection ─────────────────────────────────────────
+//
+// A click-and-drag selection that begins inside a table cell stays confined
+// to that cell in both Rendered and Preview modes, spanning the cell's
+// wrapped sub-rows as needed.  Preview triple-click selects the whole cell
+// (mirroring Rendered mode's `select_line_at_cursor`).
+
+/// Simple 3-column table.  Rendered data row (screen row 3):
+/// `│ alpha │ bravo │ charlie │` with pipes at cols 0, 8, 16, 26.
+/// Raw data row starts at byte 28; cell 1 (" bravo ") is bytes 37..44.
+const CELL_TABLE: &str = "| a | b | c |\n|---|---|---|\n| alpha | bravo | charlie |\n";
+
+/// Long sentence that forces the description column of `wrapped_table()` to
+/// wrap onto two rendered sub-rows at the default 80-col viewport.
+const LONG_CELL: &str = "the quick brown fox jumps over the lazy dog and keeps running through the quiet forest until dusk";
+
+/// Two-column table whose second cell wraps.  Rendered rows: 0=top border,
+/// 1=header, 2=thick separator, 3=data sub 0, 4=data sub 1, 5=bottom border;
+/// pipes at cols 0, 6, 79 so the description cell's content band is [8, 78).
+fn wrapped_table() -> String {
+    format!("| k | description |\n|---|---|\n| x | {LONG_CELL} |\n")
+}
+
+fn drag(col: u16, row: u16) -> MouseAction {
+    MouseAction::Drag { col, row }
+}
+
+fn triple_click_at(st: &mut EditorState, col: u16, row: u16) {
+    let mut mouse = MouseDispatcher::new();
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    for _ in 0..3 {
+        if let Some(a) = mouse.dispatch(click_event(col, row), area()) {
+            mouse_ops::apply(st, a, &mut anchor, &[], VP, VW);
+        }
+        if let Some(a) = mouse.dispatch(up_event(col, row), area()) {
+            mouse_ops::apply(st, a, &mut anchor, &[], VP, VW);
+        }
+    }
+}
+
+#[test]
+fn rendered_drag_from_cell_clamps_to_cell() {
+    let mut st = state(CELL_TABLE);
+    st.mode = Mode::Rendered;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+
+    // Click the 'r' of "bravo" (rendered col 11 on the data row).
+    mouse_ops::apply(&mut st, click(11, 3), &mut anchor, &[], VP, VW);
+    assert_eq!(st.cursor.offset, 39, "anchor on the 'r' of bravo");
+
+    // Drag into "charlie"'s columns — active clamps to the end of bravo's
+    // cell content (byte 44, just before the closing pipe).
+    mouse_ops::apply(&mut st, drag(22, 3), &mut anchor, &[], VP, VW);
+    let sel = st.selection.expect("drag sets selection");
+    let (s, e) = sel.range();
+    assert_eq!(
+        st.buffer.slice_to_string(s, e),
+        "ravo ",
+        "selection must stop at bravo's cell boundary"
+    );
+
+    // Drag up onto the header row — active clamps to the start of the cell.
+    mouse_ops::apply(&mut st, drag(2, 1), &mut anchor, &[], VP, VW);
+    let sel = st.selection.expect("selection persists");
+    let (s, e) = sel.range();
+    assert_eq!(
+        st.buffer.slice_to_string(s, e),
+        " b",
+        "upward drag must clamp to the cell's content start"
+    );
+
+    // Drag below the table — active clamps to the cell's content end.
+    mouse_ops::apply(&mut st, drag(5, 10), &mut anchor, &[], VP, VW);
+    let sel = st.selection.expect("selection persists");
+    let (s, e) = sel.range();
+    assert_eq!(
+        st.buffer.slice_to_string(s, e),
+        "ravo ",
+        "drag off the table must clamp to the cell's content end"
+    );
+}
+
+#[test]
+fn rendered_drag_across_wrapped_cell_sub_rows() {
+    let src = wrapped_table();
+    let mut st = state(&src);
+    st.mode = Mode::Rendered;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+
+    let cell_start = src.find(LONG_CELL).expect("cell text in source");
+    // First char of the second wrap chunk ("the quiet forest until dusk").
+    let chunk1 = LONG_CELL.find("the quiet").expect("wrap point");
+
+    // Click content col 2 of the cell on sub-row 0 (rendered col 10 = 'e'
+    // of "the"), then drag to the same content col on sub-row 1.
+    mouse_ops::apply(&mut st, click(10, 3), &mut anchor, &[], VP, VW);
+    assert_eq!(
+        st.cursor.offset,
+        cell_start + 2,
+        "click lands on the first chunk's char 2"
+    );
+    mouse_ops::apply(&mut st, drag(10, 4), &mut anchor, &[], VP, VW);
+    let sel = st.selection.expect("drag sets selection");
+    let (s, e) = sel.range();
+    assert_eq!(
+        st.buffer.slice_to_string(s, e),
+        &LONG_CELL[2..chunk1 + 2],
+        "drag onto the wrapped sub-row must map into the second chunk"
+    );
+
+    // Drag past the cell's right edge on sub-row 1 — clamps inside the cell.
+    mouse_ops::apply(&mut st, drag(79, 4), &mut anchor, &[], VP, VW);
+    let sel = st.selection.expect("selection persists");
+    let (s, e) = sel.range();
+    let text = st.buffer.slice_to_string(s, e);
+    assert!(
+        !text.contains('|') && !text.contains('\n'),
+        "selection escaped the cell: {text:?}"
+    );
+}
+
+#[test]
+fn preview_triple_click_selects_whole_wrapped_cell() {
+    let src = wrapped_table();
+    let mut st = state(&src);
+    assert_eq!(st.mode, Mode::Preview);
+    triple_click_at(&mut st, 20, 3);
+
+    let vs = st.visual_selection.expect("triple-click sets selection");
+    let band = vs.band.expect("cell band recorded");
+    assert_eq!(band.lines, (3, 4), "band covers both wrapped sub-rows");
+    assert_eq!(band.cols, (8, 78), "band covers the cell's content area");
+    assert_eq!(vs.anchor, (3, 8));
+    assert_eq!(
+        vs.active,
+        (4, 8 + "the quiet forest until dusk".chars().count())
+    );
+
+    let copied = mouse_ops::visual_selection_to_rendered_text(vs, &st.parsed.lines);
+    assert_eq!(
+        copied, LONG_CELL,
+        "copy must reconstruct the full cell text without borders or padding"
+    );
+}
+
+#[test]
+fn preview_triple_click_outside_table_selects_line() {
+    let mut st = state("first line\nsecond line\n");
+    assert_eq!(st.mode, Mode::Preview);
+    triple_click_at(&mut st, 3, 1);
+
+    let vs = st.visual_selection.expect("triple-click sets selection");
+    assert_eq!(vs.band, None, "non-table lines select without a band");
+    assert_eq!(vs.anchor, (1, 0));
+    assert_eq!(vs.active, (1, "second line".len()));
+}
+
+#[test]
+fn preview_triple_click_on_table_border_selects_line() {
+    let mut st = state(CELL_TABLE);
+    triple_click_at(&mut st, 3, 0); // top border row
+    let vs = st.visual_selection.expect("triple-click sets selection");
+    assert_eq!(vs.band, None, "border rows keep full-line selection");
+    assert_eq!(vs.anchor.0, 0);
+}
+
+#[test]
+fn preview_drag_from_cell_constrained_to_band() {
+    let src = wrapped_table();
+    let mut st = state(&src);
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+
+    // Click inside the description cell on sub-row 0.
+    mouse_ops::apply(&mut st, click(10, 3), &mut anchor, &[], VP, VW);
+    let vs = st.visual_selection.expect("click seeds selection");
+    let band = vs.band.expect("click in cell records band");
+    assert_eq!(band.lines, (3, 4));
+    assert_eq!(band.cols, (8, 78));
+
+    // Drag onto the bottom border, left of the cell — both axes clamp.
+    mouse_ops::apply(&mut st, drag(2, 5), &mut anchor, &[], VP, VW);
+    let vs = st.visual_selection.expect("selection persists");
+    assert_eq!(vs.active, (4, 8), "drag clamps to the band's corner");
+
+    // Drag above the table and into the key column — clamps to band start.
+    mouse_ops::apply(&mut st, drag(1, 1), &mut anchor, &[], VP, VW);
+    let vs = st.visual_selection.expect("selection persists");
+    assert_eq!(vs.active, (3, 8));
+}
+
+#[test]
+fn preview_drag_in_first_cell_does_not_leak_into_neighbor() {
+    let mut st = state(CELL_TABLE);
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+
+    // Click on "alpha" (cell 0) and drag right through "bravo".
+    mouse_ops::apply(&mut st, click(3, 3), &mut anchor, &[], VP, VW);
+    mouse_ops::apply(&mut st, drag(13, 3), &mut anchor, &[], VP, VW);
+    let vs = st.visual_selection.expect("selection persists");
+    let copied = mouse_ops::visual_selection_to_rendered_text(vs, &st.parsed.lines);
+    assert!(
+        copied.starts_with("lpha") && !copied.contains("bravo") && !copied.contains('│'),
+        "selection leaked out of cell 0: {copied:?}"
+    );
+}
+
+#[test]
+fn preview_triple_click_on_cell_with_escaped_pipe() {
+    let mut st = state("| a | b |\n|---|---|\n| x\\|y | z |\n");
+    triple_click_at(&mut st, 3, 3);
+    let vs = st.visual_selection.expect("triple-click sets selection");
+    assert!(vs.band.is_some(), "escaped-pipe cell still maps to a band");
+    let copied = mouse_ops::visual_selection_to_rendered_text(vs, &st.parsed.lines);
+    assert_eq!(
+        copied, "x|y",
+        "escaped pipe renders literally inside the cell"
+    );
+}
+
+#[test]
+fn preview_triple_click_in_empty_cell_copies_nothing() {
+    let mut st = state("| head | b |\n|---|---|\n|  | z |\n");
+    triple_click_at(&mut st, 3, 3);
+    if let Some(vs) = st.visual_selection {
+        let copied = mouse_ops::visual_selection_to_rendered_text(vs, &st.parsed.lines);
+        assert_eq!(copied.trim(), "", "empty cell must copy as empty");
+    }
+}
+
+#[test]
+fn preview_triple_click_in_header_cell_selects_header_content() {
+    let mut st = state(CELL_TABLE);
+    triple_click_at(&mut st, 2, 1); // header row, cell 0 ("a")
+    let vs = st.visual_selection.expect("triple-click sets selection");
+    assert!(vs.band.is_some(), "header cells band like data cells");
+    let copied = mouse_ops::visual_selection_to_rendered_text(vs, &st.parsed.lines);
+    assert_eq!(copied, "a");
 }

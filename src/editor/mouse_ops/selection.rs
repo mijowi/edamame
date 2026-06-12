@@ -208,6 +208,13 @@ pub(super) fn select_line_at_cursor(state: &mut EditorState) {
 /// the anchor and active endpoints are fully included; the first and last
 /// lines are clipped to the selection's char columns.  A newline separates
 /// each rendered line so multi-line copies preserve structure.
+///
+/// A cell-banded selection (started inside a table cell) clips every line
+/// to the cell's column band, drops the cell's trailing padding, and joins
+/// the lines with a single space instead of a newline: the banded lines are
+/// wrap chunks of one logical source cell and wrap points are always
+/// whitespace, so this reconstructs the cell text — matching what
+/// Rendered-mode cell selection copies.
 pub fn visual_selection_to_rendered_text(sel: VisualSelection, lines: &[Line<'_>]) -> String {
     let (start, end) = sel.range();
     let (start_line, start_col) = start;
@@ -225,19 +232,28 @@ pub fn visual_selection_to_rendered_text(sel: VisualSelection, lines: &[Line<'_>
     for idx in start_line..=end_line {
         let line = &lines[idx];
         let chars: Vec<char> = line.spans.iter().flat_map(|s| s.content.chars()).collect();
-        let lo = if idx == start_line { start_col } else { 0 };
-        let hi = if idx == end_line {
+        let mut lo = if idx == start_line { start_col } else { 0 };
+        let mut hi = if idx == end_line {
             end_col
         } else {
             chars.len()
         };
+        if let Some(band) = sel.band {
+            lo = lo.max(band.cols.0);
+            hi = hi.min(band.cols.1);
+        }
         let lo = lo.min(chars.len());
         let hi = hi.min(chars.len());
         if lo < hi {
-            out.extend(chars[lo..hi].iter());
+            let slice: String = chars[lo..hi].iter().collect();
+            if sel.band.is_some() {
+                out.push_str(slice.trim_end());
+            } else {
+                out.push_str(&slice);
+            }
         }
         if idx < end_line {
-            out.push('\n');
+            out.push(if sel.band.is_some() { ' ' } else { '\n' });
         }
     }
     out

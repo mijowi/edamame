@@ -324,10 +324,10 @@ pub fn apply(
                         .iter()
                         .map(|s| s.content.chars().count())
                         .sum();
-                    state.visual_selection = Some(crate::document::VisualSelection {
-                        anchor: (0, 0),
-                        active: (last, last_col),
-                    });
+                    state.visual_selection = Some(crate::document::VisualSelection::span(
+                        (0, 0),
+                        (last, last_col),
+                    ));
                 }
                 return false;
             }

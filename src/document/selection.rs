@@ -12,6 +12,21 @@ pub struct Selection {
     pub active: usize,
 }
 
+/// The rendered-screen region of one table cell: the rendered-line range of
+/// its logical table row plus the char-column band of the cell's content
+/// area (between the padding spaces inside the cell's `│` borders).  Stored
+/// on a [`VisualSelection`] that began inside the cell so that painting,
+/// copy, and drag extension all stay confined to the cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellBand {
+    /// Inclusive rendered-line range covering every wrapped sub-line of the
+    /// logical table row the cell belongs to.
+    pub lines: (usize, usize),
+    /// Half-open `[start, end)` rendered char-column range of the cell's
+    /// content area.
+    pub cols: (usize, usize),
+}
+
 /// A selection in the rendered (visible) view — stored as `(rendered_line,
 /// char_col)` tuples rather than raw buffer char offsets.  Used in Preview
 /// mode, where the user is selecting over the rendered output (no raw
@@ -23,9 +38,22 @@ pub struct VisualSelection {
     pub anchor: (usize, usize),
     /// `(rendered_line_idx, char_col)` of the moveable end (mouse pointer).
     pub active: (usize, usize),
+    /// `Some` when the selection began inside a table cell — painting, copy,
+    /// and drag extension are then limited to the cell's column band on each
+    /// line of the band's row range.
+    pub band: Option<CellBand>,
 }
 
 impl VisualSelection {
+    /// A plain (unbanded) selection from `anchor` to `active`.
+    pub fn span(anchor: (usize, usize), active: (usize, usize)) -> Self {
+        Self {
+            anchor,
+            active,
+            band: None,
+        }
+    }
+
     /// Normalized range `(start, end)` where `start <= end` in row-major
     /// ordering.  Convenience helper for highlight + copy code that needs a
     /// deterministic forward span.
