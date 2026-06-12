@@ -322,12 +322,11 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // wraps onto multiple rendered sub-lines (or is in a row whose
         // *other* cells wrap), build a per-chunk overlay so each
         // rendered sub of the cell can be painted with its own raw
-        // chunk.  Returns `None` for non-data rows, for cells that fit
-        // in a single sub of a single-sub row (existing
-        // `compute_cell_overlay` path), and for cells whose raw text
-        // wraps wider than the row's rendered height (existing
-        // `compute_cell_chunk_overlay` path keeps the cursor's chunk
-        // visible via horizontal scroll).
+        // chunk.  Returns `None` for non-data rows and for single-sub
+        // rows (existing `compute_cell_overlay` /
+        // `compute_cell_chunk_overlay` paths handle those).  Raw text
+        // wrapping to more chunks than the row's rendered height
+        // scrolls vertically inside the row's sub-lines.
         let wrapped_cell = if is_table && cursor_raw_line >= 2 {
             compute_wrapped_cell_overlay(
                 editor,

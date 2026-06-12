@@ -3,5 +3,5 @@ source: tests/renderer.rs
 expression: output
 ---
 [
-    "Normal bold italic  code  strike",
+    "Normal bold italic code strike",
 ]

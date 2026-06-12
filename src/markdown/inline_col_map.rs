@@ -6,8 +6,8 @@ use pulldown_cmark::{Event, Options, Parser};
 /// Built by re-parsing `raw_line` with pulldown-cmark and recording
 /// the raw byte position of every rendered character emitted by inline
 /// `Text`, `Code`, and `SoftBreak`/`HardBreak` events.  Marker bytes
-/// (asterisks, brackets, the URL portion of a link) sit in the gaps
-/// between events and are correctly skipped.
+/// (asterisks, brackets, backtick delimiters, the URL portion of a
+/// link) sit in the gaps between events and are correctly skipped.
 #[derive(Debug, Clone)]
 pub struct InlineColMap {
     rendered_to_raw: Vec<usize>,
@@ -30,7 +30,7 @@ impl InlineColMap {
         for (event, range) in Parser::new_ext(raw_line, opts).into_offset_iter() {
             match event {
                 Event::Text(_) => walk.push_text(raw_line, range),
-                Event::Code(s) => walk.push_code(&s, range),
+                Event::Code(s) => walk.push_code(raw_line, &s, range),
                 Event::SoftBreak | Event::HardBreak => walk.push_break(range.start),
                 // No `Event::FootnoteReference` arm: this map is built per
                 // line, so a reference line carries no definition and
@@ -183,10 +183,25 @@ impl CharMapWalk {
         self.push_chars(rest, byte);
     }
 
-    fn push_code(&mut self, inner: &str, range: std::ops::Range<usize>) {
-        self.map.push(self.lookup(range.start));
-        self.push_chars(inner, range.start + 1);
-        self.map.push(self.lookup(range.end.saturating_sub(1)));
+    fn push_code(&mut self, raw_line: &str, inner: &str, range: std::ops::Range<usize>) {
+        // The range covers the full span including its backtick delimiters
+        // (one or more on each side); the renderer emits only the content,
+        // so the delimiters are skipped like other marker bytes.  pulldown
+        // additionally strips one space from each end of the body when both
+        // ends are spaces (`` ` x ` `` → "x") — detect that to keep each
+        // content char pointing at its true raw position.
+        let slice_end = range.end.min(raw_line.len());
+        let slice = &raw_line[range.start..slice_end];
+        let delim = slice.bytes().take_while(|&b| b == b'`').count();
+        let body_end = slice.len().saturating_sub(delim).max(delim);
+        let body = &slice[delim..body_end];
+        let stripped = body != inner
+            && body
+                .strip_prefix(' ')
+                .and_then(|b| b.strip_suffix(' '))
+                .is_some_and(|b| b == inner);
+        let content_start = range.start + delim + usize::from(stripped);
+        self.push_chars(inner, content_start);
     }
 
     fn push_break(&mut self, byte: usize) {
@@ -335,12 +350,47 @@ mod tests {
     }
 
     #[test]
-    fn code_span_adds_space_padding() {
+    fn code_span_skips_backticks() {
         let map = InlineColMap::build("`code`");
-        // Rendered: " code " = 6 chars (leading + trailing space)
-        assert_eq!(map.rendered_len(), 6);
-        assert_eq!(map.rendered_to_raw(0), 0); // leading space maps to opening backtick
-        assert_eq!(map.rendered_to_raw(5), 5); // trailing space maps to closing backtick
+        // Rendered: "code" = 4 chars — the backticks are markers.
+        assert_eq!(map.rendered_len(), 4);
+        assert_eq!(map.rendered_to_raw(0), 1); // c
+        assert_eq!(map.rendered_to_raw(3), 4); // e
+
+        // Backtick marker bytes forward-fill like other markers.
+        assert_eq!(map.raw_to_rendered(0), 0); // opening `
+        assert_eq!(map.raw_to_rendered(5), 4); // closing `
+    }
+
+    #[test]
+    fn double_backtick_code_span_skips_both_delimiters() {
+        let map = InlineColMap::build("``a`b``");
+        // Rendered: "a`b" = 3 chars.
+        assert_eq!(map.rendered_len(), 3);
+        assert_eq!(map.rendered_to_raw(0), 2); // a
+        assert_eq!(map.rendered_to_raw(1), 3); // inner `
+        assert_eq!(map.rendered_to_raw(2), 4); // b
+    }
+
+    #[test]
+    fn code_span_with_stripped_spaces_stays_aligned() {
+        // pulldown strips one space from each end: `` ` x ` `` → "x".
+        let map = InlineColMap::build("` x `");
+        assert_eq!(map.rendered_len(), 1);
+        assert_eq!(map.rendered_to_raw(0), 2); // x sits at raw char 2
+    }
+
+    #[test]
+    fn code_span_round_trips() {
+        let map = InlineColMap::build("see `fn main()` here");
+        for rendered_col in 0..map.rendered_len() {
+            let raw_col = map.rendered_to_raw(rendered_col);
+            assert_eq!(
+                map.raw_to_rendered(raw_col),
+                rendered_col,
+                "round-trip failed at rendered col {rendered_col}"
+            );
+        }
     }
 
     #[test]
