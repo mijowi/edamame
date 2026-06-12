@@ -131,10 +131,17 @@ pub(super) struct WrappedCellOverlay {
 /// cell text onto the rendered sub-lines.  Returns `None` for single-
 /// sub-line cells in single-sub-line rows (existing single-sub
 /// `compute_cell_overlay` / `compute_cell_chunk_overlay` paths handle
-/// those), and also when the raw cell wraps to *more* chunks than the
-/// rendered row has sub-lines (existing `compute_cell_chunk_overlay`
-/// keeps the cursor's chunk visible by horizontally scrolling — more
-/// useful than truncating raw chunks).
+/// those).
+///
+/// The raw cell text is wider than its rendered form (backticks,
+/// emphasis markers, link URLs are markers the renderer drops), so it
+/// routinely wraps to *more* chunks than the rendered row has
+/// sub-lines.  In a multi-sub row the overlay then scrolls vertically:
+/// a `row_height`-chunk window containing the cursor's chunk is mapped
+/// onto the row's sub-lines, so the raw text keeps wrapping and no
+/// sub-line is left showing the stale rendered tail.  Single-sub rows
+/// still return `None` and fall back to `compute_cell_chunk_overlay`'s
+/// horizontal scroll.
 pub(super) fn compute_wrapped_cell_overlay(
     editor: &EditorState,
     block_lines_range: std::ops::Range<usize>,
@@ -196,28 +203,49 @@ pub(super) fn compute_wrapped_cell_overlay(
         return None;
     }
 
+    // Wrap the cell's *trimmed* content — the pipe-padding whitespace
+    // around it belongs to the rendered pad columns, not the content
+    // area.  Wrapping it inflates the chunk count (a trailing pad
+    // becomes a lone-space chunk that wastes a sub-line) and, more
+    // importantly, diverges from the click mapper
+    // (`coord::table_click_to_raw_col`), which wraps the trimmed text:
+    // identical input keeps the overlay's chunk layout in lockstep
+    // with the chunk a click resolves the cursor into.
+    let raw_chars: Vec<char> = raw_cell_text.chars().collect();
+    let raw_leading = raw_chars.iter().take_while(|c| c.is_whitespace()).count();
+    let raw_trailing = raw_chars
+        .iter()
+        .rev()
+        .take_while(|c| c.is_whitespace())
+        .count();
+    let content_chars = raw_chars.len().saturating_sub(raw_leading + raw_trailing);
+    let trimmed: String = raw_chars[raw_leading..raw_leading + content_chars]
+        .iter()
+        .collect();
+
     // Re-run the renderer's word-wrap so we know which sub-line + col
     // the cursor's char index lands on.  Word-wrap drops whitespace at
     // break points, so a cursor on dropped whitespace maps to the start
     // of the next visible row.
-    let wrapped = wrap_cell_with_indices(&raw_cell_text, content_width);
+    let wrapped = wrap_cell_with_indices(&trimmed, content_width);
     if wrapped.is_empty() {
         return None;
     }
 
-    // Single-sub cell in a single-sub row: leave it to the existing
-    // `compute_cell_overlay` path.  Multi-sub raw beyond the row's
-    // rendered height: leave it to `compute_cell_chunk_overlay` so the
-    // cursor's chunk stays visible via horizontal scroll.
-    if wrapped.len() <= 1 && row_height <= 1 {
-        return None;
-    }
-    if wrapped.len() > row_height {
+    // Single-sub rows: leave a fitting cell to `compute_cell_overlay`
+    // and an overflowing one to `compute_cell_chunk_overlay`'s
+    // horizontal scroll.  (Multi-sub rows whose raw wraps beyond the
+    // rendered height scroll vertically below — falling back there
+    // would replace only one sub-line and leave the cell's other
+    // rendered wrap rows painted as a stale tail.)
+    if row_height <= 1 {
         return None;
     }
 
-    // Locate cursor: which chunk + col within that chunk.
-    let cursor_in_cell = cursor_col_raw.saturating_sub(raw_cell_start_char);
+    // Locate cursor: which chunk + col within that chunk.  Offsets are
+    // relative to the trimmed content; a cursor on the leading pad
+    // clamps to the first content char.
+    let cursor_in_cell = cursor_col_raw.saturating_sub(raw_cell_start_char + raw_leading);
     let last_idx = wrapped.len() - 1;
     let mut cursor_sub = last_idx;
     let mut cursor_col_in_chunk = wrapped[last_idx].1.chars().count();
@@ -232,6 +260,18 @@ pub(super) fn compute_wrapped_cell_overlay(
         }
     }
 
+    // The raw text can wrap to MORE chunks than the row has rendered
+    // sub-lines (backticks and other marker bytes make raw wider than
+    // rendered).  Scroll vertically: map a `row_height`-chunk window
+    // containing the cursor's chunk onto the row's sub-lines.
+    // Bottom-anchored minimal scroll — the click mapper resolves a
+    // click on sub-line `s` to chunk `s`, so any chunk below
+    // `row_height` must stay on its own sub-line or the text jumps
+    // upward the moment the reveal fires.
+    let window_start = cursor_sub.saturating_sub(row_height - 1);
+    let window = &wrapped[window_start..(window_start + row_height).min(wrapped.len())];
+    let cursor_sub = cursor_sub - window_start;
+
     // raw_row char index → byte offset.  +1 sentinel so we can index
     // past the last char without panicking.
     let raw_row_byte_at: Vec<usize> = raw_row
@@ -240,21 +280,13 @@ pub(super) fn compute_wrapped_cell_overlay(
         .chain(std::iter::once(raw_row.len()))
         .collect();
 
-    let mut subs: Vec<CellOverlay> = Vec::with_capacity(wrapped.len());
-    for (i, (start_in_cell, chunk_text)) in wrapped.iter().enumerate() {
-        // First chunk inherits the cell's leading-pad space directly
-        // from the raw cell text — paint it from `cell_rendered_start`
-        // so the pad lines up.  Continuation chunks have the leading
-        // pad dropped at the wrap point, so paint them one column to
-        // the right and let the rendered ' ' that the renderer
-        // already drew in the leading-pad column show through.
-        let has_leading_pad = chunk_text.starts_with(' ');
-        let painted_start = if has_leading_pad {
-            cell_rendered_start
-        } else {
-            cell_rendered_start + 1
-        };
-        let chunk_first_char_in_row = raw_cell_start_char + start_in_cell;
+    let mut subs: Vec<CellOverlay> = Vec::with_capacity(window.len());
+    for (i, (start_in_cell, chunk_text)) in window.iter().enumerate() {
+        // Chunks carry trimmed content only, so every chunk paints one
+        // column right of the cell edge — the rendered ' ' the renderer
+        // already drew in the leading-pad column shows through.
+        let painted_start = cell_rendered_start + 1;
+        let chunk_first_char_in_row = raw_cell_start_char + raw_leading + start_in_cell;
         let raw_cell_byte_start = raw_row_byte_at
             .get(chunk_first_char_in_row)
             .copied()
@@ -274,10 +306,10 @@ pub(super) fn compute_wrapped_cell_overlay(
     }
 
     // The raw cell can wrap to FEWER chunks than the row has rendered
-    // sub-lines — the styled wrap and the raw wrap break differently
-    // (rendered code pads vs raw backticks), and an in-line edit can
-    // shrink the raw text while the rendered row height is still the
-    // pre-edit parse's.  Pad with blank overlays so `overlay_raw_cell`
+    // sub-lines — the styled wrap and the raw wrap break differently,
+    // and an in-line edit can shrink the raw text while the rendered
+    // row height is still the pre-edit parse's.  Pad with blank
+    // overlays so `overlay_raw_cell`
     // wipes the cell's area on those leftover sub-lines; without this,
     // the de-rendered cell's stale rendered wrap tail stays on screen
     // below the raw chunks.
@@ -303,4 +335,88 @@ pub(super) fn compute_wrapped_cell_overlay(
         cursor_sub,
         visual_col,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Theme;
+    use crate::document::Buffer;
+
+    /// Raw cell text is wider than its rendered form (the backticks are
+    /// dropped on render), so it can wrap to more chunks than the row's
+    /// rendered height.  The overlay must still take the multi-sub path
+    /// and scroll vertically — returning `None` would drop to the
+    /// single-sub chunk overlay, which replaces only the cursor's
+    /// sub-line and leaves the row's other rendered wrap rows on screen
+    /// as an orphaned stale tail.
+    #[test]
+    fn raw_wider_than_rendered_height_scrolls_vertically() {
+        let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
+        let src = "| a | b |\n|---|---|\n| x | `aa` `bb` `cc` `dd` `ee` |\n";
+        let mut state = crate::editor::EditorState::new(Buffer::from_str(src), theme);
+        state.set_viewport_width(18);
+
+        let lines_range = 0..state.parsed.lines.len();
+        let raw_row = "| x | `aa` `bb` `cc` `dd` `ee` |";
+        let cursor_col = raw_row.find("cc").unwrap(); // ASCII: byte == char col
+
+        let overlay = compute_wrapped_cell_overlay(&state, lines_range, 0, cursor_col, src)
+            .expect("multi-sub row must use the wrapped-cell overlay, not the chunk fallback");
+
+        // Every sub-line of the row carries a raw chunk — no blank or
+        // stale rendered tail — and the backtick delimiters are visible.
+        assert!(overlay.subs.len() >= 2, "fixture row must wrap");
+        assert!(
+            overlay.subs.iter().all(|s| !s.raw_text.is_empty()),
+            "raw chunks must cover every sub-line: {:?}",
+            overlay.subs.iter().map(|s| &s.raw_text).collect::<Vec<_>>()
+        );
+        let joined: String = overlay.subs.iter().map(|s| s.raw_text.as_str()).collect();
+        assert!(
+            joined.contains('`'),
+            "overlay must reveal raw backticks: {joined:?}"
+        );
+        assert!(overlay.cursor_sub < overlay.subs.len());
+    }
+
+    /// Clicking the SECOND wrap sub-line of a code span must keep the
+    /// cursor's chunk on that sub-line and the span's start visible on
+    /// the first.  Pre-fix, the overlay wrapped the raw cell text
+    /// untrimmed (the pipe-padding spaces inflated the chunk count and
+    /// left a lone-space chunk) and top-anchored the scroll window, so
+    /// a click on the second line yanked the cursor's chunk up to the
+    /// first sub-line with the span's start scrolled invisibly away.
+    #[test]
+    fn click_on_second_wrap_line_keeps_span_start_visible() {
+        let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
+        let src = "| a | b |\n|---|---|\n| x | `tracing-appender` |\n";
+        let mut state = crate::editor::EditorState::new(Buffer::from_str(src), theme);
+        state.set_viewport_width(17);
+
+        let lines_range = 0..state.parsed.lines.len();
+        let raw_row = "| x | `tracing-appender` |";
+        // Cursor on the 'a' of "appender" — rendered on the row's
+        // second wrap sub-line ("tracing-" / "appender").
+        let cursor_col = raw_row.find("appender").unwrap(); // ASCII: byte == char col
+
+        let overlay = compute_wrapped_cell_overlay(&state, lines_range, 0, cursor_col, src)
+            .expect("wrapped code-span cell must use the multi-sub overlay");
+
+        assert_eq!(overlay.subs.len(), 2, "fixture row wraps to two sub-lines");
+        assert!(
+            overlay.cursor_sub > 0,
+            "cursor clicked on the second sub-line must stay below the first chunk"
+        );
+        assert!(
+            overlay.subs[0].raw_text.starts_with('`'),
+            "the span's start must stay visible on the first sub-line: {:?}",
+            overlay.subs.iter().map(|s| &s.raw_text).collect::<Vec<_>>()
+        );
+        assert!(
+            overlay.subs.iter().all(|s| !s.raw_text.is_empty()),
+            "no sub-line may be wasted on a pad-space chunk: {:?}",
+            overlay.subs.iter().map(|s| &s.raw_text).collect::<Vec<_>>()
+        );
+    }
 }

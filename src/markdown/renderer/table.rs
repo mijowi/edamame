@@ -1,7 +1,7 @@
 //! `Block::Table` rendering: per-cell width metrics → `compute_widths` →
 //! per-row inline-aware wrap → bordered output.
 
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::markdown::ast::Inline;
@@ -68,14 +68,7 @@ fn flatten_breakable_chars(inlines: &[Inline], breakable: bool, out: &mut Vec<(c
             | Inline::Italic(inner)
             | Inline::Strikethrough(inner)
             | Inline::Highlight(inner) => flatten_breakable_chars(inner, breakable, out),
-            Inline::Code(c) => {
-                // Mirror the rendered form: one pad cell on each side
-                // (NBSP in table cells — see `cell_styled_chars`), both
-                // breakable like the code itself.
-                out.push(('\u{00A0}', true));
-                out.extend(c.chars().map(|c| (c, true)));
-                out.push(('\u{00A0}', true));
-            }
+            Inline::Code(c) => out.extend(c.chars().map(|c| (c, true))),
             Inline::Link { text, url, .. } => {
                 let before = out.len();
                 flatten_breakable_chars(text, true, out);
@@ -342,33 +335,11 @@ impl<'t> Renderer<'t> {
     /// span / link / etc.) so the wrapped output preserves formatting
     /// across line breaks.
     fn cell_styled_chars(&self, cell_inlines: &[Inline], default_style: Style) -> Vec<StyledChar> {
-        // `render_inline` emits each code span as a single ` code ` span —
-        // the pad spaces are the rendered stand-ins for the raw backticks.
-        // Inside a wrapping table cell those pads must travel with the
-        // code token: left as ASCII spaces they'd be trimmed at a wrap
-        // break (leading pad) or ride off with the following token
-        // (trailing pad), gluing the code background to the border or a
-        // neighbouring word.  Convert them to NBSP, which the wrap
-        // tokenizer treats as a word char (`is_soft_break_space`).  Code
-        // spans are recognized by style: `render_inline` paints them with
-        // exactly `theme.code_span` (or the dim + CROSSED_OUT variant) and
-        // nothing else uses those styles.
-        let code_style = self.theme.code_span;
-        let code_dim_style = self.theme.code_span_dim.add_modifier(Modifier::CROSSED_OUT);
         let mut out: Vec<StyledChar> = Vec::new();
         for span in self.render_inlines(cell_inlines, default_style) {
             let style = span.style;
-            let start = out.len();
             for ch in span.content.chars() {
                 out.push(StyledChar { ch, style });
-            }
-            if style == code_style || style == code_dim_style {
-                if out.get(start).is_some_and(|c| c.ch == ' ') {
-                    out[start].ch = '\u{00A0}';
-                }
-                if out.last().is_some_and(|c| c.ch == ' ') {
-                    out.last_mut().unwrap().ch = '\u{00A0}';
-                }
             }
         }
         out
@@ -398,11 +369,10 @@ mod tests {
     }
 
     #[test]
-    fn cell_min_width_short_code_span_counts_content_plus_pads() {
-        // Rendered form is `␣ok␣` (NBSP pads standing in for the
-        // backticks) — 4 cells, below the breakable floor.
+    fn cell_min_width_short_code_span_counts_content_only() {
+        // Rendered form is `ok` — 2 cells, below the breakable floor.
         let cell = vec![Inline::Code("ok".to_owned())];
-        assert_eq!(cell_min_width(&cell), 4);
+        assert_eq!(cell_min_width(&cell), 2);
     }
 
     #[test]

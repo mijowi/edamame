@@ -666,8 +666,9 @@ impl<'t> Renderer<'t> {
             | Inline::Italic(inner)
             | Inline::Strikethrough(inner)
             | Inline::Highlight(inner) => self.rendered_inlines_char_width(inner),
-            // Code span adds " code " (2 extra chars for leading/trailing spaces).
-            Inline::Code(c) => c.chars().count() + 2,
+            // Code span renders as its content only — the backtick
+            // delimiters are dropped, with no pad cells.
+            Inline::Code(c) => c.chars().count(),
             // Link renders as just the visible text (bracket contents, or a
             // URL/filename fallback when empty).
             Inline::Link { text, url, .. } => {
@@ -748,7 +749,7 @@ impl<'t> Renderer<'t> {
                 } else {
                     self.theme.code_span
                 };
-                vec![Span::styled(format!(" {} ", code), style)]
+                vec![Span::styled(code.clone(), style)]
             }
 
             Inline::Link { text, url, .. } => {
@@ -1436,19 +1437,20 @@ mod tests {
     /// trailing pad.  They render as NBSP so the wrap tokenizer can't
     /// trim them like inter-word spaces.
     #[test]
-    fn table_code_span_pads_survive_wrap_breaks() {
+    fn table_code_span_wraps_without_pads() {
         let src = "| intro `breakable_code_name` | x |\n\
                    |---|---|\n\
                    | a | b |\n";
         let lines = renderer().with_viewport_width(25).render(&parse(src));
         let texts: Vec<String> = lines.iter().map(line_text).collect();
+        let joined = texts.join("\n");
         assert!(
-            texts.iter().any(|t| t.contains("\u{00A0}breakable_")),
-            "code chunk starting a wrap row must keep its leading pad: {texts:#?}"
+            joined.contains("breakable_") && !joined.contains("breakable_code_name"),
+            "code span must hard-split across wrap rows: {texts:#?}"
         );
         assert!(
-            texts.iter().any(|t| t.contains("code_name\u{00A0}")),
-            "final code chunk must keep its trailing pad: {texts:#?}"
+            !joined.contains('\u{00A0}'),
+            "code spans render without pad cells: {texts:#?}"
         );
     }
 
