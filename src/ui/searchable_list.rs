@@ -28,10 +28,10 @@ use crate::ui::scroll_container::{
     VERTICAL_CHROME_ROWS,
 };
 
-/// Cap on the scrolling list height shared by every searchable-list
-/// modal.  Keeping the cap identical across pickers means the modal
-/// height is stable when the user switches between them — no visual
-/// reflow.
+/// Default cap on the scrolling list height for searchable-list modals.
+/// Callers pass their own cap via [`SearchableListChrome::max_list_rows`];
+/// the command palette uses this default, while the section picker passes
+/// `u16::MAX` so it grows to fill the available height instead.
 pub const MAX_LIST_ROWS: u16 = 20;
 
 /// Rows the input + divider occupy.  Pinned above the scrolling list
@@ -56,6 +56,16 @@ pub struct SearchableListChrome<'a> {
     /// Whether the cursor glyph in the input row should currently be
     /// visible (the App's blink phase).
     pub cursor_visible: bool,
+    /// Cap on the scrolling list height.  Most callers pass
+    /// [`MAX_LIST_ROWS`]; the section picker passes a taller value.
+    pub max_list_rows: u16,
+    /// Minimum blank rows to keep above *and* below the modal.  The list
+    /// height shrinks below [`Self::max_list_rows`] so the modal never
+    /// grows taller than `area.height - 2 * vertical_pad`.  Pass `0` to
+    /// let the modal fill the terminal height (the command-palette
+    /// behavior); the section picker passes a few rows so it stays
+    /// visually inset on short terminals instead of touching the edges.
+    pub vertical_pad: u16,
     pub theme: &'a Theme,
 }
 
@@ -99,8 +109,20 @@ pub fn draw_searchable_list_chrome(
     chrome: SearchableListChrome<'_>,
     scroll_state: &mut ScrollContainerState,
 ) -> Option<SearchableListLayout> {
+    // Cap the list height so the modal leaves at least `vertical_pad`
+    // blank rows above and below.  The non-list chrome (input row +
+    // divider + frame padding/title) is `PINNED_TOP + VERTICAL_CHROME_ROWS`
+    // rows, so the list can occupy whatever's left after reserving the
+    // top/bottom padding and that chrome.
+    let chrome_rows = PINNED_TOP + VERTICAL_CHROME_ROWS;
+    let height_budget = area
+        .height
+        .saturating_sub(2 * chrome.vertical_pad)
+        .saturating_sub(chrome_rows)
+        .max(1);
+    let max_list_rows = chrome.max_list_rows.min(height_budget);
     let row_count = chrome.row_count.max(1);
-    let scrolling_height = row_count.min(MAX_LIST_ROWS);
+    let scrolling_height = row_count.min(max_list_rows);
     let content = ContentSize {
         width: chrome.content_width,
         height: scrolling_height,
@@ -114,7 +136,7 @@ pub fn draw_searchable_list_chrome(
     // input row would jitter up and down as filtering changes the
     // body height.
     let max_content = ContentSize {
-        height: MAX_LIST_ROWS,
+        height: max_list_rows,
         ..content
     };
     let anchor = centered_rect_for_content(max_content, area);

@@ -1449,4 +1449,3 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 Use Ctrl with diff mode keybinds in order to facilitate editing during review
 
 - Update welcome modal to include diff mode
-

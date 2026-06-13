@@ -52,6 +52,14 @@ impl Modal for SectionPickerModal {
             theme: ctx.theme,
             cursor_visible: ctx.cursor_visible,
         };
+        // Trim the bottom region (hint line + status bar) from the area
+        // so the picker — which grows to fill the height it's given —
+        // never paints over it.
+        let bottom_rows = crate::ui::BottomRegion::height(ctx.config.editor.status_bar);
+        let area = Rect {
+            height: area.height.saturating_sub(bottom_rows),
+            ..area
+        };
         frame.render_stateful_widget(view, area, &mut self.state);
     }
 
