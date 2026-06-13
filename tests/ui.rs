@@ -155,6 +155,52 @@ fn rendered_view_paints_selection_across_multiple_rendered_blocks() {
     );
 }
 
+/// Regression: with the cursor on the phantom final line (after the source's
+/// trailing '\n'), the last real block must stay rendered.  Before the
+/// phantom-line virtual block existed, the cursor fell back to the last real
+/// block and its rendered text was replaced by an empty raw reveal —
+/// "swallowing" the next-to-last line.
+#[test]
+fn cursor_on_phantom_final_line_does_not_swallow_last_block() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let src = "Alpha\n\nBeta\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    // Cursor at the very end of the buffer — on the phantom empty line.
+    state.cursor.offset = src.chars().count();
+
+    let backend = TestBackend::new(25, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |y: u16| -> String {
+        (0..25u16)
+            .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
+            .collect()
+    };
+    assert!(
+        row_text(2).contains("Beta"),
+        "last text line must stay rendered with cursor on the phantom line, got {:?}",
+        row_text(2)
+    );
+}
+
 /// Selection highlight on a line with inline bold markup should cover the
 /// *rendered* glyph positions (cells 0-3 for "bold"), not the raw positions
 /// (cells 2-7 for "**bold**").  This catches "map is correct but never
