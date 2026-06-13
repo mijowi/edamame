@@ -29,7 +29,7 @@ use crate::ui::modal_row::{format_modal_row, RowLayout};
 use crate::ui::scroll_container::ScrollContainerState;
 use crate::ui::searchable_list::{
     draw_searchable_list_chrome, fuzzy_filter, render_searchable_list_scrollbar,
-    SearchableListChrome,
+    SearchableListChrome, MAX_LIST_ROWS,
 };
 
 /// One palette row: an action plus its display label.
@@ -293,6 +293,8 @@ impl<'a> StatefulWidget for PaletteView<'a> {
             content_width: palette_content_width(state).max(NO_MATCHES_WIDTH),
             row_count: state.display_rows.len() as u16,
             cursor_visible: self.cursor_visible,
+            max_list_rows: MAX_LIST_ROWS,
+            vertical_pad: 0,
             theme: self.theme,
         };
         let Some(layout) = draw_searchable_list_chrome(area, buf, chrome, &mut state.scroll_state)
