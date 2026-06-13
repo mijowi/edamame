@@ -289,12 +289,25 @@ impl<'a> StatefulWidget for SectionPickerView<'a> {
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         state.refresh_display();
 
+        // The section picker has no row cap — it grows to fill the
+        // available height (the modal adapter has already trimmed the
+        // bottom region from `area`).  Padding insets the modal from the
+        // top and bottom edges, but only when the terminal is tall
+        // enough to spare it; on a short terminal the rows are too
+        // precious, so we drop the padding entirely.
+        let vertical_pad = if area.height < SHORT_TERMINAL_ROWS {
+            0
+        } else {
+            SECTION_PICKER_VERTICAL_PAD
+        };
         let chrome = SearchableListChrome {
             title: "Go to Section",
             query: &state.query,
             content_width: picker_content_width(state).max(NO_HEADINGS_WIDTH),
             row_count: state.display_indices.len() as u16,
             cursor_visible: self.cursor_visible,
+            max_list_rows: u16::MAX,
+            vertical_pad,
             theme: self.theme,
         };
         let Some(layout) = draw_searchable_list_chrome(area, buf, chrome, &mut state.scroll_state)
@@ -357,6 +370,14 @@ impl<'a> StatefulWidget for SectionPickerView<'a> {
 /// Width floor used when the heading list is empty so the modal doesn't
 /// snap narrower than `(no headings)`.
 const NO_HEADINGS_WIDTH: u16 = 16;
+
+/// Blank rows kept above and below the picker on a terminal tall enough
+/// to spare them.
+const SECTION_PICKER_VERTICAL_PAD: u16 = 4;
+
+/// Terminal-height threshold below which the picker drops its vertical
+/// padding and grows edge-to-edge so the cramped screen isn't wasted.
+const SHORT_TERMINAL_ROWS: u16 = 20;
 
 /// Indent (in spaces) used to render `level` in the list.  H1 = 1 space,
 /// H2 = 2, …, H6 = 6.  Visually mirrors the editor's heading prefix
