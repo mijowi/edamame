@@ -1158,8 +1158,9 @@ mod tests {
         state.refresh_parsed();
 
         // Collapsed: each image block emits exactly its one-line
-        // placeholder — two images + the blank gap = 3 rendered lines.
-        assert_eq!(state.parsed.line_count(), 3);
+        // placeholder — two images + the blank gap + the phantom final
+        // line (the source ends with '\n') = 4 rendered lines.
+        assert_eq!(state.parsed.line_count(), 4);
     }
 
     /// Moving down through a word-wrapped line should land on the visually

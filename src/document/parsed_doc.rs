@@ -437,6 +437,26 @@ impl ParsedDoc {
             rendered_to_block.push(last);
         }
 
+        // Phantom final line: a source ending in '\n' has one more buffer
+        // line than the loops above produce blocks for — ropey places the
+        // cursor on an empty line *after* the last '\n'.  Without a block
+        // of its own, a cursor on that line falls back to the last real
+        // block (`block_for_byte`'s end-of-source fallback), and
+        // `RenderedView` then swallows that block's rendered text under an
+        // empty raw reveal.  Synthesize a zero-byte virtual block owning
+        // one blank rendered line so the phantom line maps 1:1 like every
+        // other buffer line.
+        if total_bytes > 0 && src_bytes[total_bytes - 1] == b'\n' {
+            push_blank(
+                &mut lines,
+                &mut rendered_to_block,
+                &mut all_original,
+                &mut all_per_block_own,
+                total_bytes..total_bytes,
+                true,
+            );
+        }
+
         let extended_ranges = build_extended_ranges(&all_original, total_bytes);
 
         let source_map = SourceMap::new(
@@ -932,6 +952,52 @@ mod tests {
         let b4 = doc.source_map.block_for_byte(4).unwrap();
         assert_ne!(b2, b3);
         assert_ne!(b3, b4);
+    }
+
+    /// A source ending in '\n' has a phantom final buffer line (ropey puts
+    /// the cursor on an empty line after the last '\n').  That line must own
+    /// its own virtual block — otherwise `block_for_byte`'s end-of-source
+    /// fallback attributes the cursor to the last real block and
+    /// `RenderedView` swallows that block's text under an empty raw reveal.
+    #[test]
+    fn phantom_final_line_owns_its_own_block() {
+        let src = "Alpha\n\nBeta\n";
+        let doc = ParsedDoc::build(src, theme(), true, 24);
+        let beta_block = doc.source_map.block_for_byte(src.find("Beta").unwrap());
+        let phantom_block = doc.source_map.block_for_byte(src.len());
+        assert!(beta_block.is_some() && phantom_block.is_some());
+        assert_ne!(
+            beta_block, phantom_block,
+            "cursor at end of source must not share the last real block"
+        );
+        // The phantom block owns exactly the final blank rendered line.
+        let range = doc
+            .source_map
+            .rendered_lines_for_block(phantom_block.unwrap());
+        assert_eq!(range, doc.line_count() - 1..doc.line_count());
+        let text: String = doc.lines[range.start]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            text.is_empty(),
+            "phantom line must render blank, got {text:?}"
+        );
+    }
+
+    /// No phantom block when the source does not end with a newline — the
+    /// last buffer line is the last real block's own line.
+    #[test]
+    fn no_phantom_block_without_trailing_newline() {
+        let src = "Alpha\n\nBeta";
+        let doc = ParsedDoc::build(src, theme(), true, 24);
+        let beta_block = doc.source_map.block_for_byte(src.find("Beta").unwrap());
+        let end_block = doc.source_map.block_for_byte(src.len());
+        assert_eq!(
+            beta_block, end_block,
+            "cursor at end of an unterminated line stays in that line's block"
+        );
     }
 
     /// Regression: during a column-resize drag, `live_table_widths` stuffs
