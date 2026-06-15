@@ -108,6 +108,9 @@ fn render_editor(state: &mut EditorState, width: u16, height: u16) -> ratatui::b
     let mut terminal = Terminal::new(backend).unwrap();
     let mut view_state = EditorViewState::new();
     let caps = edamame::terminal::Capabilities::default();
+    // Build the hint from the live state, exactly as the app does, so
+    // the search match counter that now leads the hint line is present.
+    let hint = edamame::ui::bottom_region::HintContent::Chords(hint_line_for(state, &keymap()));
     terminal
         .draw(|frame| {
             let view = EditorView {
@@ -120,7 +123,7 @@ fn render_editor(state: &mut EditorState, width: u16, height: u16) -> ratatui::b
                 show_line_numbers: false,
                 is_scrolling: false,
                 status_bar_layout: edamame::config::StatusBarLayout::TwoLine,
-                hint: edamame::ui::bottom_region::HintContent::Chords(Default::default()),
+                hint,
                 max_width_enabled: false,
                 max_width_cols: 0,
                 scrollbar_active: false,
@@ -207,20 +210,22 @@ fn multibyte_text_before_a_match_keeps_columns_aligned() {
 }
 
 #[test]
-fn status_counter_walks_with_focus() {
+fn hint_counter_walks_with_focus() {
     let mut st = state_with_search("x y x y x\n", "x", None);
     st.mode = Mode::Rendered;
     st.search.as_mut().unwrap().advance_focus();
     let buf = render_editor(&mut st, 40, 8);
-    let mut bar = String::new();
+    // The match counter now leads the hint line — the row directly
+    // above the status bar (TwoLine layout: rows 6 = hint, 7 = status).
+    let mut hint = String::new();
     for x in 0..40u16 {
-        bar.push(
-            buf.cell((x, 7))
+        hint.push(
+            buf.cell((x, 6))
                 .map(|c| c.symbol().chars().next().unwrap_or(' '))
                 .unwrap_or(' '),
         );
     }
-    assert!(bar.contains("2/3"), "status bar must show 2/3, got: {bar}");
+    assert!(hint.contains("2/3"), "hint line must show 2/3, got: {hint}");
 }
 
 #[test]
