@@ -44,10 +44,16 @@ impl HintChord {
 
 /// A default-hint payload: an optional leading plaintext hint (e.g.
 /// `Press any key to edit` in Preview mode) followed by a chord row.
+///
+/// `search_match` carries the `(current, total)` match counter of an
+/// active search flow.  It renders as an accent badge (`theme.status_mode_search`)
+/// at the very front of the hint line — ahead of the prelude and chords
+/// — mirroring the appearance it had when it lived on the status bar.
 #[derive(Debug, Clone, Default)]
 pub struct HintSet {
     pub prelude: Option<String>,
     pub chords: Vec<HintChord>,
+    pub search_match: Option<(usize, usize)>,
 }
 
 /// What the hint line currently displays.  The three variants are
@@ -114,6 +120,11 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
         return HintSet {
             prelude: None,
             chords,
+            // The match counter leads the search-flow hint line; absent
+            // when the result set is empty (e.g. after a replace-all
+            // consumes every match).
+            search_match: (!search.matches.is_empty())
+                .then(|| (search.focused_idx + 1, search.matches.len())),
         };
     }
     match state.mode {
@@ -129,6 +140,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
                     (Action::Quit, "Quit"),
                 ],
             ),
+            search_match: None,
         },
         Mode::Rendered | Mode::Raw if state.selection_size().is_some() => HintSet {
             prelude: None,
@@ -152,10 +164,12 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
                     (Action::ItalicizeSelection, "Italic"),
                 ],
             ),
+            search_match: None,
         },
         Mode::Rendered if cursor_in_table(state) => HintSet {
             prelude: None,
             chords: table_chords(keymap),
+            search_match: None,
         },
         Mode::Diff => {
             let all_resolved = state.diff.as_ref().is_some_and(|d| d.all_resolved());
@@ -166,6 +180,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
             HintSet {
                 prelude: None,
                 chords: diff_review_chords(all_resolved, focused_resolved),
+                search_match: None,
             }
         }
         Mode::Rendered | Mode::Raw => {
@@ -227,6 +242,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
             HintSet {
                 prelude: None,
                 chords,
+                search_match: None,
             }
         }
     }
@@ -466,6 +482,18 @@ impl<'a> Widget for HintLine<'a> {
         let spans: Vec<Span<'_>> = match &self.content {
             HintContent::Chords(set) => {
                 let mut v: Vec<Span<'_>> = Vec::new();
+                // Search match counter — an accent badge (` n/N `) that
+                // leads the hint line ahead of every other item.  Same
+                // `status_mode_search` styling it carried on the status
+                // bar; a trailing bar-styled space pads it off from the
+                // first chord so the gap matches the inter-chord one.
+                if let Some((current, total)) = set.search_match {
+                    v.push(Span::styled(
+                        format!(" {}/{} ", current, total),
+                        self.theme.status_mode_search,
+                    ));
+                    v.push(Span::styled(" ".to_string(), self.bar_style));
+                }
                 // Prelude — plain text on the hint bar, followed by a
                 // two-space gap that acts as a separator before the
                 // chord row.  Rendered as hint_bar bg + hint_label fg
@@ -1039,7 +1067,6 @@ mod tests {
                         cursor_col: Some(1),
                         section_path: Vec::new(),
                         diff_progress: None,
-                        search_progress: None,
                     },
                     hint,
                     layout,
@@ -1066,6 +1093,7 @@ mod tests {
         HintSet {
             prelude: None,
             chords,
+            search_match: None,
         }
     }
 
@@ -1116,10 +1144,38 @@ mod tests {
     }
 
     #[test]
+    fn search_match_badge_leads_the_hint_line() {
+        let set = HintSet {
+            prelude: None,
+            chords: vec![HintChord::new("⏎", "Next")],
+            search_match: Some((2, 3)),
+        };
+        let out = render_region(80, StatusBarLayout::TwoLine, HintContent::Chords(set));
+        let first_line = out.lines().next().unwrap();
+        let counter_idx = first_line.find("2/3").expect("match counter must render");
+        let next_idx = first_line.find("Next").expect("chord must render");
+        assert!(
+            counter_idx < next_idx,
+            "match counter must lead the hint line, line: {first_line:?}"
+        );
+    }
+
+    #[test]
+    fn no_search_match_badge_without_an_active_search() {
+        let set = chord_set(vec![HintChord::new("^S", "Save")]);
+        let out = render_region(80, StatusBarLayout::TwoLine, HintContent::Chords(set));
+        assert!(
+            !out.contains('/'),
+            "no counter when search_match is None: {out}"
+        );
+    }
+
+    #[test]
     fn prelude_appears_before_chords() {
         let set = HintSet {
             prelude: Some("Press any key to edit".to_owned()),
             chords: vec![HintChord::new("^P", "Menu")],
+            search_match: None,
         };
         let out = render_region(80, StatusBarLayout::TwoLine, HintContent::Chords(set));
         let first_line = out.lines().next().unwrap();
