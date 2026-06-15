@@ -3,8 +3,7 @@
 //! Composes the contextual [`HintLine`] on top of the persistent
 //! [`StatusBar`].  The hint line adapts to the cursor's context
 //! (default / table / list) and can be overlaid by a transient message
-//! or preempted by a modal prompt.  In compact mode only the status
-//! line renders.
+//! or preempted by a modal prompt.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -16,7 +15,7 @@ use ratatui::{
 };
 
 use crate::config::keymap::format_key_compact;
-use crate::config::{Action, KeyMap, StatusBarLayout, Theme};
+use crate::config::{Action, KeyMap, Theme};
 use crate::diff::Decision;
 use crate::editor::{EditorState, Mode};
 
@@ -541,23 +540,18 @@ impl<'a> Widget for HintLine<'a> {
 }
 
 /// Composite widget owning the bottom region layout.  Renders a
-/// [`HintLine`] above a [`StatusBar`] in two-line mode; collapses to
-/// just the status bar in compact mode.
+/// [`HintLine`] above a persistent [`StatusBar`].
 pub struct BottomRegion<'a> {
     pub status: StatusBarState<'a>,
     pub hint: HintContent,
-    pub layout: StatusBarLayout,
     pub theme: &'a Theme,
 }
 
 impl<'a> BottomRegion<'a> {
     /// Height in rows that [`BottomRegion`] requires.  Consulted by
     /// `EditorView` to partition the terminal area.
-    pub fn height(layout: StatusBarLayout) -> u16 {
-        match layout {
-            StatusBarLayout::TwoLine => 2,
-            StatusBarLayout::Compact => 1,
-        }
+    pub fn height() -> u16 {
+        2
     }
 }
 
@@ -566,39 +560,28 @@ impl<'a> Widget for BottomRegion<'a> {
         if area.height == 0 {
             return;
         }
-        match self.layout {
-            StatusBarLayout::Compact => {
-                StatusBar {
-                    state: self.status,
-                    theme: self.theme,
-                }
-                .render(area, buf);
-            }
-            StatusBarLayout::TwoLine => {
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(1), Constraint::Length(1)])
-                    .split(area);
-                // Diff mode recolors the whole hint bar to match the
-                // status bar's mode shift (§7).
-                let bar_style = if matches!(self.status.mode, Mode::Diff) {
-                    self.theme.hint_bar_diff
-                } else {
-                    self.theme.hint_bar
-                };
-                HintLine {
-                    content: self.hint,
-                    theme: self.theme,
-                    bar_style,
-                }
-                .render(chunks[0], buf);
-                StatusBar {
-                    state: self.status,
-                    theme: self.theme,
-                }
-                .render(chunks[1], buf);
-            }
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(area);
+        // Diff mode recolors the whole hint bar to match the
+        // status bar's mode shift (§7).
+        let bar_style = if matches!(self.status.mode, Mode::Diff) {
+            self.theme.hint_bar_diff
+        } else {
+            self.theme.hint_bar
+        };
+        HintLine {
+            content: self.hint,
+            theme: self.theme,
+            bar_style,
         }
+        .render(chunks[0], buf);
+        StatusBar {
+            state: self.status,
+            theme: self.theme,
+        }
+        .render(chunks[1], buf);
     }
 }
 
@@ -1049,9 +1032,9 @@ mod tests {
 
     // ── BottomRegion rendering ────────────────────────────────────
 
-    fn render_region(width: u16, layout: StatusBarLayout, hint: HintContent) -> String {
+    fn render_region(width: u16, hint: HintContent) -> String {
         let t = theme();
-        let height = BottomRegion::height(layout);
+        let height = BottomRegion::height();
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
@@ -1069,7 +1052,6 @@ mod tests {
                         diff_progress: None,
                     },
                     hint,
-                    layout,
                     theme: t,
                 };
                 frame.render_widget(region, frame.area());
@@ -1098,18 +1080,10 @@ mod tests {
     }
 
     #[test]
-    fn two_line_mode_renders_both_rows() {
+    fn bottom_region_renders_both_rows() {
         let set = chord_set(vec![HintChord::new("^S", "Save")]);
-        let out = render_region(40, StatusBarLayout::TwoLine, HintContent::Chords(set));
+        let out = render_region(40, HintContent::Chords(set));
         assert!(out.contains("Save"), "out: {out}");
-        assert!(out.contains("test.md"), "out: {out}");
-    }
-
-    #[test]
-    fn compact_mode_omits_hint_line() {
-        let set = chord_set(vec![HintChord::new("^S", "Save")]);
-        let out = render_region(40, StatusBarLayout::Compact, HintContent::Chords(set));
-        assert!(!out.contains("Save"), "out: {out}");
         assert!(out.contains("test.md"), "out: {out}");
     }
 
@@ -1117,7 +1091,6 @@ mod tests {
     fn transient_overlay_replaces_chords() {
         let out = render_region(
             40,
-            StatusBarLayout::TwoLine,
             HintContent::Transient {
                 text: "Copied".to_owned(),
                 style: Theme::default().transient_info,
@@ -1133,7 +1106,6 @@ mod tests {
         let chords = vec![HintChord::new("R", "Reload"), HintChord::new("I", "Ignore")];
         let out = render_region(
             60,
-            StatusBarLayout::TwoLine,
             HintContent::Prompt {
                 prompt: "File changed on disk.".to_owned(),
                 chords,
@@ -1150,7 +1122,7 @@ mod tests {
             chords: vec![HintChord::new("⏎", "Next")],
             search_match: Some((2, 3)),
         };
-        let out = render_region(80, StatusBarLayout::TwoLine, HintContent::Chords(set));
+        let out = render_region(80, HintContent::Chords(set));
         let first_line = out.lines().next().unwrap();
         let counter_idx = first_line.find("2/3").expect("match counter must render");
         let next_idx = first_line.find("Next").expect("chord must render");
@@ -1163,7 +1135,7 @@ mod tests {
     #[test]
     fn no_search_match_badge_without_an_active_search() {
         let set = chord_set(vec![HintChord::new("^S", "Save")]);
-        let out = render_region(80, StatusBarLayout::TwoLine, HintContent::Chords(set));
+        let out = render_region(80, HintContent::Chords(set));
         assert!(
             !out.contains('/'),
             "no counter when search_match is None: {out}"
@@ -1177,7 +1149,7 @@ mod tests {
             chords: vec![HintChord::new("^P", "Menu")],
             search_match: None,
         };
-        let out = render_region(80, StatusBarLayout::TwoLine, HintContent::Chords(set));
+        let out = render_region(80, HintContent::Chords(set));
         let first_line = out.lines().next().unwrap();
         let prelude_idx = first_line.find("Press any key").unwrap();
         let menu_idx = first_line.find("^P").unwrap();

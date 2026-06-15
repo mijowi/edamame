@@ -8,8 +8,7 @@ use super::keymap::KeyBindingOverrides;
 use super::readers::{read_keybindings, read_main_config, read_theme_named};
 pub use super::sections::{
     AppearanceMode, CustomExportEntry, DevConfig, DiagramsConfig, DiagramsEnabled, EditorConfig,
-    ExportConfig, ImagesConfig, ImagesEnabled, ModalConfig, RemoteImagePolicy, StatusBarLayout,
-    TableConfig,
+    ExportConfig, ImagesConfig, ImagesEnabled, ModalConfig, RemoteImagePolicy, TableConfig,
 };
 use super::theme::Theme;
 use super::theme_file::ThemeFile;

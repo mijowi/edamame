@@ -39,11 +39,6 @@ appearance = "dark"
 # is unaffected by this setting.
 # mouse_scroll_lines = 1
 
-# Status bar layout. Default: "two_line".
-#   "two_line" — contextual hint line above persistent status line.
-#   "compact"  — persistent status line only.
-# status_bar = "two_line"
-
 # Duration (ms) that a transient hint-line notification lingers before
 # auto-expiring. Default: 1500. Error messages ignore this and stay until
 # dismissed with Esc.

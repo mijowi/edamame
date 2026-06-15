@@ -102,8 +102,8 @@ fn settings_overlay_field_change_response_is_emitted_once() {
     let mut state = SettingsState::new();
     let mut config = Config::default();
 
-    // Walk down past the "Open externally" rows + "Use hint line" to
-    // reach the "Hint duration" row, which opens an inline
+    // Walk down past the "Open externally" rows to reach the
+    // "Hint duration" row, which opens an inline
     // editor on Enter (a numeric field is the cleanest test of the
     // confirm path because the alternative — cycling a bool — fires
     // FieldChanged on its own).  Use the row label table to find it.
@@ -176,7 +176,6 @@ impl SettingsStateExt for SettingsState {
             "Open config folder",
             "Open config.toml in default editor",
             "",
-            "Use hint line",
             "Hint duration",
             "Limit editor width",
             "Editor max width",

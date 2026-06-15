@@ -5,7 +5,7 @@ use ratatui::{
 };
 
 use crate::config::sections::MAX_WIDTH_COLS_MIN;
-use crate::config::{StatusBarLayout, Theme};
+use crate::config::Theme;
 use crate::editor::{EditorState, Mode};
 use crate::terminal::Capabilities;
 
@@ -52,10 +52,7 @@ pub struct EditorView<'a> {
     /// back to halfblocks rendering to avoid flickering re-encode on
     /// every frame.  Always `false` in tests that don't exercise scroll.
     pub is_scrolling: bool,
-    /// Bottom-region layout (two-line or compact).
-    pub status_bar_layout: StatusBarLayout,
     /// What the hint line should display for this frame.
-    /// Ignored in compact mode.
     pub hint: HintContent,
     /// When true, the document area is capped to `max_width_cols` and
     /// centred horizontally; the gutters are filled with `theme.normal`.
@@ -158,9 +155,8 @@ impl<'a> StatefulWidget for EditorView<'a> {
     type State = EditorViewState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        // Split into document area + bottom region.  Two rows
-        // by default (hint line + status line), one in compact mode.
-        let bottom_h = BottomRegion::height(self.status_bar_layout);
+        // Split into document area + bottom region (hint line + status line).
+        let bottom_h = BottomRegion::height();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(0), Constraint::Length(bottom_h)])
@@ -446,7 +442,6 @@ impl<'a> StatefulWidget for EditorView<'a> {
                 diff_progress,
             },
             hint: self.hint,
-            layout: self.status_bar_layout,
             theme: self.theme,
         };
         Widget::render(region, bar_area, buf);
