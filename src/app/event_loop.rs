@@ -253,7 +253,7 @@ impl App {
     /// Translate the live `term_size` into the document-area dimensions
     /// the rest of the iteration uses.  Pure: no side effects.
     pub(super) fn compute_doc_dims(&self, term_size: Size) -> DocDims {
-        let bottom_rows = crate::ui::BottomRegion::height(self.config.editor.status_bar);
+        let bottom_rows = crate::ui::BottomRegion::height();
         let doc_height = (term_size.height as usize).saturating_sub(bottom_rows as usize);
         let full_doc_area = Rect {
             x: 0,
@@ -343,7 +343,6 @@ impl App {
         let filename = self.display_filename();
         let is_scrolling = self.is_scrolling();
         let show_handles = self.config.table.show_buttons;
-        let layout = self.config.editor.status_bar;
         let max_width_enabled = self.config.editor.max_width_enabled;
         let max_width_cols = self.config.editor.max_width_cols;
         let hint = self.hint_content();
@@ -371,7 +370,6 @@ impl App {
                 show_line_numbers,
                 capabilities: capabilities_ref,
                 is_scrolling,
-                status_bar_layout: layout,
                 hint,
                 max_width_enabled,
                 max_width_cols,

@@ -46,10 +46,6 @@ pub struct EditorConfig {
     /// control.  The keyboard `ScrollUp` / `ScrollDown` actions always step
     /// by exactly one line and are not affected by this setting.
     pub mouse_scroll_lines: usize,
-    /// Bottom-region layout.  `"two_line"` (default) renders a hint line
-    /// above the persistent status line; `"compact"` collapses to just
-    /// the status line, reachable hint chords via the `?` popover.
-    pub status_bar: StatusBarLayout,
     /// Duration (milliseconds) that a non-sticky transient message
     /// overlays the hint line before auto-expiring.  Errors ignore this
     /// and remain visible until the user dismisses them with Escape.
@@ -132,17 +128,6 @@ impl AppearanceMode {
     }
 }
 
-/// How the bottom status region is laid out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StatusBarLayout {
-    /// Two rows: hint line above, persistent status below.  Default.
-    #[default]
-    TwoLine,
-    /// One row: persistent status only; hints via the `?` popover.
-    Compact,
-}
-
 impl Default for EditorConfig {
     fn default() -> Self {
         Self {
@@ -155,7 +140,6 @@ impl Default for EditorConfig {
             show_welcome: true,
             show_line_numbers: false,
             mouse_scroll_lines: 1,
-            status_bar: StatusBarLayout::default(),
             transient_ms: 1500,
             max_width_enabled: false,
             max_width_cols: 100,

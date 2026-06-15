@@ -122,7 +122,6 @@ fn render_editor(state: &mut EditorState, width: u16, height: u16) -> ratatui::b
                 capabilities: &caps,
                 show_line_numbers: false,
                 is_scrolling: false,
-                status_bar_layout: edamame::config::StatusBarLayout::TwoLine,
                 hint,
                 max_width_enabled: false,
                 max_width_cols: 0,
@@ -216,7 +215,7 @@ fn hint_counter_walks_with_focus() {
     st.search.as_mut().unwrap().advance_focus();
     let buf = render_editor(&mut st, 40, 8);
     // The match counter now leads the hint line — the row directly
-    // above the status bar (TwoLine layout: rows 6 = hint, 7 = status).
+    // above the status bar (rows 6 = hint, 7 = status).
     let mut hint = String::new();
     for x in 0..40u16 {
         hint.push(
