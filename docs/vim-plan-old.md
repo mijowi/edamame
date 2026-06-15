@@ -14,13 +14,9 @@ Add Vim-style modal editing to edamame. This is the only modal editing style
 edamame targets — Helix, Kakoune, and other schemes are explicitly not goals.
 The feature must:
 
-1. Coexist with edamame's existing `Mode::Preview` / `Mode::Rendered` /
-   `Mode::Raw` rendering axis. Vim sub-modes (Normal/Insert/Visual/VisualLine)
-   are nested inside `Rendered` and `Raw`.
-2. Reuse edamame's Markdown-aware ops (list continuation, list indent, table
-   navigation, GFM renumber).
-3. Survive concurrent feature work — i.e. ship behind a config switch
-   (`config.modal.handler = "vim"`) so default users are unaffected.
+1. Coexist with edamame's existing `Mode::Preview` / `Mode::Rendered` / `Mode::Raw` rendering axis. Vim sub-modes (Normal/Insert/Visual/VisualLine) are nested inside `Rendered` and `Raw`.
+2. Reuse edamame's Markdown-aware ops (list continuation, list indent, table navigation, GFM renumber).
+3. Survive concurrent feature work — i.e. ship behind a config switch (`config.modal.handler = "vim"`) so default users are unaffected.
 
 ### Feature scope (target = Claude Code's Vim mode + counts + search + marks + ex)
 
@@ -1096,22 +1092,12 @@ These do NOT block any checkpoint; revisit when each becomes relevant.
 
 ## 9. Glossary / decisions log
 
-- **Checkpoint**: a self-contained vertical of work that's mergeable on its
-  own. Checkpoints 1-4 stack but don't depend on each other for correctness
-  beyond their stated prerequisites.
-- **Handler / `ModalHandler`**: the trait-object-based input layer that
-  translates key events into either Actions or direct EditorState
-  mutations. Vim is one handler; Default is another.
-- **Vim sub-mode**: Normal / Insert / Visual / VisualLine. Lives on
-  `VimHandler`. Distinct from `EditorState::mode` (Preview / Rendered /
-  Raw), which is the rendering axis.
-- **Operator-pending**: vim's "I've seen `d` but no motion yet" state.
-  Modelled as `VimState::pending_op = Some(PendingOp::Operator(_))`.
-- **Linewise / charwise**: kill-ring content carries a "linewise"
-  flavor. `dd` / `yy` are linewise; `dw` / `yw` are charwise. Affects
-  paste behavior (`p` / `P`).
-- **Dot-repeat**: vim's `.`. Replays the last "change" — operator +
-  motion + count + inserted text. Captured into `VimState::last_change`.
+- **Checkpoint**: a self-contained vertical of work that's mergeable on its own. Checkpoints 1-4 stack but don't depend on each other for correctness beyond their stated prerequisites.
+- **Handler / `ModalHandler`**: the trait-object-based input layer that translates key events into either Actions or direct EditorState mutations. Vim is one handler; Default is another.
+- **Vim sub-mode**: Normal / Insert / Visual / VisualLine. Lives on `VimHandler`. Distinct from `EditorState::mode` (Preview / Rendered / Raw), which is the rendering axis.
+- **Operator-pending**: vim's "I've seen `d` but no motion yet" state. Modelled as `VimState::pending_op = Some(PendingOp::Operator(_))`.
+- **Linewise / charwise**: kill-ring content carries a "linewise" flavor. `dd` / `yy` are linewise; `dw` / `yw` are charwise. Affects paste behavior (`p` / `P`).
+- **Dot-repeat**: vim's `.`. Replays the last "change" — operator + motion + count + inserted text. Captured into `VimState::last_change`.
 
 ---
 
