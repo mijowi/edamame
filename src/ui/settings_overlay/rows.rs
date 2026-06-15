@@ -7,7 +7,7 @@
 //! plumbing — adding a new setting only touches this file.
 
 use crate::config::sections::MAX_WIDTH_COLS_MIN;
-use crate::config::{Config, DiagramsEnabled, ImagesEnabled, RemoteImagePolicy, StatusBarLayout};
+use crate::config::{Config, DiagramsEnabled, ImagesEnabled, RemoteImagePolicy};
 
 /// Row labels for the settings overlay, exported as constants so the
 /// App-level live-update wiring in `app/modal/settings.rs` and the
@@ -236,24 +236,6 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         // arrow-key navigation skips it; the View renders an empty
         // line for any non-focusable row with an empty label.
         display_only_row(""),
-        RowDef {
-            label: "Use hint line",
-            description: Some("Show or hide the hint line (status bar remains)"),
-            kind: RowKind {
-                focusable: true,
-                action: RowAction::Cycle,
-                read: |c, _| matches!(c.editor.status_bar, StatusBarLayout::TwoLine).to_string(),
-                write_string: no_write,
-                cycle: Some(|c, _, _| {
-                    c.editor.status_bar = match c.editor.status_bar {
-                        StatusBarLayout::TwoLine => StatusBarLayout::Compact,
-                        StatusBarLayout::Compact => StatusBarLayout::TwoLine,
-                    };
-                    true
-                }),
-                options: Some(BOOL_OPTIONS),
-            },
-        },
         RowDef {
             label: "Hint duration",
             description: Some("Hint line message duration in ms"),

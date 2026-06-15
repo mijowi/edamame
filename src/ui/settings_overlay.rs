@@ -16,7 +16,6 @@
 //! Theme                           catppuccin
 //!   Active theme (resolves to themes/<name>.toml)
 //!
-//! Use hint line                   true
 //! Hint duration                   1500
 //!   Hint line message duration in ms
 //! ...
@@ -189,7 +188,7 @@ impl SettingsState {
         state.focused = state
             .rows
             .iter()
-            .position(|r| r.label == "Use hint line")
+            .position(|r| r.label == "Hint duration")
             .or_else(|| state.first_focusable_index())
             .unwrap_or(0);
         state
@@ -532,7 +531,7 @@ fn settings_content_width(state: &SettingsState, config: &Config) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ImagesEnabled, RemoteImagePolicy, StatusBarLayout};
+    use crate::config::{ImagesEnabled, RemoteImagePolicy};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -571,18 +570,6 @@ mod tests {
         assert_eq!(config.images.enabled, ImagesEnabled::Never);
         state.handle_key(&key(KeyCode::Enter), &mut config);
         assert_eq!(config.images.enabled, ImagesEnabled::Ask);
-    }
-
-    #[test]
-    fn use_hint_line_toggles_status_bar_layout() {
-        let mut config = Config::default();
-        let mut state = SettingsState::new();
-        focus_row(&mut state, "Use hint line");
-        assert_eq!(config.editor.status_bar, StatusBarLayout::TwoLine);
-        state.handle_key(&key(KeyCode::Enter), &mut config);
-        assert_eq!(config.editor.status_bar, StatusBarLayout::Compact);
-        state.handle_key(&key(KeyCode::Enter), &mut config);
-        assert_eq!(config.editor.status_bar, StatusBarLayout::TwoLine);
     }
 
     #[test]
@@ -627,7 +614,7 @@ mod tests {
         // externals.  Default focus skips past the open-externally
         // pair (and the divider) and lands on the first editable row.
         let state = SettingsState::new();
-        assert_eq!(state.rows[state.focused].label, "Use hint line");
+        assert_eq!(state.rows[state.focused].label, "Hint duration");
     }
 
     #[test]
@@ -712,7 +699,6 @@ mod tests {
                 "Open config folder",
                 "Open config.toml in default editor",
                 "",
-                "Use hint line",
                 "Hint duration",
                 "Limit editor width",
                 "Editor max width",
@@ -929,11 +915,11 @@ mod tests {
     fn settings_description_appears_in_pinned_footer() {
         let config = Config::default();
         let mut state = SettingsState::new();
-        // Default focus is on the first editable row ("Use hint
-        // line"), which has a description.
+        // Default focus is on the first editable row ("Hint
+        // duration"), which has a description.
         let contents = render(&mut state, &config, 100, 25);
         assert!(
-            contents.contains("hint line"),
+            contents.contains("duration"),
             "expected focused-row description in pinned footer, got: {contents}"
         );
     }
