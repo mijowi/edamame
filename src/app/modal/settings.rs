@@ -150,7 +150,6 @@ mod tests {
         "Open config folder",
         "Open config.toml in default editor",
         "",
-        "Use hint line",
         "Hint duration",
         "Limit editor width",
         "Editor max width",

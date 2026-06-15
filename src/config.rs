@@ -18,7 +18,7 @@ pub mod warnings;
 #[allow(unused_imports)]
 pub use config::{
     AppearanceMode, Config, ConfigWarning, CustomExportEntry, DiagramsEnabled, ImagesEnabled,
-    LoadedConfig, RemoteImagePolicy, StatusBarLayout, WarningKind,
+    LoadedConfig, RemoteImagePolicy, WarningKind,
 };
 pub use keymap::{Action, CoalesceKind, KeyBindingOverrides, KeyMap, KeyMapError};
 pub use theme::Theme;
