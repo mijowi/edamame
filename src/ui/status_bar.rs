@@ -36,11 +36,6 @@ pub struct StatusBarState<'a> {
     /// `resolved/total` — a progress counter that climbs from `0/n` to
     /// `n/n` as hunks are accepted or rejected.
     pub diff_progress: Option<(usize, usize)>,
-    /// `(current, total)` match counts while a search flow is active;
-    /// `None` otherwise.  Rendered adjacent to the mode badge as
-    /// `current/total`, walking the result set as the user tabs
-    /// through matches.
-    pub search_progress: Option<(usize, usize)>,
 }
 
 /// A single-row status bar widget.
@@ -112,15 +107,6 @@ impl<'a> Widget for StatusBar<'a> {
         let diff_width = UnicodeWidthStr::width(diff_text.as_str());
         let diff_span = Span::styled(diff_text, theme.status_mode_diff);
 
-        // Search-flow match counter, same badge slot as the diff
-        // progress (the two flows are mutually exclusive).
-        let search_text = match s.search_progress {
-            Some((current, total)) => format!(" {}/{} ", current, total),
-            None => String::new(),
-        };
-        let search_width = UnicodeWidthStr::width(search_text.as_str());
-        let search_span = Span::styled(search_text, theme.status_mode_search);
-
         let filename_lead = format!(" {}", s.filename);
         let filename_width = UnicodeWidthStr::width(filename_lead.as_str());
         let filename_span = Span::styled(filename_lead, with_bar_bg(theme.status_filename));
@@ -135,11 +121,8 @@ impl<'a> Widget for StatusBar<'a> {
             .modified
             .then(|| Span::styled("*".to_string(), theme.status_modified));
 
-        let left_committed_width = mode_width
-            + diff_width
-            + search_width
-            + filename_width
-            + if s.modified { 1 } else { 0 };
+        let left_committed_width =
+            mode_width + diff_width + filename_width + if s.modified { 1 } else { 0 };
 
         // ── Right side (fixed) ──────────────────────────────────────
         let cursor_text = match (s.cursor_line, s.cursor_col) {
@@ -203,7 +186,6 @@ impl<'a> Widget for StatusBar<'a> {
         let mut spans: Vec<Span<'_>> = Vec::with_capacity(9 + breadcrumb_spans.len());
         spans.push(mode_span);
         spans.push(diff_span);
-        spans.push(search_span);
         spans.push(filename_span);
         if let Some(m) = modified_span {
             spans.push(m);
@@ -322,7 +304,6 @@ mod tests {
                         cursor_col: None,
                         section_path,
                         diff_progress: None,
-                        search_progress: None,
                     },
                     theme,
                 };
@@ -397,7 +378,6 @@ mod tests {
                         cursor_col: Some(7),
                         section_path: Vec::new(),
                         diff_progress: None,
-                        search_progress: None,
                     },
                     theme,
                 };
