@@ -124,6 +124,7 @@ impl App {
             return HintContent::Chords(HintSet {
                 prelude: Some(url.clone()),
                 chords: Vec::new(),
+                search_match: None,
             });
         }
         // Look up chord glyphs against the live KeyMap so any rebind

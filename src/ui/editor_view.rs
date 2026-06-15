@@ -433,12 +433,6 @@ impl<'a> StatefulWidget for EditorView<'a> {
             .diff
             .as_ref()
             .map(|d| (d.resolved_count(), d.hunks.len()));
-        let search_progress = self
-            .state
-            .search
-            .as_ref()
-            .filter(|s| !s.matches.is_empty())
-            .map(|s| (s.focused_idx + 1, s.matches.len()));
         let region = BottomRegion {
             status: StatusBarState {
                 mode,
@@ -450,7 +444,6 @@ impl<'a> StatefulWidget for EditorView<'a> {
                 cursor_col: Some(cursor_col + 1),
                 section_path,
                 diff_progress,
-                search_progress,
             },
             hint: self.hint,
             layout: self.status_bar_layout,
