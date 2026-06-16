@@ -1449,3 +1449,9 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
 Use Ctrl with diff mode keybinds in order to facilitate editing during review
 
 - Update welcome modal to include diff mode
+
+- Move diff mode status chip `n/N` to hint line?
+- When entering diff mode, the first change (`1/N`) should be shown to the user, not the change closest to the document position.
+
+- Selection should not be disabled during find/replace
+- Exiting find/replace should keep the editor at its current scroll location, not jump back to where it was prior to the find.
