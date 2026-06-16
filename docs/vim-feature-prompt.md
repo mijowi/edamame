@@ -12,7 +12,7 @@ The feature must:
 2. Reuse edamame's Markdown-aware ops (list continuation, list indent, table navigation, GFM renumber).
 3. Survive concurrent feature work — i.e. ship behind a config switch (`config.modal.handler = "vim"`) so default users are unaffected.
 
-In scope:
+Features in scope:
 - Modes: Normal, Insert, Visual (character-wise), Visual Line. Mode-switch keys: Esc, i, I, a, A, o, O, v, V.
 - Motions: h, j, k, l, w, e, b, 0, $, ^, gg, G, f{c}, F{c}, t{c}, T{c}, ;, ,, % (matching pair), { / } (paragraph / block), n / N (search results.
 - Editing primitives (Normal): x, X, dd, D, dw / de / db, cc, C, cw / ce / cb, yy, Y, yw / ye / yb, p, P, >>, <<, J, u, Ctrl-R, ., r{c}, ~.
@@ -45,13 +45,13 @@ Anything else, including the following, is out of scope:
 
 The status bar's mode badge prefers `vim_mode_label` over `mode.to_string()`.Display: `" NORMAL "` / `" INSERT "` / `" VISUAL "` / `" V-LINE "` (replaces `" EDIT " and " RAW "`). The user will almost certainly know if they are in edit or raw mode just by looking at the screen.
 
-Vim `:` commands, which in Vim are shown in the status line, are shown in the hint line in edamame. When in normal mode and `:` is pressed to enter command mode, whatever is on the hint line is replaced with the command being entered. Once the command has completed, the hint line is restored.
+Vim `:` commands, which in Vim are shown in the status line, are shown in the hint line in edamame. When in normal mode and `:` is pressed to enter a command, whatever is in the hint line is replaced with the command being entered. Once the command has completed, the hint line is restored.
 
 ## Open Questions
 
 - Are there any vim-editing packages we can use instead of rolling our own custom implementation? Consider `tui-textarea/examples/vim.rs`.
-- How will we plan this out into multiple checkpoints, each of which compile cleanly, pass all tests and can be manually sanity-checked?
+- How will we plan this out into multiple checkpoints, each of which compile cleanly, pass all tests and can be manually sanity-checked? This is critical for implementation.
 - Which of edamame's default keybinds, if any, conflict with the Vim motions we intend to support?
-- Goal #2 is to "Reuse edamame's Markdown-aware ops". In what specific ways can/should we do that?
+- Goal #2 is to "Reuse edamame's Markdown-aware ops". In what specific ways can/should we do that (e.g. automatic list numbering)?
 - Should we implement dot (`.`) repeat?
 
