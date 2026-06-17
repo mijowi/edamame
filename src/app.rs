@@ -33,7 +33,7 @@ use ratatui::Terminal;
 use crate::config::{Config, ConfigWarning, KeyBindingOverrides, KeyMap, Theme, ThemeFile};
 use crate::document::Buffer;
 use crate::editor::{mouse_ops, EditorState};
-use crate::input::MouseDispatcher;
+use crate::input::{MouseDispatcher, VimState};
 use crate::terminal::{Capabilities, ColorDepth, PointerShape};
 use crate::ui::{EditorViewState, HintChord};
 use crate::watcher::{FileWatcher, WatchedEvent};
@@ -317,6 +317,12 @@ pub struct App {
     /// True while a release-check worker is in flight, so closing and
     /// reopening the About modal can't spawn a duplicate request.
     release_check_in_flight: bool,
+    /// Vim modal-editing state.  `Some` iff `config.modal.handler ==
+    /// "vim"`; `None` for the default handler, which keeps every vim
+    /// code path inert for existing users.  Survives across keystrokes
+    /// (counts, pending operators, the active sub-mode) and is read by
+    /// the UI for the mode badge.
+    vim: Option<VimState>,
 }
 
 impl App {
@@ -433,6 +439,16 @@ impl App {
         editor.set_big_h1(config.editor.big_h1);
         if images_off || diagrams_off {
             editor.refresh_parsed();
+        }
+
+        // Vim modal editing is opt-in via `config.modal.handler`.  When
+        // enabled the editor never rests in Preview (vim-Normal replaces
+        // it as the non-editing mode), so switch out of the default
+        // Preview mode at startup; the `NORMAL` badge then shows from the
+        // first frame.
+        let vim = (config.modal.handler == "vim").then(VimState::default);
+        if vim.is_some() && editor.mode == crate::editor::Mode::Preview {
+            editor.mode = crate::editor::Mode::Rendered;
         }
 
         // PreviewView borrows `editor.parsed.lines` at render time, so
@@ -574,6 +590,7 @@ impl App {
             last_disk_hash: initial_disk_hash,
             latest_release: None,
             release_check_in_flight: false,
+            vim,
         })
     }
 
@@ -700,5 +717,44 @@ impl App {
                 .unwrap_or_else(|| p.to_string_lossy().into_owned()),
             None => "[No file]".to_owned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod vim_wiring_tests {
+    use crate::config::{Config, KeyBindingOverrides, Theme};
+    use crate::editor::Mode;
+    use crate::terminal::Capabilities;
+
+    use super::App;
+
+    fn app_with_handler(handler: &str) -> App {
+        let mut config = Config::default();
+        config.modal.handler = handler.into();
+        let theme_file = (&Theme::default()).into();
+        App::new(
+            config,
+            KeyBindingOverrides::default(),
+            theme_file,
+            None,
+            Capabilities::default(),
+            Vec::new(),
+        )
+        .expect("build app")
+    }
+
+    #[test]
+    fn vim_disabled_by_default() {
+        let app = app_with_handler("default");
+        assert!(app.vim.is_none(), "default handler must not enable vim");
+    }
+
+    #[test]
+    fn vim_enabled_when_configured() {
+        let app = app_with_handler("vim");
+        assert!(app.vim.is_some(), "vim handler must enable vim state");
+        // Vim never rests in Preview — startup switches to Rendered so
+        // the NORMAL badge shows from the first frame.
+        assert_eq!(app.editor.mode, Mode::Rendered);
     }
 }

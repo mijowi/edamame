@@ -36,6 +36,10 @@ pub struct StatusBarState<'a> {
     /// `resolved/total` — a progress counter that climbs from `0/n` to
     /// `n/n` as hunks are accepted or rejected.
     pub diff_progress: Option<(usize, usize)>,
+    /// When the vim handler is active, the sub-mode badge text
+    /// (`NORMAL` / `INSERT` / `VISUAL` / `V-LINE`).  Takes precedence
+    /// over the rendering-mode badge; `None` for the default handler.
+    pub vim_mode_label: Option<&'a str>,
 }
 
 /// A single-row status bar widget.
@@ -93,10 +97,16 @@ impl<'a> Widget for StatusBar<'a> {
 
         // Mode badge — color swaps per-mode so each mode reads at a
         // glance (orange = Rendered, yellow = Raw, muted = Preview).
-        // Kept as an accent badge even in diff mode.
-        let mode_text = format!(" {} ", s.mode);
+        // Kept as an accent badge even in diff mode.  When the vim
+        // handler is active its sub-mode badge wins, reusing the existing
+        // style slots (no new theme fields): NORMAL = preview/muted,
+        // INSERT = rendered/primary, VISUAL/V-LINE = raw/warning.
+        let (mode_text, mode_style) = match s.vim_mode_label {
+            Some(label) => (format!(" {} ", label), vim_badge_style(theme, label)),
+            None => (format!(" {} ", s.mode), theme.status_mode_style(s.mode)),
+        };
         let mode_width = UnicodeWidthStr::width(mode_text.as_str());
-        let mode_span = Span::styled(mode_text, theme.status_mode_style(s.mode));
+        let mode_span = Span::styled(mode_text, mode_style);
 
         // Diff-mode progress counter, rendered adjacent to the badge.
         // Accent badge — not washed with the bar bg.
@@ -198,6 +208,19 @@ impl<'a> Widget for StatusBar<'a> {
         Paragraph::new(Line::from(spans))
             .style(bar_style)
             .render(area, buf);
+    }
+}
+
+/// Map a vim sub-mode badge label onto an existing status-mode style
+/// slot.  Reuses the rendering-mode palette rather than introducing new
+/// theme fields: NORMAL borrows the muted Preview slot, INSERT the
+/// primary Rendered slot, and VISUAL / V-LINE the warning Raw slot.
+fn vim_badge_style(theme: &Theme, label: &str) -> Style {
+    match label {
+        "INSERT" => theme.status_mode_rendered,
+        "VISUAL" | "V-LINE" => theme.status_mode_raw,
+        // NORMAL (and any future label) falls back to the muted slot.
+        _ => theme.status_mode_preview,
     }
 }
 
@@ -304,6 +327,7 @@ mod tests {
                         cursor_col: None,
                         section_path,
                         diff_progress: None,
+                        vim_mode_label: None,
                     },
                     theme,
                 };
@@ -378,6 +402,7 @@ mod tests {
                         cursor_col: Some(7),
                         section_path: Vec::new(),
                         diff_progress: None,
+                        vim_mode_label: None,
                     },
                     theme,
                 };

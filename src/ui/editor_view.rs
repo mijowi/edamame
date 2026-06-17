@@ -54,6 +54,10 @@ pub struct EditorView<'a> {
     pub is_scrolling: bool,
     /// What the hint line should display for this frame.
     pub hint: HintContent,
+    /// Vim sub-mode badge (`NORMAL` / `INSERT` / `VISUAL` / `V-LINE`)
+    /// when the vim handler is active; `None` for the default handler,
+    /// where the status bar shows the rendering-mode badge instead.
+    pub vim_mode_label: Option<&'a str>,
     /// When true, the document area is capped to `max_width_cols` and
     /// centred horizontally; the gutters are filled with `theme.normal`.
     pub max_width_enabled: bool,
@@ -440,6 +444,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                 cursor_col: Some(cursor_col + 1),
                 section_path,
                 diff_progress,
+                vim_mode_label: self.vim_mode_label,
             },
             hint: self.hint,
             theme: self.theme,

@@ -33,6 +33,7 @@ use ratatui::Terminal;
 use crate::config::{Action, CoalesceKind, Config, KeyBindingOverrides, KeyMap};
 use crate::editor::{edit_ops, mouse_ops, Mode};
 use crate::input::mode_handler::default::DefaultHandler;
+use crate::input::{vim_feed, VimOutcome, VimSubMode};
 use crate::terminal::PointerShape;
 use crate::ui::editor_view::layout_doc_with_scrollbar;
 use crate::ui::{position_for_click, position_for_drag, thumb_range, EditorView, ModalKind};
@@ -346,6 +347,7 @@ impl App {
         let max_width_enabled = self.config.editor.max_width_enabled;
         let max_width_cols = self.config.editor.max_width_cols;
         let hint = self.hint_content();
+        let vim_mode_label = self.vim.as_ref().map(|v| v.mode_label());
         let modal_cursor_visible = self.editor.cursor_blink.is_visible();
         let theme_ref = self.theme;
         let drop_indicator = drop_indicator_for(&self.drag_target);
@@ -371,6 +373,7 @@ impl App {
                 capabilities: capabilities_ref,
                 is_scrolling,
                 hint,
+                vim_mode_label,
                 max_width_enabled,
                 max_width_cols,
                 scrollbar_active,
@@ -1010,6 +1013,13 @@ impl App {
             //    one-shot transition (Preview→Rendered, selection
             //    clear, list-marker consume) before we attempt to
             //    coalesce subsequent same-kind events.
+            // `resolve_action` runs the keymap, so a bare Normal-mode vim
+            // key resolves to `InsertChar` here even though the vim
+            // intercept inside `dispatch_single_key` consumes it instead.
+            // That mismatch is harmless: the `vim.sub_mode != Insert` guard
+            // below `continue`s before any coalesce run is built, so this
+            // `coalesce` value is intentionally discarded for vim-consumed
+            // keys.  Don't reorder these past the guard.
             let action_i = resolve_action(&events[i], &keymap, &self.editor);
             let coalesce = action_i.as_ref().and_then(Action::coalesce_kind);
             self.dispatch_single_key(events[i].clone(), &keymap, dims);
@@ -1040,6 +1050,14 @@ impl App {
                 // dispatch entirely, so an autorepeat burst must not
                 // be allowed to extend a run mid-flow.
                 || self.editor.search.is_some()
+                // Vim outside Insert must not coalesce: a held digit
+                // (`333`) accumulates a count, and bare keys are
+                // commands — neither is `InsertChar` typing.  Only
+                // Insert sub-mode gets the normal typing burst.
+                || self
+                    .vim
+                    .as_ref()
+                    .is_some_and(|v| v.sub_mode != VimSubMode::Insert)
             {
                 continue;
             }
@@ -1120,6 +1138,26 @@ impl App {
     /// is intentionally not handled here — `dispatch_key_batch` runs
     /// it once at the end of a batch.
     fn dispatch_single_key(&mut self, event: Event, keymap: &KeyMap, dims: &DocDims) {
+        // Vim intercept: when the vim handler is active, it owns the key
+        // first (Diff mode excepted — the diff review keymap owns those
+        // keys).  A `Pending`/`Consumed` outcome ends dispatch here; a
+        // `Passthrough` (e.g. a `Ctrl-*` chord, or any printable char in
+        // Insert mode) falls through to the default keymap path below.
+        if let Event::Key(key) = &event {
+            if key.kind == KeyEventKind::Press && self.editor.mode != Mode::Diff {
+                if let Some(vim) = self.vim.as_mut() {
+                    let key = *key;
+                    match vim_feed(vim, &mut self.editor, key, dims.doc_height, dims.doc_width) {
+                        VimOutcome::Pending | VimOutcome::Consumed => {
+                            self.needs_draw = true;
+                            return;
+                        }
+                        VimOutcome::Passthrough => {}
+                    }
+                }
+            }
+        }
+
         let mut handler = DefaultHandler::new(keymap);
         let Some(action) = handler.handle_event(event, &self.editor) else {
             return;

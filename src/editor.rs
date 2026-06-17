@@ -11,6 +11,7 @@ pub mod state_section_path;
 pub mod state_viewport;
 pub mod table_edit;
 pub mod table_edit_ops;
+pub mod vim_ops;
 
 pub use mode::Mode;
 pub use state::{EditorState, RAW_REVEAL_DELAY};
