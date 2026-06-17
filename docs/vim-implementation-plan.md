@@ -2,7 +2,7 @@
 
 Implementation reference for adding Vim-style modal editing to edamame. Companion to [`vim-feature-prompt.md`](vim-feature-prompt.md) (the requirements/scope). This document records the agreed architecture, the locked design decisions, the module layout, and the checkpoint roadmap.
 
-Status: **in progress** — CP1 (walking skeleton) complete; CP2 next.
+Status: **in progress** — CP1 (walking skeleton) and CP2 (core motions & mode entries) complete; CP3 next.
 
 ---
 
@@ -317,11 +317,19 @@ Motions/operators are tested as **pure functions** of `(EditorState, VimState, k
 > - Counts accumulate in CP1 but do not yet drive motions (that's CP3) — they're parsed and cleared so the `Esc`-clears-count contract holds.
 > - **Table chrome is the one exception to "motions traverse the raw buffer."** In a *rendered* view, `h`/`l`/`j`/`k` skip the auto-managed table border chrome (the `|` separators and the `|---|` alignment row), stepping cell-to-cell instead — landing on a border the editor owns would make the motion meaningless. This reuses the default handler's own table navigation (`EditorState::try_table_move_horizontal` / `try_table_move_vertical`, thin wrappers over `table_edit_ops::{table_move_horizontal, try_move_cell_vertical}`), so vim and arrow-key navigation behave identically inside a table. In **Raw** mode the borders are real, hand-editable source, so nothing is skipped — every character is a valid target. The skip is scoped to table chrome only; list markers stay char-navigable (they're user-authored text, unlike borders). The general principle ("rendered motions skip editor-managed chrome") extends to the word/find motions added in CP2/CP5.
 
-### CP2 — Core motions & mode entries  *(risk: LOW)*  — needs CP1
+### CP2 — Core motions & mode entries  *(risk: LOW)*  — needs CP1 — ✅ **DONE**
 `w e b W E B 0 ^ $ gg G`; entries `a A I o O`; `v V` enter Visual/VisualLine (no operators yet).
 New `Cursor`/`vim_ops::motion` helpers: `WordEnd` (`e`) and word-class `w/b` (vim distinguishes punctuation from alphanumeric; existing `move_word_*` is `W/B` semantics).
 **Sanity:** every motion lands correctly; `o` opens a line below in Insert.
 **Tests:** `w`/`e`/`b` boundaries, `$`/`^`/`0`, `gg`/`G`, `o`/`O`, `v`/`V` enter.
+
+> **Implementation notes (CP2):**
+> - **Motions live in the new `src/editor/vim_ops/motion.rs`** as a `Motion` enum + pure `resolve_motion(motion, count, cursor, buf) -> usize`, born this checkpoint as planned. Word classes are `Blank`/`Word`/`Punct`; `W/E/B` collapse `Word`+`Punct` into one class. `vim_ops.rs` re-exports `{Motion, resolve_motion}`.
+> - **`resolve_motion`'s signature is leaner than the §2.4 sketch** — no `vim` / `viewport` params, since none of the CP2 motions need them. CP3 will widen it (vertical motions, `LineN`, `f/F/t/T`) when a motion genuinely consults that state. The `Motion` enum likewise holds only the CP2 variants; later checkpoints grow it (no `#[allow(dead_code)]` needed because every variant is constructed now).
+> - **`h j k l` stay in `feed.rs`**, not `resolve_motion` — they carry bespoke table-chrome handling and manage the viewport themselves (CP1 behavior, unchanged). Only the offset-only motions route through `resolve_motion`.
+> - **Counts accumulate but don't drive motions yet** — `apply_motion` passes a fixed count of `1`. Honoring `vim.count` (and the operator `motion_count`) is CP3's reducer work; `resolve_motion` already accepts the count so CP3 is a one-line flip at the call site.
+> - **`o`/`O` insert a plain newline** via a single `EditDelta` (so undo is one unit) and enter Insert. List-aware continuation (marker copy / auto-renumber) and indent-copy are deferred to CP10 per §2.5.
+> - **Visual is minimal-but-coherent (a small, deliberate reach into CP6).** `v`/`V` set `sub_mode` + `visual_anchor` + the shared `EditorState::selection`; in Visual, motions *extend* the selection (update `active`) instead of clearing it, and `Esc` exits to Normal dropping the selection. This is the floor needed for "enter Visual" to mean anything — without motion-extension, entering Visual would be a dead-end demo. Arrow keys (`←↑↓→`) mirror `h k j l` in Visual (extend, not passthrough) so the two navigation styles behave identically; in Normal, arrows still pass through to the default handler. **Operators (`d/y/c/…`), `o` (swap ends), the `v`↔`V` toggle, and VisualLine full-line expansion remain CP6**; in CP2 those keys are inert (Consumed no-ops) and a VisualLine selection paints charwise. `Ctrl-*` chords still pass through in Visual.
 
 ### CP3 — Operator+motion reducer  *(risk: HIGH)*  — needs CP2
 Counts (`3j`, `5l`, `d2w`, `2dd`); operators `d c y` × motions; `dd yy D C Y x X`; `p P` with the linewise register.

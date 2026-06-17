@@ -18,10 +18,10 @@ pub const COUNT_CAP: u32 = 9999;
 
 /// Vim sub-mode — orthogonal to `EditorState::mode` (the rendering axis).
 ///
-/// `OperatorPending` / `Visual` / `VisualLine` are part of the locked
-/// design but are first constructed in later checkpoints (CP3 / CP6), so
-/// the binary crate would otherwise flag them as dead until then.
-#[allow(dead_code)] // Visual / OperatorPending variants land in CP3+
+/// `Visual` / `VisualLine` are constructed from CP2; `OperatorPending`
+/// is first constructed in CP3, so the binary crate would otherwise flag
+/// it as dead until then.
+#[allow(dead_code)] // OperatorPending variant lands in CP3
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VimSubMode {
     #[default]
