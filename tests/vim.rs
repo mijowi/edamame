@@ -5,7 +5,8 @@
 //! assert on the resulting state — no terminal, no `App`.  CP1 covers
 //! the walking skeleton: `h j k l` motion, `i a I A` Insert entries,
 //! `Esc` transitions, count accumulation, and the Normal/Insert
-//! passthrough contract.
+//! passthrough contract.  CP2 adds the core motions (`w e b W E B 0 ^ $
+//! gg G`), the `o`/`O` open-line entries, and `v`/`V` Visual entry.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -35,6 +36,10 @@ fn ch(c: char) -> KeyEvent {
 
 fn esc() -> KeyEvent {
     KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+}
+
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
 }
 
 fn feed(vim: &mut VimState, st: &mut EditorState, key: KeyEvent) -> VimOutcome {
@@ -296,4 +301,281 @@ fn zero_after_a_digit_extends_the_count() {
     feed(&mut vim, &mut st, ch('1'));
     assert_eq!(feed(&mut vim, &mut st, ch('0')), VimOutcome::Pending);
     assert_eq!(vim.count, Some(10));
+}
+
+// ── Core motions (CP2) ──────────────────────────────────────────────────────
+
+#[test]
+fn word_motions_land_on_boundaries() {
+    let mut st = state("foo.bar baz");
+    let mut vim = VimState::default();
+
+    // w: 'f' → '.' → 'bar' → 'baz'.
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.cursor.offset, 3); // '.'
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.cursor.offset, 4); // 'b' of bar
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.cursor.offset, 8); // 'b' of baz
+
+    // b walks back to word starts.
+    feed(&mut vim, &mut st, ch('b'));
+    assert_eq!(st.cursor.offset, 4);
+
+    // e lands on the last char of the next word.
+    st.cursor.offset = 0;
+    feed(&mut vim, &mut st, ch('e'));
+    assert_eq!(st.cursor.offset, 2); // 'o' of foo
+}
+
+#[test]
+fn big_word_motions_ignore_punctuation() {
+    let mut st = state("foo.bar baz");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('W'));
+    assert_eq!(st.cursor.offset, 8, "W jumps the whole foo.bar blob");
+
+    st.cursor.offset = 10; // 'z'
+    feed(&mut vim, &mut st, ch('B'));
+    assert_eq!(st.cursor.offset, 8, "B back to start of baz");
+
+    st.cursor.offset = 0;
+    feed(&mut vim, &mut st, ch('E'));
+    assert_eq!(st.cursor.offset, 6, "E to the end of foo.bar");
+}
+
+#[test]
+fn line_motions_zero_caret_dollar() {
+    let mut st = state("  hello world\nnext");
+    let mut vim = VimState::default();
+    st.cursor.offset = 6; // inside "hello"
+
+    feed(&mut vim, &mut st, ch('0'));
+    assert_eq!(st.cursor.offset, 0, "0 → line start");
+
+    feed(&mut vim, &mut st, ch('^'));
+    assert_eq!(st.cursor.offset, 2, "^ → first non-blank");
+
+    feed(&mut vim, &mut st, ch('$'));
+    assert_eq!(st.cursor.offset, 13, "$ → end of line before the newline");
+}
+
+#[test]
+fn gg_and_capital_g_jump_document_ends() {
+    let mut st = state("  first\nmiddle\nlast");
+    let mut vim = VimState::default();
+    st.cursor.offset = 10; // inside "middle"
+
+    feed(&mut vim, &mut st, ch('G'));
+    assert_eq!(st.cursor.offset, 15, "G → first non-blank of last line");
+
+    // gg is a two-key sequence: the first g is Pending.
+    assert_eq!(feed(&mut vim, &mut st, ch('g')), VimOutcome::Pending);
+    assert!(vim.pending_g);
+    assert_eq!(feed(&mut vim, &mut st, ch('g')), VimOutcome::Consumed);
+    assert_eq!(st.cursor.offset, 2, "gg → first non-blank of first line");
+    assert!(!vim.pending_g);
+}
+
+#[test]
+fn lone_g_followed_by_other_key_is_a_noop() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    st.cursor.offset = 3;
+    feed(&mut vim, &mut st, ch('g'));
+    let out = feed(&mut vim, &mut st, ch('x'));
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(st.cursor.offset, 3, "unknown g-command does not move");
+    assert!(!vim.pending_g);
+}
+
+#[test]
+fn pending_g_is_resolved_before_a_count_digit() {
+    // A pending `g` must be consumed by the very next key, even a digit, so
+    // it can never linger while the digit grows the count (which would let a
+    // later lone `g` fire `gg`).
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    st.cursor.offset = 3;
+
+    feed(&mut vim, &mut st, ch('g'));
+    assert!(vim.pending_g);
+    let out = feed(&mut vim, &mut st, ch('5'));
+    assert_eq!(out, VimOutcome::Consumed, "g then digit is a swallowed no-op");
+    assert!(!vim.pending_g, "pending_g must not dangle past the digit");
+    assert_eq!(vim.count, None, "the digit does not accumulate a count");
+    assert_eq!(st.cursor.offset, 3, "no motion fires");
+}
+
+// ── o / O (CP2) ───────────────────────────────────────────────────────────────
+
+#[test]
+fn o_opens_a_line_below_and_enters_insert() {
+    let mut st = state("abc\ndef");
+    let mut vim = VimState::default();
+    st.cursor.offset = 1; // inside "abc"
+
+    feed(&mut vim, &mut st, ch('o'));
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+    assert_eq!(st.buffer.contents(), "abc\n\ndef");
+    assert_eq!(st.cursor.offset, 4, "cursor on the new blank line below");
+}
+
+#[test]
+fn capital_o_opens_a_line_above_and_enters_insert() {
+    let mut st = state("abc\ndef");
+    let mut vim = VimState::default();
+    let line1 = st.buffer.line_to_char(1);
+    st.cursor.offset = line1 + 1; // inside "def"
+
+    feed(&mut vim, &mut st, ch('O'));
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+    assert_eq!(st.buffer.contents(), "abc\n\ndef");
+    assert_eq!(
+        st.cursor.offset, line1,
+        "cursor on the new blank line above"
+    );
+}
+
+#[test]
+fn o_on_the_last_line_appends_a_new_line() {
+    let mut st = state("only");
+    let mut vim = VimState::default();
+    st.cursor.offset = 2;
+
+    feed(&mut vim, &mut st, ch('o'));
+    assert_eq!(st.buffer.contents(), "only\n");
+    assert_eq!(
+        st.cursor.offset, 5,
+        "cursor on the freshly-opened last line"
+    );
+}
+
+#[test]
+fn open_line_is_a_single_undo_unit() {
+    // `o`/`O` must record exactly one EditDelta so a later `u` reverses
+    // the whole open-line in one step (Risk #2 in the plan).
+    let mut st = state("abc\ndef");
+    let mut vim = VimState::default();
+    st.cursor.offset = 1; // inside "abc"
+
+    feed(&mut vim, &mut st, ch('o'));
+    assert_eq!(st.buffer.contents(), "abc\n\ndef");
+    assert_eq!(st.history.undo_depth(), 1, "o records exactly one delta");
+
+    // A single undo restores the original buffer in one step.
+    assert!(st.history.undo(&mut st.buffer).is_some());
+    assert_eq!(st.buffer.contents(), "abc\ndef");
+
+    // `O` is likewise one unit.
+    let mut st = state("abc\ndef");
+    let mut vim = VimState::default();
+    let line1 = st.buffer.line_to_char(1);
+    st.cursor.offset = line1 + 1; // inside "def"
+
+    feed(&mut vim, &mut st, ch('O'));
+    assert_eq!(st.buffer.contents(), "abc\n\ndef");
+    assert_eq!(st.history.undo_depth(), 1, "O records exactly one delta");
+
+    assert!(st.history.undo(&mut st.buffer).is_some());
+    assert_eq!(st.buffer.contents(), "abc\ndef");
+}
+
+// ── Visual entry (CP2) ─────────────────────────────────────────────────────────
+
+#[test]
+fn v_enters_visual_and_anchors_the_selection() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    st.cursor.offset = 1;
+
+    assert_eq!(feed(&mut vim, &mut st, ch('v')), VimOutcome::Consumed);
+    assert_eq!(vim.sub_mode, VimSubMode::Visual);
+    assert_eq!(vim.visual_anchor, Some(1));
+    let sel = st.selection.expect("v installs a selection");
+    assert_eq!((sel.anchor, sel.active), (1, 1));
+}
+
+#[test]
+fn capital_v_enters_visual_line() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    assert_eq!(vim.sub_mode, VimSubMode::VisualLine);
+    assert!(st.selection.is_some());
+}
+
+#[test]
+fn motions_extend_the_selection_in_visual() {
+    let mut st = state("hello world");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v')); // anchor at 0
+    feed(&mut vim, &mut st, ch('w')); // → start of "world" (6)
+
+    let sel = st.selection.expect("selection persists through motion");
+    assert_eq!(sel.anchor, 0, "anchor stays put");
+    assert_eq!(sel.active, 6, "active follows the cursor");
+    assert_eq!(st.cursor.offset, 6);
+}
+
+#[test]
+fn esc_leaves_visual_and_clears_the_selection() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('l'));
+    assert!(st.selection.is_some());
+
+    feed(&mut vim, &mut st, esc());
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+    assert!(st.selection.is_none(), "Esc drops the visual selection");
+    assert_eq!(vim.visual_anchor, None);
+}
+
+#[test]
+fn hjkl_extend_the_selection_in_visual() {
+    let mut st = state("hello\nworld");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v')); // anchor at 0
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('l'));
+    let sel = st.selection.expect("selection persists");
+    assert_eq!((sel.anchor, sel.active), (0, 2));
+}
+
+#[test]
+fn arrow_keys_extend_the_selection_in_visual_like_hjkl() {
+    // Arrow keys must behave exactly like `h j k l` in Visual — extend the
+    // selection rather than passing through (which would clear it).
+    let mut st = state("hello\nworld");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v')); // anchor at 0
+
+    assert_eq!(
+        feed(&mut vim, &mut st, key(KeyCode::Right)),
+        VimOutcome::Consumed,
+        "Right must be consumed in Visual, not passed through"
+    );
+    feed(&mut vim, &mut st, key(KeyCode::Right));
+    let sel = st
+        .selection
+        .expect("selection persists through arrow motion");
+    assert_eq!((sel.anchor, sel.active), (0, 2));
+
+    feed(&mut vim, &mut st, key(KeyCode::Down));
+    let sel = st.selection.expect("selection persists across a line");
+    assert_eq!(sel.anchor, 0);
+    assert_eq!(sel.active, st.cursor.offset);
+}
+
+#[test]
+fn arrow_keys_in_normal_pass_through() {
+    // Outside Visual, arrows keep their default-handler bindings.
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    assert_eq!(
+        feed(&mut vim, &mut st, key(KeyCode::Right)),
+        VimOutcome::Passthrough,
+        "Normal-mode arrows fall through to the default keymap"
+    );
 }
