@@ -2,7 +2,7 @@
 
 Implementation reference for adding Vim-style modal editing to edamame. Companion to [`vim-feature-prompt.md`](vim-feature-prompt.md) (the requirements/scope). This document records the agreed architecture, the locked design decisions, the module layout, and the checkpoint roadmap.
 
-Status: **planned** — implementation begins at Checkpoint 1.
+Status: **in progress** — CP1 (walking skeleton) complete; CP2 next.
 
 ---
 
@@ -302,11 +302,20 @@ Every checkpoint **compiles cleanly, passes all existing + new tests, and is ind
 
 Motions/operators are tested as **pure functions** of `(EditorState, VimState, key sequence) → resulting state`, the same way `mouse_ops::apply` is tested without a terminal. New tests go in `tests/vim.rs` (plus snapshot updates in `tests/ui.rs` at the end).
 
-### CP1 — Walking skeleton  *(risk: HIGH)*
+### CP1 — Walking skeleton  *(risk: HIGH)*  — ✅ **DONE**
 **Goal:** config switch wires `VimState` onto `App`; vim branch in `dispatch_single_key`; `h j k l` move; `i`/`a`/`I`/`A` enter Insert; `Esc` → Normal (cursor left); status badge shows `NORMAL`/`INSERT`.
 **Sanity check:** open a file with vim on → badge `NORMAL`; `j` moves; `i` then typing inserts; `Esc` → `NORMAL`; bare `j` no longer types.
 **Files:** create `src/input/vim.rs`(+`state.rs`,`feed.rs`); `src/editor/vim_ops.rs` stub; modify `src/app.rs` (field + init from config), `src/app/event_loop.rs` (dispatch branch + coalesce guard), `src/ui/status_bar.rs` + `src/ui/editor_view.rs` (label), `src/input.rs` facade.
 **Tests:** handler-disabled-by-default; `hjkl` move; `i`→insert→`Esc`→Normal; bare char doesn't insert in Normal; digit accumulation clears on `Esc`. Existing `tests/ui.rs` snapshots unchanged.
+
+> **Implementation notes (CP1):**
+> - The full `VimState` field set from §2.2 was laid down now (locked design). Forward-only enums (`PendingOp`, `FindKind`, `CmdLineKind`, and the not-yet-constructed `VimSubMode` variants) carry `#[allow(dead_code)]` with a "wired in CPn" comment — the binary crate (which re-`mod`s the sources separately from `lib.rs`) flags un-constructed pub variants as dead, and CI runs `-D warnings`. Each `allow` is removed as its checkpoint lands. Follows the existing `HintPrompt` "first consumer lands later" precedent.
+> - CP1 motion/insert logic lives directly in `feed.rs` calling `editor.cursor.*` + `update_cursor_block` + `ensure_cursor_visible`; `vim_ops.rs` is a doc-only stub until CP2/CP3 need it.
+> - `VimOutcome` is minimal for CP1 (`Pending` / `Consumed` / `Passthrough`). The `Save` / `Quit` / `EnterSearch` variants and their `event_loop` match arms are deferred to the checkpoints that emit them (CP8/CP9), to avoid pulling in `enter_search_flow`/`Action::Quit` wiring before it's exercised.
+> - `vim_feed`'s signature drops the `keymap: &KeyMap` parameter shown in §2.3. CP1 needs no keymap (Ctrl-* chords are detected by modifier and returned as `Passthrough`, so the *caller* applies the keymap), and no later checkpoint's planned surface reads it either — `Save`/`Quit`/`EnterSearch`/`:s` all act without consulting bindings. The parameter is re-added only if a future checkpoint genuinely needs binding lookup inside the reducer.
+> - App-wiring tests (handler enable/disable, startup mode) live in `src/app.rs`'s `vim_wiring_tests` unit module (private `App` fields); behavioral reducer tests are pure-function tests in `tests/vim.rs` (12 tests). `I` implements true first-non-blank; `Esc` from Insert never crosses a line boundary.
+> - Counts accumulate in CP1 but do not yet drive motions (that's CP3) — they're parsed and cleared so the `Esc`-clears-count contract holds.
+> - **Table chrome is the one exception to "motions traverse the raw buffer."** In a *rendered* view, `h`/`l`/`j`/`k` skip the auto-managed table border chrome (the `|` separators and the `|---|` alignment row), stepping cell-to-cell instead — landing on a border the editor owns would make the motion meaningless. This reuses the default handler's own table navigation (`EditorState::try_table_move_horizontal` / `try_table_move_vertical`, thin wrappers over `table_edit_ops::{table_move_horizontal, try_move_cell_vertical}`), so vim and arrow-key navigation behave identically inside a table. In **Raw** mode the borders are real, hand-editable source, so nothing is skipped — every character is a valid target. The skip is scoped to table chrome only; list markers stay char-navigable (they're user-authored text, unlike borders). The general principle ("rendered motions skip editor-managed chrome") extends to the word/find motions added in CP2/CP5.
 
 ### CP2 — Core motions & mode entries  *(risk: LOW)*  — needs CP1
 `w e b W E B 0 ^ $ gg G`; entries `a A I o O`; `v V` enter Visual/VisualLine (no operators yet).

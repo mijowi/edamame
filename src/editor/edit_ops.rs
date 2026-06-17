@@ -4,10 +4,9 @@ use crate::editor::footnote_edit;
 use crate::editor::list_edit::{self, ListInfo};
 use crate::editor::table_edit;
 use crate::editor::table_edit_ops::{
-    cursor_in_table, cursor_on_alignment_row, table_delete_column, table_delete_row,
-    table_insert_column, table_insert_row, table_move_column, table_move_horizontal,
-    table_move_row, table_next_cell, table_next_row, table_prev_cell, table_prev_row,
-    try_move_cell_vertical,
+    cursor_in_table, table_delete_column, table_delete_row, table_insert_column, table_insert_row,
+    table_move_column, table_move_horizontal, table_move_row, table_next_cell, table_next_row,
+    table_prev_cell, table_prev_row, try_move_cell_vertical,
 };
 use crate::editor::{EditorState, Mode};
 
@@ -1298,44 +1297,15 @@ pub(super) fn cursor_byte(state: &EditorState) -> usize {
     state.buffer.rope().char_to_byte(state.cursor.offset)
 }
 
-/// Move the cursor up/down by one line, then — if that move landed on a
-/// table's alignment row or inside a hidden (zero-rendered-line) block —
-/// advance once more in the same direction so the cursor skips the
-/// structural artefact entirely.  Honours `visual_line_nav` for all moves
-/// so wrapped lines, tables, and hidden HTML comments cooperate.
+/// Move the cursor up/down by one line in a rendered view, skipping a
+/// table's alignment row and any hidden (zero-rendered-line) blocks so the
+/// cursor never stalls on a structural artefact.  Honours `visual_line_nav`
+/// (the default handler's wrapped-line nav).  The shared skip/step logic
+/// lives on [`EditorState::move_cursor_line`], which also gates the skip on
+/// the rendered-vs-`Raw` view so vim `j`/`k` and this path stay in lockstep.
 fn move_line_skipping_alignment(state: &mut EditorState, down: bool, viewport_width: usize) {
-    let step = |state: &mut EditorState| {
-        if down {
-            if state.visual_line_nav && viewport_width > 0 {
-                state.move_down_visual(viewport_width);
-            } else {
-                state.cursor.move_down(&state.buffer);
-            }
-        } else if state.visual_line_nav && viewport_width > 0 {
-            state.move_up_visual(viewport_width);
-        } else {
-            state.cursor.move_up(&state.buffer);
-        }
-    };
-    step(state);
-    if cursor_on_alignment_row(state) {
-        step(state);
-    }
-    // Walk past any consecutive hidden (zero-rendered-line) blocks — HTML
-    // comments don't produce rendered rows, so stopping on one would leave
-    // the cursor "stuck" at a position the user can't see in hybrid view.
-    // The loop is bounded by repeated `prev_offset` equality: when the step
-    // function can't advance further (top/bottom of buffer), we stop rather
-    // than spin.
-    let mut safety = 32usize;
-    while cursor_on_hidden_block(state) && safety > 0 {
-        let prev_offset = state.cursor.offset;
-        step(state);
-        if state.cursor.offset == prev_offset {
-            break;
-        }
-        safety -= 1;
-    }
+    let visual = state.visual_line_nav;
+    state.move_cursor_line(down, visual, viewport_width);
 }
 
 /// True iff the cursor currently falls inside a block with zero rendered
@@ -1346,7 +1316,7 @@ fn move_line_skipping_alignment(state: &mut EditorState, down: bool, viewport_wi
 /// Intentionally specific to comments rather than "any zero-own block":
 /// suppressed blank lines (when `preserve_blank_lines` is false) also have
 /// zero own but are bytes the cursor may legitimately want to land on.
-fn cursor_on_hidden_block(state: &EditorState) -> bool {
+pub(super) fn cursor_on_hidden_block(state: &EditorState) -> bool {
     let rope = state.buffer.rope();
     let cursor_byte = rope.char_to_byte(state.cursor.offset);
     let Some(block_idx) = state.parsed.source_map.block_for_byte(cursor_byte) else {

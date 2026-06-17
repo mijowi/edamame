@@ -1050,6 +1050,7 @@ mod tests {
                         cursor_col: Some(1),
                         section_path: Vec::new(),
                         diff_progress: None,
+                        vim_mode_label: None,
                     },
                     hint,
                     theme: t,

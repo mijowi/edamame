@@ -123,6 +123,7 @@ fn render_editor(state: &mut EditorState, width: u16, height: u16) -> ratatui::b
                 show_line_numbers: false,
                 is_scrolling: false,
                 hint,
+                vim_mode_label: None,
                 max_width_enabled: false,
                 max_width_cols: 0,
                 scrollbar_active: false,
