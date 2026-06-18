@@ -17,7 +17,7 @@ pub mod operator;
 
 pub use edits::{indent_lines, join_lines, paste, replace_char, toggle_case};
 pub use motion::{
-    doubled_line_range, first_non_blank, resolve_motion, resolve_motion_range, vertical_line_range,
-    Motion, OpRange,
+    doubled_line_range, first_non_blank, resolve_find_repeat, resolve_motion, resolve_motion_range,
+    vertical_line_range, FindKind, Motion, OpRange,
 };
 pub use operator::{execute_operator, Operator};

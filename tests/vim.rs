@@ -1318,3 +1318,178 @@ fn ctrl_r_is_bound_to_redo_in_the_default_keymap() {
     );
     assert_eq!(km.action_for(&ctrl_shift_z), Some(&Action::Redo));
 }
+
+// ── CP5: find / paragraph / matching-pair motions ──────────────────────────────
+
+#[test]
+fn f_waits_for_a_char_then_lands_on_it() {
+    let mut st = state("hello world");
+    let mut vim = VimState::default();
+    assert_eq!(feed(&mut vim, &mut st, ch('f')), VimOutcome::Pending);
+    assert_eq!(feed(&mut vim, &mut st, ch('o')), VimOutcome::Consumed);
+    assert_eq!(st.cursor.offset, 4); // first 'o'
+}
+
+#[test]
+fn t_stops_one_char_before_the_target() {
+    let mut st = state("hello world");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('t'));
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.cursor.offset, 5); // the space before 'w'
+}
+
+#[test]
+fn count_finds_the_nth_occurrence() {
+    let mut st = state("a.b.c.d");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('2'));
+    feed(&mut vim, &mut st, ch('f'));
+    feed(&mut vim, &mut st, ch('.'));
+    assert_eq!(st.cursor.offset, 3); // second '.'
+}
+
+#[test]
+fn find_miss_leaves_the_cursor_put() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('f'));
+    feed(&mut vim, &mut st, ch('z'));
+    assert_eq!(st.cursor.offset, 0);
+}
+
+#[test]
+fn esc_cancels_a_pending_find() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('f'));
+    assert!(vim.pending_find.is_some());
+    feed(&mut vim, &mut st, esc());
+    assert_eq!(vim.pending_find, None);
+    assert_eq!(st.cursor.offset, 0);
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+}
+
+#[test]
+fn semicolon_replays_and_comma_reverses_the_last_find() {
+    let mut st = state("a.b.c.d");
+    let mut vim = VimState::default();
+    // f. → first '.' (1); ; → second '.' (3); ; → third '.' (5).
+    feed(&mut vim, &mut st, ch('f'));
+    feed(&mut vim, &mut st, ch('.'));
+    assert_eq!(st.cursor.offset, 1);
+    feed(&mut vim, &mut st, ch(';'));
+    assert_eq!(st.cursor.offset, 3);
+    feed(&mut vim, &mut st, ch(';'));
+    assert_eq!(st.cursor.offset, 5);
+    // , reverses direction → back to the '.' at 3.
+    feed(&mut vim, &mut st, ch(','));
+    assert_eq!(st.cursor.offset, 3);
+}
+
+#[test]
+fn semicolon_after_t_skips_the_adjacent_match() {
+    // Repeating a `t` must not stay stuck one char before the same target:
+    // "abc-d-e-f" — t- lands on 'c'(2); ; advances to 'd'(4) then 'e'(6).
+    let mut st = state("abc-d-e-f");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('t'));
+    feed(&mut vim, &mut st, ch('-'));
+    assert_eq!(st.cursor.offset, 2); // one before the first '-'
+    feed(&mut vim, &mut st, ch(';'));
+    assert_eq!(st.cursor.offset, 4); // skipped the adjacent '-', one before the second
+    feed(&mut vim, &mut st, ch(';'));
+    assert_eq!(st.cursor.offset, 6); // one before the third '-'
+                                     // No further '-' ahead → ; is a no-op, not a backward jump.
+    feed(&mut vim, &mut st, ch(';'));
+    assert_eq!(st.cursor.offset, 6);
+}
+
+#[test]
+fn semicolon_after_capital_t_skips_the_adjacent_match() {
+    // The backward form: "a-b-c-d", cursor on 'd'(6).  T- is stuck on 'd'
+    // (the '-' at 5 is adjacent); ; must skip back to one after the '-' at 3.
+    let mut st = state("a-b-c-d");
+    st.cursor.offset = 6;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('T'));
+    feed(&mut vim, &mut st, ch('-'));
+    assert_eq!(st.cursor.offset, 6); // adjacent '-' → T- can't move
+    feed(&mut vim, &mut st, ch(';'));
+    assert_eq!(st.cursor.offset, 4); // skipped to one after the '-' at 3
+}
+
+#[test]
+fn percent_jumps_between_matching_brackets() {
+    let mut st = state("(a[b]c)");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('%'));
+    assert_eq!(st.cursor.offset, 6); // ( → )
+    feed(&mut vim, &mut st, ch('%'));
+    assert_eq!(st.cursor.offset, 0); // ) → (
+                                     // From the inner '[' → its ']'.
+    st.cursor.offset = 2;
+    feed(&mut vim, &mut st, ch('%'));
+    assert_eq!(st.cursor.offset, 4);
+}
+
+#[test]
+fn paragraph_motions_move_between_blank_lines() {
+    let mut st = state("alpha\n\nbeta");
+    let mut vim = VimState::default();
+    // } → the blank line (offset 6).
+    feed(&mut vim, &mut st, ch('}'));
+    assert_eq!(st.cursor.offset, 6);
+    // Move into the second paragraph, then { back to the blank line.
+    st.cursor.offset = 7; // 'b' of beta
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('{'));
+    assert_eq!(st.cursor.offset, 6);
+}
+
+#[test]
+fn df_deletes_through_the_found_char_inclusive() {
+    let mut st = state("hello world");
+    let mut vim = VimState::default();
+    // dfo → delete "hello" (through the first 'o'), one undo unit.
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('f'));
+    feed(&mut vim, &mut st, ch('o'));
+    assert_eq!(st.buffer.contents(), " world");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+    feed(&mut vim, &mut st, ch('u'));
+    assert_eq!(st.buffer.contents(), "hello world", "df is a single undo");
+}
+
+#[test]
+fn dt_deletes_up_to_but_not_including_the_target() {
+    let mut st = state("hello world");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('t'));
+    feed(&mut vim, &mut st, ch('o'));
+    assert_eq!(st.buffer.contents(), "o world"); // "hell" removed
+}
+
+#[test]
+fn d_percent_deletes_the_whole_pair() {
+    let mut st = state("(abc)d");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('%'));
+    assert_eq!(st.buffer.contents(), "d");
+}
+
+#[test]
+fn find_extends_a_visual_selection() {
+    let mut st = state("foobar");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('f'));
+    feed(&mut vim, &mut st, ch('b'));
+    assert_eq!(vim.sub_mode, VimSubMode::Visual);
+    let sel = st.selection.expect("visual selection present");
+    assert_eq!(sel.anchor, 0);
+    assert_eq!(sel.active, 3); // 'b' of "bar"
+}

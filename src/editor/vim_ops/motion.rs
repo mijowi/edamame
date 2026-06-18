@@ -8,34 +8,52 @@
 //!
 //! CP2 ships the core motions (`w e b W E B 0 ^ $ gg G`).  CP3 adds the
 //! count-aware [`resolve_motion_range`] operator entry point (plus the
-//! `h`/`l` charwise targets `Left`/`Right`).  Character-find / paragraph /
-//! search / matching-pair motions land in later checkpoints.
+//! `h`/`l` charwise targets `Left`/`Right`).  CP5 adds the character-find
+//! (`f F t T`, replayed by `; ,`), paragraph (`{ }`), and matching-pair
+//! (`%`) motions.  Search (`n N`) lands in a later checkpoint.
 
 use std::ops::Range;
 
 use crate::document::{next_grapheme_offset, Buffer};
 
+/// Which character-find motion a [`Motion::FindChar`] carries (`f F t T`),
+/// also recorded in `VimState::last_find` so `;` / `,` can replay (or
+/// reverse) the last one.  Defined here in the editor layer — rather than
+/// alongside the rest of the vim state in `input::vim` — so the `Motion`
+/// enum can name it without inverting the input→editor dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindKind {
+    Forward,      // f — land *on* the next occurrence
+    Backward,     // F — land *on* the previous occurrence
+    ForwardTill,  // t — land one char before the next occurrence
+    BackwardTill, // T — land one char after the previous occurrence
+}
+
 /// A resolved Normal-mode motion.  The variants present so far are the
-/// CP2 core set plus the CP3 charwise `h`/`l` targets and the `cw`/`cW`
-/// current-word-end targets; later checkpoints extend the enum (`f/F/t/T`,
-/// `{ }`, `n N`, `%`, `NG`).
+/// CP2 core set, the CP3 charwise `h`/`l` and `cw`/`cW` targets, and the
+/// CP5 find / paragraph / matching-pair motions; later checkpoints extend
+/// the enum (`n N`, `NG`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Motion {
-    Left,              // h (operator target)
-    Right,             // l (operator target)
-    WordForward,       // w
-    WordEnd,           // e
-    WordBackward,      // b
-    CurrentWordEnd,    // cw target (end of the word the cursor is *in*)
-    CurrentBigWordEnd, // cW target
-    BigWordForward,    // W
-    BigWordEnd,        // E
-    BigWordBackward,   // B
-    LineStart,         // 0
-    LineFirstNonBlank, // ^
-    LineEnd,           // $
-    DocStart,          // gg
-    DocEnd,            // G
+    Left,                     // h (operator target)
+    Right,                    // l (operator target)
+    WordForward,              // w
+    WordEnd,                  // e
+    WordBackward,             // b
+    CurrentWordEnd,           // cw target (end of the word the cursor is *in*)
+    CurrentBigWordEnd,        // cW target
+    BigWordForward,           // W
+    BigWordEnd,               // E
+    BigWordBackward,          // B
+    LineStart,                // 0
+    LineFirstNonBlank,        // ^
+    LineEnd,                  // $
+    DocStart,                 // gg
+    DocEnd,                   // G
+    FindChar(char, FindKind), // f F t T (and ; , replays)
+    ParagraphForward,         // }
+    ParagraphBackward,        // {
+    MatchingPair,             // %
 }
 
 /// The span an operator (`d`/`c`/`y`) should act on, resolved from a
@@ -97,6 +115,12 @@ pub fn resolve_motion(motion: Motion, count: u32, cursor: usize, buf: &Buffer) -
         Motion::LineEnd => line_end(buf, cursor),
         Motion::DocStart => first_non_blank(buf, 0),
         Motion::DocEnd => first_non_blank(buf, last_content_line(buf)),
+        Motion::FindChar(c, kind) => {
+            find_char(buf, cursor, c, kind, count, /*skip_adjacent=*/ false)
+        }
+        Motion::ParagraphForward => paragraph(buf, cursor, count, true),
+        Motion::ParagraphBackward => paragraph(buf, cursor, count, false),
+        Motion::MatchingPair => matching_pair(buf, cursor),
     }
 }
 
@@ -127,15 +151,23 @@ pub fn resolve_motion_range(motion: Motion, count: u32, cursor: usize, buf: &Buf
             }
             let lo = cursor.min(target);
             let mut hi = cursor.max(target);
-            // `e`/`E` (and the `cw`/`cW` current-word-end targets) land
-            // *on* the last char of the word; include it.
-            if matches!(
-                motion,
+            // Inclusive-end motions land *on* the last affected char, so the
+            // operator range must extend one grapheme past it:
+            //  - `e`/`E` (and the `cw`/`cW` current-word-end targets);
+            //  - a forward find (`df(` / `dt(` include the landing char);
+            //  - `%` (the matched bracket is deleted with `d%`).
+            // Backward finds and a `%` that found nothing fall through as the
+            // default `[lo, hi)` span (exclusive), which is already correct.
+            let inclusive = match motion {
                 Motion::WordEnd
-                    | Motion::BigWordEnd
-                    | Motion::CurrentWordEnd
-                    | Motion::CurrentBigWordEnd
-            ) {
+                | Motion::BigWordEnd
+                | Motion::CurrentWordEnd
+                | Motion::CurrentBigWordEnd => true,
+                Motion::FindChar(_, FindKind::Forward | FindKind::ForwardTill) => target > cursor,
+                Motion::MatchingPair => target != cursor,
+                _ => false,
+            };
+            if inclusive {
                 hi = next_grapheme_offset(buf, hi).min(buf.len_chars());
             }
             OpRange::Chars(lo..hi)
@@ -296,6 +328,205 @@ fn word_backward(buf: &Buffer, mut pos: usize, count: u32, big: bool) -> usize {
         }
     }
     pos
+}
+
+// ── Find / paragraph / matching-pair motions ──────────────────────────────────
+
+/// `f`/`F`/`t`/`T`: find the `count`-th occurrence of `target` on the
+/// cursor's line and return the landing offset.  Forward finds (`f`/`t`)
+/// scan right of the cursor; backward finds (`F`/`T`) scan left.  `t`/`T`
+/// stop one char short of the match.  Bounded to the current line; a miss
+/// leaves the cursor put.
+///
+/// `skip_adjacent` is set only for a `;`/`,` *repeat* of a `t`/`T`: it steps
+/// over a match sitting immediately in the search direction, so repeating
+/// `t` advances past the char it is already resting before instead of
+/// getting stuck on it (matching vim's default `;`).  It is a no-op for
+/// `f`/`F` (which already advance past the char the cursor sits on).
+fn find_char(
+    buf: &Buffer,
+    cursor: usize,
+    target: char,
+    kind: FindKind,
+    count: u32,
+    skip_adjacent: bool,
+) -> usize {
+    let count = count.max(1);
+    let line = buf.char_to_line(cursor);
+    let lstart = buf.line_to_char(line);
+    let lend = line_end_offset(buf, line);
+    let forward = matches!(kind, FindKind::Forward | FindKind::ForwardTill);
+    let till = matches!(kind, FindKind::ForwardTill | FindKind::BackwardTill);
+    let mut hits = 0;
+    let found = if forward {
+        let mut pos = None;
+        let mut i = cursor + 1;
+        // Repeat of `t`: jump past an immediately-adjacent match.
+        if skip_adjacent && till && i < lend && char_at(buf, i) == target {
+            i += 1;
+        }
+        while i < lend {
+            if char_at(buf, i) == target {
+                hits += 1;
+                if hits == count {
+                    pos = Some(i);
+                    break;
+                }
+            }
+            i += 1;
+        }
+        pos
+    } else {
+        let mut pos = None;
+        let mut i = cursor;
+        // Repeat of `T`: jump past an immediately-adjacent match.
+        if skip_adjacent && till && i > lstart && char_at(buf, i - 1) == target {
+            i -= 1;
+        }
+        while i > lstart {
+            i -= 1;
+            if char_at(buf, i) == target {
+                hits += 1;
+                if hits == count {
+                    pos = Some(i);
+                    break;
+                }
+            }
+        }
+        pos
+    };
+    match (found, kind) {
+        (Some(p), FindKind::Forward | FindKind::Backward) => p,
+        // `t` lands one before the match (never behind the cursor); `T`
+        // lands one after (never past the cursor).
+        (Some(p), FindKind::ForwardTill) => p.saturating_sub(1).max(cursor),
+        (Some(p), FindKind::BackwardTill) => (p + 1).min(cursor),
+        (None, _) => cursor,
+    }
+}
+
+/// Resolve a `;`/`,` repeat of the last character-find.  Identical to a
+/// fresh find for `f`/`F`, but for `t`/`T` it skips a match sitting
+/// immediately in the search direction, so repeating `t` advances past the
+/// char it is resting before (matching vim's default `;`) instead of
+/// staying stuck on it.
+pub fn resolve_find_repeat(
+    buf: &Buffer,
+    cursor: usize,
+    target: char,
+    kind: FindKind,
+    count: u32,
+) -> usize {
+    find_char(
+        buf, cursor, target, kind, count, /*skip_adjacent=*/ true,
+    )
+}
+
+/// Whether buffer `line` is a paragraph boundary — a completely empty line
+/// (vim does not treat a whitespace-only line as a boundary).
+fn is_blank_line(buf: &Buffer, line: usize) -> bool {
+    buf.line(line)
+        .map(|s| s.trim_end_matches('\n').is_empty())
+        .unwrap_or(true)
+}
+
+/// `}` (`forward`) / `{`: move `count` paragraphs, landing on the start of
+/// the bounding empty line.  Running off the end clamps to end-of-buffer
+/// (`}`) or the buffer start (`{`).
+fn paragraph(buf: &Buffer, cursor: usize, count: u32, forward: bool) -> usize {
+    let count = count.max(1);
+    let last = buf.line_count().saturating_sub(1);
+    let mut line = buf.char_to_line(cursor);
+    for _ in 0..count {
+        if forward {
+            if line >= last {
+                return buf.len_chars();
+            }
+            let mut l = line + 1;
+            while l < last && !is_blank_line(buf, l) {
+                l += 1;
+            }
+            if is_blank_line(buf, l) {
+                line = l;
+            } else {
+                return buf.len_chars();
+            }
+        } else {
+            if line == 0 {
+                return 0;
+            }
+            let mut l = line - 1;
+            while l > 0 && !is_blank_line(buf, l) {
+                l -= 1;
+            }
+            line = l;
+        }
+    }
+    buf.line_to_char(line)
+}
+
+/// `%`: scan from the cursor to the line end for the first bracket of a
+/// `()` / `[]` / `{}` pair, then jump to its match (searching forward from
+/// an opener, backward from a closer, respecting nesting across lines).
+/// No bracket on the line — or an unbalanced one — leaves the cursor put.
+fn matching_pair(buf: &Buffer, cursor: usize) -> usize {
+    let len = buf.len_chars();
+    let line = buf.char_to_line(cursor);
+    let lend = line_end_offset(buf, line);
+    let mut p = cursor;
+    while p < lend && !is_bracket(char_at(buf, p)) {
+        p += 1;
+    }
+    if p >= lend {
+        return cursor;
+    }
+    let (open, close, forward) = match char_at(buf, p) {
+        '(' => ('(', ')', true),
+        ')' => ('(', ')', false),
+        '[' => ('[', ']', true),
+        ']' => ('[', ']', false),
+        '{' => ('{', '}', true),
+        '}' => ('{', '}', false),
+        _ => return cursor,
+    };
+    let mut depth = 0i32;
+    if forward {
+        let mut i = p;
+        while i < len {
+            let ch = char_at(buf, i);
+            if ch == open {
+                depth += 1;
+            } else if ch == close {
+                depth -= 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            i += 1;
+        }
+    } else {
+        let mut i = p;
+        loop {
+            let ch = char_at(buf, i);
+            if ch == close {
+                depth += 1;
+            } else if ch == open {
+                depth -= 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            if i == 0 {
+                break;
+            }
+            i -= 1;
+        }
+    }
+    cursor
+}
+
+fn is_bracket(c: char) -> bool {
+    matches!(c, '(' | ')' | '[' | ']' | '{' | '}')
 }
 
 // ── Line / document motions ───────────────────────────────────────────────────
@@ -518,5 +749,135 @@ mod tests {
         assert_eq!(resolve_motion(Motion::Right, 9, 0, &b), 3);
         // h stops at the line start.
         assert_eq!(resolve_motion(Motion::Left, 9, 2, &b), 0);
+    }
+
+    // ── Find / paragraph / matching-pair ──────────────────────────────
+
+    #[test]
+    fn find_forward_lands_on_the_char() {
+        // "foo.bar.baz": f. from 'f' → first '.', count 2 → second '.'.
+        let t = "foo.bar.baz";
+        assert_eq!(m(Motion::FindChar('.', FindKind::Forward), 0, t), 3);
+        assert_eq!(
+            resolve_motion(Motion::FindChar('.', FindKind::Forward), 2, 0, &buf(t)),
+            7
+        );
+    }
+
+    #[test]
+    fn find_till_stops_one_short() {
+        // "abcXdef": tX from 'a' lands on 'c' (offset 2), one before 'X'.
+        let t = "abcXdef";
+        assert_eq!(m(Motion::FindChar('X', FindKind::ForwardTill), 0, t), 2);
+    }
+
+    #[test]
+    fn find_repeat_skips_an_adjacent_till_match() {
+        // "abc-d-e-f": a `t-` repeat from 'c'(2) must skip the adjacent '-'
+        // at 3 and land on 'd'(4); a fresh resolve would stay stuck at 2.
+        let b = buf("abc-d-e-f");
+        assert_eq!(
+            resolve_motion(Motion::FindChar('-', FindKind::ForwardTill), 1, 2, &b),
+            2,
+            "fresh till is stuck on the adjacent match"
+        );
+        assert_eq!(
+            resolve_find_repeat(&b, 2, '-', FindKind::ForwardTill, 1),
+            4,
+            "the repeat skips it"
+        );
+        // Backward symmetry: T- repeat from 'e'(6) skips '-'(5) to land on 'd'(4).
+        assert_eq!(
+            resolve_find_repeat(&b, 6, '-', FindKind::BackwardTill, 1),
+            4
+        );
+        // `f`/`F` repeats are unaffected by the skip (no off-by-one nudge).
+        assert_eq!(
+            resolve_find_repeat(&b, 0, '-', FindKind::Forward, 1),
+            resolve_motion(Motion::FindChar('-', FindKind::Forward), 1, 0, &b)
+        );
+    }
+
+    #[test]
+    fn find_backward_and_till() {
+        // "a.b.c" — offsets a=0 .=1 b=2 .=3 c=4.
+        let t = "a.b.c";
+        // F. from 'c' (4) lands on the '.' at 3.
+        assert_eq!(m(Motion::FindChar('.', FindKind::Backward), 4, t), 3);
+        // T. from 'c' (4) lands one *after* that '.', i.e. on 'c' itself (4).
+        assert_eq!(m(Motion::FindChar('.', FindKind::BackwardTill), 4, t), 4);
+        // T. from 'c' with two earlier dots and a longer gap actually moves:
+        // "a..xc" → T. from 'c'(4) → one after the '.' at 2 → 'x' (3).
+        let u = "a..xc";
+        assert_eq!(m(Motion::FindChar('.', FindKind::BackwardTill), 4, u), 3);
+    }
+
+    #[test]
+    fn find_misses_leave_the_cursor() {
+        // No 'z' on the line → cursor stays; find never crosses the newline.
+        let t = "abc\nzzz";
+        assert_eq!(m(Motion::FindChar('z', FindKind::Forward), 0, t), 0);
+    }
+
+    #[test]
+    fn paragraph_forward_and_backward() {
+        // Two paragraphs separated by a blank line at line 2 (offset 8).
+        let t = "a\nb\n\nc\nd";
+        // } from offset 0 → start of the blank line (offset 4).
+        assert_eq!(m(Motion::ParagraphForward, 0, t), 4);
+        // { from the second paragraph (offset 6, 'c') → blank line (offset 4).
+        assert_eq!(m(Motion::ParagraphBackward, 6, t), 4);
+        // } past the last paragraph clamps to end-of-buffer.
+        assert_eq!(m(Motion::ParagraphForward, 6, t), buf(t).len_chars());
+    }
+
+    #[test]
+    fn matching_pair_jumps_each_bracket_type() {
+        // "(a[b]{c})": from '(' → matching ')' at 8, and back.
+        let t = "(a[b]{c})";
+        assert_eq!(m(Motion::MatchingPair, 0, t), 8); // ( → )
+        assert_eq!(m(Motion::MatchingPair, 8, t), 0); // ) → (
+        assert_eq!(m(Motion::MatchingPair, 2, t), 4); // [ → ]
+        assert_eq!(m(Motion::MatchingPair, 5, t), 7); // { → }
+    }
+
+    #[test]
+    fn matching_pair_scans_forward_to_the_first_bracket() {
+        // "x = (1 + 2)": % from 'x' scans right to '(' then jumps to ')'.
+        let t = "x = (1 + 2)";
+        assert_eq!(m(Motion::MatchingPair, 0, t), 10);
+    }
+
+    #[test]
+    fn matching_pair_respects_nesting() {
+        let t = "((()))";
+        assert_eq!(m(Motion::MatchingPair, 0, t), 5);
+        assert_eq!(m(Motion::MatchingPair, 1, t), 4);
+        assert_eq!(m(Motion::MatchingPair, 2, t), 3);
+    }
+
+    #[test]
+    fn range_forward_find_is_inclusive() {
+        // df. on "ab.cd" → [0, 3): includes the '.'.
+        let b = buf("ab.cd");
+        assert_eq!(
+            resolve_motion_range(Motion::FindChar('.', FindKind::Forward), 1, 0, &b),
+            OpRange::Chars(0..3)
+        );
+    }
+
+    #[test]
+    fn range_matching_pair_is_inclusive_both_ends() {
+        // d% on "(abc)" from '(' → [0, 5): the whole pair.
+        let b = buf("(abc)");
+        assert_eq!(
+            resolve_motion_range(Motion::MatchingPair, 1, 0, &b),
+            OpRange::Chars(0..5)
+        );
+        // From ')' back to '(' is also the whole pair.
+        assert_eq!(
+            resolve_motion_range(Motion::MatchingPair, 1, 4, &b),
+            OpRange::Chars(0..5)
+        );
     }
 }
