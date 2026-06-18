@@ -12,6 +12,8 @@
 //! subset, so later checkpoints add behavior without re-shaping the
 //! struct.  See `docs/vim-implementation-plan.md` §2.2.
 
+use crate::editor::vim_ops::FindKind;
+
 /// Upper bound on an accumulated count so a held digit key can't grow an
 /// unbounded `u32` (and so `3j` style repeats stay sane).
 pub const COUNT_CAP: u32 = 9999;
@@ -40,17 +42,6 @@ pub enum PendingOp {
     Yank,
     IndentRight,
     IndentLeft,
-}
-
-/// The four character-find motions (`f F t T`), recorded so `;` / `,`
-/// can replay the last one.
-#[allow(dead_code)] // find motions are wired in CP5
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FindKind {
-    Forward,
-    Backward,
-    ForwardTill,
-    BackwardTill,
 }
 
 /// Vim's unnamed register, with a charwise/linewise flag.  `dd`/`yy`/
@@ -94,6 +85,8 @@ pub struct VimState {
     pub pending_g: bool,
     /// `r` was pressed and is awaiting the replacement character (`r{c}`).
     pub pending_replace: bool,
+    /// `f`/`F`/`t`/`T` was pressed and is awaiting the target character.
+    pub pending_find: Option<FindKind>,
     /// `Some(true)` = inner (`i`), `Some(false)` = around (`a`).
     pub pending_text_object: Option<bool>,
     /// Last `f`/`F`/`t`/`T` target, for `;` and `,`.
@@ -107,15 +100,17 @@ pub struct VimState {
 
 impl VimState {
     /// Clear the in-progress multi-key parse (counts, pending operator,
-    /// pending `g`, pending `r`, pending text-object).  Leaves `sub_mode`, the
-    /// register, the last-find, and any visual anchor untouched — those
-    /// have lifetimes independent of a single command sequence.
+    /// pending `g`, pending `r`, pending find, pending text-object).  Leaves
+    /// `sub_mode`, the register, the last-find, and any visual anchor
+    /// untouched — those have lifetimes independent of a single command
+    /// sequence.
     pub fn reset_pending(&mut self) {
         self.count = None;
         self.pending_op = None;
         self.motion_count = None;
         self.pending_g = false;
         self.pending_replace = false;
+        self.pending_find = None;
         self.pending_text_object = None;
     }
 
@@ -157,6 +152,7 @@ mod tests {
             motion_count: Some(2),
             pending_g: true,
             pending_replace: true,
+            pending_find: Some(FindKind::Forward),
             pending_text_object: Some(true),
             register: VimRegister {
                 text: "x".into(),
@@ -170,6 +166,7 @@ mod tests {
         assert_eq!(v.motion_count, None);
         assert!(!v.pending_g);
         assert!(!v.pending_replace);
+        assert_eq!(v.pending_find, None);
         assert_eq!(v.pending_text_object, None);
         // Untouched.
         assert_eq!(v.sub_mode, VimSubMode::Insert);

@@ -20,6 +20,12 @@
 //! words).  In Normal a bare key is swallowed (it must never type);
 //! Insert defers to the existing editing pipeline via
 //! [`VimOutcome::Passthrough`].
+//!
+//! CP5 adds the character-find motions `f F t T` (each waits one key for
+//! its target, then records it so `;` / `,` can replay / reverse it),
+//! the paragraph motions `{ }`, and the matching-pair motion `%`.  All
+//! work as plain motions, as operator targets (`df(`, `d}`, `d%`), and as
+//! Visual-selection extensions.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -27,8 +33,8 @@ use crate::config::Action;
 use crate::document::{EditDelta, Selection};
 use crate::editor::vim_ops::{
     doubled_line_range, execute_operator, first_non_blank, indent_lines, join_lines, paste,
-    replace_char, resolve_motion, resolve_motion_range, toggle_case, vertical_line_range, Motion,
-    OpRange, Operator,
+    replace_char, resolve_find_repeat, resolve_motion, resolve_motion_range, toggle_case,
+    vertical_line_range, FindKind, Motion, OpRange, Operator,
 };
 use crate::editor::{edit_ops, EditorState, Mode};
 
@@ -111,6 +117,11 @@ fn feed_normal(
     if vim.pending_replace {
         return feed_replace_char(vim, editor, key, vh, vw);
     }
+    // A pending `f`/`F`/`t`/`T` (possibly behind an operator, e.g. `df`)
+    // is awaiting its target char; resolve it before anything else.
+    if let Some(kind) = vim.pending_find {
+        return feed_find_char(vim, editor, kind, key, vh, vw, /*visual=*/ false);
+    }
     if is_passthrough_chord(&key) {
         // The chord fires its app action via the default handler; a
         // half-typed operator / count must not linger behind it (`d`
@@ -153,6 +164,11 @@ fn feed_visual(
     vh: usize,
     vw: usize,
 ) -> VimOutcome {
+    // A pending `f`/`F`/`t`/`T` is awaiting its target char (Visual has no
+    // operators yet, so this only ever extends the selection).
+    if let Some(kind) = vim.pending_find {
+        return feed_find_char(vim, editor, kind, key, vh, vw, /*visual=*/ true);
+    }
     if is_passthrough_chord(&key) {
         return VimOutcome::Passthrough;
     }
@@ -255,6 +271,27 @@ fn feed_command_char(
     }
 
     let count = count_of(vim);
+
+    // `f`/`F`/`t`/`T`: arm a pending find and wait for the target char
+    // (kept count intact so `3fx` finds the third `x`).
+    if let Some(kind) = find_kind_for(c) {
+        vim.pending_find = Some(kind);
+        return VimOutcome::Pending;
+    }
+
+    // `;` / `,`: replay (or reverse) the last find.  `resolve_find_repeat`
+    // skips an adjacent match for a `t`/`T` repeat so `;` never gets stuck
+    // one char before the same target.
+    if c == ';' || c == ',' {
+        if let Some((kind, target)) = vim.last_find {
+            let kind = if c == ',' { reverse_find(kind) } else { kind };
+            let dest =
+                resolve_find_repeat(&editor.buffer, editor.cursor.offset, target, kind, count);
+            move_to_offset(editor, dest, vh, vw, visual);
+        }
+        vim.reset_pending();
+        return VimOutcome::Consumed;
+    }
 
     // Pure motions resolved by `vim_ops::motion`.
     if let Some(motion) = motion_for(c) {
@@ -458,6 +495,13 @@ fn feed_operator_pending(
         return VimOutcome::Consumed;
     }
 
+    // `df(` / `dt(` / …: arm a pending find; the next key (the target
+    // char) resolves the range and runs the operator via `feed_find_char`.
+    if let Some(kind) = find_kind_for(c) {
+        vim.pending_find = Some(kind);
+        return VimOutcome::Pending;
+    }
+
     // Charwise / `gg`-`G` motion targets.
     if let Some(motion) = operator_motion_for(c) {
         let motion = change_word_to_word_end(operator, motion, editor);
@@ -580,6 +624,62 @@ fn feed_replace_char(
     VimOutcome::Consumed
 }
 
+/// Resolve a pending `f`/`F`/`t`/`T`: the previous key armed the find and
+/// `key` carries the target char.  Records the find for `;` / `,`, then
+/// either runs the pending operator over the find range (`df(`) or moves
+/// the cursor / extends the Visual selection.  A non-char key or a `Ctrl-*`
+/// chord cancels with no edit (and drops OperatorPending back to Normal).
+fn feed_find_char(
+    vim: &mut VimState,
+    editor: &mut EditorState,
+    kind: FindKind,
+    key: KeyEvent,
+    vh: usize,
+    vw: usize,
+    visual: bool,
+) -> VimOutcome {
+    let target = match key.code {
+        KeyCode::Char(c) if !is_passthrough_chord(&key) => c,
+        _ => {
+            if vim.sub_mode == VimSubMode::OperatorPending {
+                vim.sub_mode = VimSubMode::Normal;
+            }
+            vim.reset_pending();
+            return VimOutcome::Consumed;
+        }
+    };
+    vim.last_find = Some((kind, target));
+    let motion = Motion::FindChar(target, kind);
+
+    // Operator target (`df(`): multiply the leading and inter-motion counts
+    // exactly like the other operator motions.  A find can only be armed
+    // behind a Delete/Change/Yank (indent ops route through
+    // `feed_indent_pending`, which never arms a find), so `operator_kind` is
+    // always `Some` when `pending_op` is set here.
+    if let Some(operator) = vim.pending_op.and_then(operator_kind) {
+        let count = vim
+            .count
+            .unwrap_or(1)
+            .saturating_mul(vim.motion_count.unwrap_or(1))
+            .clamp(1, COUNT_CAP);
+        let range = resolve_motion_range(motion, count, editor.cursor.offset, &editor.buffer);
+        run_operator(vim, editor, operator, range, vh, vw);
+        return VimOutcome::Consumed;
+    }
+
+    // Plain motion: a Normal cursor move or a Visual selection extend.  Per
+    // the invariant above the operator branch always fires when `pending_op`
+    // is set, so we should never still be OperatorPending here — but fail
+    // safe back to Normal rather than linger in a half-consumed operator if
+    // that ever changes (e.g. a future operator without an `operator_kind`).
+    if vim.sub_mode == VimSubMode::OperatorPending {
+        vim.sub_mode = VimSubMode::Normal;
+    }
+    apply_motion(editor, motion, count_of(vim), vh, vw, visual);
+    vim.reset_pending();
+    VimOutcome::Consumed
+}
+
 /// Map a key to one of the offset-only Normal/Visual motions, or `None`.
 fn motion_for(c: char) -> Option<Motion> {
     Some(match c {
@@ -593,6 +693,9 @@ fn motion_for(c: char) -> Option<Motion> {
         '^' => Motion::LineFirstNonBlank,
         '$' => Motion::LineEnd,
         'G' => Motion::DocEnd,
+        '{' => Motion::ParagraphBackward,
+        '}' => Motion::ParagraphForward,
+        '%' => Motion::MatchingPair,
         _ => return None,
     })
 }
@@ -605,6 +708,28 @@ fn operator_motion_for(c: char) -> Option<Motion> {
         'h' => Some(Motion::Left),
         'l' => Some(Motion::Right),
         _ => motion_for(c),
+    }
+}
+
+/// Map `f`/`F`/`t`/`T` to its [`FindKind`], or `None`.
+fn find_kind_for(c: char) -> Option<FindKind> {
+    Some(match c {
+        'f' => FindKind::Forward,
+        'F' => FindKind::Backward,
+        't' => FindKind::ForwardTill,
+        'T' => FindKind::BackwardTill,
+        _ => return None,
+    })
+}
+
+/// The reversed find direction, for `,` (replay the last find the other
+/// way): `f`↔`F`, `t`↔`T`.
+fn reverse_find(kind: FindKind) -> FindKind {
+    match kind {
+        FindKind::Forward => FindKind::Backward,
+        FindKind::Backward => FindKind::Forward,
+        FindKind::ForwardTill => FindKind::BackwardTill,
+        FindKind::BackwardTill => FindKind::ForwardTill,
     }
 }
 
@@ -685,11 +810,19 @@ fn apply_motion(
     vw: usize,
     visual: bool,
 ) {
+    let target = resolve_motion(motion, count, editor.cursor.offset, &editor.buffer);
+    move_to_offset(editor, target, vh, vw, visual);
+}
+
+/// Move the cursor to an already-resolved `target` offset and run the
+/// shared post-move bookkeeping; in Visual, extend the selection to the new
+/// position instead of clearing it.  Shared by `apply_motion` and the
+/// `;`/`,` find-repeat path (which resolves its own target).
+fn move_to_offset(editor: &mut EditorState, target: usize, vh: usize, vw: usize, visual: bool) {
     ensure_editing(editor);
     if !visual {
         clear_selection(editor);
     }
-    let target = resolve_motion(motion, count, editor.cursor.offset, &editor.buffer);
     editor.cursor.offset = target.min(editor.buffer.len_chars());
     editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
     after_move(editor, vh, vw);
