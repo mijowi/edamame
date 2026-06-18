@@ -114,6 +114,13 @@ impl VimState {
         self.pending_text_object = None;
     }
 
+    /// Whether the active sub-mode is VisualLine — drives the render-path
+    /// `visual_line_mode` line-expansion and the App-layer clipboard
+    /// widening.
+    pub fn is_visual_line(&self) -> bool {
+        self.sub_mode == VimSubMode::VisualLine
+    }
+
     /// Short uppercase badge for the status bar.
     pub fn mode_label(&self) -> &'static str {
         match self.sub_mode {

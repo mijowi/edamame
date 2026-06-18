@@ -27,14 +27,17 @@
 //! work as plain motions, as operator targets (`df(`, `d}`, `d%`), and as
 //! Visual-selection extensions.
 
+use std::ops::Range;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::config::Action;
 use crate::document::{EditDelta, Selection};
 use crate::editor::vim_ops::{
     doubled_line_range, execute_operator, first_non_blank, indent_lines, join_lines, paste,
-    replace_char, resolve_find_repeat, resolve_motion, resolve_motion_range, toggle_case,
-    vertical_line_range, FindKind, Motion, OpRange, Operator,
+    replace_char, replace_char_range, replace_range_with, resolve_find_repeat, resolve_motion,
+    resolve_motion_range, set_case_range, toggle_case, toggle_case_range, vertical_line_range,
+    visual_line_bounds, visual_line_char_range, FindKind, Motion, OpRange, OpResult, Operator,
 };
 use crate::editor::{edit_ops, EditorState, Mode};
 
@@ -151,12 +154,14 @@ fn feed_normal(
 
 // ── Visual / Visual-Line ──────────────────────────────────────────────────────
 
-/// CP2 Visual handling: motions extend the shared `selection`; `Esc`
-/// leaves Visual back to Normal and clears the selection.  Operators,
-/// `o` (swap ends), and the `v`↔`V` toggle land in CP6, so other keys
-/// are swallowed (Consumed) without effect.  `Ctrl-*` chords still pass
-/// through, so `Ctrl-C` copies the highlighted span via the existing
-/// clipboard action.
+/// Visual handling: motions extend the shared `selection`; `Esc` leaves
+/// Visual back to Normal and clears the selection.  CP6 wires the Visual
+/// commands — the operators `d`/`x`/`y`/`c`/`s`/`>`/`<`/`~`/`J`, `o` (swap
+/// ends), and the `v`↔`V` toggle — intercepted ahead of the shared
+/// motion path so motions still extend the selection while a command key
+/// acts on it.  `Ctrl-*` chords still pass through, so `Ctrl-C` copies the
+/// highlighted span via the existing clipboard action (VisualLine copy/cut
+/// is widened to whole lines at the App dispatch layer).
 fn feed_visual(
     vim: &mut VimState,
     editor: &mut EditorState,
@@ -164,8 +169,12 @@ fn feed_visual(
     vh: usize,
     vw: usize,
 ) -> VimOutcome {
-    // A pending `f`/`F`/`t`/`T` is awaiting its target char (Visual has no
-    // operators yet, so this only ever extends the selection).
+    // A pending Visual `r{c}` is awaiting its replacement char.
+    if vim.pending_replace {
+        return feed_visual_replace_char(vim, editor, key, vh, vw);
+    }
+    // A pending `f`/`F`/`t`/`T` is awaiting its target char (this only ever
+    // extends the selection — Visual operators act on the existing span).
     if let Some(kind) = vim.pending_find {
         return feed_find_char(vim, editor, kind, key, vh, vw, /*visual=*/ true);
     }
@@ -177,7 +186,13 @@ fn feed_visual(
             exit_visual(vim, editor);
             VimOutcome::Consumed
         }
-        KeyCode::Char(c) => feed_command_char(vim, editor, c, vh, vw, /*visual=*/ true),
+        KeyCode::Char(c) => match feed_visual_command(vim, editor, c, vh, vw) {
+            // A Visual command (operator / swap / toggle) acted on the
+            // selection; otherwise fall through to the shared motion / count
+            // / find / `gg` path so motions extend the selection.
+            Some(out) => out,
+            None => feed_command_char(vim, editor, c, vh, vw, /*visual=*/ true),
+        },
         // Arrow keys mirror `h j k l` in Visual: extend the selection
         // rather than passing through to the default handler (which would
         // move the cursor *and* clear the selection).
@@ -203,6 +218,268 @@ fn exit_visual(vim: &mut VimState, editor: &mut EditorState) {
     vim.visual_anchor = None;
     vim.reset_pending();
     editor.selection = None;
+}
+
+/// Visual-mode command keys: the operators, `o` (swap ends), and the
+/// `v`/`V` toggle.  Returns `Some(outcome)` when `c` is a Visual command;
+/// `None` lets the shared motion / count / find / `gg` path handle it (so
+/// motions still extend the selection and counts accumulate).
+fn feed_visual_command(
+    vim: &mut VimState,
+    editor: &mut EditorState,
+    c: char,
+    vh: usize,
+    vw: usize,
+) -> Option<VimOutcome> {
+    match c {
+        'd' | 'x' => run_visual_operator(vim, editor, Operator::Delete, vh, vw),
+        'y' => run_visual_operator(vim, editor, Operator::Yank, vh, vw),
+        'c' | 's' => run_visual_operator(vim, editor, Operator::Change, vh, vw),
+        '>' => run_visual_indent(vim, editor, /*right=*/ true, vh, vw),
+        '<' => run_visual_indent(vim, editor, /*right=*/ false, vh, vw),
+        '~' => run_visual_toggle_case(vim, editor, vh, vw),
+        // `u` / `U`: force the selection to lower / upper case (in Visual,
+        // `u` is *not* undo — that's a Normal-only key).
+        'u' => run_visual_set_case(vim, editor, /*upper=*/ false, vh, vw),
+        'U' => run_visual_set_case(vim, editor, /*upper=*/ true, vh, vw),
+        'J' => run_visual_join(vim, editor, vh, vw),
+        // `p` / `P`: replace the selection with the unnamed register.
+        'p' | 'P' => run_visual_paste(vim, editor, vh, vw),
+        // `r{c}`: arm the replace and wait for the target char (resolved by
+        // `feed_visual_replace_char`).  Stays in Visual until then.
+        'r' => {
+            vim.pending_replace = true;
+            return Some(VimOutcome::Pending);
+        }
+        'o' => swap_visual_ends(vim, editor, vh, vw),
+        // `v` / `V`: pressing the *current* mode's key exits to Normal; the
+        // other key switches between charwise and linewise, keeping the
+        // anchor and selection (a lossless toggle — `selection` is never
+        // snapped).
+        'v' => toggle_visual_mode(vim, editor, /*line=*/ false),
+        'V' => toggle_visual_mode(vim, editor, /*line=*/ true),
+        _ => return None,
+    }
+    Some(VimOutcome::Consumed)
+}
+
+/// Run `f` with the active Visual selection.  If the selection is somehow
+/// absent (it never should be while in a Visual sub-mode), bail to Normal via
+/// `exit_visual` instead — so every Visual command that needs the span shares
+/// one early-exit rather than repeating it.  `Selection` is `Copy`, so the
+/// closure receives it by value alongside fresh `&mut` borrows.
+fn with_selection(
+    vim: &mut VimState,
+    editor: &mut EditorState,
+    f: impl FnOnce(&mut VimState, &mut EditorState, Selection),
+) {
+    let Some(sel) = editor.selection else {
+        exit_visual(vim, editor);
+        return;
+    };
+    f(vim, editor, sel);
+}
+
+/// Run a `d`/`y`/`c` operator over the current Visual selection, then leave
+/// Visual.  Charwise Visual uses the raw `selection.range()` span (so the
+/// edit matches the highlight exactly — see §2.6); VisualLine widens to
+/// whole lines via the shared `visual_line_bounds` helper and yanks
+/// linewise.  `c`/`s` enter Insert; everything else returns to Normal.
+fn run_visual_operator(
+    vim: &mut VimState,
+    editor: &mut EditorState,
+    op: Operator,
+    vh: usize,
+    vw: usize,
+) {
+    with_selection(vim, editor, |vim, editor, sel| {
+        let range = if vim.sub_mode == VimSubMode::VisualLine {
+            let (first, last) = visual_line_bounds(&sel, &editor.buffer);
+            OpRange::Lines { first, last }
+        } else {
+            let (lo, hi) = sel.range();
+            OpRange::Chars(lo..hi)
+        };
+        let res = execute_operator(editor, op, range);
+        vim.visual_anchor = None;
+        editor.selection = None;
+        fold_op_result(vim, editor, res, vh, vw);
+    });
+}
+
+/// `>` / `<` in Visual: indent / outdent every line the selection touches
+/// (linewise even from charwise Visual, matching vim), then leave Visual.
+/// Indent never fills the register (it reuses the `>>` / `<<` path).
+fn run_visual_indent(
+    vim: &mut VimState,
+    editor: &mut EditorState,
+    right: bool,
+    vh: usize,
+    vw: usize,
+) {
+    with_selection(vim, editor, |vim, editor, sel| {
+        let (first, last) = visual_line_bounds(&sel, &editor.buffer);
+        let tab_width = editor.tab_width;
+        ensure_editing(editor);
+        indent_lines(editor, first, last, right, tab_width);
+        leave_visual_to_normal(vim, editor, vh, vw);
+    });
+}
+
+/// The char range a Visual *range edit* (`~`/`u`/`U`/`r`/`p`) operates on:
+/// the raw charwise `selection` span, or the line-expanded whole-line range
+/// in VisualLine (the shared `visual_line_char_range`, so the edit always
+/// matches the highlight).
+fn visual_char_range(vim: &VimState, editor: &EditorState, sel: &Selection) -> Range<usize> {
+    if vim.sub_mode == VimSubMode::VisualLine {
+        visual_line_char_range(sel, &editor.buffer)
+    } else {
+        let (lo, hi) = sel.range();
+        lo..hi
+    }
+}
+
+/// `~` in Visual: toggle the case of the selection — the charwise span, or
+/// the line-expanded range in VisualLine — as one delta, then leave Visual.
+fn run_visual_toggle_case(vim: &mut VimState, editor: &mut EditorState, vh: usize, vw: usize) {
+    with_selection(vim, editor, |vim, editor, sel| {
+        let range = visual_char_range(vim, editor, &sel);
+        ensure_editing(editor);
+        toggle_case_range(editor, range.start, range.end);
+        leave_visual_to_normal(vim, editor, vh, vw);
+    });
+}
+
+/// `u` / `U` in Visual: force the selection to lower (`upper == false`) or
+/// upper case as one delta, then leave Visual.  Operates on the charwise
+/// span or the line-expanded range, exactly like `~`.
+fn run_visual_set_case(
+    vim: &mut VimState,
+    editor: &mut EditorState,
+    upper: bool,
+    vh: usize,
+    vw: usize,
+) {
+    with_selection(vim, editor, |vim, editor, sel| {
+        let range = visual_char_range(vim, editor, &sel);
+        ensure_editing(editor);
+        set_case_range(editor, range.start, range.end, upper);
+        leave_visual_to_normal(vim, editor, vh, vw);
+    });
+}
+
+/// `p` / `P` in Visual: replace the selection with the unnamed register as a
+/// single delta, then leave Visual.  The register is left **unchanged** — a
+/// deliberate departure from vim's default (which clobbers the register with
+/// the deleted text), so the same yank can be pasted over several selections
+/// in turn (the widely-preferred behavior).  Charwise Visual replaces the raw
+/// span; VisualLine replaces the whole lines.  A charwise register dropped
+/// over whole lines gets a trailing newline so it keeps its own line.  An
+/// empty register is a no-op that still leaves Visual.
+fn run_visual_paste(vim: &mut VimState, editor: &mut EditorState, vh: usize, vw: usize) {
+    with_selection(vim, editor, |vim, editor, sel| {
+        if vim.register.text.is_empty() {
+            leave_visual_to_normal(vim, editor, vh, vw);
+            return;
+        }
+        let line_mode = vim.sub_mode == VimSubMode::VisualLine;
+        let range = visual_char_range(vim, editor, &sel);
+        // VisualLine replaces whole lines (range ends in '\n'); a charwise
+        // register has no trailing newline, so add one to keep it on its own line.
+        let text = if line_mode && !vim.register.linewise {
+            format!("{}\n", vim.register.text)
+        } else {
+            vim.register.text.clone()
+        };
+        ensure_editing(editor);
+        replace_range_with(editor, range.start, range.end, &text);
+        leave_visual_to_normal(vim, editor, vh, vw);
+    });
+}
+
+/// Resolve a pending Visual `r{c}`: replace every char in the selection (the
+/// charwise span or the line-expanded range) with the printable key `c`, then
+/// leave Visual.  A non-char key or a `Ctrl-*` chord cancels with no edit and
+/// keeps the Visual selection (vim's behavior).
+fn feed_visual_replace_char(
+    vim: &mut VimState,
+    editor: &mut EditorState,
+    key: KeyEvent,
+    vh: usize,
+    vw: usize,
+) -> VimOutcome {
+    match key.code {
+        KeyCode::Char(c) if !is_passthrough_chord(&key) => {
+            if let Some(sel) = editor.selection {
+                let range = visual_char_range(vim, editor, &sel);
+                ensure_editing(editor);
+                replace_char_range(editor, range.start, range.end, c);
+            }
+            leave_visual_to_normal(vim, editor, vh, vw);
+        }
+        // Cancel the pending replace but stay in Visual with the selection.
+        _ => vim.pending_replace = false,
+    }
+    VimOutcome::Consumed
+}
+
+/// `J` in Visual: join every line the selection touches into one (a
+/// single-line selection joins with the line below, matching vim), then
+/// leave Visual.
+fn run_visual_join(vim: &mut VimState, editor: &mut EditorState, vh: usize, vw: usize) {
+    with_selection(vim, editor, |vim, editor, sel| {
+        let (first, last) = visual_line_bounds(&sel, &editor.buffer);
+        ensure_editing(editor);
+        editor.cursor.offset = editor.buffer.line_to_char(first);
+        editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
+        // `join_lines(count)` performs `max(2, count) - 1` joins, so a
+        // single-line span (`last == first`) still joins one line below.
+        let count = (last - first + 1) as u32;
+        join_lines(editor, count);
+        leave_visual_to_normal(vim, editor, vh, vw);
+    });
+}
+
+/// `o` in Visual: swap the anchor and active ends so a following motion
+/// grows the other side.  Stays in Visual.
+fn swap_visual_ends(vim: &mut VimState, editor: &mut EditorState, vh: usize, vw: usize) {
+    if let Some(sel) = editor.selection.as_mut() {
+        std::mem::swap(&mut sel.anchor, &mut sel.active);
+        let active = sel.active;
+        vim.visual_anchor = Some(sel.anchor);
+        editor.cursor.offset = active.min(editor.buffer.len_chars());
+        editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
+        after_move(editor, vh, vw);
+    }
+    vim.reset_pending();
+}
+
+/// `v` / `V` while already in Visual: toggle between charwise and linewise,
+/// or exit to Normal when the pressed key matches the current mode.  The
+/// anchor and selection survive a switch (the line expansion is recomputed
+/// on demand, so nothing is lost).
+fn toggle_visual_mode(vim: &mut VimState, editor: &mut EditorState, line: bool) {
+    let target = if line {
+        VimSubMode::VisualLine
+    } else {
+        VimSubMode::Visual
+    };
+    if vim.sub_mode == target {
+        exit_visual(vim, editor);
+    } else {
+        vim.sub_mode = target;
+        vim.reset_pending();
+    }
+}
+
+/// Drop the Visual selection and return to Normal after a Visual edit that
+/// does not enter Insert (`>`/`<`/`~`/`J`).
+fn leave_visual_to_normal(vim: &mut VimState, editor: &mut EditorState, vh: usize, vw: usize) {
+    vim.visual_anchor = None;
+    editor.selection = None;
+    vim.reset_pending();
+    vim.sub_mode = VimSubMode::Normal;
+    after_edit(editor, vh, vw);
 }
 
 // ── Shared command dispatch ────────────────────────────────────────────────────
@@ -527,7 +804,22 @@ fn run_operator(
     vw: usize,
 ) {
     let res = execute_operator(editor, op, range);
-    // A no-op operator (empty charwise span) leaves the register untouched.
+    fold_op_result(vim, editor, res, vh, vw);
+}
+
+/// Fold an [`execute_operator`] result back into `VimState`: store the
+/// register (unless the operator covered nothing — a no-op leaves it alone),
+/// clear the in-progress parse, transition to Insert (for `c`) or Normal, and
+/// refresh the editor.  Shared by the Normal-mode `run_operator` and the
+/// Visual `run_visual_operator` so the two can't drift apart.  The Visual
+/// caller drops the selection / anchor before calling this.
+fn fold_op_result(
+    vim: &mut VimState,
+    editor: &mut EditorState,
+    res: OpResult,
+    vh: usize,
+    vw: usize,
+) {
     if !res.register_text.is_empty() {
         vim.register = VimRegister {
             text: res.register_text,

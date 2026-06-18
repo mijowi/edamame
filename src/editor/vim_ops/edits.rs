@@ -3,7 +3,10 @@
 //! that mutate the buffer directly: `r{c}` (replace), `~` (toggle case),
 //! `J` (join lines), and `>>`/`<<` (indent / outdent).  `x`/`X`/`D`/`C`/`Y`
 //! are expressed via `execute_operator` in `vim_feed`, and `u`/`Ctrl-R`
-//! reuse the existing undo/redo path, so they don't appear here.  See
+//! reuse the existing undo/redo path, so they don't appear here.  CP6 adds
+//! the Visual-mode range edits: `toggle_case_range` (`~`), `set_case_range`
+//! (`u`/`U` force-case), `replace_char_range` (`r{c}`), and
+//! `replace_range_with` (`p` paste-over).  See
 //! `docs/vim-implementation-plan.md` §2.4.
 //!
 //! Every primitive issues a *single* [`EditDelta`] so the whole command is
@@ -148,6 +151,113 @@ pub fn toggle_case(editor: &mut EditorState, count: u32) {
     editor.update_cursor_block();
 }
 
+/// Toggle the case of every character in `[start, end)` as a single delta,
+/// leaving the cursor at `start`.  Used by Visual-mode `~`, where the range
+/// is the highlighted span (charwise) or the line-expanded range (VisualLine).
+/// Non-cased characters (including any newline inside the range) pass through
+/// unchanged; a range with nothing to toggle records no delta.
+pub fn toggle_case_range(editor: &mut EditorState, start: usize, end: usize) {
+    let len = editor.buffer.len_chars();
+    let start = start.min(len);
+    let end = end.min(len);
+    if start >= end {
+        return;
+    }
+    let removed = editor.buffer.slice_to_string(start, end);
+    let inserted: String = removed.chars().map(toggle_case_char).collect();
+    if inserted == removed {
+        return; // nothing cased in the range
+    }
+    editor.apply_delta(EditDelta {
+        offset: start,
+        removed,
+        inserted,
+    });
+    editor.cursor.offset = start;
+    editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
+    editor.update_cursor_block();
+}
+
+/// Force the case of every character in `[start, end)` to lower
+/// (`upper == false`) or upper (`upper == true`) as a single delta, leaving
+/// the cursor at `start`.  Used by Visual-mode `u` / `U`.  Newlines and
+/// already-correct / non-cased characters pass through unchanged; a range
+/// with nothing to change records no delta.
+pub fn set_case_range(editor: &mut EditorState, start: usize, end: usize, upper: bool) {
+    let len = editor.buffer.len_chars();
+    let start = start.min(len);
+    let end = end.min(len);
+    if start >= end {
+        return;
+    }
+    let removed = editor.buffer.slice_to_string(start, end);
+    let inserted: String = removed.chars().map(|c| force_case_char(c, upper)).collect();
+    if inserted == removed {
+        return; // nothing to recase in the range
+    }
+    editor.apply_delta(EditDelta {
+        offset: start,
+        removed,
+        inserted,
+    });
+    editor.cursor.offset = start;
+    editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
+    editor.update_cursor_block();
+}
+
+/// Visual-mode `r{c}`: replace every character in `[start, end)` with `c` as a
+/// single delta, preserving any newlines inside the range (so a multi-line
+/// selection keeps its line breaks, matching vim).  The cursor lands at
+/// `start`.  An empty range records no delta.
+pub fn replace_char_range(editor: &mut EditorState, start: usize, end: usize, c: char) {
+    let len = editor.buffer.len_chars();
+    let start = start.min(len);
+    let end = end.min(len);
+    if start >= end {
+        return;
+    }
+    let removed = editor.buffer.slice_to_string(start, end);
+    let inserted: String = removed
+        .chars()
+        .map(|ch| if ch == '\n' { '\n' } else { c })
+        .collect();
+    editor.apply_delta(EditDelta {
+        offset: start,
+        removed,
+        inserted,
+    });
+    editor.cursor.offset = start;
+    editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
+    editor.update_cursor_block();
+}
+
+/// Visual-mode `p`: replace `[start, end)` with `text` as a single delta,
+/// landing the cursor on the last inserted char (vim's charwise-paste
+/// convention).  `text` is the register contents, already normalized by the
+/// caller (a trailing newline appended when a charwise register is dropped
+/// over whole lines).  A no-op when both the range and `text` are empty.
+pub fn replace_range_with(editor: &mut EditorState, start: usize, end: usize, text: &str) {
+    let len = editor.buffer.len_chars();
+    let start = start.min(len);
+    let end = end.min(len);
+    if start >= end && text.is_empty() {
+        return;
+    }
+    let removed = editor.buffer.slice_to_string(start, end);
+    let inserted_chars = text.chars().count();
+    editor.apply_delta(EditDelta {
+        offset: start,
+        removed,
+        inserted: text.to_owned(),
+    });
+    editor.cursor.offset = (start + inserted_chars)
+        .saturating_sub(1)
+        .max(start)
+        .min(editor.buffer.len_chars());
+    editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
+    editor.update_cursor_block();
+}
+
 /// Swap the case of a single character; leave non-cased characters as-is.
 fn toggle_case_char(c: char) -> char {
     if c.is_uppercase() {
@@ -156,6 +266,16 @@ fn toggle_case_char(c: char) -> char {
         c.to_uppercase().next().unwrap_or(c)
     } else {
         c
+    }
+}
+
+/// Force a single character to upper (`upper`) or lower case; leave non-cased
+/// characters as-is.
+fn force_case_char(c: char, upper: bool) -> char {
+    if upper {
+        c.to_uppercase().next().unwrap_or(c)
+    } else {
+        c.to_lowercase().next().unwrap_or(c)
     }
 }
 

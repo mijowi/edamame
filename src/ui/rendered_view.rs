@@ -91,6 +91,11 @@ pub struct RenderedView<'a> {
     /// after the handles are painted.  `None` when no relevant drag is
     /// active.
     pub drop_indicator: Option<crate::ui::table_view::DropIndicator>,
+    /// True in vim VisualLine sub-mode: the charwise `selection` is widened
+    /// to whole lines (via `vim_ops::visual_line_char_range`) purely for the
+    /// overlay paint, so the highlight covers full rows.  `selection` itself
+    /// is never snapped — see `docs/vim-implementation-plan.md` §2.6.
+    pub visual_line_mode: bool,
 }
 
 impl<'a> StatefulWidget for RenderedView<'a> {
@@ -367,7 +372,12 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // Selection: compute the selected raw byte range once; per-line overlay
         // logic will intersect it with each line's byte range.
         let selection_bytes = editor.selection.map(|s| {
-            let (sa, sb) = s.range();
+            let (sa, sb) = if self.visual_line_mode {
+                let r = crate::editor::vim_ops::visual_line_char_range(&s, &editor.buffer);
+                (r.start, r.end)
+            } else {
+                s.range()
+            };
             let rope = editor.buffer.rope();
             (rope.char_to_byte(sa), rope.char_to_byte(sb))
         });

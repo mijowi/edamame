@@ -523,6 +523,19 @@ impl App {
             self.dispatch_search_action(safe, doc_height, doc_width);
             return;
         }
+        // VisualLine `Ctrl-C` / `Ctrl-X`: copy/cut the line-expanded range so
+        // the clipboard matches the highlighted rows (§2.6).  The widening
+        // goes through the one shared `visual_line_char_range` helper that the
+        // render and operator paths use, so the three can never disagree.
+        // `selection` itself is never snapped — Copy restores the charwise
+        // span so a continued Visual session keeps its true anchor; Cut
+        // removes the lines and leaves Visual.
+        if matches!(action, Action::Copy | Action::Cut)
+            && self.vim.as_ref().is_some_and(|v| v.is_visual_line())
+        {
+            self.dispatch_visual_line_clipboard(action, doc_height, doc_width);
+            return;
+        }
         let handled = self.handle_app_action(&action, doc_height, doc_width);
         if !handled {
             // Diff mode owns its own dispatch — checked *before* the
@@ -559,6 +572,45 @@ impl App {
                 self.follow_link(target, doc_height, doc_width);
             }
         }
+    }
+
+    /// Copy or cut a vim VisualLine selection: widen it to whole lines for
+    /// the clipboard write (matching the on-screen highlight), without ever
+    /// snapping the persistent charwise `selection`.  `Copy` restores the
+    /// original span afterwards (the user may keep extending in Visual);
+    /// `Cut` deletes the lines and exits Visual, since the selected content
+    /// is gone.  `EditorState` / `edit_ops` stay vim-agnostic — the widening
+    /// lives entirely here.
+    fn dispatch_visual_line_clipboard(
+        &mut self,
+        action: Action,
+        doc_height: usize,
+        doc_width: usize,
+    ) {
+        let Some(sel) = self.editor.selection else {
+            return;
+        };
+        let range = crate::editor::vim_ops::visual_line_char_range(&sel, &self.editor.buffer);
+        let widened = crate::document::Selection {
+            anchor: range.start,
+            active: range.end,
+        };
+        self.editor.selection = Some(widened);
+        let is_cut = matches!(action, Action::Cut);
+        edit_ops::apply(&mut self.editor, action, doc_height, doc_width);
+        if is_cut {
+            // The lines are gone; drop back to Normal.
+            if let Some(vim) = self.vim.as_mut() {
+                vim.sub_mode = crate::input::VimSubMode::Normal;
+                vim.visual_anchor = None;
+            }
+            self.editor.selection = None;
+        } else {
+            // Copy left the buffer untouched — restore the charwise span so
+            // the highlight and a continued Visual session stay correct.
+            self.editor.selection = Some(sel);
+        }
+        self.needs_draw = true;
     }
 
     /// Shared free-scroll arms for the diff and search flow
