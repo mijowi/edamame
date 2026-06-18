@@ -36,6 +36,7 @@ impl WelcomeModal {
                 config.images.enabled,
                 config.images.remote_policy,
                 config.diagrams.enabled,
+                config.modal.handler == "vim",
             ),
             fingerprint: caps.fingerprint(),
         })
@@ -110,6 +111,7 @@ impl WelcomeModal {
         let images = self.state.images;
         let remote = self.state.remote;
         let diagrams = self.state.diagrams;
+        let use_vim = self.state.use_vim;
         let dont_show_again = self.state.dont_show_again;
         let image_capable = self.state.image_capable;
         let fingerprint = self.fingerprint.clone();
@@ -119,6 +121,10 @@ impl WelcomeModal {
                 app.config.images.remote_policy = remote;
                 app.config.diagrams.enabled = diagrams;
             }
+            // Vim is terminal-independent, so apply it unconditionally —
+            // this both persists `modal.handler` and activates / clears
+            // the running session's modal-editing state.
+            app.set_vim_enabled(use_vim);
             app.config.editor.show_welcome = !dont_show_again;
             // The welcome modal already showed the capability summary for
             // this terminal, so seed the seen-fingerprints set with it —

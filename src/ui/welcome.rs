@@ -45,18 +45,36 @@ pub enum WelcomeFocus {
     Images,
     RemoteImages,
     Diagrams,
+    VimMotions,
     ShowAgain,
     Save,
 }
 
-const FOCUS_ORDER: [WelcomeFocus; 6] = [
+const FOCUS_ORDER: [WelcomeFocus; 7] = [
     WelcomeFocus::Theme,
     WelcomeFocus::Images,
     WelcomeFocus::RemoteImages,
     WelcomeFocus::Diagrams,
+    WelcomeFocus::VimMotions,
     WelcomeFocus::ShowAgain,
     WelcomeFocus::Save,
 ];
+
+impl WelcomeFocus {
+    /// Position of this variant within [`FOCUS_ORDER`] — the single
+    /// source of truth shared by Tab navigation and the `focus_offsets`
+    /// slot each render pass writes to.  Using this instead of literal
+    /// indices means inserting a new focusable row only requires editing
+    /// `FOCUS_ORDER`; the offset assignments can never drift out of sync.
+    /// Panics if a variant is missing from `FOCUS_ORDER`, which
+    /// `every_focus_variant_is_ordered` guards against at test time.
+    fn order_index(self) -> usize {
+        FOCUS_ORDER
+            .iter()
+            .position(|f| *f == self)
+            .expect("every WelcomeFocus must appear in FOCUS_ORDER")
+    }
+}
 
 /// Outcome of dispatching a key/click to the welcome modal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +97,10 @@ pub struct WelcomeState {
     pub images: ImagesEnabled,
     pub remote: RemoteImagePolicy,
     pub diagrams: DiagramsEnabled,
+    /// "Use Vim motions" toggle.  Default `false` — when checked, Save
+    /// flips `config.modal.handler` to `"vim"` and activates modal
+    /// editing for the running session.
+    pub use_vim: bool,
     /// "Don't show this again" toggle.  Default `true` per spec — Save
     /// writes `show_welcome = false` (the modal won't reappear on next
     /// launch) unless the user opts back in by unchecking this box.
@@ -104,13 +126,16 @@ pub struct WelcomeState {
     pub images_pill_rects: [Option<Rect>; 3],
     pub remote_pill_rects: [Option<Rect>; 3],
     pub diagrams_pill_rects: [Option<Rect>; 3],
+    pub vim_rect: Option<Rect>,
     pub show_again_rect: Option<Rect>,
     pub save_button_rect: Option<Rect>,
 
     /// Body-relative y of each focusable row, captured each render so
     /// focus moves can scroll the focused element back into view.
     /// Indexed by position in `FOCUS_ORDER` — array length is tied to
-    /// `FOCUS_ORDER.len()` so the two can't drift.
+    /// `FOCUS_ORDER.len()`, and both the render writes and the Tab reads
+    /// resolve their slot through `WelcomeFocus::order_index`, so the two
+    /// can't drift.
     focus_offsets: [u16; FOCUS_ORDER.len()],
 
     // ── Capability summary, captured at construction ──
@@ -125,12 +150,14 @@ impl WelcomeState {
         images: ImagesEnabled,
         remote: RemoteImagePolicy,
         diagrams: DiagramsEnabled,
+        use_vim: bool,
     ) -> Self {
         Self {
             focused: WelcomeFocus::Theme,
             images,
             remote,
             diagrams,
+            use_vim,
             dont_show_again: true,
             image_capable: caps.image_protocol.is_some(),
             pre_cascade_remote: None,
@@ -140,6 +167,7 @@ impl WelcomeState {
             images_pill_rects: [None, None, None],
             remote_pill_rects: [None, None, None],
             diagrams_pill_rects: [None, None, None],
+            vim_rect: None,
             show_again_rect: None,
             save_button_rect: None,
             focus_offsets: [0; FOCUS_ORDER.len()],
@@ -261,6 +289,7 @@ impl WelcomeState {
             KeyCode::Char(' ') => {
                 match self.focused {
                     WelcomeFocus::ShowAgain => self.dont_show_again = !self.dont_show_again,
+                    WelcomeFocus::VimMotions => self.use_vim = !self.use_vim,
                     WelcomeFocus::Theme => return WelcomeResponse::OpenThemePicker,
                     WelcomeFocus::Save => return WelcomeResponse::Save,
                     WelcomeFocus::Images | WelcomeFocus::RemoteImages | WelcomeFocus::Diagrams => {
@@ -274,6 +303,10 @@ impl WelcomeState {
                 WelcomeFocus::Save => WelcomeResponse::Save,
                 WelcomeFocus::ShowAgain => {
                     self.dont_show_again = !self.dont_show_again;
+                    WelcomeResponse::Continue
+                }
+                WelcomeFocus::VimMotions => {
+                    self.use_vim = !self.use_vim;
                     WelcomeResponse::Continue
                 }
                 _ => WelcomeResponse::Continue,
@@ -307,6 +340,11 @@ impl WelcomeState {
         if rect_contains(self.show_again_rect, col, row) {
             self.focused = WelcomeFocus::ShowAgain;
             self.dont_show_again = !self.dont_show_again;
+            return WelcomeResponse::Continue;
+        }
+        if rect_contains(self.vim_rect, col, row) {
+            self.focused = WelcomeFocus::VimMotions;
+            self.use_vim = !self.use_vim;
             return WelcomeResponse::Continue;
         }
         if self.image_capable {
@@ -374,7 +412,8 @@ everything else stays formatted; RAW has no formatting. \n\
 • Mouse, image, and Mermaid diagram support, depending on your terminal's capabilities\n\
 • GitHub Flavored Markdown, including tables, task lists, and more, plus highlights\n\
 • Bottom bar with status and contextual hints\n\
-• Command palette for access to commands and settings (Ctrl-P)";
+• Command palette for access to commands and settings (Ctrl-P)\n\
+• Vim mode — optional Vim-style editing (see docs for what's supported)";
 /// Hint shown below the capability summary when any capability is
 /// degraded.  Wrapped at body inner width at render time.
 const DEGRADED_HINT: &str = "  ✗ — Consider upgrading to a modern terminal, \
@@ -427,9 +466,10 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         //  1                 current theme line
         //  2                 switch theme button + spacer below
         //  3 * 3             three tri-state sections (row + explanation + spacer)
+        //  3                 vim-motions toggle (row + explanation + spacer)
         //  1                 footer (toggle + Save)
         let cap_rows = state.cap_summary.rows.len() as u16;
-        let natural_height = 1 + para_rows + 1 + 1 + cap_rows + hint_rows + 1 + 1 + 2 + 9 + 1;
+        let natural_height = 1 + para_rows + 1 + 1 + cap_rows + hint_rows + 1 + 1 + 2 + 9 + 3 + 1;
 
         let content = ContentSize {
             width: CONTENT_WIDTH,
@@ -637,11 +677,11 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             width: button_w,
             height: 1,
         });
-        state.focus_offsets[0] = y;
+        state.focus_offsets[WelcomeFocus::Theme.order_index()] = y;
         y += 2;
 
         // ── Tri-state rows ──────────────────────────────────────────
-        state.focus_offsets[1] = y;
+        state.focus_offsets[WelcomeFocus::Images.order_index()] = y;
         let images_rects = render_tristate(
             &mut scratch,
             scratch_rect,
@@ -665,7 +705,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         );
         y += 2;
 
-        state.focus_offsets[2] = y;
+        state.focus_offsets[WelcomeFocus::RemoteImages.order_index()] = y;
         let remote_disabled = !state.image_capable || state.remote_locked_by_images();
         let remote_rects = render_tristate(
             &mut scratch,
@@ -690,7 +730,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         );
         y += 2;
 
-        state.focus_offsets[3] = y;
+        state.focus_offsets[WelcomeFocus::Diagrams.order_index()] = y;
         let diagrams_rects = render_tristate(
             &mut scratch,
             scratch_rect,
@@ -709,6 +749,58 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             y,
             body_w,
             "Render mermaid code blocks as inline diagrams.",
+            muted_style,
+            self.theme,
+        );
+        y += 2;
+
+        // ── Vim motions toggle ──────────────────────────────────────
+        let vim_focused = state.focused == WelcomeFocus::VimMotions;
+        let vim_label_style = if vim_focused {
+            self.theme.modal_button_focused
+        } else {
+            self.theme.modal_item
+        };
+        let vim_glyph_style = if vim_focused {
+            self.theme.modal_button_focused
+        } else if state.use_vim {
+            self.theme.modal_item_selected_unfocused
+        } else {
+            self.theme.modal_item
+        };
+        let vim_glyph = if state.use_vim { "[x]" } else { "[ ]" };
+        let vim_suffix = " Vim mode";
+        let vim_w = (vim_glyph.chars().count() + vim_suffix.chars().count()) as u16;
+        Paragraph::new("").style(self.theme.modal_bg).render(
+            Rect {
+                x: body_x,
+                y,
+                width: body_w,
+                height: 1,
+            },
+            &mut scratch,
+        );
+        let vim_area = Rect {
+            x: body_x,
+            y,
+            width: vim_w,
+            height: 1,
+        };
+        Paragraph::new(Line::from(vec![
+            Span::styled(vim_glyph.to_owned(), vim_glyph_style),
+            Span::styled(vim_suffix.to_owned(), vim_label_style),
+        ]))
+        .style(self.theme.modal_bg)
+        .render(vim_area, &mut scratch);
+        state.vim_rect = Some(vim_area);
+        state.focus_offsets[WelcomeFocus::VimMotions.order_index()] = y;
+        y += 1;
+        render_explanation(
+            &mut scratch,
+            body_x,
+            y,
+            body_w,
+            "Enable Vim-style modal editing",
             muted_style,
             self.theme,
         );
@@ -770,7 +862,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         .style(self.theme.modal_bg)
         .render(toggle_area, &mut scratch);
         state.show_again_rect = Some(toggle_area);
-        state.focus_offsets[4] = y;
+        state.focus_offsets[WelcomeFocus::ShowAgain.order_index()] = y;
 
         let save_area = Rect {
             x: save_x,
@@ -782,7 +874,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             .style(self.theme.modal_bg)
             .render(save_area, &mut scratch);
         state.save_button_rect = Some(save_area);
-        state.focus_offsets[5] = y;
+        state.focus_offsets[WelcomeFocus::Save.order_index()] = y;
 
         // ── Blit visible window of scratch into the body ────────────
         // Retarget `scratch`'s area so its (scroll..scroll+visible_h)
@@ -811,6 +903,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         state.theme_button_rect = translate_rect(state.theme_button_rect, body, scroll);
         state.save_button_rect = translate_rect(state.save_button_rect, body, scroll);
         state.show_again_rect = translate_rect(state.show_again_rect, body, scroll);
+        state.vim_rect = translate_rect(state.vim_rect, body, scroll);
         for r in state.images_pill_rects.iter_mut() {
             *r = translate_rect(*r, body, scroll);
         }
@@ -1156,6 +1249,7 @@ mod tests {
             ImagesEnabled::Ask,
             RemoteImagePolicy::Ask,
             DiagramsEnabled::Ask,
+            false,
         )
     }
 
@@ -1168,8 +1262,9 @@ mod tests {
             KeyCode::Tab,
             crossterm::event::KeyModifiers::NONE,
         ));
-        // Image rows are disabled (no protocol) — skip to ShowAgain.
-        assert_eq!(s.focused, WelcomeFocus::ShowAgain);
+        // Image rows are disabled (no protocol) — skip to the always-on
+        // vim-motions toggle.
+        assert_eq!(s.focused, WelcomeFocus::VimMotions);
     }
 
     #[test]
@@ -1224,6 +1319,34 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert_eq!(r, WelcomeResponse::Save);
+    }
+
+    #[test]
+    fn space_toggles_vim_motions() {
+        let caps = caps_full();
+        let mut s = make_state(&caps);
+        assert!(!s.use_vim, "vim motions default off");
+        s.focused = WelcomeFocus::VimMotions;
+        s.handle_key(&KeyEvent::new(
+            KeyCode::Char(' '),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(s.use_vim);
+        s.handle_key(&KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(!s.use_vim, "Enter toggles back off");
+    }
+
+    #[test]
+    fn every_focus_variant_is_ordered() {
+        // `order_index` panics if a variant is absent from `FOCUS_ORDER`,
+        // so resolving each one is the guard that keeps the render writes
+        // and Tab reads addressing the same `focus_offsets` slots.
+        for (i, f) in FOCUS_ORDER.iter().enumerate() {
+            assert_eq!(f.order_index(), i, "{f:?} resolves to its FOCUS_ORDER slot");
+        }
     }
 
     #[test]
