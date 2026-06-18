@@ -23,12 +23,14 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::config::Action;
 use crate::document::{EditDelta, Selection};
 use crate::editor::vim_ops::{
-    doubled_line_range, execute_operator, first_non_blank, paste, resolve_motion,
-    resolve_motion_range, vertical_line_range, Motion, OpRange, Operator,
+    doubled_line_range, execute_operator, first_non_blank, indent_lines, join_lines, paste,
+    replace_char, resolve_motion, resolve_motion_range, toggle_case, vertical_line_range, Motion,
+    OpRange, Operator,
 };
-use crate::editor::{EditorState, Mode};
+use crate::editor::{edit_ops, EditorState, Mode};
 
 use super::state::{PendingOp, VimRegister, VimState, VimSubMode, COUNT_CAP};
 
@@ -103,6 +105,12 @@ fn feed_normal(
     vh: usize,
     vw: usize,
 ) -> VimOutcome {
+    // `r{c}`: the previous key was `r`; this key is the replacement.  A
+    // plain printable char replaces; anything else (Esc, an arrow, a
+    // `Ctrl-*` chord) cancels the pending replace with no edit.
+    if vim.pending_replace {
+        return feed_replace_char(vim, editor, key, vh, vw);
+    }
     if is_passthrough_chord(&key) {
         // The chord fires its app action via the default handler; a
         // half-typed operator / count must not linger behind it (`d`
@@ -321,6 +329,30 @@ fn feed_command_char(
                 paste_register(vim, editor, count, /*after=*/ false, vh, vw);
                 vim.reset_pending();
             }
+            // `r{c}`: arm the replace and wait for the next key; keep the
+            // accumulated count (`3rx` replaces three chars).
+            'r' => {
+                vim.pending_replace = true;
+                return VimOutcome::Pending;
+            }
+            '~' => {
+                toggle_case(editor, count);
+                after_edit(editor, vh, vw);
+                vim.reset_pending();
+            }
+            'J' => {
+                join_lines(editor, count);
+                after_edit(editor, vh, vw);
+                vim.reset_pending();
+            }
+            // `u`: undo, reusing the existing history path (so dirty / list
+            // bookkeeping match a normal undo).  `count` repeats it (`3u`).
+            'u' => {
+                for _ in 0..count {
+                    edit_ops::apply(editor, Action::Undo, vh, vw);
+                }
+                vim.reset_pending();
+            }
             'i' => {
                 enter_insert(vim, editor);
                 vim.reset_pending();
@@ -388,6 +420,12 @@ fn feed_operator_pending(
         return VimOutcome::Pending;
     }
 
+    // Indent operators (`>>` / `<<`) are linewise and never touch the
+    // register, so they take their own path rather than `execute_operator`.
+    if matches!(op, PendingOp::IndentRight | PendingOp::IndentLeft) {
+        return feed_indent_pending(vim, editor, op, c, vh, vw);
+    }
+
     // `dgg`: first `g` is pending, resolved on the next key by
     // `feed_command_char`'s `pending_g` arm (which sees `pending_op`).
     if c == 'g' {
@@ -395,12 +433,9 @@ fn feed_operator_pending(
         return VimOutcome::Pending;
     }
 
-    let Some(operator) = operator_kind(op) else {
-        // IndentRight / IndentLeft land in CP4; until then, cancel.
-        vim.sub_mode = VimSubMode::Normal;
-        vim.reset_pending();
-        return VimOutcome::Consumed;
-    };
+    // Only `Delete`/`Change`/`Yank` reach here — the indent operators
+    // returned above via `feed_indent_pending`, so `operator_kind` is `Some`.
+    let operator = operator_kind(op).expect("indent operators handled before this point");
 
     // `[count1] op [count2] motion` multiplies the two counts.
     let count = vim
@@ -488,6 +523,63 @@ fn paste_register(
     after_edit(editor, vh, vw);
 }
 
+/// Operator-pending dispatch for the indent operators (`>`/`<`).  CP4 wires
+/// the doubled forms `>>` / `<<` (over `count` lines); any other following
+/// key cancels (operator+motion indent like `>j` is out of CP4 scope, and
+/// Visual `>`/`<` arrive in CP6).
+fn feed_indent_pending(
+    vim: &mut VimState,
+    editor: &mut EditorState,
+    op: PendingOp,
+    c: char,
+    vh: usize,
+    vw: usize,
+) -> VimOutcome {
+    let right = op == PendingOp::IndentRight;
+    // Doubled operator (`>>` / `<<`): indent `count` lines from the cursor,
+    // multiplying the leading and inter-operator counts like other operators.
+    if operator_for(c) == Some(op) {
+        let count = vim
+            .count
+            .unwrap_or(1)
+            .saturating_mul(vim.motion_count.unwrap_or(1))
+            .clamp(1, COUNT_CAP);
+        if let OpRange::Lines { first, last } =
+            doubled_line_range(&editor.buffer, editor.cursor.offset, count)
+        {
+            let tab_width = editor.tab_width;
+            ensure_editing(editor);
+            indent_lines(editor, first, last, right, tab_width);
+            after_edit(editor, vh, vw);
+        }
+    }
+    // Doubled or not, the sequence is finished: back to Normal, parse cleared.
+    vim.sub_mode = VimSubMode::Normal;
+    vim.reset_pending();
+    VimOutcome::Consumed
+}
+
+/// Resolve a pending `r{c}`: replace `count` chars with the printable key
+/// `c`.  Esc / arrows / `Ctrl-*` chords cancel with no edit.
+fn feed_replace_char(
+    vim: &mut VimState,
+    editor: &mut EditorState,
+    key: KeyEvent,
+    vh: usize,
+    vw: usize,
+) -> VimOutcome {
+    if let KeyCode::Char(c) = key.code {
+        if !is_passthrough_chord(&key) {
+            let count = count_of(vim);
+            ensure_editing(editor);
+            replace_char(editor, c, count);
+            after_edit(editor, vh, vw);
+        }
+    }
+    vim.reset_pending();
+    VimOutcome::Consumed
+}
+
 /// Map a key to one of the offset-only Normal/Visual motions, or `None`.
 fn motion_for(c: char) -> Option<Motion> {
     Some(match c {
@@ -516,13 +608,14 @@ fn operator_motion_for(c: char) -> Option<Motion> {
     }
 }
 
-/// Map an operator key to its `PendingOp`, or `None`.  `>`/`<` (indent)
-/// land in CP4.
+/// Map an operator key to its `PendingOp`, or `None`.
 fn operator_for(c: char) -> Option<PendingOp> {
     match c {
         'd' => Some(PendingOp::Delete),
         'c' => Some(PendingOp::Change),
         'y' => Some(PendingOp::Yank),
+        '>' => Some(PendingOp::IndentRight),
+        '<' => Some(PendingOp::IndentLeft),
         _ => None,
     }
 }

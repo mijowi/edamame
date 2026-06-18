@@ -6,11 +6,13 @@
 //! the walking skeleton: `h j k l` motion, `i a I A` Insert entries,
 //! `Esc` transitions, count accumulation, and the Normal/Insert
 //! passthrough contract.  CP2 adds the core motions (`w e b W E B 0 ^ $
-//! gg G`), the `o`/`O` open-line entries, and `v`/`V` Visual entry.
+//! gg G`), the `o`/`O` open-line entries, and `v`/`V` Visual entry.  CP3
+//! adds the operator+motion reducer; CP4 adds the remaining Normal
+//! primitives (`r{c} ~ >> << J u`, and `Ctrl-R` redo via the keymap).
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use edamame::config::Theme;
+use edamame::config::{Action, KeyBindingOverrides, KeyMap, Theme};
 use edamame::document::{Buffer, Selection};
 use edamame::editor::{EditorState, Mode};
 use edamame::input::{vim_feed, VimOutcome, VimState, VimSubMode};
@@ -40,6 +42,10 @@ fn esc() -> KeyEvent {
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+fn ctrl(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
 fn feed(vim: &mut VimState, st: &mut EditorState, key: KeyEvent) -> VimOutcome {
@@ -1027,7 +1033,10 @@ fn passthrough_chord_clears_a_partial_count() {
     feed(&mut vim, &mut st, ctrl_s);
     assert_eq!(vim.count, None);
     feed(&mut vim, &mut st, ch('l'));
-    assert_eq!(st.cursor.offset, 1, "the stale count did not repeat the move");
+    assert_eq!(
+        st.cursor.offset, 1,
+        "the stale count did not repeat the move"
+    );
 }
 
 #[test]
@@ -1039,4 +1048,273 @@ fn invalid_operator_target_cancels_without_editing() {
     assert_eq!(out, VimOutcome::Consumed);
     assert_eq!(vim.sub_mode, VimSubMode::Normal);
     assert_eq!(st.buffer.contents(), "hello", "an invalid target is inert");
+}
+
+// ── CP4: replace (`r{c}`) ───────────────────────────────────────────────────────
+
+#[test]
+fn r_replaces_the_char_under_the_cursor() {
+    let mut st = state("abc");
+    let mut vim = VimState::default();
+    assert_eq!(feed(&mut vim, &mut st, ch('r')), VimOutcome::Pending);
+    assert!(vim.pending_replace);
+    feed(&mut vim, &mut st, ch('x'));
+    assert_eq!(st.buffer.contents(), "xbc");
+    assert_eq!(st.cursor.offset, 0, "cursor stays on the replaced char");
+    assert!(!vim.pending_replace, "replace consumed the pending state");
+}
+
+#[test]
+fn r_with_count_replaces_multiple_chars() {
+    let mut st = state("abcde");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('3'));
+    feed(&mut vim, &mut st, ch('r'));
+    feed(&mut vim, &mut st, ch('z'));
+    assert_eq!(st.buffer.contents(), "zzzde");
+    assert_eq!(
+        st.cursor.offset, 2,
+        "cursor lands on the last replaced char"
+    );
+}
+
+#[test]
+fn r_is_a_noop_when_fewer_chars_remain_than_count() {
+    let mut st = state("ab");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('3'));
+    feed(&mut vim, &mut st, ch('r'));
+    feed(&mut vim, &mut st, ch('x'));
+    assert_eq!(st.buffer.contents(), "ab", "not enough room → no edit");
+}
+
+#[test]
+fn r_never_replaces_across_the_newline() {
+    // `2r` on the last char of a line would need a char from the next line;
+    // vim refuses (a `r` never touches the newline).
+    let mut st = state("ab\ncd");
+    let mut vim = VimState::default();
+    st.cursor.offset = 1; // on 'b'
+    feed(&mut vim, &mut st, ch('2'));
+    feed(&mut vim, &mut st, ch('r'));
+    feed(&mut vim, &mut st, ch('x'));
+    assert_eq!(
+        st.buffer.contents(),
+        "ab\ncd",
+        "no spill onto the next line"
+    );
+}
+
+#[test]
+fn r_then_esc_cancels_without_editing() {
+    let mut st = state("abc");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('r'));
+    let out = feed(&mut vim, &mut st, esc());
+    assert_eq!(out, VimOutcome::Consumed);
+    assert!(!vim.pending_replace);
+    assert_eq!(st.buffer.contents(), "abc", "Esc aborts the replace");
+}
+
+// ── CP4: toggle case (`~`) ───────────────────────────────────────────────────────
+
+#[test]
+fn tilde_toggles_case_and_advances() {
+    let mut st = state("aBc");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('~'));
+    assert_eq!(st.buffer.contents(), "ABc");
+    assert_eq!(st.cursor.offset, 1, "~ advances past the toggled char");
+}
+
+#[test]
+fn tilde_with_count_toggles_a_run() {
+    let mut st = state("aBcD");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('3'));
+    feed(&mut vim, &mut st, ch('~'));
+    assert_eq!(st.buffer.contents(), "AbCD");
+    assert_eq!(st.cursor.offset, 3);
+}
+
+#[test]
+fn tilde_clamps_to_the_line_content() {
+    // A count larger than the remaining chars toggles only to the line end.
+    let mut st = state("aB\ncd");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('9'));
+    feed(&mut vim, &mut st, ch('~'));
+    assert_eq!(st.buffer.contents(), "Ab\ncd", "stops before the newline");
+}
+
+#[test]
+fn tilde_passes_non_cased_chars_through_unchanged() {
+    // The `.` in the middle has no case; it is left as-is while the cased
+    // chars around it still toggle, and the cursor still advances past it.
+    let mut st = state("a.B");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('3'));
+    feed(&mut vim, &mut st, ch('~'));
+    assert_eq!(st.buffer.contents(), "A.b", "non-cased char untouched");
+    assert_eq!(st.cursor.offset, 3, "cursor advances over the whole run");
+}
+
+// ── CP4: join (`J`) ──────────────────────────────────────────────────────────────
+
+#[test]
+fn j_joins_the_next_line_with_a_space() {
+    let mut st = state("foo\nbar");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('J'));
+    assert_eq!(st.buffer.contents(), "foo bar");
+    assert_eq!(st.cursor.offset, 3, "cursor lands on the join column");
+}
+
+#[test]
+fn j_strips_leading_whitespace_of_the_joined_line() {
+    let mut st = state("foo\n    bar");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('J'));
+    assert_eq!(
+        st.buffer.contents(),
+        "foo bar",
+        "one space, indent stripped"
+    );
+}
+
+#[test]
+fn j_with_count_joins_multiple_lines_in_one_undo() {
+    let mut st = state("a\nb\nc");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('3'));
+    feed(&mut vim, &mut st, ch('J'));
+    assert_eq!(st.buffer.contents(), "a b c");
+    assert_eq!(st.history.undo_depth(), 1, "3J is a single undo unit");
+    st.history.undo(&mut st.buffer);
+    assert_eq!(st.buffer.contents(), "a\nb\nc");
+}
+
+#[test]
+fn j_on_the_last_line_is_a_noop() {
+    let mut st = state("only");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('J'));
+    assert_eq!(st.buffer.contents(), "only", "nothing below to join");
+}
+
+// ── CP4: indent / outdent (`>>` / `<<`) ──────────────────────────────────────────
+
+#[test]
+fn double_indent_adds_a_tab_width_of_spaces() {
+    let mut st = state("foo");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('>'));
+    assert_eq!(vim.sub_mode, VimSubMode::OperatorPending);
+    feed(&mut vim, &mut st, ch('>'));
+    assert_eq!(st.buffer.contents(), "    foo");
+    assert_eq!(st.cursor.offset, 4, "cursor on the first non-blank");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+}
+
+#[test]
+fn double_outdent_strips_a_tab_width_of_spaces() {
+    let mut st = state("    foo");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('<'));
+    feed(&mut vim, &mut st, ch('<'));
+    assert_eq!(st.buffer.contents(), "foo");
+}
+
+#[test]
+fn indent_then_outdent_round_trips() {
+    let mut st = state("foo\nbar");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('>'));
+    feed(&mut vim, &mut st, ch('>'));
+    assert_eq!(st.buffer.contents(), "    foo\nbar");
+    feed(&mut vim, &mut st, ch('<'));
+    feed(&mut vim, &mut st, ch('<'));
+    assert_eq!(st.buffer.contents(), "foo\nbar");
+}
+
+#[test]
+fn indent_with_count_spans_lines_in_one_undo() {
+    let mut st = state("a\nb\nc");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('3'));
+    feed(&mut vim, &mut st, ch('>'));
+    feed(&mut vim, &mut st, ch('>'));
+    assert_eq!(st.buffer.contents(), "    a\n    b\n    c");
+    assert_eq!(st.history.undo_depth(), 1, "3>> is a single undo unit");
+}
+
+#[test]
+fn outdent_of_a_flush_line_is_a_noop() {
+    let mut st = state("foo");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('<'));
+    feed(&mut vim, &mut st, ch('<'));
+    assert_eq!(st.buffer.contents(), "foo");
+    assert_eq!(st.history.undo_depth(), 0, "no delta recorded");
+}
+
+#[test]
+fn outdent_strips_a_single_leading_tab() {
+    // A leading tab counts as one indent step regardless of tab_width.
+    let mut st = state("\tfoo");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('<'));
+    feed(&mut vim, &mut st, ch('<'));
+    assert_eq!(st.buffer.contents(), "foo", "the leading tab is removed");
+}
+
+#[test]
+fn indent_leaves_blank_lines_within_the_range_empty() {
+    // `3>>` spans a blank middle line; vim never indents an empty line, so
+    // it stays empty while the surrounding content lines are indented.
+    let mut st = state("a\n\nc");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('3'));
+    feed(&mut vim, &mut st, ch('>'));
+    feed(&mut vim, &mut st, ch('>'));
+    assert_eq!(
+        st.buffer.contents(),
+        "    a\n\n    c",
+        "blank line untouched"
+    );
+}
+
+// ── CP4: undo / redo (`u` / `Ctrl-R`) ────────────────────────────────────────────
+
+#[test]
+fn u_undoes_the_last_change() {
+    let mut st = state("foo");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('>'));
+    feed(&mut vim, &mut st, ch('>'));
+    assert_eq!(st.buffer.contents(), "    foo");
+    feed(&mut vim, &mut st, ch('u'));
+    assert_eq!(st.buffer.contents(), "foo", "u reverts the indent");
+}
+
+#[test]
+fn ctrl_r_passes_through_for_the_keymap_to_redo() {
+    // Vim claims no `Ctrl-R`; it falls through to the default keymap, which
+    // CP4 binds to Redo.  The reducer must report `Passthrough`.
+    let mut st = state("foo");
+    let mut vim = VimState::default();
+    assert_eq!(feed(&mut vim, &mut st, ctrl('r')), VimOutcome::Passthrough);
+}
+
+#[test]
+fn ctrl_r_is_bound_to_redo_in_the_default_keymap() {
+    // The binding fires in both default and vim mode (vim passes through to
+    // this same keymap).  Ctrl-Shift-Z stays bound to Redo as well.
+    let km = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+    assert_eq!(km.action_for(&ctrl('r')), Some(&Action::Redo));
+    let ctrl_shift_z = KeyEvent::new(
+        KeyCode::Char('z'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
+    assert_eq!(km.action_for(&ctrl_shift_z), Some(&Action::Redo));
 }

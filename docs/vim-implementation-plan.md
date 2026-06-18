@@ -2,7 +2,7 @@
 
 Implementation reference for adding Vim-style modal editing to edamame. Companion to [`vim-feature-prompt.md`](vim-feature-prompt.md) (the requirements/scope). This document records the agreed architecture, the locked design decisions, the module layout, and the checkpoint roadmap.
 
-Status: **in progress** — CP1 (walking skeleton), CP2 (core motions & mode entries), and CP3 (operator+motion reducer) complete; CP4 next.
+Status: **in progress** — CP1 (walking skeleton), CP2 (core motions & mode entries), CP3 (operator+motion reducer), and CP4 (remaining Normal primitives) complete; CP5 next.
 
 ---
 
@@ -344,10 +344,17 @@ Build `resolve_motion_range` + `execute_operator`; the vim `VimRegister`.
 > - **Single delta per operator** (Risk #2) holds: `execute_operator` issues exactly one `apply_delta`, verified by the `3dw`/`dd` single-undo tests.  **vim special cases implemented:** `cw`/`cW` → `ce`/`cE` on a non-blank (keeps the trailing space); `dw` on the last word of a line clamps to the line end (never joins lines); linewise delete of the final line consumes the *preceding* newline so no blank line is left; `cc` clears the line(s) but keeps one empty line and enters Insert.  **Deferred:** `NG` (count-to-line `G`) — `G` still ignores its count; not in the CP3 test list.  Ordered-list renumber after `dd` is left for CP10 per §2.5.
 > - **Counts multiply** across `[count1]op[count2]motion` (`2d3w` = 6 words), both orderings tested.  `VimSubMode::OperatorPending` lost its `#[allow(dead_code)]` (now constructed); `PendingOp`'s allow was narrowed to the `IndentRight`/`IndentLeft` variants (CP4).  Tests: 29 new pure-function reducer tests in `tests/vim.rs` (64 total) plus 9 `resolve_motion_range`/range-helper unit tests in `motion.rs`.
 
-### CP4 — Remaining Normal primitives  *(risk: LOW)*  — needs CP3
+### CP4 — Remaining Normal primitives  *(risk: LOW)*  — needs CP3 — ✅ **DONE**
 `r{c} ~ >> << J u Ctrl-R`. `u` maps to `Action::Undo`; `Ctrl-R` works via passthrough once `bind!("ctrl+r", Action::Redo)` is added to the default keymap (§2.7) — no vim-specific claim. The rest mutate via `vim_ops::edits`.
 **Sanity:** `r` replaces a char; `~` toggles case; `>>` indents; `J` joins; `Ctrl-R` redoes.
 **Tests:** each primitive; `>>`/`<<` round-trip; `Ctrl-R` redo via the new keymap binding (fires in both default and vim mode).
+
+> **Implementation notes (CP4):**
+> - **`r` needed a pending-key field not in the §2.2 sketch.** `r{c}` waits one key for the replacement char, but the locked `VimState` had no slot for it (the §2.3 sequence examples assume an `f`/`t`-style pending-char mechanism that the struct never spelled out). Added a minimal `pending_replace: bool`, cleared by `reset_pending` and on `Esc`/arrows/`Ctrl-*` (which cancel with no edit). CP5's `f F t T` will want a richer pending-find state; `pending_replace` is the narrow CP4-only version of that, replaced/generalized then.
+> - **`u`/`Ctrl-R` reuse the existing history path, no new edit code.** `u` calls `edit_ops::apply(editor, Action::Undo, …)` directly from the reducer (input layer → editor layer, allowed), honoring a count (`3u`). `Ctrl-R` is a `Ctrl-*` chord, so it already returns `Passthrough`; the only change is the new `bind!("ctrl+r", Action::Redo)` in the default keymap (lands here per §2.7). `first_key_for(Redo)` is now ambiguous between `Ctrl-Shift-Z` and `Ctrl-R` (the keymap is a `HashMap`), but no test or hint advertises Redo's chord, so the keybinds-overlay display is unaffected.
+> - **`>>`/`<<` bypass `execute_operator`.** Indent is linewise and must **not** touch the register, so it takes its own `vim_ops::edits::indent_lines` path rather than the `Delete/Change/Yank` operator machinery. `>`/`<` enter `OperatorPending` via the extended `operator_for`; a new `feed_indent_pending` arm handles the doubled `>>`/`<<` (with counts, `3>>`) and cancels on any other following key. **Operator+motion indent (`>j`, `>G`) is deliberately out of CP4 scope** — only the doubled form ships, matching §1's `>> <<` surface; Visual `>`/`<` is CP6. Indent adds `tab_width` spaces to non-blank lines (blank lines stay empty, vim-style); outdent strips up to `tab_width` leading spaces or one leading tab; a no-op outdent records no delta. List-aware indenting stays deferred to CP10 (§2.5), like `o` list-continuation.
+> - **Single delta per primitive** holds for the multi-line / multi-char forms: `3>>`, `3J`, and `3rx` each issue exactly one `apply_delta` (one `u`), verified by the single-undo tests. `J`'s multi-line join builds the whole replacement as one delta rather than N per-line joins. `~` advances the cursor past the toggled run (clamped to the line content); `J` lands the cursor on the first join column.
+> - **`PendingOp`'s `#[allow(dead_code)]` removed** (its `IndentRight`/`IndentLeft` variants are now constructed). Tests: 20 new pure-function reducer tests in `tests/vim.rs` (92 total), including a keymap assertion that `Ctrl-R` (and `Ctrl-Shift-Z`) map to `Redo`.
 
 ### CP5 — Find & pair motions  *(risk: LOW)*  — needs CP2
 `f F t T` + `; ,` repeat; `{ }` paragraph; `%` matching pair. Entirely inside `vim_feed` + `motion.rs`.
