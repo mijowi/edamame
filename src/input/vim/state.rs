@@ -17,11 +17,6 @@
 pub const COUNT_CAP: u32 = 9999;
 
 /// Vim sub-mode — orthogonal to `EditorState::mode` (the rendering axis).
-///
-/// `Visual` / `VisualLine` are constructed from CP2; `OperatorPending`
-/// is first constructed in CP3, so the binary crate would otherwise flag
-/// it as dead until then.
-#[allow(dead_code)] // OperatorPending variant lands in CP3
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VimSubMode {
     #[default]
@@ -35,7 +30,11 @@ pub enum VimSubMode {
 }
 
 /// Operator awaiting a motion / text object (`d c y >> <<`).
-#[allow(dead_code)] // operators are wired in CP3
+///
+/// `Delete` / `Change` / `Yank` are wired in CP3; `IndentRight` /
+/// `IndentLeft` (`>>` / `<<`) land in CP4, so the binary crate would flag
+/// those two as never-constructed until then.
+#[allow(dead_code)] // IndentRight / IndentLeft land in CP4
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingOp {
     Delete,
