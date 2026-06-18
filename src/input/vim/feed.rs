@@ -26,6 +26,12 @@
 //! the paragraph motions `{ }`, and the matching-pair motion `%`.  All
 //! work as plain motions, as operator targets (`df(`, `d}`, `d%`), and as
 //! Visual-selection extensions.
+//!
+//! CP7 adds the text objects `iw aw iW aW`, the quote pairs `i"/a" i'/a'
+//! i\`/a\``, and the bracket pairs `i(/a( i[/a[ i{/a{`.  An `i`/`a` behind
+//! an operator (or in Visual) arms a pending object; the next key resolves
+//! it via `vim_ops::resolve_text_object_range` and either runs the operator
+//! (`diw`, `ci(`) or sets the Visual selection (`viw`).
 
 use std::ops::Range;
 
@@ -36,8 +42,9 @@ use crate::document::{EditDelta, Selection};
 use crate::editor::vim_ops::{
     doubled_line_range, execute_operator, first_non_blank, indent_lines, join_lines, paste,
     replace_char, replace_char_range, replace_range_with, resolve_find_repeat, resolve_motion,
-    resolve_motion_range, set_case_range, toggle_case, toggle_case_range, vertical_line_range,
-    visual_line_bounds, visual_line_char_range, FindKind, Motion, OpRange, OpResult, Operator,
+    resolve_motion_range, resolve_text_object_range, set_case_range, toggle_case,
+    toggle_case_range, vertical_line_range, visual_line_bounds, visual_line_char_range, FindKind,
+    Motion, OpRange, OpResult, Operator, TextObject,
 };
 use crate::editor::{edit_ops, EditorState, Mode};
 
@@ -125,6 +132,11 @@ fn feed_normal(
     if let Some(kind) = vim.pending_find {
         return feed_find_char(vim, editor, kind, key, vh, vw, /*visual=*/ false);
     }
+    // A pending text object — `i`/`a` was pressed behind an operator (`di`,
+    // `ca`) and this key is the object char (`w`, `(`, `"`, …).
+    if let Some(inner) = vim.pending_text_object {
+        return feed_text_object(vim, editor, inner, key, vh, vw, /*visual=*/ false);
+    }
     if is_passthrough_chord(&key) {
         // The chord fires its app action via the default handler; a
         // half-typed operator / count must not linger behind it (`d`
@@ -177,6 +189,11 @@ fn feed_visual(
     // extends the selection — Visual operators act on the existing span).
     if let Some(kind) = vim.pending_find {
         return feed_find_char(vim, editor, kind, key, vh, vw, /*visual=*/ true);
+    }
+    // A pending text object — `i`/`a` was pressed and this key is the object
+    // char; in Visual it sets the selection to the object's range.
+    if let Some(inner) = vim.pending_text_object {
+        return feed_text_object(vim, editor, inner, key, vh, vw, /*visual=*/ true);
     }
     if is_passthrough_chord(&key) {
         return VimOutcome::Passthrough;
@@ -249,6 +266,12 @@ fn feed_visual_command(
         // `feed_visual_replace_char`).  Stays in Visual until then.
         'r' => {
             vim.pending_replace = true;
+            return Some(VimOutcome::Pending);
+        }
+        // `i` / `a`: arm a text object (`viw`, `va(`); the next key (the
+        // object char) sets the selection via `feed_text_object`.
+        'i' | 'a' => {
+            vim.pending_text_object = Some(c == 'i');
             return Some(VimOutcome::Pending);
         }
         'o' => swap_visual_ends(vim, editor, vh, vw),
@@ -787,7 +810,15 @@ fn feed_operator_pending(
         return VimOutcome::Consumed;
     }
 
-    // Text objects (`iw`, `i(`, …) land in CP7; any other key cancels.
+    // Text objects (`diw`, `ci(`, …): `i`/`a` arm the object and wait for the
+    // object char, resolved by `feed_text_object` (checked at the top of
+    // `feed_normal`, since `sub_mode` is still OperatorPending here).
+    if c == 'i' || c == 'a' {
+        vim.pending_text_object = Some(c == 'i');
+        return VimOutcome::Pending;
+    }
+
+    // Any other key cancels the operator (vim's behavior).
     vim.sub_mode = VimSubMode::Normal;
     vim.reset_pending();
     VimOutcome::Consumed
@@ -895,8 +926,29 @@ fn feed_indent_pending(
     VimOutcome::Consumed
 }
 
+/// Cancel a pending sub-state (`r{c}`, an `f`/`t` find, or an `i`/`a` text
+/// object) because `key` is not the input it was awaiting.  A `Ctrl-*` chord
+/// still fires its app action (`Passthrough`, mirroring the bare-operator
+/// chord path in `feed_normal`); every other cancelling key (`Esc`, an arrow,
+/// a stray letter) is swallowed (`Consumed`).  Either way the in-progress
+/// operator / count is dropped and `OperatorPending` falls back to Normal so
+/// the next key starts a clean command.  In Visual the selection is left
+/// intact (`sub_mode` is `Visual`, never `OperatorPending`, so it is untouched).
+fn cancel_pending(vim: &mut VimState, key: &KeyEvent) -> VimOutcome {
+    if vim.sub_mode == VimSubMode::OperatorPending {
+        vim.sub_mode = VimSubMode::Normal;
+    }
+    vim.reset_pending();
+    if is_passthrough_chord(key) {
+        VimOutcome::Passthrough
+    } else {
+        VimOutcome::Consumed
+    }
+}
+
 /// Resolve a pending `r{c}`: replace `count` chars with the printable key
-/// `c`.  Esc / arrows / `Ctrl-*` chords cancel with no edit.
+/// `c`.  Esc / arrows cancel with no edit; a `Ctrl-*` chord cancels and
+/// passes through so its app action still fires (see [`cancel_pending`]).
 fn feed_replace_char(
     vim: &mut VimState,
     editor: &mut EditorState,
@@ -904,23 +956,24 @@ fn feed_replace_char(
     vh: usize,
     vw: usize,
 ) -> VimOutcome {
-    if let KeyCode::Char(c) = key.code {
-        if !is_passthrough_chord(&key) {
+    match key.code {
+        KeyCode::Char(c) if !is_passthrough_chord(&key) => {
             let count = count_of(vim);
             ensure_editing(editor);
             replace_char(editor, c, count);
             after_edit(editor, vh, vw);
+            vim.reset_pending();
+            VimOutcome::Consumed
         }
+        _ => cancel_pending(vim, &key),
     }
-    vim.reset_pending();
-    VimOutcome::Consumed
 }
 
 /// Resolve a pending `f`/`F`/`t`/`T`: the previous key armed the find and
 /// `key` carries the target char.  Records the find for `;` / `,`, then
 /// either runs the pending operator over the find range (`df(`) or moves
-/// the cursor / extends the Visual selection.  A non-char key or a `Ctrl-*`
-/// chord cancels with no edit (and drops OperatorPending back to Normal).
+/// the cursor / extends the Visual selection.  A non-char key cancels with no
+/// edit; a `Ctrl-*` chord cancels and passes through (see [`cancel_pending`]).
 fn feed_find_char(
     vim: &mut VimState,
     editor: &mut EditorState,
@@ -932,13 +985,7 @@ fn feed_find_char(
 ) -> VimOutcome {
     let target = match key.code {
         KeyCode::Char(c) if !is_passthrough_chord(&key) => c,
-        _ => {
-            if vim.sub_mode == VimSubMode::OperatorPending {
-                vim.sub_mode = VimSubMode::Normal;
-            }
-            vim.reset_pending();
-            return VimOutcome::Consumed;
-        }
+        _ => return cancel_pending(vim, &key),
     };
     vim.last_find = Some((kind, target));
     let motion = Motion::FindChar(target, kind);
@@ -970,6 +1017,120 @@ fn feed_find_char(
     apply_motion(editor, motion, count_of(vim), vh, vw, visual);
     vim.reset_pending();
     VimOutcome::Consumed
+}
+
+/// Resolve a pending text object: the previous key was `i` / `a` and `key`
+/// carries the object char (`w`, `(`, `"`, …).  In Normal it runs the
+/// pending operator over the object's char range (`diw`, `ci(`); in Visual
+/// it sets the selection to the object.  A non-object key cancels with no
+/// edit; a `Ctrl-*` chord cancels and passes through so its app action still
+/// fires (see [`cancel_pending`]).  Either cancel drops OperatorPending back
+/// to Normal and leaves any Visual selection intact.
+fn feed_text_object(
+    vim: &mut VimState,
+    editor: &mut EditorState,
+    inner: bool,
+    key: KeyEvent,
+    vh: usize,
+    vw: usize,
+    visual: bool,
+) -> VimOutcome {
+    let obj = match key.code {
+        KeyCode::Char(c) if !is_passthrough_chord(&key) => text_object_for(c, inner),
+        _ => None,
+    };
+    let Some(obj) = obj else {
+        // Not a text-object char (a chord, a non-char key, or a char that
+        // names no object like `dij`): cancel, passing a chord through.
+        return cancel_pending(vim, &key);
+    };
+    let range = resolve_text_object_range(obj, editor.cursor.offset, &editor.buffer);
+
+    if visual {
+        // Set the selection to the object's span (vim's `viw` etc.).  A
+        // missing object leaves the selection as-is; an empty inner object
+        // collapses the selection to a point.
+        if let Some(r) = range {
+            select_text_object(vim, editor, r, vh, vw);
+        }
+        vim.reset_pending();
+        return VimOutcome::Consumed;
+    }
+
+    // Operator target (`diw`, `ci(`, `yi"`).  An empty inner range (e.g.
+    // `ci(` on `()`) is handled by `execute_operator`: Delete/Yank no-op,
+    // Change still enters Insert at the spot.  A missing object cancels.
+    if let Some(operator) = vim.pending_op.and_then(operator_kind) {
+        if let Some(r) = range {
+            run_operator(vim, editor, operator, OpRange::Chars(r), vh, vw);
+        } else {
+            vim.sub_mode = VimSubMode::Normal;
+            vim.reset_pending();
+        }
+        return VimOutcome::Consumed;
+    }
+
+    // Defensive: a text object with no pending operator in Normal should be
+    // unreachable (it's only armed behind an operator), but fail safe.
+    if vim.sub_mode == VimSubMode::OperatorPending {
+        vim.sub_mode = VimSubMode::Normal;
+    }
+    vim.reset_pending();
+    VimOutcome::Consumed
+}
+
+/// Install a Visual selection covering the half-open `range` of a text
+/// object, parking the cursor on its (exclusive) end.  Mirrors the charwise
+/// Visual model where `selection.range()` is the highlighted/operated span
+/// and the cursor sits at `active`.
+fn select_text_object(
+    vim: &mut VimState,
+    editor: &mut EditorState,
+    range: Range<usize>,
+    vh: usize,
+    vw: usize,
+) {
+    ensure_editing(editor);
+    let len = editor.buffer.len_chars();
+    let start = range.start.min(len);
+    let end = range.end.min(len);
+    vim.visual_anchor = Some(start);
+    editor.selection = Some(Selection {
+        anchor: start,
+        active: end,
+    });
+    editor.cursor.offset = end;
+    editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
+    after_move(editor, vh, vw);
+}
+
+/// Map an object char (after an `i`/`a` prefix) to a [`TextObject`], or
+/// `None`.  Both bracket directions resolve to the same pair, and `b`/`B`
+/// are vim's aliases for the paren / brace pairs.
+fn text_object_for(c: char, inner: bool) -> Option<TextObject> {
+    Some(match c {
+        'w' => TextObject::Word { inner, big: false },
+        'W' => TextObject::Word { inner, big: true },
+        '"' => TextObject::Quote { inner, quote: '"' },
+        '\'' => TextObject::Quote { inner, quote: '\'' },
+        '`' => TextObject::Quote { inner, quote: '`' },
+        '(' | ')' | 'b' => TextObject::Pair {
+            inner,
+            open: '(',
+            close: ')',
+        },
+        '[' | ']' => TextObject::Pair {
+            inner,
+            open: '[',
+            close: ']',
+        },
+        '{' | '}' | 'B' => TextObject::Pair {
+            inner,
+            open: '{',
+            close: '}',
+        },
+        _ => return None,
+    })
 }
 
 /// Map a key to one of the offset-only Normal/Visual motions, or `None`.

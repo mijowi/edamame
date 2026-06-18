@@ -72,15 +72,16 @@ pub enum OpRange {
 
 /// Character class for word motions.  `w`/`e`/`b` distinguish runs of
 /// "word" characters (alphanumeric + `_`) from runs of punctuation;
-/// `W`/`E`/`B` treat every non-blank character as a single class.
+/// `W`/`E`/`B` treat every non-blank character as a single class.  Shared
+/// with `text_object` (the `iw`/`aw` word objects use the same classes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Class {
+pub(crate) enum Class {
     Blank,
     Word,
     Punct,
 }
 
-fn class(c: char, big: bool) -> Class {
+pub(crate) fn class(c: char, big: bool) -> Class {
     if c.is_whitespace() {
         Class::Blank
     } else if big || c.is_alphanumeric() || c == '_' {

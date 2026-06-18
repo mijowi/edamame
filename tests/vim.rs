@@ -1933,3 +1933,288 @@ fn visual_paste_and_replace_are_single_undo_units() {
         "one undo restores both lines"
     );
 }
+
+// ── CP7: text objects ──────────────────────────────────────────────────────────
+
+#[test]
+fn diw_deletes_the_inner_word() {
+    // Cursor on "bar"; diw removes just the word, leaving the spaces.
+    let mut st = state("foo bar baz");
+    st.cursor.offset = 5;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('i'));
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.buffer.contents(), "foo  baz");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+}
+
+#[test]
+fn daw_includes_the_trailing_space() {
+    let mut st = state("foo bar baz");
+    st.cursor.offset = 4; // 'b' of bar
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('a'));
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.buffer.contents(), "foo baz");
+}
+
+#[test]
+fn ciw_changes_word_and_enters_insert() {
+    let mut st = state("foo bar");
+    st.cursor.offset = 1; // inside "foo"
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('c'));
+    feed(&mut vim, &mut st, ch('i'));
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.buffer.contents(), " bar");
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+}
+
+#[test]
+fn diw_is_a_single_undo_unit() {
+    let mut st = state("foo bar");
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('i'));
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.buffer.contents(), " bar");
+    feed(&mut vim, &mut st, ch('u'));
+    assert_eq!(
+        st.buffer.contents(),
+        "foo bar",
+        "one undo restores the word"
+    );
+}
+
+#[test]
+fn di_quote_deletes_inside_quotes() {
+    let mut st = state("say \"hi\" now");
+    st.cursor.offset = 5; // inside "hi"
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('i'));
+    feed(&mut vim, &mut st, ch('"'));
+    assert_eq!(st.buffer.contents(), "say \"\" now");
+}
+
+#[test]
+fn da_quote_deletes_quotes_and_trailing_space() {
+    let mut st = state("say \"hi\" now");
+    st.cursor.offset = 5;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('a'));
+    feed(&mut vim, &mut st, ch('"'));
+    assert_eq!(st.buffer.contents(), "say now");
+}
+
+#[test]
+fn ci_paren_changes_inside_parens() {
+    let mut st = state("f(arg)");
+    st.cursor.offset = 3; // inside "arg"
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('c'));
+    feed(&mut vim, &mut st, ch('i'));
+    feed(&mut vim, &mut st, ch('('));
+    assert_eq!(st.buffer.contents(), "f()");
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+    assert_eq!(st.cursor.offset, 2, "Insert begins between the parens");
+}
+
+#[test]
+fn da_bracket_deletes_brackets_too() {
+    let mut st = state("x[ab]y");
+    st.cursor.offset = 2;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('a'));
+    feed(&mut vim, &mut st, ch('['));
+    assert_eq!(st.buffer.contents(), "xy");
+}
+
+#[test]
+fn di_brace_works_from_a_closing_bracket() {
+    // Cursor on the closing brace resolves to its own pair.
+    let mut st = state("{ab}");
+    st.cursor.offset = 3; // on '}'
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('i'));
+    feed(&mut vim, &mut st, ch('}'));
+    assert_eq!(st.buffer.contents(), "{}");
+}
+
+#[test]
+fn ci_paren_picks_the_innermost_nested_pair() {
+    let mut st = state("(a(b)c)");
+    st.cursor.offset = 3; // 'b'
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('i'));
+    feed(&mut vim, &mut st, ch('('));
+    assert_eq!(st.buffer.contents(), "(a()c)");
+}
+
+#[test]
+fn text_object_on_a_missing_pair_is_a_noop() {
+    let mut st = state("abc");
+    st.cursor.offset = 1;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('i'));
+    feed(&mut vim, &mut st, ch('('));
+    assert_eq!(
+        st.buffer.contents(),
+        "abc",
+        "no enclosing pair → nothing deleted"
+    );
+    assert_eq!(vim.sub_mode, VimSubMode::Normal, "operator is cancelled");
+}
+
+#[test]
+fn visual_inner_word_selects_the_word() {
+    let mut st = state("foo bar");
+    st.cursor.offset = 5; // inside "bar"
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('i'));
+    feed(&mut vim, &mut st, ch('w'));
+    let sel = st.selection.expect("selection set");
+    assert_eq!(sel.range(), (4, 7), "the whole word is selected");
+    // A following `d` deletes exactly the selection.
+    feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(st.buffer.contents(), "foo ");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+}
+
+#[test]
+fn visual_inner_quote_selects_inside() {
+    let mut st = state("a \"hi\" b");
+    st.cursor.offset = 3; // inside "hi"
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('i'));
+    feed(&mut vim, &mut st, ch('"'));
+    let sel = st.selection.expect("selection set");
+    assert_eq!(sel.range(), (3, 5));
+}
+
+#[test]
+fn cancelling_a_text_object_drops_the_operator() {
+    let mut st = state("foo bar");
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('i'));
+    // Esc after the `i` prefix cancels with no edit.
+    feed(&mut vim, &mut st, esc());
+    assert_eq!(st.buffer.contents(), "foo bar");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+    assert_eq!(vim.pending_op, None);
+    assert_eq!(vim.pending_text_object, None);
+}
+
+// ── Ctrl-* chord passthrough while a sub-state is pending ───────────────────────
+
+#[test]
+fn ctrl_chord_during_a_pending_text_object_passes_through() {
+    // `di` then Ctrl-S: the operator is abandoned with no edit, and the
+    // chord passes through so its app action (Save) still fires — matching
+    // the bare-operator path where `d` then Ctrl-S also passes through.
+    let mut st = state("foo bar");
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('i'));
+    assert_eq!(feed(&mut vim, &mut st, ctrl('s')), VimOutcome::Passthrough);
+    assert_eq!(st.buffer.contents(), "foo bar", "no edit");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+    assert_eq!(vim.pending_op, None);
+    assert_eq!(vim.pending_text_object, None);
+}
+
+#[test]
+fn ctrl_chord_during_a_pending_find_passes_through() {
+    // `df` then Ctrl-S: same contract for the find pending state.
+    let mut st = state("foo bar");
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('f'));
+    assert_eq!(feed(&mut vim, &mut st, ctrl('s')), VimOutcome::Passthrough);
+    assert_eq!(st.buffer.contents(), "foo bar", "no edit");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+    assert_eq!(vim.pending_op, None);
+    assert_eq!(vim.pending_find, None);
+}
+
+#[test]
+fn ctrl_chord_during_a_pending_replace_passes_through() {
+    // `r` then Ctrl-S: the replace is abandoned and the chord passes through.
+    let mut st = state("foo bar");
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('r'));
+    assert_eq!(feed(&mut vim, &mut st, ctrl('s')), VimOutcome::Passthrough);
+    assert_eq!(st.buffer.contents(), "foo bar", "no replacement");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+    assert!(!vim.pending_replace);
+}
+
+#[test]
+fn non_chord_cancel_of_a_pending_text_object_is_still_consumed() {
+    // `di` then `j`: `j` names no object, so it cancels — but a plain key is
+    // swallowed (Consumed), not passed through, and applies no motion.
+    let mut st = state("foo bar");
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('i'));
+    assert_eq!(feed(&mut vim, &mut st, ch('j')), VimOutcome::Consumed);
+    assert_eq!(st.buffer.contents(), "foo bar");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+    assert_eq!(vim.pending_op, None);
+    assert_eq!(vim.pending_text_object, None);
+}
+
+#[test]
+fn ctrl_chord_during_a_visual_text_object_passes_through_keeping_selection() {
+    // In Visual, `vi` then Ctrl-C cancels the pending object but keeps the
+    // selection and passes the chord through (so Ctrl-C copies the span).
+    let mut st = state("foo bar");
+    st.cursor.offset = 5;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    let before = st.selection.expect("visual selection set on entry");
+    feed(&mut vim, &mut st, ch('i'));
+    assert_eq!(feed(&mut vim, &mut st, ctrl('c')), VimOutcome::Passthrough);
+    assert_eq!(vim.sub_mode, VimSubMode::Visual, "still in Visual");
+    assert_eq!(
+        st.selection.expect("selection retained"),
+        before,
+        "the selection is untouched by the cancel"
+    );
+    assert_eq!(vim.pending_text_object, None);
+}

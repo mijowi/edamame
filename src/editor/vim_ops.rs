@@ -10,13 +10,15 @@
 //! `visual` (the shared VisualLine line-expansion helper used by the render
 //! path, the Visual operators, and the system clipboard copy/cut) plus the
 //! Visual range edits in `edits` (`u`/`U` force-case, `r{c}`, `p` paste-over).
-//! Text-object, search, and
-//! ex resolution land in later checkpoints (`text_object.rs`, `search.rs`,
-//! `ex.rs`).  See `docs/vim-implementation-plan.md` §2.1.
+//! CP7 adds `text_object` (the `iw`/`aw`/quote/bracket-pair objects used by
+//! `d`/`c`/`y` and Visual).  Search and ex resolution land in later
+//! checkpoints (`search.rs`, `ex.rs`).  See
+//! `docs/vim-implementation-plan.md` §2.1.
 
 pub mod edits;
 pub mod motion;
 pub mod operator;
+pub mod text_object;
 pub mod visual;
 
 pub use edits::{
@@ -28,4 +30,5 @@ pub use motion::{
     vertical_line_range, FindKind, Motion, OpRange,
 };
 pub use operator::{execute_operator, OpResult, Operator};
+pub use text_object::{resolve_text_object_range, TextObject};
 pub use visual::{visual_line_bounds, visual_line_char_range};
