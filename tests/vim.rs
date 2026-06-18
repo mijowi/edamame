@@ -583,3 +583,460 @@ fn arrow_keys_in_normal_pass_through() {
         "Normal-mode arrows fall through to the default keymap"
     );
 }
+
+// ── Counts drive motions (CP3) ──────────────────────────────────────────────
+
+#[test]
+fn count_repeats_a_vertical_motion() {
+    let mut st = state("l0\nl1\nl2\nl3\nl4");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('3'));
+    feed(&mut vim, &mut st, ch('j'));
+    let (line, _) = st.cursor.line_col(&st.buffer);
+    assert_eq!(line, 3, "3j moves down three lines");
+    assert_eq!(vim.count, None, "count clears after the motion");
+}
+
+#[test]
+fn count_repeats_a_word_motion() {
+    let mut st = state("aa bb cc dd ee");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('3'));
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.cursor.offset, 9, "3w lands on the start of the 4th word");
+}
+
+// ── Operator + motion (CP3) ─────────────────────────────────────────────────
+
+#[test]
+fn dw_deletes_a_word() {
+    let mut st = state("foo bar baz");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.buffer.contents(), "bar baz");
+    assert_eq!(st.cursor.offset, 0);
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+}
+
+#[test]
+fn three_dw_is_a_single_undo_unit() {
+    // Risk #2: an operator must issue exactly one delta so `3dw` reverses
+    // in one `u`.
+    let mut st = state("foo bar baz qux");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('3'));
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.buffer.contents(), "qux");
+    assert_eq!(st.history.undo_depth(), 1, "3dw records exactly one delta");
+    assert!(st.history.undo(&mut st.buffer).is_some());
+    assert_eq!(st.buffer.contents(), "foo bar baz qux");
+}
+
+#[test]
+fn d2w_and_2dw_both_delete_two_words() {
+    // `[op][count][motion]` and `[count][op][motion]` are equivalent.
+    let mut a = state("a b c d");
+    let mut va = VimState::default();
+    feed(&mut va, &mut a, ch('d'));
+    feed(&mut va, &mut a, ch('2'));
+    feed(&mut va, &mut a, ch('w'));
+    assert_eq!(a.buffer.contents(), "c d");
+
+    let mut b = state("a b c d");
+    let mut vb = VimState::default();
+    feed(&mut vb, &mut b, ch('2'));
+    feed(&mut vb, &mut b, ch('d'));
+    feed(&mut vb, &mut b, ch('w'));
+    assert_eq!(b.buffer.contents(), "c d");
+}
+
+#[test]
+fn counts_multiply_across_operator_and_motion() {
+    // `2d3w` deletes 2*3 = 6 words.
+    let mut st = state("a b c d e f g h");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('2'));
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('3'));
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.buffer.contents(), "g h");
+}
+
+#[test]
+fn de_deletes_to_word_end_inclusive() {
+    let mut st = state("foo bar");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('e'));
+    assert_eq!(st.buffer.contents(), " bar", "de deletes 'foo' inclusively");
+}
+
+#[test]
+fn dollar_delete_clears_to_end_of_line() {
+    let mut st = state("hello world\nnext");
+    let mut vim = VimState::default();
+    st.cursor.offset = 6; // on 'w'
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('$'));
+    assert_eq!(st.buffer.contents(), "hello \nnext");
+}
+
+#[test]
+fn dw_on_last_word_does_not_join_lines() {
+    // vim's rule: `dw` on the final word of a line stops at the line end.
+    let mut st = state("foo\nbar");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.buffer.contents(), "\nbar");
+}
+
+// ── dd / yy / p (CP3) ───────────────────────────────────────────────────────
+
+#[test]
+fn dd_deletes_a_line_as_one_undo_unit() {
+    let mut st = state("one\ntwo\nthree");
+    let mut vim = VimState::default();
+    let l1 = st.buffer.line_to_char(1);
+    st.cursor.offset = l1; // on "two"
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(st.buffer.contents(), "one\nthree");
+    assert_eq!(st.history.undo_depth(), 1);
+    assert!(vim.register.linewise);
+    assert_eq!(vim.register.text, "two\n");
+}
+
+#[test]
+fn count_dd_deletes_multiple_lines() {
+    let mut st = state("a\nb\nc\nd");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('2'));
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(st.buffer.contents(), "c\nd");
+}
+
+#[test]
+fn dd_on_last_line_removes_trailing_line_cleanly() {
+    let mut st = state("one\ntwo");
+    let mut vim = VimState::default();
+    let l1 = st.buffer.line_to_char(1);
+    st.cursor.offset = l1;
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(st.buffer.contents(), "one", "no stray blank line remains");
+}
+
+#[test]
+fn yy_then_p_duplicates_the_line_below() {
+    let mut st = state("one\ntwo");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('y'));
+    feed(&mut vim, &mut st, ch('y'));
+    assert_eq!(st.buffer.contents(), "one\ntwo", "yank does not mutate");
+    assert!(vim.register.linewise);
+    feed(&mut vim, &mut st, ch('p'));
+    assert_eq!(st.buffer.contents(), "one\none\ntwo");
+    let (line, _) = st.cursor.line_col(&st.buffer);
+    assert_eq!(line, 1, "cursor lands on the pasted line below");
+}
+
+#[test]
+fn capital_p_pastes_a_line_above() {
+    let mut st = state("one\ntwo");
+    let mut vim = VimState::default();
+    let l1 = st.buffer.line_to_char(1);
+    st.cursor.offset = l1; // on "two"
+    feed(&mut vim, &mut st, ch('y'));
+    feed(&mut vim, &mut st, ch('y'));
+    feed(&mut vim, &mut st, ch('P'));
+    assert_eq!(st.buffer.contents(), "one\ntwo\ntwo");
+}
+
+#[test]
+fn yy_then_p_on_last_line_inserts_below() {
+    let mut st = state("only");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('y'));
+    feed(&mut vim, &mut st, ch('y'));
+    feed(&mut vim, &mut st, ch('p'));
+    assert_eq!(st.buffer.contents(), "only\nonly");
+}
+
+// ── Charwise yank / paste (CP3) ─────────────────────────────────────────────
+
+#[test]
+fn charwise_yank_and_paste_after_cursor() {
+    let mut st = state("abc");
+    let mut vim = VimState::default();
+    // yw yanks "abc" (whole word at start of line).
+    feed(&mut vim, &mut st, ch('y'));
+    feed(&mut vim, &mut st, ch('e')); // ye → "abc" inclusive
+    assert_eq!(vim.register.text, "abc");
+    assert!(!vim.register.linewise);
+    assert_eq!(st.cursor.offset, 0, "yank parks the cursor at span start");
+    feed(&mut vim, &mut st, ch('p'));
+    assert_eq!(st.buffer.contents(), "aabcbc", "p inserts after the cursor");
+}
+
+// ── cw / cc (CP3) ───────────────────────────────────────────────────────────
+
+#[test]
+fn cw_changes_word_and_enters_insert_keeping_trailing_space() {
+    // vim special case: `cw` acts like `ce`, leaving the space after.
+    let mut st = state("foo bar");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('c'));
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+    assert_eq!(st.buffer.contents(), " bar", "cw leaves the trailing space");
+    assert_eq!(st.cursor.offset, 0);
+}
+
+// `cw`/`cW` change to the end of the word the cursor is *in*, never running
+// into the next word — the regression matrix for the `CurrentWordEnd` fix.
+
+#[test]
+fn cw_on_single_char_word_changes_only_that_word() {
+    // Cursor on a single-char word is simultaneously at its start and end;
+    // `cw` must change just it, not spill into the next word.
+    let mut st = state("a b c");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('c'));
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.buffer.contents(), " b c", "cw changes only 'a'");
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+    assert_eq!(st.cursor.offset, 0);
+}
+
+#[test]
+fn cw_on_last_char_of_word_changes_only_that_char() {
+    let mut st = state("foo bar");
+    let mut vim = VimState::default();
+    st.cursor.offset = 2; // last 'o' of "foo"
+    feed(&mut vim, &mut st, ch('c'));
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.buffer.contents(), "fo bar", "cw changes only the 'o'");
+}
+
+#[test]
+fn cw_mid_word_changes_to_end_of_that_word() {
+    let mut st = state("hello world");
+    let mut vim = VimState::default();
+    st.cursor.offset = 2; // first 'l' of "hello"
+    feed(&mut vim, &mut st, ch('c'));
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.buffer.contents(), "he world", "cw changes 'llo'");
+}
+
+#[test]
+fn c2w_changes_two_words_without_overshooting() {
+    // `c2w` from a word start changes exactly two words (counting the
+    // current word as the first), not three.
+    let mut st = state("a b c d");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('c'));
+    feed(&mut vim, &mut st, ch('2'));
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.buffer.contents(), " c d", "c2w changes 'a b' only");
+}
+
+#[test]
+fn cw_on_punctuation_changes_the_punct_run() {
+    // Word-class separation: `cw` on a punctuation run changes just that
+    // run, not the following identifier.
+    let mut st = state("a->b");
+    let mut vim = VimState::default();
+    st.cursor.offset = 1; // on '-'
+    feed(&mut vim, &mut st, ch('c'));
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(st.buffer.contents(), "ab", "cw changes the '->' run");
+}
+
+#[test]
+fn capital_cw_changes_whole_bigword() {
+    // `cW` ignores punctuation: on "foo.bar baz" it changes "foo.bar".
+    let mut st = state("foo.bar baz");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('c'));
+    feed(&mut vim, &mut st, ch('W'));
+    assert_eq!(st.buffer.contents(), " baz", "cW changes the whole blob");
+}
+
+#[test]
+fn cc_clears_the_line_keeps_it_and_enters_insert() {
+    let mut st = state("one\ntwo\nthree");
+    let mut vim = VimState::default();
+    let l1 = st.buffer.line_to_char(1);
+    st.cursor.offset = l1 + 1; // inside "two"
+    feed(&mut vim, &mut st, ch('c'));
+    feed(&mut vim, &mut st, ch('c'));
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+    assert_eq!(
+        st.buffer.contents(),
+        "one\n\nthree",
+        "line kept, content cleared"
+    );
+    assert_eq!(st.cursor.offset, l1);
+}
+
+// ── D / C / Y (CP3) ─────────────────────────────────────────────────────────
+
+#[test]
+fn capital_d_deletes_to_end_of_line() {
+    let mut st = state("hello world");
+    let mut vim = VimState::default();
+    st.cursor.offset = 5; // on the space
+    feed(&mut vim, &mut st, ch('D'));
+    assert_eq!(st.buffer.contents(), "hello");
+}
+
+#[test]
+fn capital_c_changes_to_end_of_line_and_enters_insert() {
+    let mut st = state("hello world");
+    let mut vim = VimState::default();
+    st.cursor.offset = 6; // on 'w'
+    feed(&mut vim, &mut st, ch('C'));
+    assert_eq!(st.buffer.contents(), "hello ");
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+}
+
+#[test]
+fn capital_y_yanks_the_whole_line() {
+    let mut st = state("one\ntwo");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('Y'));
+    assert!(vim.register.linewise);
+    assert_eq!(vim.register.text, "one\n");
+    assert_eq!(st.buffer.contents(), "one\ntwo", "Y does not mutate");
+}
+
+// ── x / X (CP3) ─────────────────────────────────────────────────────────────
+
+#[test]
+fn x_deletes_char_under_cursor_with_count() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('x'));
+    assert_eq!(st.buffer.contents(), "ello");
+    feed(&mut vim, &mut st, ch('2'));
+    feed(&mut vim, &mut st, ch('x'));
+    assert_eq!(st.buffer.contents(), "lo", "2x removes two chars");
+    assert_eq!(vim.register.text, "el");
+}
+
+#[test]
+fn x_at_line_end_does_not_cross_the_newline() {
+    let mut st = state("ab\ncd");
+    let mut vim = VimState::default();
+    st.cursor.offset = 2; // at the newline boundary (end of "ab")
+    feed(&mut vim, &mut st, ch('x'));
+    assert_eq!(st.buffer.contents(), "ab\ncd", "x at line end is a no-op");
+}
+
+#[test]
+fn capital_x_deletes_char_before_cursor() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    st.cursor.offset = 3; // on second 'l'
+    feed(&mut vim, &mut st, ch('X'));
+    assert_eq!(st.buffer.contents(), "helo");
+    assert_eq!(st.cursor.offset, 2);
+}
+
+#[test]
+fn capital_x_at_line_start_is_a_noop() {
+    let mut st = state("ab\ncd");
+    let mut vim = VimState::default();
+    let l1 = st.buffer.line_to_char(1);
+    st.cursor.offset = l1; // start of "cd"
+    feed(&mut vim, &mut st, ch('X'));
+    assert_eq!(st.buffer.contents(), "ab\ncd", "X at line start is a no-op");
+}
+
+// ── dj / dk linewise (CP3) ──────────────────────────────────────────────────
+
+#[test]
+fn dj_deletes_two_lines() {
+    let mut st = state("a\nb\nc\nd");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('j'));
+    assert_eq!(
+        st.buffer.contents(),
+        "c\nd",
+        "dj deletes the cursor line and the next"
+    );
+}
+
+#[test]
+fn dgg_deletes_up_to_the_first_line() {
+    let mut st = state("a\nb\nc\nd");
+    let mut vim = VimState::default();
+    let l2 = st.buffer.line_to_char(2);
+    st.cursor.offset = l2; // on "c"
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('g'));
+    feed(&mut vim, &mut st, ch('g'));
+    assert_eq!(st.buffer.contents(), "d", "dgg removes lines 0..=2");
+}
+
+// ── Operator cancellation (CP3) ─────────────────────────────────────────────
+
+#[test]
+fn esc_cancels_a_pending_operator() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    assert_eq!(feed(&mut vim, &mut st, ch('d')), VimOutcome::Pending);
+    assert_eq!(vim.sub_mode, VimSubMode::OperatorPending);
+    feed(&mut vim, &mut st, esc());
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+    assert_eq!(vim.pending_op, None);
+    assert_eq!(st.buffer.contents(), "hello");
+}
+
+#[test]
+fn passthrough_chord_cancels_a_pending_operator() {
+    // `d` then a `Ctrl-*` chord: the chord falls through to the default
+    // handler, and the half-typed operator must not linger (otherwise the
+    // next key would be read as a delete target).
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(vim.sub_mode, VimSubMode::OperatorPending);
+    let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+    assert_eq!(feed(&mut vim, &mut st, ctrl_s), VimOutcome::Passthrough);
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+    assert_eq!(vim.pending_op, None);
+    // The next motion behaves as a fresh Normal-mode key, not a target.
+    feed(&mut vim, &mut st, ch('l'));
+    assert_eq!(st.cursor.offset, 1);
+    assert_eq!(st.buffer.contents(), "hello", "no edit occurred");
+}
+
+#[test]
+fn passthrough_chord_clears_a_partial_count() {
+    // A count interrupted by a chord must not survive to the next key.
+    let mut st = state("hello world");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('3'));
+    let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+    feed(&mut vim, &mut st, ctrl_s);
+    assert_eq!(vim.count, None);
+    feed(&mut vim, &mut st, ch('l'));
+    assert_eq!(st.cursor.offset, 1, "the stale count did not repeat the move");
+}
+
+#[test]
+fn invalid_operator_target_cancels_without_editing() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    let out = feed(&mut vim, &mut st, ch('z'));
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+    assert_eq!(st.buffer.contents(), "hello", "an invalid target is inert");
+}

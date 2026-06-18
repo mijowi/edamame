@@ -2,7 +2,7 @@
 
 Implementation reference for adding Vim-style modal editing to edamame. Companion to [`vim-feature-prompt.md`](vim-feature-prompt.md) (the requirements/scope). This document records the agreed architecture, the locked design decisions, the module layout, and the checkpoint roadmap.
 
-Status: **in progress** — CP1 (walking skeleton) and CP2 (core motions & mode entries) complete; CP3 next.
+Status: **in progress** — CP1 (walking skeleton), CP2 (core motions & mode entries), and CP3 (operator+motion reducer) complete; CP4 next.
 
 ---
 
@@ -331,11 +331,18 @@ New `Cursor`/`vim_ops::motion` helpers: `WordEnd` (`e`) and word-class `w/b` (vi
 > - **`o`/`O` insert a plain newline** via a single `EditDelta` (so undo is one unit) and enter Insert. List-aware continuation (marker copy / auto-renumber) and indent-copy are deferred to CP10 per §2.5.
 > - **Visual is minimal-but-coherent (a small, deliberate reach into CP6).** `v`/`V` set `sub_mode` + `visual_anchor` + the shared `EditorState::selection`; in Visual, motions *extend* the selection (update `active`) instead of clearing it, and `Esc` exits to Normal dropping the selection. This is the floor needed for "enter Visual" to mean anything — without motion-extension, entering Visual would be a dead-end demo. Arrow keys (`←↑↓→`) mirror `h k j l` in Visual (extend, not passthrough) so the two navigation styles behave identically; in Normal, arrows still pass through to the default handler. **Operators (`d/y/c/…`), `o` (swap ends), the `v`↔`V` toggle, and VisualLine full-line expansion remain CP6**; in CP2 those keys are inert (Consumed no-ops) and a VisualLine selection paints charwise. `Ctrl-*` chords still pass through in Visual.
 
-### CP3 — Operator+motion reducer  *(risk: HIGH)*  — needs CP2
+### CP3 — Operator+motion reducer  *(risk: HIGH)*  — needs CP2 — ✅ **DONE**
 Counts (`3j`, `5l`, `d2w`, `2dd`); operators `d c y` × motions; `dd yy D C Y x X`; `p P` with the linewise register.
 Build `resolve_motion_range` + `execute_operator`; the vim `VimRegister`.
 **Sanity:** `3dw` deletes 3 words as one undo; `yy` then `p` duplicates the line below; `cw` deletes word + enters Insert.
 **Tests:** `3dw` single undo; `dd`; `yy`/`p` linewise; `cw`; `D`/`C`/`Y`; `x`/`X`; count×op×motion both orderings.
+
+> **Implementation notes (CP3):**
+> - **Range resolution is an `OpRange` enum**, not the `(Range<usize>, bool)` tuple sketched in §2.4.  `OpRange::Chars(start..end)` carries a charwise span; `OpRange::Lines { first, last }` carries inclusive buffer-line indices.  Encoding linewise as line indices (rather than a char range + flag) lets `operator.rs` derive the full-line content range, the delete range (which may consume a neighboring newline), and the register text without re-deriving line boundaries from offsets — and removes the separate `bool`.  `resolve_motion_range` returns charwise spans for `w e b W E B 0 ^ $ h l` (end-inclusive for `e`/`E`) and linewise for `gg`/`G`; `vertical_line_range` / `doubled_line_range` produce the `j`/`k` and `dd` spans.
+> - **Layering: `execute_operator` does NOT take `VimState`** (the §2.4 sketch passed `vim`).  `VimState` lives in the input layer (4), above `editor::vim_ops` (5), so an editor→input dependency would invert the architecture.  Instead `execute_operator(editor, op, range)` returns an `OpResult { register_text, linewise, enter_insert }` and `feed.rs` (input layer) folds that into `vim.register` / `vim.sub_mode`.  `op` is an editor-layer `Operator { Delete, Change, Yank }`; `feed.rs` maps `PendingOp → Operator` (the indent variants return `None` until CP4).
+> - **`x X D C Y` reuse the operator machinery** rather than bespoke edits: `x`/`X` are `Delete` over `resolve_motion_range(Right/Left, …)` (clamped to the line, so `x` at line end and `X` at line start are no-ops), `D`/`C` are `Delete`/`Change` over `LineEnd`, `Y` is a doubled-yank line span.  Only `p`/`P` needed a dedicated `vim_ops::edits::paste` (charwise paste-after-cursor vs. linewise open-a-line, repeated by count, taking the register *contents* not a `VimRegister` so the editor layer stays input-free).  `r{c}`/`~`/`J`/`o`/`O` stay deferred to CP4/CP2.
+> - **Single delta per operator** (Risk #2) holds: `execute_operator` issues exactly one `apply_delta`, verified by the `3dw`/`dd` single-undo tests.  **vim special cases implemented:** `cw`/`cW` → `ce`/`cE` on a non-blank (keeps the trailing space); `dw` on the last word of a line clamps to the line end (never joins lines); linewise delete of the final line consumes the *preceding* newline so no blank line is left; `cc` clears the line(s) but keeps one empty line and enters Insert.  **Deferred:** `NG` (count-to-line `G`) — `G` still ignores its count; not in the CP3 test list.  Ordered-list renumber after `dd` is left for CP10 per §2.5.
+> - **Counts multiply** across `[count1]op[count2]motion` (`2d3w` = 6 words), both orderings tested.  `VimSubMode::OperatorPending` lost its `#[allow(dead_code)]` (now constructed); `PendingOp`'s allow was narrowed to the `IndentRight`/`IndentLeft` variants (CP4).  Tests: 29 new pure-function reducer tests in `tests/vim.rs` (64 total) plus 9 `resolve_motion_range`/range-helper unit tests in `motion.rs`.
 
 ### CP4 — Remaining Normal primitives  *(risk: LOW)*  — needs CP3
 `r{c} ~ >> << J u Ctrl-R`. `u` maps to `Action::Undo`; `Ctrl-R` works via passthrough once `bind!("ctrl+r", Action::Redo)` is added to the default keymap (§2.7) — no vim-specific claim. The rest mutate via `vim_ops::edits`.
