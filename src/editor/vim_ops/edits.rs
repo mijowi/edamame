@@ -1,11 +1,15 @@
 //! Single-key edits driven from `vim_feed`.  CP3 implements `p`/`P`
-//! (paste the unnamed register); `r{c}`, `~`, `J`, `x`/`X`, `o`/`O` land
-//! in later checkpoints (`x`/`X` are expressed via `execute_operator` in
-//! CP3, so only paste lives here for now).  See
+//! (paste the unnamed register); CP4 adds the remaining Normal primitives
+//! that mutate the buffer directly: `r{c}` (replace), `~` (toggle case),
+//! `J` (join lines), and `>>`/`<<` (indent / outdent).  `x`/`X`/`D`/`C`/`Y`
+//! are expressed via `execute_operator` in `vim_feed`, and `u`/`Ctrl-R`
+//! reuse the existing undo/redo path, so they don't appear here.  See
 //! `docs/vim-implementation-plan.md` §2.4.
 //!
-//! Paste takes the register *contents* (`text` + `linewise`) rather than a
-//! `VimRegister`, so this editor-layer module needs no `use crate::input`.
+//! Every primitive issues a *single* [`EditDelta`] so the whole command is
+//! one undo unit (`3>>`, `3J`, `3rx`).  Paste and the CP4 edits take plain
+//! values (register contents, a char, a count) rather than any vim type, so
+//! this editor-layer module needs no `use crate::input`.
 
 use crate::document::{next_grapheme_offset, EditDelta};
 use crate::editor::vim_ops::motion::{first_non_blank, line_end_offset};
@@ -92,4 +96,212 @@ fn paste_linewise(editor: &mut EditorState, text: &str, after: bool) {
     editor.cursor.offset = first_non_blank(&editor.buffer, landing_line);
     editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
     editor.update_cursor_block();
+}
+
+// ── Replace / toggle-case ───────────────────────────────────────────────────────
+
+/// `r{c}`: replace `count` characters at the cursor with `c`, in one delta.
+/// A no-op (vim beeps) when fewer than `count` characters remain on the line
+/// — `r` never replaces the trailing newline or spills onto the next line.
+/// The cursor lands on the last replaced character.
+pub fn replace_char(editor: &mut EditorState, c: char, count: u32) {
+    let count = count.max(1) as usize;
+    let cursor = editor.cursor.offset;
+    let line = editor.buffer.char_to_line(cursor);
+    let line_end = line_end_offset(&editor.buffer, line);
+    if cursor + count > line_end {
+        return; // not enough room on the line
+    }
+    let removed = editor.buffer.slice_to_string(cursor, cursor + count);
+    let inserted: String = std::iter::repeat_n(c, count).collect();
+    editor.apply_delta(EditDelta {
+        offset: cursor,
+        removed,
+        inserted,
+    });
+    editor.cursor.offset = (cursor + count - 1).min(editor.buffer.len_chars());
+    editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
+    editor.update_cursor_block();
+}
+
+/// `~`: toggle the case of `count` characters at the cursor (clamped to the
+/// line content), as one delta, then advance the cursor past them — vim's
+/// `~` behavior.  Non-cased characters pass through unchanged.
+pub fn toggle_case(editor: &mut EditorState, count: u32) {
+    let count = count.max(1) as usize;
+    let cursor = editor.cursor.offset;
+    let line = editor.buffer.char_to_line(cursor);
+    let line_end = line_end_offset(&editor.buffer, line);
+    let n = count.min(line_end.saturating_sub(cursor));
+    if n == 0 {
+        return; // at (or past) the line content end — nothing to toggle
+    }
+    let removed = editor.buffer.slice_to_string(cursor, cursor + n);
+    let inserted: String = removed.chars().map(toggle_case_char).collect();
+    editor.apply_delta(EditDelta {
+        offset: cursor,
+        removed,
+        inserted,
+    });
+    editor.cursor.offset = (cursor + n).min(line_end);
+    editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
+    editor.update_cursor_block();
+}
+
+/// Swap the case of a single character; leave non-cased characters as-is.
+fn toggle_case_char(c: char) -> char {
+    if c.is_uppercase() {
+        c.to_lowercase().next().unwrap_or(c)
+    } else if c.is_lowercase() {
+        c.to_uppercase().next().unwrap_or(c)
+    } else {
+        c
+    }
+}
+
+// ── Join ────────────────────────────────────────────────────────────────────────
+
+/// `J`: join the current line with the line(s) below it as a *single* delta
+/// (so `3J` is one undo).  A bare `J` (or `2J`) joins one line below; `3J`
+/// joins two, and so on.  Each join removes the intervening newline and the
+/// next line's leading whitespace and inserts a single separating space —
+/// unless the text before the join already ends in whitespace or the joined
+/// line is empty, in which case no space is added.  The cursor lands on the
+/// first join column (vim's convention).
+pub fn join_lines(editor: &mut EditorState, count: u32) {
+    let joins = count.max(2) as usize - 1; // 1J / 2J → 1 join; 3J → 2
+    let buf = &editor.buffer;
+    let start_line = buf.char_to_line(editor.cursor.offset);
+    let line_count = buf.line_count();
+    if start_line + 1 >= line_count {
+        return; // nothing below to join
+    }
+
+    let region_start = line_end_offset(buf, start_line);
+    let start_line_start = buf.line_to_char(start_line);
+    // Whether the text immediately before the next insert is whitespace
+    // (so no separating space is added).
+    let mut prev_is_ws = region_start == start_line_start
+        || (region_start > 0 && buf.rope().char(region_start - 1).is_whitespace());
+
+    let mut replacement = String::new();
+    let mut first_join_offset = None;
+    let mut last_consumed = start_line;
+    for step in 1..=joins {
+        let li = start_line + step;
+        if li >= line_count {
+            break;
+        }
+        last_consumed = li;
+        // Strip the joined line's leading whitespace.
+        let li_start = buf.line_to_char(li);
+        let li_end = line_end_offset(buf, li);
+        let mut content_start = li_start;
+        while content_start < li_end && matches!(buf.rope().char(content_start), ' ' | '\t') {
+            content_start += 1;
+        }
+        let content = buf.slice_to_string(content_start, li_end);
+        let is_empty = content_start >= li_end;
+        let sep = if prev_is_ws || is_empty { "" } else { " " };
+        if first_join_offset.is_none() {
+            first_join_offset = Some(region_start + replacement.chars().count());
+        }
+        replacement.push_str(sep);
+        replacement.push_str(&content);
+        prev_is_ws = content
+            .chars()
+            .next_back()
+            .is_none_or(|c| c.is_whitespace());
+    }
+
+    let region_end = line_end_offset(buf, last_consumed);
+    let removed = buf.slice_to_string(region_start, region_end);
+    editor.apply_delta(EditDelta {
+        offset: region_start,
+        removed,
+        inserted: replacement,
+    });
+    editor.cursor.offset = first_join_offset
+        .unwrap_or(region_start)
+        .min(editor.buffer.len_chars());
+    editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
+    editor.update_cursor_block();
+}
+
+// ── Indent / outdent ────────────────────────────────────────────────────────────
+
+/// `>>` / `<<`: indent (`right`) or outdent buffer lines `first..=last` by one
+/// `tab_width` step, as a single delta.  Indent prepends `tab_width` spaces to
+/// every line that holds non-blank content (blank lines stay empty, matching
+/// vim); outdent strips up to `tab_width` leading spaces, or one leading tab,
+/// per line.  The cursor lands on the first non-blank of `first`.  CP4 does
+/// the plain-indent case; list-aware indenting is wired in CP10 (§2.5).
+pub fn indent_lines(
+    editor: &mut EditorState,
+    first: usize,
+    last: usize,
+    right: bool,
+    tab_width: usize,
+) {
+    let line_count = editor.buffer.line_count();
+    if line_count == 0 {
+        return;
+    }
+    let last = last.min(line_count - 1);
+    let first = first.min(last);
+    let start = editor.buffer.line_to_char(first);
+    let end = if last + 1 < line_count {
+        editor.buffer.line_to_char(last + 1)
+    } else {
+        editor.buffer.len_chars()
+    };
+    let region = editor.buffer.slice_to_string(start, end);
+    let indent = " ".repeat(tab_width);
+    let mut out = String::with_capacity(region.len() + tab_width);
+    for line in region.split_inclusive('\n') {
+        let (content, nl) = match line.strip_suffix('\n') {
+            Some(c) => (c, "\n"),
+            None => (line, ""),
+        };
+        if right {
+            if content.chars().any(|c| !c.is_whitespace()) {
+                out.push_str(&indent);
+            }
+            out.push_str(content);
+        } else {
+            out.push_str(strip_indent(content, tab_width));
+        }
+        out.push_str(nl);
+    }
+    if out == region {
+        return; // nothing changed (e.g. outdent of already-flush lines)
+    }
+    editor.apply_delta(EditDelta {
+        offset: start,
+        removed: region,
+        inserted: out,
+    });
+    editor.cursor.offset = first_non_blank(&editor.buffer, first);
+    editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
+    editor.update_cursor_block();
+}
+
+/// Drop up to `tab_width` leading spaces, or a single leading tab, from
+/// `content`.  Returns a sub-slice (all stripped chars are single-byte).
+fn strip_indent(content: &str, tab_width: usize) -> &str {
+    let mut skip = 0;
+    for (i, c) in content.char_indices() {
+        if i >= tab_width {
+            break;
+        }
+        match c {
+            ' ' => skip = i + 1,
+            '\t' => {
+                skip = i + 1;
+                break;
+            }
+            _ => break,
+        }
+    }
+    &content[skip..]
 }

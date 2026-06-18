@@ -32,9 +32,7 @@ pub enum VimSubMode {
 /// Operator awaiting a motion / text object (`d c y >> <<`).
 ///
 /// `Delete` / `Change` / `Yank` are wired in CP3; `IndentRight` /
-/// `IndentLeft` (`>>` / `<<`) land in CP4, so the binary crate would flag
-/// those two as never-constructed until then.
-#[allow(dead_code)] // IndentRight / IndentLeft land in CP4
+/// `IndentLeft` (`>>` / `<<`) are wired in CP4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingOp {
     Delete,
@@ -94,6 +92,8 @@ pub struct VimState {
     pub motion_count: Option<u32>,
     /// First `g` of a `gg` sequence.
     pub pending_g: bool,
+    /// `r` was pressed and is awaiting the replacement character (`r{c}`).
+    pub pending_replace: bool,
     /// `Some(true)` = inner (`i`), `Some(false)` = around (`a`).
     pub pending_text_object: Option<bool>,
     /// Last `f`/`F`/`t`/`T` target, for `;` and `,`.
@@ -107,7 +107,7 @@ pub struct VimState {
 
 impl VimState {
     /// Clear the in-progress multi-key parse (counts, pending operator,
-    /// pending `g`, pending text-object).  Leaves `sub_mode`, the
+    /// pending `g`, pending `r`, pending text-object).  Leaves `sub_mode`, the
     /// register, the last-find, and any visual anchor untouched — those
     /// have lifetimes independent of a single command sequence.
     pub fn reset_pending(&mut self) {
@@ -115,6 +115,7 @@ impl VimState {
         self.pending_op = None;
         self.motion_count = None;
         self.pending_g = false;
+        self.pending_replace = false;
         self.pending_text_object = None;
     }
 
@@ -155,6 +156,7 @@ mod tests {
             pending_op: Some(PendingOp::Delete),
             motion_count: Some(2),
             pending_g: true,
+            pending_replace: true,
             pending_text_object: Some(true),
             register: VimRegister {
                 text: "x".into(),
@@ -167,6 +169,7 @@ mod tests {
         assert_eq!(v.pending_op, None);
         assert_eq!(v.motion_count, None);
         assert!(!v.pending_g);
+        assert!(!v.pending_replace);
         assert_eq!(v.pending_text_object, None);
         // Untouched.
         assert_eq!(v.sub_mode, VimSubMode::Insert);
