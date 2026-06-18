@@ -594,6 +594,28 @@ impl App {
         })
     }
 
+    /// Enable or disable vim modal editing for the running session,
+    /// keeping `config.modal.handler` and the editor mode in sync.
+    /// Mirrors the startup wiring in `App::new` so a mid-session toggle
+    /// (e.g. from the welcome modal) takes effect immediately instead of
+    /// waiting for the next launch.
+    pub(crate) fn set_vim_enabled(&mut self, enabled: bool) {
+        if enabled {
+            self.config.modal.handler = "vim".into();
+            if self.vim.is_none() {
+                self.vim = Some(VimState::default());
+            }
+            // Vim-Normal replaces Preview as the resting mode, so leave
+            // Preview behind exactly as startup does.
+            if self.editor.mode == crate::editor::Mode::Preview {
+                self.editor.mode = crate::editor::Mode::Rendered;
+            }
+        } else {
+            self.config.modal.handler = "default".into();
+            self.vim = None;
+        }
+    }
+
     /// Drain any additional `ImageReady` events already sitting in
     /// `rx` without blocking.  Called after handling the first
     /// `ImageReady` in a burst so the main loop processes all
@@ -756,5 +778,54 @@ mod vim_wiring_tests {
         // Vim never rests in Preview — startup switches to Rendered so
         // the NORMAL badge shows from the first frame.
         assert_eq!(app.editor.mode, Mode::Rendered);
+    }
+
+    #[test]
+    fn set_vim_enabled_mirrors_startup_wiring() {
+        // Enabling mid-session (e.g. from the welcome modal) must reach
+        // the exact state startup produces: vim state present, handler
+        // string flipped, and Preview left behind for Rendered.
+        let mut app = app_with_handler("default");
+        assert!(app.vim.is_none());
+        assert_eq!(app.editor.mode, Mode::Preview);
+
+        app.set_vim_enabled(true);
+        assert!(app.vim.is_some(), "vim state created");
+        assert_eq!(app.config.modal.handler, "vim");
+        assert_eq!(
+            app.editor.mode,
+            Mode::Rendered,
+            "Preview gives way to vim-Normal"
+        );
+    }
+
+    #[test]
+    fn set_vim_enabled_false_clears_vim() {
+        // Disabling tears down vim state and restores the default handler
+        // string so a later `Config::save` writes `handler = "default"`.
+        let mut app = app_with_handler("vim");
+        assert!(app.vim.is_some());
+
+        app.set_vim_enabled(false);
+        assert!(app.vim.is_none(), "vim state cleared");
+        assert_eq!(app.config.modal.handler, "default");
+    }
+
+    #[test]
+    fn set_vim_enabled_true_is_idempotent() {
+        // A redundant enable (already-vim session re-saving the welcome
+        // modal) must preserve the live vim state, not swap in a fresh
+        // default — the guard is `if self.vim.is_none()`.
+        let mut app = app_with_handler("vim");
+        app.vim.as_mut().expect("vim active").pending_g = true;
+        app.editor.mode = Mode::Raw;
+
+        app.set_vim_enabled(true);
+        assert!(
+            app.vim.as_ref().expect("vim still active").pending_g,
+            "existing vim state is preserved, not reset"
+        );
+        // A non-Preview mode is left untouched — only Preview is rewritten.
+        assert_eq!(app.editor.mode, Mode::Raw);
     }
 }
