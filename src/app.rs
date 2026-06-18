@@ -828,4 +828,61 @@ mod vim_wiring_tests {
         // A non-Preview mode is left untouched — only Preview is rewritten.
         assert_eq!(app.editor.mode, Mode::Raw);
     }
+
+    // ── CP6: VisualLine clipboard widening (Ctrl-C / Ctrl-X) ───────────
+
+    use crate::config::Action;
+    use crate::document::{Buffer, Selection};
+    use crate::input::VimSubMode;
+
+    /// Install a VisualLine selection over `text` spanning the given charwise
+    /// `anchor`/`active` (deliberately ragged, mid-line endpoints).
+    fn app_in_visual_line(text: &str, anchor: usize, active: usize) -> App {
+        let mut app = app_with_handler("vim");
+        app.editor.replace_buffer(Buffer::from_str(text));
+        app.editor.selection = Some(Selection { anchor, active });
+        let vim = app.vim.as_mut().expect("vim active");
+        vim.sub_mode = VimSubMode::VisualLine;
+        vim.visual_anchor = Some(anchor);
+        app
+    }
+
+    #[test]
+    fn visual_line_copy_grabs_whole_lines_without_snapping_selection() {
+        // Charwise span from mid-line-0 to mid-line-1; `Ctrl-C` must copy
+        // both whole lines (matching the VisualLine highlight).
+        let mut app = app_in_visual_line("alpha\nbeta\ngamma", 2, 7);
+        app.dispatch_action(Action::Copy, 40, 80);
+        assert_eq!(app.editor.kill_ring, "alpha\nbeta\n");
+        // The persistent selection is restored to the charwise span — never
+        // snapped — and Visual continues.
+        let sel = app.editor.selection.expect("selection restored");
+        assert_eq!((sel.anchor, sel.active), (2, 7));
+        assert_eq!(app.vim.as_ref().unwrap().sub_mode, VimSubMode::VisualLine);
+    }
+
+    #[test]
+    fn visual_line_cut_removes_whole_lines_and_exits_visual() {
+        let mut app = app_in_visual_line("alpha\nbeta\ngamma", 2, 7);
+        app.dispatch_action(Action::Cut, 40, 80);
+        assert_eq!(app.editor.buffer.contents(), "gamma");
+        assert_eq!(app.editor.kill_ring, "alpha\nbeta\n");
+        assert_eq!(app.vim.as_ref().unwrap().sub_mode, VimSubMode::Normal);
+        assert!(app.editor.selection.is_none());
+    }
+
+    #[test]
+    fn charwise_visual_copy_grabs_only_the_raw_span() {
+        // In charwise Visual there is no widening — `Ctrl-C` copies exactly
+        // the highlighted span.
+        let mut app = app_with_handler("vim");
+        app.editor.replace_buffer(Buffer::from_str("alpha\nbeta"));
+        app.editor.selection = Some(Selection {
+            anchor: 0,
+            active: 2,
+        });
+        app.vim.as_mut().unwrap().sub_mode = VimSubMode::Visual;
+        app.dispatch_action(Action::Copy, 40, 80);
+        assert_eq!(app.editor.kill_ring, "al");
+    }
 }

@@ -127,6 +127,7 @@ fn rendered_view_paints_selection_across_multiple_rendered_blocks() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -179,6 +180,7 @@ fn cursor_on_phantom_final_line_does_not_swallow_last_block() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -233,6 +235,7 @@ fn selection_on_bold_text_highlights_rendered_positions() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -286,6 +289,7 @@ fn setext_heading_reveals_both_title_and_underline_on_cursor() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -344,6 +348,7 @@ fn rendered_view_selection_in_table_cell_does_not_spill_into_borders() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -415,6 +420,7 @@ fn rendered_view_selection_inside_cursors_own_cell_survives_cell_overlay() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -464,6 +470,7 @@ fn rendered_view_cell_scoped_reveal_keeps_neighbouring_pipes_rendered() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -547,6 +554,7 @@ fn table_view_paints_row_and_column_handles_when_enabled() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -652,6 +660,7 @@ fn table_view_paints_one_row_handle_per_logical_row() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -723,6 +732,7 @@ fn rendered_view_wrapped_cell_keeps_table_layout_when_cursor_inside() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -809,6 +819,7 @@ fn rendered_view_wrapped_cell_shows_raw_markdown_chunk() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -884,6 +895,7 @@ fn rendered_view_wrapped_cell_wipes_stale_tail_when_raw_shrinks() {
         terminal
             .draw(|frame| {
                 let view = RenderedView {
+                    visual_line_mode: false,
                     drop_indicator: None,
                     state,
                     theme,
@@ -957,6 +969,7 @@ fn table_view_handles_only_paint_when_cursor_in_table() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1003,6 +1016,7 @@ fn table_view_handles_only_paint_when_cursor_in_table() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1042,6 +1056,7 @@ fn table_view_snapshots_empty_when_no_table() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1201,6 +1216,7 @@ fn table_row_striping_alternates_bg_per_data_row() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1257,6 +1273,7 @@ fn table_row_striping_replaces_thin_rule_with_blank_separator() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1326,6 +1343,7 @@ fn table_row_striping_off_leaves_default_bg() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1375,6 +1393,7 @@ fn table_view_paints_drop_indicator_on_row_drag() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: Some(indicator),
                 state: &state,
                 theme,
@@ -1440,6 +1459,7 @@ fn rendered_view_code_block_only_opening_fence_de_renders() {
         terminal
             .draw(|frame| {
                 let view = RenderedView {
+                    visual_line_mode: false,
                     drop_indicator: None,
                     show_table_buttons: false,
                     state,
@@ -1541,6 +1561,7 @@ fn rendered_view_code_block_blank_body_line_aligns_cursor_indicator() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -1610,6 +1631,7 @@ fn rendered_view_bare_code_fence_de_renders_opening_fence() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -1672,6 +1694,7 @@ fn mermaid_block_reveals_full_raw_source_on_cursor_entry() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -1765,6 +1788,7 @@ fn rendered_view_drag_selection_paints_wrapped_cell_continuation() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,

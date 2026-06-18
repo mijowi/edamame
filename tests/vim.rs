@@ -8,7 +8,10 @@
 //! passthrough contract.  CP2 adds the core motions (`w e b W E B 0 ^ $
 //! gg G`), the `o`/`O` open-line entries, and `v`/`V` Visual entry.  CP3
 //! adds the operator+motion reducer; CP4 adds the remaining Normal
-//! primitives (`r{c} ~ >> << J u`, and `Ctrl-R` redo via the keymap).
+//! primitives (`r{c} ~ >> << J u`, and `Ctrl-R` redo via the keymap).  CP6
+//! adds the Visual / VisualLine operators (`d/x y c/s > < ~ J`, `o`
+//! swap-ends, `v`/`V` toggle) and the line-expansion of a VisualLine
+//! selection for operators and the system clipboard.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -1492,4 +1495,441 @@ fn find_extends_a_visual_selection() {
     let sel = st.selection.expect("visual selection present");
     assert_eq!(sel.anchor, 0);
     assert_eq!(sel.active, 3); // 'b' of "bar"
+}
+
+// ── CP6: Visual & VisualLine operators ─────────────────────────────────────────
+
+#[test]
+fn visual_charwise_delete_removes_the_highlighted_span() {
+    // `v l l d` deletes the half-open `[anchor, cursor)` span (the painted
+    // range), yanks it charwise, and returns to Normal.
+    let mut st = state("hello world");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v')); // anchor 0
+    feed(&mut vim, &mut st, ch('l')); // active 1
+    feed(&mut vim, &mut st, ch('l')); // active 2
+    feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(st.buffer.contents(), "llo world");
+    assert_eq!(vim.register.text, "he");
+    assert!(!vim.register.linewise);
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+    assert!(st.selection.is_none());
+    assert_eq!(st.cursor.offset, 0);
+}
+
+#[test]
+fn visual_x_is_an_alias_for_delete() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('x'));
+    assert_eq!(st.buffer.contents(), "ello");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+}
+
+#[test]
+fn visual_charwise_yank_leaves_the_buffer_and_parks_at_start() {
+    let mut st = state("hello world");
+    let mut vim = VimState::default();
+    st.cursor.offset = 6; // on "world"
+    feed(&mut vim, &mut st, ch('v')); // anchor 6
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('y'));
+    assert_eq!(st.buffer.contents(), "hello world", "yank never mutates");
+    assert_eq!(vim.register.text, "wo");
+    assert!(!vim.register.linewise);
+    assert_eq!(st.cursor.offset, 6, "cursor parks at the span start");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+}
+
+#[test]
+fn visual_change_deletes_and_enters_insert() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('c'));
+    assert_eq!(st.buffer.contents(), "ello");
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+    assert!(st.selection.is_none());
+}
+
+#[test]
+fn visual_s_is_an_alias_for_change() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('s'));
+    assert_eq!(st.buffer.contents(), "ello");
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+}
+
+#[test]
+fn visual_line_delete_removes_whole_lines_linewise() {
+    // `V j d` deletes both touched lines, yanks them linewise.
+    let mut st = state("alpha\nbeta\ngamma");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V')); // line 0
+    feed(&mut vim, &mut st, ch('j')); // extend onto line 1
+    feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(st.buffer.contents(), "gamma");
+    assert_eq!(vim.register.text, "alpha\nbeta\n");
+    assert!(vim.register.linewise);
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+}
+
+#[test]
+fn visual_line_yank_is_linewise() {
+    let mut st = state("alpha\nbeta\ngamma");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('j'));
+    feed(&mut vim, &mut st, ch('y'));
+    assert_eq!(
+        st.buffer.contents(),
+        "alpha\nbeta\ngamma",
+        "yank never mutates"
+    );
+    assert_eq!(vim.register.text, "alpha\nbeta\n");
+    assert!(vim.register.linewise);
+}
+
+#[test]
+fn visual_line_delete_then_paste_duplicates() {
+    // A VisualLine yank fills the linewise register, so `p` opens a new line.
+    let mut st = state("one\ntwo\nthree");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('y')); // yank line 0 linewise
+    feed(&mut vim, &mut st, ch('p')); // paste below
+    assert_eq!(st.buffer.contents(), "one\none\ntwo\nthree");
+}
+
+#[test]
+fn visual_indent_right_and_left_round_trip() {
+    let mut st = state("ab\ncd");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('j'));
+    feed(&mut vim, &mut st, ch('>')); // indent both lines by tab_width (4)
+    assert_eq!(st.buffer.contents(), "    ab\n    cd");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+    // Re-select and outdent back.
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('j'));
+    feed(&mut vim, &mut st, ch('<'));
+    assert_eq!(st.buffer.contents(), "ab\ncd");
+}
+
+#[test]
+fn visual_indent_does_not_touch_the_register() {
+    let mut st = state("ab\ncd");
+    let mut vim = VimState::default();
+    vim.register.text = "kept".into();
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('>'));
+    assert_eq!(
+        vim.register.text, "kept",
+        "indent must not fill the register"
+    );
+}
+
+#[test]
+fn visual_charwise_indent_acts_on_whole_lines() {
+    // `>` from charwise Visual still indents every line the span touches.
+    let mut st = state("ab\ncd");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('j')); // span from line 0 into line 1
+    feed(&mut vim, &mut st, ch('>'));
+    assert_eq!(st.buffer.contents(), "    ab\n    cd");
+}
+
+#[test]
+fn visual_tilde_toggles_case_of_the_span() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('l')); // span [0,2) → "he"
+    feed(&mut vim, &mut st, ch('~'));
+    assert_eq!(st.buffer.contents(), "HEllo");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+}
+
+#[test]
+fn visual_line_tilde_toggles_whole_lines() {
+    let mut st = state("ab\ncd");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('j'));
+    feed(&mut vim, &mut st, ch('~'));
+    assert_eq!(st.buffer.contents(), "AB\nCD");
+}
+
+#[test]
+fn visual_join_collapses_the_selected_lines() {
+    let mut st = state("one\ntwo\nthree");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('j'));
+    feed(&mut vim, &mut st, ch('j')); // span lines 0..=2
+    feed(&mut vim, &mut st, ch('J'));
+    assert_eq!(st.buffer.contents(), "one two three");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+}
+
+#[test]
+fn visual_single_line_join_pulls_up_the_line_below() {
+    let mut st = state("one\ntwo");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v')); // single-line span on line 0
+    feed(&mut vim, &mut st, ch('J'));
+    assert_eq!(st.buffer.contents(), "one two");
+}
+
+#[test]
+fn visual_o_swaps_the_selection_ends() {
+    let mut st = state("hello world");
+    let mut vim = VimState::default();
+    st.cursor.offset = 2;
+    feed(&mut vim, &mut st, ch('v')); // anchor 2
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('l')); // active 4
+    feed(&mut vim, &mut st, ch('o')); // swap: cursor jumps to the anchor end
+    assert_eq!(vim.sub_mode, VimSubMode::Visual);
+    assert_eq!(st.cursor.offset, 2);
+    let sel = st.selection.expect("selection persists through swap");
+    assert_eq!((sel.anchor, sel.active), (4, 2));
+    assert_eq!(vim.visual_anchor, Some(4));
+    // A motion now grows the (newly active) low end.
+    feed(&mut vim, &mut st, ch('h')); // active 1
+    let sel = st.selection.expect("selection persists");
+    assert_eq!((sel.anchor, sel.active), (4, 1));
+}
+
+#[test]
+fn capital_v_then_v_switches_to_charwise_keeping_anchor() {
+    let mut st = state("alpha\nbeta");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    let anchor = vim.visual_anchor;
+    feed(&mut vim, &mut st, ch('v')); // VisualLine → Visual
+    assert_eq!(vim.sub_mode, VimSubMode::Visual);
+    assert_eq!(vim.visual_anchor, anchor, "anchor survives the toggle");
+    assert!(st.selection.is_some());
+}
+
+#[test]
+fn v_then_v_exits_to_normal() {
+    let mut st = state("alpha");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('v')); // same key → exit
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+    assert!(st.selection.is_none());
+}
+
+#[test]
+fn capital_v_then_capital_v_exits_to_normal() {
+    let mut st = state("alpha");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('V'));
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+    assert!(st.selection.is_none());
+}
+
+#[test]
+fn visual_operator_is_a_single_undo_unit() {
+    // A multi-line VisualLine delete collapses to one `u`.
+    let mut st = state("a\nb\nc\nd");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('j'));
+    feed(&mut vim, &mut st, ch('j')); // lines 0..=2
+    feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(st.buffer.contents(), "d");
+    feed(&mut vim, &mut st, ch('u'));
+    assert_eq!(
+        st.buffer.contents(),
+        "a\nb\nc\nd",
+        "one undo restores all three lines"
+    );
+}
+
+#[test]
+fn visual_line_change_clears_the_lines_and_enters_insert() {
+    // `V j c` deletes both touched lines but (like `cc`) keeps one empty
+    // line to type on, yanks them linewise, and enters Insert.
+    let mut st = state("alpha\nbeta\ngamma");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V')); // line 0
+    feed(&mut vim, &mut st, ch('j')); // extend onto line 1
+    feed(&mut vim, &mut st, ch('c'));
+    assert_eq!(st.buffer.contents(), "\ngamma");
+    assert_eq!(vim.register.text, "alpha\nbeta\n");
+    assert!(vim.register.linewise);
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+    assert!(st.selection.is_none());
+}
+
+// ── CP6: Visual `p` / `r{c}` / `u` / `U` ────────────────────────────────────────
+
+#[test]
+fn visual_charwise_paste_replaces_the_span_with_the_register() {
+    // Yank "world", select "hello", then `p` over it.
+    let mut st = state("hello world");
+    let mut vim = VimState::default();
+    vim.register.text = "world".into();
+    vim.register.linewise = false;
+    feed(&mut vim, &mut st, ch('v')); // anchor 0
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('l')); // span [0,4) → "hell"
+    feed(&mut vim, &mut st, ch('p'));
+    assert_eq!(st.buffer.contents(), "worldo world");
+    // The register is left untouched so it can be pasted over again.
+    assert_eq!(vim.register.text, "world");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+    assert!(st.selection.is_none());
+}
+
+#[test]
+fn visual_line_paste_replaces_whole_lines_with_a_linewise_register() {
+    let mut st = state("one\ntwo\nthree");
+    let mut vim = VimState::default();
+    vim.register.text = "X\n".into();
+    vim.register.linewise = true;
+    feed(&mut vim, &mut st, ch('V')); // line 0
+    feed(&mut vim, &mut st, ch('j')); // extend onto line 1
+    feed(&mut vim, &mut st, ch('p'));
+    assert_eq!(st.buffer.contents(), "X\nthree");
+    assert_eq!(vim.register.text, "X\n", "register kept");
+}
+
+#[test]
+fn visual_line_paste_of_a_charwise_register_keeps_its_own_line() {
+    // A charwise register dropped over whole lines gets a trailing newline.
+    let mut st = state("one\ntwo");
+    let mut vim = VimState::default();
+    vim.register.text = "X".into();
+    vim.register.linewise = false;
+    feed(&mut vim, &mut st, ch('V')); // line 0 only
+    feed(&mut vim, &mut st, ch('p'));
+    assert_eq!(st.buffer.contents(), "X\ntwo");
+}
+
+#[test]
+fn visual_paste_with_empty_register_is_a_noop_that_leaves_visual() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('p'));
+    assert_eq!(
+        st.buffer.contents(),
+        "hello",
+        "empty register changes nothing"
+    );
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+    assert!(st.selection.is_none());
+}
+
+#[test]
+fn visual_charwise_replace_fills_the_span_with_one_char() {
+    // `v l l r x` replaces the [0,2) span ("he") with "xx".
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('l')); // span [0,2)
+    assert_eq!(feed(&mut vim, &mut st, ch('r')), VimOutcome::Pending);
+    feed(&mut vim, &mut st, ch('x'));
+    assert_eq!(st.buffer.contents(), "xxllo");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+    assert!(st.selection.is_none());
+}
+
+#[test]
+fn visual_line_replace_preserves_newlines() {
+    // `V j r *` replaces every char of both lines with '*', keeping the
+    // line break between them.
+    let mut st = state("ab\ncd");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('j'));
+    feed(&mut vim, &mut st, ch('r'));
+    feed(&mut vim, &mut st, ch('*'));
+    assert_eq!(st.buffer.contents(), "**\n**");
+}
+
+#[test]
+fn visual_replace_cancelled_by_esc_keeps_the_selection() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('r')); // arm pending replace
+    feed(&mut vim, &mut st, esc()); // cancel
+    assert_eq!(st.buffer.contents(), "hello", "no edit on cancel");
+    assert_eq!(vim.sub_mode, VimSubMode::Visual, "still in Visual");
+    assert!(!vim.pending_replace);
+    assert!(st.selection.is_some());
+}
+
+#[test]
+fn visual_u_forces_lowercase_and_capital_u_forces_uppercase() {
+    let mut st = state("Hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('l')); // span [0,4) → "Hell"
+    feed(&mut vim, &mut st, ch('u'));
+    assert_eq!(st.buffer.contents(), "hello");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+
+    // Now uppercase the same span.
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('U'));
+    assert_eq!(st.buffer.contents(), "HELLo");
+}
+
+#[test]
+fn visual_line_set_case_covers_whole_lines() {
+    let mut st = state("ab\ncd");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('j'));
+    feed(&mut vim, &mut st, ch('U'));
+    assert_eq!(st.buffer.contents(), "AB\nCD");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+}
+
+#[test]
+fn visual_paste_and_replace_are_single_undo_units() {
+    // VisualLine replace over two lines collapses to one `u`.
+    let mut st = state("ab\ncd\nef");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('j'));
+    feed(&mut vim, &mut st, ch('r'));
+    feed(&mut vim, &mut st, ch('z'));
+    assert_eq!(st.buffer.contents(), "zz\nzz\nef");
+    feed(&mut vim, &mut st, ch('u'));
+    assert_eq!(
+        st.buffer.contents(),
+        "ab\ncd\nef",
+        "one undo restores both lines"
+    );
 }

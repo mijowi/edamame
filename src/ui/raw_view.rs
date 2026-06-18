@@ -16,6 +16,10 @@ use crate::ui::line_render::render_line_from_visual;
 pub struct RawView<'a> {
     pub state: &'a EditorState,
     pub theme: &'a Theme,
+    /// True in vim VisualLine sub-mode: the charwise `selection` is widened
+    /// to whole lines for the highlight only (see §2.6); `selection` itself
+    /// is never snapped.
+    pub visual_line_mode: bool,
 }
 
 #[derive(Debug, Default)]
@@ -40,7 +44,14 @@ impl<'a> StatefulWidget for RawView<'a> {
         let cursor_style = self.theme.cursor_raw;
         let cursor_visible = self.state.cursor_visible();
         let sel_style = self.theme.selection;
-        let selection_range = self.state.selection.map(|s| s.range());
+        let selection_range = self.state.selection.map(|s| {
+            if self.visual_line_mode {
+                let r = crate::editor::vim_ops::visual_line_char_range(&s, &self.state.buffer);
+                (r.start, r.end)
+            } else {
+                s.range()
+            }
+        });
 
         let search_matches: &[std::ops::Range<usize>] = self
             .state
@@ -214,6 +225,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let view = RawView {
+                    visual_line_mode: false,
                     state: &state,
                     theme,
                 };
@@ -250,6 +262,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let view = RawView {
+                    visual_line_mode: false,
                     state: &state,
                     theme,
                 };
@@ -274,6 +287,52 @@ mod tests {
     }
 
     #[test]
+    fn raw_view_visual_line_mode_paints_whole_lines() {
+        // A charwise selection covering only part of two lines paints, in
+        // VisualLine mode, the full content of every touched line.
+        let theme = theme();
+        let buf = Buffer::from_str("Hello world\nsecond line\n");
+        let mut state = EditorState::new(buf, theme);
+        state.mode = crate::editor::Mode::Raw;
+        // Anchor mid-line-0, active mid-line-1 — a ragged charwise span.
+        state.selection = Some(Selection {
+            anchor: 3,
+            active: 15,
+        });
+        let mut view_state = RawViewState::default();
+
+        let backend = TestBackend::new(20, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let view = RawView {
+                    visual_line_mode: true,
+                    state: &state,
+                    theme,
+                };
+                StatefulWidget::render(view, frame.area(), frame.buffer_mut(), &mut view_state);
+            })
+            .unwrap();
+
+        let tbuf = terminal.backend().buffer().clone();
+        // Every content column of line 0 ("Hello world", 11 cols) and line 1
+        // ("second line", 11 cols) carries the selection bg — including col 0,
+        // which the ragged charwise span (anchor 3) would have left bare.
+        for x in 0..11u16 {
+            assert_eq!(
+                tbuf.cell((x, 0)).unwrap().style().bg,
+                theme.selection.bg,
+                "line 0 col {x} missing selection bg"
+            );
+            assert_eq!(
+                tbuf.cell((x, 1)).unwrap().style().bg,
+                theme.selection.bg,
+                "line 1 col {x} missing selection bg"
+            );
+        }
+    }
+
+    #[test]
     fn raw_view_visual_scroll_starts_inside_wrapped_line() {
         let theme = theme();
         let buf = Buffer::from_str("abcdefghijklmnopqrstuvwxyz\n");
@@ -287,6 +346,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let view = RawView {
+                    visual_line_mode: false,
                     state: &state,
                     theme,
                 };
