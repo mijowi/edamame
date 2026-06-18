@@ -1139,12 +1139,20 @@ impl App {
     /// it once at the end of a batch.
     fn dispatch_single_key(&mut self, event: Event, keymap: &KeyMap, dims: &DocDims) {
         // Vim intercept: when the vim handler is active, it owns the key
-        // first (Diff mode excepted — the diff review keymap owns those
-        // keys).  A `Pending`/`Consumed` outcome ends dispatch here; a
+        // first.  Two exceptions defer to a flow that hard-binds these
+        // keys downstream and would otherwise be shadowed:
+        //   - Diff mode — the diff-review keymap owns its keys.
+        //   - The search flow (`editor.search.is_some()`) — its bindings
+        //     (`Esc`/`r`/`a`, …) are matched in `DefaultHandler::handle`,
+        //     which runs *after* this intercept; without this guard vim
+        //     Normal would swallow `Esc` and trap the user in the flow.
+        //     Vim's own `/` entry routes through here in a later checkpoint.
+        // A `Pending`/`Consumed` outcome ends dispatch here; a
         // `Passthrough` (e.g. a `Ctrl-*` chord, or any printable char in
         // Insert mode) falls through to the default keymap path below.
+        let vim_deferred = self.editor.mode == Mode::Diff || self.editor.search.is_some();
         if let Event::Key(key) = &event {
-            if key.kind == KeyEventKind::Press && self.editor.mode != Mode::Diff {
+            if key.kind == KeyEventKind::Press && !vim_deferred {
                 if let Some(vim) = self.vim.as_mut() {
                     let key = *key;
                     match vim_feed(vim, &mut self.editor, key, dims.doc_height, dims.doc_width) {
@@ -1245,10 +1253,12 @@ fn drop_indicator_for(
 
 #[cfg(test)]
 mod tests {
-    use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use ratatui::layout::Rect;
 
     use crate::app::test_utils::app_with_buffer;
+    use crate::config::{KeyBindingOverrides, KeyMap};
+    use crate::search::SearchState;
 
     use super::DocDims;
 
@@ -1305,5 +1315,31 @@ mod tests {
         // Move below the doc area (e.g. onto the status bar).
         app.dispatch_mouse_event(mouse(MouseEventKind::Moved, 2, 10), &dims);
         assert!(app.hovered_link.is_none());
+    }
+
+    #[test]
+    fn esc_exits_the_search_flow_even_with_vim_active() {
+        // Regression: the vim intercept in `dispatch_single_key` must
+        // defer to the search flow (which hard-binds `Esc` → `SearchExit`
+        // downstream in `DefaultHandler`).  Without the deferral vim
+        // Normal swallows `Esc` (`reset_pending`, Consumed) and the user
+        // is trapped in the flow with no way out.
+        let mut app = app_with_buffer("hello world\n", 0);
+        app.set_vim_enabled(true);
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        let dims = dims();
+
+        // Enter a navigate-only search flow with at least one match.
+        let search = SearchState::new("world".to_string(), None, 0).unwrap();
+        app.editor.enter_search(search);
+        assert!(app.editor.search.is_some(), "search flow is active");
+
+        let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.dispatch_single_key(esc, &keymap, &dims);
+
+        assert!(
+            app.editor.search.is_none(),
+            "Esc must exit the search flow, not be swallowed by vim Normal"
+        );
     }
 }
