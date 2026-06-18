@@ -401,7 +401,11 @@ fn pending_g_is_resolved_before_a_count_digit() {
     feed(&mut vim, &mut st, ch('g'));
     assert!(vim.pending_g);
     let out = feed(&mut vim, &mut st, ch('5'));
-    assert_eq!(out, VimOutcome::Consumed, "g then digit is a swallowed no-op");
+    assert_eq!(
+        out,
+        VimOutcome::Consumed,
+        "g then digit is a swallowed no-op"
+    );
     assert!(!vim.pending_g, "pending_g must not dangle past the digit");
     assert_eq!(vim.count, None, "the digit does not accumulate a count");
     assert_eq!(st.cursor.offset, 3, "no motion fires");
