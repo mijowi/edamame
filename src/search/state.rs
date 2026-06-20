@@ -13,8 +13,9 @@ use std::ops::Range;
 /// refresh can never panic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchState {
-    /// The literal, case-sensitive query.  Never empty, never contains
-    /// a newline (rejected by [`Self::new`]).
+    /// The literal query.  Never empty, never contains a newline
+    /// (rejected by [`Self::new`]).  Matched smartcase for navigation,
+    /// case-sensitively for a replace flow — see [`Self::ensure_fresh`].
     pub query: String,
     /// Replacement text.  `None` means the user left the replace field
     /// empty — a navigate-only flow with no Replace / Replace-all keys.
@@ -72,7 +73,14 @@ impl SearchState {
         if self.buffer_version == version {
             return false;
         }
-        self.matches = find_all(source, &self.query);
+        // Smartcase is a navigation-only convenience.  A replace flow stays
+        // strictly case-sensitive, so neither its highlights nor the
+        // replacement ever rewrite a casing variant the user didn't type.
+        self.matches = if self.is_replace_flow() {
+            find_all_cs(source, &self.query)
+        } else {
+            find_all(source, &self.query)
+        };
         self.buffer_version = version;
         if self.focused_idx >= self.matches.len() {
             self.focused_idx = 0;
@@ -104,17 +112,68 @@ impl SearchState {
 }
 
 /// All non-overlapping byte ranges of `needle` in `haystack`, in
-/// document order.  `str::match_indices` is non-overlapping by
-/// construction and always yields char-boundary offsets, so the ranges
-/// are UTF-8-safe.
+/// document order, applying **smartcase**: the search is case-insensitive
+/// unless `needle` contains an uppercase letter, in which case it is
+/// case-sensitive.  Every returned offset is a char boundary, so the
+/// ranges are UTF-8-safe.
+///
+/// This is the **navigation** matcher (`/`, `n`/`N`, `Ctrl-F` find).
+/// Smartcase lives here, in the base search feature, so both the
+/// `Ctrl-F` flow and vim's `/` share it — every edamame user gets it,
+/// not just vim.  The replace flow deliberately uses [`find_all_cs`]
+/// instead, so a lowercase find term never overwrites a casing variant.
 pub fn find_all(haystack: &str, needle: &str) -> Vec<Range<usize>> {
     if needle.is_empty() {
         return Vec::new();
     }
+    // Smartcase: any uppercase char in the pattern → case-sensitive.
+    if needle.chars().any(char::is_uppercase) {
+        return find_all_cs(haystack, needle);
+    }
+    find_all_ci(haystack, needle)
+}
+
+/// Case-sensitive, non-overlapping match search — the matcher the
+/// replace flow always uses (smartcase is navigation-only).
+/// `str::match_indices` is non-overlapping by construction and always
+/// yields char-boundary offsets, so the ranges are UTF-8-safe.
+fn find_all_cs(haystack: &str, needle: &str) -> Vec<Range<usize>> {
     haystack
         .match_indices(needle)
         .map(|(start, m)| start..start + m.len())
         .collect()
+}
+
+/// Case-insensitive, non-overlapping match search keeping byte offsets
+/// aligned to the original `haystack` (lowercasing the strings up front
+/// would shift offsets for chars whose lowercase form differs in byte
+/// length, so we compare char-by-char against the untouched source).
+fn find_all_ci(haystack: &str, needle: &str) -> Vec<Range<usize>> {
+    let needle_chars: Vec<char> = needle.chars().collect();
+    let hay_chars: Vec<(usize, char)> = haystack.char_indices().collect();
+    let n = needle_chars.len();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + n <= hay_chars.len() {
+        let matched = (0..n).all(|k| chars_eq_ci(hay_chars[i + k].1, needle_chars[k]));
+        if matched {
+            let start = hay_chars[i].0;
+            let end = hay_chars
+                .get(i + n)
+                .map_or(haystack.len(), |&(byte, _)| byte);
+            out.push(start..end);
+            i += n; // non-overlapping, mirroring `match_indices`
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Compare two chars ignoring case (Unicode simple case folding via
+/// `to_lowercase`, which covers the markdown-text cases we care about).
+fn chars_eq_ci(a: char, b: char) -> bool {
+    a == b || a.to_lowercase().eq(b.to_lowercase())
 }
 
 #[cfg(test)]
@@ -128,11 +187,37 @@ mod tests {
     }
 
     #[test]
-    fn find_all_is_case_sensitive_and_non_overlapping() {
-        assert_eq!(find_all("Foo foo FOO", "foo"), vec![4..7]);
-        // "aaa" contains "aa" at 0 and 1, but match_indices yields only
-        // the non-overlapping occurrence at 0.
+    fn find_all_is_non_overlapping() {
+        // "aaa" contains "aa" at 0 and 1, but both the case-sensitive and
+        // case-insensitive paths yield only the non-overlapping match at 0.
         assert_eq!(find_all("aaa", "aa"), vec![0..2]);
+        assert_eq!(find_all("AAA", "aa"), vec![0..2]);
+    }
+
+    #[test]
+    fn find_all_smartcase_lowercase_query_is_insensitive() {
+        // An all-lowercase pattern matches every case variant.
+        assert_eq!(find_all("Foo foo FOO", "foo"), vec![0..3, 4..7, 8..11]);
+    }
+
+    #[test]
+    fn find_all_smartcase_uppercase_query_is_sensitive() {
+        // Any uppercase letter flips the search to case-sensitive.
+        assert_eq!(find_all("Foo foo FOO", "Foo"), vec![0..3]);
+        assert_eq!(find_all("Foo foo FOO", "FOO"), vec![8..11]);
+    }
+
+    #[test]
+    fn find_all_ci_keeps_byte_offsets_aligned_for_multibyte() {
+        // Case-insensitive matching must not shift offsets even when a
+        // char's lowercase form differs; "café" / "CAFÉ" stays byte-aligned.
+        let hay = "café CAFÉ";
+        let ranges = find_all(hay, "café");
+        assert_eq!(ranges.len(), 2);
+        // Each range must slice cleanly (a panic here would mean a
+        // non-char-boundary offset) and recover a case variant of "café".
+        let hits: Vec<&str> = ranges.iter().map(|r| &hay[r.clone()]).collect();
+        assert_eq!(hits, vec!["café", "CAFÉ"]);
     }
 
     #[test]
@@ -143,6 +228,19 @@ mod tests {
         for r in ranges {
             assert_eq!(&hay[r], "naïve");
         }
+    }
+
+    #[test]
+    fn replace_flow_matching_is_case_sensitive_not_smartcase() {
+        // A navigate flow with a lowercase query is smartcase (3 hits)...
+        let mut nav = SearchState::new("foo".to_owned(), None, 0).unwrap();
+        nav.ensure_fresh("Foo foo FOO", 1);
+        assert_eq!(nav.matches.len(), 3);
+        // ...but the same query in a replace flow stays case-sensitive, so
+        // only the exact-case occurrence is hit (and would be replaced).
+        let mut repl = SearchState::new("foo".to_owned(), Some("bar".to_owned()), 0).unwrap();
+        repl.ensure_fresh("Foo foo FOO", 1);
+        assert_eq!(repl.matches, vec![4..7]);
     }
 
     #[test]

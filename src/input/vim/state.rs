@@ -55,12 +55,24 @@ pub struct VimRegister {
 }
 
 /// Which command-line prompt is active (`:` / `/` / `?`).
-#[allow(dead_code)] // the command line is wired in CP8 / CP9
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CmdLineKind {
+    /// `:` ex command line — armed in CP9.
+    #[allow(dead_code)]
     Ex,
     SearchForward,
     SearchBackward,
+}
+
+impl CmdLineKind {
+    /// The leading glyph shown at the start of the command line.
+    pub fn prefix(self) -> char {
+        match self {
+            CmdLineKind::Ex => ':',
+            CmdLineKind::SearchForward => '/',
+            CmdLineKind::SearchBackward => '?',
+        }
+    }
 }
 
 /// The hint-line command-line buffer, active while typing `:` / `/` / `?`.
