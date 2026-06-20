@@ -40,6 +40,7 @@ use crate::ui::{position_for_click, position_for_drag, thumb_range, EditorView, 
 use crate::watcher::{NotifyWatcher, WatchedEvent};
 
 use super::actions::{modal_wheel_delta, HandleEvent};
+use super::flash::MessageKind;
 use super::frame_timer::{MIN_FRAME_INTERVAL, RESIZE_QUIESCE};
 use super::modal::ModalRenderCtx;
 use super::{App, AppEvent};
@@ -1159,7 +1160,7 @@ impl App {
     /// [`App::dispatch_action`] pipeline.  The external-editor drain
     /// is intentionally not handled here — `dispatch_key_batch` runs
     /// it once at the end of a batch.
-    fn dispatch_single_key(&mut self, event: Event, keymap: &KeyMap, dims: &DocDims) {
+    pub(super) fn dispatch_single_key(&mut self, event: Event, keymap: &KeyMap, dims: &DocDims) {
         // Vim intercept: when the vim handler is active, it owns the key
         // first.  Two exceptions defer to a flow that hard-binds these
         // keys downstream and would otherwise be shadowed:
@@ -1186,6 +1187,31 @@ impl App {
                         }
                         VimOutcome::EnterSearch { forward, query } => {
                             self.enter_vim_search(query, forward);
+                            self.needs_draw = true;
+                            return;
+                        }
+                        // `:w` / `:q` / `:wq` route through the existing
+                        // save / quit actions so the dirty-buffer confirm and
+                        // save flash behave exactly as for `Ctrl-*`.  `:wq`
+                        // saves first, leaving the buffer clean before the
+                        // quit guard runs.
+                        VimOutcome::Save => {
+                            self.dispatch_action(Action::Save, dims.doc_height, dims.doc_width);
+                            self.needs_draw = true;
+                            return;
+                        }
+                        VimOutcome::Quit { save_first } => {
+                            if save_first {
+                                self.dispatch_action(Action::Save, dims.doc_height, dims.doc_width);
+                            }
+                            self.dispatch_action(Action::Quit, dims.doc_height, dims.doc_width);
+                            self.needs_draw = true;
+                            return;
+                        }
+                        // A `:s` result or an ex parse / regex error: the
+                        // substitution already ran in the reducer; just flash.
+                        VimOutcome::Flash(text) => {
+                            self.flash(text, MessageKind::Info);
                             self.needs_draw = true;
                             return;
                         }

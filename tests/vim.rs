@@ -2499,3 +2499,246 @@ fn backspace_and_delete_extend_a_visual_selection_without_editing() {
     let sel = st.selection.as_ref().unwrap();
     assert_eq!(sel.active, 5, "Backspace pulls the active end left");
 }
+
+// ── CP9: Ex commands (`:w :q :wq :s :%s`) ──────────────────────────────────────
+
+/// Type a full `:`-command (the leading `:`, the body, then Enter) and
+/// return the outcome of the submitting Enter press.
+fn ex_cmd(vim: &mut VimState, st: &mut EditorState, body: &str) -> VimOutcome {
+    feed(vim, st, ch(':'));
+    for c in body.chars() {
+        feed(vim, st, ch(c));
+    }
+    feed(vim, st, key(KeyCode::Enter))
+}
+
+#[test]
+fn colon_opens_the_ex_command_line() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    assert_eq!(feed(&mut vim, &mut st, ch(':')), VimOutcome::Pending);
+    let cl = vim.cmdline.as_ref().expect("ex command line armed");
+    assert_eq!(cl.kind.prefix(), ':');
+    // Bare letters now edit the command line, not the buffer.
+    assert_eq!(feed(&mut vim, &mut st, ch('w')), VimOutcome::Consumed);
+    assert_eq!(vim.cmdline.as_ref().unwrap().input, "w");
+    // Esc cancels the prompt without acting.
+    assert_eq!(feed(&mut vim, &mut st, esc()), VimOutcome::Consumed);
+    assert!(vim.cmdline.is_none());
+    assert_eq!(st.buffer.contents(), "hello", "cancelled `:` never edits");
+}
+
+#[test]
+fn ex_write_returns_save_outcome() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    assert_eq!(ex_cmd(&mut vim, &mut st, "w"), VimOutcome::Save);
+    assert!(vim.cmdline.is_none(), "prompt closes on submit");
+}
+
+#[test]
+fn ex_quit_and_writequit_outcomes() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    assert_eq!(
+        ex_cmd(&mut vim, &mut st, "q"),
+        VimOutcome::Quit { save_first: false }
+    );
+    assert_eq!(
+        ex_cmd(&mut vim, &mut st, "wq"),
+        VimOutcome::Quit { save_first: true }
+    );
+}
+
+#[test]
+fn ex_empty_command_is_a_silent_noop() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch(':'));
+    assert_eq!(
+        feed(&mut vim, &mut st, key(KeyCode::Enter)),
+        VimOutcome::Consumed
+    );
+    assert!(vim.cmdline.is_none());
+    assert_eq!(st.buffer.contents(), "hello");
+}
+
+#[test]
+fn ex_substitute_current_line_first_match_only() {
+    let mut st = state("foo foo\nfoo foo");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, "s/foo/bar/");
+    assert_eq!(out, VimOutcome::Flash("1 substitution".to_owned()));
+    assert_eq!(
+        st.buffer.contents(),
+        "bar foo\nfoo foo",
+        ":s replaces only the first match on the current line"
+    );
+}
+
+#[test]
+fn ex_substitute_current_line_global_flag() {
+    let mut st = state("foo foo\nfoo foo");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, "s/foo/bar/g");
+    assert_eq!(out, VimOutcome::Flash("2 substitutions".to_owned()));
+    assert_eq!(
+        st.buffer.contents(),
+        "bar bar\nfoo foo",
+        "g replaces every match on the current line only"
+    );
+}
+
+#[test]
+fn ex_substitute_whole_file_global() {
+    let mut st = state("foo foo\nfoo foo");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, "%s/foo/bar/g");
+    assert_eq!(out, VimOutcome::Flash("4 substitutions".to_owned()));
+    assert_eq!(st.buffer.contents(), "bar bar\nbar bar");
+}
+
+#[test]
+fn ex_substitute_ignore_case_flag() {
+    let mut st = state("Foo foo FOO");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, "%s/foo/x/gi");
+    assert_eq!(out, VimOutcome::Flash("3 substitutions".to_owned()));
+    assert_eq!(st.buffer.contents(), "x x x");
+}
+
+#[test]
+fn ex_substitute_is_a_single_undo_unit() {
+    let mut st = state("foo\nfoo\nfoo");
+    let mut vim = VimState::default();
+    ex_cmd(&mut vim, &mut st, "%s/foo/bar/g");
+    assert_eq!(st.buffer.contents(), "bar\nbar\nbar");
+    // One `u` reverts the whole substitution.
+    feed(&mut vim, &mut st, ch('u'));
+    assert_eq!(
+        st.buffer.contents(),
+        "foo\nfoo\nfoo",
+        ":%s undoes in a single step"
+    );
+}
+
+#[test]
+fn ex_substitute_no_match_flashes_and_leaves_buffer() {
+    let mut st = state("abc");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, "s/zzz/x/");
+    assert_eq!(out, VimOutcome::Flash("Pattern not found: zzz".to_owned()));
+    assert_eq!(st.buffer.contents(), "abc", "a no-match records no edit");
+    assert!(
+        !st.dirty,
+        "a no-match substitution does not dirty the buffer"
+    );
+}
+
+#[test]
+fn ex_substitute_supports_regex() {
+    let mut st = state("a1b2c3");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, r"%s/[0-9]/-/g");
+    assert_eq!(out, VimOutcome::Flash("3 substitutions".to_owned()));
+    assert_eq!(st.buffer.contents(), "a-b-c-");
+}
+
+#[test]
+fn ex_parse_error_flashes_without_editing() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, "nope");
+    assert_eq!(
+        out,
+        VimOutcome::Flash("Not an editor command: nope".to_owned())
+    );
+    assert_eq!(st.buffer.contents(), "hello");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
+}
+
+#[test]
+fn ex_invalid_regex_flashes() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    // `\(` translates to an unbalanced `(` — it passes the vim→regex
+    // translator but the engine rejects it at compile time.
+    let out = ex_cmd(&mut vim, &mut st, r"s/\(/x/");
+    match out {
+        VimOutcome::Flash(text) => assert!(text.starts_with("Invalid pattern:"), "got: {text}"),
+        other => panic!("expected an invalid-pattern flash, got {other:?}"),
+    }
+    assert_eq!(st.buffer.contents(), "hello");
+}
+
+// ── CP9 follow-up: vim-syntax substitution (translator + fancy-regex) ──────────
+
+#[test]
+fn ex_substitute_uses_vim_pattern_syntax() {
+    // Vim grouping/quantifiers (`\(…\)`, `\+`) and a backreference in the
+    // replacement (`\1`), not the regex-crate `$1` form.
+    let mut st = state("hello world");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, r"s/\(\w\+\) \(\w\+\)/\2 \1/");
+    assert_eq!(out, VimOutcome::Flash("1 substitution".to_owned()));
+    assert_eq!(st.buffer.contents(), "world hello");
+}
+
+#[test]
+fn ex_substitute_replacement_case_modifier() {
+    // `\U\1` upcases the captured group — a vim replacement feature the plain
+    // regex crate cannot express.
+    let mut st = state("shout please");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, r"s/\(\w\+\)/\U\1/");
+    assert_eq!(out, VimOutcome::Flash("1 substitution".to_owned()));
+    assert_eq!(st.buffer.contents(), "SHOUT please");
+}
+
+#[test]
+fn ex_substitute_pattern_backreference() {
+    // `\(.\)\1` (a doubled character) is impossible with the linear-time
+    // regex crate; fancy-regex makes it work.
+    let mut st = state("aa bb cd");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, r"%s/\(.\)\1/X/g");
+    assert_eq!(out, VimOutcome::Flash("2 substitutions".to_owned()));
+    assert_eq!(st.buffer.contents(), "X X cd");
+}
+
+#[test]
+fn ex_substitute_very_magic_mode() {
+    let mut st = state("foofoo bar");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, r"s/\v(foo)+/baz/");
+    assert_eq!(out, VimOutcome::Flash("1 substitution".to_owned()));
+    assert_eq!(st.buffer.contents(), "baz bar");
+}
+
+#[test]
+fn ex_substitute_word_boundary() {
+    // `\<cat\>` matches the whole word only, not the `cat` in `category`.
+    let mut st = state("cat category cat");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, r"%s/\<cat\>/dog/g");
+    assert_eq!(out, VimOutcome::Flash("2 substitutions".to_owned()));
+    assert_eq!(st.buffer.contents(), "dog category dog");
+}
+
+#[test]
+fn ex_substitute_unsupported_atom_flashes() {
+    let mut st = state("foobar");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, r"s/foo\zsbar/X/");
+    match out {
+        VimOutcome::Flash(text) => {
+            assert!(text.starts_with("Unsupported vim pattern:"), "got: {text}")
+        }
+        other => panic!("expected unsupported-pattern flash, got {other:?}"),
+    }
+    assert_eq!(
+        st.buffer.contents(),
+        "foobar",
+        "rejected pattern records no edit"
+    );
+}

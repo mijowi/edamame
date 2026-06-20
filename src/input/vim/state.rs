@@ -57,8 +57,7 @@ pub struct VimRegister {
 /// Which command-line prompt is active (`:` / `/` / `?`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CmdLineKind {
-    /// `:` ex command line — armed in CP9.
-    #[allow(dead_code)]
+    /// `:` ex command line (`:w`/`:q`/`:wq`/`:s`/`:%s`).
     Ex,
     SearchForward,
     SearchBackward,

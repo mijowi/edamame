@@ -11,21 +11,25 @@
 //! path, the Visual operators, and the system clipboard copy/cut) plus the
 //! Visual range edits in `edits` (`u`/`U` force-case, `r{c}`, `p` paste-over).
 //! CP7 adds `text_object` (the `iw`/`aw`/quote/bracket-pair objects used by
-//! `d`/`c`/`y` and Visual).  Search and ex resolution land in later
-//! checkpoints (`search.rs`, `ex.rs`).  See
+//! `d`/`c`/`y` and Visual).  CP8 added `search` (the `*`/`#` word scan).  CP9
+//! adds `ex` (the `:w`/`:q`/`:wq`/`:s`/`:%s` parser + the regex substitution —
+//! the only use of the `fancy-regex` crate).  See
 //! `docs/vim-implementation-plan.md` §2.1.
 
 pub mod edits;
+pub mod ex;
 pub mod motion;
 pub mod operator;
 pub mod search;
 pub mod text_object;
+pub mod vim_regex;
 pub mod visual;
 
 pub use edits::{
     indent_lines, join_lines, paste, replace_char, replace_char_range, replace_range_with,
     set_case_range, toggle_case, toggle_case_range,
 };
+pub use ex::{execute_substitute, parse_ex, ExCommand};
 pub use motion::{
     doubled_line_range, first_non_blank, resolve_find_repeat, resolve_motion, resolve_motion_range,
     vertical_line_range, FindKind, Motion, OpRange,

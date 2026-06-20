@@ -885,4 +885,105 @@ mod vim_wiring_tests {
         app.dispatch_action(Action::Copy, 40, 80);
         assert_eq!(app.editor.kill_ring, "al");
     }
+
+    // ── CP9: Ex commands driven end-to-end through `dispatch_single_key` ───
+
+    use crate::app::event_loop::DocDims;
+    use crate::config::KeyMap;
+    use crate::document::Buffer as Buf;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::layout::Rect;
+
+    fn ex_dims() -> DocDims {
+        DocDims {
+            doc_height: 24,
+            doc_width: 80,
+            doc_area: Rect::new(0, 0, 80, 24),
+        }
+    }
+
+    /// Type a full `:`-command (the `:`, the body, then Enter) into `app`
+    /// through the real key-dispatch entry point.
+    fn run_ex(app: &mut App, body: &str) {
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).expect("keymap");
+        let dims = ex_dims();
+        let press = |app: &mut App, code: KeyCode| {
+            app.dispatch_single_key(
+                Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                &keymap,
+                &dims,
+            );
+        };
+        press(app, KeyCode::Char(':'));
+        for c in body.chars() {
+            press(app, KeyCode::Char(c));
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    #[test]
+    fn ex_write_saves_the_buffer_to_disk() {
+        let mut app = app_with_handler("vim");
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        app.editor.buffer = Buf::for_new_file(tmp.path());
+        app.editor.buffer.insert(0, "hello vim");
+        app.editor.dirty = true;
+
+        run_ex(&mut app, "w");
+
+        assert!(!app.editor.dirty, ":w clears the dirty flag");
+        let on_disk = std::fs::read_to_string(tmp.path()).expect("read back");
+        assert_eq!(on_disk, "hello vim", ":w writes the buffer to disk");
+    }
+
+    #[test]
+    fn ex_quit_on_clean_buffer_quits_immediately() {
+        let mut app = app_with_handler("vim");
+        assert!(!app.editor.dirty);
+        let modals_before = app.modal_stack.len();
+        run_ex(&mut app, "q");
+        assert!(app.should_quit, ":q on a clean buffer quits");
+        assert_eq!(
+            app.modal_stack.len(),
+            modals_before,
+            "no quit-confirm pushed when the buffer is clean"
+        );
+    }
+
+    #[test]
+    fn ex_quit_on_dirty_buffer_opens_the_quit_confirm() {
+        let mut app = app_with_handler("vim");
+        app.editor.buffer.insert(0, "x");
+        app.editor.dirty = true;
+        // Drop any startup modal so the assertion below sees only the
+        // quit-confirm the `:q` itself opens.
+        while app.modal_stack.pop().is_some() {}
+        run_ex(&mut app, "q");
+        assert!(!app.should_quit, "dirty :q must not quit silently");
+        assert!(
+            app.modal_stack
+                .contains::<crate::app::modal::QuitConfirmModal>(),
+            "dirty :q opens the quit-confirm modal"
+        );
+    }
+
+    #[test]
+    fn ex_substitute_global_flashes_and_edits_through_the_app() {
+        let mut app = app_with_handler("vim");
+        app.editor.replace_buffer(Buffer::from_str("foo\nfoo"));
+        run_ex(&mut app, "%s/foo/bar/g");
+        assert_eq!(app.editor.buffer.contents(), "bar\nbar");
+        let msg = app.transient.as_ref().expect("substitution flash");
+        assert_eq!(msg.text, "2 substitutions");
+    }
+
+    #[test]
+    fn ex_parse_error_flashes_through_the_app() {
+        let mut app = app_with_handler("vim");
+        app.editor.replace_buffer(Buffer::from_str("hello"));
+        run_ex(&mut app, "nope");
+        let msg = app.transient.as_ref().expect("parse-error flash");
+        assert_eq!(msg.text, "Not an editor command: nope");
+        assert_eq!(app.editor.buffer.contents(), "hello");
+    }
 }

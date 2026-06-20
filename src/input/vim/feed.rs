@@ -40,11 +40,12 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::config::Action;
 use crate::document::{EditDelta, Selection};
 use crate::editor::vim_ops::{
-    doubled_line_range, execute_operator, first_non_blank, indent_lines, join_lines, paste,
-    replace_char, replace_char_range, replace_range_with, resolve_find_repeat, resolve_motion,
-    resolve_motion_range, resolve_text_object_range, set_case_range, toggle_case,
-    toggle_case_range, vertical_line_range, visual_line_bounds, visual_line_char_range,
-    word_under_cursor_at, FindKind, Motion, OpRange, OpResult, Operator, TextObject,
+    doubled_line_range, execute_operator, execute_substitute, first_non_blank, indent_lines,
+    join_lines, parse_ex, paste, replace_char, replace_char_range, replace_range_with,
+    resolve_find_repeat, resolve_motion, resolve_motion_range, resolve_text_object_range,
+    set_case_range, toggle_case, toggle_case_range, vertical_line_range, visual_line_bounds,
+    visual_line_char_range, word_under_cursor_at, ExCommand, FindKind, Motion, OpRange, OpResult,
+    Operator, TextObject,
 };
 use crate::editor::{edit_ops, EditorState, Mode};
 
@@ -72,6 +73,19 @@ pub enum VimOutcome {
     /// `enter_vim_search`.  `n`/`N` need no outcome — they move over
     /// `EditorState::search` directly.
     EnterSearch { forward: bool, query: String },
+    /// `:w` — write the buffer via the existing `Action::Save`, so the
+    /// flash / autosave bookkeeping comes for free.
+    Save,
+    /// `:q` (`save_first == false`) / `:wq` (`true`) — quit via the
+    /// existing dirty-guarded `Action::Quit`, saving first for `:wq` (so
+    /// the buffer is clean before the quit guard runs).
+    Quit { save_first: bool },
+    /// A status / error message from an ex command (a `:s` result, a parse
+    /// or regex error) for the App to flash on the hint line.  The
+    /// substitution itself already ran against `EditorState`; only the
+    /// user-facing message bubbles up (the reducer can't flash — that's an
+    /// App concern).
+    Flash(String),
 }
 
 /// Feed one key press to the vim state machine.
@@ -86,7 +100,7 @@ pub fn vim_feed(
     // until the user submits (Enter) or cancels (Esc / Backspace past the
     // start), so it is checked before any sub-mode dispatch.
     if vim.cmdline.is_some() {
-        return feed_cmdline(vim, key);
+        return feed_cmdline(vim, editor, key, viewport_height, viewport_width);
     }
     match vim.sub_mode {
         VimSubMode::Insert => feed_insert(vim, editor, key, viewport_height, viewport_width),
@@ -132,9 +146,15 @@ fn feed_insert(
 
 /// Drive the active command line.  Editing keys redraw in place; `Enter`
 /// submits and `Esc` (or a backspace past the start) cancels.  A submitted
-/// `/` / `?` line becomes a [`VimOutcome::EnterSearch`]; an empty submit (or
-/// the CP9-only `:`) just closes the prompt.
-fn feed_cmdline(vim: &mut VimState, key: KeyEvent) -> VimOutcome {
+/// `/` / `?` line becomes a [`VimOutcome::EnterSearch`]; a submitted `:` line
+/// is parsed and run by [`submit_ex`]; an empty submit just closes the prompt.
+fn feed_cmdline(
+    vim: &mut VimState,
+    editor: &mut EditorState,
+    key: KeyEvent,
+    vh: usize,
+    vw: usize,
+) -> VimOutcome {
     let Some(cl) = vim.cmdline.as_mut() else {
         return VimOutcome::Passthrough;
     };
@@ -147,9 +167,8 @@ fn feed_cmdline(vim: &mut VimState, key: KeyEvent) -> VimOutcome {
         }
         CmdLineStep::Submit(input) => {
             vim.cmdline = None;
-            // An empty query closes the prompt with no search; `:` is
-            // wired in CP9.
             match kind {
+                // An empty `/` / `?` query closes the prompt with no search.
                 CmdLineKind::SearchForward if !input.is_empty() => VimOutcome::EnterSearch {
                     forward: true,
                     query: input,
@@ -158,9 +177,37 @@ fn feed_cmdline(vim: &mut VimState, key: KeyEvent) -> VimOutcome {
                     forward: false,
                     query: input,
                 },
+                CmdLineKind::Ex => submit_ex(editor, &input, vh, vw),
                 _ => VimOutcome::Consumed,
             }
         }
+    }
+}
+
+/// Parse and run a submitted `:` ex command.  `:w`/`:q`/`:wq` bubble up as
+/// App-level outcomes (the App runs the matching `Action`, so the dirty-quit
+/// confirm and save flash fire exactly as for the `Ctrl-*` chords); `:s`/`:%s`
+/// execute here against the editor (a single-undo regex substitution) and
+/// report their result as a `Flash`.  A parse / regex error flashes too; an
+/// empty `:` line is a silent no-op.
+fn submit_ex(editor: &mut EditorState, input: &str, vh: usize, vw: usize) -> VimOutcome {
+    if input.trim().is_empty() {
+        return VimOutcome::Consumed;
+    }
+    match parse_ex(input) {
+        Ok(ExCommand::Write) => VimOutcome::Save,
+        Ok(ExCommand::Quit) => VimOutcome::Quit { save_first: false },
+        Ok(ExCommand::WriteQuit) => VimOutcome::Quit { save_first: true },
+        Ok(ExCommand::Substitute(sub)) => match execute_substitute(editor, &sub) {
+            Ok(0) => VimOutcome::Flash(format!("Pattern not found: {}", sub.pattern)),
+            Ok(n) => {
+                after_edit(editor, vh, vw);
+                let plural = if n == 1 { "" } else { "s" };
+                VimOutcome::Flash(format!("{n} substitution{plural}"))
+            }
+            Err(e) => VimOutcome::Flash(e.to_string()),
+        },
+        Err(e) => VimOutcome::Flash(e.to_string()),
     }
 }
 
@@ -849,11 +896,17 @@ fn feed_command_char(
             // `/` `?`: open the command-line search prompt.  The next keys
             // are captured by `feed_cmdline` until Enter / Esc.
             '/' => {
-                start_search_cmdline(vim, CmdLineKind::SearchForward);
+                start_cmdline(vim, CmdLineKind::SearchForward);
                 return VimOutcome::Pending;
             }
             '?' => {
-                start_search_cmdline(vim, CmdLineKind::SearchBackward);
+                start_cmdline(vim, CmdLineKind::SearchBackward);
+                return VimOutcome::Pending;
+            }
+            // `:`: open the ex command line (`:w`/`:q`/`:wq`/`:s`/`:%s`),
+            // captured by `feed_cmdline` until Enter / Esc.
+            ':' => {
+                start_cmdline(vim, CmdLineKind::Ex);
                 return VimOutcome::Pending;
             }
             // `n` / `N`: advance / retreat over the active search matches
@@ -1599,10 +1652,10 @@ fn after_edit(editor: &mut EditorState, vh: usize, vw: usize) {
     editor.ensure_cursor_visible(vh, vw);
 }
 
-/// Open a search command line (`/` or `?`), clearing any in-progress
-/// count / operator parse first.  The prompt then captures keys via
-/// `feed_cmdline` until the user submits or cancels.
-fn start_search_cmdline(vim: &mut VimState, kind: CmdLineKind) {
+/// Open a command line (`/` `?` search, or `:` ex), clearing any
+/// in-progress count / operator parse first.  The prompt then captures keys
+/// via `feed_cmdline` until the user submits or cancels.
+fn start_cmdline(vim: &mut VimState, kind: CmdLineKind) {
     vim.reset_pending();
     vim.cmdline = Some(CmdLineState {
         kind,
