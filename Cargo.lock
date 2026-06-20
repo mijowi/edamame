@@ -841,6 +841,7 @@ dependencies = [
  "criterion",
  "crossterm 0.29.0",
  "dirs",
+ "fancy-regex 0.18.0",
  "image",
  "insta",
  "mermaid-rs-renderer",
@@ -958,6 +959,17 @@ checksum = "b95f7c0680e4142284cf8b22c14a476e87d61b004a3a0861872b32ef7ead40a2"
 dependencies = [
  "bit-set 0.5.3",
  "regex",
+]
+
+[[package]]
+name = "fancy-regex"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1e1dacd0d2082dfcf1351c4bdd566bbe89a2b263235a2b50058f1e130a47277"
+dependencies = [
+ "bit-set 0.8.0",
+ "regex-automata",
+ "regex-syntax",
 ]
 
 [[package]]
@@ -3395,7 +3407,7 @@ dependencies = [
  "anyhow",
  "base64",
  "bitflags 2.11.0",
- "fancy-regex",
+ "fancy-regex 0.11.0",
  "filedescriptor",
  "finl_unicode",
  "fixedbitset 0.4.2",
