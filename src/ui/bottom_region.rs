@@ -77,6 +77,13 @@ pub enum HintContent {
         prompt: String,
         chords: Vec<HintChord>,
     },
+    /// Vim command line (`/` `?` `:`): a prefix glyph plus the typed text
+    /// with a block cursor at char index `cursor`.
+    CommandLine {
+        prefix: char,
+        text: String,
+        cursor: usize,
+    },
 }
 
 /// Pick the default hint set for `state`, adapting to the cursor's
@@ -459,6 +466,37 @@ pub fn lay_out_chords(chords: &[HintChord], theme: &Theme, bar_style: Style) -> 
     spans
 }
 
+/// Build the spans for a vim command line: a leading ` {prefix}` glyph,
+/// then the typed text with a block cursor cell at char index `cursor`
+/// (styled `theme.cursor_rendered`).  When the cursor sits past the last
+/// char it renders as a trailing styled space, so an empty `/` still shows
+/// a cursor.
+fn command_line_spans(
+    prefix: char,
+    text: &str,
+    cursor: usize,
+    theme: &Theme,
+    bar_style: Style,
+) -> Vec<Span<'static>> {
+    let base = match bar_style.bg {
+        Some(bg) => theme.hint_label.bg(bg),
+        None => theme.hint_label,
+    };
+    let mut spans = vec![Span::styled(format!(" {prefix}"), base)];
+    for (i, c) in text.chars().enumerate() {
+        let style = if i == cursor {
+            theme.cursor_rendered
+        } else {
+            base
+        };
+        spans.push(Span::styled(c.to_string(), style));
+    }
+    if cursor >= text.chars().count() {
+        spans.push(Span::styled(" ".to_string(), theme.cursor_rendered));
+    }
+    spans
+}
+
 /// The hint-line widget.  Renders chords / transient / prompt onto a
 /// single row, with a trailing fill using `bar_style`.
 pub struct HintLine<'a> {
@@ -519,6 +557,11 @@ impl<'a> Widget for HintLine<'a> {
                 v.extend(chord_spans);
                 v
             }
+            HintContent::CommandLine {
+                prefix,
+                text,
+                cursor,
+            } => command_line_spans(*prefix, text, *cursor, self.theme, self.bar_style),
         };
 
         // Sum what we've rendered so we can pad the trailing fill with

@@ -43,15 +43,18 @@ use crate::editor::vim_ops::{
     doubled_line_range, execute_operator, first_non_blank, indent_lines, join_lines, paste,
     replace_char, replace_char_range, replace_range_with, resolve_find_repeat, resolve_motion,
     resolve_motion_range, resolve_text_object_range, set_case_range, toggle_case,
-    toggle_case_range, vertical_line_range, visual_line_bounds, visual_line_char_range, FindKind,
-    Motion, OpRange, OpResult, Operator, TextObject,
+    toggle_case_range, vertical_line_range, visual_line_bounds, visual_line_char_range,
+    word_under_cursor_at, FindKind, Motion, OpRange, OpResult, Operator, TextObject,
 };
 use crate::editor::{edit_ops, EditorState, Mode};
 
-use super::state::{PendingOp, VimRegister, VimState, VimSubMode, COUNT_CAP};
+use super::cmdline::{self, CmdLineStep};
+use super::state::{
+    CmdLineKind, CmdLineState, PendingOp, VimRegister, VimState, VimSubMode, COUNT_CAP,
+};
 
 /// What `vim_feed` decided about a key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VimOutcome {
     /// A multi-key sequence is still accumulating — keep the pending
     /// count / operator state.
@@ -62,6 +65,13 @@ pub enum VimOutcome {
     /// Not a vim key (e.g. a `Ctrl-*` chord) — fall through to the
     /// default keymap handler.
     Passthrough,
+    /// An App-level effect the reducer can't perform itself (it holds
+    /// `&mut EditorState`, not `&mut App`): start a search for `query`
+    /// in the given direction.  Emitted by `/` `?` (query from the
+    /// command line) and `*` `#` (word under the cursor).  The App runs
+    /// `enter_vim_search`.  `n`/`N` need no outcome — they move over
+    /// `EditorState::search` directly.
+    EnterSearch { forward: bool, query: String },
 }
 
 /// Feed one key press to the vim state machine.
@@ -72,6 +82,12 @@ pub fn vim_feed(
     viewport_height: usize,
     viewport_width: usize,
 ) -> VimOutcome {
+    // An active command line (`/` `?`, and `:` in CP9) captures every key
+    // until the user submits (Enter) or cancels (Esc / Backspace past the
+    // start), so it is checked before any sub-mode dispatch.
+    if vim.cmdline.is_some() {
+        return feed_cmdline(vim, key);
+    }
     match vim.sub_mode {
         VimSubMode::Insert => feed_insert(vim, editor, key, viewport_height, viewport_width),
         VimSubMode::Visual | VimSubMode::VisualLine => {
@@ -109,6 +125,42 @@ fn feed_insert(
             VimOutcome::Consumed
         }
         _ => VimOutcome::Passthrough,
+    }
+}
+
+// ── Command line (`/` `?` `:`) ──────────────────────────────────────────────────
+
+/// Drive the active command line.  Editing keys redraw in place; `Enter`
+/// submits and `Esc` (or a backspace past the start) cancels.  A submitted
+/// `/` / `?` line becomes a [`VimOutcome::EnterSearch`]; an empty submit (or
+/// the CP9-only `:`) just closes the prompt.
+fn feed_cmdline(vim: &mut VimState, key: KeyEvent) -> VimOutcome {
+    let Some(cl) = vim.cmdline.as_mut() else {
+        return VimOutcome::Passthrough;
+    };
+    let kind = cl.kind;
+    match cmdline::feed_key(cl, key) {
+        CmdLineStep::Editing => VimOutcome::Consumed,
+        CmdLineStep::Cancel => {
+            vim.cmdline = None;
+            VimOutcome::Consumed
+        }
+        CmdLineStep::Submit(input) => {
+            vim.cmdline = None;
+            // An empty query closes the prompt with no search; `:` is
+            // wired in CP9.
+            match kind {
+                CmdLineKind::SearchForward if !input.is_empty() => VimOutcome::EnterSearch {
+                    forward: true,
+                    query: input,
+                },
+                CmdLineKind::SearchBackward if !input.is_empty() => VimOutcome::EnterSearch {
+                    forward: false,
+                    query: input,
+                },
+                _ => VimOutcome::Consumed,
+            }
+        }
     }
 }
 
@@ -152,13 +204,66 @@ fn feed_normal(
     match key.code {
         KeyCode::Esc => {
             // Esc cancels any in-progress operator / count and leaves
-            // OperatorPending back in Normal.
+            // OperatorPending back in Normal.  It also dismisses an active
+            // search's highlights (vim's `:noh`), keeping the cursor and
+            // scroll where they are — only a *navigate* search reaches here
+            // (a capturing replace flow defers to `DefaultHandler`, so vim
+            // never sees its `Esc`).  Dropping the session directly rather
+            // than via `exit_search` avoids the pre-search scroll restore:
+            // the user stays on the match they navigated to.
             vim.sub_mode = VimSubMode::Normal;
             vim.reset_pending();
+            editor.search = None;
             VimOutcome::Consumed
         }
         KeyCode::Char(c) => feed_command_char(vim, editor, c, vh, vw, /*visual=*/ false),
-        // Non-character keys (arrows, Home/End, PageUp/Down, …) keep
+        // `Tab` / `Shift-Tab` walk the active search matches, exactly like
+        // `n` / `N`, so a vim navigate search is navigable however it was
+        // started (`/`, `?`, `Ctrl-F`, or the palette).  With no search
+        // active they are inert — never `InsertTab` (Normal must not edit).
+        KeyCode::Tab if editor.search.is_some() => {
+            search_repeat(editor, /*forward=*/ true, count_of(vim), vh, vw);
+            vim.reset_pending();
+            VimOutcome::Consumed
+        }
+        KeyCode::BackTab if editor.search.is_some() => {
+            search_repeat(editor, /*forward=*/ false, count_of(vim), vh, vw);
+            vim.reset_pending();
+            VimOutcome::Consumed
+        }
+        // Editing keys never mutate the buffer in Normal (vim's rule): the
+        // global keymap would turn these into `DeleteCharBack` / `Newline`
+        // / `InsertTab`, so they must be consumed here.  `Backspace` moves
+        // left, `Delete` moves right, `Enter` drops to the next line's
+        // first non-blank; `Tab` (no search) is inert.  Any in-progress
+        // operator / count is cancelled.
+        KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter | KeyCode::Tab => {
+            vim.sub_mode = VimSubMode::Normal;
+            let n = count_of(vim);
+            match key.code {
+                KeyCode::Backspace => {
+                    for _ in 0..n {
+                        feed_hjkl(editor, 'h', vh, vw);
+                    }
+                }
+                KeyCode::Delete => {
+                    for _ in 0..n {
+                        feed_hjkl(editor, 'l', vh, vw);
+                    }
+                }
+                KeyCode::Enter => {
+                    for _ in 0..n {
+                        feed_hjkl(editor, 'j', vh, vw);
+                    }
+                    move_first_non_blank(editor);
+                    after_move(editor, vh, vw);
+                }
+                _ => {} // Tab with no search: inert.
+            }
+            vim.reset_pending();
+            VimOutcome::Consumed
+        }
+        // Other non-character keys (arrows, Home/End, PageUp/Down, …) keep
         // their default bindings so navigation still works in Normal.
         _ => VimOutcome::Passthrough,
     }
@@ -212,16 +317,30 @@ fn feed_visual(
         },
         // Arrow keys mirror `h j k l` in Visual: extend the selection
         // rather than passing through to the default handler (which would
-        // move the cursor *and* clear the selection).
-        KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+        // move the cursor *and* clear the selection).  `Backspace` /
+        // `Delete` / `Enter` join them as left / right / down movers so
+        // they extend the selection instead of editing through it.
+        KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Up
+        | KeyCode::Down
+        | KeyCode::Backspace
+        | KeyCode::Delete
+        | KeyCode::Enter => {
             let dir = match key.code {
-                KeyCode::Left => 'h',
-                KeyCode::Right => 'l',
+                KeyCode::Left | KeyCode::Backspace => 'h',
+                KeyCode::Right | KeyCode::Delete => 'l',
                 KeyCode::Up => 'k',
-                _ => 'j',
+                _ => 'j', // Down, Enter
             };
             feed_hjkl(editor, dir, vh, vw);
             extend_selection(editor);
+            vim.reset_pending();
+            VimOutcome::Consumed
+        }
+        // `Tab` / `Shift-Tab` are inert in Visual — never `InsertTab`,
+        // which would replace the selection.
+        KeyCode::Tab | KeyCode::BackTab => {
             vim.reset_pending();
             VimOutcome::Consumed
         }
@@ -726,6 +845,39 @@ fn feed_command_char(
             'V' => {
                 enter_visual(vim, editor, /*line=*/ true);
                 vim.reset_pending();
+            }
+            // `/` `?`: open the command-line search prompt.  The next keys
+            // are captured by `feed_cmdline` until Enter / Esc.
+            '/' => {
+                start_search_cmdline(vim, CmdLineKind::SearchForward);
+                return VimOutcome::Pending;
+            }
+            '?' => {
+                start_search_cmdline(vim, CmdLineKind::SearchBackward);
+                return VimOutcome::Pending;
+            }
+            // `n` / `N`: advance / retreat over the active search matches
+            // (a no-op when no search is active).  Honors the count (`3n`).
+            'n' => {
+                search_repeat(editor, /*forward=*/ true, count, vh, vw);
+                vim.reset_pending();
+            }
+            'N' => {
+                search_repeat(editor, /*forward=*/ false, count, vh, vw);
+                vim.reset_pending();
+            }
+            // `*` / `#`: search the word under the cursor forward / backward.
+            // Emits `EnterSearch` (the App runs the search); a no-op when the
+            // line has no keyword at/after the cursor.
+            '*' => {
+                let outcome = search_word_outcome(editor, /*forward=*/ true);
+                vim.reset_pending();
+                return outcome;
+            }
+            '#' => {
+                let outcome = search_word_outcome(editor, /*forward=*/ false);
+                vim.reset_pending();
+                return outcome;
             }
             // Any other bare key is swallowed — a Normal-mode key must
             // never fall through to `InsertChar`.
@@ -1445,6 +1597,62 @@ fn after_edit(editor: &mut EditorState, vh: usize, vw: usize) {
     }
     editor.update_cursor_block();
     editor.ensure_cursor_visible(vh, vw);
+}
+
+/// Open a search command line (`/` or `?`), clearing any in-progress
+/// count / operator parse first.  The prompt then captures keys via
+/// `feed_cmdline` until the user submits or cancels.
+fn start_search_cmdline(vim: &mut VimState, kind: CmdLineKind) {
+    vim.reset_pending();
+    vim.cmdline = Some(CmdLineState {
+        kind,
+        input: String::new(),
+        cursor: 0,
+    });
+}
+
+/// `n` / `N`: advance (or retreat) the focused match `count` times over the
+/// active search, then sync the cursor and scroll it into view.  A no-op
+/// when no search is active.  Mirrors `App::search_move_focus` but acts
+/// directly on `EditorState` (vim owns the keys, so no App round-trip is
+/// needed — see §2.3).
+fn search_repeat(editor: &mut EditorState, forward: bool, count: u32, vh: usize, vw: usize) {
+    if editor.search.is_none() {
+        return;
+    }
+    // Vim edits can have mutated the buffer since the last search, leaving
+    // the match list stale — refresh before navigating.
+    editor.ensure_search_fresh();
+    for _ in 0..count.max(1) {
+        if let Some(s) = editor.search.as_mut() {
+            if forward {
+                s.advance_focus();
+            } else {
+                s.retreat_focus();
+            }
+        }
+    }
+    editor.sync_cursor_to_search_focus();
+    editor.scroll_focused_match_into_view(vh, vw);
+}
+
+/// `*` / `#`: build a search for the word under the cursor.  Repositions
+/// the cursor to the word's start first (vim's behavior) so the App's
+/// cursor-relative focus is correct — without it a backward `#` from the
+/// middle of an occurrence would snap to the current word's start instead
+/// of jumping to the previous occurrence.  Returns `EnterSearch` so the
+/// App runs the flow; a `Consumed` no-op when the line has no keyword
+/// at/after the cursor.
+fn search_word_outcome(editor: &mut EditorState, forward: bool) -> VimOutcome {
+    match word_under_cursor_at(&editor.buffer, editor.cursor.offset) {
+        Some((start, query)) => {
+            editor.cursor.offset = start;
+            editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
+            editor.update_cursor_block();
+            VimOutcome::EnterSearch { forward, query }
+        }
+        None => VimOutcome::Consumed,
+    }
 }
 
 /// Move the cursor to the first non-blank character of its line (the

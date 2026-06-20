@@ -19,6 +19,7 @@ use edamame::config::{Action, KeyBindingOverrides, KeyMap, Theme};
 use edamame::document::{Buffer, Selection};
 use edamame::editor::{EditorState, Mode};
 use edamame::input::{vim_feed, VimOutcome, VimState, VimSubMode};
+use edamame::search::SearchState;
 
 const VH: usize = 40;
 const VW: usize = 80;
@@ -2217,4 +2218,284 @@ fn ctrl_chord_during_a_visual_text_object_passes_through_keeping_selection() {
         "the selection is untouched by the cancel"
     );
     assert_eq!(vim.pending_text_object, None);
+}
+
+// ── CP8: search (`/ ? n N * #`) ─────────────────────────────────────────────────
+
+/// Install an active navigate-only search for `query` on `st`.
+fn with_search(st: &mut EditorState, query: &str) {
+    let s = SearchState::new(query.to_owned(), None, st.scroll).expect("valid query");
+    st.enter_search(s);
+}
+
+#[test]
+fn slash_opens_a_command_line_and_enter_submits_a_forward_search() {
+    let mut st = state("foo bar foo");
+    let mut vim = VimState::default();
+
+    assert_eq!(feed(&mut vim, &mut st, ch('/')), VimOutcome::Pending);
+    assert!(vim.cmdline.is_some(), "`/` arms the command line");
+
+    feed(&mut vim, &mut st, ch('f'));
+    feed(&mut vim, &mut st, ch('o'));
+    feed(&mut vim, &mut st, ch('o'));
+    let out = feed(&mut vim, &mut st, key(KeyCode::Enter));
+    assert_eq!(
+        out,
+        VimOutcome::EnterSearch {
+            forward: true,
+            query: "foo".to_string()
+        }
+    );
+    assert!(vim.cmdline.is_none(), "submit closes the command line");
+}
+
+#[test]
+fn question_mark_submits_a_backward_search() {
+    let mut st = state("foo bar foo");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('?'));
+    feed(&mut vim, &mut st, ch('b'));
+    feed(&mut vim, &mut st, ch('a'));
+    feed(&mut vim, &mut st, ch('r'));
+    assert_eq!(
+        feed(&mut vim, &mut st, key(KeyCode::Enter)),
+        VimOutcome::EnterSearch {
+            forward: false,
+            query: "bar".to_string()
+        }
+    );
+}
+
+#[test]
+fn esc_in_the_command_line_cancels_without_searching() {
+    let mut st = state("foo");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('/'));
+    feed(&mut vim, &mut st, ch('x'));
+    assert_eq!(feed(&mut vim, &mut st, esc()), VimOutcome::Consumed);
+    assert!(vim.cmdline.is_none(), "Esc closes the command line");
+}
+
+#[test]
+fn empty_search_submit_is_a_noop() {
+    let mut st = state("foo");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('/'));
+    assert_eq!(
+        feed(&mut vim, &mut st, key(KeyCode::Enter)),
+        VimOutcome::Consumed,
+        "an empty query closes the prompt with no search"
+    );
+    assert!(vim.cmdline.is_none());
+}
+
+#[test]
+fn command_line_typing_does_not_move_the_cursor_or_edit() {
+    let mut st = state("hello");
+    let before = st.buffer.contents();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('/'));
+    for c in "ell".chars() {
+        feed(&mut vim, &mut st, ch(c));
+    }
+    assert_eq!(
+        st.cursor.offset, 0,
+        "cursor stays put while typing a search"
+    );
+    assert_eq!(st.buffer.contents(), before, "no buffer edit");
+}
+
+#[test]
+fn star_searches_the_word_under_the_cursor_forward() {
+    let mut st = state("foo bar foo");
+    st.cursor.offset = 4; // on "bar"
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    assert_eq!(
+        feed(&mut vim, &mut st, ch('*')),
+        VimOutcome::EnterSearch {
+            forward: true,
+            query: "bar".to_string()
+        }
+    );
+}
+
+#[test]
+fn hash_searches_the_word_under_the_cursor_backward() {
+    let mut st = state("alpha beta");
+    st.cursor.offset = 7; // inside "beta"
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    assert_eq!(
+        feed(&mut vim, &mut st, ch('#')),
+        VimOutcome::EnterSearch {
+            forward: false,
+            query: "beta".to_string()
+        }
+    );
+}
+
+#[test]
+fn star_on_whitespace_with_no_following_word_is_a_noop() {
+    let mut st = state("hi    ");
+    st.cursor.offset = 3; // trailing spaces, no word after
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    assert_eq!(feed(&mut vim, &mut st, ch('*')), VimOutcome::Consumed);
+}
+
+#[test]
+fn n_and_capital_n_advance_and_retreat_the_focused_match() {
+    let mut st = state("foo bar foo baz foo");
+    with_search(&mut st, "foo"); // matches at 0, 8, 16
+    let mut vim = VimState::default();
+    assert_eq!(st.search.as_ref().unwrap().focused_idx, 0);
+
+    feed(&mut vim, &mut st, ch('n'));
+    assert_eq!(st.search.as_ref().unwrap().focused_idx, 1);
+    assert_eq!(st.cursor.offset, 8, "cursor follows the match");
+
+    feed(&mut vim, &mut st, ch('N'));
+    assert_eq!(st.search.as_ref().unwrap().focused_idx, 0);
+    assert_eq!(st.cursor.offset, 0);
+
+    // Retreat past the first wraps to the last.
+    feed(&mut vim, &mut st, ch('N'));
+    assert_eq!(st.search.as_ref().unwrap().focused_idx, 2);
+}
+
+#[test]
+fn count_drives_n() {
+    let mut st = state("x y x y x y x"); // "x" at 0,4,8,12
+    with_search(&mut st, "x");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('2'));
+    feed(&mut vim, &mut st, ch('n'));
+    assert_eq!(
+        st.search.as_ref().unwrap().focused_idx,
+        2,
+        "2n advances twice"
+    );
+}
+
+#[test]
+fn n_with_no_active_search_is_an_inert_noop() {
+    let mut st = state("foo bar");
+    let mut vim = VimState::default();
+    assert_eq!(feed(&mut vim, &mut st, ch('n')), VimOutcome::Consumed);
+    assert_eq!(st.cursor.offset, 0);
+    assert!(st.search.is_none());
+}
+
+#[test]
+fn esc_in_normal_dismisses_an_active_search() {
+    let mut st = state("foo bar foo");
+    with_search(&mut st, "foo");
+    let mut vim = VimState::default();
+    assert!(st.search.is_some());
+    feed(&mut vim, &mut st, esc());
+    assert!(
+        st.search.is_none(),
+        "Esc clears the search highlight (`:noh`)"
+    );
+}
+
+// ── Normal mode never edits (Backspace / Delete / Enter / Tab) ───────────────────
+
+#[test]
+fn backspace_in_normal_moves_left_without_editing() {
+    let mut st = state("hello");
+    st.cursor.offset = 3;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    let out = feed(&mut vim, &mut st, key(KeyCode::Backspace));
+    assert_eq!(out, VimOutcome::Consumed, "Backspace is swallowed");
+    assert_eq!(st.buffer.contents(), "hello", "no buffer edit");
+    assert_eq!(st.cursor.offset, 2, "cursor moved left");
+}
+
+#[test]
+fn delete_in_normal_moves_right_without_editing() {
+    let mut st = state("hello");
+    st.cursor.offset = 1;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, key(KeyCode::Delete));
+    assert_eq!(st.buffer.contents(), "hello", "no buffer edit");
+    assert_eq!(st.cursor.offset, 2, "cursor moved right");
+}
+
+#[test]
+fn count_drives_backspace_in_normal() {
+    let mut st = state("hello");
+    st.cursor.offset = 4;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('3'));
+    feed(&mut vim, &mut st, key(KeyCode::Backspace));
+    assert_eq!(st.buffer.contents(), "hello");
+    assert_eq!(st.cursor.offset, 1, "3<BS> moves left three times");
+}
+
+#[test]
+fn enter_in_normal_moves_to_next_line_first_non_blank_without_editing() {
+    let mut st = state("abc\n   xyz");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, key(KeyCode::Enter));
+    assert_eq!(st.buffer.contents(), "abc\n   xyz", "no newline inserted");
+    assert_eq!(
+        st.cursor.offset, 7,
+        "cursor on the first non-blank of line 2"
+    );
+}
+
+#[test]
+fn tab_in_normal_without_a_search_is_inert() {
+    let mut st = state("hi");
+    let mut vim = VimState::default();
+    let out = feed(&mut vim, &mut st, key(KeyCode::Tab));
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(st.buffer.contents(), "hi", "Tab must not insert a tab");
+    assert_eq!(st.cursor.offset, 0);
+}
+
+#[test]
+fn tab_and_backtab_walk_search_matches_like_n_and_capital_n() {
+    let mut st = state("foo bar foo baz foo");
+    with_search(&mut st, "foo"); // matches at 0, 8, 16
+    let mut vim = VimState::default();
+    assert_eq!(st.search.as_ref().unwrap().focused_idx, 0);
+
+    feed(&mut vim, &mut st, key(KeyCode::Tab));
+    assert_eq!(st.search.as_ref().unwrap().focused_idx, 1, "Tab advances");
+    assert_eq!(st.cursor.offset, 8, "cursor follows the match");
+
+    feed(&mut vim, &mut st, key(KeyCode::BackTab));
+    assert_eq!(
+        st.search.as_ref().unwrap().focused_idx,
+        0,
+        "Shift-Tab retreats"
+    );
+}
+
+#[test]
+fn backspace_and_delete_extend_a_visual_selection_without_editing() {
+    let mut st = state("hello world");
+    st.cursor.offset = 4;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v')); // enter Visual, anchor at 4
+    feed(&mut vim, &mut st, key(KeyCode::Delete)); // extend right
+    feed(&mut vim, &mut st, key(KeyCode::Delete));
+    assert_eq!(
+        st.buffer.contents(),
+        "hello world",
+        "Visual edit-keys don't edit"
+    );
+    let sel = st.selection.as_ref().expect("selection still set");
+    assert_eq!((sel.anchor, sel.active), (4, 6), "selection extended right");
+    feed(&mut vim, &mut st, key(KeyCode::Backspace)); // extend back left
+    let sel = st.selection.as_ref().unwrap();
+    assert_eq!(sel.active, 5, "Backspace pulls the active end left");
 }

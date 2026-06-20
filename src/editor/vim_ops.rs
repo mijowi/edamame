@@ -18,6 +18,7 @@
 pub mod edits;
 pub mod motion;
 pub mod operator;
+pub mod search;
 pub mod text_object;
 pub mod visual;
 
@@ -30,5 +31,6 @@ pub use motion::{
     vertical_line_range, FindKind, Motion, OpRange,
 };
 pub use operator::{execute_operator, OpResult, Operator};
+pub use search::word_under_cursor_at;
 pub use text_object::{resolve_text_object_range, TextObject};
 pub use visual::{visual_line_bounds, visual_line_char_range};

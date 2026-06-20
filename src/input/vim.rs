@@ -4,6 +4,7 @@
 //! apply/resolution layer.  This mirrors `MouseDispatcher` →
 //! `mouse_ops::apply`.  See `docs/vim-implementation-plan.md`.
 
+pub mod cmdline;
 pub mod feed;
 pub mod state;
 

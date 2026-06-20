@@ -515,7 +515,9 @@ impl App {
         // default-denies everything off the allowlist; allowed
         // app-level openers are re-routed inside
         // `dispatch_search_action`.
-        if self.editor.search.is_some() {
+        // A vim navigate-only search does *not* capture (vim owns its keys),
+        // so the gate is skipped there — see `search_flow_captures`.
+        if self.search_flow_captures() {
             let Some(safe) = search_safe_action(&action) else {
                 self.flash_action_unavailable("search");
                 return;

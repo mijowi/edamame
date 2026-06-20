@@ -30,6 +30,24 @@ fn keymap() -> KeyMap {
     KeyMap::build(&KeyBindingOverrides::default()).unwrap()
 }
 
+// ── Smartcase (base feature) ──────────────────────────────────────────
+
+#[test]
+fn smartcase_lowercase_query_matches_every_case() {
+    // A lowercase pattern is case-insensitive — every variant matches.
+    let st = state_with_search("Foo foo FOO\n", "foo", None);
+    assert_eq!(st.search.as_ref().unwrap().matches.len(), 3);
+}
+
+#[test]
+fn smartcase_uppercase_query_is_case_sensitive() {
+    // Any uppercase letter flips the search to case-sensitive.
+    let st = state_with_search("Foo foo FOO\n", "Foo", None);
+    let matches = &st.search.as_ref().unwrap().matches;
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0], 0..3);
+}
+
 // ── EditorState flow lifecycle ────────────────────────────────────────
 
 #[test]
