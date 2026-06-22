@@ -772,6 +772,10 @@ impl KeyMap {
         // History
         bind!("ctrl+z", Action::Undo);
         bind!("ctrl+shift+z", Action::Redo);
+        // Ctrl-R is vim's Redo; bind it for everyone so vim Redo works via
+        // plain passthrough (no vim-specific claim) and non-vim users gain a
+        // second Redo chord.  See docs/vim-implementation-plan.md §2.7.
+        bind!("ctrl+r", Action::Redo);
 
         // Clipboard
         // Ctrl-C → Copy (not Quit). The app intercepts Ctrl-C in crossterm

@@ -92,6 +92,80 @@ impl App {
         self.needs_draw = true;
     }
 
+    /// Start a vim `/` / `?` / `*` / `#` search: a navigate-only flow whose
+    /// initial focus is cursor-relative — the first match *after* the cursor
+    /// for a forward search, *before* it for a backward one, wrapping around
+    /// the document.  Unlike [`Self::enter_search_flow`] (the modal path,
+    /// which always starts at the first match), this matches vim's semantics.
+    /// Zero matches never enters the flow — the user gets a flash.
+    pub(crate) fn enter_vim_search(&mut self, query: String, forward: bool) {
+        let Some(state) = SearchState::new(query.clone(), None, self.editor.scroll) else {
+            self.flash("Search term cannot span lines", MessageKind::Info);
+            return;
+        };
+        self.editor.enter_search(state);
+        if self
+            .editor
+            .search
+            .as_ref()
+            .is_some_and(|s| s.matches.is_empty())
+        {
+            self.editor.exit_search();
+            self.flash(format!("No matches for \"{query}\""), MessageKind::Info);
+            self.needs_draw = true;
+            return;
+        }
+        // Cursor-relative initial focus.  Match offsets are bytes, so compare
+        // against the cursor's byte offset.
+        let cursor_byte = self
+            .editor
+            .buffer
+            .rope()
+            .char_to_byte(self.editor.cursor.offset);
+        if let Some(s) = self.editor.search.as_mut() {
+            let idx = if forward {
+                // First match starting strictly after the cursor; wrap to 0.
+                let i = s.matches.partition_point(|m| m.start <= cursor_byte);
+                if i >= s.matches.len() {
+                    0
+                } else {
+                    i
+                }
+            } else {
+                // Last match starting strictly before the cursor; wrap to last.
+                let i = s.matches.partition_point(|m| m.start < cursor_byte);
+                if i == 0 {
+                    s.matches.len() - 1
+                } else {
+                    i - 1
+                }
+            };
+            s.focused_idx = idx;
+        }
+        self.editor.sync_cursor_to_search_focus();
+        // `enter_search` set `pending_focus_scroll`; the next `prepare_viewport`
+        // scrolls the focused match into view once the height is known.
+        self.needs_draw = true;
+    }
+
+    /// Whether the active search flow *captures* keyboard / mouse input — the
+    /// gate that default-denies buffer edits and routes flow keys to
+    /// `dispatch_search_action`.
+    ///
+    /// A flow captures unless it is a vim navigate-only search: vim owns its
+    /// own keys (`n`/`N` move over `EditorState::search`, every other key is a
+    /// normal vim command), so a vim `/` search must *not* trap input the way
+    /// the `Ctrl-F` flow does.  A vim *replace* flow (`Ctrl-F` with a
+    /// replacement) still captures — it needs the `Tab`/`r`/`a` flow keys.
+    /// With no vim handler the rule reduces to "any active search captures",
+    /// exactly the previous behavior.
+    pub(crate) fn search_flow_captures(&self) -> bool {
+        self.editor
+            .search
+            .as_ref()
+            .is_some_and(|s| self.vim.is_none() || s.is_replace_flow())
+    }
+
     /// Tear down the active flow (if any): cancel a pending advance and
     /// restore the pre-search scroll.  Safe to call unconditionally —
     /// buffer-replacing paths (diff entry, file reload) use this so a
@@ -561,6 +635,82 @@ mod tests {
         );
         assert!(!app.should_quit);
         assert!(app.editor.search.is_some(), "flow stays active behind it");
+    }
+
+    #[test]
+    fn vim_search_forward_focuses_first_match_after_cursor() {
+        let mut app = app_with_buffer("foo bar foo baz foo\n", 0); // matches 0,8,16
+        app.set_vim_enabled(true);
+        app.editor.cursor.offset = 5; // within "bar"
+        app.enter_vim_search("foo".to_owned(), true);
+        assert_eq!(app.editor.search.as_ref().unwrap().focused_idx, 1);
+        assert_eq!(app.editor.cursor.offset, 8, "cursor on the focused match");
+    }
+
+    #[test]
+    fn vim_search_backward_focuses_last_match_before_cursor() {
+        let mut app = app_with_buffer("foo bar foo baz foo\n", 0);
+        app.set_vim_enabled(true);
+        app.editor.cursor.offset = 12; // within "baz"
+        app.enter_vim_search("foo".to_owned(), false);
+        assert_eq!(app.editor.search.as_ref().unwrap().focused_idx, 1);
+    }
+
+    #[test]
+    fn vim_search_forward_wraps_when_no_match_follows_the_cursor() {
+        let mut app = app_with_buffer("foo bar foo\n", 0); // matches 0,8
+        app.set_vim_enabled(true);
+        app.editor.cursor.offset = 9; // within the last match
+        app.enter_vim_search("foo".to_owned(), true);
+        assert_eq!(
+            app.editor.search.as_ref().unwrap().focused_idx,
+            0,
+            "no match strictly after the cursor wraps to the first"
+        );
+    }
+
+    #[test]
+    fn vim_search_with_no_match_flashes_and_does_not_enter() {
+        let mut app = app_with_buffer("foo bar\n", 0);
+        app.set_vim_enabled(true);
+        app.enter_vim_search("zzz".to_owned(), true);
+        assert!(app.editor.search.is_none(), "zero matches → no flow");
+        assert!(app.transient.is_some(), "a no-match flash is shown");
+    }
+
+    #[test]
+    fn hash_from_mid_word_jumps_to_the_previous_occurrence() {
+        use crate::input::{vim_feed, VimOutcome};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        // "foo" at 0, 8, 16; cursor in the *middle* of the third occurrence.
+        let mut app = app_with_buffer("foo bar foo baz foo\n", 0);
+        app.set_vim_enabled(true);
+        app.editor.cursor.offset = 17; // 'o' inside the third "foo" (start 16)
+        app.editor.update_cursor_block();
+
+        let mut vim = app.vim.take().unwrap();
+        let out = vim_feed(
+            &mut vim,
+            &mut app.editor,
+            KeyEvent::new(KeyCode::Char('#'), KeyModifiers::NONE),
+            24,
+            80,
+        );
+        app.vim = Some(vim);
+        let VimOutcome::EnterSearch { forward, query } = out else {
+            panic!("# should emit EnterSearch, got {out:?}");
+        };
+        assert!(!forward);
+        assert_eq!(query, "foo");
+        // search_word_outcome repositioned the cursor to the word start (16),
+        // not left at 17 — that is what makes the backward jump correct.
+        assert_eq!(app.editor.cursor.offset, 16);
+
+        app.enter_vim_search(query, forward);
+        // Backward from word-start 16 → previous occurrence at 8 (idx 1),
+        // NOT the current word at 16 (the bug being fixed).
+        assert_eq!(app.editor.search.as_ref().unwrap().focused_idx, 1);
+        assert_eq!(app.editor.cursor.offset, 8, "cursor on the previous match");
     }
 
     #[test]

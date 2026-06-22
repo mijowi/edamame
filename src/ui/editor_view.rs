@@ -54,6 +54,15 @@ pub struct EditorView<'a> {
     pub is_scrolling: bool,
     /// What the hint line should display for this frame.
     pub hint: HintContent,
+    /// Vim sub-mode badge (`NORMAL` / `INSERT` / `VISUAL` / `V-LINE`)
+    /// when the vim handler is active; `None` for the default handler,
+    /// where the status bar shows the rendering-mode badge instead.
+    pub vim_mode_label: Option<&'a str>,
+    /// True in vim VisualLine sub-mode.  Threaded into `RenderedView` /
+    /// `RawView` so the charwise `selection` is widened to whole lines for
+    /// the highlight overlay only (§2.6).  Always `false` for the default
+    /// handler and in non-Visual vim sub-modes.
+    pub visual_line_mode: bool,
     /// When true, the document area is capped to `max_width_cols` and
     /// centred horizontally; the gutters are filled with `theme.normal`.
     pub max_width_enabled: bool,
@@ -260,6 +269,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                         theme: self.theme,
                         show_table_buttons: self.show_table_buttons,
                         drop_indicator: self.table_drop_indicator,
+                        visual_line_mode: self.visual_line_mode,
                     },
                     doc_area,
                     buf,
@@ -271,6 +281,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                     RawView {
                         state: &*self.state,
                         theme: self.theme,
+                        visual_line_mode: self.visual_line_mode,
                     },
                     doc_area,
                     buf,
@@ -440,6 +451,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                 cursor_col: Some(cursor_col + 1),
                 section_path,
                 diff_progress,
+                vim_mode_label: self.vim_mode_label,
             },
             hint: self.hint,
             theme: self.theme,

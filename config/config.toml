@@ -77,9 +77,10 @@ appearance = "dark"
 # big_h1 = true
 
 # ── Modal ─────────────────────────────────────────────────────────────────────
-# Which modal handler processes key events. Currently only "default" is
-# supported (the non-modal chord/shortcut keymap); this section exists as a
-# forward-looking extension point.
+# Which modal handler processes key events. "default" is the non-modal
+# chord/shortcut keymap; "vim" enables Vim-style modal editing and motions
+# (only a subset of Vim is supported — see the docs). This can also be
+# toggled from the first-run welcome modal.
 # [modal]
 # handler = "default"
 

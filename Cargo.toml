@@ -54,6 +54,14 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 unicode-width = "0.2"
 unicode-segmentation = "1"
 
+# Regex — used only by the vim `:s` / `:%s` ex substitution (CP9).  The `/`
+# search path stays literal-substring (smartcase); regex is confined here.
+# `fancy-regex` (not the `regex` crate) is used so the vim→regex translator
+# can reach backreferences and lookaround — features the linear-time `regex`
+# engine cannot express.  It delegates to `regex` for the simple fast path
+# and only backtracks when a fancy feature appears.
+fancy-regex = "0.18"
+
 # Clipboard (OS clipboard with kill-ring fallback).  `wayland-data-control`
 # is NOT in arboard's default feature set but is required for read access on
 # pure-Wayland systems (Sway, GNOME without XWayland, etc.); without it

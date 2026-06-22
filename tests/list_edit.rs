@@ -701,3 +701,59 @@ fn undo_reverts_continue_item() {
     apply(&mut st, Action::Undo);
     assert_eq!(st.contents(), src);
 }
+
+#[test]
+fn delete_line_renumbers_outer_list_across_a_nested_child() {
+    // Non-vim `DeleteLine`: removing an outer item whose sibling carries a
+    // nested child must still renumber the outer run.  The cursor lands on the
+    // nested child after the delete, so this exercises the nesting-aware path.
+    let src = "1. Ordered\n2. Second\n    1. nested\n3. Third\n";
+    let mut st = editor_at(src, "2. Second");
+    apply(&mut st, Action::DeleteLine);
+    assert_eq!(st.contents(), "1. Ordered\n    1. nested\n2. Third\n");
+}
+
+// ── renumber_list_block: nesting-aware ───────────────────────────────────────
+
+#[test]
+fn renumber_block_counts_outer_run_across_a_nested_child() {
+    use edamame::editor::list_edit::renumber_list_block;
+    // Outer items 1 and 3 are split by a nested child; the cursor sits on the
+    // child (where a post-delete cursor lands).  The outer run must renumber.
+    let src = "1. a\n    1. x\n3. c\n";
+    let cursor = src.find("1. x").unwrap();
+    let delta = renumber_list_block(src, cursor).expect("outer run is not sequential");
+    let mut out = src.to_owned();
+    out.replace_range(
+        delta.offset..delta.offset + delta.removed.len(),
+        &delta.inserted,
+    );
+    assert_eq!(out, "1. a\n    1. x\n2. c\n");
+}
+
+#[test]
+fn renumber_block_restarts_each_sublist_and_is_noop_when_consistent() {
+    use edamame::editor::list_edit::renumber_list_block;
+    // Already-consistent nested structure: every ordered run is sequential and
+    // each sub-list restarts at 1 under its parent → no edit.
+    let src = "1. a\n    1. x\n    2. y\n2. b\n    1. p\n3. c\n";
+    assert!(
+        renumber_list_block(src, 0).is_none(),
+        "consistent block needs no edit"
+    );
+}
+
+#[test]
+fn renumber_block_preserves_bullet_children() {
+    use edamame::editor::list_edit::renumber_list_block;
+    // A bullet sub-list nested under ordered items is kept verbatim while the
+    // outer ordered run is renumbered.
+    let src = "1. a\n    - x\n    - y\n3. c\n";
+    let delta = renumber_list_block(src, 0).expect("outer run 1,3 is not sequential");
+    let mut out = src.to_owned();
+    out.replace_range(
+        delta.offset..delta.offset + delta.removed.len(),
+        &delta.inserted,
+    );
+    assert_eq!(out, "1. a\n    - x\n    - y\n2. c\n");
+}
