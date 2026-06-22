@@ -806,7 +806,6 @@ impl KeyMap {
         bind!("shift+right", Action::SelectRight);
         bind!("shift+up", Action::SelectUp);
         bind!("shift+down", Action::SelectDown);
-        bind!("ctrl+shift+a", Action::SelectAll);
 
         // List
         bind!("ctrl+space", Action::ToggleCheckbox);
