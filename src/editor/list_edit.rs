@@ -242,8 +242,7 @@ mod tests {
     #[test]
     fn renumber_list_fixes_disordered_numbers() {
         let src = "1. a\n1. b\n1. c\n";
-        let info = info_at(src, 0);
-        let delta = renumber_list(&info, src).expect("renumber");
+        let delta = renumber_list_block(src, 0).expect("renumber");
         let mut out = src.to_owned();
         out.replace_range(
             delta.offset..delta.offset + delta.removed.len(),
@@ -255,8 +254,7 @@ mod tests {
     #[test]
     fn renumber_list_noop_when_already_sequential() {
         let src = "1. a\n2. b\n3. c\n";
-        let info = info_at(src, 0);
-        assert!(renumber_list(&info, src).is_none());
+        assert!(renumber_list_block(src, 0).is_none());
     }
 
     #[test]

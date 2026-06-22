@@ -1,0 +1,5 @@
+---
+source: tests/ui.rs
+expression: out
+---
+ VISUAL  notes.md                                             1:1  42 lines  2%

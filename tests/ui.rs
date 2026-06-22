@@ -101,6 +101,68 @@ fn snapshot_status_bar_modified() {
     insta::assert_snapshot!(out);
 }
 
+/// Render the status bar with a vim sub-mode badge (`NORMAL` / `INSERT` /
+/// `VISUAL` / `V-LINE`), which takes precedence over the rendering-mode
+/// badge.  The view mode stays `Rendered` (vim never rests in Preview).
+fn render_status_bar_vim(label: &str, width: u16) -> String {
+    let theme = Box::leak(Box::new(Theme::default()));
+    let backend = TestBackend::new(width, 1);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            let bar = StatusBar {
+                state: StatusBarState {
+                    mode: Mode::Rendered,
+                    filename: "notes.md",
+                    line_count: 42,
+                    modified: false,
+                    scroll: 0,
+                    cursor_line: Some(1),
+                    cursor_col: Some(1),
+                    section_path: Vec::new(),
+                    diff_progress: None,
+                    vim_mode_label: Some(label),
+                },
+                theme,
+            };
+            frame.render_widget(bar, frame.area());
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    (0..width)
+        .map(|x| {
+            buf.cell((x, 0))
+                .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+        })
+        .collect()
+}
+
+#[test]
+fn status_bar_vim_normal_badge_wins_over_view_mode() {
+    let out = render_status_bar_vim("NORMAL", 60);
+    assert!(out.contains("NORMAL"), "got: {out:?}");
+    // The vim badge replaces the rendering-mode `EDIT` badge.
+    assert!(!out.contains("EDIT"), "got: {out:?}");
+}
+
+#[test]
+fn snapshot_status_bar_vim_normal() {
+    let out = render_status_bar_vim("NORMAL", 80);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn snapshot_status_bar_vim_insert() {
+    let out = render_status_bar_vim("INSERT", 80);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn snapshot_status_bar_vim_visual() {
+    let out = render_status_bar_vim("VISUAL", 80);
+    insta::assert_snapshot!(out);
+}
+
 #[test]
 fn rendered_view_paints_selection_across_multiple_rendered_blocks() {
     use edamame::document::{Buffer, Selection};
@@ -265,6 +327,64 @@ fn selection_on_bold_text_highlights_rendered_positions() {
         !cell_has_sel(4, 1),
         "cell (4, 1) should NOT have selection bg (past 'bold')"
     );
+}
+
+/// Regression: a VisualLine selection over a rendered list line must paint the
+/// list marker (`• ` / `1. `) too, not just the item text.  The marker→content
+/// column map snaps a within-marker start forward to the content column, so a
+/// full-line (col-0) selection would otherwise leave the marker cells unpainted
+/// even though the underlying bytes are selected.
+#[test]
+fn visual_line_selection_paints_the_list_marker() {
+    use edamame::document::{Buffer, Selection};
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // Line 0 is a spacer holding the cursor so the list lines below stay
+    // rendered (a cursor on a list line would reveal it as raw instead).
+    let src = "x\n- alpha\n- beta\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    // Charwise anchors inside the two bullet items; VisualLine widening
+    // expands them to the whole lines (markers included).
+    state.selection = Some(Selection {
+        anchor: 4,  // inside "alpha"
+        active: 14, // inside "beta"
+    });
+    state.cursor.offset = 0; // cursor parked on the spacer line
+
+    let backend = TestBackend::new(25, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                visual_line_mode: true,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let cell_has_sel = |x: u16, y: u16| {
+        buf.cell((x, y))
+            .map(|c| c.style().bg == theme.selection.bg)
+            .unwrap_or(false)
+    };
+    // Row 1 renders "• alpha": cell 0 is the bullet marker and must be
+    // highlighted, as must the content past it.
+    assert!(
+        cell_has_sel(0, 1),
+        "VisualLine highlight must cover the list marker cell, not start past it"
+    );
+    assert!(cell_has_sel(2, 1), "item content must stay highlighted");
+    // Row 2 ("• beta") must be fully covered the same way.
+    assert!(cell_has_sel(0, 2), "second item marker must be highlighted");
 }
 
 #[test]

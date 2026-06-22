@@ -152,7 +152,9 @@ impl App {
                 &fallback
             }
         };
-        HintContent::Chords(hint_line_for(&self.editor, keymap))
+        // When vim is active, the sub-mode drives a vim-specific chord row.
+        let vim_mode = self.vim.as_ref().map(|v| v.sub_mode);
+        HintContent::Chords(hint_line_for(&self.editor, keymap, vim_mode))
     }
 
     /// Inspect `action` after dispatch and emit the matching flash

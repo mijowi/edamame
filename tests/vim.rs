@@ -2742,3 +2742,199 @@ fn ex_substitute_unsupported_atom_flashes() {
         "rejected pattern records no edit"
     );
 }
+
+// ── CP10: markdown-aware list wiring ────────────────────────────────────────────
+
+#[test]
+fn o_continues_an_ordered_list_with_the_next_number() {
+    // `o` after `1. Item` opens a fresh `2. ` item below and enters Insert.
+    let mut st = state("1. Item\n");
+    let mut vim = VimState::default();
+    st.cursor.offset = 3; // inside "Item"
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('o'));
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+    assert_eq!(st.buffer.contents(), "1. Item\n2. \n");
+}
+
+#[test]
+fn o_continues_a_bullet_list_with_the_same_marker() {
+    let mut st = state("- one\n");
+    let mut vim = VimState::default();
+    st.cursor.offset = 2; // inside "one"
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('o'));
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+    assert_eq!(st.buffer.contents(), "- one\n- \n");
+}
+
+#[test]
+fn o_continue_is_a_single_undo_unit() {
+    let mut st = state("1. a\n2. b\n");
+    let mut vim = VimState::default();
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('o'));
+    // Inserted `2. ` and renumbered `b` to `3.` inline — all one delta.
+    assert_eq!(st.buffer.contents(), "1. a\n2. \n3. b\n");
+    // One undo restores the original document.
+    feed(&mut vim, &mut st, esc());
+    feed(&mut vim, &mut st, ch('u'));
+    assert_eq!(st.buffer.contents(), "1. a\n2. b\n");
+}
+
+#[test]
+fn capital_o_opens_an_item_above_a_later_list_item() {
+    // `O` on the second item continues from the first, landing a new item
+    // between them and renumbering the tail.
+    let mut st = state("1. a\n2. b\n");
+    let mut vim = VimState::default();
+    st.cursor.offset = 5; // on "2. b"
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('O'));
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+    assert_eq!(st.buffer.contents(), "1. a\n2. \n3. b\n");
+}
+
+#[test]
+fn o_outside_a_list_opens_a_plain_line() {
+    let mut st = state("hello\n");
+    let mut vim = VimState::default();
+    st.cursor.offset = 1;
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('o'));
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+    assert_eq!(st.buffer.contents(), "hello\n\n");
+}
+
+#[test]
+fn dd_renumbers_an_ordered_list() {
+    // Deleting the middle item renumbers the survivors monotonically.
+    let mut st = state("1. a\n2. b\n3. c\n");
+    let mut vim = VimState::default();
+    st.cursor.offset = 5; // on "2. b"
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(st.buffer.contents(), "1. a\n2. c\n");
+}
+
+#[test]
+fn dd_does_not_renumber_a_bullet_list() {
+    let mut st = state("- a\n- b\n- c\n");
+    let mut vim = VimState::default();
+    st.cursor.offset = 4; // on "- b"
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(st.buffer.contents(), "- a\n- c\n");
+}
+
+#[test]
+fn indent_indents_a_bullet_list_item() {
+    let mut st = state("- item\n");
+    let mut vim = VimState::default();
+    st.cursor.offset = 2; // on "item"
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('>'));
+    feed(&mut vim, &mut st, ch('>'));
+    assert_eq!(st.buffer.contents(), "    - item\n");
+}
+
+#[test]
+fn outdent_round_trips_a_list_indent() {
+    let mut st = state("    - item\n");
+    let mut vim = VimState::default();
+    st.cursor.offset = 6; // on "item"
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('<'));
+    feed(&mut vim, &mut st, ch('<'));
+    assert_eq!(st.buffer.contents(), "- item\n");
+}
+
+#[test]
+fn indent_indents_a_nested_ordered_list_item() {
+    // `>>` on the second ordered item nests it (fresh `1.`) and renumbers
+    // the outer run — the structure-aware path, not plain space-indent.
+    let mut st = state("1. a\n2. b\n3. c\n");
+    let mut vim = VimState::default();
+    st.cursor.offset = 5; // on "2. b"
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('>'));
+    feed(&mut vim, &mut st, ch('>'));
+    assert_eq!(st.buffer.contents(), "1. a\n    1. b\n2. c\n");
+}
+
+#[test]
+fn indent_outside_a_list_falls_back_to_plain_spaces() {
+    let mut st = state("hello\n");
+    let mut vim = VimState::default();
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('>'));
+    feed(&mut vim, &mut st, ch('>'));
+    assert_eq!(st.buffer.contents(), "    hello\n");
+}
+
+#[test]
+fn outdent_renumbers_the_item_into_the_outer_ordered_run() {
+    // De-nesting an ordered item must renumber the source so the raw markers
+    // match the (already sequential) rendered numbers — the outdented item
+    // carries a stale nested `1.` into the outer list otherwise.
+    let mut st = state("1. a\n2. b\n    1. c\n3. d\n");
+    let mut vim = VimState::default();
+    st.cursor.offset = 17; // on "c" in "    1. c"
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('<'));
+    feed(&mut vim, &mut st, ch('<'));
+    assert_eq!(st.buffer.contents(), "1. a\n2. b\n3. c\n4. d\n");
+}
+
+#[test]
+fn indent_onto_an_existing_nested_run_renumbers_the_join() {
+    // Nesting an item below a sibling nested run joins it as a duplicate `1.`;
+    // the renumber pass must fix the nested sequence so the source matches the
+    // rendered numbers.
+    let mut st = state("1. a\n    1. x\n    2. y\n2. b\n");
+    let mut vim = VimState::default();
+    st.cursor.offset = 26; // on "b" in "2. b"
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('>'));
+    feed(&mut vim, &mut st, ch('>'));
+    assert_eq!(st.buffer.contents(), "1. a\n    1. x\n    2. y\n    3. b\n");
+}
+
+#[test]
+fn dd_renumbers_an_outer_list_across_a_nested_child() {
+    // Deleting an outer item whose sibling carries a nested child must still
+    // renumber the outer run — the post-`dd` cursor lands on the nested child,
+    // so a flat renumber would touch only the inner list and leave the outer
+    // sequence stale (the rendered view shows it sequential regardless).
+    let mut st = state("1. Ordered\n2. Second\n    1. nested\n3. Third\n");
+    let mut vim = VimState::default();
+    st.cursor.offset = 11; // on "2. Second"
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(
+        st.buffer.contents(),
+        "1. Ordered\n    1. nested\n2. Third\n",
+    );
+}
+
+#[test]
+fn dd_renumbers_each_nested_sublist_under_its_own_parent() {
+    // Two parents each own a nested ordered sub-list; deleting a middle
+    // top-level item renumbers the outer run (3→2) while both sub-lists keep
+    // restarting at 1 under their own parent.
+    let mut st = state("1. a\n    1. x\n    2. y\n2. b\n3. c\n    1. p\n    2. q\n");
+    let mut vim = VimState::default();
+    st.cursor.offset = 23; // on "2. b"
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(
+        st.buffer.contents(),
+        "1. a\n    1. x\n    2. y\n2. c\n    1. p\n    2. q\n",
+    );
+}

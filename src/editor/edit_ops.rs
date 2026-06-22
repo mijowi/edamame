@@ -1486,15 +1486,26 @@ fn list_toggle_checkbox(state: &mut EditorState) {
     apply_byte_delta(state, res.delta, res.cursor_byte);
 }
 
-/// After a paste that may have landed in or adjacent to an ordered list,
-/// renumber the surrounding list so the sequence stays monotonic.  No-op for
-/// bullet lists or when the cursor is outside a list.
+/// After an edit that may have landed in or adjacent to an ordered list
+/// (delete, paste, list-break, …), renumber the surrounding list so the
+/// sequence stays monotonic.  No-op for bullet lists, in Raw mode, or when the
+/// cursor is outside a list.
+///
+/// Uses the nesting-aware [`list_edit::renumber_list_block`]: a delete lands the
+/// cursor on the line below, which for a list whose items have nested children
+/// is the *child* — so a flat per-indent renumber would fix only the
+/// (already-correct) inner list and leave the outer sequence stale.  The block
+/// walk renumbers every ordered run in the surrounding list, each restarting
+/// under its own parent.
 fn list_renumber_at_cursor(state: &mut EditorState) {
-    let Some((source, info)) = current_list(state) else {
+    // Raw mode: defer to plain text, never rewrite markers (mirrors
+    // `current_list`'s bail-out, which the other list-edit paths use).
+    if state.mode == Mode::Raw {
         return;
-    };
+    }
+    let source = state.buffer.contents();
     let byte_before = cursor_byte(state);
-    if let Some(delta) = list_edit::renumber_list(&info, &source) {
+    if let Some(delta) = list_edit::renumber_list_block(&source, byte_before) {
         apply_byte_delta(state, delta, byte_before);
     }
 }

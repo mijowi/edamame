@@ -13,7 +13,10 @@
 //! CP7 adds `text_object` (the `iw`/`aw`/quote/bracket-pair objects used by
 //! `d`/`c`/`y` and Visual).  CP8 added `search` (the `*`/`#` word scan).  CP9
 //! adds `ex` (the `:w`/`:q`/`:wq`/`:s`/`:%s` parser + the regex substitution —
-//! the only use of the `fancy-regex` crate).  See
+//! the only use of the `fancy-regex` crate).  CP10 extends `edits` with the
+//! markdown-aware list wiring (`open_list_continue` for `o`/`O`,
+//! `renumber_list_at_cursor` after `dd`, `indent_list_item` for `>>`/`<<`),
+//! which reuse the byte-oriented `list_edit` primitives.  See
 //! `docs/vim-implementation-plan.md` §2.1.
 
 pub mod edits;
@@ -26,8 +29,9 @@ pub mod vim_regex;
 pub mod visual;
 
 pub use edits::{
-    indent_lines, join_lines, paste, replace_char, replace_char_range, replace_range_with,
-    set_case_range, toggle_case, toggle_case_range,
+    indent_lines, indent_list_item, join_lines, open_list_continue, paste, renumber_list_at_cursor,
+    replace_char, replace_char_range, replace_range_with, set_case_range, toggle_case,
+    toggle_case_range,
 };
 pub use ex::{execute_substitute, parse_ex, ExCommand};
 pub use motion::{

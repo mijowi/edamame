@@ -41,11 +41,11 @@ use crate::config::Action;
 use crate::document::{EditDelta, Selection};
 use crate::editor::vim_ops::{
     doubled_line_range, execute_operator, execute_substitute, first_non_blank, indent_lines,
-    join_lines, parse_ex, paste, replace_char, replace_char_range, replace_range_with,
-    resolve_find_repeat, resolve_motion, resolve_motion_range, resolve_text_object_range,
-    set_case_range, toggle_case, toggle_case_range, vertical_line_range, visual_line_bounds,
-    visual_line_char_range, word_under_cursor_at, ExCommand, FindKind, Motion, OpRange, OpResult,
-    Operator, TextObject,
+    indent_list_item, join_lines, open_list_continue, parse_ex, paste, renumber_list_at_cursor,
+    replace_char, replace_char_range, replace_range_with, resolve_find_repeat, resolve_motion,
+    resolve_motion_range, resolve_text_object_range, set_case_range, toggle_case,
+    toggle_case_range, vertical_line_range, visual_line_bounds, visual_line_char_range,
+    word_under_cursor_at, ExCommand, FindKind, Motion, OpRange, OpResult, Operator, TextObject,
 };
 use crate::editor::{edit_ops, EditorState, Mode};
 
@@ -1056,6 +1056,12 @@ fn fold_op_result(
     vh: usize,
     vw: usize,
 ) {
+    // A linewise edit (`dd`, `dj`, `Vd`, …) can leave an ordered list's
+    // numbering disturbed; renumber it so the sequence stays monotonic,
+    // matching the non-vim delete path.  A no-op for yanks / `cc` / non-lists.
+    if res.linewise {
+        renumber_list_at_cursor(editor);
+    }
     if !res.register_text.is_empty() {
         vim.register = VimRegister {
             text: res.register_text,
@@ -1116,11 +1122,17 @@ fn feed_indent_pending(
             .unwrap_or(1)
             .saturating_mul(vim.motion_count.unwrap_or(1))
             .clamp(1, COUNT_CAP);
-        if let OpRange::Lines { first, last } =
+        ensure_editing(editor);
+        // A bare `>>` / `<<` (count 1) on a list item indents it
+        // structurally (nests / un-nests, renumbering ordered runs); a
+        // counted `N>>`, a non-list line, or Raw mode falls back to the
+        // plain space-based indent over the line span.
+        if count == 1 && indent_list_item(editor, right) {
+            after_edit(editor, vh, vw);
+        } else if let OpRange::Lines { first, last } =
             doubled_line_range(&editor.buffer, editor.cursor.offset, count)
         {
             let tab_width = editor.tab_width;
-            ensure_editing(editor);
             indent_lines(editor, first, last, right, tab_width);
             after_edit(editor, vh, vw);
         }
@@ -1593,10 +1605,16 @@ fn extend_selection(editor: &mut EditorState) {
 }
 
 /// Open a new line below (`o`) or above (`O`) the cursor's line, place
-/// the cursor on it, and enter Insert.  CP2 inserts a plain newline;
-/// list-aware continuation (auto-renumber / marker copy) arrives in CP10.
+/// the cursor on it, and enter Insert.  Inside a Markdown list the line is
+/// opened as a fresh list item (marker copied, ordered list renumbered) via
+/// `open_list_continue`; otherwise a plain newline is inserted.
 fn open_line(vim: &mut VimState, editor: &mut EditorState, below: bool, vh: usize, vw: usize) {
     ensure_editing(editor);
+    if open_list_continue(editor, below) {
+        after_edit(editor, vh, vw);
+        vim.sub_mode = VimSubMode::Insert;
+        return;
+    }
     let (line, _) = editor.cursor.line_col(&editor.buffer);
     let line_start = editor.buffer.line_to_char(line);
     if below {
