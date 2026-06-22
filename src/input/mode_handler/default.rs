@@ -38,15 +38,25 @@ impl<'k> ModeHandler for DefaultHandler<'k> {
             }
         }
 
-        // The search flow owns its keys the same way: Tab / Shift-Tab /
-        // `r` / `a` / Esc map to search actions before the global
-        // keymap gets a look-in (which would otherwise turn Tab into
-        // `InsertTab` and Esc into `ExitToPreview`).  Unmatched keys
-        // fall through; anything that resolves to a disallowed action
-        // is then dropped by the App's `search_safe_action` gate.
-        if state.search.is_some() {
+        // The search flow owns its keys the same way: search keys map to
+        // search actions before the global keymap gets a look-in (which
+        // would otherwise turn Tab into `InsertTab` and Esc into
+        // `ExitToPreview`).  A *capturing* replace flow intercepts the full
+        // set (`Tab`/`Shift+Tab`/`r`/`a`/`Esc`); a non-capturing navigate
+        // flow intercepts only the navigation keys (`Tab`/`Shift+Tab`/`Esc`)
+        // so `r`/`a` and every printable key fall through to normal editing
+        // with the match highlights left in place.
+        if let Some(search) = state.search.as_ref() {
             if let Some(action) = crate::search::search_action_for(&event) {
-                return Some(action);
+                let capturing = search.is_replace_flow();
+                if capturing
+                    || matches!(
+                        action,
+                        Action::SearchNext | Action::SearchPrev | Action::SearchExit
+                    )
+                {
+                    return Some(action);
+                }
             }
         }
 

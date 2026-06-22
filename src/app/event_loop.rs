@@ -306,6 +306,11 @@ impl App {
         self.last_doc_height = dims.doc_height;
         self.last_doc_width = dims.doc_width;
         self.editor.set_viewport_width(dims.doc_width);
+        // A non-capturing navigate flow lets the buffer be edited freely, so
+        // the match list can go stale outside the in-flow mutation paths.
+        // Refresh here (version-guarded → a no-op when nothing changed) so the
+        // focus-scroll below and the overlay painter both see live ranges.
+        self.editor.ensure_search_fresh();
         // Resolve a diff-entry scroll request now that the viewport
         // height is known (it isn't at the modal-close site that enters
         // diff mode).  One-shot: cleared after it fires.
@@ -807,12 +812,12 @@ impl App {
             return;
         }
 
-        // During a capturing search flow only viewport movement is
-        // allowed — clicks and drags would relocate the cursor or start a
-        // selection underneath the flow's own focus management.  Mirrors
-        // the keyboard gate in `search_safe_action`.  A vim navigate
-        // search does not capture, so clicks stay live there.  `Moved`
-        // events stay live for pointer-shape tracking.
+        // During a capturing (replace) search flow only viewport movement
+        // is allowed — clicks and drags would relocate the cursor or start
+        // a selection underneath the flow's own focus management.  Mirrors
+        // the keyboard gate in `search_safe_action`.  A navigate-only search
+        // does not capture, so clicks stay live there (in vim or default
+        // mode).  `Moved` events stay live for pointer-shape tracking.
         if self.search_flow_captures()
             && !matches!(
                 mouse_event.kind,
@@ -1385,7 +1390,7 @@ mod tests {
         let dims = dims();
 
         // Enter a navigate-only search flow with at least one match.
-        let search = SearchState::new("world".to_string(), None, 0).unwrap();
+        let search = SearchState::new("world".to_string(), None).unwrap();
         app.editor.enter_search(search);
         assert!(app.editor.search.is_some(), "search flow is active");
 
@@ -1407,7 +1412,7 @@ mod tests {
         app.set_vim_enabled(true);
         let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
         let dims = dims();
-        let search = SearchState::new("foo".to_string(), None, 0).unwrap();
+        let search = SearchState::new("foo".to_string(), None).unwrap();
         app.editor.enter_search(search);
         assert_eq!(app.editor.search.as_ref().unwrap().focused_idx, 0);
 

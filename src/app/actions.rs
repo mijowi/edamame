@@ -85,12 +85,14 @@ pub(super) fn diff_safe_action(action: &Action) -> Option<Action> {
     }
 }
 
-/// Default-deny gate over [`Action`]s while a search flow is active.
-/// Returns `Some(action)` for the search-flow actions themselves plus
-/// the read-only / always-safe set (scrolling, overlay openers, save,
-/// quit, undo/redo of in-flow replaces); `None` for everything else —
-/// most operations are unavailable for the duration of the flow,
-/// mirroring diff mode.
+/// Default-deny gate over [`Action`]s while a *capturing* search flow
+/// (a replace flow) is active.  Returns `Some(action)` for the
+/// search-flow actions, read-only navigation (cursor moves, selection,
+/// copy), and the always-safe set (scrolling, overlay openers, save,
+/// quit, undo/redo of in-flow replaces); `None` for everything that
+/// mutates the buffer — those stay unavailable for the duration of the
+/// flow, mirroring diff mode.  Navigate-only flows don't capture, so
+/// they never reach this gate.
 pub(super) fn search_safe_action(action: &Action) -> Option<Action> {
     use Action::*;
     let allowed = matches!(
@@ -101,6 +103,24 @@ pub(super) fn search_safe_action(action: &Action) -> Option<Action> {
             | SearchReplace
             | SearchReplaceAll
             | SearchExit
+            // Read-only navigation: the user can move the cursor, select,
+            // and copy while the replace flow holds the `Tab`/`r`/`a` keys.
+            | MoveLeft
+            | MoveRight
+            | MoveUp
+            | MoveDown
+            | MoveWordLeft
+            | MoveWordRight
+            | MoveLineStart
+            | MoveLineEnd
+            | MoveDocStart
+            | MoveDocEnd
+            | SelectLeft
+            | SelectRight
+            | SelectUp
+            | SelectDown
+            | SelectAll
+            | Copy
             | ScrollUp
             | ScrollDown
             | ScrollPageUp
@@ -515,14 +535,27 @@ impl App {
         // default-denies everything off the allowlist; allowed
         // app-level openers are re-routed inside
         // `dispatch_search_action`.
-        // A vim navigate-only search does *not* capture (vim owns its keys),
-        // so the gate is skipped there — see `search_flow_captures`.
+        // A navigate-only flow does *not* capture, in vim or default mode —
+        // see `search_flow_captures`.
         if self.search_flow_captures() {
             let Some(safe) = search_safe_action(&action) else {
                 self.flash_action_unavailable("search");
                 return;
             };
             self.dispatch_search_action(safe, doc_height, doc_width);
+            return;
+        }
+        // Non-capturing navigate flow: its own navigation actions (intercepted
+        // ahead of the keymap by `search_action_for`) still route to the
+        // search dispatcher; everything else falls through to normal editing
+        // with the match highlights left in place.
+        if self.editor.search.is_some()
+            && matches!(
+                action,
+                Action::SearchNext | Action::SearchPrev | Action::SearchExit
+            )
+        {
+            self.dispatch_search_action(action, doc_height, doc_width);
             return;
         }
         // VisualLine `Ctrl-C` / `Ctrl-X`: copy/cut the line-expanded range so

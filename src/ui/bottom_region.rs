@@ -1166,7 +1166,10 @@ mod tests {
         let set = hint_line_for(&st, &keymap(), true);
         assert_eq!(set.chords[0].label, "Back/fwd");
         assert_eq!(set.chords[0].chord, "⌥←→");
-        assert_eq!(set.chords[1].label, "Menu", "baseline Menu follows the nav hint");
+        assert_eq!(
+            set.chords[1].label, "Menu",
+            "baseline Menu follows the nav hint"
+        );
     }
 
     #[test]
@@ -1203,7 +1206,7 @@ mod tests {
         use crate::search::SearchState;
         let mut st = state("foo foo foo");
         st.mode = Mode::Rendered;
-        let search = SearchState::new("foo".to_owned(), None, st.scroll).unwrap();
+        let search = SearchState::new("foo".to_owned(), None).unwrap();
         st.enter_search(search);
         // An active search replaces the whole row with the flow chords +
         // match counter — under vim too, since `hint_line_for` no longer

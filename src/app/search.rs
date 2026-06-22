@@ -52,7 +52,7 @@ impl App {
     /// path.  Zero matches never enters the flow — the user gets a
     /// flash and stays where they were.
     pub(crate) fn enter_search_flow(&mut self, query: String, replace: Option<String>) {
-        let Some(state) = SearchState::new(query.clone(), replace, self.editor.scroll) else {
+        let Some(state) = SearchState::new(query.clone(), replace) else {
             // The modal validates non-empty input, so this only fires
             // for a query the session can't represent (e.g. pasted
             // newline).
@@ -99,7 +99,7 @@ impl App {
     /// which always starts at the first match), this matches vim's semantics.
     /// Zero matches never enters the flow — the user gets a flash.
     pub(crate) fn enter_vim_search(&mut self, query: String, forward: bool) {
-        let Some(state) = SearchState::new(query.clone(), None, self.editor.scroll) else {
+        let Some(state) = SearchState::new(query.clone(), None) else {
             self.flash("Search term cannot span lines", MessageKind::Info);
             return;
         };
@@ -152,24 +152,31 @@ impl App {
     /// gate that default-denies buffer edits and routes flow keys to
     /// `dispatch_search_action`.
     ///
-    /// A flow captures unless it is a vim navigate-only search: vim owns its
-    /// own keys (`n`/`N` move over `EditorState::search`, every other key is a
-    /// normal vim command), so a vim `/` search must *not* trap input the way
-    /// the `Ctrl-F` flow does.  A vim *replace* flow (`Ctrl-F` with a
-    /// replacement) still captures — it needs the `Tab`/`r`/`a` flow keys.
-    /// With no vim handler the rule reduces to "any active search captures",
-    /// exactly the previous behavior.
+    /// Only a **replace** flow captures, in vim or default mode alike.  A
+    /// replace flow needs the unmodified `Tab`/`r`/`a` flow keys, so it can't
+    /// also pass printable keys through to editing — it traps input, allowing
+    /// only read-only navigation (cursor moves, selection, copy) plus the flow
+    /// keys (see `search_safe_action`).
+    ///
+    /// A **navigate-only** flow does *not* capture: it is a lightweight
+    /// highlight overlay (vim's `hlsearch`, VS Code's find widget).  The user
+    /// keeps full editing freedom; only `Tab`/`Shift+Tab` (next/prev, plus
+    /// vim's `n`/`N`) and `Esc` (dismiss) are intercepted ahead of the keymap,
+    /// and the match list re-highlights as the buffer changes (refreshed every
+    /// frame in `prepare_viewport`).
     pub(crate) fn search_flow_captures(&self) -> bool {
         self.editor
             .search
             .as_ref()
-            .is_some_and(|s| self.vim.is_none() || s.is_replace_flow())
+            .is_some_and(|s| s.is_replace_flow())
     }
 
     /// Tear down the active flow (if any): cancel a pending advance and
-    /// restore the pre-search scroll.  Safe to call unconditionally —
-    /// buffer-replacing paths (diff entry, file reload) use this so a
-    /// stale match list never survives a content swap.
+    /// drop the session, leaving the viewport on the match the user
+    /// navigated to (search is a motion — no scroll-back to origin).
+    /// Safe to call unconditionally — buffer-replacing paths (diff
+    /// entry, file reload) use this so a stale match list never survives
+    /// a content swap.
     pub(crate) fn exit_search_flow(&mut self) {
         self.cancel_search_advance();
         if self.editor.search.is_some() {
@@ -240,6 +247,35 @@ impl App {
             | Action::CreateCustomTheme
             | Action::OpenConfigFolder => {
                 self.handle_app_action(&action, doc_height, doc_width);
+            }
+            // Read-only navigation allowed by `search_safe_action`: move
+            // the cursor / extend a selection / copy without leaving the
+            // replace flow.  Manual cursor movement supersedes a pending
+            // post-replace advance so the timer can't yank the cursor away
+            // afterwards; Copy leaves the cursor (and any pending advance)
+            // untouched.
+            Action::MoveLeft
+            | Action::MoveRight
+            | Action::MoveUp
+            | Action::MoveDown
+            | Action::MoveWordLeft
+            | Action::MoveWordRight
+            | Action::MoveLineStart
+            | Action::MoveLineEnd
+            | Action::MoveDocStart
+            | Action::MoveDocEnd
+            | Action::SelectLeft
+            | Action::SelectRight
+            | Action::SelectUp
+            | Action::SelectDown
+            | Action::SelectAll => {
+                self.cancel_search_advance();
+                crate::editor::edit_ops::apply(&mut self.editor, action, doc_height, doc_width);
+                self.needs_draw = true;
+            }
+            Action::Copy => {
+                crate::editor::edit_ops::apply(&mut self.editor, action, doc_height, doc_width);
+                self.needs_draw = true;
             }
             // Everything else passed `search_safe_action` but needs no
             // arm here.
@@ -450,8 +486,11 @@ mod tests {
     }
 
     #[test]
-    fn gate_blocks_buffer_edits_during_flow() {
-        let mut app = app_in_search("alpha beta alpha\n", "alpha", "");
+    fn gate_blocks_buffer_edits_during_replace_flow() {
+        // A replace flow captures: buffer-mutating actions are denied so the
+        // `Tab`/`r`/`a` flow keys stay unambiguous and the match ranges stay
+        // valid.  (Navigate-only flows don't capture — see the test below.)
+        let mut app = app_in_search("alpha beta alpha\n", "alpha", "OMEGA");
         let before = app.editor.buffer.contents();
         dispatch(&mut app, Action::InsertChar('x'));
         dispatch(&mut app, Action::DeleteCharBack);
@@ -462,11 +501,46 @@ mod tests {
 
     #[test]
     fn denied_action_flashes_not_available() {
-        let mut app = app_in_search("alpha beta\n", "alpha", "");
+        let mut app = app_in_search("alpha beta\n", "alpha", "OMEGA");
         dispatch(&mut app, Action::InsertChar('x'));
         let text = app.transient.as_ref().map(|t| t.text.clone());
         assert_eq!(text.as_deref(), Some("Not available during search"));
         assert!(app.editor.search.is_some(), "flow survives the denial");
+    }
+
+    #[test]
+    fn navigate_flow_allows_editing_and_keeps_highlights() {
+        // A navigate-only flow is a non-capturing overlay: the buffer edits
+        // freely while the flow stays active and its matches re-track the
+        // change (refreshed in `prepare_viewport`, simulated here).
+        let mut app = app_in_search("foo foo foo\n", "foo", "");
+        app.editor.mode = crate::editor::Mode::Rendered;
+        assert_eq!(app.editor.search.as_ref().unwrap().matches.len(), 3);
+        dispatch(&mut app, Action::InsertChar('x'));
+        assert_eq!(app.editor.buffer.contents(), "xfoo foo foo\n");
+        assert!(app.editor.search.is_some(), "editing does not end the flow");
+        app.editor.ensure_search_fresh();
+        assert_eq!(
+            app.editor.search.as_ref().unwrap().matches.len(),
+            3,
+            "the three matches still track after the edit"
+        );
+    }
+
+    #[test]
+    fn replace_flow_allows_cursor_movement_and_copy() {
+        // The capturing replace flow still permits read-only navigation:
+        // moving the cursor and copying must not be denied.
+        let mut app = app_in_search("alpha beta alpha\n", "alpha", "OMEGA");
+        let before = app.editor.cursor.offset;
+        dispatch(&mut app, Action::MoveRight);
+        assert_ne!(app.editor.cursor.offset, before, "cursor may move");
+        dispatch(&mut app, Action::SelectRight);
+        dispatch(&mut app, Action::Copy);
+        // None of these are buffer mutations, so the flow stays active and
+        // the text is untouched.
+        assert_eq!(app.editor.buffer.contents(), "alpha beta alpha\n");
+        assert!(app.editor.search.is_some());
     }
 
     #[test]
@@ -523,14 +597,16 @@ mod tests {
     }
 
     #[test]
-    fn exit_restores_pre_search_scroll() {
+    fn exit_stays_on_the_current_match_without_scroll_back() {
+        // Search is a motion: exiting leaves the viewport where the user
+        // navigated to (here, scroll 7), not back at the pre-search origin.
         let mut app = app_with_buffer(&"line\n".repeat(100), 0);
         app.editor.scroll = 42;
         app.enter_search_flow("line".to_owned(), None);
         app.editor.scroll = 7;
         dispatch(&mut app, Action::SearchExit);
         assert!(app.editor.search.is_none());
-        assert_eq!(app.editor.scroll, 42);
+        assert_eq!(app.editor.scroll, 7, "no scroll-back to origin on exit");
     }
 
     #[test]

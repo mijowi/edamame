@@ -26,8 +26,6 @@ pub struct SearchState {
     pub focused_idx: usize,
     /// `Buffer::version()` the match list was computed against.
     buffer_version: u64,
-    /// Scroll offset saved on entry and restored when the flow exits.
-    pub pre_search_scroll: usize,
 }
 
 impl SearchState {
@@ -35,7 +33,7 @@ impl SearchState {
     /// containing a newline (matches can't span buffer lines).  The
     /// match list starts stale; the caller's first
     /// [`Self::ensure_fresh`] populates it.
-    pub fn new(query: String, replace: Option<String>, pre_search_scroll: usize) -> Option<Self> {
+    pub fn new(query: String, replace: Option<String>) -> Option<Self> {
         if query.is_empty() || query.contains('\n') {
             return None;
         }
@@ -46,7 +44,6 @@ impl SearchState {
             focused_idx: 0,
             // Forces the first `ensure_fresh` to compute.
             buffer_version: u64::MAX,
-            pre_search_scroll,
         })
     }
 
@@ -233,25 +230,25 @@ mod tests {
     #[test]
     fn replace_flow_matching_is_case_sensitive_not_smartcase() {
         // A navigate flow with a lowercase query is smartcase (3 hits)...
-        let mut nav = SearchState::new("foo".to_owned(), None, 0).unwrap();
+        let mut nav = SearchState::new("foo".to_owned(), None).unwrap();
         nav.ensure_fresh("Foo foo FOO", 1);
         assert_eq!(nav.matches.len(), 3);
         // ...but the same query in a replace flow stays case-sensitive, so
         // only the exact-case occurrence is hit (and would be replaced).
-        let mut repl = SearchState::new("foo".to_owned(), Some("bar".to_owned()), 0).unwrap();
+        let mut repl = SearchState::new("foo".to_owned(), Some("bar".to_owned())).unwrap();
         repl.ensure_fresh("Foo foo FOO", 1);
         assert_eq!(repl.matches, vec![4..7]);
     }
 
     #[test]
     fn new_rejects_empty_and_multiline_queries() {
-        assert!(SearchState::new(String::new(), None, 0).is_none());
-        assert!(SearchState::new("a\nb".to_owned(), None, 0).is_none());
-        assert!(SearchState::new("ok".to_owned(), None, 0).is_some());
+        assert!(SearchState::new(String::new(), None).is_none());
+        assert!(SearchState::new("a\nb".to_owned(), None).is_none());
+        assert!(SearchState::new("ok".to_owned(), None).is_some());
     }
 
     fn fresh(source: &str, query: &str) -> SearchState {
-        let mut s = SearchState::new(query.to_owned(), None, 0).unwrap();
+        let mut s = SearchState::new(query.to_owned(), None).unwrap();
         s.ensure_fresh(source, 1);
         s
     }

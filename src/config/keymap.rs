@@ -198,7 +198,8 @@ pub enum Action {
     /// Replace every match in one shot — a single undo step — then
     /// exit the flow.  No-op in a navigate-only flow.
     SearchReplaceAll,
-    /// Exit the search flow, restoring the pre-search scroll.
+    /// Exit the search flow, leaving the cursor and viewport on the
+    /// current match (search is a motion — no scroll-back to origin).
     SearchExit,
 
     // ── Diff review ────────────────────────────────────────────────
