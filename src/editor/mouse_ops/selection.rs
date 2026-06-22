@@ -42,8 +42,16 @@ pub(super) fn expand_selection_to_inline_markers(
         if start_byte < len || end_byte + len > source.len() {
             continue;
         }
-        let before = &source[start_byte - len..start_byte];
-        let after = &source[end_byte..end_byte + len];
+        // Use `get` rather than direct slicing: the bytes adjacent to the
+        // selection may fall inside a multibyte char (e.g. `—`), which would
+        // panic on a `&source[..]` slice. All markers are ASCII, so a
+        // non-boundary range simply can't match and is safely skipped.
+        let (Some(before), Some(after)) = (
+            source.get(start_byte - len..start_byte),
+            source.get(end_byte..end_byte + len),
+        ) else {
+            continue;
+        };
         if before == *m && after == *m {
             // Don't cross a line boundary when expanding — redundant given
             // the check above but cheap to verify.
@@ -257,4 +265,44 @@ pub fn visual_selection_to_rendered_text(sel: VisualSelection, lines: &[Line<'_>
         }
     }
     out
+}
+
+#[cfg(test)]
+mod marker_expansion_tests {
+    use super::*;
+    use crate::document::Buffer;
+
+    /// Regression: a marker check on the bytes adjacent to the selection
+    /// must not panic when those bytes fall inside a multibyte char (e.g.
+    /// the em-dash `—`, three bytes wide).
+    #[test]
+    fn no_panic_on_multibyte_char_adjacent_to_selection() {
+        // The selection must start immediately *after* the em-dash (not on
+        // it) and have a trailing char, so the `start_byte - len` probe for a
+        // 1-byte marker lands inside `—` (bytes 0..3) while the `end_byte +
+        // len` probe stays in bounds. Selecting the em-dash itself would only
+        // ever probe the ASCII chars on either side and never hit the bug.
+        let buffer = Buffer::from_str("—bc");
+        // Select `b` (char index 1..2): `start_byte` is 3, so `before` probes
+        // source[2..3], which is inside the em-dash.
+        let sel = Selection {
+            anchor: 1,
+            active: 2,
+        };
+        let out = expand_selection_to_inline_markers(&buffer, sel);
+        assert_eq!((out.anchor, out.active), (1, 2));
+    }
+
+    #[test]
+    fn still_expands_real_markers() {
+        let buffer = Buffer::from_str("a *foo* b");
+        // Select `foo` (char index 3..6).
+        let sel = Selection {
+            anchor: 3,
+            active: 6,
+        };
+        let out = expand_selection_to_inline_markers(&buffer, sel);
+        // Expanded to include the surrounding `*` markers (char 2..7).
+        assert_eq!((out.anchor, out.active), (2, 7));
+    }
 }
