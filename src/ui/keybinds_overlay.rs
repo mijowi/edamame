@@ -149,8 +149,8 @@ impl KeybindsState {
     /// Construct the overlay state with a draft cloned from the live
     /// keymap and overrides.  Mutations stay in the draft until the
     /// user saves.
-    pub fn open(keymap: &KeyMap, overrides: &KeyBindingOverrides) -> Self {
-        let rows = build_rows();
+    pub fn open(keymap: &KeyMap, overrides: &KeyBindingOverrides, vim_enabled: bool) -> Self {
+        let rows = build_rows(vim_enabled);
         let focus_offsets = compute_focus_offsets(&rows);
         let mut state = Self {
             focused: 0,
@@ -761,11 +761,18 @@ fn rect_contains(rect: Option<Rect>, col: u16, row: u16) -> bool {
 /// bindings interleave exactly the way they appear on screen.  Adding
 /// a category here is the only edit needed to surface a new section
 /// in the overlay.
-fn build_rows() -> Vec<Row> {
+///
+/// When `vim_enabled` is true the `Preview mode` row (`ExitToPreview`)
+/// is dropped: vim's NORMAL is the resting mode that replaces Preview,
+/// so the action is a no-op and the row would only mislead.
+fn build_rows(vim_enabled: bool) -> Vec<Row> {
     let mut rows = Vec::new();
     for (title, bindings) in CATEGORIES {
         rows.push(Row::Header(title));
         for (action, label) in *bindings {
+            if vim_enabled && *action == Action::ExitToPreview {
+                continue;
+            }
             rows.push(Row::Binding {
                 action: action.clone(),
                 label,
@@ -789,7 +796,11 @@ mod tests {
     }
 
     fn open() -> KeybindsState {
-        KeybindsState::open(&keymap(), &KeyBindingOverrides::default())
+        KeybindsState::open(&keymap(), &KeyBindingOverrides::default(), false)
+    }
+
+    fn open_vim() -> KeybindsState {
+        KeybindsState::open(&keymap(), &KeyBindingOverrides::default(), true)
     }
 
     #[test]
@@ -1199,7 +1210,7 @@ mod tests {
     fn excluded_actions_are_not_rows() {
         // PgUp / PgDown were removed from the overlay — confirm both
         // via the Action set the row builder produces.
-        let rows = build_rows();
+        let rows = build_rows(false);
         for excluded in [Action::ScrollPageUp, Action::ScrollPageDown] {
             for row in &rows {
                 if let Row::Binding { action, .. } = row {
@@ -1216,7 +1227,7 @@ mod tests {
     fn editor_section_includes_mode_switching() {
         // Per review, "Preview mode" and "Toggle raw/render" sit
         // under Editor (not a separate View category).
-        let rows = build_rows();
+        let rows = build_rows(false);
         let mut current_header: Option<&'static str> = None;
         for row in &rows {
             match row {
@@ -1234,8 +1245,46 @@ mod tests {
     }
 
     #[test]
+    fn vim_mode_hides_preview_mode_row() {
+        // Vim's NORMAL replaces Preview as the resting mode, so the
+        // `Preview mode` (ExitToPreview) row is a no-op and must not
+        // appear when vim is enabled.  Without vim it still shows.
+        let default_rows = build_rows(false);
+        assert!(
+            default_rows.iter().any(|r| matches!(
+                r,
+                Row::Binding { action, .. } if *action == Action::ExitToPreview
+            )),
+            "Preview mode row should be present without vim"
+        );
+        let vim_rows = build_rows(true);
+        assert!(
+            !vim_rows.iter().any(|r| matches!(
+                r,
+                Row::Binding { action, .. } if *action == Action::ExitToPreview
+            )),
+            "Preview mode row should be hidden with vim enabled"
+        );
+        // The rest of the Editor section is untouched (Save still present).
+        assert!(vim_rows.iter().any(|r| matches!(
+            r,
+            Row::Binding { action, .. } if *action == Action::Save
+        )));
+    }
+
+    #[test]
+    fn vim_overlay_initial_focus_is_valid() {
+        // The dropped row must not strand initial focus on a header.
+        let state = open_vim();
+        assert!(matches!(
+            state.rows.get(state.focused),
+            Some(Row::Binding { .. })
+        ));
+    }
+
+    #[test]
     fn table_section_has_cell_navigation() {
-        let rows = build_rows();
+        let rows = build_rows(false);
         let mut in_table = false;
         let mut found_next_cell = false;
         for row in &rows {

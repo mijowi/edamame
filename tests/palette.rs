@@ -199,7 +199,7 @@ fn keybinds_overlay_conflict_is_rejected_and_reports_existing_action() {
 
     let keymap = keymap();
     let overrides = KeyBindingOverrides::default();
-    let mut state = KeybindsState::open(&keymap, &overrides);
+    let mut state = KeybindsState::open(&keymap, &overrides, false);
 
     // Focus the row for `Save`.  `focus_action` is the public surface
     // for jumping to a known row in the category-grouped layout.
@@ -245,7 +245,7 @@ fn keybinds_overlay_rebind_round_trips_through_save() {
 
     let keymap = keymap();
     let overrides = KeyBindingOverrides::default();
-    let mut state = KeybindsState::open(&keymap, &overrides);
+    let mut state = KeybindsState::open(&keymap, &overrides, false);
     assert!(state.focus_action(&Action::Save));
     state.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     state.handle_key(&KeyEvent::new(KeyCode::F(9), KeyModifiers::NONE));
