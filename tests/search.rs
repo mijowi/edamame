@@ -7,7 +7,7 @@
 //! `src/app/search.rs` and `src/app/modal/search_replace.rs`.
 
 use edamame::config::{KeyBindingOverrides, KeyMap, Theme};
-use edamame::document::Buffer;
+use edamame::document::{Buffer, Selection};
 use edamame::editor::{EditorState, Mode};
 use edamame::search::SearchState;
 use edamame::ui::bottom_region::hint_line_for;
@@ -28,6 +28,24 @@ fn state_with_search(text: &str, query: &str, replace: Option<&str>) -> EditorSt
 
 fn keymap() -> KeyMap {
     KeyMap::build(&KeyBindingOverrides::default()).unwrap()
+}
+
+// ── Smartcase (base feature) ──────────────────────────────────────────
+
+#[test]
+fn smartcase_lowercase_query_matches_every_case() {
+    // A lowercase pattern is case-insensitive — every variant matches.
+    let st = state_with_search("Foo foo FOO\n", "foo", None);
+    assert_eq!(st.search.as_ref().unwrap().matches.len(), 3);
+}
+
+#[test]
+fn smartcase_uppercase_query_is_case_sensitive() {
+    // Any uppercase letter flips the search to case-sensitive.
+    let st = state_with_search("Foo foo FOO\n", "Foo", None);
+    let matches = &st.search.as_ref().unwrap().matches;
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0], 0..3);
 }
 
 // ── EditorState flow lifecycle ────────────────────────────────────────
@@ -123,6 +141,8 @@ fn render_editor(state: &mut EditorState, width: u16, height: u16) -> ratatui::b
                 show_line_numbers: false,
                 is_scrolling: false,
                 hint,
+                vim_mode_label: None,
+                visual_line_mode: false,
                 max_width_enabled: false,
                 max_width_cols: 0,
                 scrollbar_active: false,
@@ -271,6 +291,49 @@ fn code_block_match_highlight_aligns_with_padded_text() {
     }
     assert_ne!(buf.cell((0, 1)).unwrap().style().bg, t.selection.bg);
     assert_ne!(buf.cell((4, 1)).unwrap().style().bg, t.selection.bg);
+}
+
+#[test]
+fn visual_selection_highlights_the_code_fence_rows() {
+    // Regression: the opening (` lang `) and closing fence rows of a
+    // fenced code block render unrelated text, so `paint_byte_range_overlay`
+    // used to skip them entirely — leaving a selection that spans a code
+    // block unhighlighted at its top and bottom.  They now paint the whole
+    // rendered row when the selection covers them.
+    let t = theme();
+    // Cursor stays on "para" (offset 0) so the code block is NOT the
+    // cursor block and therefore renders normally (no raw reveal),
+    // exercising the overlay-painting path.
+    let doc = "para\n\n```rust\ncode\n```\n";
+    let mut st = EditorState::new(Buffer::from_str(doc), theme());
+    st.mode = Mode::Rendered;
+    st.set_viewport_width(40);
+    // Charwise selection covering the whole code block (chars 6..22).
+    st.selection = Some(Selection {
+        anchor: 6,
+        active: 22,
+    });
+    let buf = render_editor(&mut st, 40, 10);
+    // Rows: 0 "para", 1 blank, 2 ` rust ` fence-lang, 3 "code" body,
+    // 4 closing fence pad.  The opening fence renders as " rust " — assert
+    // the "rust" label cells (cols 1..5) carry the selection background.
+    for x in 1..5u16 {
+        let cell = buf.cell((x, 2)).unwrap();
+        assert_eq!(
+            cell.style().bg,
+            t.selection.bg,
+            "opening fence col {x} must be highlighted by the selection"
+        );
+    }
+    // The code body row stays highlighted too (cols 1..5 cover "code").
+    for x in 1..5u16 {
+        let cell = buf.cell((x, 3)).unwrap();
+        assert_eq!(
+            cell.style().bg,
+            t.selection.bg,
+            "code body col {x} must be highlighted by the selection"
+        );
+    }
 }
 
 #[test]

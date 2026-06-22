@@ -33,12 +33,14 @@ use ratatui::Terminal;
 use crate::config::{Action, CoalesceKind, Config, KeyBindingOverrides, KeyMap};
 use crate::editor::{edit_ops, mouse_ops, Mode};
 use crate::input::mode_handler::default::DefaultHandler;
+use crate::input::{vim_feed, VimOutcome, VimSubMode};
 use crate::terminal::PointerShape;
 use crate::ui::editor_view::layout_doc_with_scrollbar;
 use crate::ui::{position_for_click, position_for_drag, thumb_range, EditorView, ModalKind};
 use crate::watcher::{NotifyWatcher, WatchedEvent};
 
 use super::actions::{modal_wheel_delta, HandleEvent};
+use super::flash::MessageKind;
 use super::frame_timer::{MIN_FRAME_INTERVAL, RESIZE_QUIESCE};
 use super::modal::ModalRenderCtx;
 use super::{App, AppEvent};
@@ -346,6 +348,8 @@ impl App {
         let max_width_enabled = self.config.editor.max_width_enabled;
         let max_width_cols = self.config.editor.max_width_cols;
         let hint = self.hint_content();
+        let vim_mode_label = self.vim.as_ref().map(|v| v.mode_label());
+        let visual_line_mode = self.vim.as_ref().is_some_and(|v| v.is_visual_line());
         let modal_cursor_visible = self.editor.cursor_blink.is_visible();
         let theme_ref = self.theme;
         let drop_indicator = drop_indicator_for(&self.drag_target);
@@ -371,6 +375,8 @@ impl App {
                 capabilities: capabilities_ref,
                 is_scrolling,
                 hint,
+                vim_mode_label,
+                visual_line_mode,
                 max_width_enabled,
                 max_width_cols,
                 scrollbar_active,
@@ -801,12 +807,13 @@ impl App {
             return;
         }
 
-        // During a search flow only viewport movement is allowed —
-        // clicks and drags would relocate the cursor or start a
-        // selection underneath the flow's own focus management.
-        // Mirrors the keyboard gate in `search_safe_action`.  `Moved`
+        // During a capturing search flow only viewport movement is
+        // allowed — clicks and drags would relocate the cursor or start a
+        // selection underneath the flow's own focus management.  Mirrors
+        // the keyboard gate in `search_safe_action`.  A vim navigate
+        // search does not capture, so clicks stay live there.  `Moved`
         // events stay live for pointer-shape tracking.
-        if self.editor.search.is_some()
+        if self.search_flow_captures()
             && !matches!(
                 mouse_event.kind,
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::Moved
@@ -914,7 +921,24 @@ impl App {
     /// `Event::Paste(String)`.  Route straight into the buffer so
     /// pasting from external apps always works, regardless of whether
     /// arboard can reach the OS clipboard from inside this process.
+    ///
+    /// Vim re-routes two cases so a paste never corrupts the document:
+    /// while a `/` `?` (`:` in CP9) command line is open the paste fills
+    /// the prompt instead of the buffer, and in any non-Insert sub-mode
+    /// the buffer is read-only — a stray paste is dropped (use `p`/`P`
+    /// to paste the register in Normal), upholding the "Normal mode does
+    /// not edit" rule.
     pub(super) fn dispatch_paste(&mut self, text: String, dims: &DocDims) {
+        if let Some(vim) = self.vim.as_mut() {
+            if let Some(cl) = vim.cmdline.as_mut() {
+                crate::input::vim::cmdline::paste_str(cl, &text);
+                self.needs_draw = true;
+                return;
+            }
+            if vim.sub_mode != VimSubMode::Insert {
+                return;
+            }
+        }
         edit_ops::paste_text(&mut self.editor, &text, dims.doc_height, dims.doc_width);
         self.needs_draw = true;
     }
@@ -1010,6 +1034,13 @@ impl App {
             //    one-shot transition (Preview→Rendered, selection
             //    clear, list-marker consume) before we attempt to
             //    coalesce subsequent same-kind events.
+            // `resolve_action` runs the keymap, so a bare Normal-mode vim
+            // key resolves to `InsertChar` here even though the vim
+            // intercept inside `dispatch_single_key` consumes it instead.
+            // That mismatch is harmless: the `vim.sub_mode != Insert` guard
+            // below `continue`s before any coalesce run is built, so this
+            // `coalesce` value is intentionally discarded for vim-consumed
+            // keys.  Don't reorder these past the guard.
             let action_i = resolve_action(&events[i], &keymap, &self.editor);
             let coalesce = action_i.as_ref().and_then(Action::coalesce_kind);
             self.dispatch_single_key(events[i].clone(), &keymap, dims);
@@ -1034,12 +1065,22 @@ impl App {
             if self.editor.selection.is_some()
                 || self.drag_target.is_some()
                 || self.editor.mode == crate::editor::Mode::Preview
-                // The search flow blocks buffer edits via the
+                // A capturing search flow blocks buffer edits via the
                 // `search_safe_action` gate inside `dispatch_action`;
                 // the coalesced insert/delete runs below bypass that
                 // dispatch entirely, so an autorepeat burst must not
-                // be allowed to extend a run mid-flow.
-                || self.editor.search.is_some()
+                // be allowed to extend a run mid-flow.  A vim navigate
+                // search does not capture, so Insert-mode typing during
+                // one still coalesces normally.
+                || self.search_flow_captures()
+                // Vim outside Insert must not coalesce: a held digit
+                // (`333`) accumulates a count, and bare keys are
+                // commands — neither is `InsertChar` typing.  Only
+                // Insert sub-mode gets the normal typing burst.
+                || self
+                    .vim
+                    .as_ref()
+                    .is_some_and(|v| v.sub_mode != VimSubMode::Insert)
             {
                 continue;
             }
@@ -1119,7 +1160,67 @@ impl App {
     /// [`App::dispatch_action`] pipeline.  The external-editor drain
     /// is intentionally not handled here — `dispatch_key_batch` runs
     /// it once at the end of a batch.
-    fn dispatch_single_key(&mut self, event: Event, keymap: &KeyMap, dims: &DocDims) {
+    pub(super) fn dispatch_single_key(&mut self, event: Event, keymap: &KeyMap, dims: &DocDims) {
+        // Vim intercept: when the vim handler is active, it owns the key
+        // first.  Two exceptions defer to a flow that hard-binds these
+        // keys downstream and would otherwise be shadowed:
+        //   - Diff mode — the diff-review keymap owns its keys.
+        //   - A *capturing* search flow — a replace flow (or any search in
+        //     non-vim mode).  Its bindings (`Esc`/`r`/`a`, …) are matched in
+        //     `DefaultHandler::handle`, which runs *after* this intercept;
+        //     without this guard vim Normal would swallow `Esc` and trap the
+        //     user.  A vim navigate-only search does *not* defer — vim owns
+        //     `n`/`N` and every other key over the highlighted matches (§2.3).
+        // A `Pending`/`Consumed` outcome ends dispatch here; an `EnterSearch`
+        // starts the search flow; a `Passthrough` (e.g. a `Ctrl-*` chord, or
+        // any printable char in Insert mode) falls through to the default
+        // keymap path below.
+        let vim_deferred = self.editor.mode == Mode::Diff || self.search_flow_captures();
+        if let Event::Key(key) = &event {
+            if key.kind == KeyEventKind::Press && !vim_deferred {
+                if let Some(vim) = self.vim.as_mut() {
+                    let key = *key;
+                    match vim_feed(vim, &mut self.editor, key, dims.doc_height, dims.doc_width) {
+                        VimOutcome::Pending | VimOutcome::Consumed => {
+                            self.needs_draw = true;
+                            return;
+                        }
+                        VimOutcome::EnterSearch { forward, query } => {
+                            self.enter_vim_search(query, forward);
+                            self.needs_draw = true;
+                            return;
+                        }
+                        // `:w` / `:q` / `:wq` route through the existing
+                        // save / quit actions so the dirty-buffer confirm and
+                        // save flash behave exactly as for `Ctrl-*`.  `:wq`
+                        // saves first, leaving the buffer clean before the
+                        // quit guard runs.
+                        VimOutcome::Save => {
+                            self.dispatch_action(Action::Save, dims.doc_height, dims.doc_width);
+                            self.needs_draw = true;
+                            return;
+                        }
+                        VimOutcome::Quit { save_first } => {
+                            if save_first {
+                                self.dispatch_action(Action::Save, dims.doc_height, dims.doc_width);
+                            }
+                            self.dispatch_action(Action::Quit, dims.doc_height, dims.doc_width);
+                            self.needs_draw = true;
+                            return;
+                        }
+                        // A `:s` result or an ex parse / regex error: the
+                        // substitution already ran in the reducer; just flash.
+                        VimOutcome::Flash(text) => {
+                            self.flash(text, MessageKind::Info);
+                            self.needs_draw = true;
+                            return;
+                        }
+                        VimOutcome::Passthrough => {}
+                    }
+                }
+            }
+        }
+
         let mut handler = DefaultHandler::new(keymap);
         let Some(action) = handler.handle_event(event, &self.editor) else {
             return;
@@ -1207,10 +1308,12 @@ fn drop_indicator_for(
 
 #[cfg(test)]
 mod tests {
-    use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use ratatui::layout::Rect;
 
     use crate::app::test_utils::app_with_buffer;
+    use crate::config::{KeyBindingOverrides, KeyMap};
+    use crate::search::SearchState;
 
     use super::DocDims;
 
@@ -1267,5 +1370,102 @@ mod tests {
         // Move below the doc area (e.g. onto the status bar).
         app.dispatch_mouse_event(mouse(MouseEventKind::Moved, 2, 10), &dims);
         assert!(app.hovered_link.is_none());
+    }
+
+    #[test]
+    fn esc_exits_the_search_flow_even_with_vim_active() {
+        // Regression: the vim intercept in `dispatch_single_key` must
+        // defer to the search flow (which hard-binds `Esc` → `SearchExit`
+        // downstream in `DefaultHandler`).  Without the deferral vim
+        // Normal swallows `Esc` (`reset_pending`, Consumed) and the user
+        // is trapped in the flow with no way out.
+        let mut app = app_with_buffer("hello world\n", 0);
+        app.set_vim_enabled(true);
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        let dims = dims();
+
+        // Enter a navigate-only search flow with at least one match.
+        let search = SearchState::new("world".to_string(), None, 0).unwrap();
+        app.editor.enter_search(search);
+        assert!(app.editor.search.is_some(), "search flow is active");
+
+        let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.dispatch_single_key(esc, &keymap, &dims);
+
+        assert!(
+            app.editor.search.is_none(),
+            "Esc must exit the search flow, not be swallowed by vim Normal"
+        );
+    }
+
+    #[test]
+    fn tab_walks_a_navigate_search_started_outside_vim() {
+        // A navigate search started via Ctrl-F / palette (not `/`) must still
+        // be Tab-navigable when vim is enabled — the key reaches vim_feed
+        // (the flow doesn't capture), which advances the match like `n`.
+        let mut app = app_with_buffer("foo bar foo baz foo\n", 0);
+        app.set_vim_enabled(true);
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        let dims = dims();
+        let search = SearchState::new("foo".to_string(), None, 0).unwrap();
+        app.editor.enter_search(search);
+        assert_eq!(app.editor.search.as_ref().unwrap().focused_idx, 0);
+
+        let tab = Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.dispatch_single_key(tab, &keymap, &dims);
+        assert_eq!(
+            app.editor.search.as_ref().unwrap().focused_idx,
+            1,
+            "Tab advances the focused match"
+        );
+        // The buffer must be untouched (no `InsertTab` leaked through).
+        assert_eq!(app.editor.buffer.contents(), "foo bar foo baz foo\n");
+    }
+
+    #[test]
+    fn paste_into_an_open_vim_command_line_fills_the_prompt_not_the_buffer() {
+        use crate::input::vim::state::{CmdLineKind, CmdLineState};
+        let mut app = app_with_buffer("hello\n", 0);
+        app.set_vim_enabled(true);
+        if let Some(vim) = app.vim.as_mut() {
+            vim.cmdline = Some(CmdLineState::new(CmdLineKind::SearchForward));
+        }
+        let before = app.editor.buffer.contents();
+        app.dispatch_paste("wor".to_owned(), &dims());
+        assert_eq!(app.editor.buffer.contents(), before, "buffer untouched");
+        let cl = app.vim.as_ref().unwrap().cmdline.as_ref().unwrap();
+        assert_eq!(cl.input, "wor");
+        assert_eq!(cl.cursor, 3);
+    }
+
+    #[test]
+    fn paste_in_vim_normal_mode_does_not_edit_the_buffer() {
+        // Regression: a bracketed paste in Normal used to fall straight into
+        // the buffer (and could panic by desyncing the parsed doc).
+        let mut app = app_with_buffer("hello\n", 0);
+        app.set_vim_enabled(true); // default sub_mode = Normal
+        let before = app.editor.buffer.contents();
+        app.dispatch_paste("XYZ".to_owned(), &dims());
+        assert_eq!(
+            app.editor.buffer.contents(),
+            before,
+            "Normal mode does not edit"
+        );
+    }
+
+    #[test]
+    fn command_line_paste_strips_newlines() {
+        use crate::input::vim::state::{CmdLineKind, CmdLineState};
+        let mut app = app_with_buffer("hi\n", 0);
+        app.set_vim_enabled(true);
+        if let Some(vim) = app.vim.as_mut() {
+            vim.cmdline = Some(CmdLineState::new(CmdLineKind::SearchForward));
+        }
+        app.dispatch_paste("a\nb\r\nc".to_owned(), &dims());
+        assert_eq!(
+            app.vim.as_ref().unwrap().cmdline.as_ref().unwrap().input,
+            "abc",
+            "multi-line paste collapses to a single search line"
+        );
     }
 }

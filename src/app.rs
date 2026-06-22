@@ -33,7 +33,7 @@ use ratatui::Terminal;
 use crate::config::{Config, ConfigWarning, KeyBindingOverrides, KeyMap, Theme, ThemeFile};
 use crate::document::Buffer;
 use crate::editor::{mouse_ops, EditorState};
-use crate::input::MouseDispatcher;
+use crate::input::{MouseDispatcher, VimState};
 use crate::terminal::{Capabilities, ColorDepth, PointerShape};
 use crate::ui::{EditorViewState, HintChord};
 use crate::watcher::{FileWatcher, WatchedEvent};
@@ -317,6 +317,12 @@ pub struct App {
     /// True while a release-check worker is in flight, so closing and
     /// reopening the About modal can't spawn a duplicate request.
     release_check_in_flight: bool,
+    /// Vim modal-editing state.  `Some` iff `config.modal.handler ==
+    /// "vim"`; `None` for the default handler, which keeps every vim
+    /// code path inert for existing users.  Survives across keystrokes
+    /// (counts, pending operators, the active sub-mode) and is read by
+    /// the UI for the mode badge.
+    vim: Option<VimState>,
 }
 
 impl App {
@@ -433,6 +439,16 @@ impl App {
         editor.set_big_h1(config.editor.big_h1);
         if images_off || diagrams_off {
             editor.refresh_parsed();
+        }
+
+        // Vim modal editing is opt-in via `config.modal.handler`.  When
+        // enabled the editor never rests in Preview (vim-Normal replaces
+        // it as the non-editing mode), so switch out of the default
+        // Preview mode at startup; the `NORMAL` badge then shows from the
+        // first frame.
+        let vim = (config.modal.handler == "vim").then(VimState::default);
+        if vim.is_some() && editor.mode == crate::editor::Mode::Preview {
+            editor.mode = crate::editor::Mode::Rendered;
         }
 
         // PreviewView borrows `editor.parsed.lines` at render time, so
@@ -574,7 +590,30 @@ impl App {
             last_disk_hash: initial_disk_hash,
             latest_release: None,
             release_check_in_flight: false,
+            vim,
         })
+    }
+
+    /// Enable or disable vim modal editing for the running session,
+    /// keeping `config.modal.handler` and the editor mode in sync.
+    /// Mirrors the startup wiring in `App::new` so a mid-session toggle
+    /// (e.g. from the welcome modal) takes effect immediately instead of
+    /// waiting for the next launch.
+    pub(crate) fn set_vim_enabled(&mut self, enabled: bool) {
+        if enabled {
+            self.config.modal.handler = "vim".into();
+            if self.vim.is_none() {
+                self.vim = Some(VimState::default());
+            }
+            // Vim-Normal replaces Preview as the resting mode, so leave
+            // Preview behind exactly as startup does.
+            if self.editor.mode == crate::editor::Mode::Preview {
+                self.editor.mode = crate::editor::Mode::Rendered;
+            }
+        } else {
+            self.config.modal.handler = "default".into();
+            self.vim = None;
+        }
     }
 
     /// Drain any additional `ImageReady` events already sitting in
@@ -700,5 +739,251 @@ impl App {
                 .unwrap_or_else(|| p.to_string_lossy().into_owned()),
             None => "[No file]".to_owned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod vim_wiring_tests {
+    use crate::config::{Config, KeyBindingOverrides, Theme};
+    use crate::editor::Mode;
+    use crate::terminal::Capabilities;
+
+    use super::App;
+
+    fn app_with_handler(handler: &str) -> App {
+        let mut config = Config::default();
+        config.modal.handler = handler.into();
+        let theme_file = (&Theme::default()).into();
+        App::new(
+            config,
+            KeyBindingOverrides::default(),
+            theme_file,
+            None,
+            Capabilities::default(),
+            Vec::new(),
+        )
+        .expect("build app")
+    }
+
+    #[test]
+    fn vim_disabled_by_default() {
+        let app = app_with_handler("default");
+        assert!(app.vim.is_none(), "default handler must not enable vim");
+    }
+
+    #[test]
+    fn vim_enabled_when_configured() {
+        let app = app_with_handler("vim");
+        assert!(app.vim.is_some(), "vim handler must enable vim state");
+        // Vim never rests in Preview — startup switches to Rendered so
+        // the NORMAL badge shows from the first frame.
+        assert_eq!(app.editor.mode, Mode::Rendered);
+    }
+
+    #[test]
+    fn set_vim_enabled_mirrors_startup_wiring() {
+        // Enabling mid-session (e.g. from the welcome modal) must reach
+        // the exact state startup produces: vim state present, handler
+        // string flipped, and Preview left behind for Rendered.
+        let mut app = app_with_handler("default");
+        assert!(app.vim.is_none());
+        assert_eq!(app.editor.mode, Mode::Preview);
+
+        app.set_vim_enabled(true);
+        assert!(app.vim.is_some(), "vim state created");
+        assert_eq!(app.config.modal.handler, "vim");
+        assert_eq!(
+            app.editor.mode,
+            Mode::Rendered,
+            "Preview gives way to vim-Normal"
+        );
+    }
+
+    #[test]
+    fn set_vim_enabled_false_clears_vim() {
+        // Disabling tears down vim state and restores the default handler
+        // string so a later `Config::save` writes `handler = "default"`.
+        let mut app = app_with_handler("vim");
+        assert!(app.vim.is_some());
+
+        app.set_vim_enabled(false);
+        assert!(app.vim.is_none(), "vim state cleared");
+        assert_eq!(app.config.modal.handler, "default");
+    }
+
+    #[test]
+    fn set_vim_enabled_true_is_idempotent() {
+        // A redundant enable (already-vim session re-saving the welcome
+        // modal) must preserve the live vim state, not swap in a fresh
+        // default — the guard is `if self.vim.is_none()`.
+        let mut app = app_with_handler("vim");
+        app.vim.as_mut().expect("vim active").pending_g = true;
+        app.editor.mode = Mode::Raw;
+
+        app.set_vim_enabled(true);
+        assert!(
+            app.vim.as_ref().expect("vim still active").pending_g,
+            "existing vim state is preserved, not reset"
+        );
+        // A non-Preview mode is left untouched — only Preview is rewritten.
+        assert_eq!(app.editor.mode, Mode::Raw);
+    }
+
+    // ── CP6: VisualLine clipboard widening (Ctrl-C / Ctrl-X) ───────────
+
+    use crate::config::Action;
+    use crate::document::{Buffer, Selection};
+    use crate::input::VimSubMode;
+
+    /// Install a VisualLine selection over `text` spanning the given charwise
+    /// `anchor`/`active` (deliberately ragged, mid-line endpoints).
+    fn app_in_visual_line(text: &str, anchor: usize, active: usize) -> App {
+        let mut app = app_with_handler("vim");
+        app.editor.replace_buffer(Buffer::from_str(text));
+        app.editor.selection = Some(Selection { anchor, active });
+        let vim = app.vim.as_mut().expect("vim active");
+        vim.sub_mode = VimSubMode::VisualLine;
+        vim.visual_anchor = Some(anchor);
+        app
+    }
+
+    #[test]
+    fn visual_line_copy_grabs_whole_lines_without_snapping_selection() {
+        // Charwise span from mid-line-0 to mid-line-1; `Ctrl-C` must copy
+        // both whole lines (matching the VisualLine highlight).
+        let mut app = app_in_visual_line("alpha\nbeta\ngamma", 2, 7);
+        app.dispatch_action(Action::Copy, 40, 80);
+        assert_eq!(app.editor.kill_ring, "alpha\nbeta\n");
+        // The persistent selection is restored to the charwise span — never
+        // snapped — and Visual continues.
+        let sel = app.editor.selection.expect("selection restored");
+        assert_eq!((sel.anchor, sel.active), (2, 7));
+        assert_eq!(app.vim.as_ref().unwrap().sub_mode, VimSubMode::VisualLine);
+    }
+
+    #[test]
+    fn visual_line_cut_removes_whole_lines_and_exits_visual() {
+        let mut app = app_in_visual_line("alpha\nbeta\ngamma", 2, 7);
+        app.dispatch_action(Action::Cut, 40, 80);
+        assert_eq!(app.editor.buffer.contents(), "gamma");
+        assert_eq!(app.editor.kill_ring, "alpha\nbeta\n");
+        assert_eq!(app.vim.as_ref().unwrap().sub_mode, VimSubMode::Normal);
+        assert!(app.editor.selection.is_none());
+    }
+
+    #[test]
+    fn charwise_visual_copy_grabs_only_the_raw_span() {
+        // In charwise Visual there is no widening — `Ctrl-C` copies exactly
+        // the highlighted span.
+        let mut app = app_with_handler("vim");
+        app.editor.replace_buffer(Buffer::from_str("alpha\nbeta"));
+        app.editor.selection = Some(Selection {
+            anchor: 0,
+            active: 2,
+        });
+        app.vim.as_mut().unwrap().sub_mode = VimSubMode::Visual;
+        app.dispatch_action(Action::Copy, 40, 80);
+        assert_eq!(app.editor.kill_ring, "al");
+    }
+
+    // ── CP9: Ex commands driven end-to-end through `dispatch_single_key` ───
+
+    use crate::app::event_loop::DocDims;
+    use crate::config::KeyMap;
+    use crate::document::Buffer as Buf;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::layout::Rect;
+
+    fn ex_dims() -> DocDims {
+        DocDims {
+            doc_height: 24,
+            doc_width: 80,
+            doc_area: Rect::new(0, 0, 80, 24),
+        }
+    }
+
+    /// Type a full `:`-command (the `:`, the body, then Enter) into `app`
+    /// through the real key-dispatch entry point.
+    fn run_ex(app: &mut App, body: &str) {
+        let keymap = KeyMap::build(&KeyBindingOverrides::default()).expect("keymap");
+        let dims = ex_dims();
+        let press = |app: &mut App, code: KeyCode| {
+            app.dispatch_single_key(
+                Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                &keymap,
+                &dims,
+            );
+        };
+        press(app, KeyCode::Char(':'));
+        for c in body.chars() {
+            press(app, KeyCode::Char(c));
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    #[test]
+    fn ex_write_saves_the_buffer_to_disk() {
+        let mut app = app_with_handler("vim");
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        app.editor.buffer = Buf::for_new_file(tmp.path());
+        app.editor.buffer.insert(0, "hello vim");
+        app.editor.dirty = true;
+
+        run_ex(&mut app, "w");
+
+        assert!(!app.editor.dirty, ":w clears the dirty flag");
+        let on_disk = std::fs::read_to_string(tmp.path()).expect("read back");
+        assert_eq!(on_disk, "hello vim", ":w writes the buffer to disk");
+    }
+
+    #[test]
+    fn ex_quit_on_clean_buffer_quits_immediately() {
+        let mut app = app_with_handler("vim");
+        assert!(!app.editor.dirty);
+        let modals_before = app.modal_stack.len();
+        run_ex(&mut app, "q");
+        assert!(app.should_quit, ":q on a clean buffer quits");
+        assert_eq!(
+            app.modal_stack.len(),
+            modals_before,
+            "no quit-confirm pushed when the buffer is clean"
+        );
+    }
+
+    #[test]
+    fn ex_quit_on_dirty_buffer_opens_the_quit_confirm() {
+        let mut app = app_with_handler("vim");
+        app.editor.buffer.insert(0, "x");
+        app.editor.dirty = true;
+        // Drop any startup modal so the assertion below sees only the
+        // quit-confirm the `:q` itself opens.
+        while app.modal_stack.pop().is_some() {}
+        run_ex(&mut app, "q");
+        assert!(!app.should_quit, "dirty :q must not quit silently");
+        assert!(
+            app.modal_stack
+                .contains::<crate::app::modal::QuitConfirmModal>(),
+            "dirty :q opens the quit-confirm modal"
+        );
+    }
+
+    #[test]
+    fn ex_substitute_global_flashes_and_edits_through_the_app() {
+        let mut app = app_with_handler("vim");
+        app.editor.replace_buffer(Buffer::from_str("foo\nfoo"));
+        run_ex(&mut app, "%s/foo/bar/g");
+        assert_eq!(app.editor.buffer.contents(), "bar\nbar");
+        let msg = app.transient.as_ref().expect("substitution flash");
+        assert_eq!(msg.text, "2 substitutions");
+    }
+
+    #[test]
+    fn ex_parse_error_flashes_through_the_app() {
+        let mut app = app_with_handler("vim");
+        app.editor.replace_buffer(Buffer::from_str("hello"));
+        run_ex(&mut app, "nope");
+        let msg = app.transient.as_ref().expect("parse-error flash");
+        assert_eq!(msg.text, "Not an editor command: nope");
+        assert_eq!(app.editor.buffer.contents(), "hello");
     }
 }

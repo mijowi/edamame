@@ -9,7 +9,8 @@
 
 use crate::document::EditDelta;
 use crate::editor::list_edit::parse::{
-    cursor_item_idx, ContinueResult, ListInfo, ListItemInfo, MarkerKind,
+    cursor_item_idx, line_end_byte, line_start_byte, parse_line_start, ContinueResult, ListInfo,
+    ListItemInfo, MarkerKind,
 };
 
 /// Build an `EditDelta` that continues the list at `cursor_byte` by inserting
@@ -417,36 +418,138 @@ pub fn outdent_item(
     })
 }
 
-/// Rewrite every ordered item's number so they form a monotonic sequence
-/// starting from the first item's parsed number (falling back to 1).  No-op
-/// for bullet lists.  Returns `None` when the list is already consistent.
-pub fn renumber_list(info: &ListInfo, source: &str) -> Option<EditDelta> {
-    let MarkerKind::Ordered(delim) = info.kind else {
+/// Renumber every ordered list run inside the contiguous list block
+/// surrounding `cursor_byte`, nesting-aware.
+///
+/// Walks the whole block of adjacent list-item lines (any indent / kind) and
+/// renumbers each ordered run independently with an indent stack, so:
+///
+///   - an outer list keeps counting across a nested child sitting between two of
+///     its items (a flat per-indent renumber can't reach this, because the
+///     deeper line fragments the run and a post-delete cursor lands on that
+///     child), and
+///   - each nested sub-list restarts its own sequence under its own parent.
+///
+/// Bullet lines and deeper continuation/child lines are preserved verbatim;
+/// only ordered markers are rewritten.  Returns `None` when the cursor is not on
+/// a list-item line or nothing needs changing (so it records no edit / no spare
+/// undo step).  The block is bounded by blank or non-list lines, matching the
+/// flat path's blank-line behavior.
+pub fn renumber_list_block(source: &str, cursor_byte: usize) -> Option<EditDelta> {
+    if source.is_empty() {
         return None;
+    }
+    let bytes = source.as_bytes();
+    let clamped = cursor_byte.min(source.len());
+    let cur_start = line_start_byte(bytes, clamped);
+    // The cursor must rest on a list-item line for the block to exist.
+    let cur_content_end = line_end_byte(bytes, cur_start);
+    parse_line_start(&source[cur_start..cur_content_end])?;
+
+    // Expand upward over contiguous list-item lines.
+    let mut block_start = cur_start;
+    while block_start > 0 {
+        let prev_nl = block_start - 1; // the '\n' ending the previous line
+        if bytes.get(prev_nl).copied() != Some(b'\n') {
+            break;
+        }
+        let prev_start = line_start_byte(bytes, prev_nl);
+        if parse_line_start(&source[prev_start..prev_nl]).is_some() {
+            block_start = prev_start;
+        } else {
+            break;
+        }
+    }
+
+    // Expand downward over contiguous list-item lines.
+    let line_end_incl = |content_end: usize| {
+        if content_end < source.len() && bytes[content_end] == b'\n' {
+            content_end + 1
+        } else {
+            content_end
+        }
     };
-    let base = info.items.first()?.number.unwrap_or(1);
-    // Check whether the list is already consistent; if so, skip the edit.
-    let already_sequential = info
-        .items
-        .iter()
-        .enumerate()
-        .all(|(offset, it)| it.number == Some(base + offset as u64));
-    if already_sequential {
+    let mut block_end = line_end_incl(cur_content_end);
+    while block_end < source.len() {
+        let next_end = line_end_byte(bytes, block_end);
+        if parse_line_start(&source[block_end..next_end]).is_some() {
+            block_end = line_end_incl(next_end);
+        } else {
+            break;
+        }
+    }
+
+    // Single pass over the block's lines, renumbering ordered runs with an
+    // indent stack of `(indent_len, delimiter, next_number)`.
+    let block = &source[block_start..block_end];
+    let mut out = String::with_capacity(block.len());
+    let mut stack: Vec<(usize, char, u64)> = Vec::new();
+    let mut changed = false;
+    let mut rest = block;
+    while !rest.is_empty() {
+        let (line, tail, had_nl) = match rest.find('\n') {
+            Some(i) => (&rest[..i], &rest[i + 1..], true),
+            None => (rest, "", false),
+        };
+        match parse_line_start(line) {
+            Some((indent, MarkerKind::Ordered(delim), Some(num))) => {
+                let k = indent.len();
+                // Drop any deeper nested levels that just ended.
+                while stack.last().is_some_and(|&(ki, _, _)| ki > k) {
+                    stack.pop();
+                }
+                let new_num = match stack.last_mut() {
+                    Some((ki, d, counter)) if *ki == k && *d == delim => {
+                        let n = *counter;
+                        *counter += 1;
+                        n
+                    }
+                    _ => {
+                        // New ordered run: a same-indent run of a different
+                        // delimiter is a different list, so replace it.
+                        if stack.last().is_some_and(|&(ki, _, _)| ki == k) {
+                            stack.pop();
+                        }
+                        stack.push((k, delim, num + 1));
+                        num
+                    }
+                };
+                // `rest`-of-line after the `{indent}{digits}{delim} ` marker.
+                // All marker chars are single-byte, so the byte slice is safe.
+                let marker_len = indent.len() + num.to_string().len() + 2;
+                out.push_str(&indent);
+                out.push_str(&new_num.to_string());
+                out.push(delim);
+                out.push(' ');
+                out.push_str(&line[marker_len..]);
+                changed |= new_num != num;
+            }
+            other => {
+                // A bullet (or differently-delimited) sibling ends any ordered
+                // run at its indent or deeper; a deeper continuation / child
+                // line (parse returns `None`) leaves the stack untouched.
+                if let Some((indent, _, _)) = other {
+                    let k = indent.len();
+                    while stack.last().is_some_and(|&(ki, _, _)| ki >= k) {
+                        stack.pop();
+                    }
+                }
+                out.push_str(line);
+            }
+        }
+        if had_nl {
+            out.push('\n');
+        }
+        rest = tail;
+    }
+
+    if !changed {
         return None;
     }
-
-    let removed = source[info.start..info.end].to_owned();
-    let mut inserted = String::with_capacity(removed.len());
-    for (i, item) in info.items.iter().enumerate() {
-        let num = base + i as u64;
-        let rest = trim_marker_prefix(source, item);
-        inserted.push_str(&format!("{}{}{delim} {}", info.indent, num, rest));
-    }
-
     Some(EditDelta {
-        offset: info.start,
-        removed,
-        inserted,
+        offset: block_start,
+        removed: block.to_owned(),
+        inserted: out,
     })
 }
 

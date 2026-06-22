@@ -29,6 +29,7 @@ fn render_status_bar(
                     cursor_col: None,
                     section_path: Vec::new(),
                     diff_progress: None,
+                    vim_mode_label: None,
                 },
                 theme,
             };
@@ -100,6 +101,68 @@ fn snapshot_status_bar_modified() {
     insta::assert_snapshot!(out);
 }
 
+/// Render the status bar with a vim sub-mode badge (`NORMAL` / `INSERT` /
+/// `VISUAL` / `V-LINE`), which takes precedence over the rendering-mode
+/// badge.  The view mode stays `Rendered` (vim never rests in Preview).
+fn render_status_bar_vim(label: &str, width: u16) -> String {
+    let theme = Box::leak(Box::new(Theme::default()));
+    let backend = TestBackend::new(width, 1);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            let bar = StatusBar {
+                state: StatusBarState {
+                    mode: Mode::Rendered,
+                    filename: "notes.md",
+                    line_count: 42,
+                    modified: false,
+                    scroll: 0,
+                    cursor_line: Some(1),
+                    cursor_col: Some(1),
+                    section_path: Vec::new(),
+                    diff_progress: None,
+                    vim_mode_label: Some(label),
+                },
+                theme,
+            };
+            frame.render_widget(bar, frame.area());
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+    (0..width)
+        .map(|x| {
+            buf.cell((x, 0))
+                .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+        })
+        .collect()
+}
+
+#[test]
+fn status_bar_vim_normal_badge_wins_over_view_mode() {
+    let out = render_status_bar_vim("NORMAL", 60);
+    assert!(out.contains("NORMAL"), "got: {out:?}");
+    // The vim badge replaces the rendering-mode `EDIT` badge.
+    assert!(!out.contains("EDIT"), "got: {out:?}");
+}
+
+#[test]
+fn snapshot_status_bar_vim_normal() {
+    let out = render_status_bar_vim("NORMAL", 80);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn snapshot_status_bar_vim_insert() {
+    let out = render_status_bar_vim("INSERT", 80);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn snapshot_status_bar_vim_visual() {
+    let out = render_status_bar_vim("VISUAL", 80);
+    insta::assert_snapshot!(out);
+}
+
 #[test]
 fn rendered_view_paints_selection_across_multiple_rendered_blocks() {
     use edamame::document::{Buffer, Selection};
@@ -126,6 +189,7 @@ fn rendered_view_paints_selection_across_multiple_rendered_blocks() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -178,6 +242,7 @@ fn cursor_on_phantom_final_line_does_not_swallow_last_block() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -232,6 +297,7 @@ fn selection_on_bold_text_highlights_rendered_positions() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -263,6 +329,64 @@ fn selection_on_bold_text_highlights_rendered_positions() {
     );
 }
 
+/// Regression: a VisualLine selection over a rendered list line must paint the
+/// list marker (`• ` / `1. `) too, not just the item text.  The marker→content
+/// column map snaps a within-marker start forward to the content column, so a
+/// full-line (col-0) selection would otherwise leave the marker cells unpainted
+/// even though the underlying bytes are selected.
+#[test]
+fn visual_line_selection_paints_the_list_marker() {
+    use edamame::document::{Buffer, Selection};
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // Line 0 is a spacer holding the cursor so the list lines below stay
+    // rendered (a cursor on a list line would reveal it as raw instead).
+    let src = "x\n- alpha\n- beta\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    // Charwise anchors inside the two bullet items; VisualLine widening
+    // expands them to the whole lines (markers included).
+    state.selection = Some(Selection {
+        anchor: 4,  // inside "alpha"
+        active: 14, // inside "beta"
+    });
+    state.cursor.offset = 0; // cursor parked on the spacer line
+
+    let backend = TestBackend::new(25, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                visual_line_mode: true,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let cell_has_sel = |x: u16, y: u16| {
+        buf.cell((x, y))
+            .map(|c| c.style().bg == theme.selection.bg)
+            .unwrap_or(false)
+    };
+    // Row 1 renders "• alpha": cell 0 is the bullet marker and must be
+    // highlighted, as must the content past it.
+    assert!(
+        cell_has_sel(0, 1),
+        "VisualLine highlight must cover the list marker cell, not start past it"
+    );
+    assert!(cell_has_sel(2, 1), "item content must stay highlighted");
+    // Row 2 ("• beta") must be fully covered the same way.
+    assert!(cell_has_sel(0, 2), "second item marker must be highlighted");
+}
+
 #[test]
 fn setext_heading_reveals_both_title_and_underline_on_cursor() {
     use edamame::document::Buffer;
@@ -285,6 +409,7 @@ fn setext_heading_reveals_both_title_and_underline_on_cursor() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -343,6 +468,7 @@ fn rendered_view_selection_in_table_cell_does_not_spill_into_borders() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -414,6 +540,7 @@ fn rendered_view_selection_inside_cursors_own_cell_survives_cell_overlay() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -463,6 +590,7 @@ fn rendered_view_cell_scoped_reveal_keeps_neighbouring_pipes_rendered() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -546,6 +674,7 @@ fn table_view_paints_row_and_column_handles_when_enabled() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -651,6 +780,7 @@ fn table_view_paints_one_row_handle_per_logical_row() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -722,6 +852,7 @@ fn rendered_view_wrapped_cell_keeps_table_layout_when_cursor_inside() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -808,6 +939,7 @@ fn rendered_view_wrapped_cell_shows_raw_markdown_chunk() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -883,6 +1015,7 @@ fn rendered_view_wrapped_cell_wipes_stale_tail_when_raw_shrinks() {
         terminal
             .draw(|frame| {
                 let view = RenderedView {
+                    visual_line_mode: false,
                     drop_indicator: None,
                     state,
                     theme,
@@ -956,6 +1089,7 @@ fn table_view_handles_only_paint_when_cursor_in_table() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1002,6 +1136,7 @@ fn table_view_handles_only_paint_when_cursor_in_table() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1041,6 +1176,7 @@ fn table_view_snapshots_empty_when_no_table() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1147,6 +1283,7 @@ fn status_bar_shows_cursor_position() {
                     cursor_col: Some(12),
                     section_path: Vec::new(),
                     diff_progress: None,
+                    vim_mode_label: None,
                 },
                 theme,
             };
@@ -1199,6 +1336,7 @@ fn table_row_striping_alternates_bg_per_data_row() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1255,6 +1393,7 @@ fn table_row_striping_replaces_thin_rule_with_blank_separator() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1324,6 +1463,7 @@ fn table_row_striping_off_leaves_default_bg() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1373,6 +1513,7 @@ fn table_view_paints_drop_indicator_on_row_drag() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: Some(indicator),
                 state: &state,
                 theme,
@@ -1438,6 +1579,7 @@ fn rendered_view_code_block_only_opening_fence_de_renders() {
         terminal
             .draw(|frame| {
                 let view = RenderedView {
+                    visual_line_mode: false,
                     drop_indicator: None,
                     show_table_buttons: false,
                     state,
@@ -1539,6 +1681,7 @@ fn rendered_view_code_block_blank_body_line_aligns_cursor_indicator() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -1608,6 +1751,7 @@ fn rendered_view_bare_code_fence_de_renders_opening_fence() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -1670,6 +1814,7 @@ fn mermaid_block_reveals_full_raw_source_on_cursor_entry() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -1763,6 +1908,7 @@ fn rendered_view_drag_selection_paints_wrapped_cell_continuation() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                visual_line_mode: false,
                 drop_indicator: None,
                 state: &state,
                 theme,

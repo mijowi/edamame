@@ -4,10 +4,9 @@ use crate::editor::footnote_edit;
 use crate::editor::list_edit::{self, ListInfo};
 use crate::editor::table_edit;
 use crate::editor::table_edit_ops::{
-    cursor_in_table, cursor_on_alignment_row, table_delete_column, table_delete_row,
-    table_insert_column, table_insert_row, table_move_column, table_move_horizontal,
-    table_move_row, table_next_cell, table_next_row, table_prev_cell, table_prev_row,
-    try_move_cell_vertical,
+    cursor_in_table, table_delete_column, table_delete_row, table_insert_column, table_insert_row,
+    table_move_column, table_move_horizontal, table_move_row, table_next_cell, table_next_row,
+    table_prev_cell, table_prev_row, try_move_cell_vertical,
 };
 use crate::editor::{EditorState, Mode};
 
@@ -1298,44 +1297,15 @@ pub(super) fn cursor_byte(state: &EditorState) -> usize {
     state.buffer.rope().char_to_byte(state.cursor.offset)
 }
 
-/// Move the cursor up/down by one line, then — if that move landed on a
-/// table's alignment row or inside a hidden (zero-rendered-line) block —
-/// advance once more in the same direction so the cursor skips the
-/// structural artefact entirely.  Honours `visual_line_nav` for all moves
-/// so wrapped lines, tables, and hidden HTML comments cooperate.
+/// Move the cursor up/down by one line in a rendered view, skipping a
+/// table's alignment row and any hidden (zero-rendered-line) blocks so the
+/// cursor never stalls on a structural artefact.  Honours `visual_line_nav`
+/// (the default handler's wrapped-line nav).  The shared skip/step logic
+/// lives on [`EditorState::move_cursor_line`], which also gates the skip on
+/// the rendered-vs-`Raw` view so vim `j`/`k` and this path stay in lockstep.
 fn move_line_skipping_alignment(state: &mut EditorState, down: bool, viewport_width: usize) {
-    let step = |state: &mut EditorState| {
-        if down {
-            if state.visual_line_nav && viewport_width > 0 {
-                state.move_down_visual(viewport_width);
-            } else {
-                state.cursor.move_down(&state.buffer);
-            }
-        } else if state.visual_line_nav && viewport_width > 0 {
-            state.move_up_visual(viewport_width);
-        } else {
-            state.cursor.move_up(&state.buffer);
-        }
-    };
-    step(state);
-    if cursor_on_alignment_row(state) {
-        step(state);
-    }
-    // Walk past any consecutive hidden (zero-rendered-line) blocks — HTML
-    // comments don't produce rendered rows, so stopping on one would leave
-    // the cursor "stuck" at a position the user can't see in hybrid view.
-    // The loop is bounded by repeated `prev_offset` equality: when the step
-    // function can't advance further (top/bottom of buffer), we stop rather
-    // than spin.
-    let mut safety = 32usize;
-    while cursor_on_hidden_block(state) && safety > 0 {
-        let prev_offset = state.cursor.offset;
-        step(state);
-        if state.cursor.offset == prev_offset {
-            break;
-        }
-        safety -= 1;
-    }
+    let visual = state.visual_line_nav;
+    state.move_cursor_line(down, visual, viewport_width);
 }
 
 /// True iff the cursor currently falls inside a block with zero rendered
@@ -1346,7 +1316,7 @@ fn move_line_skipping_alignment(state: &mut EditorState, down: bool, viewport_wi
 /// Intentionally specific to comments rather than "any zero-own block":
 /// suppressed blank lines (when `preserve_blank_lines` is false) also have
 /// zero own but are bytes the cursor may legitimately want to land on.
-fn cursor_on_hidden_block(state: &EditorState) -> bool {
+pub(super) fn cursor_on_hidden_block(state: &EditorState) -> bool {
     let rope = state.buffer.rope();
     let cursor_byte = rope.char_to_byte(state.cursor.offset);
     let Some(block_idx) = state.parsed.source_map.block_for_byte(cursor_byte) else {
@@ -1516,15 +1486,26 @@ fn list_toggle_checkbox(state: &mut EditorState) {
     apply_byte_delta(state, res.delta, res.cursor_byte);
 }
 
-/// After a paste that may have landed in or adjacent to an ordered list,
-/// renumber the surrounding list so the sequence stays monotonic.  No-op for
-/// bullet lists or when the cursor is outside a list.
+/// After an edit that may have landed in or adjacent to an ordered list
+/// (delete, paste, list-break, …), renumber the surrounding list so the
+/// sequence stays monotonic.  No-op for bullet lists, in Raw mode, or when the
+/// cursor is outside a list.
+///
+/// Uses the nesting-aware [`list_edit::renumber_list_block`]: a delete lands the
+/// cursor on the line below, which for a list whose items have nested children
+/// is the *child* — so a flat per-indent renumber would fix only the
+/// (already-correct) inner list and leave the outer sequence stale.  The block
+/// walk renumbers every ordered run in the surrounding list, each restarting
+/// under its own parent.
 fn list_renumber_at_cursor(state: &mut EditorState) {
-    let Some((source, info)) = current_list(state) else {
+    // Raw mode: defer to plain text, never rewrite markers (mirrors
+    // `current_list`'s bail-out, which the other list-edit paths use).
+    if state.mode == Mode::Raw {
         return;
-    };
+    }
+    let source = state.buffer.contents();
     let byte_before = cursor_byte(state);
-    if let Some(delta) = list_edit::renumber_list(&info, &source) {
+    if let Some(delta) = list_edit::renumber_list_block(&source, byte_before) {
         apply_byte_delta(state, delta, byte_before);
     }
 }

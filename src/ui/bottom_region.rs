@@ -77,6 +77,13 @@ pub enum HintContent {
         prompt: String,
         chords: Vec<HintChord>,
     },
+    /// Vim command line (`/` `?` `:`): a prefix glyph plus the typed text
+    /// with a block cursor at char index `cursor`.
+    CommandLine {
+        prefix: char,
+        text: String,
+        cursor: usize,
+    },
 }
 
 /// Pick the default hint set for `state`, adapting to the cursor's
@@ -89,10 +96,19 @@ pub enum HintContent {
 /// frame — no chord text is hardcoded.  Chords for actions that the
 /// user has unbound are silently dropped from the row.
 ///
-/// Priority: table (Rendered only) > task-list item > mode-default.
+/// Priority: active search > table (Rendered only) > task-list item >
+/// mode-default.
 /// Tables don't appear in Raw mode because the table-editing chords
 /// don't work against the raw source — the user is editing the plain
 /// Markdown and `Tab` / `⌥↑↓` insert characters or do nothing.
+///
+/// The vim handler reuses this same row unchanged: vim's modal keys
+/// (`i` / `v` / `:` / `/`, the Visual operators, …) are vim-internal and
+/// the status bar already advertises the active sub-mode, so the hint line
+/// shows edamame's own contextual + baseline chords in every vim sub-mode
+/// rather than re-advertising vim's keys.  A Visual selection lands on the
+/// shared selection row (Cut / Copy / Paste / …) because vim Visual sets
+/// the editor `selection` just like a mouse drag does.
 pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
     // An active search flow replaces the row wholesale, whatever the
     // view mode — only the flow keys work while it's active.  The
@@ -459,6 +475,37 @@ pub fn lay_out_chords(chords: &[HintChord], theme: &Theme, bar_style: Style) -> 
     spans
 }
 
+/// Build the spans for a vim command line: a leading ` {prefix}` glyph,
+/// then the typed text with a block cursor cell at char index `cursor`
+/// (styled `theme.cursor_rendered`).  When the cursor sits past the last
+/// char it renders as a trailing styled space, so an empty `/` still shows
+/// a cursor.
+fn command_line_spans(
+    prefix: char,
+    text: &str,
+    cursor: usize,
+    theme: &Theme,
+    bar_style: Style,
+) -> Vec<Span<'static>> {
+    let base = match bar_style.bg {
+        Some(bg) => theme.hint_label.bg(bg),
+        None => theme.hint_label,
+    };
+    let mut spans = vec![Span::styled(format!(" {prefix}"), base)];
+    for (i, c) in text.chars().enumerate() {
+        let style = if i == cursor {
+            theme.cursor_rendered
+        } else {
+            base
+        };
+        spans.push(Span::styled(c.to_string(), style));
+    }
+    if cursor >= text.chars().count() {
+        spans.push(Span::styled(" ".to_string(), theme.cursor_rendered));
+    }
+    spans
+}
+
 /// The hint-line widget.  Renders chords / transient / prompt onto a
 /// single row, with a trailing fill using `bar_style`.
 pub struct HintLine<'a> {
@@ -519,6 +566,11 @@ impl<'a> Widget for HintLine<'a> {
                 v.extend(chord_spans);
                 v
             }
+            HintContent::CommandLine {
+                prefix,
+                text,
+                cursor,
+            } => command_line_spans(*prefix, text, *cursor, self.theme, self.bar_style),
         };
 
         // Sum what we've rendered so we can pad the trailing fill with
@@ -1014,6 +1066,28 @@ mod tests {
         assert!(labels.iter().any(|l| l.contains("row")));
     }
 
+    // ── active search ─────────────────────────────────────────────
+
+    #[test]
+    fn active_search_replaces_the_row() {
+        use crate::search::SearchState;
+        let mut st = state("foo foo foo");
+        st.mode = Mode::Rendered;
+        let search = SearchState::new("foo".to_owned(), None, st.scroll).unwrap();
+        st.enter_search(search);
+        // An active search replaces the whole row with the flow chords +
+        // match counter — under vim too, since `hint_line_for` no longer
+        // branches on the sub-mode (the App passes the same editor state
+        // either way).
+        let set = hint_line_for(&st, &keymap());
+        assert!(set.search_match.is_some(), "match counter must lead");
+        assert!(set.chords.iter().any(|c| c.label == "Next"));
+        assert!(
+            !set.chords.iter().any(|c| c.label == "Menu"),
+            "baseline chords must yield to the active search row"
+        );
+    }
+
     // ── lay_out_chords ────────────────────────────────────────────
 
     #[test]
@@ -1050,6 +1124,7 @@ mod tests {
                         cursor_col: Some(1),
                         section_path: Vec::new(),
                         diff_progress: None,
+                        vim_mode_label: None,
                     },
                     hint,
                     theme: t,

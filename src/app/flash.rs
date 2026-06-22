@@ -95,13 +95,22 @@ impl App {
         self.transient.as_ref().and_then(|m| m.until)
     }
 
-    /// Build the hint content for this frame.  Prompt > Transient >
-    /// Chords, matching the plan's priority.
+    /// Build the hint content for this frame.  Prompt > CommandLine >
+    /// Transient > hovered-link > Chords, matching the plan's priority.
     pub(super) fn hint_content(&self) -> HintContent {
         if let Some(prompt) = self.hint_prompt.as_ref() {
             return HintContent::Prompt {
                 prompt: prompt.prompt.clone(),
                 chords: prompt.chords.clone(),
+            };
+        }
+        // A vim command line (`/` `?`) replaces the chord row while the user
+        // is typing it, sitting just below a modal prompt.
+        if let Some(cl) = self.vim.as_ref().and_then(|v| v.cmdline.as_ref()) {
+            return HintContent::CommandLine {
+                prefix: cl.kind.prefix(),
+                text: cl.input.clone(),
+                cursor: cl.cursor,
             };
         }
         if let Some(msg) = self.transient.as_ref() {
@@ -143,6 +152,9 @@ impl App {
                 &fallback
             }
         };
+        // Vim reuses the same contextual + baseline hint row as the default
+        // handler — the modal keys are vim-internal and the status bar badge
+        // already advertises the active sub-mode.
         HintContent::Chords(hint_line_for(&self.editor, keymap))
     }
 

@@ -1,0 +1,5 @@
+---
+source: tests/ui.rs
+expression: out
+---
+ INSERT  notes.md                                             1:1  42 lines  2%

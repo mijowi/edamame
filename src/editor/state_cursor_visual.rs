@@ -6,9 +6,105 @@
 //! a logical-line raw column and a screen-cell column for a wrapped line.
 
 use crate::editor::state::line_text_trimmed;
-use crate::editor::EditorState;
+use crate::editor::{EditorState, Mode};
 
 impl EditorState {
+    /// Move the cursor one line up/down, skipping the structural rows that
+    /// are not real editing targets — but **only in a rendered view**.  In
+    /// `Mode::Rendered`/`Preview` a GFM table's alignment row (`|---|`) and
+    /// hidden (zero-rendered-line) HTML-comment blocks are skipped, because
+    /// they're artefacts the user can't sensibly land on.  In `Mode::Raw`
+    /// every line is genuine, editable source, so nothing is skipped.  This
+    /// rendered-vs-raw rule is shared by the default handler (`MoveUp`/
+    /// `MoveDown`) and vim `j`/`k`.
+    ///
+    /// `visual` selects per-visual-row stepping (wrapped lines — the
+    /// `gj`/`gk` feel) over logical-line stepping: the default handler
+    /// passes `visual_line_nav`; vim `j`/`k` pass `false` (logical), since
+    /// `gj`/`gk` are the visual variants.
+    pub fn move_cursor_line(&mut self, down: bool, visual: bool, viewport_width: usize) {
+        self.step_cursor_line(down, visual, viewport_width);
+
+        // Raw view: the alignment row and comment bytes are real lines the
+        // user may want to edit, so they're valid targets — skip nothing.
+        if self.mode == Mode::Raw {
+            return;
+        }
+
+        // Skip a landed-on alignment row, then walk past any run of hidden
+        // (zero-rendered-line) comment blocks.  The loop is bounded by
+        // offset-stalls at the buffer edge so it can't spin.
+        if crate::editor::table_edit_ops::cursor_on_alignment_row(self) {
+            self.step_cursor_line(down, visual, viewport_width);
+        }
+        let mut safety = 32usize;
+        while crate::editor::edit_ops::cursor_on_hidden_block(self) && safety > 0 {
+            let prev_offset = self.cursor.offset;
+            self.step_cursor_line(down, visual, viewport_width);
+            if self.cursor.offset == prev_offset {
+                break;
+            }
+            safety -= 1;
+        }
+    }
+
+    /// One raw step for [`Self::move_cursor_line`]: per-visual-row when
+    /// `visual` is set and a width is known, else per-logical-line.
+    fn step_cursor_line(&mut self, down: bool, visual: bool, viewport_width: usize) {
+        match (down, visual && viewport_width > 0) {
+            (true, true) => self.move_down_visual(viewport_width),
+            (true, false) => self.cursor.move_down(&self.buffer),
+            (false, true) => self.move_up_visual(viewport_width),
+            (false, false) => self.cursor.move_up(&self.buffer),
+        }
+    }
+
+    /// Attempt table-cell **horizontal** navigation, skipping the
+    /// auto-managed border chrome (`|`, padding, the alignment row) so a
+    /// motion lands cell-to-cell rather than on characters the editor owns.
+    /// Reuses the default handler's [`table_move_horizontal`] logic, so vim
+    /// `h`/`l` and the arrow keys behave identically inside a table.
+    ///
+    /// Returns `true` when the cursor was moved or deliberately clamped at a
+    /// table edge; `false` when the caller should fall back to a plain
+    /// grapheme step.  Always `false` in `Mode::Raw`, where the borders are
+    /// real, hand-editable source and every character is a valid target.
+    pub fn try_table_move_horizontal(&mut self, forward: bool) -> bool {
+        if self.mode == Mode::Raw {
+            return false;
+        }
+        let moved = crate::editor::table_edit_ops::table_move_horizontal(self, forward);
+        if moved {
+            // `table_move_horizontal` sets the offset directly; refresh the
+            // preferred column so a following logical `j`/`k` lands sensibly.
+            self.cursor.preferred_col = self.cursor.cell_col(&self.buffer);
+        }
+        moved
+    }
+
+    /// Attempt table-cell **vertical** navigation (the `j`/`k` companion to
+    /// [`Self::try_table_move_horizontal`]): move to the cell directly
+    /// above/below, preserving the column and skipping the alignment row.
+    /// Reuses the default handler's [`try_move_cell_vertical`], which also
+    /// refreshes the cursor block and viewport on success.  Same `Raw`-mode
+    /// and fall-back contract as the horizontal variant.
+    pub fn try_table_move_vertical(
+        &mut self,
+        down: bool,
+        viewport_height: usize,
+        viewport_width: usize,
+    ) -> bool {
+        if self.mode == Mode::Raw {
+            return false;
+        }
+        crate::editor::table_edit_ops::try_move_cell_vertical(
+            self,
+            down,
+            viewport_height,
+            viewport_width,
+        )
+    }
+
     /// Move the cursor up by one **visual** line, accounting for word-wrap at
     /// `col_width`.
     ///
