@@ -25,6 +25,12 @@ pub(crate) const LABEL_BIG_H1: &str = "Big H1 headings";
 pub(crate) const LABEL_VISUAL_LINE_NAV: &str = "Use visual line navigation";
 pub(crate) const LABEL_LINE_NUMBERS: &str = "Show line numbers";
 pub(crate) const LABEL_SCROLL_SPEED: &str = "Scroll speed";
+pub(crate) const LABEL_VIM_MODE: &str = "Vim mode";
+
+/// Handler name written to `config.modal.handler` when vim mode is on.
+const VIM_HANDLER: &str = "vim";
+/// Handler name written to `config.modal.handler` when vim mode is off.
+const DEFAULT_HANDLER: &str = "default";
 
 /// Minimum accepted value for [`LABEL_SCROLL_SPEED`].  The
 /// dispatcher additionally clamps zero to one as a safety net, but
@@ -340,6 +346,30 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 write_string: no_write,
                 cycle: Some(|c, _, _| {
                     c.editor.visual_line_nav = !c.editor.visual_line_nav;
+                    true
+                }),
+                options: Some(BOOL_OPTIONS),
+            },
+        },
+        RowDef {
+            label: LABEL_VIM_MODE,
+            description: Some("Vim-style modal editing (Normal / Insert / Visual)"),
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Cycle,
+                // Vim mode is stored as the modal handler name, not a
+                // bool — `read`/`cycle` translate between the
+                // `true`/`false` pills and `config.modal.handler`.  The
+                // App-level live-update arm rebuilds the VimState so the
+                // toggle takes effect without a restart.
+                read: |c, _| (c.modal.handler == VIM_HANDLER).to_string(),
+                write_string: no_write,
+                cycle: Some(|c, _, _| {
+                    c.modal.handler = if c.modal.handler == VIM_HANDLER {
+                        DEFAULT_HANDLER.to_owned()
+                    } else {
+                        VIM_HANDLER.to_owned()
+                    };
                     true
                 }),
                 options: Some(BOOL_OPTIONS),
