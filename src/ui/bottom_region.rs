@@ -18,7 +18,6 @@ use crate::config::keymap::format_key_compact;
 use crate::config::{Action, KeyMap, Theme};
 use crate::diff::Decision;
 use crate::editor::{EditorState, Mode};
-use crate::input::VimSubMode;
 
 use super::status_bar::{StatusBar, StatusBarState};
 
@@ -97,23 +96,20 @@ pub enum HintContent {
 /// frame — no chord text is hardcoded.  Chords for actions that the
 /// user has unbound are silently dropped from the row.
 ///
-/// Priority: active search > vim sub-mode (when `vim_mode` is `Some`) >
-/// table (Rendered only) > task-list item > mode-default.
+/// Priority: active search > table (Rendered only) > task-list item >
+/// mode-default.
 /// Tables don't appear in Raw mode because the table-editing chords
 /// don't work against the raw source — the user is editing the plain
 /// Markdown and `Tab` / `⌥↑↓` insert characters or do nothing.
 ///
-/// When the vim handler is active, `vim_mode` carries the current
-/// sub-mode and the row is replaced with vim-specific chords advertising
-/// the modal keys plus the `Ctrl`-bound app actions (looked up live from
-/// `keymap`, so rebinds show up immediately).  An active search still
-/// wins, so the search-flow chords and match counter stay visible while
-/// navigating matches.
-pub fn hint_line_for(
-    state: &EditorState,
-    keymap: &KeyMap,
-    vim_mode: Option<VimSubMode>,
-) -> HintSet {
+/// The vim handler reuses this same row unchanged: vim's modal keys
+/// (`i` / `v` / `:` / `/`, the Visual operators, …) are vim-internal and
+/// the status bar already advertises the active sub-mode, so the hint line
+/// shows edamame's own contextual + baseline chords in every vim sub-mode
+/// rather than re-advertising vim's keys.  A Visual selection lands on the
+/// shared selection row (Cut / Copy / Paste / …) because vim Visual sets
+/// the editor `selection` just like a mouse drag does.
+pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
     // An active search flow replaces the row wholesale, whatever the
     // view mode — only the flow keys work while it's active.  The
     // Replace / Replace-all chords appear only in the replace flow
@@ -144,15 +140,6 @@ pub fn hint_line_for(
             // consumes every match).
             search_match: (!search.matches.is_empty())
                 .then(|| (search.focused_idx + 1, search.matches.len())),
-        };
-    }
-    // Vim sub-mode rows replace the default mode rows.  Sits below the
-    // active-search arm so search navigation chords still show through.
-    if let Some(sub_mode) = vim_mode {
-        return HintSet {
-            prelude: None,
-            chords: vim_hint_chords(keymap, sub_mode),
-            search_match: None,
         };
     }
     match state.mode {
@@ -272,49 +259,6 @@ pub fn hint_line_for(
                 chords,
                 search_match: None,
             }
-        }
-    }
-}
-
-/// Vim-mode hint row, keyed by sub-mode.  The modal keys (`i`, `v`, `:`,
-/// `/`, `d`, …) are vim-internal — they aren't in `keymap`, so they're
-/// spelled as literal chord glyphs; the app actions (`Menu` / `Save` /
-/// `Quit`) are looked up live from `keymap` so a rebind appears on the
-/// next frame and an unbound action drops out.
-fn vim_hint_chords(keymap: &KeyMap, sub_mode: VimSubMode) -> Vec<HintChord> {
-    match sub_mode {
-        VimSubMode::Insert => {
-            let mut chords = vec![HintChord::new("Esc", "Normal")];
-            chords.extend(chords_from(
-                keymap,
-                &[(Action::ShowCommandPalette, "Menu"), (Action::Save, "Save")],
-            ));
-            chords
-        }
-        VimSubMode::Visual | VimSubMode::VisualLine => vec![
-            HintChord::new("d", "Delete"),
-            HintChord::new("y", "Yank"),
-            HintChord::new("c", "Change"),
-            HintChord::new(">", "Indent"),
-            HintChord::new("Esc", "Normal"),
-        ],
-        // Normal and OperatorPending share the Normal-mode row.
-        VimSubMode::Normal | VimSubMode::OperatorPending => {
-            let mut chords = vec![
-                HintChord::new("i", "Insert"),
-                HintChord::new("v", "Visual"),
-                HintChord::new(":", "Cmd"),
-                HintChord::new("/", "Find"),
-            ];
-            chords.extend(chords_from(
-                keymap,
-                &[
-                    (Action::ShowCommandPalette, "Menu"),
-                    (Action::Save, "Save"),
-                    (Action::Quit, "Quit"),
-                ],
-            ));
-            chords
         }
     }
 }
@@ -754,7 +698,7 @@ mod tests {
     #[test]
     fn preview_hint_has_prelude_and_menu_first() {
         let st = state("hello");
-        let set = hint_line_for(&st, &keymap(), None);
+        let set = hint_line_for(&st, &keymap());
         assert_eq!(set.prelude.as_deref(), Some("Press any key to edit"));
         assert_eq!(set.chords[0].chord, "^P");
         assert_eq!(set.chords[0].label, "Menu");
@@ -803,7 +747,7 @@ mod tests {
     fn rendered_hint_has_save_and_paste_and_raw() {
         let mut st = state("hello");
         st.mode = Mode::Rendered;
-        let set = hint_line_for(&st, &keymap(), None);
+        let set = hint_line_for(&st, &keymap());
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(set.chords[0].chord, "^P", "Menu is always first");
         assert!(labels.contains(&"Paste"));
@@ -844,7 +788,7 @@ mod tests {
         st.mode = Mode::Rendered;
 
         // Fresh history → no redo entry yet.
-        let labels: Vec<_> = hint_line_for(&st, &keymap(), None)
+        let labels: Vec<_> = hint_line_for(&st, &keymap())
             .chords
             .iter()
             .map(|c| c.label.clone())
@@ -864,7 +808,7 @@ mod tests {
         st.history.undo(&mut st.buffer).unwrap();
         assert!(st.history.can_redo(), "test premise");
 
-        let labels: Vec<_> = hint_line_for(&st, &keymap(), None)
+        let labels: Vec<_> = hint_line_for(&st, &keymap())
             .chords
             .iter()
             .map(|c| c.label.clone())
@@ -882,7 +826,7 @@ mod tests {
             inserted: "X".into(),
         });
         assert!(!st.history.can_redo(), "test premise");
-        let labels: Vec<_> = hint_line_for(&st, &keymap(), None)
+        let labels: Vec<_> = hint_line_for(&st, &keymap())
             .chords
             .iter()
             .map(|c| c.label.clone())
@@ -897,7 +841,7 @@ mod tests {
     fn raw_mode_flips_view_toggle_label_to_render() {
         let mut st = state("hello");
         st.mode = Mode::Raw;
-        let set = hint_line_for(&st, &keymap(), None);
+        let set = hint_line_for(&st, &keymap());
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(
             labels.contains(&"Render"),
@@ -912,14 +856,14 @@ mod tests {
         st.mode = Mode::Rendered;
         // Cursor in the "site" link text → on a link.
         st.cursor.offset = 5;
-        let on_link = hint_line_for(&st, &keymap(), None);
+        let on_link = hint_line_for(&st, &keymap());
         assert_eq!(
             on_link.chords[0].label, "Open link",
             "contextual link hint must lead the row"
         );
         // Cursor in the trailing plain-text tail → not on a link.
         st.cursor.offset = 32;
-        let off_link = hint_line_for(&st, &keymap(), None);
+        let off_link = hint_line_for(&st, &keymap());
         assert!(
             !off_link.chords.iter().any(|c| c.label == "Open link"),
             "Open link hint leaked outside the link span"
@@ -934,7 +878,7 @@ mod tests {
         let mut st = state("- [ ] see [docs](https://example.com)\n");
         st.mode = Mode::Rendered;
         st.cursor.offset = 14; // inside "docs"
-        let set = hint_line_for(&st, &keymap(), None);
+        let set = hint_line_for(&st, &keymap());
         assert_eq!(set.chords[0].label, "Open link");
         assert_eq!(set.chords[1].label, "Toggle");
         assert_eq!(
@@ -952,7 +896,7 @@ mod tests {
             anchor: 0,
             active: 5,
         });
-        let set = hint_line_for(&st, &keymap(), None);
+        let set = hint_line_for(&st, &keymap());
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(
             labels,
@@ -971,7 +915,7 @@ mod tests {
             active: 5,
         });
         assert_eq!(
-            hint_line_for(&st, &keymap(), None)
+            hint_line_for(&st, &keymap())
                 .chords
                 .iter()
                 .map(|c| c.label.clone())
@@ -981,7 +925,7 @@ mod tests {
         // Clearing the selection must drop the row back to the
         // baseline edit-mode chords with Menu leading.
         st.selection = None;
-        let set = hint_line_for(&st, &keymap(), None);
+        let set = hint_line_for(&st, &keymap());
         assert_eq!(set.chords[0].label, "Menu");
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(!labels.contains(&"Cut"));
@@ -994,7 +938,7 @@ mod tests {
         let mut st = state("- a\n- b\n");
         st.mode = Mode::Rendered;
         st.cursor.offset = 2;
-        let set = hint_line_for(&st, &keymap(), None);
+        let set = hint_line_for(&st, &keymap());
         assert!(
             !set.chords.iter().any(|c| c.label == "Toggle"),
             "regular list items have no checkbox to toggle"
@@ -1007,7 +951,7 @@ mod tests {
         let mut st = state("- [ ] todo\n");
         st.mode = Mode::Rendered;
         st.cursor.offset = 8;
-        let set = hint_line_for(&st, &keymap(), None);
+        let set = hint_line_for(&st, &keymap());
         assert_eq!(set.chords[0].chord, "^Space");
         assert_eq!(set.chords[0].label, "Toggle");
     }
@@ -1018,7 +962,7 @@ mod tests {
         let mut st = state(source);
         st.mode = Mode::Raw;
         st.cursor.offset = 22;
-        let set = hint_line_for(&st, &keymap(), None);
+        let set = hint_line_for(&st, &keymap());
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(
             !labels.iter().any(|l| l.contains("cell")),
@@ -1039,7 +983,7 @@ mod tests {
             .unwrap();
         let mut st = state("hello");
         st.mode = Mode::Rendered;
-        let set = hint_line_for(&st, &km, None);
+        let set = hint_line_for(&st, &km);
         let menu = set
             .chords
             .iter()
@@ -1071,7 +1015,7 @@ mod tests {
         );
         let mut st = state("hello");
         st.mode = Mode::Rendered;
-        let set = hint_line_for(&st, &km, None);
+        let set = hint_line_for(&st, &km);
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(
             !labels.contains(&"Save"),
@@ -1094,7 +1038,7 @@ mod tests {
         let mut st = state(source);
         st.mode = Mode::Rendered;
         st.cursor.offset = 22;
-        let set = hint_line_for(&st, &km, None);
+        let set = hint_line_for(&st, &km);
         let move_chord = set
             .chords
             .iter()
@@ -1116,74 +1060,31 @@ mod tests {
         let mut st = state(source);
         st.mode = Mode::Rendered;
         st.cursor.offset = 22;
-        let set = hint_line_for(&st, &keymap(), None);
+        let set = hint_line_for(&st, &keymap());
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.iter().any(|l| l.contains("cell")));
         assert!(labels.iter().any(|l| l.contains("row")));
     }
 
-    // ── vim hint rows ─────────────────────────────────────────────
+    // ── active search ─────────────────────────────────────────────
 
     #[test]
-    fn vim_normal_row_advertises_modal_keys_and_app_chords() {
-        let st = state("hello");
-        let set = hint_line_for(&st, &keymap(), Some(VimSubMode::Normal));
-        let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
-        // Modal keys lead, spelled as literal glyphs.
-        assert_eq!(set.chords[0].chord, "i");
-        assert_eq!(set.chords[0].label, "Insert");
-        assert!(labels.contains(&"Visual"));
-        assert!(labels.contains(&"Find"));
-        // App actions are looked up from the keymap.
-        let menu = set.chords.iter().find(|c| c.label == "Menu").unwrap();
-        assert_eq!(menu.chord, "^P");
-        assert!(labels.contains(&"Save"));
-        assert!(labels.contains(&"Quit"));
-    }
-
-    #[test]
-    fn vim_operator_pending_shares_the_normal_row() {
-        let st = state("hello");
-        let normal = hint_line_for(&st, &keymap(), Some(VimSubMode::Normal));
-        let pending = hint_line_for(&st, &keymap(), Some(VimSubMode::OperatorPending));
-        assert_eq!(normal.chords, pending.chords);
-    }
-
-    #[test]
-    fn vim_insert_row_leads_with_esc_normal() {
-        let st = state("hello");
-        let set = hint_line_for(&st, &keymap(), Some(VimSubMode::Insert));
-        assert_eq!(set.chords[0].chord, "Esc");
-        assert_eq!(set.chords[0].label, "Normal");
-    }
-
-    #[test]
-    fn vim_visual_row_shows_operators() {
-        let st = state("hello");
-        let set = hint_line_for(&st, &keymap(), Some(VimSubMode::Visual));
-        let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
-        assert!(labels.contains(&"Delete"));
-        assert!(labels.contains(&"Yank"));
-        assert!(labels.contains(&"Change"));
-        // V-LINE shares the Visual row.
-        let line = hint_line_for(&st, &keymap(), Some(VimSubMode::VisualLine));
-        assert_eq!(set.chords, line.chords);
-    }
-
-    #[test]
-    fn active_search_overrides_the_vim_row() {
+    fn active_search_replaces_the_row() {
         use crate::search::SearchState;
         let mut st = state("foo foo foo");
         st.mode = Mode::Rendered;
         let search = SearchState::new("foo".to_owned(), None, st.scroll).unwrap();
         st.enter_search(search);
-        // Even in vim Normal, an active search shows the flow chords + counter.
-        let set = hint_line_for(&st, &keymap(), Some(VimSubMode::Normal));
+        // An active search replaces the whole row with the flow chords +
+        // match counter — under vim too, since `hint_line_for` no longer
+        // branches on the sub-mode (the App passes the same editor state
+        // either way).
+        let set = hint_line_for(&st, &keymap());
         assert!(set.search_match.is_some(), "match counter must lead");
         assert!(set.chords.iter().any(|c| c.label == "Next"));
         assert!(
-            !set.chords.iter().any(|c| c.label == "Insert"),
-            "vim row must yield to the active search row"
+            !set.chords.iter().any(|c| c.label == "Menu"),
+            "baseline chords must yield to the active search row"
         );
     }
 

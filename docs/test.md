@@ -31,7 +31,7 @@ Block quote
 [File link](./plan.md)
 
 [Heading link](#escape-characters)
- 
+
 This sentence has two footnotes.[^1][^2]
 
 This sentence also references the first footnote.[^1]
