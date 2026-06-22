@@ -73,8 +73,8 @@ appearance = "dark"
 # Render H1 headings as 4-row "big text" using Quadrant block characters
 # (▘▝▖▗▀▄▌▐█), via the `tui-big-text` widget. Falls back to the regular
 # one-line styled rendering when the title would exceed the viewport width
-# or contains non-ASCII characters. Default: true.
-# big_h1 = true
+# or contains non-ASCII characters. Default: false.
+# big_h1 = false
 
 # ── Modal ─────────────────────────────────────────────────────────────────────
 # Which modal handler processes key events. "default" is the non-modal
