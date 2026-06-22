@@ -162,7 +162,16 @@ fn rendered_view_paints_all_matches_with_focused_emphasis() {
     st.mode = Mode::Rendered;
     let buf = render_editor(&mut st, 40, 8);
     // First match (focused) at cols 0..3, second at cols 8..11 of row 0.
-    for x in 0..3u16 {
+    // Col 0 carries the block cursor (cursor wins over the highlight per
+    // cell, just like Raw mode), so it shows the cursor bg, not the
+    // selection wash; the rest of the focused match carries the emphasis.
+    let cursor_cell = buf.cell((0, 0)).unwrap();
+    assert_eq!(
+        cursor_cell.style().bg,
+        t.cursor_rendered.bg,
+        "the cursor sitting on the focused match must stay visible over the highlight"
+    );
+    for x in 1..3u16 {
         let cell = buf.cell((x, 0)).unwrap();
         assert_eq!(
             cell.style().bg,
@@ -228,6 +237,72 @@ fn multibyte_text_before_a_match_keeps_columns_aligned() {
     }
     let before = buf.cell((5, 0)).unwrap();
     assert_ne!(before.style().bg, t.selection.bg);
+}
+
+#[test]
+fn end_of_line_cursor_stays_visible_during_search() {
+    // Reproduces the `A` case: an edit parks the cursor at end-of-line
+    // (one column past the last char) while a navigate search keeps the
+    // block rendered (raw reveal suppressed).  The rendered-mode cursor
+    // indicator must still paint on the trailing cell.
+    let t = theme();
+    let mut st = state_with_search("foo bar\n", "foo", None);
+    st.mode = Mode::Rendered;
+    st.set_viewport_width(40);
+    st.cursor.offset = 7; // end of "foo bar", one past 'r'
+    st.update_cursor_block();
+    let buf = render_editor(&mut st, 40, 8);
+    assert_eq!(
+        buf.cell((7, 0)).unwrap().style().bg,
+        t.cursor_rendered.bg,
+        "an end-of-line cursor must be painted on the trailing cell"
+    );
+}
+
+#[test]
+fn blank_line_cursor_stays_visible_during_search() {
+    // Reproduces the `o` / `O` case: opening a blank line parks the cursor
+    // on it (col 0 of an empty line is also its end-of-line).  The cursor
+    // must paint there even though the block stays rendered, not raw.
+    let t = theme();
+    let mut st = state_with_search("foo\n\nbar foo\n", "foo", None);
+    st.mode = Mode::Rendered;
+    st.set_viewport_width(40);
+    st.cursor.offset = 4; // the blank line between the two paragraphs
+    st.update_cursor_block();
+    let buf = render_editor(&mut st, 40, 8);
+    // Row 0 = "foo", row 1 = the blank line carrying the cursor.
+    assert_eq!(
+        buf.cell((0, 1)).unwrap().style().bg,
+        t.cursor_rendered.bg,
+        "a cursor on a blank line must stay visible during search"
+    );
+}
+
+#[test]
+fn wrapped_table_cell_match_highlights_only_its_own_sub_line() {
+    // A search match that lands on a continuation wrap-chunk of a table
+    // cell must highlight ONLY the sub-line that actually shows the matched
+    // text — not also spill a clamped highlight onto the row's first
+    // sub-line (the pre-fix behavior, which mapped the first sub-line while
+    // ignoring the cell's wrapping).
+    let t = theme();
+    let table = "| Col |\n| --- |\n| alpha bravo charlie delta echo |\n";
+    let mut st = state_with_search(table, "delta", None);
+    st.mode = Mode::Rendered;
+    st.set_viewport_width(24);
+    // Narrow viewport forces the long data cell to wrap onto several rows.
+    let buf = render_editor(&mut st, 24, 12);
+    let area = buf.area();
+    let rows_with_focus = (0..area.height)
+        .filter(|&y| {
+            (0..area.width).any(|x| buf.cell((x, y)).unwrap().style().bg == t.selection.bg)
+        })
+        .count();
+    assert_eq!(
+        rows_with_focus, 1,
+        "the match must highlight exactly one rendered sub-line, not bleed onto the row's first line"
+    );
 }
 
 #[test]

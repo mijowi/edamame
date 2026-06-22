@@ -8,7 +8,7 @@ use ratatui::{
 use crate::config::Theme;
 use crate::editor::table_edit;
 use crate::editor::EditorState;
-use crate::markdown::table_layout::{table_raw_col_to_rendered_col, CellOverlay};
+use crate::markdown::table_layout::CellOverlay;
 
 use super::list_marker::{
     list_raw_col_to_rendered_col, raw_list_marker_char_width, rendered_list_marker_char_width,
@@ -250,120 +250,120 @@ pub(super) fn paint_byte_range_overlay(
     // covered text, so it lands inside the block's real range.
     let block_kind = editor.parsed.real_block_for_byte(line_sel_start);
 
-    let (rend_start, rend_end) = if is_table {
-        if table_sub > 0 {
-            // Continuation sub-line of a wrapped row: each cell shows
-            // wrap chunk `table_sub` of its content, so the highlight is
-            // the per-cell intersection of the selected raw cols with
-            // that chunk — one segment per cell.
-            for (rs, re) in crate::markdown::table_layout::table_raw_col_range_to_rendered_segments(
-                raw_line,
-                line,
-                start_raw_col,
-                end_raw_col,
-                table_sub,
-            ) {
-                paint_cols_on_line(
-                    line, buf, area, y_start, rows_used, skip_rows, rs, re, style,
-                );
-            }
-            return;
-        }
-        let Some(rs) = table_raw_col_to_rendered_col(raw_line, line, start_raw_col) else {
-            return;
-        };
-        let Some(re) = table_raw_col_to_rendered_col(raw_line, line, end_raw_col) else {
-            return;
-        };
-        (rs, re)
-    } else if let Some(crate::markdown::Block::CodeBlock { fenced, .. }) = block_kind {
-        // Code body rows render the raw text 1:1 behind one leading
-        // pad cell.  Indented (non-fenced) blocks additionally drop
-        // the up-to-4-space indent that pulldown-cmark strips from the
-        // content.
-        //
-        // Fence rows render unrelated text — the ` lang ` label (or an
-        // NBSP placeholder) for the opening fence, and an NBSP
-        // placeholder for the closing fence — so a raw→rendered column
-        // mapping is meaningless.  When the selection touches a fence
-        // row, highlight the whole rendered row so the selection reads
-        // as covering it (Visual / V-LINE) rather than leaving a gap at
-        // the top and bottom of a selected block.
-        if *fenced && (raw_line_idx == 0 || raw_line_idx + 1 == raw_lines.len()) {
-            (0, actual_rendered)
-        } else {
-            let stripped = if *fenced {
-                0
-            } else {
-                code_indent_strip_chars(raw_line)
-            };
-            let map_col = |c: usize| c.saturating_sub(stripped) + 1;
-            (map_col(start_raw_col), map_col(end_raw_col))
-        }
-    } else if let Some(crate::markdown::Block::Heading { level, .. }) = block_kind {
-        // Headings render as a level-deep space prefix plus the
-        // collapsed inline content; shift the mapped cols right by the
-        // prefix.  A length mismatch (big-H1 rows, the setext
-        // underline, smart-punctuation collapse) skips the highlight
-        // instead of falling back to raw cols, which would be
-        // off-by-prefix.
-        let prefix = heading_prefix_width(*level);
-        let content_rendered = actual_rendered.saturating_sub(prefix);
-        match (
-            inline_map.raw_to_rendered_checked(start_raw_col, content_rendered),
-            inline_map.raw_to_rendered_checked(end_raw_col, content_rendered),
+    if is_table {
+        // A cell may wrap onto several rendered sub-lines, and the match's
+        // raw columns land in at most ONE wrap chunk per cell.  Map the raw
+        // range to the per-cell rendered segments visible on *this*
+        // wrap-chunk (`table_sub`): a cell whose chunk doesn't overlap the
+        // match contributes no segment, so the highlight never bleeds onto a
+        // sub-line that doesn't actually show the matched text.  This is the
+        // unified path for the first sub-line (`table_sub == 0`, the first
+        // chunk) and every continuation alike — the old first-line mapping
+        // ignored wrapping and painted a spurious clamped highlight on
+        // sub-line 0 for a match that really sits on a later chunk.
+        for (rs, re) in crate::markdown::table_layout::table_raw_col_range_to_rendered_segments(
+            raw_line,
+            line,
+            start_raw_col,
+            end_raw_col,
+            table_sub,
         ) {
-            (Some(rs), Some(re)) => (rs + prefix, re + prefix),
-            _ => return,
+            paint_cols_on_line(
+                line, buf, area, y_start, rows_used, skip_rows, rs, re, style,
+            );
         }
-    } else if let (Some(rs), Some(re)) = (
-        list_raw_col_to_rendered_col(raw_line, line, start_raw_col),
-        list_raw_col_to_rendered_col(raw_line, line, end_raw_col),
-    ) {
-        // List-item line: the marker-only map handles the `- ` / `1. `
-        // prefix shift.  Compose with the inline collapse map so bold /
-        // italic / link markup inside the item also lines up.
-        let raw_marker = raw_list_marker_char_width(raw_line);
-        let rendered_marker = rendered_list_marker_char_width(line);
-        let (mut rend_start, rend_end) =
-            if let (Some(rmw), Some(rmw_r)) = (raw_marker, rendered_marker) {
-                let content_rendered = actual_rendered.saturating_sub(rmw_r);
-                if inline_map.rendered_len() == content_rendered {
-                    let map_col = |raw_col: usize| -> usize {
-                        if raw_col < rmw {
-                            rmw_r
-                        } else {
-                            inline_map.raw_to_rendered(raw_col) + rmw_r
-                        }
-                    };
-                    (map_col(start_raw_col), map_col(end_raw_col))
+        return;
+    }
+
+    let (rend_start, rend_end) =
+        if let Some(crate::markdown::Block::CodeBlock { fenced, .. }) = block_kind {
+            // Code body rows render the raw text 1:1 behind one leading
+            // pad cell.  Indented (non-fenced) blocks additionally drop
+            // the up-to-4-space indent that pulldown-cmark strips from the
+            // content.
+            //
+            // Fence rows render unrelated text — the ` lang ` label (or an
+            // NBSP placeholder) for the opening fence, and an NBSP
+            // placeholder for the closing fence — so a raw→rendered column
+            // mapping is meaningless.  When the selection touches a fence
+            // row, highlight the whole rendered row so the selection reads
+            // as covering it (Visual / V-LINE) rather than leaving a gap at
+            // the top and bottom of a selected block.
+            if *fenced && (raw_line_idx == 0 || raw_line_idx + 1 == raw_lines.len()) {
+                (0, actual_rendered)
+            } else {
+                let stripped = if *fenced {
+                    0
+                } else {
+                    code_indent_strip_chars(raw_line)
+                };
+                let map_col = |c: usize| c.saturating_sub(stripped) + 1;
+                (map_col(start_raw_col), map_col(end_raw_col))
+            }
+        } else if let Some(crate::markdown::Block::Heading { level, .. }) = block_kind {
+            // Headings render as a level-deep space prefix plus the
+            // collapsed inline content; shift the mapped cols right by the
+            // prefix.  A length mismatch (big-H1 rows, the setext
+            // underline, smart-punctuation collapse) skips the highlight
+            // instead of falling back to raw cols, which would be
+            // off-by-prefix.
+            let prefix = heading_prefix_width(*level);
+            let content_rendered = actual_rendered.saturating_sub(prefix);
+            match (
+                inline_map.raw_to_rendered_checked(start_raw_col, content_rendered),
+                inline_map.raw_to_rendered_checked(end_raw_col, content_rendered),
+            ) {
+                (Some(rs), Some(re)) => (rs + prefix, re + prefix),
+                _ => return,
+            }
+        } else if let (Some(rs), Some(re)) = (
+            list_raw_col_to_rendered_col(raw_line, line, start_raw_col),
+            list_raw_col_to_rendered_col(raw_line, line, end_raw_col),
+        ) {
+            // List-item line: the marker-only map handles the `- ` / `1. `
+            // prefix shift.  Compose with the inline collapse map so bold /
+            // italic / link markup inside the item also lines up.
+            let raw_marker = raw_list_marker_char_width(raw_line);
+            let rendered_marker = rendered_list_marker_char_width(line);
+            let (mut rend_start, rend_end) =
+                if let (Some(rmw), Some(rmw_r)) = (raw_marker, rendered_marker) {
+                    let content_rendered = actual_rendered.saturating_sub(rmw_r);
+                    if inline_map.rendered_len() == content_rendered {
+                        let map_col = |raw_col: usize| -> usize {
+                            if raw_col < rmw {
+                                rmw_r
+                            } else {
+                                inline_map.raw_to_rendered(raw_col) + rmw_r
+                            }
+                        };
+                        (map_col(start_raw_col), map_col(end_raw_col))
+                    } else {
+                        (rs, re)
+                    }
                 } else {
                     (rs, re)
-                }
-            } else {
-                (rs, re)
-            };
-        // A selection that reaches the line's first column covers the rendered
-        // marker too — most notably VisualLine, which widens to whole lines, but
-        // also any charwise span whose intermediate lines are fully selected.
-        // The marker map above snaps such a start forward to the content column,
-        // leaving the `1. ` / `• ` prefix unpainted; pull it back to col 0 so the
-        // whole rendered row highlights.
-        if start_raw_col == 0 {
-            rend_start = 0;
-        }
-        (rend_start, rend_end)
-    } else {
-        // Paragraph / heading / code block line: use the inline collapse
-        // map so selection highlights track rendered glyph positions.
-        match (
-            inline_map.raw_to_rendered_checked(start_raw_col, actual_rendered),
-            inline_map.raw_to_rendered_checked(end_raw_col, actual_rendered),
-        ) {
-            (Some(rs), Some(re)) => (rs, re),
-            _ => (start_raw_col, end_raw_col),
-        }
-    };
+                };
+            // A selection that reaches the line's first column covers the rendered
+            // marker too — most notably VisualLine, which widens to whole lines, but
+            // also any charwise span whose intermediate lines are fully selected.
+            // The marker map above snaps such a start forward to the content column,
+            // leaving the `1. ` / `• ` prefix unpainted; pull it back to col 0 so the
+            // whole rendered row highlights.
+            if start_raw_col == 0 {
+                rend_start = 0;
+            }
+            (rend_start, rend_end)
+        } else {
+            // Paragraph / heading / code block line: use the inline collapse
+            // map so selection highlights track rendered glyph positions.
+            match (
+                inline_map.raw_to_rendered_checked(start_raw_col, actual_rendered),
+                inline_map.raw_to_rendered_checked(end_raw_col, actual_rendered),
+            ) {
+                (Some(rs), Some(re)) => (rs, re),
+                _ => (start_raw_col, end_raw_col),
+            }
+        };
     if rend_start >= rend_end {
         return;
     }

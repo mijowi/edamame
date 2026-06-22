@@ -12,7 +12,7 @@ use crate::editor::EditorState;
 use crate::markdown::table_layout::{compute_cell_overlay, table_raw_col_to_rendered_col};
 
 use super::image_view::{self, ImageLayoutSnapshot};
-use super::line_render::{render_line_from_visual, render_line_with_cursor_from_visual};
+use super::line_render::{render_line_from_visual, render_line_reporting_cursor};
 use super::link_view::{self, LinkLayoutSnapshot};
 use super::table_view::{self, TableLayoutSnapshot};
 
@@ -64,6 +64,13 @@ pub struct RenderedViewState {
     /// layout has changed — the same coalescing strategy used for
     /// images and links.
     pub table_snapshots_key: Option<(usize, Rect, u64, bool)>,
+    /// Absolute `(x, y)` terminal cell where the rendered-mode cursor
+    /// indicator was painted this frame, or `None` when the cursor was
+    /// drawn via a raw-reveal / cell-overlay path (which composite the
+    /// cursor themselves) or wasn't visible.  `EditorView` re-stamps this
+    /// cell with `theme.cursor_rendered` after the search-match / selection
+    /// overlays run, so an overlay can't bury the cursor.
+    pub cursor_screen: Option<(u16, u16)>,
 }
 
 /// Hybrid rendered/raw editing view.
@@ -351,6 +358,10 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             Some(w) => w.row_first_line_idx + w.cursor_sub,
             None => cursor_block_lines.start + cursor_in_block,
         };
+
+        // Cleared each frame; the indicator path below records the cursor's
+        // screen cell so `EditorView` can re-stamp it over later overlays.
+        view_state.cursor_screen = None;
 
         // Determine the scroll offset; sync from editor state.
         view_state.scroll = editor.scroll;
@@ -772,7 +783,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     } else {
                         cursor_col
                     };
-                    rows_used = render_line_with_cursor_from_visual(
+                    let (rows, cursor_cell) = render_line_reporting_cursor(
                         line,
                         area,
                         buf,
@@ -784,7 +795,11 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                             None
                         },
                         skip_rows,
-                    ) as usize;
+                    );
+                    rows_used = rows as usize;
+                    // Record where the indicator landed so `EditorView` can
+                    // re-stamp it after the search / selection overlays.
+                    view_state.cursor_screen = cursor_cell;
                 } else {
                     rows_used = 1;
                 }

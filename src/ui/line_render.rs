@@ -152,12 +152,39 @@ pub fn render_line_with_cursor_from_visual(
     cursor_col_override: Option<(usize, Style)>,
     skip_rows: usize,
 ) -> u16 {
+    render_line_reporting_cursor(
+        line,
+        area,
+        buf,
+        visual_y,
+        wrap,
+        cursor_col_override,
+        skip_rows,
+    )
+    .0
+}
+
+/// Like [`render_line_with_cursor_from_visual`], but also returns the
+/// absolute `(x, y)` cell where the cursor override was painted (`None`
+/// when no override, or the override fell outside the drawn rows).  The
+/// hybrid `RenderedView` uses the reported cell to re-stamp the cursor on
+/// top of post-pass overlays (search-match highlights, selection washes)
+/// that run after this widget and would otherwise bury it.
+pub fn render_line_reporting_cursor(
+    line: &Line<'static>,
+    area: Rect,
+    buf: &mut TuiBuf,
+    visual_y: u16,
+    wrap: bool,
+    cursor_col_override: Option<(usize, Style)>,
+    skip_rows: usize,
+) -> (u16, Option<(u16, u16)>) {
     if visual_y >= area.height {
-        return 0;
+        return (0, None);
     }
     let width = area.width as usize;
     if width == 0 {
-        return 1;
+        return (1, None);
     }
     let abs_y = area.y + visual_y;
 
@@ -173,9 +200,9 @@ pub fn render_line_with_cursor_from_visual(
 
     if !wrap {
         if skip_rows > 0 {
-            return 0;
+            return (0, None);
         }
-        paint_row(
+        let cursor_cell = paint_row(
             &chars,
             0,
             chars.len(),
@@ -187,7 +214,7 @@ pub fn render_line_with_cursor_from_visual(
             line_style,
             cursor_col_override,
         );
-        return 1;
+        return (1, cursor_cell);
     }
 
     // Single source of truth for row breaks — keeps the renderer in lockstep
@@ -196,6 +223,7 @@ pub fn render_line_with_cursor_from_visual(
     let rows = visual_rows_of_chars(&chars, width, indent);
     let effective_indent = if indent + 1 >= width { 0 } else { indent };
 
+    let mut cursor_cell = None;
     let mut cur_visual = visual_y;
     for (row_idx, &(start, row_end, _next_start)) in rows.iter().enumerate().skip(skip_rows) {
         if cur_visual >= area.height {
@@ -203,7 +231,7 @@ pub fn render_line_with_cursor_from_visual(
         }
         let cur_abs_y = area.y + cur_visual;
         let row_indent = if row_idx == 0 { 0 } else { effective_indent };
-        paint_row(
+        if let Some(cell) = paint_row(
             &chars,
             start,
             row_end,
@@ -214,11 +242,13 @@ pub fn render_line_with_cursor_from_visual(
             cur_abs_y,
             line_style,
             cursor_col_override,
-        );
+        ) {
+            cursor_cell = Some(cell);
+        }
         cur_visual += 1;
     }
 
-    cur_visual - visual_y
+    (cur_visual - visual_y, cursor_cell)
 }
 
 /// Paint a single visual row.  `chars[start..end]` are written starting at
@@ -227,6 +257,11 @@ pub fn render_line_with_cursor_from_visual(
 /// is the char-index offset to add to `rel_idx` when matching against
 /// `cursor_col_override` — for wrapped continuation rows this is the row's
 /// `start`; for the no-wrap fast path it's 0.
+///
+/// Returns the absolute `(x, y)` cell where the cursor override was drawn —
+/// `None` when the override doesn't fall on this row.  Callers use the
+/// reported cell to re-stamp the cursor on top of post-pass overlays
+/// (search-match highlights, selection washes) that would otherwise bury it.
 #[allow(clippy::too_many_arguments)]
 fn paint_row(
     chars: &[(char, Style)],
@@ -239,7 +274,8 @@ fn paint_row(
     abs_y: u16,
     line_style: Style,
     cursor_col_override: Option<(usize, Style)>,
-) {
+) -> Option<(u16, u16)> {
+    let mut cursor_cell = None;
     let mut x = area.x;
     let area_end = area.x + area.width;
     for _ in 0..row_indent {
@@ -265,22 +301,41 @@ fn paint_row(
             break;
         }
         let abs_col = abs_col_base + rel_idx;
-        let effective_style = cursor_col_override
+        let cursor_style = cursor_col_override
             .filter(|(col, _)| *col == abs_col)
-            .map(|(_, s)| s)
-            .unwrap_or(*style);
+            .map(|(_, s)| s);
         if let Some(cell) = buf.cell_mut((x, abs_y)) {
             cell.set_char(*ch);
-            cell.set_style(effective_style);
+            cell.set_style(cursor_style.unwrap_or(*style));
+        }
+        if cursor_style.is_some() {
+            cursor_cell = Some((x, abs_y));
         }
         x += cells;
     }
+    // End-of-line cursor: the override column sits one past the last char,
+    // so the content loop above never reaches it.  Draw it on the first
+    // trailing (blank) cell so an end-of-line cursor stays visible even when
+    // the block is shown rendered rather than raw — e.g. while a search flow
+    // suppresses the raw cursor-block reveal, or during the jitter
+    // suppression delay.  Guard on `col == chars.len()` so a word-wrap gap
+    // (whose trailing cells belong to the next row's content) never matches.
+    let eol_cursor = cursor_col_override.filter(|&(col, _)| col == chars.len());
+    let mut fill_col = abs_col_base + (end - start);
     while x < area_end {
         if let Some(cell) = buf.cell_mut((x, abs_y)) {
-            cell.set_style(line_style);
+            if let Some((_, s)) = eol_cursor.filter(|&(col, _)| col == fill_col) {
+                cell.set_char(' ');
+                cell.set_style(s);
+                cursor_cell = Some((x, abs_y));
+            } else {
+                cell.set_style(line_style);
+            }
         }
         x += 1;
+        fill_col += 1;
     }
+    cursor_cell
 }
 
 /// Compute the list of visual rows produced by wrapping `chars` at `width`

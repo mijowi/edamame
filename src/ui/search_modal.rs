@@ -314,7 +314,12 @@ impl<'a> StatefulWidget for SearchModalView<'a> {
         row_y = row_y.saturating_add(1);
         // Matching-mode note, aligned under the search input's value
         // ("Search " label + two-cell gap).  Quiet hint styling so it
-        // reads as metadata, not another field.
+        // reads as metadata, not another field.  The matcher depends on
+        // the flow: a navigate-only search (empty replace field) is
+        // smartcase — case-insensitive unless the query has an uppercase
+        // letter — while a replace flow stays strictly case-sensitive so a
+        // lowercase find never rewrites a casing variant the user didn't
+        // type.  See `SearchState::ensure_fresh`.
         if row_y < inner.y + inner.height {
             let note_area = Rect {
                 x: inner.x,
@@ -322,9 +327,14 @@ impl<'a> StatefulWidget for SearchModalView<'a> {
                 width: inner.width,
                 height: 1,
             };
+            let note = if state.replace.is_empty() {
+                "(Smart case)"
+            } else {
+                "(Case sensitive)"
+            };
             Paragraph::new(Line::from(vec![
                 Span::raw(" ".repeat(9)),
-                Span::styled("(Case sensitive)", self.theme.text_muted()),
+                Span::styled(note, self.theme.text_muted()),
             ]))
             .style(self.theme.modal_bg)
             .render(note_area, buf);
@@ -594,7 +604,35 @@ mod tests {
         assert!(contents.contains("Search and Replace"), "{contents}");
         assert!(contents.contains("needle"), "{contents}");
         assert!(contents.contains("thread"), "{contents}");
+        // A filled replace field selects the case-sensitive replace flow.
         assert!(contents.contains("(Case sensitive)"), "{contents}");
         assert!(contents.contains("Cancel"), "{contents}");
+    }
+
+    #[test]
+    fn note_reflects_smartcase_when_replace_is_empty() {
+        // An empty replace field selects the navigate-only flow, which
+        // matches smartcase — the note must say so, not "(Case sensitive)".
+        let backend = TestBackend::new(80, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = SearchModalState::new("needle".to_owned(), String::new());
+        terminal
+            .draw(|frame| {
+                let m = SearchModalView {
+                    theme: theme(),
+                    cursor_visible: true,
+                };
+                frame.render_stateful_widget(m, frame.area(), &mut state);
+            })
+            .unwrap();
+        let contents: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(contents.contains("(Smart case)"), "{contents}");
+        assert!(!contents.contains("(Case sensitive)"), "{contents}");
     }
 }
