@@ -128,8 +128,7 @@ fn render_editor(state: &mut EditorState, width: u16, height: u16) -> ratatui::b
     let caps = edamame::terminal::Capabilities::default();
     // Build the hint from the live state, exactly as the app does, so
     // the search match counter that now leads the hint line is present.
-    let hint =
-        edamame::ui::bottom_region::HintContent::Chords(hint_line_for(state, &keymap()));
+    let hint = edamame::ui::bottom_region::HintContent::Chords(hint_line_for(state, &keymap()));
     terminal
         .draw(|frame| {
             let view = EditorView {

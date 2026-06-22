@@ -155,9 +155,29 @@ fn feed_cmdline(
     vh: usize,
     vw: usize,
 ) -> VimOutcome {
-    let Some(cl) = vim.cmdline.as_mut() else {
+    if vim.cmdline.is_none() {
         return VimOutcome::Passthrough;
-    };
+    }
+    // Up/Down recall the per-session command history (oldest commands on Up,
+    // back toward the live draft on Down) before the text-field sees the key.
+    // Reading the history (a distinct `VimState` field) alongside the mutable
+    // `cmdline` borrow relies on disjoint-field borrows, so both are taken by
+    // direct field access rather than through a helper.
+    if matches!(key.code, KeyCode::Up | KeyCode::Down) {
+        let kind = vim.cmdline.as_ref().expect("cmdline is Some").kind;
+        let history = match kind {
+            CmdLineKind::Ex => &vim.ex_history,
+            CmdLineKind::SearchForward | CmdLineKind::SearchBackward => &vim.search_history,
+        };
+        let cl = vim.cmdline.as_mut().expect("cmdline is Some");
+        if key.code == KeyCode::Up {
+            cmdline::history_prev(cl, history);
+        } else {
+            cmdline::history_next(cl, history);
+        }
+        return VimOutcome::Consumed;
+    }
+    let cl = vim.cmdline.as_mut().expect("cmdline is Some");
     let kind = cl.kind;
     match cmdline::feed_key(cl, key) {
         CmdLineStep::Editing => VimOutcome::Consumed,
@@ -167,6 +187,11 @@ fn feed_cmdline(
         }
         CmdLineStep::Submit(input) => {
             vim.cmdline = None;
+            // Record every non-empty submitted line (valid or not, as vim does)
+            // so Up can recall it next time the prompt opens.
+            if !input.is_empty() {
+                vim.record_command(kind, &input);
+            }
             match kind {
                 // An empty `/` / `?` query closes the prompt with no search.
                 CmdLineKind::SearchForward if !input.is_empty() => VimOutcome::EnterSearch {
@@ -1675,11 +1700,7 @@ fn after_edit(editor: &mut EditorState, vh: usize, vw: usize) {
 /// via `feed_cmdline` until the user submits or cancels.
 fn start_cmdline(vim: &mut VimState, kind: CmdLineKind) {
     vim.reset_pending();
-    vim.cmdline = Some(CmdLineState {
-        kind,
-        input: String::new(),
-        cursor: 0,
-    });
+    vim.cmdline = Some(CmdLineState::new(kind));
 }
 
 /// `n` / `N`: advance (or retreat) the focused match `count` times over the

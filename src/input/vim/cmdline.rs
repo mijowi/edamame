@@ -75,6 +75,50 @@ pub fn feed_key(cl: &mut CmdLineState, key: KeyEvent) -> CmdLineStep {
     }
 }
 
+/// Recall the previous (older) entry of `history` into the prompt. The first
+/// step back stashes the live draft (so [`history_next`] can restore it) and
+/// jumps to the newest entry; further steps walk toward older entries and stop
+/// at the oldest. A no-op when `history` is empty. The cursor lands at the end
+/// of the recalled line, as in vim.
+pub fn history_prev(cl: &mut CmdLineState, history: &[String]) {
+    if history.is_empty() {
+        return;
+    }
+    let idx = match cl.history_idx {
+        None => {
+            cl.draft = cl.input.clone();
+            history.len() - 1
+        }
+        Some(0) => return, // already at the oldest entry
+        Some(i) => i.saturating_sub(1),
+    };
+    cl.history_idx = Some(idx);
+    set_input(cl, history[idx].clone());
+}
+
+/// Step toward newer entries of `history`. Stepping past the newest entry ends
+/// the recall and restores the stashed draft. A no-op when not currently
+/// browsing history.
+pub fn history_next(cl: &mut CmdLineState, history: &[String]) {
+    let Some(idx) = cl.history_idx else {
+        return;
+    };
+    if idx + 1 < history.len() {
+        cl.history_idx = Some(idx + 1);
+        set_input(cl, history[idx + 1].clone());
+    } else {
+        cl.history_idx = None;
+        let draft = std::mem::take(&mut cl.draft);
+        set_input(cl, draft);
+    }
+}
+
+/// Replace the prompt text and park the cursor at its end.
+fn set_input(cl: &mut CmdLineState, text: String) {
+    cl.cursor = text.chars().count();
+    cl.input = text;
+}
+
 /// Insert pasted `text` at the cursor (a bracketed paste into an open
 /// `/` `?` `:` prompt).  Newlines are dropped — the command line is a
 /// single line, and a multi-line paste would otherwise corrupt it (this
@@ -99,11 +143,7 @@ mod tests {
     use crate::input::vim::state::CmdLineKind;
 
     fn cl() -> CmdLineState {
-        CmdLineState {
-            kind: CmdLineKind::SearchForward,
-            input: String::new(),
-            cursor: 0,
-        }
+        CmdLineState::new(CmdLineKind::SearchForward)
     }
 
     fn ch(c: char) -> KeyEvent {
@@ -155,6 +195,48 @@ mod tests {
         feed_key(&mut s, ch('X'));
         assert_eq!(s.input, "fXo");
         assert_eq!(s.cursor, 2);
+    }
+
+    #[test]
+    fn history_up_walks_older_then_down_restores_draft() {
+        let history = vec!["w".to_owned(), "q".to_owned(), "wq".to_owned()];
+        let mut s = cl();
+        feed_key(&mut s, ch('a'));
+        // First Up stashes the half-typed draft and jumps to the newest entry.
+        history_prev(&mut s, &history);
+        assert_eq!(s.draft, "a");
+        assert_eq!(s.input, "wq");
+        assert_eq!(s.cursor, 2);
+        assert_eq!(s.history_idx, Some(2));
+        // Walk to the oldest, then stay put at the boundary.
+        history_prev(&mut s, &history);
+        history_prev(&mut s, &history);
+        assert_eq!(s.input, "w");
+        assert_eq!(s.history_idx, Some(0));
+        history_prev(&mut s, &history); // already oldest — no-op
+        assert_eq!(s.input, "w");
+        // Down steps back toward newer entries…
+        history_next(&mut s, &history);
+        assert_eq!(s.input, "q");
+        history_next(&mut s, &history);
+        assert_eq!(s.input, "wq");
+        // …and Down past the newest restores the original draft.
+        history_next(&mut s, &history);
+        assert_eq!(s.input, "a");
+        assert_eq!(s.cursor, 1);
+        assert_eq!(s.history_idx, None);
+        // Down with no recall active is a no-op.
+        history_next(&mut s, &history);
+        assert_eq!(s.input, "a");
+    }
+
+    #[test]
+    fn history_up_on_empty_history_is_a_noop() {
+        let mut s = cl();
+        feed_key(&mut s, ch('x'));
+        history_prev(&mut s, &[]);
+        assert_eq!(s.input, "x");
+        assert_eq!(s.history_idx, None);
     }
 
     #[test]
