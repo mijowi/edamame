@@ -102,6 +102,12 @@ pub enum HintContent {
 /// don't work against the raw source — the user is editing the plain
 /// Markdown and `Tab` / `⌥↑↓` insert characters or do nothing.
 ///
+/// `nav_available` is true when the file/in-document history stack holds
+/// at least one back- or forward-entry; it surfaces the `⌥←→ Back/fwd`
+/// contextual hint.  It's threaded in from the `App` rather than read off
+/// `state` because the nav stacks are a UI-layer fact (`App::nav_back` /
+/// `App::nav_forward`), not document state.
+///
 /// The vim handler reuses this same row unchanged: vim's modal keys
 /// (`i` / `v` / `:` / `/`, the Visual operators, …) are vim-internal and
 /// the status bar already advertises the active sub-mode, so the hint line
@@ -109,7 +115,7 @@ pub enum HintContent {
 /// rather than re-advertising vim's keys.  A Visual selection lands on the
 /// shared selection row (Cut / Copy / Paste / …) because vim Visual sets
 /// the editor `selection` just like a mouse drag does.
-pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
+pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, nav_available: bool) -> HintSet {
     // An active search flow replaces the row wholesale, whatever the
     // view mode — only the flow keys work while it's active.  The
     // Replace / Replace-all chords appear only in the replace flow
@@ -143,9 +149,8 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
         };
     }
     match state.mode {
-        Mode::Preview => HintSet {
-            prelude: Some("Press any key to edit".to_owned()),
-            chords: chords_from(
+        Mode::Preview => {
+            let mut chords = chords_from(
                 keymap,
                 &[
                     (Action::ShowCommandPalette, "Menu"),
@@ -154,9 +159,23 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
                     (Action::Copy, "Copy"),
                     (Action::Quit, "Quit"),
                 ],
-            ),
-            search_match: None,
-        },
+            );
+            // History navigation leads the row when there's somewhere to
+            // go — Preview is browse mode, so back/forward is its most
+            // relevant context.  Suppressed when the cursor sits in a
+            // table: `Alt+Left/Right` reorder columns there (the nav
+            // redirect in `app::actions` only fires outside a table), and
+            // the cursor offset persists into Preview, so a table cell is
+            // reachable here too.
+            if nav_available && !cursor_in_table(state) {
+                chords.insert(0, nav_chord());
+            }
+            HintSet {
+                prelude: Some("Press any key to edit".to_owned()),
+                chords,
+                search_match: None,
+            }
+        }
         Mode::Rendered | Mode::Raw if state.selection_size().is_some() => HintSet {
             prelude: None,
             chords: chords_from(
@@ -243,7 +262,20 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
             // each `insert(0, ..)` pushes the previous head back by
             // one slot, so the LAST insert ends up leftmost.  Order
             // of inserts below is the REVERSE of the desired visual
-            // order: Toggle → Link.
+            // order: Back/fwd → Toggle → Link.  History navigation
+            // goes in first so it lands rightmost of the contextual
+            // block (just left of `Menu`) — its trigger (a non-empty
+            // history stack) is the broadest, so it trails the narrower
+            // Link / Toggle hints.  The `!cursor_in_table` guard keeps
+            // the ⌥←→ chord hidden whenever the cursor sits in a table —
+            // there `Alt+Left/Right` reorder columns instead of
+            // navigating history (the redirect in `app::actions` only
+            // fires outside a table).  The Rendered table arm above
+            // returns before this point, but Raw mode has no such arm, so
+            // the explicit check is what covers the Raw-in-table case.
+            if nav_available && !cursor_in_table(state) {
+                chords.insert(0, nav_chord());
+            }
             if cursor_on_task_item(state) {
                 if let Some(c) = chord_for(keymap, &Action::ToggleCheckbox, "Toggle") {
                     chords.insert(0, c);
@@ -261,6 +293,19 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap) -> HintSet {
             }
         }
     }
+}
+
+/// The combined back/forward history-navigation hint (`⌥←→ Back/fwd`).
+///
+/// The chord glyph is fixed rather than looked up from `keymap` because
+/// `NavigateBack` / `NavigateForward` carry no default binding — the keys
+/// that actually fire them are `Alt+Left` / `Alt+Right`, which the `App`
+/// redirects from `TableMoveColumnLeft` / `TableMoveColumnRight` when the
+/// cursor is outside any table (see `app::actions::handle_app_action`).
+/// One badge stands in for both directions, mirroring the table arm's
+/// bundled `⌥↑↓←→` glyph.
+fn nav_chord() -> HintChord {
+    HintChord::new("⌥←→", "Back/fwd")
 }
 
 /// Look up the first key bound to `action` in `keymap` and pair it
@@ -698,7 +743,7 @@ mod tests {
     #[test]
     fn preview_hint_has_prelude_and_menu_first() {
         let st = state("hello");
-        let set = hint_line_for(&st, &keymap());
+        let set = hint_line_for(&st, &keymap(), false);
         assert_eq!(set.prelude.as_deref(), Some("Press any key to edit"));
         assert_eq!(set.chords[0].chord, "^P");
         assert_eq!(set.chords[0].label, "Menu");
@@ -747,7 +792,7 @@ mod tests {
     fn rendered_hint_has_save_and_paste_and_raw() {
         let mut st = state("hello");
         st.mode = Mode::Rendered;
-        let set = hint_line_for(&st, &keymap());
+        let set = hint_line_for(&st, &keymap(), false);
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(set.chords[0].chord, "^P", "Menu is always first");
         assert!(labels.contains(&"Paste"));
@@ -788,7 +833,7 @@ mod tests {
         st.mode = Mode::Rendered;
 
         // Fresh history → no redo entry yet.
-        let labels: Vec<_> = hint_line_for(&st, &keymap())
+        let labels: Vec<_> = hint_line_for(&st, &keymap(), false)
             .chords
             .iter()
             .map(|c| c.label.clone())
@@ -808,7 +853,7 @@ mod tests {
         st.history.undo(&mut st.buffer).unwrap();
         assert!(st.history.can_redo(), "test premise");
 
-        let labels: Vec<_> = hint_line_for(&st, &keymap())
+        let labels: Vec<_> = hint_line_for(&st, &keymap(), false)
             .chords
             .iter()
             .map(|c| c.label.clone())
@@ -826,7 +871,7 @@ mod tests {
             inserted: "X".into(),
         });
         assert!(!st.history.can_redo(), "test premise");
-        let labels: Vec<_> = hint_line_for(&st, &keymap())
+        let labels: Vec<_> = hint_line_for(&st, &keymap(), false)
             .chords
             .iter()
             .map(|c| c.label.clone())
@@ -841,7 +886,7 @@ mod tests {
     fn raw_mode_flips_view_toggle_label_to_render() {
         let mut st = state("hello");
         st.mode = Mode::Raw;
-        let set = hint_line_for(&st, &keymap());
+        let set = hint_line_for(&st, &keymap(), false);
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(
             labels.contains(&"Render"),
@@ -856,14 +901,14 @@ mod tests {
         st.mode = Mode::Rendered;
         // Cursor in the "site" link text → on a link.
         st.cursor.offset = 5;
-        let on_link = hint_line_for(&st, &keymap());
+        let on_link = hint_line_for(&st, &keymap(), false);
         assert_eq!(
             on_link.chords[0].label, "Open link",
             "contextual link hint must lead the row"
         );
         // Cursor in the trailing plain-text tail → not on a link.
         st.cursor.offset = 32;
-        let off_link = hint_line_for(&st, &keymap());
+        let off_link = hint_line_for(&st, &keymap(), false);
         assert!(
             !off_link.chords.iter().any(|c| c.label == "Open link"),
             "Open link hint leaked outside the link span"
@@ -878,7 +923,7 @@ mod tests {
         let mut st = state("- [ ] see [docs](https://example.com)\n");
         st.mode = Mode::Rendered;
         st.cursor.offset = 14; // inside "docs"
-        let set = hint_line_for(&st, &keymap());
+        let set = hint_line_for(&st, &keymap(), false);
         assert_eq!(set.chords[0].label, "Open link");
         assert_eq!(set.chords[1].label, "Toggle");
         assert_eq!(
@@ -896,7 +941,7 @@ mod tests {
             anchor: 0,
             active: 5,
         });
-        let set = hint_line_for(&st, &keymap());
+        let set = hint_line_for(&st, &keymap(), false);
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(
             labels,
@@ -915,7 +960,7 @@ mod tests {
             active: 5,
         });
         assert_eq!(
-            hint_line_for(&st, &keymap())
+            hint_line_for(&st, &keymap(), false)
                 .chords
                 .iter()
                 .map(|c| c.label.clone())
@@ -925,7 +970,7 @@ mod tests {
         // Clearing the selection must drop the row back to the
         // baseline edit-mode chords with Menu leading.
         st.selection = None;
-        let set = hint_line_for(&st, &keymap());
+        let set = hint_line_for(&st, &keymap(), false);
         assert_eq!(set.chords[0].label, "Menu");
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(!labels.contains(&"Cut"));
@@ -938,7 +983,7 @@ mod tests {
         let mut st = state("- a\n- b\n");
         st.mode = Mode::Rendered;
         st.cursor.offset = 2;
-        let set = hint_line_for(&st, &keymap());
+        let set = hint_line_for(&st, &keymap(), false);
         assert!(
             !set.chords.iter().any(|c| c.label == "Toggle"),
             "regular list items have no checkbox to toggle"
@@ -951,7 +996,7 @@ mod tests {
         let mut st = state("- [ ] todo\n");
         st.mode = Mode::Rendered;
         st.cursor.offset = 8;
-        let set = hint_line_for(&st, &keymap());
+        let set = hint_line_for(&st, &keymap(), false);
         assert_eq!(set.chords[0].chord, "^Space");
         assert_eq!(set.chords[0].label, "Toggle");
     }
@@ -962,7 +1007,7 @@ mod tests {
         let mut st = state(source);
         st.mode = Mode::Raw;
         st.cursor.offset = 22;
-        let set = hint_line_for(&st, &keymap());
+        let set = hint_line_for(&st, &keymap(), false);
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(
             !labels.iter().any(|l| l.contains("cell")),
@@ -983,7 +1028,7 @@ mod tests {
             .unwrap();
         let mut st = state("hello");
         st.mode = Mode::Rendered;
-        let set = hint_line_for(&st, &km);
+        let set = hint_line_for(&st, &km, false);
         let menu = set
             .chords
             .iter()
@@ -1015,7 +1060,7 @@ mod tests {
         );
         let mut st = state("hello");
         st.mode = Mode::Rendered;
-        let set = hint_line_for(&st, &km);
+        let set = hint_line_for(&st, &km, false);
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(
             !labels.contains(&"Save"),
@@ -1038,7 +1083,7 @@ mod tests {
         let mut st = state(source);
         st.mode = Mode::Rendered;
         st.cursor.offset = 22;
-        let set = hint_line_for(&st, &km);
+        let set = hint_line_for(&st, &km, false);
         let move_chord = set
             .chords
             .iter()
@@ -1055,12 +1100,97 @@ mod tests {
     }
 
     #[test]
+    fn nav_hint_appears_only_when_history_available() {
+        let mut st = state("hello");
+        st.mode = Mode::Rendered;
+        // No history → no Back/fwd chord.
+        let off = hint_line_for(&st, &keymap(), false);
+        assert!(
+            !off.chords.iter().any(|c| c.label == "Back/fwd"),
+            "Back/fwd must stay hidden with an empty history stack"
+        );
+        // History present → the ⌥←→ chord rides the contextual block,
+        // sitting just before the baseline `Menu` chord.
+        let on = hint_line_for(&st, &keymap(), true);
+        let nav = on
+            .chords
+            .iter()
+            .position(|c| c.label == "Back/fwd")
+            .expect("Back/fwd hint must appear when history is available");
+        assert_eq!(on.chords[nav].chord, "⌥←→");
+        let menu = on
+            .chords
+            .iter()
+            .position(|c| c.label == "Menu")
+            .expect("Menu still present");
+        assert_eq!(nav + 1, menu, "Back/fwd must sit immediately before Menu");
+    }
+
+    #[test]
+    fn nav_hint_suppressed_in_table() {
+        // Alt+Left/Right reorder columns inside a table, so the history
+        // chord must not be advertised there even when history exists.
+        let source = "| a | b |\n| - | - |\n| c | d |\n";
+        let mut st = state(source);
+        st.mode = Mode::Rendered;
+        st.cursor.offset = 22;
+        let set = hint_line_for(&st, &keymap(), true);
+        assert!(
+            !set.chords.iter().any(|c| c.label == "Back/fwd"),
+            "Back/fwd must stay hidden while the cursor is in a table"
+        );
+    }
+
+    #[test]
+    fn nav_hint_suppressed_in_table_raw_mode() {
+        // Raw mode has no early-returning table arm, so the suppression
+        // rests entirely on the explicit `!cursor_in_table` guard.  Without
+        // it the row would advertise ⌥←→ while Alt+Left/Right actually
+        // reorder the table column (the nav redirect fires only outside a
+        // table, regardless of view mode).
+        let source = "| a | b |\n| - | - |\n| c | d |\n";
+        let mut st = state(source);
+        st.mode = Mode::Raw;
+        st.cursor.offset = 22;
+        let set = hint_line_for(&st, &keymap(), true);
+        assert!(
+            !set.chords.iter().any(|c| c.label == "Back/fwd"),
+            "Back/fwd must stay hidden in a table even in Raw mode"
+        );
+    }
+
+    #[test]
+    fn nav_hint_leads_preview_row() {
+        // Preview is browse mode — history navigation leads the row.
+        let st = state("hello");
+        let set = hint_line_for(&st, &keymap(), true);
+        assert_eq!(set.chords[0].label, "Back/fwd");
+        assert_eq!(set.chords[0].chord, "⌥←→");
+        assert_eq!(set.chords[1].label, "Menu", "baseline Menu follows the nav hint");
+    }
+
+    #[test]
+    fn nav_hint_trails_link_and_toggle() {
+        // On a task line that also holds a link, the narrower Link /
+        // Toggle hints lead and Back/fwd trails them, still ahead of the
+        // baseline row.
+        let mut st = state("- [ ] see [docs](https://example.com)\n");
+        st.mode = Mode::Rendered;
+        st.cursor.offset = 14; // inside "docs"
+        let set = hint_line_for(&st, &keymap(), true);
+        assert_eq!(set.chords[0].label, "Open link");
+        assert_eq!(set.chords[1].label, "Toggle");
+        assert_eq!(set.chords[2].label, "Back/fwd");
+        assert_eq!(set.chords[3].label, "Menu");
+    }
+
+    #[test]
     fn rendered_table_cursor_shows_table_chords() {
         let source = "| a | b |\n| - | - |\n| c | d |\n";
         let mut st = state(source);
         st.mode = Mode::Rendered;
         st.cursor.offset = 22;
-        let set = hint_line_for(&st, &keymap());
+        let set = hint_line_for(&st, &keymap(), false);
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.iter().any(|l| l.contains("cell")));
         assert!(labels.iter().any(|l| l.contains("row")));
@@ -1079,7 +1209,7 @@ mod tests {
         // match counter — under vim too, since `hint_line_for` no longer
         // branches on the sub-mode (the App passes the same editor state
         // either way).
-        let set = hint_line_for(&st, &keymap());
+        let set = hint_line_for(&st, &keymap(), false);
         assert!(set.search_match.is_some(), "match counter must lead");
         assert!(set.chords.iter().any(|c| c.label == "Next"));
         assert!(
