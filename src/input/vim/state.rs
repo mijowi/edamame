@@ -74,6 +74,12 @@ impl CmdLineKind {
     }
 }
 
+/// Upper bound on the per-session `:` / search history; older entries are
+/// dropped once a kind's history grows past this. Vim's default `history` is
+/// 50 — 100 is comfortably more than a single editing session recalls while
+/// staying trivially cheap to keep in memory.
+pub const HISTORY_CAP: usize = 100;
+
 /// The hint-line command-line buffer, active while typing `:` / `/` / `?`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CmdLineState {
@@ -81,6 +87,27 @@ pub struct CmdLineState {
     pub input: String,
     /// Char index within `input`.
     pub cursor: usize,
+    /// History-recall position: `None` while editing the live draft, `Some(i)`
+    /// while showing `history[i]` after an Up. Down past the newest entry
+    /// returns to `None` (and restores [`draft`](Self::draft)).
+    pub history_idx: Option<usize>,
+    /// The in-progress text stashed when history recall begins, so stepping
+    /// Down past the newest entry restores what the user was typing.
+    pub draft: String,
+}
+
+impl CmdLineState {
+    /// A fresh, empty command line of the given `kind` (cursor at 0, not
+    /// browsing history).
+    pub fn new(kind: CmdLineKind) -> Self {
+        Self {
+            kind,
+            input: String::new(),
+            cursor: 0,
+            history_idx: None,
+            draft: String::new(),
+        }
+    }
 }
 
 /// The complete vim state held on `App`.
@@ -107,6 +134,12 @@ pub struct VimState {
     pub register: VimRegister,
     /// Active while typing a `:` / `/` / `?` command line.
     pub cmdline: Option<CmdLineState>,
+    /// Session-only `:` ex-command history, oldest first, newest last.
+    /// Recalled with Up/Down while the `:` prompt is open.
+    pub ex_history: Vec<String>,
+    /// Session-only search history (`/` and `?` share one register, as in
+    /// vim), oldest first.
+    pub search_history: Vec<String>,
 }
 
 impl VimState {
@@ -123,6 +156,31 @@ impl VimState {
         self.pending_replace = false;
         self.pending_find = None;
         self.pending_text_object = None;
+    }
+
+    /// The session history list for a command-line `kind`. `/` and `?` share
+    /// the search history, as they do in vim.
+    fn history_for(&mut self, kind: CmdLineKind) -> &mut Vec<String> {
+        match kind {
+            CmdLineKind::Ex => &mut self.ex_history,
+            CmdLineKind::SearchForward | CmdLineKind::SearchBackward => &mut self.search_history,
+        }
+    }
+
+    /// Record a submitted command line into the matching session history.
+    /// A repeat of an existing entry is moved to the end (so Up walks distinct
+    /// commands, newest first), and the list is capped at [`HISTORY_CAP`].
+    /// `cmd` is assumed non-empty — empty submits are not recorded.
+    pub fn record_command(&mut self, kind: CmdLineKind, cmd: &str) {
+        let history = self.history_for(kind);
+        if let Some(pos) = history.iter().position(|e| e == cmd) {
+            history.remove(pos);
+        }
+        history.push(cmd.to_owned());
+        let overflow = history.len().saturating_sub(HISTORY_CAP);
+        if overflow > 0 {
+            history.drain(0..overflow);
+        }
     }
 
     /// Whether the active sub-mode is VisualLine — drives the render-path
@@ -189,5 +247,34 @@ mod tests {
         // Untouched.
         assert_eq!(v.sub_mode, VimSubMode::Insert);
         assert_eq!(v.register.text, "x");
+    }
+
+    #[test]
+    fn record_command_dedups_to_end_and_keeps_search_separate() {
+        let mut v = VimState::default();
+        v.record_command(CmdLineKind::Ex, "w");
+        v.record_command(CmdLineKind::Ex, "q");
+        v.record_command(CmdLineKind::Ex, "w"); // repeat moves to the end
+        assert_eq!(v.ex_history, vec!["q".to_owned(), "w".to_owned()]);
+        // `/` and `?` share one history, separate from `:`.
+        v.record_command(CmdLineKind::SearchForward, "foo");
+        v.record_command(CmdLineKind::SearchBackward, "bar");
+        assert_eq!(v.search_history, vec!["foo".to_owned(), "bar".to_owned()]);
+        assert_eq!(v.ex_history.len(), 2);
+    }
+
+    #[test]
+    fn record_command_caps_history_dropping_oldest() {
+        let mut v = VimState::default();
+        for i in 0..HISTORY_CAP + 5 {
+            v.record_command(CmdLineKind::Ex, &format!("cmd{i}"));
+        }
+        assert_eq!(v.ex_history.len(), HISTORY_CAP);
+        // The five oldest were dropped from the front.
+        assert_eq!(v.ex_history[0], "cmd5");
+        assert_eq!(
+            v.ex_history[HISTORY_CAP - 1],
+            format!("cmd{}", HISTORY_CAP + 4)
+        );
     }
 }

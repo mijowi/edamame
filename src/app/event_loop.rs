@@ -1428,11 +1428,7 @@ mod tests {
         let mut app = app_with_buffer("hello\n", 0);
         app.set_vim_enabled(true);
         if let Some(vim) = app.vim.as_mut() {
-            vim.cmdline = Some(CmdLineState {
-                kind: CmdLineKind::SearchForward,
-                input: String::new(),
-                cursor: 0,
-            });
+            vim.cmdline = Some(CmdLineState::new(CmdLineKind::SearchForward));
         }
         let before = app.editor.buffer.contents();
         app.dispatch_paste("wor".to_owned(), &dims());
@@ -1463,11 +1459,7 @@ mod tests {
         let mut app = app_with_buffer("hi\n", 0);
         app.set_vim_enabled(true);
         if let Some(vim) = app.vim.as_mut() {
-            vim.cmdline = Some(CmdLineState {
-                kind: CmdLineKind::SearchForward,
-                input: String::new(),
-                cursor: 0,
-            });
+            vim.cmdline = Some(CmdLineState::new(CmdLineKind::SearchForward));
         }
         app.dispatch_paste("a\nb\r\nc".to_owned(), &dims());
         assert_eq!(

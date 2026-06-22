@@ -2743,6 +2743,75 @@ fn ex_substitute_unsupported_atom_flashes() {
     );
 }
 
+// ── Command-line history (Up/Down recall) ───────────────────────────────────────
+
+#[test]
+fn ex_history_recalls_previous_commands_with_arrows() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    ex_cmd(&mut vim, &mut st, "w");
+    ex_cmd(&mut vim, &mut st, "q");
+    // Reopen the prompt and type a partial draft.
+    feed(&mut vim, &mut st, ch(':'));
+    feed(&mut vim, &mut st, ch('x'));
+    // Up walks newest → oldest.
+    feed(&mut vim, &mut st, key(KeyCode::Up));
+    assert_eq!(vim.cmdline.as_ref().unwrap().input, "q");
+    feed(&mut vim, &mut st, key(KeyCode::Up));
+    assert_eq!(vim.cmdline.as_ref().unwrap().input, "w");
+    feed(&mut vim, &mut st, key(KeyCode::Up)); // already oldest — no further change
+    assert_eq!(vim.cmdline.as_ref().unwrap().input, "w");
+    // Down walks back, and past the newest restores the typed draft.
+    feed(&mut vim, &mut st, key(KeyCode::Down));
+    assert_eq!(vim.cmdline.as_ref().unwrap().input, "q");
+    feed(&mut vim, &mut st, key(KeyCode::Down));
+    assert_eq!(vim.cmdline.as_ref().unwrap().input, "x");
+    assert_eq!(vim.cmdline.as_ref().unwrap().cursor, 1);
+}
+
+#[test]
+fn recalled_ex_command_runs_when_submitted() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    ex_cmd(&mut vim, &mut st, "w");
+    feed(&mut vim, &mut st, ch(':'));
+    feed(&mut vim, &mut st, key(KeyCode::Up));
+    assert_eq!(
+        feed(&mut vim, &mut st, key(KeyCode::Enter)),
+        VimOutcome::Save
+    );
+}
+
+#[test]
+fn ex_and_search_keep_independent_histories() {
+    let mut st = state("foo bar");
+    let mut vim = VimState::default();
+    ex_cmd(&mut vim, &mut st, "w");
+    // A search submission records into the (separate) search history.
+    feed(&mut vim, &mut st, ch('/'));
+    feed(&mut vim, &mut st, ch('f'));
+    feed(&mut vim, &mut st, ch('o'));
+    feed(&mut vim, &mut st, ch('o'));
+    feed(&mut vim, &mut st, key(KeyCode::Enter));
+    assert_eq!(vim.ex_history, vec!["w".to_owned()]);
+    assert_eq!(vim.search_history, vec!["foo".to_owned()]);
+    // The `:` prompt only recalls ex history, never the search query.
+    feed(&mut vim, &mut st, ch(':'));
+    feed(&mut vim, &mut st, key(KeyCode::Up));
+    assert_eq!(vim.cmdline.as_ref().unwrap().input, "w");
+}
+
+#[test]
+fn empty_ex_submit_is_not_recorded() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    ex_cmd(&mut vim, &mut st, "");
+    assert!(
+        vim.ex_history.is_empty(),
+        "an empty `:` line is not history"
+    );
+}
+
 // ── CP10: markdown-aware list wiring ────────────────────────────────────────────
 
 #[test]
