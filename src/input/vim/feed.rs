@@ -285,12 +285,11 @@ fn feed_normal(
             // search's highlights (vim's `:noh`), keeping the cursor and
             // scroll where they are — only a *navigate* search reaches here
             // (a capturing replace flow defers to `DefaultHandler`, so vim
-            // never sees its `Esc`).  Dropping the session directly rather
-            // than via `exit_search` avoids the pre-search scroll restore:
-            // the user stays on the match they navigated to.
+            // never sees its `Esc`).  `exit_search` leaves the user on the
+            // match they navigated to (search is a motion — no scroll-back).
             vim.sub_mode = VimSubMode::Normal;
             vim.reset_pending();
-            editor.search = None;
+            editor.exit_search();
             VimOutcome::Consumed
         }
         KeyCode::Char(c) => feed_command_char(vim, editor, c, vh, vw, /*visual=*/ false),

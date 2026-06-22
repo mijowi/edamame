@@ -145,8 +145,12 @@ mod tests {
     /// restarting.  The rest of the rows are read live at render /
     /// use time.  Kept in sync with the row table by
     /// [`live_update_coverage_is_exhaustive`].
-    const LIVE_UPDATE_LABELS: &[&str] =
-        &[LABEL_BIG_H1, LABEL_SCROLL_SPEED, LABEL_VISUAL_LINE_NAV, LABEL_VIM_MODE];
+    const LIVE_UPDATE_LABELS: &[&str] = &[
+        LABEL_BIG_H1,
+        LABEL_SCROLL_SPEED,
+        LABEL_VISUAL_LINE_NAV,
+        LABEL_VIM_MODE,
+    ];
 
     /// Labels that are read live (no App-side cache to push to) and
     /// therefore intentionally have no arm in [`apply_live_update`].

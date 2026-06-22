@@ -583,12 +583,12 @@ impl EditorState {
         self.ensure_search_fresh();
     }
 
-    /// Drop the active search flow and restore the pre-search scroll.
-    /// No-op when no flow is active.
+    /// Drop the active search flow, leaving the cursor and viewport on
+    /// the match the user navigated to.  Search is a *motion* (matching
+    /// vim's `/` and the VS Code find widget): exiting never scrolls back
+    /// to where the search began.  No-op when no flow is active.
     pub fn exit_search(&mut self) {
-        if let Some(s) = self.search.take() {
-            self.scroll = s.pre_search_scroll;
-        }
+        self.search = None;
     }
 
     /// Bidirectional raw↔rendered char-column map for `raw_line`, cached

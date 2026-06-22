@@ -20,8 +20,8 @@ fn theme() -> &'static Theme {
 
 fn state_with_search(text: &str, query: &str, replace: Option<&str>) -> EditorState {
     let mut st = EditorState::new(Buffer::from_str(text), theme());
-    let search = SearchState::new(query.to_owned(), replace.map(str::to_owned), st.scroll)
-        .expect("valid query");
+    let search =
+        SearchState::new(query.to_owned(), replace.map(str::to_owned)).expect("valid query");
     st.enter_search(search);
     st
 }
@@ -54,7 +54,7 @@ fn smartcase_uppercase_query_is_case_sensitive() {
 fn enter_search_populates_matches_and_keeps_mode() {
     let mut st = EditorState::new(Buffer::from_str("foo bar foo\n"), theme());
     st.mode = Mode::Rendered;
-    let search = SearchState::new("foo".to_owned(), None, st.scroll).unwrap();
+    let search = SearchState::new("foo".to_owned(), None).unwrap();
     st.enter_search(search);
     assert_eq!(st.mode, Mode::Rendered, "search must not change the mode");
     assert_eq!(st.search.as_ref().unwrap().matches.len(), 2);
@@ -62,13 +62,14 @@ fn enter_search_populates_matches_and_keeps_mode() {
 }
 
 #[test]
-fn exit_search_restores_scroll_and_drops_session() {
+fn exit_search_drops_session_and_keeps_scroll() {
+    // Search is a motion: exiting leaves the viewport where the user
+    // navigated to, never scrolling back to where the search began.
     let mut st = state_with_search(&"line\n".repeat(50), "line", None);
-    st.search.as_mut().unwrap().pre_search_scroll = 9;
     st.scroll = 30;
     st.exit_search();
     assert!(st.search.is_none());
-    assert_eq!(st.scroll, 9);
+    assert_eq!(st.scroll, 30, "exit stays put — no scroll-back to origin");
 }
 
 #[test]
@@ -128,7 +129,8 @@ fn render_editor(state: &mut EditorState, width: u16, height: u16) -> ratatui::b
     let caps = edamame::terminal::Capabilities::default();
     // Build the hint from the live state, exactly as the app does, so
     // the search match counter that now leads the hint line is present.
-    let hint = edamame::ui::bottom_region::HintContent::Chords(hint_line_for(state, &keymap(), false));
+    let hint =
+        edamame::ui::bottom_region::HintContent::Chords(hint_line_for(state, &keymap(), false));
     terminal
         .draw(|frame| {
             let view = EditorView {

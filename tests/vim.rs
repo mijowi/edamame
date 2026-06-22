@@ -2224,7 +2224,7 @@ fn ctrl_chord_during_a_visual_text_object_passes_through_keeping_selection() {
 
 /// Install an active navigate-only search for `query` on `st`.
 fn with_search(st: &mut EditorState, query: &str) {
-    let s = SearchState::new(query.to_owned(), None, st.scroll).expect("valid query");
+    let s = SearchState::new(query.to_owned(), None).expect("valid query");
     st.enter_search(s);
 }
 

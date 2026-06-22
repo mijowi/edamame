@@ -84,9 +84,10 @@ impl EditorState {
             return false;
         }
         // An active search flow keeps the document fully rendered:
-        // tabbing through matches must not flip blocks between
-        // rendered and raw under the highlights, and typing is
-        // disabled for the duration of the flow anyway.
+        // tabbing through matches must not flip blocks between rendered
+        // and raw under the highlights.  This holds even for a
+        // non-capturing navigate flow, where editing is allowed — the
+        // highlights stay stable until the user dismisses the search.
         if self.search.is_some() {
             return false;
         }
