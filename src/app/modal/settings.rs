@@ -17,7 +17,9 @@ use ratatui::Frame;
 use super::types::{Modal, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
 use crate::config::Config;
-use crate::ui::settings_overlay::{LABEL_BIG_H1, LABEL_SCROLL_SPEED, LABEL_VISUAL_LINE_NAV};
+use crate::ui::settings_overlay::{
+    LABEL_BIG_H1, LABEL_SCROLL_SPEED, LABEL_VIM_MODE, LABEL_VISUAL_LINE_NAV,
+};
 use crate::ui::{ModalKind, SettingsResponse, SettingsState, SettingsView};
 
 pub struct SettingsOverlayModal {
@@ -44,6 +46,12 @@ pub(super) fn apply_live_update(label: &str, app: &mut App) {
             .set_wheel_step(app.config.editor.mouse_scroll_lines),
         LABEL_VISUAL_LINE_NAV => {
             app.editor.visual_line_nav = app.config.editor.visual_line_nav;
+        }
+        LABEL_VIM_MODE => {
+            // The row cycle flipped `config.modal.handler`; rebuild the
+            // live VimState (and resting mode) to match so vim editing
+            // turns on/off immediately without a restart.
+            app.set_vim_enabled(app.config.modal.handler == "vim");
         }
         _ => {}
     }
@@ -137,7 +145,8 @@ mod tests {
     /// restarting.  The rest of the rows are read live at render /
     /// use time.  Kept in sync with the row table by
     /// [`live_update_coverage_is_exhaustive`].
-    const LIVE_UPDATE_LABELS: &[&str] = &[LABEL_BIG_H1, LABEL_SCROLL_SPEED, LABEL_VISUAL_LINE_NAV];
+    const LIVE_UPDATE_LABELS: &[&str] =
+        &[LABEL_BIG_H1, LABEL_SCROLL_SPEED, LABEL_VISUAL_LINE_NAV, LABEL_VIM_MODE];
 
     /// Labels that are read live (no App-side cache to push to) and
     /// therefore intentionally have no arm in [`apply_live_update`].
@@ -225,6 +234,24 @@ mod tests {
         app.config.editor.mouse_scroll_lines = new_step;
         apply_live_update(LABEL_SCROLL_SPEED, &mut app);
         assert_eq!(app.mouse.wheel_step(), new_step);
+    }
+
+    #[test]
+    fn live_update_toggles_vim_state_on_and_off() {
+        let mut app = make_app();
+        // make_app starts with the default handler → no vim state.
+        assert!(app.vim.is_none());
+
+        // Enable: the row cycle flips the handler, then the live update
+        // builds the VimState.
+        app.config.modal.handler = "vim".into();
+        apply_live_update(LABEL_VIM_MODE, &mut app);
+        assert!(app.vim.is_some(), "vim mode on builds VimState");
+
+        // Disable: handler back to default, live update tears it down.
+        app.config.modal.handler = "default".into();
+        apply_live_update(LABEL_VIM_MODE, &mut app);
+        assert!(app.vim.is_none(), "vim mode off clears VimState");
     }
 
     #[test]

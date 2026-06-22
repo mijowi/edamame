@@ -107,7 +107,9 @@ fn pill_spans(options: &[&str], current: &str, focused: bool, theme: &Theme) -> 
 // The lib itself never reads them, so allow(dead_code) on the helper
 // suppresses the otherwise-spurious `cargo clippy --lib` warning.
 #[allow(unused_imports)]
-pub(crate) use self::rows::{HEADER_NOTE, LABEL_BIG_H1, LABEL_SCROLL_SPEED, LABEL_VISUAL_LINE_NAV};
+pub(crate) use self::rows::{
+    HEADER_NOTE, LABEL_BIG_H1, LABEL_SCROLL_SPEED, LABEL_VIM_MODE, LABEL_VISUAL_LINE_NAV,
+};
 
 /// All row labels in display order, including non-focusable dividers.
 /// Used by the App-level live-update wiring tests in
@@ -559,6 +561,19 @@ mod tests {
     }
 
     #[test]
+    fn cycle_toggles_vim_mode_handler() {
+        let mut config = Config::default();
+        let mut state = SettingsState::new();
+        focus_row(&mut state, "Vim mode");
+        assert_eq!(config.modal.handler, "default"); // default: off
+        let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
+        assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
+        assert_eq!(config.modal.handler, "vim");
+        state.handle_key(&key(KeyCode::Enter), &mut config);
+        assert_eq!(config.modal.handler, "default");
+    }
+
+    #[test]
     fn cycle_advances_show_images_through_ask_always_never() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
@@ -706,6 +721,7 @@ mod tests {
                 "Diff intro",
                 "Big H1 headings",
                 "Use visual line navigation",
+                "Vim mode",
                 "Show line numbers",
                 "Scroll speed",
                 "Show images",
