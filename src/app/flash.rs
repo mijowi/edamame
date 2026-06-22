@@ -152,9 +152,10 @@ impl App {
                 &fallback
             }
         };
-        // When vim is active, the sub-mode drives a vim-specific chord row.
-        let vim_mode = self.vim.as_ref().map(|v| v.sub_mode);
-        HintContent::Chords(hint_line_for(&self.editor, keymap, vim_mode))
+        // Vim reuses the same contextual + baseline hint row as the default
+        // handler — the modal keys are vim-internal and the status bar badge
+        // already advertises the active sub-mode.
+        HintContent::Chords(hint_line_for(&self.editor, keymap))
     }
 
     /// Inspect `action` after dispatch and emit the matching flash
