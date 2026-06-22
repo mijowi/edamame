@@ -1146,9 +1146,12 @@ impl App {
     pub fn open_keybinds_overlay(&mut self) {
         let keymap = self.ensure_keymap_clone();
         let overrides = self.keybindings.clone();
+        let vim_enabled = self.vim.is_some();
         self.modal_stack
             .push(Box::new(modal::KeybindsOverlayModal::new(
-                &keymap, &overrides,
+                &keymap,
+                &overrides,
+                vim_enabled,
             )));
     }
 

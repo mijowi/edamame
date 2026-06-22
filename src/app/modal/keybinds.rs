@@ -28,9 +28,9 @@ pub struct KeybindsOverlayModal {
 }
 
 impl KeybindsOverlayModal {
-    pub fn new(keymap: &KeyMap, overrides: &KeyBindingOverrides) -> Self {
+    pub fn new(keymap: &KeyMap, overrides: &KeyBindingOverrides, vim_enabled: bool) -> Self {
         Self {
-            state: KeybindsState::open(keymap, overrides),
+            state: KeybindsState::open(keymap, overrides, vim_enabled),
         }
     }
 }
