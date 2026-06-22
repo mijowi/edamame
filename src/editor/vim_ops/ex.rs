@@ -36,6 +36,9 @@ pub enum ExCommand {
     Quit,
     /// `:wq` — write then quit.
     WriteQuit,
+    /// `:x` — write then quit, but only write when the buffer is modified
+    /// (the canonical vim behavior; `:wq` always writes).
+    WriteQuitIfModified,
     /// `:s/…` (current line) or `:%s/…` (whole file).
     Substitute(Substitution),
 }
@@ -92,6 +95,7 @@ pub fn parse_ex(input: &str) -> Result<ExCommand, ExError> {
         "w" | "write" => Ok(ExCommand::Write),
         "q" | "quit" => Ok(ExCommand::Quit),
         "wq" => Ok(ExCommand::WriteQuit),
+        "x" | "xit" => Ok(ExCommand::WriteQuitIfModified),
         other => Err(ExError::UnknownCommand(other.to_owned())),
     }
 }
@@ -288,6 +292,8 @@ mod tests {
         assert_eq!(parse_ex("write"), Ok(ExCommand::Write));
         assert_eq!(parse_ex("q"), Ok(ExCommand::Quit));
         assert_eq!(parse_ex("wq"), Ok(ExCommand::WriteQuit));
+        assert_eq!(parse_ex("x"), Ok(ExCommand::WriteQuitIfModified));
+        assert_eq!(parse_ex("xit"), Ok(ExCommand::WriteQuitIfModified));
         // Leading / trailing whitespace is tolerated.
         assert_eq!(parse_ex("  w  "), Ok(ExCommand::Write));
     }

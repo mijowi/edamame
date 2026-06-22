@@ -223,6 +223,11 @@ fn submit_ex(editor: &mut EditorState, input: &str, vh: usize, vw: usize) -> Vim
         Ok(ExCommand::Write) => VimOutcome::Save,
         Ok(ExCommand::Quit) => VimOutcome::Quit { save_first: false },
         Ok(ExCommand::WriteQuit) => VimOutcome::Quit { save_first: true },
+        // `:x` writes only when the buffer is dirty, then quits — the
+        // canonical vim behavior (`:wq` always writes).
+        Ok(ExCommand::WriteQuitIfModified) => VimOutcome::Quit {
+            save_first: editor.dirty,
+        },
         Ok(ExCommand::Substitute(sub)) => match execute_substitute(editor, &sub) {
             Ok(0) => VimOutcome::Flash(format!("Pattern not found: {}", sub.pattern)),
             Ok(n) => {
