@@ -15,8 +15,10 @@
 //! this editor-layer module needs no `use crate::input`.
 
 use crate::document::{next_grapheme_offset, EditDelta};
+use crate::editor::edit_ops::{apply_byte_delta, cursor_byte};
+use crate::editor::list_edit;
 use crate::editor::vim_ops::motion::{first_non_blank, line_end_offset};
-use crate::editor::EditorState;
+use crate::editor::{EditorState, Mode};
 
 /// Paste the register `text` `count` times.  `after` selects `p` (after
 /// the cursor / below the line) vs. `P` (before the cursor / above the
@@ -404,6 +406,113 @@ pub fn indent_lines(
     editor.cursor.offset = first_non_blank(&editor.buffer, first);
     editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
     editor.update_cursor_block();
+}
+
+// ── List-aware wiring (CP10) ──────────────────────────────────────────────────────
+//
+// `o`/`O`, `dd`, and `>>`/`<<` reuse the byte-oriented `list_edit` primitives —
+// the same ones the non-vim editing path drives — so vim list editing and
+// arrow-key list editing produce identical structure.  Each goes through
+// `edit_ops::apply_byte_delta` (byte → char conversion + cursor placement), and
+// every primitive is a *single* `EditDelta` (`continue_item` and `indent_item`
+// renumber inline), keeping `o`/`>>` one undo unit.  All bail out in `Mode::Raw`,
+// where the markers are hand-editable source the engine must not rewrite.
+
+/// `o` / `O` inside a Markdown list: continue the list with a fresh empty item
+/// instead of a bare newline, auto-renumbering an ordered list.  `below`
+/// (`o`) continues from the cursor's item; `O` continues from the *previous*
+/// item so the new marker lands above the current one.  Returns `true` when a
+/// list continuation was applied; `false` (cursor not in a list, in Raw mode,
+/// or `O` on the list's first item) lets the caller fall back to a plain
+/// newline open.  The cursor is left just past the new marker, ready for
+/// Insert.
+pub fn open_list_continue(editor: &mut EditorState, below: bool) -> bool {
+    if editor.mode == Mode::Raw {
+        return false;
+    }
+    let source = editor.buffer.contents();
+    let byte = cursor_byte(editor);
+    let Some(info) = list_edit::find_list_at(&source, byte) else {
+        return false;
+    };
+    let Some(item_idx) = list_edit::cursor_item_idx(&info, byte) else {
+        return false;
+    };
+    // The byte to continue from: the end of the current item's content line
+    // (`o`), or the previous item's (`O`).  `O` on the first item has no
+    // earlier item to split from, so it falls back to a plain open-above.
+    let at = if below {
+        info.items[item_idx].line_end
+    } else if item_idx > 0 {
+        info.items[item_idx - 1].line_end
+    } else {
+        return false;
+    };
+    let Some(res) = list_edit::continue_item(&info, &source, at) else {
+        return false;
+    };
+    apply_byte_delta(editor, res.delta, res.cursor_byte);
+    true
+}
+
+/// After a linewise delete (`dd`, `dj`, `Vd`, …) renumber the ordered list
+/// surrounding the cursor so its sequence stays monotonic.  No-op for bullet
+/// lists, already-sequential lists, in Raw mode, or when the cursor is not in
+/// a list — so it is safe to call after *any* linewise operator (a yank or a
+/// `cc` leaves the numbers untouched and records no delta).
+///
+/// Uses the nesting-aware [`list_edit::renumber_list_block`]: a `dd` lands the
+/// cursor on the line below, which for a list whose items have nested children
+/// is the *child* — so a flat per-indent renumber would fix only the
+/// (already-correct) inner list and leave the outer sequence stale.  The block
+/// walk renumbers every ordered run in the surrounding list, each restarting
+/// under its own parent.
+pub fn renumber_list_at_cursor(editor: &mut EditorState) {
+    if editor.mode == Mode::Raw {
+        return;
+    }
+    let source = editor.buffer.contents();
+    let byte = cursor_byte(editor);
+    if let Some(delta) = list_edit::renumber_list_block(&source, byte) {
+        apply_byte_delta(editor, delta, byte);
+    }
+}
+
+/// `>>` / `<<` inside a Markdown list: indent (`right`) or outdent the cursor's
+/// list item one level via the structure-aware `list_edit` primitives — which
+/// reset an indented ordered item to a fresh `1.` and renumber the surrounding
+/// run, matching the non-vim `Tab` / `Shift+Tab` behavior.  Returns `true` when
+/// handled; `false` (not in a list, in Raw mode, or an outdent with no indent
+/// to strip) lets the caller fall back to the plain space-based `indent_lines`.
+pub fn indent_list_item(editor: &mut EditorState, right: bool) -> bool {
+    if editor.mode == Mode::Raw {
+        return false;
+    }
+    let source = editor.buffer.contents();
+    let byte = cursor_byte(editor);
+    let Some(info) = list_edit::find_list_at(&source, byte) else {
+        return false;
+    };
+    let tab_width = editor.tab_width;
+    let res = if right {
+        list_edit::indent_item(&info, &source, byte, tab_width)
+    } else {
+        list_edit::outdent_item(&info, &source, byte, tab_width)
+    };
+    let Some(res) = res else {
+        return false;
+    };
+    apply_byte_delta(editor, res.delta, res.cursor_byte);
+    // Moving the item between nesting levels can leave a stale marker number in
+    // the destination ordered list — an outdented item carries its old nested
+    // `1.` into the outer run, and an item indented onto an existing nested run
+    // joins it as a duplicate `1.`.  The rendered view always shows sequential
+    // numbers, so the raw source would otherwise disagree.  Renumber the list
+    // now at the cursor's new level, mirroring the global renumber pass the
+    // non-vim `Tab` / `Shift+Tab` path runs after every edit.  A no-op for
+    // bullet lists and already-sequential runs.
+    renumber_list_at_cursor(editor);
+    true
 }
 
 /// Drop up to `tab_width` leading spaces, or a single leading tab, from

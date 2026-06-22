@@ -318,23 +318,34 @@ pub(super) fn paint_byte_range_overlay(
         // italic / link markup inside the item also lines up.
         let raw_marker = raw_list_marker_char_width(raw_line);
         let rendered_marker = rendered_list_marker_char_width(line);
-        if let (Some(rmw), Some(rmw_r)) = (raw_marker, rendered_marker) {
-            let content_rendered = actual_rendered.saturating_sub(rmw_r);
-            if inline_map.rendered_len() == content_rendered {
-                let map_col = |raw_col: usize| -> usize {
-                    if raw_col < rmw {
-                        rmw_r
-                    } else {
-                        inline_map.raw_to_rendered(raw_col) + rmw_r
-                    }
-                };
-                (map_col(start_raw_col), map_col(end_raw_col))
+        let (mut rend_start, rend_end) =
+            if let (Some(rmw), Some(rmw_r)) = (raw_marker, rendered_marker) {
+                let content_rendered = actual_rendered.saturating_sub(rmw_r);
+                if inline_map.rendered_len() == content_rendered {
+                    let map_col = |raw_col: usize| -> usize {
+                        if raw_col < rmw {
+                            rmw_r
+                        } else {
+                            inline_map.raw_to_rendered(raw_col) + rmw_r
+                        }
+                    };
+                    (map_col(start_raw_col), map_col(end_raw_col))
+                } else {
+                    (rs, re)
+                }
             } else {
                 (rs, re)
-            }
-        } else {
-            (rs, re)
+            };
+        // A selection that reaches the line's first column covers the rendered
+        // marker too — most notably VisualLine, which widens to whole lines, but
+        // also any charwise span whose intermediate lines are fully selected.
+        // The marker map above snaps such a start forward to the content column,
+        // leaving the `1. ` / `• ` prefix unpainted; pull it back to col 0 so the
+        // whole rendered row highlights.
+        if start_raw_col == 0 {
+            rend_start = 0;
         }
+        (rend_start, rend_end)
     } else {
         // Paragraph / heading / code block line: use the inline collapse
         // map so selection highlights track rendered glyph positions.

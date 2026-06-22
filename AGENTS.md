@@ -499,5 +499,6 @@ Use `tracing` macros (`tracing::info!`, `tracing::debug!`, etc.) — **never** `
 | `base64`, `tempfile` | Self-contained HTML export and custom-command pipelines |
 | `mermaid-rs-renderer` + `resvg` + `usvg` + `sha2` | Mermaid diagram rendering |
 | `tui-big-text` | Big-text rendering for H1 headings |
+| `fancy-regex` | Regex engine for vim `:s`/`:%s` substitution (backreferences + lookaround; the `/` search path stays literal-substring) |
 | `insta` | Snapshot testing |
 | `proptest` | Property-based testing |
