@@ -313,6 +313,23 @@ impl<'a> StatefulWidget for EditorView<'a> {
             super::rendered_view::paint_search_overlays(self.state, buf, doc_area, self.theme);
         }
 
+        // ── Cursor re-stamp ───────────────────────────────────────
+        // The rendered-mode cursor indicator is painted inline by
+        // `RenderedView`, but the search-match (and jitter-window
+        // selection) overlays run as a post-pass above and patch their
+        // wash onto every covered cell — including the cursor's.  Re-apply
+        // the cursor style on the recorded cell so an overlay can't bury
+        // it.  `cursor_screen` is `Some` only when the cursor was drawn via
+        // the rendered indicator path (raw-reveal / cell-overlay paths
+        // composite the cursor themselves and aren't overlaid).
+        if mode == Mode::Rendered {
+            if let Some((x, y)) = state.rendered.cursor_screen {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_style(self.theme.cursor_rendered);
+                }
+            }
+        }
+
         // ── Line-number gutter paint ─────────────────────────────
         if let Some(ga) = gutter_area {
             let scroll = self.state.scroll;
