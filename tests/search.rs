@@ -7,7 +7,7 @@
 //! `src/app/search.rs` and `src/app/modal/search_replace.rs`.
 
 use edamame::config::{KeyBindingOverrides, KeyMap, Theme};
-use edamame::document::Buffer;
+use edamame::document::{Buffer, Selection};
 use edamame::editor::{EditorState, Mode};
 use edamame::search::SearchState;
 use edamame::ui::bottom_region::hint_line_for;
@@ -292,6 +292,49 @@ fn code_block_match_highlight_aligns_with_padded_text() {
     }
     assert_ne!(buf.cell((0, 1)).unwrap().style().bg, t.selection.bg);
     assert_ne!(buf.cell((4, 1)).unwrap().style().bg, t.selection.bg);
+}
+
+#[test]
+fn visual_selection_highlights_the_code_fence_rows() {
+    // Regression: the opening (` lang `) and closing fence rows of a
+    // fenced code block render unrelated text, so `paint_byte_range_overlay`
+    // used to skip them entirely — leaving a selection that spans a code
+    // block unhighlighted at its top and bottom.  They now paint the whole
+    // rendered row when the selection covers them.
+    let t = theme();
+    // Cursor stays on "para" (offset 0) so the code block is NOT the
+    // cursor block and therefore renders normally (no raw reveal),
+    // exercising the overlay-painting path.
+    let doc = "para\n\n```rust\ncode\n```\n";
+    let mut st = EditorState::new(Buffer::from_str(doc), theme());
+    st.mode = Mode::Rendered;
+    st.set_viewport_width(40);
+    // Charwise selection covering the whole code block (chars 6..22).
+    st.selection = Some(Selection {
+        anchor: 6,
+        active: 22,
+    });
+    let buf = render_editor(&mut st, 40, 10);
+    // Rows: 0 "para", 1 blank, 2 ` rust ` fence-lang, 3 "code" body,
+    // 4 closing fence pad.  The opening fence renders as " rust " — assert
+    // the "rust" label cells (cols 1..5) carry the selection background.
+    for x in 1..5u16 {
+        let cell = buf.cell((x, 2)).unwrap();
+        assert_eq!(
+            cell.style().bg,
+            t.selection.bg,
+            "opening fence col {x} must be highlighted by the selection"
+        );
+    }
+    // The code body row stays highlighted too (cols 1..5 cover "code").
+    for x in 1..5u16 {
+        let cell = buf.cell((x, 3)).unwrap();
+        assert_eq!(
+            cell.style().bg,
+            t.selection.bg,
+            "code body col {x} must be highlighted by the selection"
+        );
+    }
 }
 
 #[test]

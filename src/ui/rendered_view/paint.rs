@@ -278,21 +278,28 @@ pub(super) fn paint_byte_range_overlay(
         (rs, re)
     } else if let Some(crate::markdown::Block::CodeBlock { fenced, .. }) = block_kind {
         // Code body rows render the raw text 1:1 behind one leading
-        // pad cell.  Fence rows (the ` lang ` label and the closing
-        // placeholder) render unrelated text — skip rather than paint
-        // a speculative highlight on them.  Indented (non-fenced)
-        // blocks additionally drop the up-to-4-space indent that
-        // pulldown-cmark strips from the content.
+        // pad cell.  Indented (non-fenced) blocks additionally drop
+        // the up-to-4-space indent that pulldown-cmark strips from the
+        // content.
+        //
+        // Fence rows render unrelated text — the ` lang ` label (or an
+        // NBSP placeholder) for the opening fence, and an NBSP
+        // placeholder for the closing fence — so a raw→rendered column
+        // mapping is meaningless.  When the selection touches a fence
+        // row, highlight the whole rendered row so the selection reads
+        // as covering it (Visual / V-LINE) rather than leaving a gap at
+        // the top and bottom of a selected block.
         if *fenced && (raw_line_idx == 0 || raw_line_idx + 1 == raw_lines.len()) {
-            return;
-        }
-        let stripped = if *fenced {
-            0
+            (0, actual_rendered)
         } else {
-            code_indent_strip_chars(raw_line)
-        };
-        let map_col = |c: usize| c.saturating_sub(stripped) + 1;
-        (map_col(start_raw_col), map_col(end_raw_col))
+            let stripped = if *fenced {
+                0
+            } else {
+                code_indent_strip_chars(raw_line)
+            };
+            let map_col = |c: usize| c.saturating_sub(stripped) + 1;
+            (map_col(start_raw_col), map_col(end_raw_col))
+        }
     } else if let Some(crate::markdown::Block::Heading { level, .. }) = block_kind {
         // Headings render as a level-deep space prefix plus the
         // collapsed inline content; shift the mapped cols right by the
