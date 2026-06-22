@@ -155,7 +155,11 @@ impl App {
         // Vim reuses the same contextual + baseline hint row as the default
         // handler — the modal keys are vim-internal and the status bar badge
         // already advertises the active sub-mode.
-        HintContent::Chords(hint_line_for(&self.editor, keymap))
+        // The history-navigation hint surfaces whenever there's somewhere
+        // to go in either direction — the single ⌥←→ chord covers both
+        // NavigateBack and NavigateForward.
+        let nav_available = !self.nav_back.is_empty() || !self.nav_forward.is_empty();
+        HintContent::Chords(hint_line_for(&self.editor, keymap, nav_available))
     }
 
     /// Inspect `action` after dispatch and emit the matching flash
