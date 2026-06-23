@@ -63,11 +63,12 @@ pub enum Action {
     Redo,
     // ── File operations ────────────────────────────────────────────
     Save,
-    /// Write the current buffer to a different path without changing
-    /// the buffer's associated path — subsequent `Save`s still write
-    /// to the original file.  Distinct from a hypothetical "Save As"
-    /// (which would *also* switch the buffer to the new path).
-    SaveCopy,
+    /// Write the buffer to a chosen path and adopt it as the buffer's
+    /// home — subsequent `Save`s target the new path.  Opens a path-entry
+    /// modal seeded with the current path (or a default for an unnamed
+    /// buffer).  The vim `:w <path>` command writes a detached copy
+    /// instead, leaving the buffer's path unchanged.
+    SaveAs,
     Open,
     // ── Mode transitions ───────────────────────────────────────────
     EnterEditMode,
@@ -303,7 +304,7 @@ action_variants! {
     BoldSelection, ItalicizeSelection,
     SelectLeft, SelectRight, SelectUp, SelectDown, SelectAll,
     Undo, Redo,
-    Save, SaveCopy, Open,
+    Save, SaveAs, Open,
     EnterEditMode, ExitToPreview, ToggleRawMode, Quit,
     ToggleCheckbox,
     TableNextCell, TablePrevCell, TableNextRow, TablePrevRow,

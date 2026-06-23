@@ -53,7 +53,7 @@ pub use scroll_container::ModalKind;
 // Used by integration tests in tests/ui.rs.
 #[allow(unused_imports)]
 pub use rendered_view::{RenderedView, RenderedViewState};
-pub use save_copy_modal::{default_copy_path, SaveCopyResponse, SaveCopyState, SaveCopyView};
+pub use save_copy_modal::{default_save_as_path, SaveCopyResponse, SaveCopyState, SaveCopyView};
 #[allow(unused_imports)]
 pub use scrollbar::{
     position_for_click, position_for_drag, thumb_range, Scrollbar, ScrollbarMetrics,

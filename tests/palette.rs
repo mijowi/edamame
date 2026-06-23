@@ -57,7 +57,7 @@ fn palette_save_entry_resolves_to_same_action_as_keyboard_save() {
     let keyboard_action = Action::Save;
 
     // Palette path: open palette, type "save f" (the trailing " f"
-    // disambiguates "Save file" from "Save a copy"), press Enter.
+    // disambiguates "Save file" from "Save as…"), press Enter.
     let mut palette = PaletteState::open(&keymap());
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     for c in "save f".chars() {

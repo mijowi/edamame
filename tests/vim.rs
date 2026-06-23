@@ -36,6 +36,18 @@ fn state(text: &str) -> EditorState {
     st
 }
 
+/// Like [`state`] but with an associated file path, so `:w` / `:wq`
+/// resolve to a direct save rather than the Save As prompt a never-saved
+/// (path-less) buffer triggers.
+fn state_with_path(text: &str) -> EditorState {
+    let mut buf = Buffer::for_new_file(std::path::Path::new("/tmp/edamame-vim-test.md"));
+    buf.insert(0, text);
+    let mut st = EditorState::new(buf, theme());
+    st.mode = Mode::Rendered;
+    st.update_cursor_block();
+    st
+}
+
 fn ch(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
 }
@@ -2530,7 +2542,7 @@ fn colon_opens_the_ex_command_line() {
 
 #[test]
 fn ex_write_returns_save_outcome() {
-    let mut st = state("hello");
+    let mut st = state_with_path("hello");
     let mut vim = VimState::default();
     assert_eq!(ex_cmd(&mut vim, &mut st, "w"), VimOutcome::Save);
     assert!(vim.cmdline.is_none(), "prompt closes on submit");
@@ -2538,7 +2550,7 @@ fn ex_write_returns_save_outcome() {
 
 #[test]
 fn ex_quit_and_writequit_outcomes() {
-    let mut st = state("hello");
+    let mut st = state_with_path("hello");
     let mut vim = VimState::default();
     assert_eq!(
         ex_cmd(&mut vim, &mut st, "q"),
@@ -2547,6 +2559,81 @@ fn ex_quit_and_writequit_outcomes() {
     assert_eq!(
         ex_cmd(&mut vim, &mut st, "wq"),
         VimOutcome::Quit { save_first: true }
+    );
+}
+
+#[test]
+fn ex_write_path_copies_saveas_repoints() {
+    let mut st = state_with_path("hello");
+    let mut vim = VimState::default();
+    // `:w <path>` writes a copy (keeps the current file) — real vim.
+    assert_eq!(
+        ex_cmd(&mut vim, &mut st, "w other.md"),
+        VimOutcome::SaveCopy {
+            path: std::path::PathBuf::from("other.md"),
+            then_quit: false,
+            force: false,
+        }
+    );
+    // `:w! <path>` forces past the overwrite-confirmation prompt.
+    assert_eq!(
+        ex_cmd(&mut vim, &mut st, "w! other.md"),
+        VimOutcome::SaveCopy {
+            path: std::path::PathBuf::from("other.md"),
+            then_quit: false,
+            force: true,
+        }
+    );
+    // `:saveas <path>` re-points the buffer at the new path.
+    assert_eq!(
+        ex_cmd(&mut vim, &mut st, "saveas other.md"),
+        VimOutcome::SaveAs {
+            path: Some(std::path::PathBuf::from("other.md")),
+            then_quit: false,
+            force: false,
+        }
+    );
+    // `:saveas` with no argument prompts (path None).
+    assert_eq!(
+        ex_cmd(&mut vim, &mut st, "saveas"),
+        VimOutcome::SaveAs {
+            path: None,
+            then_quit: false,
+            force: false,
+        }
+    );
+    // `:wq <path>` writes a copy, then quits.
+    assert_eq!(
+        ex_cmd(&mut vim, &mut st, "wq out.md"),
+        VimOutcome::SaveCopy {
+            path: std::path::PathBuf::from("out.md"),
+            then_quit: true,
+            force: false,
+        }
+    );
+}
+
+#[test]
+fn ex_write_on_pathless_buffer_prompts() {
+    // A never-saved buffer has no destination, so a bare `:w` opens the
+    // Save As prompt; `:wq` does the same but also carries the quit intent.
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    assert_eq!(
+        ex_cmd(&mut vim, &mut st, "w"),
+        VimOutcome::SaveAs {
+            path: None,
+            then_quit: false,
+            force: false,
+        }
+    );
+    assert_eq!(
+        ex_cmd(&mut vim, &mut st, "wq"),
+        VimOutcome::SaveAs {
+            path: None,
+            then_quit: true,
+            force: false,
+        }
     );
 }
 
@@ -2771,7 +2858,7 @@ fn ex_history_recalls_previous_commands_with_arrows() {
 
 #[test]
 fn recalled_ex_command_runs_when_submitted() {
-    let mut st = state("hello");
+    let mut st = state_with_path("hello");
     let mut vim = VimState::default();
     ex_cmd(&mut vim, &mut st, "w");
     feed(&mut vim, &mut st, ch(':'));

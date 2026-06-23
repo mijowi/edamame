@@ -418,7 +418,6 @@ const SUGGESTED_ACTIONS: &[Action] = &[
     Action::GoToSection,
     Action::InsertTable,
     Action::ToggleTableButtons,
-    Action::SaveCopy,
     Action::ExportHtml,
     Action::OpenInExternalEditor,
     Action::ShowMarkdownCheatSheet,
@@ -437,9 +436,7 @@ const SECTION_ORDER: &[&str] = &["File", "Edit", "View", "Navigate", "Table", "T
 
 fn section_of(action: &Action) -> &'static str {
     match action {
-        Action::Save | Action::SaveCopy | Action::Open | Action::ExportHtml | Action::Quit => {
-            "File"
-        }
+        Action::Save | Action::SaveAs | Action::Open | Action::ExportHtml | Action::Quit => "File",
         Action::Undo
         | Action::Redo
         | Action::Copy
@@ -569,7 +566,6 @@ mod tests {
                 "Go to section".to_owned(),
                 "Insert table".to_owned(),
                 "Toggle table buttons".to_owned(),
-                "Save a copy".to_owned(),
                 "Export HTML".to_owned(),
                 "Open current file in system editor".to_owned(),
                 "Show Markdown cheat sheet".to_owned(),
@@ -646,16 +642,6 @@ mod tests {
         }
         let action = state.focused_action().expect("save matched");
         assert_eq!(action, Action::Save);
-    }
-
-    #[test]
-    fn typing_save_a_copy_finds_save_copy() {
-        let mut state = PaletteState::open(&keymap());
-        for c in "save a copy".chars() {
-            state.handle_key(&key(KeyCode::Char(c)));
-        }
-        let action = state.focused_action().expect("save a copy matched");
-        assert_eq!(action, Action::SaveCopy);
     }
 
     #[test]

@@ -45,12 +45,19 @@ impl QuitConfirmModal {
         match response {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled => ModalOutcome::Close,
-            ModalResponse::ButtonPressed(0) => {
-                ModalOutcome::CloseAnd(Box::new(|app| match app.save_buffer() {
-                    Ok(()) => app.should_quit = true,
-                    Err(_) => app.notify("Save failed — quit aborted", ModalKind::Error),
-                }))
-            }
+            ModalResponse::ButtonPressed(0) => ModalOutcome::CloseAnd(Box::new(|app| {
+                if app.editor.buffer.path().is_some() {
+                    match app.save_buffer() {
+                        Ok(()) => app.should_quit = true,
+                        Err(_) => app.notify("Save failed — quit aborted", ModalKind::Error),
+                    }
+                } else {
+                    // No path yet — prompt for one, then quit once the
+                    // buffer is written.  Cancelling the prompt aborts
+                    // the quit, leaving the buffer intact.
+                    app.open_save_as_modal(Some(Box::new(|app| app.should_quit = true)));
+                }
+            })),
             ModalResponse::ButtonPressed(1) => ModalOutcome::CloseAnd(Box::new(|app| {
                 app.should_quit = true;
             })),

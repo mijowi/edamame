@@ -63,11 +63,19 @@ impl DirtyGuardModal {
                 let pending = std::mem::take(&mut self.pending);
                 match idx {
                     0 => ModalOutcome::CloseAnd(Box::new(move |app| {
-                        match app.save_buffer() {
-                            Ok(()) => app.navigate_to_file(pending),
-                            Err(e) => {
-                                tracing::warn!(target: "link", error = %e, "save-before-navigate failed");
+                        if app.editor.buffer.path().is_some() {
+                            match app.save_buffer() {
+                                Ok(()) => app.navigate_to_file(pending),
+                                Err(e) => {
+                                    tracing::warn!(target: "link", error = %e, "save-before-navigate failed");
+                                }
                             }
+                        } else {
+                            // No path yet — prompt for one, then follow
+                            // the pending navigation once it's written.
+                            app.open_save_as_modal(Some(Box::new(move |app| {
+                                app.navigate_to_file(pending);
+                            })));
                         }
                         let (h, w) = (app.last_doc_height, app.last_doc_width);
                         app.editor.ensure_cursor_visible(h, w);

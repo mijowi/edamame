@@ -67,7 +67,6 @@ pub(super) fn diff_safe_action(action: &Action) -> Option<Action> {
             | ScrollPageDown
             | ScrollToTop
             | ScrollToBottom
-            | SaveCopy
             | Quit
             | ShowCommandPalette
             | ShowMarkdownCheatSheet
@@ -130,7 +129,7 @@ pub(super) fn search_safe_action(action: &Action) -> Option<Action> {
             | Undo
             | Redo
             | Save
-            | SaveCopy
+            | SaveAs
             | Quit
             | ShowCommandPalette
             | ShowMarkdownCheatSheet
@@ -368,8 +367,8 @@ impl App {
                 self.needs_draw = true;
                 true
             }
-            Action::SaveCopy => {
-                self.open_save_copy_modal();
+            Action::SaveAs => {
+                self.open_save_as_modal(None);
                 self.needs_draw = true;
                 true
             }
@@ -383,6 +382,14 @@ impl App {
             Action::Save => {
                 if self.editor.mode == crate::editor::Mode::Diff {
                     self.flash("Resolve diff before saving", MessageKind::Info);
+                    return true;
+                }
+                // A new, never-saved buffer has no destination yet.
+                // Prompt for one via the Save As modal instead of
+                // letting `save_file` fail into a generic "Save failed".
+                if self.editor.buffer.path().is_none() {
+                    self.open_save_as_modal(None);
+                    self.needs_draw = true;
                     return true;
                 }
                 let dirty_before = self.editor.dirty;
@@ -809,10 +816,10 @@ impl App {
                     );
                 }
             }
-            Action::SaveCopy => {
-                self.open_save_copy_modal();
-                self.needs_draw = true;
-            }
+            // Note: `SaveAs` is deliberately excluded from
+            // `diff_safe_action` (and so never reaches here) — it
+            // re-points the buffer path and watcher, which would desync
+            // the live diff.
             Action::Quit => {
                 // An active diff review is unapplied work — quitting
                 // would discard the pending external change and every
@@ -1099,11 +1106,12 @@ impl App {
     }
 
     /// Save the buffer to a new path and adopt it as the buffer's
-    /// home.  Used by the file-deleted "Save as…" flow
-    /// ([`crate::app::modal::FileDeletedSaveAsModal`]): the original
-    /// file is gone, so writing the rope elsewhere should re-point the
-    /// buffer, the App's `file_path`, and the filesystem watcher at the
-    /// new location rather than leaving them bound to the deleted path.
+    /// home.  Backs every "Save As" path: the [`modal::SaveAsModal`]
+    /// (palette `SaveAs`, a path-less `Save`, vim `:w <path>` /
+    /// `:saveas`) and the file-deleted recovery flow.  Writing the rope
+    /// elsewhere re-points the buffer, the App's `file_path`, and the
+    /// filesystem watcher at the new location rather than leaving them
+    /// bound to the old path.
     ///
     /// Mirrors [`Self::save_buffer`]'s post-write bookkeeping (clear
     /// dirty, stamp the own-write hash) and additionally re-points the
@@ -1184,14 +1192,81 @@ impl App {
             .push(Box::new(modal::InsertTableModal::new()));
     }
 
-    /// Open the path-input prompt seeded with a sensible default
-    /// derived from the current buffer's filename (e.g. `notes.md`
-    /// becomes `notes copy.md`).
-    pub fn open_save_copy_modal(&mut self) {
-        self.modal_stack
-            .push(Box::new(modal::SaveCopyModal::for_buffer_path(
-                self.editor.buffer.path(),
-            )));
+    /// Open the "Save As" path-entry modal, seeded from the buffer's
+    /// current path (or a default for an unnamed buffer).  On submit the
+    /// buffer is written and *re-pointed* at the new path via
+    /// [`Self::save_buffer_as`].  `after_save` runs once the write
+    /// succeeds — used by the save-then-quit / save-then-navigate flows
+    /// so a path-less buffer can finish a deferred action after the user
+    /// supplies a path.
+    pub fn open_save_as_modal(&mut self, after_save: Option<modal::save_as::AfterSave>) {
+        let m = modal::SaveAsModal::for_buffer_path(self.editor.buffer.path(), after_save);
+        self.modal_stack.push(Box::new(m));
+    }
+
+    /// Write the buffer to a named `path`, adopting it — but first prompt
+    /// for confirmation when the write would clobber a *different*
+    /// existing file (see [`crate::document::Buffer::would_overwrite`]).
+    /// `force` skips that prompt (vim `:w!` / `:saveas!`).  `after` runs
+    /// once the write succeeds (e.g. quit for `:wq <path>`).
+    ///
+    /// Used by the vim direct-save path, where the destination is named
+    /// on the command line so no path-entry modal is involved.  The Save
+    /// As modal does its own overwrite check inline (it owns the path
+    /// field) and pushes the same [`modal::OverwriteConfirmModal`].
+    pub(super) fn save_buffer_as_confirmed(
+        &mut self,
+        path: std::path::PathBuf,
+        force: bool,
+        after: Option<modal::save_as::AfterSave>,
+    ) {
+        if !force && self.editor.buffer.would_overwrite(&path) {
+            self.modal_stack
+                .push(Box::new(modal::OverwriteConfirmModal::new(path, after)));
+            return;
+        }
+        match self.save_buffer_as(&path) {
+            Ok(()) => {
+                self.flash(format!("Saved to {}", path.display()), MessageKind::Success);
+                if let Some(after) = after {
+                    after(self);
+                }
+            }
+            Err(e) => self.notify(format!("Save failed: {e}"), ModalKind::Error),
+        }
+    }
+
+    /// Write a snapshot of the buffer to a named `path` *without* changing
+    /// the buffer's own path (vim `:w <path>` — the user keeps editing the
+    /// current file).  Like [`Self::save_buffer_as_confirmed`] it confirms
+    /// before clobbering a *different* existing file; `force` (`:w!`) skips
+    /// that prompt.  `after` runs once the write succeeds (e.g. quit for
+    /// `:wq <path>`).
+    pub(super) fn save_copy_confirmed(
+        &mut self,
+        path: std::path::PathBuf,
+        force: bool,
+        after: Option<modal::save_as::AfterSave>,
+    ) {
+        if !force && self.editor.buffer.would_overwrite(&path) {
+            self.modal_stack
+                .push(Box::new(modal::OverwriteConfirmModal::for_copy(
+                    path, after,
+                )));
+            return;
+        }
+        match self.editor.buffer.save_copy(&path) {
+            Ok(()) => {
+                self.flash(
+                    format!("Copy saved to {}", path.display()),
+                    MessageKind::Success,
+                );
+                if let Some(after) = after {
+                    after(self);
+                }
+            }
+            Err(e) => self.notify(format!("Save failed: {e}"), ModalKind::Error),
+        }
     }
 
     /// Drain `EditorState::pending_column_widths_commit` (set by a

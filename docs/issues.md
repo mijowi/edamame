@@ -5,8 +5,9 @@
 - Refactor/clean up source and tests
 
 - Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
-
-- Fix error when trying to save a path-less new buffer
+- Fix block cursor appearing to change input size in various modals
+- Thin cursor in command palette and some other modals is too thin
+- Unify modal cursor appearance — some modals have a thin cursor; others a block
 
 ## Diff mode
 - Finish diff mode plan (editing hunks in diff mode)

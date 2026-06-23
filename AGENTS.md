@@ -86,8 +86,8 @@ src/
       command_palette.rs, config_warning.rs, diagrams_enabled.rs,
       dirty_guard.rs, export_success.rs, export_theme.rs, images_enabled.rs,
       insert_table.rs, keybinds.rs, markdown_cheat_sheet.rs, notice.rs,
-      quit_confirm.rs, remote_image.rs, save_copy.rs, settings.rs,
-      terminal_capabilities.rs, theme_picker.rs, welcome.rs,
+      overwrite_confirm.rs, quit_confirm.rs, remote_image.rs, save_as.rs,
+      settings.rs, terminal_capabilities.rs, theme_picker.rs, welcome.rs,
       width_injection.rs    # one modal adapter per file
 
   config.rs         # facade — re-exports Config, KeyMap, Theme, ThemeFile, …
