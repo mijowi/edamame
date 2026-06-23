@@ -208,6 +208,7 @@ pub fn render_line_reporting_cursor(
             chars.len(),
             0,
             0,
+            &[],
             area,
             buf,
             abs_y,
@@ -222,6 +223,9 @@ pub fn render_line_reporting_cursor(
     let indent = compute_hanging_indent(line);
     let rows = visual_rows_of_chars(&chars, width, indent);
     let effective_indent = if indent + 1 >= width { 0 } else { indent };
+    // Blockquote bar to repaint on each wrapped continuation row so the gutter
+    // doesn't vanish mid-quote; empty for non-blockquote lines.
+    let cont_prefix = leading_bar_prefix(&chars);
 
     let mut cursor_cell = None;
     let mut cur_visual = visual_y;
@@ -231,12 +235,14 @@ pub fn render_line_reporting_cursor(
         }
         let cur_abs_y = area.y + cur_visual;
         let row_indent = if row_idx == 0 { 0 } else { effective_indent };
+        let row_prefix: &[(char, Style)] = if row_idx == 0 { &[] } else { &cont_prefix };
         if let Some(cell) = paint_row(
             &chars,
             start,
             row_end,
             start,
             row_indent,
+            row_prefix,
             area,
             buf,
             cur_abs_y,
@@ -252,11 +258,16 @@ pub fn render_line_reporting_cursor(
 }
 
 /// Paint a single visual row.  `chars[start..end]` are written starting at
-/// `area.x + row_indent` (after writing `row_indent` blanks in `line_style`
-/// so the indent column shows the surrounding background).  `abs_col_base`
-/// is the char-index offset to add to `rel_idx` when matching against
-/// `cursor_col_override` — for wrapped continuation rows this is the row's
-/// `start`; for the no-wrap fast path it's 0.
+/// `area.x + row_indent` (after filling `row_indent` cells of hanging-indent
+/// padding).  `abs_col_base` is the char-index offset to add to `rel_idx`
+/// when matching against `cursor_col_override` — for wrapped continuation
+/// rows this is the row's `start`; for the no-wrap fast path it's 0.
+///
+/// `cont_prefix` is the styled glyph run repainted at the start of the indent
+/// zone (the blockquote `▎ ` bar — see [`leading_bar_prefix`]); any indent
+/// cells beyond it are blank-filled in `line_style`.  It is empty for the
+/// first row of a line and for non-blockquote continuations, so list-item
+/// continuations keep their plain blank padding.
 ///
 /// Returns the absolute `(x, y)` cell where the cursor override was drawn —
 /// `None` when the override doesn't fall on this row.  Callers use the
@@ -269,6 +280,7 @@ fn paint_row(
     end: usize,
     abs_col_base: usize,
     row_indent: usize,
+    cont_prefix: &[(char, Style)],
     area: Rect,
     buf: &mut TuiBuf,
     abs_y: u16,
@@ -278,13 +290,25 @@ fn paint_row(
     let mut cursor_cell = None;
     let mut x = area.x;
     let area_end = area.x + area.width;
+    // Indent zone: repaint the blockquote bar(s) so the gutter persists on
+    // wrapped rows, then blank-fill the remainder (e.g. a list marker's width
+    // when a list item inside a quote wraps) with the surrounding background.
+    let mut prefix_iter = cont_prefix.iter();
     for _ in 0..row_indent {
         if x >= area_end {
             break;
         }
         if let Some(cell) = buf.cell_mut((x, abs_y)) {
-            cell.set_char(' ');
-            cell.set_style(line_style);
+            match prefix_iter.next() {
+                Some((ch, style)) => {
+                    cell.set_char(*ch);
+                    cell.set_style(*style);
+                }
+                None => {
+                    cell.set_char(' ');
+                    cell.set_style(line_style);
+                }
+            }
         }
         x += 1;
     }
@@ -488,6 +512,18 @@ fn compute_hanging_indent_chars(chars: &[char]) -> usize {
     }
     let leading = i;
 
+    // Blockquote bar prefix: the rendered `▎ ` gutter, or the raw `> ` marker
+    // shown when the cursor's quote line is raw-revealed.  Each level is a
+    // 2-cell prefix that must hang off wrapped continuation rows — the bar is
+    // repainted there (see `leading_bar_prefix`) so the gutter persists, and
+    // the wrap budget matches the navigation side, which sees the raw `> `.
+    // After the bar(s) an inner list marker may follow, so recurse on the
+    // remainder to keep a wrapped list item inside a quote aligned too.
+    if blockquote_prefix_unit(&chars[i..]) {
+        let after = i + 2;
+        return 2 + compute_hanging_indent_chars(&chars[after..]);
+    }
+
     // Rendered bullet glyph (`•`) — only emitted by the renderer.
     if chars.get(i) == Some(&'•') && chars.get(i + 1) == Some(&' ') {
         return text_start_after_optional_task_prefix(chars, i + 2);
@@ -531,6 +567,30 @@ fn text_start_after_optional_task_prefix(chars: &[char], pos: usize) -> usize {
     } else {
         pos
     }
+}
+
+/// True when `chars` begins with one blockquote-bar unit: the rendered gutter
+/// glyph `▎` or the raw `>` marker, followed by a space.  Each unit is two
+/// cells wide; nesting (`▎ ▎ `, `> > `) is handled by recursion in
+/// [`compute_hanging_indent_chars`].
+fn blockquote_prefix_unit(chars: &[char]) -> bool {
+    matches!(chars.first(), Some('▎') | Some('>')) && chars.get(1) == Some(&' ')
+}
+
+/// The leading run of rendered blockquote bar glyphs (`▎ ` units, with their
+/// styles) at the start of a styled line.  Repainted into the hanging-indent
+/// zone of each wrapped continuation row so the quote gutter persists across
+/// the wrap.  Only the rendered `▎` glyph is captured — a raw-revealed `> `
+/// line is literal source and gets plain blank padding on continuation rows.
+fn leading_bar_prefix(chars: &[(char, Style)]) -> Vec<(char, Style)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 1 < chars.len() && chars[i].0 == '▎' && chars[i + 1].0 == ' ' {
+        out.push(chars[i]);
+        out.push(chars[i + 1]);
+        i += 2;
+    }
+    out
 }
 
 /// Given the visual-row layout of a line and a raw char column, return
@@ -659,9 +719,74 @@ mod tests {
 
     #[test]
     fn hanging_indent_blockquote() {
-        // Blockquote bar must not register as a marker.
+        // Rendered blockquote bar hangs off so wrapped quote text aligns
+        // under the gutter (2 cells: glyph + space).
         let line = Line::from(vec![Span::raw("▎ "), Span::raw("quoted")]);
-        assert_eq!(compute_hanging_indent(&line), 0);
+        assert_eq!(compute_hanging_indent(&line), 2);
+    }
+
+    #[test]
+    fn hanging_indent_blockquote_raw_marker() {
+        // The raw `> ` marker (cursor's quote line raw-revealed, and the
+        // text the navigation side wraps) hangs off the same 2 cells, so
+        // wrap budgets agree between the rendered bar and the raw source.
+        assert_eq!(compute_hanging_indent_str("> quoted text"), 2);
+    }
+
+    #[test]
+    fn hanging_indent_nested_blockquote() {
+        // Two bar levels stack to a 4-cell hanging indent.
+        let line = Line::from(vec![Span::raw("▎ ▎ "), Span::raw("quoted")]);
+        assert_eq!(compute_hanging_indent(&line), 4);
+    }
+
+    #[test]
+    fn hanging_indent_list_inside_blockquote() {
+        // A bullet nested in a quote: bar (2) + bullet marker (2) = 4.
+        let line = Line::from(vec![Span::raw("▎ • "), Span::raw("item")]);
+        assert_eq!(compute_hanging_indent(&line), 4);
+    }
+
+    #[test]
+    fn leading_bar_prefix_captures_rendered_bars_only() {
+        let rendered: Vec<(char, Style)> = "▎ ▎ quoted"
+            .chars()
+            .map(|c| (c, Style::default()))
+            .collect();
+        assert_eq!(leading_bar_prefix(&rendered).len(), 4);
+        // Raw `> ` is literal source, never repainted on continuation rows.
+        let raw: Vec<(char, Style)> = "> quoted".chars().map(|c| (c, Style::default())).collect();
+        assert!(leading_bar_prefix(&raw).is_empty());
+    }
+
+    #[test]
+    fn wrapped_blockquote_repaints_bar_on_continuation_rows() {
+        // "▎ alpha beta gamma" wrapped at width 10: row 0 holds "▎ alpha "
+        // and the continuation row must begin with the "▎ " gutter, not blanks.
+        let area = Rect::new(0, 0, 10, 3);
+        let mut buf = TuiBuf::empty(area);
+        let line = Line::from(vec![Span::raw("▎ "), Span::raw("alpha beta gamma")]);
+        let rows = render_line(&line, area, &mut buf, 0, true);
+        assert!(rows >= 2, "expected the quote to wrap, got {rows} row(s)");
+        // Row 0 starts with the bar.
+        assert_eq!(
+            buf.cell((0, 0)).map(|c| c.symbol().to_string()),
+            Some("▎".into())
+        );
+        // Continuation row 1 also starts with the bar glyph + space, then text.
+        assert_eq!(
+            buf.cell((0, 1)).map(|c| c.symbol().to_string()),
+            Some("▎".into())
+        );
+        assert_eq!(
+            buf.cell((1, 1)).map(|c| c.symbol().to_string()),
+            Some(" ".into())
+        );
+        // The wrapped text begins at the indent column (2), not column 0.
+        assert_ne!(
+            buf.cell((2, 1)).map(|c| c.symbol().to_string()),
+            Some(" ".into())
+        );
     }
 
     #[test]

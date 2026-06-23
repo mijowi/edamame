@@ -6,8 +6,6 @@
 
 - Add support for dynamic cursor (keyboard, not mouse). In edit modes and UI inputs, the cursor should be a caret/vertical line. In preview and future non-edit modes like Vim normal mode, the cursor should be a block. Ensure that the block cursor and caret are separately styleable, with overrides possible for each mode/usage.
 
-- Multiline block quote render/de-render issue
-
 - Fix error when trying to save a path-less new buffer
 
 ## Diff mode
