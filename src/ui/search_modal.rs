@@ -200,6 +200,26 @@ impl SearchModalState {
         SearchModalResponse::Continue
     }
 
+    /// Insert a bracketed paste into the focused field (Search or
+    /// Replace) at its in-field cursor.  No-op when focus is on a
+    /// button.  The paste is flattened to one line and length-capped by
+    /// [`crate::ui::sanitize_paste`].
+    pub fn paste(&mut self, text: &str) {
+        if !self.focus.is_field() {
+            return;
+        }
+        let clean = crate::ui::sanitize_paste(text);
+        if clean.is_empty() {
+            return;
+        }
+        let (value, cursor) = self.focused_pair_mut();
+        for c in clean.chars() {
+            insert_char_at(value, *cursor, c);
+            *cursor += 1;
+        }
+        self.last_error = None;
+    }
+
     fn try_search(&mut self) -> SearchModalResponse {
         if self.query.is_empty() {
             self.last_error = Some("Search term required".to_owned());
@@ -571,6 +591,36 @@ mod tests {
         let ctrl_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
         s.handle_key(&ctrl_f);
         assert_eq!(s.query, "a");
+    }
+
+    #[test]
+    fn paste_inserts_into_focused_field_and_flattens_newlines() {
+        let mut s = SearchModalState::new(String::new(), String::new());
+        s.paste("foo\nbar");
+        assert_eq!(s.query, "foobar", "newlines stripped, query targeted");
+        assert_eq!(s.query_cursor, 6);
+        s.handle_key(&key(KeyCode::Tab)); // focus Replace
+        s.paste("baz");
+        assert_eq!(s.replace, "baz");
+        assert_eq!(s.query, "foobar", "query untouched while Replace focused");
+    }
+
+    #[test]
+    fn paste_respects_the_in_field_cursor() {
+        let mut s = SearchModalState::new("ad".to_owned(), String::new());
+        s.handle_key(&key(KeyCode::Left)); // cursor between 'a' and 'd'
+        s.paste("bc");
+        assert_eq!(s.query, "abcd");
+        assert_eq!(s.query_cursor, 3);
+    }
+
+    #[test]
+    fn paste_is_a_noop_on_button_focus() {
+        let mut s = SearchModalState::new("q".to_owned(), String::new());
+        s.focus = SearchModalField::Search;
+        s.paste("ignored");
+        assert_eq!(s.query, "q");
+        assert_eq!(s.replace, "");
     }
 
     #[test]

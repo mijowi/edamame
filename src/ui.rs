@@ -30,6 +30,7 @@ pub mod section_picker;
 pub mod settings_overlay;
 pub mod status_bar;
 pub mod table_view;
+pub mod text_input;
 pub mod theme_picker;
 pub mod welcome;
 
@@ -64,5 +65,6 @@ pub use section_picker::{
 pub use settings_overlay::SettingsResponse;
 pub use settings_overlay::{SettingsState, SettingsView};
 pub use table_view::DropIndicator;
+pub use text_input::sanitize_paste;
 pub use theme_picker::{ThemePickerResponse, ThemePickerState, ThemePickerView};
 pub use welcome::{WelcomeResponse, WelcomeState, WelcomeView};

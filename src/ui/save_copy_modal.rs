@@ -194,6 +194,24 @@ impl SaveCopyState {
         SaveCopyResponse::Continue
     }
 
+    /// Insert a bracketed paste into the path field at the cursor.
+    /// No-op when focus is on a button.  The paste is flattened to one
+    /// line and length-capped by [`crate::ui::sanitize_paste`].
+    pub fn paste(&mut self, text: &str) {
+        if !self.focus.is_path() {
+            return;
+        }
+        let clean = crate::ui::sanitize_paste(text);
+        if clean.is_empty() {
+            return;
+        }
+        for c in clean.chars() {
+            insert_char_at(&mut self.path, self.cursor, c);
+            self.cursor += 1;
+        }
+        self.last_error = None;
+    }
+
     fn try_save(&mut self) -> SaveCopyResponse {
         let trimmed = self.path.trim();
         if trimmed.is_empty() {

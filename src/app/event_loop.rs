@@ -638,6 +638,10 @@ impl App {
                     }
                 }
             }
+            Event::Paste(text) => {
+                self.dispatch_modal_paste(text);
+                self.needs_draw = true;
+            }
             _ => {}
         }
 

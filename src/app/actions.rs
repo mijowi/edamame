@@ -423,6 +423,26 @@ impl App {
         }
     }
 
+    /// Route a bracketed paste to the topmost modal.  Mirrors
+    /// [`Self::dispatch_modal_key`]'s pop-dispatch-push pattern; only the
+    /// text-input modals act on it (the rest inherit the `Modal`
+    /// trait's no-op `handle_paste`).
+    pub(super) fn dispatch_modal_paste(&mut self, text: &str) {
+        let Some(mut top) = self.modal_stack.pop() else {
+            return;
+        };
+        let outcome = top.handle_paste(text);
+        match outcome {
+            ModalOutcome::Continue => self.modal_stack.push(top),
+            ModalOutcome::ContinueAnd(cb) => {
+                self.modal_stack.push(top);
+                cb(self);
+            }
+            ModalOutcome::Close => {}
+            ModalOutcome::CloseAnd(cb) => cb(self),
+        }
+    }
+
     /// Route a left-button click at terminal coords `(col, row)` to the
     /// topmost modal.  Mirrors [`Self::dispatch_modal_key`]'s
     /// pop-dispatch-push pattern so handlers can take `&mut App`.

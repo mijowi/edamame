@@ -93,6 +93,16 @@ pub trait Modal {
         doc_width: usize,
     ) -> ModalOutcome;
 
+    /// Apply a bracketed paste.  `text` is the raw clipboard payload as
+    /// crossterm delivered it; the modal is responsible for sanitizing
+    /// it (see [`crate::ui::sanitize_paste`]) and routing it to its
+    /// focused field.  Default: no-op — modals without a text field
+    /// silently ignore pastes, matching the editor-less behaviour before
+    /// paste routing existed.
+    fn handle_paste(&mut self, _text: &str) -> ModalOutcome {
+        ModalOutcome::Continue
+    }
+
     /// Apply a mouse-wheel delta.  Default: no-op (modals without a
     /// scrollable body ignore wheel events).
     fn handle_wheel(&mut self, _delta: i32) {}

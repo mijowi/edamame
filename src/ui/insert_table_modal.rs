@@ -230,6 +230,30 @@ impl InsertTableState {
         buf.push_str(&next.to_string());
         self.last_error = None;
     }
+
+    /// Insert a bracketed paste into the focused numeric field.  Only
+    /// ASCII digits survive (these fields are numeric), the paste is
+    /// first flattened and length-capped by [`crate::ui::sanitize_paste`],
+    /// and the same 4-digit field cap as typing is enforced.  No-op on a
+    /// button focus.
+    pub fn paste(&mut self, text: &str) {
+        if !self.focus.is_field() {
+            return;
+        }
+        let clean = crate::ui::sanitize_paste(text);
+        let buf = self.field_buf_mut();
+        let mut changed = false;
+        for c in clean.chars().filter(|c| c.is_ascii_digit()) {
+            if buf.len() >= 4 {
+                break;
+            }
+            buf.push(c);
+            changed = true;
+        }
+        if changed {
+            self.last_error = None;
+        }
+    }
 }
 
 /// View-only widget that renders the modal over the editor.
@@ -417,6 +441,25 @@ mod tests {
         assert_eq!(s.cols, "3");
         assert_eq!(s.focus, InsertTableField::Rows);
         assert!(s.last_error.is_none());
+    }
+
+    #[test]
+    fn paste_keeps_only_digits_and_respects_the_field_cap() {
+        let mut s = InsertTableState::new();
+        s.rows.clear();
+        // Non-digits dropped; capped at 4 digits like typing.
+        s.paste("12ab34567");
+        assert_eq!(s.rows, "1234");
+    }
+
+    #[test]
+    fn paste_is_a_noop_on_button_focus() {
+        let mut s = InsertTableState::new();
+        s.handle_key(&key(KeyCode::Tab)); // Cols
+        s.handle_key(&key(KeyCode::Tab)); // Insert (button)
+        s.cols.clear();
+        s.paste("9");
+        assert_eq!(s.cols, "", "paste ignored while a button is focused");
     }
 
     #[test]

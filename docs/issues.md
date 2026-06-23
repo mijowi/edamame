@@ -8,8 +8,6 @@
 
 - Multiline block quote render/de-render issue
 
-- Accept pasted text into modals with text input (e.g. search, command palette) and vim command line
-
 - Fix error when trying to save a path-less new buffer
 
 ## Diff mode
