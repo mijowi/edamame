@@ -32,10 +32,27 @@ use crate::editor::EditorState;
 pub enum ExCommand {
     /// `:w` — write the buffer.
     Write,
+    /// `:w <path>` / `:write <path>` — write a snapshot to the given path
+    /// *without* changing the buffer's own path (real-vim `:w {file}`
+    /// semantics; the user keeps editing the current file).  `force` is a
+    /// trailing `!` (`:w! <path>`), which skips the overwrite-confirmation
+    /// prompt.
+    WriteCopy { path: String, force: bool },
+    /// `:saveas <path>` — write the buffer to the given path and *adopt*
+    /// it as the buffer's home (subsequent `:w` target the new path).
+    /// `force` is a trailing `!` (`:saveas! <path>`).
+    WriteAs { path: String, force: bool },
+    /// `:saveas` with no argument — prompt for a path (the user always
+    /// wants the path-entry modal here, even on an already-named buffer).
+    SaveAsPrompt,
     /// `:q` — quit (dirty-guarded).
     Quit,
     /// `:wq` — write then quit.
     WriteQuit,
+    /// `:wq <path>` — write a snapshot to the given path (copy semantics,
+    /// like `:w <path>`), then quit.  `force` is a trailing `!`
+    /// (`:wq! <path>`).
+    WriteQuitCopy { path: String, force: bool },
     /// `:x` — write then quit, but only write when the buffer is modified
     /// (the canonical vim behavior; `:wq` always writes).
     WriteQuitIfModified,
@@ -91,12 +108,47 @@ pub fn parse_ex(input: &str) -> Result<ExCommand, ExError> {
         }
     }
 
+    // The write / save-as family may carry a path argument, so it can't go
+    // through the exact-match table below (`:w foo.md` must not be an
+    // "unknown command").  A bare `:w` / `:wq` resolves here too.
+    if let Some(cmd) = parse_write_forms(s) {
+        return Ok(cmd);
+    }
+
     match s {
-        "w" | "write" => Ok(ExCommand::Write),
         "q" | "quit" => Ok(ExCommand::Quit),
-        "wq" => Ok(ExCommand::WriteQuit),
         "x" | "xit" => Ok(ExCommand::WriteQuitIfModified),
         other => Err(ExError::UnknownCommand(other.to_owned())),
+    }
+}
+
+/// Parse the write / save-as command family, every member of which may
+/// carry a path argument: `:w[!] [path]`, `:write[!] [path]`,
+/// `:saveas[!] [path]`, and `:wq[!] [path]`.  A trailing `!` (force) is
+/// accepted and ignored — edamame has no read-only buffer concept.
+/// Returns `None` for anything outside this family so the caller's
+/// exact-match table can handle `:q`, `:x`, …
+fn parse_write_forms(s: &str) -> Option<ExCommand> {
+    // Split the command word (up to the first whitespace) from its
+    // argument; `s` is already outer-trimmed, so the remainder is the
+    // path verbatim (internal spaces preserved, no surrounding blanks).
+    let (head, rest) = match s.find(char::is_whitespace) {
+        Some(i) => (&s[..i], s[i..].trim_start()),
+        None => (s, ""),
+    };
+    let force = head.ends_with('!');
+    let word = head.strip_suffix('!').unwrap_or(head);
+    let path = (!rest.is_empty()).then(|| rest.to_owned());
+    match (word, path) {
+        // `:saveas <path>` re-points; a bare `:saveas` prompts for a name.
+        ("saveas", Some(path)) => Some(ExCommand::WriteAs { path, force }),
+        ("saveas", None) => Some(ExCommand::SaveAsPrompt),
+        // `:w <path>` writes a copy and keeps the current file (real vim).
+        ("w" | "write", Some(path)) => Some(ExCommand::WriteCopy { path, force }),
+        ("w" | "write", None) => Some(ExCommand::Write),
+        ("wq", Some(path)) => Some(ExCommand::WriteQuitCopy { path, force }),
+        ("wq", None) => Some(ExCommand::WriteQuit),
+        _ => None,
     }
 }
 
@@ -296,6 +348,75 @@ mod tests {
         assert_eq!(parse_ex("xit"), Ok(ExCommand::WriteQuitIfModified));
         // Leading / trailing whitespace is tolerated.
         assert_eq!(parse_ex("  w  "), Ok(ExCommand::Write));
+    }
+
+    #[test]
+    fn parses_write_as_forms() {
+        // `:w <path>` / `:write <path>` write a copy (keep the current file).
+        assert_eq!(
+            parse_ex("w notes.md"),
+            Ok(ExCommand::WriteCopy {
+                path: "notes.md".to_owned(),
+                force: false,
+            })
+        );
+        assert_eq!(
+            parse_ex("write notes.md"),
+            Ok(ExCommand::WriteCopy {
+                path: "notes.md".to_owned(),
+                force: false,
+            })
+        );
+        // `:saveas <path>` re-points the buffer at the new path.
+        assert_eq!(
+            parse_ex("saveas notes.md"),
+            Ok(ExCommand::WriteAs {
+                path: "notes.md".to_owned(),
+                force: false,
+            })
+        );
+        // A bare `:saveas` prompts for a path.
+        assert_eq!(parse_ex("saveas"), Ok(ExCommand::SaveAsPrompt));
+        // `:wq <path>` writes a copy, then quits.
+        assert_eq!(
+            parse_ex("wq out.md"),
+            Ok(ExCommand::WriteQuitCopy {
+                path: "out.md".to_owned(),
+                force: false,
+            })
+        );
+        // A bare `:w!` writes to the current path (force needs no path).
+        assert_eq!(parse_ex("w!"), Ok(ExCommand::Write));
+        // `!` on a named destination sets force (skips the overwrite prompt).
+        assert_eq!(
+            parse_ex("w! notes.md"),
+            Ok(ExCommand::WriteCopy {
+                path: "notes.md".to_owned(),
+                force: true,
+            })
+        );
+        assert_eq!(
+            parse_ex("saveas! out.md"),
+            Ok(ExCommand::WriteAs {
+                path: "out.md".to_owned(),
+                force: true,
+            })
+        );
+        assert_eq!(
+            parse_ex("wq! out.md"),
+            Ok(ExCommand::WriteQuitCopy {
+                path: "out.md".to_owned(),
+                force: true,
+            })
+        );
+        // Internal spaces in the path are preserved.
+        assert_eq!(
+            parse_ex("w my file.md"),
+            Ok(ExCommand::WriteCopy {
+                path: "my file.md".to_owned(),
+                force: false,
+            })
+        );
     }
 
     #[test]

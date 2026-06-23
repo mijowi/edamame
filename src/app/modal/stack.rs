@@ -99,6 +99,17 @@ impl ModalStack {
             .find(|m| m.as_any().is::<T>())
             .and_then(|m| m.as_any_mut().downcast_mut::<T>())
     }
+
+    /// Shared borrow of the first modal of type `T` on the stack, if any.
+    /// "First" is bottom-up, matching [`Self::find_first_mut`].  Used to
+    /// inspect a flag on an open modal (e.g. whether a `SaveAsModal` is the
+    /// file-deletion recovery flow) without mutating it.
+    pub fn find_first<T: Modal + 'static>(&self) -> Option<&T> {
+        self.inner
+            .iter()
+            .find(|m| m.as_any().is::<T>())
+            .and_then(|m| m.as_any().downcast_ref::<T>())
+    }
 }
 
 #[cfg(test)]

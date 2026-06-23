@@ -144,21 +144,19 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_action_save_emits_error_modal_when_buffer_has_no_path() {
-        // The unnamed-buffer save path returns Err from
-        // `Buffer::save_file`; `dispatch_action` → `save_buffer` →
-        // `flash_for_action(Action::Save, dirty_before=true)` must
-        // raise the sticky error modal, not the transient "Saved"
-        // flash.
-        use crate::app::modal::NoticeModal;
+    fn dispatch_action_save_prompts_for_path_when_buffer_has_no_path() {
+        // A never-saved buffer has no destination, so `Save` opens the
+        // Save As path-entry modal instead of failing into a sticky
+        // error.  The buffer stays dirty until the user supplies a path.
+        use crate::app::modal::SaveAsModal;
         let mut app = make_app();
         assert!(app.editor.buffer.path().is_none());
         app.editor.dirty = true;
         app.dispatch_action(Action::Save, 40, 80);
-        assert!(app.editor.dirty, "failed save must leave dirty set");
+        assert!(app.editor.dirty, "unsaved buffer must stay dirty");
         assert!(
-            app.modal_stack.contains::<NoticeModal>(),
-            "failed save must surface a NoticeModal"
+            app.modal_stack.contains::<SaveAsModal>(),
+            "path-less save must open the Save As modal"
         );
     }
 }

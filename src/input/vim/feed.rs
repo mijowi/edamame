@@ -34,6 +34,7 @@
 //! (`diw`, `ci(`) or sets the Visual selection (`viw`).
 
 use std::ops::Range;
+use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -80,6 +81,29 @@ pub enum VimOutcome {
     /// existing dirty-guarded `Action::Quit`, saving first for `:wq` (so
     /// the buffer is clean before the quit guard runs).
     Quit { save_first: bool },
+    /// `:saveas` / a bare `:w` on a path-less buffer — write the buffer to
+    /// a new path and *adopt* it (subsequent saves target the new path).
+    /// `path == Some` saves directly (the user named the destination on
+    /// the command line); `path == None` opens the Save As modal so the
+    /// user can choose one.  `then_quit` carries the `:wq` / `:x` intent:
+    /// quit once the write succeeds.  `force` (a trailing `!`, e.g.
+    /// `:saveas!`) skips the overwrite-confirmation prompt for a named
+    /// destination.
+    SaveAs {
+        path: Option<PathBuf>,
+        then_quit: bool,
+        force: bool,
+    },
+    /// `:w <path>` / `:wq <path>` — write a snapshot to `path` *without*
+    /// changing the buffer's own path (real-vim `:w {file}` semantics: the
+    /// user keeps editing the current file).  `then_quit` carries the
+    /// `:wq` intent; `force` (`:w!`) skips the overwrite-confirmation
+    /// prompt.
+    SaveCopy {
+        path: PathBuf,
+        then_quit: bool,
+        force: bool,
+    },
     /// A status / error message from an ex command (a `:s` result, a parse
     /// or regex error) for the App to flash on the hint line.  The
     /// substitution itself already ran against `EditorState`; only the
@@ -220,14 +244,74 @@ fn submit_ex(editor: &mut EditorState, input: &str, vh: usize, vw: usize) -> Vim
         return VimOutcome::Consumed;
     }
     match parse_ex(input) {
-        Ok(ExCommand::Write) => VimOutcome::Save,
-        Ok(ExCommand::Quit) => VimOutcome::Quit { save_first: false },
-        Ok(ExCommand::WriteQuit) => VimOutcome::Quit { save_first: true },
-        // `:x` writes only when the buffer is dirty, then quits — the
-        // canonical vim behavior (`:wq` always writes).
-        Ok(ExCommand::WriteQuitIfModified) => VimOutcome::Quit {
-            save_first: editor.dirty,
+        // A bare `:w` writes to the current path, or — for a never-saved
+        // buffer — prompts for one via the Save As modal.
+        Ok(ExCommand::Write) => {
+            if editor.buffer.path().is_some() {
+                VimOutcome::Save
+            } else {
+                VimOutcome::SaveAs {
+                    path: None,
+                    then_quit: false,
+                    force: false,
+                }
+            }
+        }
+        // `:w <path>` — write a copy to the named path, keep the current
+        // file.  A trailing `!` forces past the overwrite prompt.
+        Ok(ExCommand::WriteCopy { path, force }) => VimOutcome::SaveCopy {
+            path: PathBuf::from(path),
+            then_quit: false,
+            force,
         },
+        // `:saveas <path>` — re-point the buffer at the named path.
+        Ok(ExCommand::WriteAs { path, force }) => VimOutcome::SaveAs {
+            path: Some(PathBuf::from(path)),
+            then_quit: false,
+            force,
+        },
+        // `:saveas` with no argument always prompts (the modal does its
+        // own overwrite check, so no force is threaded here).
+        Ok(ExCommand::SaveAsPrompt) => VimOutcome::SaveAs {
+            path: None,
+            then_quit: false,
+            force: false,
+        },
+        Ok(ExCommand::Quit) => VimOutcome::Quit { save_first: false },
+        Ok(ExCommand::WriteQuit) => {
+            if editor.buffer.path().is_some() {
+                VimOutcome::Quit { save_first: true }
+            } else {
+                // No path yet — prompt, then quit once it's written.
+                VimOutcome::SaveAs {
+                    path: None,
+                    then_quit: true,
+                    force: false,
+                }
+            }
+        }
+        // `:wq <path>` — write a copy, then quit (copy semantics like `:w`).
+        Ok(ExCommand::WriteQuitCopy { path, force }) => VimOutcome::SaveCopy {
+            path: PathBuf::from(path),
+            then_quit: true,
+            force,
+        },
+        // `:x` writes only when the buffer is dirty, then quits — the
+        // canonical vim behavior (`:wq` always writes).  A dirty,
+        // path-less buffer prompts for a path before quitting.
+        Ok(ExCommand::WriteQuitIfModified) => {
+            if !editor.dirty {
+                VimOutcome::Quit { save_first: false }
+            } else if editor.buffer.path().is_some() {
+                VimOutcome::Quit { save_first: true }
+            } else {
+                VimOutcome::SaveAs {
+                    path: None,
+                    then_quit: true,
+                    force: false,
+                }
+            }
+        }
         Ok(ExCommand::Substitute(sub)) => match execute_substitute(editor, &sub) {
             Ok(0) => VimOutcome::Flash(format!("Pattern not found: {}", sub.pattern)),
             Ok(n) => {

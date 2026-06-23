@@ -1,7 +1,7 @@
 //! Path-entry modal pushed atop [`super::DirtyConflictModal`] when the
-//! user picks `[Save a copy]`.  Mirrors the regular
-//! [`super::SaveCopyModal`] UI (reuses [`SaveCopyState`] +
-//! [`SaveCopyView`]) but its post-save effect is "save buffer to the
+//! user picks `[Save a copy]`.  Reuses the shared [`SaveCopyState`] +
+//! [`SaveCopyView`] path-entry widget (as [`super::SaveAsModal`] does)
+//! but its post-save effect is "save buffer to the
 //! chosen path, then reload the on-disk contents into the editor's
 //! buffer" — the in-flight conflict resolution flow.  Carries the
 //! on-disk contents already read by the watcher worker so the
@@ -49,6 +49,7 @@ impl Modal for DirtyConflictSaveCopyModal {
         let view = SaveCopyView {
             theme: ctx.theme,
             cursor_visible: ctx.cursor_visible,
+            title: "Save a Copy",
         };
         frame.render_stateful_widget(view, area, &mut self.state);
     }

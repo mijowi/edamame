@@ -107,15 +107,40 @@ impl Buffer {
         Ok(())
     }
 
-    /// Save to an explicit path and update the buffer's associated path.
-    /// Used by [`crate::app::App::save_buffer_as`] (the file-deleted
-    /// "Save as…" flow) and integration tests in `tests/`.
+    /// Save to an explicit path and adopt it as the buffer's associated
+    /// path.  The shared write primitive behind every "Save As" flow
+    /// (command palette, a path-less `Save`, vim `:w <path>` / `:saveas`,
+    /// and the file-deleted recovery flow) via
+    /// [`crate::app::App::save_buffer_as`], plus integration tests in
+    /// `tests/`.
+    ///
+    /// Overwrites `path` **unconditionally** — this is the low-level
+    /// force primitive.  Callers are responsible for confirming an
+    /// overwrite of a *different* existing file first (see
+    /// [`Self::would_overwrite`] and the `OverwriteConfirmModal` flow);
+    /// saving over the buffer's own path is a normal in-place save and
+    /// needs no confirmation.
     pub fn save_as(&mut self, path: &Path) -> Result<()> {
         let content = self.rope.to_string();
         std::fs::write(path, &content)
             .with_context(|| format!("Failed to write file: {}", path.display()))?;
         self.path = Some(path.to_owned());
         Ok(())
+    }
+
+    /// True when writing to `path` would clobber a *different* existing
+    /// file — i.e. `path` already exists and is not this buffer's own
+    /// associated path.  Saving over the buffer's current file is a
+    /// normal in-place save (never an "overwrite" in this sense), so a
+    /// Save As to the seeded current path passes.  Callers use this to
+    /// decide whether to confirm before [`Self::save_as`], which writes
+    /// unconditionally.
+    ///
+    /// Comparison is by stored path value, so an unusual spelling of the
+    /// same file (e.g. relative vs. absolute) may prompt a harmless extra
+    /// confirmation — saying yes simply re-saves that same file.
+    pub fn would_overwrite(&self, path: &Path) -> bool {
+        path.exists() && self.path.as_deref() != Some(path)
     }
 
     /// Write the buffer contents to `path` without touching the
@@ -275,6 +300,28 @@ mod tests {
         let b = Buffer::new();
         assert_eq!(b.len_chars(), 0);
         assert_eq!(b.line_count(), 1); // ropey always reports at least one line
+    }
+
+    #[test]
+    fn would_overwrite_only_for_a_different_existing_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let existing = dir.path().join("there.md");
+        std::fs::write(&existing, "x").expect("seed");
+        let missing = dir.path().join("absent.md");
+
+        let mut b = buf("body");
+        // Path-less buffer: any existing target is an overwrite; a
+        // nonexistent one is not.
+        assert!(b.would_overwrite(&existing));
+        assert!(!b.would_overwrite(&missing));
+
+        // Saving over the buffer's own file is never an "overwrite".
+        b.path = Some(existing.clone());
+        assert!(!b.would_overwrite(&existing));
+        // …but a *different* existing file still is.
+        let other = dir.path().join("other.md");
+        std::fs::write(&other, "y").expect("seed");
+        assert!(b.would_overwrite(&other));
     }
 
     #[test]

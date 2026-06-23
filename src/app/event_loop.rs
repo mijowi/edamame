@@ -1217,6 +1217,49 @@ impl App {
                             self.needs_draw = true;
                             return;
                         }
+                        // `:w <path>` / `:saveas` / a path-less `:w`.  A
+                        // named destination saves directly (confirming an
+                        // overwrite of a different existing file first,
+                        // unless `force` from a trailing `!`); an unnamed
+                        // one opens the Save As modal.  `then_quit` (`:wq` /
+                        // `:x`) quits once the write succeeds.
+                        VimOutcome::SaveAs {
+                            path,
+                            then_quit,
+                            force,
+                        } => {
+                            let after: Option<crate::app::modal::save_as::AfterSave> = if then_quit
+                            {
+                                Some(Box::new(|app| app.should_quit = true))
+                            } else {
+                                None
+                            };
+                            match path {
+                                Some(p) => self.save_buffer_as_confirmed(p, force, after),
+                                None => self.open_save_as_modal(after),
+                            }
+                            self.needs_draw = true;
+                            return;
+                        }
+                        // `:w <path>` / `:wq <path>` — write a copy to the
+                        // named path, keeping the current file (real vim).
+                        // Confirms an overwrite of a different existing file
+                        // unless `force` (`:w!`).
+                        VimOutcome::SaveCopy {
+                            path,
+                            then_quit,
+                            force,
+                        } => {
+                            let after: Option<crate::app::modal::save_as::AfterSave> = if then_quit
+                            {
+                                Some(Box::new(|app| app.should_quit = true))
+                            } else {
+                                None
+                            };
+                            self.save_copy_confirmed(path, force, after);
+                            self.needs_draw = true;
+                            return;
+                        }
                         // A `:s` result or an ex parse / regex error: the
                         // substitution already ran in the reducer; just flash.
                         VimOutcome::Flash(text) => {

@@ -55,7 +55,7 @@ use crate::watcher::{WatchedChange, WatchedEvent};
 use super::flash::MessageKind;
 use super::modal::dirty_conflict_discard_confirm::DirtyConflictDiscardConfirmModal;
 use super::modal::dirty_conflict_save_copy::DirtyConflictSaveCopyModal;
-use super::modal::{DirtyConflictModal, FileDeletedModal, FileDeletedSaveAsModal};
+use super::modal::{DirtyConflictModal, FileDeletedModal, SaveAsModal};
 use super::App;
 
 impl App {
@@ -102,9 +102,14 @@ impl App {
         // reconcile) must not stack a duplicate modal — neither the
         // prompt itself nor its `[Save as…]` path-entry child (which
         // closes the prompt before opening, so the prompt alone is not
-        // enough to detect an in-progress save-as flow).
+        // enough to detect an in-progress save-as flow).  Only a
+        // *deletion-recovery* save-as counts here — a voluntary save-as
+        // on a live file must not swallow a genuine deletion.
         if self.modal_stack.contains::<FileDeletedModal>()
-            || self.modal_stack.contains::<FileDeletedSaveAsModal>()
+            || self
+                .modal_stack
+                .find_first::<SaveAsModal>()
+                .is_some_and(|m| m.is_deletion_recovery())
         {
             return;
         }
@@ -135,7 +140,11 @@ impl App {
         // and the write reads back as an own-write.  (`handle_file_removed`
         // makes the symmetric choice, treating an open save-as child as
         // an in-progress deletion flow.)
-        if self.modal_stack.contains::<FileDeletedSaveAsModal>() {
+        if self
+            .modal_stack
+            .find_first::<SaveAsModal>()
+            .is_some_and(|m| m.is_deletion_recovery())
+        {
             return;
         }
 
@@ -595,7 +604,7 @@ mod tests {
 
     #[test]
     fn deletion_is_idempotent_across_save_as_flow() {
-        use crate::app::modal::{FileDeletedModal, FileDeletedSaveAsModal};
+        use crate::app::modal::{FileDeletedModal, SaveAsModal};
         // A second deletion signal that arrives while the user is in
         // the `[Save as…]` path-entry child (the prompt itself is
         // closed) must not stack a fresh prompt on top of it.
@@ -605,7 +614,7 @@ mod tests {
         // the path-entry modal opens in its place.
         app.modal_stack.remove_first::<FileDeletedModal>();
         app.modal_stack
-            .push(Box::new(FileDeletedSaveAsModal::new("x".into())));
+            .push(Box::new(SaveAsModal::for_deleted_file("x".into())));
         let base = app.modal_stack.len();
 
         app.handle_file_removed(tmp.path().to_path_buf());
@@ -616,7 +625,7 @@ mod tests {
             "must not stack a duplicate prompt"
         );
         assert!(!app.modal_stack.contains::<FileDeletedModal>());
-        assert!(app.modal_stack.contains::<FileDeletedSaveAsModal>());
+        assert!(app.modal_stack.contains::<SaveAsModal>());
     }
 
     #[test]
@@ -641,7 +650,7 @@ mod tests {
 
     #[test]
     fn recreate_during_save_as_does_not_enter_diff_behind_it() {
-        use crate::app::modal::{FileDeletedModal, FileDeletedSaveAsModal};
+        use crate::app::modal::{FileDeletedModal, SaveAsModal};
         // File deleted, user picks `[Save as…]` (prompt closed, path
         // entry open), then the file is recreated externally.  The
         // user has committed to saving their buffer out, so the change
@@ -651,12 +660,12 @@ mod tests {
         app.handle_file_removed(tmp.path().to_path_buf());
         app.modal_stack.remove_first::<FileDeletedModal>();
         app.modal_stack
-            .push(Box::new(FileDeletedSaveAsModal::new("x".into())));
+            .push(Box::new(SaveAsModal::for_deleted_file("x".into())));
 
         app.handle_file_changed(file_changed_event(tmp.path().to_path_buf(), "a\nB\n"));
 
         assert!(
-            app.modal_stack.contains::<FileDeletedSaveAsModal>(),
+            app.modal_stack.contains::<SaveAsModal>(),
             "the save-as path entry must stay open",
         );
         assert!(
@@ -664,6 +673,39 @@ mod tests {
             "an external recreate must not enter diff mode behind save-as",
         );
         assert_ne!(app.editor.mode, crate::editor::Mode::Diff);
+    }
+
+    #[test]
+    fn voluntary_save_as_does_not_suppress_external_change() {
+        use crate::app::modal::{DirtyConflictModal, SaveAsModal};
+        // A *voluntary* Save As (not the deletion-recovery flow) is just a
+        // path-entry prompt over a live file — it must NOT swallow a
+        // genuine external change the way the deletion-recovery flow does.
+        // This locks in the `is_deletion_recovery()` narrowing of the
+        // watcher dedup: a `SaveAsModal` whose flag is false leaves
+        // `handle_file_changed` to dispatch the conflict as normal.
+        let (mut app, tmp) = app_with_temp_file("alpha");
+        let len = app.editor.buffer.len_chars();
+        app.editor.buffer.insert_char(len, '!');
+        app.editor.dirty = true;
+        app.modal_stack.push(Box::new(SaveAsModal::for_buffer_path(
+            Some(tmp.path()),
+            None,
+        )));
+        assert!(
+            !app.modal_stack
+                .find_first::<SaveAsModal>()
+                .unwrap()
+                .is_deletion_recovery(),
+            "this must be the voluntary (non-recovery) variant",
+        );
+
+        app.handle_file_changed(file_changed_event(tmp.path().to_path_buf(), "external"));
+
+        assert!(
+            app.modal_stack.contains::<DirtyConflictModal>(),
+            "a voluntary save-as must not suppress the dirty-conflict modal",
+        );
     }
 
     #[test]

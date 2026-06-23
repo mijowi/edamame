@@ -237,7 +237,7 @@ impl App {
             // App-level openers and save paths reuse their standard
             // handlers; all are read-only with respect to the flow.
             Action::Save
-            | Action::SaveCopy
+            | Action::SaveAs
             | Action::ShowCommandPalette
             | Action::ShowMarkdownCheatSheet
             | Action::ShowAbout

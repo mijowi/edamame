@@ -4,9 +4,9 @@
 //!
 //! - `[Save]` re-creates the file at its original path via
 //!   [`App::save_buffer`].
-//! - `[Save as…]` opens [`super::FileDeletedSaveAsModal`] to write the
-//!   buffer to a new path and re-point at it (useful when the original
-//!   directory is also gone).
+//! - `[Save as…]` opens a [`super::SaveAsModal`] to write the buffer to
+//!   a new path and re-point at it (useful when the original directory
+//!   is also gone).
 //! - `Esc` / `[Dismiss]` closes and keeps the buffer in memory,
 //!   unchanged — the user can save later by any normal means.
 //!
@@ -24,7 +24,7 @@ use ratatui::Frame;
 
 use super::chrome::ModalChrome;
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
-use super::FileDeletedSaveAsModal;
+use super::SaveAsModal;
 use crate::app::App;
 use crate::app::MessageKind;
 use crate::ui::{ModalButton, ModalResponse};
@@ -79,7 +79,7 @@ impl FileDeletedModal {
                 let default = self.path.display().to_string();
                 ModalOutcome::CloseAnd(Box::new(move |app| {
                     app.modal_stack
-                        .push(Box::new(FileDeletedSaveAsModal::new(default)));
+                        .push(Box::new(SaveAsModal::for_deleted_file(default)));
                 }))
             }
             // [Dismiss].
@@ -142,7 +142,6 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
-    use crate::app::modal::FileDeletedSaveAsModal;
     use crate::app::test_utils::make_app;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -172,7 +171,7 @@ mod tests {
         app.dispatch_modal_key(key(KeyCode::Enter), 40, 80);
         assert!(!app.modal_stack.contains::<FileDeletedModal>());
         assert!(
-            app.modal_stack.contains::<FileDeletedSaveAsModal>(),
+            app.modal_stack.contains::<SaveAsModal>(),
             "[Save as…] must open the path-entry modal",
         );
     }

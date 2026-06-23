@@ -1,4 +1,7 @@
-//! Path-input modal for `Action::SaveCopy`.
+//! Shared path-entry widget ([`SaveCopyState`] + [`SaveCopyView`]) used by
+//! the path-input modals — Save As, the file-deleted recovery prompt, and
+//! the dirty-conflict "save aside" flow.  Each modal supplies its own frame
+//! title and decides what the entered path does on submit.
 //!
 //! A single text field ("Path") above a Save / Cancel button row.  Tab
 //! / Shift-Tab and Up / Down move between the three focus targets;
@@ -9,10 +12,8 @@
 //! is on a button.
 //!
 //! The widget is UI-only: the App layer reads the entered path when
-//! [`SaveCopyResponse::Save`] fires and routes the actual write through
-//! `Buffer::save_copy`, which intentionally does NOT update the
-//! buffer's associated path — the user keeps editing the original
-//! file.
+//! [`SaveCopyResponse::Save`] fires and decides whether to re-point the
+//! buffer (Save As) or write a detached copy.
 
 use std::path::{Path, PathBuf};
 
@@ -79,7 +80,7 @@ pub enum SaveCopyResponse {
 pub struct SaveCopyState {
     /// The path the user is editing.  Seeded by the App with a sensible
     /// default derived from the current buffer's filename
-    /// (see [`default_copy_path`]).
+    /// (see [`default_save_as_path`]).
     pub path: String,
     /// Cursor position into [`Self::path`] expressed as a Unicode-scalar
     /// (char) index, so paths containing multi-byte characters behave
@@ -242,46 +243,40 @@ fn remove_char_at(s: &mut String, cursor: usize) {
     }
 }
 
-/// Build a sensible default path for a copy of `original`.  Inserts
-/// " copy" before the extension so `notes.md` becomes
-/// `<dir>/notes copy.md`, and resolves any relative original to an
-/// absolute path against the current working directory so the user
-/// always sees the full destination — saving them from guessing where
-/// a relative `notes copy.md` would actually land.  Returns
-/// `"copy.md"` when no original path is available (e.g. an unsaved
-/// scratch buffer).
-pub fn default_copy_path(original: Option<&Path>) -> String {
-    let Some(p) = original else {
-        return "copy.md".to_owned();
-    };
-    let stem = p
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("copy")
-        .to_owned();
-    let ext = p.extension().and_then(|s| s.to_str());
-    let name = match ext {
-        Some(e) => format!("{stem} copy.{e}"),
-        None => format!("{stem} copy"),
-    };
-    let copy_path: PathBuf = match p.parent() {
-        Some(par) if !par.as_os_str().is_empty() => par.join(&name),
-        _ => PathBuf::from(&name),
-    };
-    let absolute = if copy_path.is_absolute() {
-        copy_path
+/// Build the default destination shown in the Save As field: the buffer's
+/// current path resolved to an absolute path (so the directory is visible
+/// and the user can retarget it), or `<cwd>/untitled.md` for an unnamed
+/// buffer.  The filename is left unchanged — Save As re-points the buffer
+/// to the same name (possibly in a different directory).
+pub fn default_save_as_path(original: Option<&Path>) -> String {
+    let path = original
+        .map(Path::to_owned)
+        .unwrap_or_else(|| PathBuf::from("untitled.md"));
+    absolutize(path)
+}
+
+/// Resolve `path` to an absolute path against the current working
+/// directory (leaving an already-absolute path untouched) and render it
+/// for display in a path field.
+fn absolutize(path: PathBuf) -> String {
+    let absolute = if path.is_absolute() {
+        path
     } else {
         std::env::current_dir()
-            .map(|cwd| cwd.join(&copy_path))
-            .unwrap_or(copy_path)
+            .map(|cwd| cwd.join(&path))
+            .unwrap_or(path)
     };
     absolute.display().to_string()
 }
 
-/// View-only widget that renders the modal over the editor.
+/// View-only widget that renders the modal over the editor.  The same
+/// path-entry widget backs several modals (Save a Copy, Save As, the
+/// file-conflict copy), so the frame title is supplied by the caller.
 pub struct SaveCopyView<'a> {
     pub theme: &'a Theme,
     pub cursor_visible: bool,
+    /// Frame title, e.g. `"Save a Copy"` or `"Save As"`.
+    pub title: &'static str,
 }
 
 impl<'a> StatefulWidget for SaveCopyView<'a> {
@@ -310,7 +305,7 @@ impl<'a> StatefulWidget for SaveCopyView<'a> {
             modal_area,
             buf,
             FrameOpts {
-                title: "Save a Copy",
+                title: self.title,
                 kind: ModalKind::Normal,
                 show_close_hint: true,
                 content,
@@ -462,31 +457,19 @@ mod tests {
     }
 
     #[test]
-    fn default_path_inserts_copy_before_extension_for_absolute_input() {
+    fn save_as_default_keeps_name_and_shows_absolute_directory() {
+        // Save As keeps the filename (no "… copy") but resolves to an
+        // absolute path so the destination directory is visible/editable.
         let p = Path::new("/tmp/notes.md");
-        assert_eq!(default_copy_path(Some(p)), "/tmp/notes copy.md");
-    }
+        assert_eq!(default_save_as_path(Some(p)), "/tmp/notes.md");
 
-    #[test]
-    fn default_path_handles_missing_extension() {
-        let p = Path::new("/etc/README");
-        assert_eq!(default_copy_path(Some(p)), "/etc/README copy");
-    }
-
-    #[test]
-    fn default_path_absolutizes_relative_input_against_cwd() {
-        // A relative buffer path resolves to an absolute target so the
-        // user always sees the full destination.
         let cwd = std::env::current_dir().expect("cwd");
-        let p = Path::new("README.md");
-        let got = default_copy_path(Some(p));
-        let expected = cwd.join("README copy.md").display().to_string();
-        assert_eq!(got, expected);
-    }
+        let rel = default_save_as_path(Some(Path::new("notes.md")));
+        assert_eq!(rel, cwd.join("notes.md").display().to_string());
 
-    #[test]
-    fn default_path_falls_back_when_buffer_unsaved() {
-        assert_eq!(default_copy_path(None), "copy.md");
+        // An unnamed buffer defaults to <cwd>/untitled.md.
+        let unnamed = default_save_as_path(None);
+        assert_eq!(unnamed, cwd.join("untitled.md").display().to_string());
     }
 
     #[test]
@@ -708,6 +691,7 @@ mod tests {
                 let m = SaveCopyView {
                     theme: theme(),
                     cursor_visible: true,
+                    title: "Save a Copy",
                 };
                 frame.render_stateful_widget(m, frame.area(), &mut state);
             })

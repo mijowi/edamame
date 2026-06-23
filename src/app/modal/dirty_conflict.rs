@@ -80,7 +80,7 @@ impl DirtyConflictModal {
 /// `<stem>.local`.  When `original` is `None`, falls back to a
 /// generic `copy.md`.  Returned as an absolute path string for the
 /// path-entry modal, matching the convention used by
-/// [`crate::ui::default_copy_path`].
+/// [`crate::ui::default_save_as_path`].
 pub(crate) fn local_copy_path(original: Option<&Path>) -> String {
     let Some(p) = original else {
         return "copy.md".to_owned();
