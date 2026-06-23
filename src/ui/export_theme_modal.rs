@@ -239,6 +239,25 @@ impl ExportThemeState {
         }
     }
 
+    /// Insert a bracketed paste into the Name field at the cursor.
+    /// No-op unless the Name field is focused.  The paste is flattened
+    /// to one line and length-capped by [`crate::ui::sanitize_paste`].
+    pub fn paste(&mut self, text: &str) {
+        if !matches!(self.focus, ExportThemeField::Name) {
+            return;
+        }
+        let clean = crate::ui::sanitize_paste(text);
+        if clean.is_empty() {
+            return;
+        }
+        for c in clean.chars() {
+            insert_char_at(&mut self.name, self.cursor, c);
+            self.cursor += 1;
+        }
+        self.last_error = None;
+        self.name_user_edited = true;
+    }
+
     fn try_export(&mut self, existing: &[String]) -> ExportThemeResponse {
         let Some(source) = self.themes.get(self.selected).cloned() else {
             self.last_error = Some("No theme selected".to_owned());

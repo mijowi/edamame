@@ -180,6 +180,19 @@ impl ThemePickerState {
         }
     }
 
+    /// Insert a bracketed paste into the filter query, then re-filter
+    /// and live-preview the newly focused theme.  The paste is flattened
+    /// to one line and length-capped by [`crate::ui::sanitize_paste`].
+    pub fn paste(&mut self, text: &str) -> ThemePickerResponse {
+        let clean = crate::ui::sanitize_paste(text);
+        if clean.is_empty() {
+            return ThemePickerResponse::Continue;
+        }
+        self.query.push_str(&clean);
+        self.invalidate_display();
+        self.preview_if_changed()
+    }
+
     /// Return [`ThemePickerResponse::Preview`] if the focused theme
     /// name has drifted from the most recently previewed one, else
     /// [`ThemePickerResponse::Continue`].  Updates `last_previewed`

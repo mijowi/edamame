@@ -92,6 +92,17 @@ impl Modal for SectionPickerModal {
         }
     }
 
+    fn handle_paste(&mut self, text: &str) -> ModalOutcome {
+        // Paste only grows the filter, so it can yield `Continue` or a
+        // live `Preview`; reuse the keyboard `Preview` arm's scroll arm.
+        if let SectionPickerResponse::Preview { target_scroll } = self.state.paste(text) {
+            return ModalOutcome::ContinueAnd(Box::new(move |app| {
+                app.arm_section_jump(target_scroll);
+            }));
+        }
+        ModalOutcome::Continue
+    }
+
     fn handle_wheel(&mut self, delta: i32) {
         self.state.scroll_state.scroll_by(delta);
     }

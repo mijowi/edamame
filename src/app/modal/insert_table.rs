@@ -80,6 +80,11 @@ impl Modal for InsertTableModal {
         }
     }
 
+    fn handle_paste(&mut self, text: &str) -> ModalOutcome {
+        self.state.paste(text);
+        ModalOutcome::Continue
+    }
+
     fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
         super::types::close_if_esc_clicked(self.state.esc_button_rect, col, row)
     }

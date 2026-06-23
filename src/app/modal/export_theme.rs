@@ -61,6 +61,11 @@ impl Modal for ExportThemeModal {
         }
     }
 
+    fn handle_paste(&mut self, text: &str) -> ModalOutcome {
+        self.state.paste(text);
+        ModalOutcome::Continue
+    }
+
     fn handle_wheel(&mut self, delta: i32) {
         self.state.scroll_state.scroll_by(delta);
     }

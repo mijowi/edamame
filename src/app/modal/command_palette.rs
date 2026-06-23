@@ -53,6 +53,11 @@ impl Modal for CommandPaletteModal {
         }
     }
 
+    fn handle_paste(&mut self, text: &str) -> ModalOutcome {
+        self.state.paste(text);
+        ModalOutcome::Continue
+    }
+
     fn handle_wheel(&mut self, delta: i32) {
         self.state.scroll_state.scroll_by(delta);
     }
@@ -83,6 +88,21 @@ mod tests {
         let mut app = make_app();
         app.open_command_palette();
         assert!(app.modal_stack.contains::<CommandPaletteModal>());
+    }
+
+    #[test]
+    fn paste_routes_into_the_open_palette_query() {
+        // End-to-end: a bracketed paste while the palette is open must
+        // reach `PaletteState::query` through `dispatch_modal_paste`,
+        // flattened and length-capped by `sanitize_paste`.
+        let mut app = make_app();
+        app.open_command_palette();
+        app.dispatch_modal_paste("sa\nve");
+        let modal = app
+            .modal_stack
+            .find_first_mut::<CommandPaletteModal>()
+            .expect("palette still open");
+        assert_eq!(modal.state.query, "save");
     }
 
     #[test]

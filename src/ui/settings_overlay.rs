@@ -279,6 +279,17 @@ impl SettingsState {
         }
     }
 
+    /// Insert a bracketed paste into the inline field editor, if one is
+    /// open.  No-op when no field is being edited (the settings rows are
+    /// otherwise cycled, not typed into).  The paste is flattened to one
+    /// line and length-capped by [`crate::ui::sanitize_paste`]; the
+    /// value is still validated on Enter via the row's `write_string`.
+    pub fn paste(&mut self, text: &str) {
+        if let Some(buf) = self.editing.as_mut() {
+            buf.push_str(&crate::ui::sanitize_paste(text));
+        }
+    }
+
     /// Cycle the focused row's value by `delta` (-1 / +1).  Only
     /// applies to bool/enum/theme rows; no-op on numeric/edit-only
     /// rows so an accidental Left arrow doesn't surprise the user.

@@ -164,6 +164,21 @@ impl Modal for ThemePickerModal {
         }
     }
 
+    fn handle_paste(&mut self, text: &str) -> ModalOutcome {
+        // Paste can only yield `Continue` or a live `Preview` (it just
+        // grows the filter); reuse the same theme-swap as the keyboard
+        // `Preview` arm.  Selection / cancellation never originate here.
+        if let ThemePickerResponse::Preview(name) = self.state.paste(text) {
+            return ModalOutcome::ContinueAnd(Box::new(move |app| {
+                if app.config.theme != name {
+                    app.config.theme = name;
+                    app.apply_active_theme();
+                }
+            }));
+        }
+        ModalOutcome::Continue
+    }
+
     fn handle_wheel(&mut self, delta: i32) {
         self.state.scroll_state.scroll_by(delta);
     }

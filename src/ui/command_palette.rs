@@ -180,6 +180,19 @@ impl PaletteState {
         }
     }
 
+    /// Insert a bracketed paste into the query, then invalidate the
+    /// cached display so the next render re-filters.  The paste is
+    /// flattened to one line and length-capped by
+    /// [`crate::ui::sanitize_paste`].
+    pub fn paste(&mut self, text: &str) {
+        let clean = crate::ui::sanitize_paste(text);
+        if clean.is_empty() {
+            return;
+        }
+        self.query.push_str(&clean);
+        self.invalidate_display();
+    }
+
     /// The visible row count for the current query.  Used by tests in
     /// this module that want to assert "this query yielded N matches".
     #[allow(dead_code)]
@@ -510,6 +523,16 @@ mod tests {
 
     fn keymap() -> KeyMap {
         KeyMap::build(&KeyBindingOverrides::default()).unwrap()
+    }
+
+    #[test]
+    fn paste_appends_sanitized_text_to_the_query() {
+        let mut state = PaletteState::open(&keymap());
+        state.handle_key(&key(KeyCode::Char('s')));
+        state.paste("a\nv\te");
+        assert_eq!(state.query, "save", "newlines/tabs stripped, appended");
+        // The cached display invalidated so the next render re-filters.
+        assert!(state.match_count() > 0);
     }
 
     #[test]
