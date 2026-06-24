@@ -420,6 +420,10 @@ impl App {
             image_font_size,
         );
         editor.tab_width = config.editor.tab_width;
+        editor.cursor_blink = crate::editor::CursorBlink::from_config(
+            config.editor.cursor_blink,
+            config.editor.cursor_blink_ms,
+        );
         // When the user has persisted `images.enabled = "never"`, image
         // blocks must collapse to just the `[Image: alt]` placeholder —
         // no reserved rows beneath.  The `Ask` / `Always` paths leave

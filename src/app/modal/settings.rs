@@ -18,7 +18,7 @@ use super::types::{Modal, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
 use crate::config::Config;
 use crate::ui::settings_overlay::{
-    LABEL_BIG_H1, LABEL_SCROLL_SPEED, LABEL_VIM_MODE, LABEL_VISUAL_LINE_NAV,
+    LABEL_BIG_H1, LABEL_BLINK_CURSOR, LABEL_SCROLL_SPEED, LABEL_VIM_MODE, LABEL_VISUAL_LINE_NAV,
 };
 use crate::ui::{ModalKind, SettingsResponse, SettingsState, SettingsView};
 
@@ -41,6 +41,10 @@ impl SettingsOverlayModal {
 pub(super) fn apply_live_update(label: &str, app: &mut App) {
     match label {
         LABEL_BIG_H1 => app.editor.set_big_h1(app.config.editor.big_h1),
+        LABEL_BLINK_CURSOR => app.editor.cursor_blink.apply_config(
+            app.config.editor.cursor_blink,
+            app.config.editor.cursor_blink_ms,
+        ),
         LABEL_SCROLL_SPEED => app
             .mouse
             .set_wheel_step(app.config.editor.mouse_scroll_lines),
@@ -152,6 +156,7 @@ mod tests {
     /// [`live_update_coverage_is_exhaustive`].
     const LIVE_UPDATE_LABELS: &[&str] = &[
         LABEL_BIG_H1,
+        LABEL_BLINK_CURSOR,
         LABEL_SCROLL_SPEED,
         LABEL_VISUAL_LINE_NAV,
         LABEL_VIM_MODE,
@@ -168,18 +173,14 @@ mod tests {
         "Open config folder",
         "Open config.toml in default editor",
         "",
-        "Hint duration",
-        "Limit editor width",
-        "Editor max width",
         "Autosave",
-        "Diff intro",
-        "Show line numbers",
-        "Show images",
+        "Editor max width",
+        "Limit editor width",
         "Show diagrams",
+        "Show images",
+        "Show line numbers",
         "Show remote images",
         "Show table buttons",
-        "Export inlined images",
-        "Export diagrams as SVG",
     ];
 
     #[test]

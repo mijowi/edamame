@@ -83,6 +83,17 @@ pub struct EditorConfig {
     /// again" checkbox flips this off so subsequent reviews open
     /// straight into the diff view.
     pub show_diff_intro: bool,
+    /// When true (default), the editor cursor blinks on a fixed
+    /// cadence (`cursor_blink_ms`); when false the cursor is drawn
+    /// solid and never hidden.  Exposed as an on/off toggle in the
+    /// settings overlay; the cadence itself stays file-only.
+    pub cursor_blink: bool,
+    /// Cursor blink half-period in milliseconds — the cursor toggles
+    /// between visible and hidden every `cursor_blink_ms`.  Only
+    /// consulted when `cursor_blink` is true.  Default: 530 (the
+    /// classic terminal cadence).  File-only; the overlay exposes the
+    /// on/off toggle but not this value.
+    pub cursor_blink_ms: u64,
 }
 
 /// Floor applied to `EditorConfig::max_width_cols` at every use site so a
@@ -147,6 +158,8 @@ impl Default for EditorConfig {
             autosave_enabled: false,
             autosave_idle_ms: AUTOSAVE_IDLE_MS_DEFAULT,
             show_diff_intro: true,
+            cursor_blink: true,
+            cursor_blink_ms: 530,
         }
     }
 }

@@ -13,13 +13,19 @@
 //! Open Config folder              <config_dir>
 //! Open config.toml in default editor
 //!
-//! Theme                           catppuccin
-//!   Active theme (resolves to themes/<name>.toml)
+//! Autosave                        [ true ] [ false ]
+//!   Automatically save changes when idle
 //!
-//! Hint duration                   1500
-//!   Hint line message duration in ms
+//! Editor max width                100
+//! Maximum content width in characters when limit is on
 //! ...
 //! ```
+//!
+//! Editable rows are listed alphabetically by label, except `Show line
+//! numbers`, which sits below the two image-visibility rows so the image
+//! group stays contiguous.  The remote-images row is locked (greyed +
+//! skipped, in the muted hint color) while `Show images` is `Never`,
+//! mirroring the welcome modal's cascade.
 //!
 //! The first two rows are "open externally" actions — the folder row
 //! shells `xdg-open` (or the OS equivalent) on the config directory;
@@ -44,7 +50,7 @@ use ratatui::{
     widgets::{Paragraph, StatefulWidget, Widget},
 };
 
-use crate::config::{Config, Theme};
+use crate::config::{Config, ImagesEnabled, RemoteImagePolicy, Theme};
 use crate::ui::content_width::{max_row_width, optional_text_width};
 use crate::ui::modal_row::{format_modal_row, RowLayout};
 use crate::ui::overlay_nav::next_focusable;
@@ -83,7 +89,13 @@ fn pill_row_width(options: &[&str]) -> usize {
 /// `modal_item_selected_unfocused`.  All other pills fall back to
 /// `modal_item`.  See the [theming docs](../../../docs/theming.md)
 /// "Focus vs. persistent selection" section for the rationale.
-fn pill_spans(options: &[&str], current: &str, focused: bool, theme: &Theme) -> Vec<Span<'static>> {
+fn pill_spans(
+    options: &[&str],
+    current: &str,
+    focused: bool,
+    disabled: bool,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
     let gap = " ".repeat(PILL_GAP);
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(options.len() * 2);
     for (i, label) in options.iter().enumerate() {
@@ -91,7 +103,13 @@ fn pill_spans(options: &[&str], current: &str, focused: bool, theme: &Theme) -> 
             spans.push(Span::styled(gap.clone(), theme.modal_item));
         }
         let selected = label.eq_ignore_ascii_case(current);
-        let style: Style = if selected && focused {
+        // A disabled row reads as inert: every pill (even the selected
+        // one) renders in the muted hint style (`text_muted`, not the
+        // accent-colored `modal_description`) with no focus/selection
+        // affordance.
+        let style: Style = if disabled {
+            theme.modal_close_hint
+        } else if selected && focused {
             theme.modal_button_focused
         } else if selected {
             theme.modal_item_selected_unfocused
@@ -108,7 +126,8 @@ fn pill_spans(options: &[&str], current: &str, focused: bool, theme: &Theme) -> 
 // suppresses the otherwise-spurious `cargo clippy --lib` warning.
 #[allow(unused_imports)]
 pub(crate) use self::rows::{
-    HEADER_NOTE, LABEL_BIG_H1, LABEL_SCROLL_SPEED, LABEL_VIM_MODE, LABEL_VISUAL_LINE_NAV,
+    HEADER_NOTE, LABEL_BIG_H1, LABEL_BLINK_CURSOR, LABEL_SCROLL_SPEED, LABEL_VIM_MODE,
+    LABEL_VISUAL_LINE_NAV,
 };
 
 /// All row labels in display order, including non-focusable dividers.
@@ -169,6 +188,11 @@ pub struct SettingsState {
     pub scroll_state: ScrollContainerState,
     /// Absolute terminal rect of the rendered `esc` close hint.
     pub esc_button_rect: Option<Rect>,
+    /// Cached "remote policy before the images→Never cascade" so that
+    /// flipping `Show images` back out of `Never` restores the user's
+    /// prior `Show remote images` choice.  Mirrors the welcome modal's
+    /// `pre_cascade_remote` (see `ui::welcome`).
+    pre_cascade_remote: Option<RemoteImagePolicy>,
     rows: Vec<RowDef>,
 }
 
@@ -181,16 +205,20 @@ impl SettingsState {
             theme_names: Vec::new(),
             scroll_state: ScrollContainerState::default(),
             esc_button_rect: None,
+            pre_cascade_remote: None,
             rows: build_rows(),
         };
         // Default focus to the first editable setting rather than the
         // "open externally" pair at the top.  Most users open the
         // overlay to tweak a setting; the externals are still one Up
-        // arrow away.
+        // arrow away.  Picking the first Cycle/Edit row keeps this
+        // correct as the (alphabetized) row order changes.
         state.focused = state
             .rows
             .iter()
-            .position(|r| r.label == "Hint duration")
+            .position(|r| {
+                r.kind.focusable && matches!(r.kind.action, RowAction::Cycle | RowAction::Edit)
+            })
             .or_else(|| state.first_focusable_index())
             .unwrap_or(0);
         state
@@ -249,11 +277,11 @@ impl SettingsState {
         match key.code {
             KeyCode::Esc => SettingsResponse::Cancelled,
             KeyCode::Up => {
-                self.move_focus(-1);
+                self.move_focus(-1, config);
                 SettingsResponse::Continue
             }
             KeyCode::Down => {
-                self.move_focus(1);
+                self.move_focus(1, config);
                 SettingsResponse::Continue
             }
             KeyCode::Left => self.cycle_focused(config, -1),
@@ -293,24 +321,54 @@ impl SettingsState {
     /// Cycle the focused row's value by `delta` (-1 / +1).  Only
     /// applies to bool/enum/theme rows; no-op on numeric/edit-only
     /// rows so an accidental Left arrow doesn't surprise the user.
+    /// A disabled row (e.g. the cascade-locked remote-images row) never
+    /// cycles.  Cycling `Show images` cascades the remote-images policy
+    /// to / from `Never`, matching the welcome modal.
     fn cycle_focused(&mut self, config: &mut Config, delta: i32) -> SettingsResponse {
-        let row = match self.rows.get(self.focused) {
-            Some(r) => r,
+        // Copy the bits we need before mutating `config` / `self` so the
+        // borrow of `self.rows` doesn't outlive the row's cycle call.
+        let (label, cycle, disabled) = match self.rows.get(self.focused) {
+            Some(r) => (r.label, r.kind.cycle, r.is_disabled(config)),
             None => return SettingsResponse::Continue,
         };
-        let cycled = match row.kind.cycle {
+        if disabled {
+            return SettingsResponse::Continue;
+        }
+        let was_images_never = matches!(config.images.enabled, ImagesEnabled::Never);
+        let cycled = match cycle {
             Some(f) => f(config, delta, &self.theme_names),
             None => false,
         };
+        if cycled && label == rows::LABEL_SHOW_IMAGES {
+            self.apply_images_cascade(config, was_images_never);
+        }
         if cycled {
-            SettingsResponse::FieldChanged(row.label)
+            SettingsResponse::FieldChanged(label)
         } else {
             SettingsResponse::Continue
         }
     }
 
-    fn move_focus(&mut self, delta: i32) {
-        if let Some(idx) = next_focusable(&self.rows, self.focused, delta, |r| r.kind.focusable) {
+    /// Apply the images→remote cascade after `Show images` changed.
+    /// Entering `Never` forces remote to `Never` (stashing the prior
+    /// value); leaving `Never` restores it.  Mirrors
+    /// `ui::welcome::WelcomeState::set_images`.
+    fn apply_images_cascade(&mut self, config: &mut Config, was_never: bool) {
+        let now_never = matches!(config.images.enabled, ImagesEnabled::Never);
+        if !was_never && now_never {
+            self.pre_cascade_remote = Some(config.images.remote_policy);
+            config.images.remote_policy = RemoteImagePolicy::Never;
+        } else if was_never && !now_never {
+            if let Some(prev) = self.pre_cascade_remote.take() {
+                config.images.remote_policy = prev;
+            }
+        }
+    }
+
+    fn move_focus(&mut self, delta: i32, config: &Config) {
+        if let Some(idx) = next_focusable(&self.rows, self.focused, delta, |r| {
+            r.focus_eligible(config)
+        }) {
             self.focused = idx;
             self.scroll_state.ensure_visible(self.focused as u16);
         }
@@ -347,7 +405,8 @@ impl<'a> StatefulWidget for SettingsView<'a> {
         // Pinned-bottom region: 1 description row when the focused row
         // has one, plus 2 rows for the error footer (blank + ✗ msg).
         let focused_row = state.rows.get(state.focused);
-        let has_description = focused_row.and_then(|r| r.description).is_some();
+        let focused_desc = focused_row.and_then(|r| r.resolved_description(self.config));
+        let has_description = focused_desc.is_some();
         let pinned_bottom: u16 = (if has_description { 1 } else { 0 })
             + (if state.last_error.is_some() { 2 } else { 0 });
 
@@ -423,15 +482,18 @@ impl<'a> StatefulWidget for SettingsView<'a> {
         // Pinned footer: description (when present) followed by error.
         let mut footer_y = inner.y + table_height;
         if has_description {
-            if let Some(desc) = focused_row.and_then(|r| r.description) {
+            if let Some(desc) = focused_desc.as_deref() {
                 let desc_area = Rect {
                     x: inner.x,
                     y: footer_y,
                     width: inner.width,
                     height: 1,
                 };
+                // No leading indent: the description left-aligns with the
+                // header note ("Common options shown below …") at the body
+                // edge rather than under the row labels.
                 Paragraph::new(Line::from(Span::styled(
-                    format!("    {}", desc),
+                    desc.to_owned(),
                     self.theme.modal_description,
                 )))
                 .style(self.theme.modal_bg)
@@ -486,15 +548,18 @@ fn build_row_lines<'a>(
         // also be option rows, so the editing branch never collides.
         if let Some(options) = row.kind.options {
             let current = (row.kind.read)(config, &state.theme_names);
+            let disabled = row.is_disabled(config);
             let marker = if focused { "› " } else { "  " };
             let label_padded = format!("{marker}{:<pad$}", row.label, pad = LABEL_PAD);
-            let label_style = if focused {
+            let label_style = if disabled {
+                theme.modal_close_hint
+            } else if focused {
                 theme.modal_item_selected
             } else {
                 theme.modal_item
             };
             let mut spans: Vec<Span<'static>> = vec![Span::styled(label_padded, label_style)];
-            spans.extend(pill_spans(options, &current, focused, theme));
+            spans.extend(pill_spans(options, &current, focused, disabled, theme));
             lines.push(Line::from(spans));
             continue;
         }
@@ -540,9 +605,13 @@ fn settings_content_width(state: &SettingsState, config: &Config) -> u16 {
         };
         FOCUS_MARKER_WIDTH + LABEL_PAD + value_w
     });
-    // 4 = "    " description indent
+    // The description is left-aligned at the body edge (no indent), so
+    // size against its raw length.  Resolve it so a dynamic description
+    // (e.g. the blink cadence) can't clip.
     let desc_max = max_row_width(&state.rows, |r| {
-        r.description.map(|d| 4 + d.chars().count()).unwrap_or(0)
+        r.resolved_description(config)
+            .map(|d| d.chars().count())
+            .unwrap_or(0)
     });
     let err_max = optional_text_width(state.last_error.as_deref(), 2);
     row_max.max(desc_max).max(err_max)
@@ -606,21 +675,21 @@ mod tests {
     }
 
     #[test]
-    fn hint_duration_opens_inline_editor_and_round_trips() {
+    fn editor_max_width_opens_inline_editor_and_round_trips() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, "Hint duration");
+        focus_row(&mut state, "Editor max width");
         state.handle_key(&key(KeyCode::Enter), &mut config);
-        assert_eq!(state.editing.as_deref(), Some("1500"));
-        for _ in 0..4 {
+        assert_eq!(state.editing.as_deref(), Some("100"));
+        for _ in 0..3 {
             state.handle_key(&key(KeyCode::Backspace), &mut config);
         }
-        for c in "2500".chars() {
+        for c in "200".chars() {
             state.handle_key(&key(KeyCode::Char(c)), &mut config);
         }
         let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
         assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
-        assert_eq!(config.editor.transient_ms, 2500);
+        assert_eq!(config.editor.max_width_cols, 200);
     }
 
     #[test]
@@ -645,9 +714,10 @@ mod tests {
     fn default_focus_is_first_editable_row() {
         // Most users open Settings to adjust a setting, not the
         // externals.  Default focus skips past the open-externally
-        // pair (and the divider) and lands on the first editable row.
+        // pair (and the divider) and lands on the first editable row
+        // (alphabetically, "Autosave").
         let state = SettingsState::new();
-        assert_eq!(state.rows[state.focused].label, "Hint duration");
+        assert_eq!(state.rows[state.focused].label, "Autosave");
     }
 
     #[test]
@@ -681,10 +751,10 @@ mod tests {
     fn invalid_inline_value_is_rejected() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, "Hint duration");
+        focus_row(&mut state, "Editor max width");
         state.handle_key(&key(KeyCode::Enter), &mut config);
-        // Replace `1500` with garbage.
-        for _ in 0..4 {
+        // Replace `100` with garbage.
+        for _ in 0..3 {
             state.handle_key(&key(KeyCode::Backspace), &mut config);
         }
         for c in "abc".chars() {
@@ -693,7 +763,7 @@ mod tests {
         let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
         assert!(matches!(resp, SettingsResponse::Continue));
         assert!(state.last_error.is_some());
-        assert_eq!(config.editor.transient_ms, 1500); // unchanged
+        assert_eq!(config.editor.max_width_cols, 100); // unchanged
     }
 
     #[test]
@@ -708,7 +778,7 @@ mod tests {
     fn escape_inside_inline_editor_only_cancels_the_edit() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, "Hint duration");
+        focus_row(&mut state, "Editor max width");
         state.handle_key(&key(KeyCode::Enter), &mut config);
         assert!(state.editing.is_some());
         let resp = state.handle_key(&key(KeyCode::Esc), &mut config);
@@ -732,22 +802,21 @@ mod tests {
                 "Open config folder",
                 "Open config.toml in default editor",
                 "",
-                "Hint duration",
-                "Limit editor width",
-                "Editor max width",
+                // Editable settings, alphabetized by label — except
+                // "Show line numbers", grouped below the image rows.
                 "Autosave",
-                "Diff intro",
                 "Big H1 headings",
+                "Blink cursor",
+                "Editor max width",
+                "Limit editor width",
+                "Scroll speed",
+                "Show diagrams",
+                "Show images",
+                "Show remote images",
+                "Show line numbers",
+                "Show table buttons",
                 "Use visual line navigation",
                 "Vim mode",
-                "Show line numbers",
-                "Scroll speed",
-                "Show images",
-                "Show diagrams",
-                "Show remote images",
-                "Show table buttons",
-                "Export inlined images",
-                "Export diagrams as SVG",
             ]
         );
     }
@@ -769,6 +838,13 @@ mod tests {
             "images.max_width",
             "images.max_height",
             "dev.logging",
+            // Removed from the overlay: hint duration and diff intro are
+            // file-only now, and the export toggles moved to the
+            // export-flow modal.
+            "Hint duration",
+            "Diff intro",
+            "Export inlined images",
+            "Export diagrams as SVG",
         ] {
             assert!(
                 !labels.contains(&stale),
@@ -899,7 +975,7 @@ mod tests {
         // must use `modal_item`.
         let config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, "Hint duration"); // unfocus the pill rows
+        focus_row(&mut state, "Editor max width"); // unfocus the pill rows
         let theme = theme_ref();
         let lines = build_row_lines(&state, &config, theme, true);
         let row = lines
@@ -949,12 +1025,73 @@ mod tests {
     fn settings_description_appears_in_pinned_footer() {
         let config = Config::default();
         let mut state = SettingsState::new();
-        // Default focus is on the first editable row ("Hint
-        // duration"), which has a description.
+        // Default focus is on the first editable row ("Autosave"),
+        // which has a description.
         let contents = render(&mut state, &config, 100, 25);
         assert!(
-            contents.contains("duration"),
+            contents.contains("Automatically save"),
             "expected focused-row description in pinned footer, got: {contents}"
         );
+    }
+
+    #[test]
+    fn blink_cursor_description_embeds_config_cadence() {
+        // The "Blink cursor" row's description is dynamic: it reads the
+        // file-only `cursor_blink_ms` so the hint reflects the user's
+        // configured cadence rather than a hardcoded value.
+        let mut config = Config::default();
+        config.editor.cursor_blink_ms = 777;
+        let mut state = SettingsState::new();
+        focus_row(&mut state, "Blink cursor");
+        let contents = render(&mut state, &config, 100, 30);
+        assert!(
+            contents.contains("Blink cursor every 777 ms"),
+            "expected dynamic blink description, got: {contents}"
+        );
+    }
+
+    #[test]
+    fn blink_cursor_row_toggles_config_flag() {
+        let mut config = Config::default();
+        let mut state = SettingsState::new();
+        focus_row(&mut state, "Blink cursor");
+        assert!(config.editor.cursor_blink); // default on
+        let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
+        assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
+        assert!(!config.editor.cursor_blink);
+    }
+
+    #[test]
+    fn show_images_never_cascades_remote_to_never_and_locks_row() {
+        // Mirrors the welcome modal: cycling Show images to Never forces
+        // remote to Never, disables the remote row, and skips it on
+        // navigation; leaving Never restores the prior remote choice.
+        let mut config = Config::default();
+        config.images.remote_policy = RemoteImagePolicy::Always;
+        let mut state = SettingsState::new();
+        focus_row(&mut state, "Show images");
+        // Ask → Always → Never.
+        state.handle_key(&key(KeyCode::Enter), &mut config);
+        state.handle_key(&key(KeyCode::Enter), &mut config);
+        assert_eq!(config.images.enabled, ImagesEnabled::Never);
+        assert_eq!(config.images.remote_policy, RemoteImagePolicy::Never);
+
+        // The remote row is now disabled and skipped by Down navigation.
+        let remote_idx = state
+            .rows
+            .iter()
+            .position(|r| r.label == "Show remote images")
+            .unwrap();
+        assert!(state.rows[remote_idx].is_disabled(&config));
+        state.focused = remote_idx - 1; // row just above the locked one
+        state.handle_key(&key(KeyCode::Down), &mut config);
+        assert_ne!(state.focused, remote_idx, "Down must skip the locked row");
+
+        // Leave Never (Never → Ask) — prior remote choice is restored.
+        focus_row(&mut state, "Show images");
+        state.handle_key(&key(KeyCode::Enter), &mut config);
+        assert_eq!(config.images.enabled, ImagesEnabled::Ask);
+        assert_eq!(config.images.remote_policy, RemoteImagePolicy::Always);
+        assert!(!state.rows[remote_idx].is_disabled(&config));
     }
 }
