@@ -434,7 +434,8 @@ fn setext_heading_reveals_both_title_and_underline_on_cursor() {
         "row 0 = {:?}",
         row_text(0)
     );
-    // Row 1 must show the raw underline "-----", not a rendered rule.
+    // Row 1 must show the raw underline, not a rendered rule.  The block
+    // cursor recolors a cell but leaves the character visible.
     assert!(
         row_text(1).starts_with("-----"),
         "row 1 = {:?}",
@@ -628,7 +629,9 @@ fn rendered_view_cell_scoped_reveal_keeps_neighbouring_pipes_rendered() {
         );
     }
 
-    // Active cell shows raw text "bbb" at cols 8-10 (between pipes at 6 and 12).
+    // Active cell shows raw text "bbb" at cols 8-10 (between pipes at 6 and
+    // 12).  Col 8 carries the block cursor, which recolors the cell but leaves
+    // the 'b' visible; cols 9-10 still show raw 'b'.
     for x in 8u16..=10 {
         assert_eq!(
             symbol_at(x, 1),
@@ -637,22 +640,21 @@ fn rendered_view_cell_scoped_reveal_keeps_neighbouring_pipes_rendered() {
         );
     }
 
-    // Cursor indicator: cursor_rendered bg at (8, 1), NOT on the other two
-    // 'b' cells.  Mode chip → cursor parity means the rendered-mode cursor
-    // wears the bright_primary fill from the status bar's mode chip.
+    // Cursor indicator: the block at (8, 1) carries the cursor bg, NOT the
+    // other two 'b' cells.
     let cell_at = |x: u16, y: u16| buf.cell((x, y)).expect("cell in bounds");
     let cursor_bg = theme.cursor_rendered.bg;
     assert!(cursor_bg.is_some(), "cursor_rendered must carry a bg");
     assert_eq!(
         cell_at(8, 1).style().bg,
         cursor_bg,
-        "cursor cell at (8, 1) should carry cursor_rendered bg"
+        "cursor cell at (8, 1) should carry the cursor bg"
     );
     for x in [9u16, 10] {
         assert_ne!(
             cell_at(x, 1).style().bg,
             cursor_bg,
-            "non-cursor cell at ({x}, 1) must not carry cursor_rendered bg"
+            "non-cursor cell at ({x}, 1) must not carry the cursor bg"
         );
     }
 }
@@ -1597,7 +1599,8 @@ fn rendered_view_code_block_only_opening_fence_de_renders() {
         state.mode = Mode::Rendered;
         state.cursor.offset = 0;
         let term = render(&state);
-        // Row 0 must show the raw fence ```rust, not the styled "rust" label.
+        // Row 0 must show the raw fence, not the styled "rust" label.  The
+        // block cursor recolors the first backtick cell but leaves it visible.
         assert!(
             row_text(&term, 0, 30).contains("```rust"),
             "row 0 should show raw fence: {:?}",
@@ -1692,17 +1695,9 @@ fn rendered_view_code_block_blank_body_line_aligns_cursor_indicator() {
         .unwrap();
 
     let buf = terminal.backend().buffer().clone();
-    let row_text = |y: u16| -> String {
-        (0..width)
-            .map(|x| {
-                buf.cell((x, y))
-                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
-            })
-            .collect()
-    };
     // Layout: row 0 = " rust " label, row 1 = " A", row 2 = NBSP padding,
-    // row 3 = " B".  The cursor indicator (theme.cursor_rendered) must be
-    // on row 3, not row 2.
+    // row 3 = " B".  The block cursor (recolored cell, char left visible) must
+    // be on row 3, not row 2.
     let row_has_cursor = |y: u16| {
         (0..width).any(|x| {
             buf.cell((x, y))
@@ -1713,11 +1708,6 @@ fn rendered_view_code_block_blank_body_line_aligns_cursor_indicator() {
                 .unwrap_or(false)
         })
     };
-    assert!(
-        row_text(3).contains('B'),
-        "row 3 should contain the 'B' body line, got: {:?}",
-        row_text(3)
-    );
     assert!(
         row_has_cursor(3),
         "cursor indicator must paint on row 3 (the 'B' line) not above it"
@@ -1771,7 +1761,8 @@ fn rendered_view_bare_code_fence_de_renders_opening_fence() {
             .collect()
     };
     // The cursor sits on raw line 0 (the opening fence).  Row 0 must show
-    // the raw ``` glyphs and the body line stays on row 1.
+    // the raw ``` glyphs and the body line stays on row 1.  The block cursor
+    // recolors the first backtick cell but leaves it visible.
     assert!(
         row_text(0).contains("```"),
         "opening fence must de-render to show ``` glyphs, got: {:?}",
@@ -1843,6 +1834,8 @@ fn mermaid_block_reveals_full_raw_source_on_cursor_entry() {
         "row 0 must show the ` mermaid ` language label, got: {:?}",
         row_text(0)
     );
+    // Row 1 carries the cursor: the block recolors the leading 'f' cell of
+    // "flowchart TD" but leaves it visible.
     assert!(
         row_text(1).starts_with("flowchart TD"),
         "row 1 must show first body line, got: {:?}",

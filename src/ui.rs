@@ -4,6 +4,7 @@ pub mod button_row;
 pub mod cap_summary;
 pub mod command_palette;
 pub mod content_width;
+pub mod cursor;
 pub mod diff_view;
 pub mod dim;
 pub mod editor_view;

@@ -7,7 +7,7 @@ use ratatui::{
 
 use crate::config::Theme;
 use crate::editor::EditorState;
-use crate::ui::line_render::render_line_from_visual;
+use crate::ui::line_render::render_line_with_cursor_from_visual;
 
 /// Raw (plain text) document view.
 ///
@@ -126,24 +126,20 @@ impl<'a> StatefulWidget for RawView<'a> {
                 }
             }
 
-            let display_line = raw_display_line(
-                raw,
-                if buf_line == cursor_line && cursor_visible {
-                    Some(cursor_col)
-                } else {
-                    None
-                },
-                line_sel_cols,
-                &line_highlights,
-                cursor_style,
-                sel_style,
-            );
-            let rows_used = render_line_from_visual(
+            // The block cursor is painted onto the resolved cell by the render
+            // override — not baked into `display_line` — so the wrapped layout
+            // is computed from the bare source text and stays in lockstep with
+            // the scroll / navigation wrap (which never sees the cursor).
+            let cursor_override =
+                (buf_line == cursor_line && cursor_visible).then_some((cursor_col, cursor_style));
+            let display_line = raw_display_line(raw, line_sel_cols, &line_highlights, sel_style);
+            let rows_used = render_line_with_cursor_from_visual(
                 &display_line,
                 area,
                 buf,
                 vis_row as u16,
                 true,
+                cursor_override,
                 first_sub_row,
             ) as usize;
             if rows_used == 0 {
@@ -157,47 +153,33 @@ impl<'a> StatefulWidget for RawView<'a> {
     }
 }
 
+/// Build the styled line for one buffer line in Raw mode: selection
+/// background plus search-match highlights, one span per char.  The cursor is
+/// NOT painted here — it is drawn onto the resolved cell by the render
+/// override so the wrapped layout matches the bare-text wrap.
 fn raw_display_line(
     raw: &str,
-    cursor_col: Option<usize>,
     selection: Option<(usize, usize)>,
     highlights: &[(usize, usize, ratatui::style::Style)],
-    cursor_style: ratatui::style::Style,
     selection_style: ratatui::style::Style,
 ) -> Line<'static> {
-    let mut spans = Vec::new();
     let chars: Vec<char> = raw.chars().collect();
-    let cursor_at = cursor_col.unwrap_or(usize::MAX);
-    for i in 0..=chars.len() {
-        if i == chars.len() {
-            if cursor_at == i {
-                spans.push(Span::styled(" ", cursor_style));
-            }
-            break;
-        }
+    let mut spans = Vec::with_capacity(chars.len());
+    for (i, ch) in chars.iter().enumerate() {
         let in_selection = matches!(selection, Some((s, e)) if i >= s && i < e);
-        // Search-match highlight for this column, if any.  Applied
-        // under the cursor but over the selection, mirroring the
-        // rendered view's overlay order.
         let highlight = highlights
             .iter()
             .find(|(s, e, _)| i >= *s && i < *e)
             .map(|(_, _, st)| *st);
-        let mut style = if cursor_at == i && in_selection {
-            cursor_style.patch(selection_style)
-        } else if cursor_at == i {
-            cursor_style
-        } else if in_selection {
+        let mut style = if in_selection {
             selection_style
         } else {
             ratatui::style::Style::default()
         };
-        if cursor_at != i {
-            if let Some(h) = highlight {
-                style = style.patch(h);
-            }
+        if let Some(h) = highlight {
+            style = style.patch(h);
         }
-        spans.push(Span::styled(chars[i].to_string(), style));
+        spans.push(Span::styled(ch.to_string(), style));
     }
     Line::from(spans)
 }
@@ -299,6 +281,9 @@ mod tests {
             anchor: 3,
             active: 15,
         });
+        // Park the block cursor on the trailing empty line (row 2) so it
+        // doesn't recolor a checked selection cell on rows 0-1.
+        state.cursor.offset = state.buffer.len_chars();
         let mut view_state = RawViewState::default();
 
         let backend = TestBackend::new(20, 3);

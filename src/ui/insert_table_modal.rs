@@ -22,6 +22,7 @@ use ratatui::{
 
 use crate::config::Theme;
 use crate::ui::button_row::{button_row_width, render_button_row};
+use crate::ui::cursor::text_field_spans;
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind,
 };
@@ -393,20 +394,25 @@ fn render_field_row(
     } else {
         theme.modal_input_unfocused
     };
-    // Show a trailing cursor glyph on the focused field so the user
-    // sees where typing would land.
-    let value_display = if focused && cursor_visible {
-        format!(" {value}▏")
-    } else {
-        format!(" {value} ")
-    };
-    Paragraph::new(Line::from(vec![
+    // Shared cursor renderer: a trailing `▏` bar (in `theme.cursor`) on the
+    // focused field so the user sees where typing lands.  The fields are
+    // digits-only and append-only, so the cursor is always at the end; the
+    // slot is constant-width across blink phases.
+    let mut spans = vec![
         Span::styled(label_padded, theme.modal_item),
         Span::raw("  "),
-        Span::styled(value_display, value_style),
-    ]))
-    .style(theme.modal_bg)
-    .render(area, buf);
+        Span::styled(" ", value_style),
+    ];
+    spans.extend(text_field_spans(
+        value,
+        value.chars().count(),
+        focused && cursor_visible,
+        value_style,
+        theme.cursor,
+    ));
+    Paragraph::new(Line::from(spans))
+        .style(theme.modal_bg)
+        .render(area, buf);
 }
 
 /// Render `[ Insert ]  [ Cancel ]` centred horizontally with the

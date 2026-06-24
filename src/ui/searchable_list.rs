@@ -17,7 +17,6 @@ use nucleo_matcher::{Matcher, Utf32Str};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::Modifier,
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
@@ -185,16 +184,17 @@ pub fn draw_searchable_list_chrome(
         width: inner.width,
         height: 1,
     };
-    let prompt = Span::styled("› ", chrome.theme.modal_item);
-    let typed = Span::styled(chrome.query.to_owned(), chrome.theme.modal_item);
-    let mut spans = vec![prompt, typed];
-    if chrome.cursor_visible {
-        let cursor_style = ratatui::style::Style::default()
-            .fg(chrome.theme.palette.primary)
-            .bg(chrome.theme.palette.surface_elevated)
-            .add_modifier(Modifier::BOLD);
-        spans.push(Span::styled("▏", cursor_style));
-    }
+    // Unified modal cursor via the shared block-cursor helper: the query is
+    // append-only, so the cursor sits at the end.  The cell is constant width
+    // across blink phases so the input never jitters.
+    let mut spans = vec![Span::styled("› ", chrome.theme.modal_item)];
+    spans.extend(crate::ui::cursor::text_field_spans(
+        chrome.query,
+        chrome.query.chars().count(),
+        chrome.cursor_visible,
+        chrome.theme.modal_item,
+        chrome.theme.cursor,
+    ));
     Paragraph::new(Line::from(spans))
         .style(chrome.theme.modal_bg)
         .render(input_area, buf);

@@ -638,8 +638,18 @@ fn render_name_row(
         if !pre.is_empty() {
             spans.push(Span::styled(pre, value_style));
         }
+        // Constant-width cursor slot: a solid block when visible, a same-width
+        // space when not, so the field doesn't jitter on blink.  The
+        // horizontal-scroll layout above reserves this as its own cell (the
+        // `-3` width budget), so the block sits in its own cell here rather
+        // than recoloring the char to its right.
         if cursor_visible {
-            spans.push(Span::styled("▏", theme.cursor));
+            spans.push(Span::styled(
+                crate::ui::cursor::CURSOR_BLOCK.to_string(),
+                theme.cursor,
+            ));
+        } else {
+            spans.push(Span::styled(" ", value_style));
         }
         if !post.is_empty() {
             spans.push(Span::styled(post, value_style));

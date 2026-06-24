@@ -111,6 +111,7 @@ impl App {
                 prefix: cl.kind.prefix(),
                 text: cl.input.clone(),
                 cursor: cl.cursor,
+                cursor_visible: self.editor.cursor_blink.is_visible(),
             };
         }
         if let Some(msg) = self.transient.as_ref() {
