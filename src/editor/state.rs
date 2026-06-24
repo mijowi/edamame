@@ -12,17 +12,21 @@ use crate::search::SearchState;
 
 // ── Cursor blink ─────────────────────────────────────────────────────
 
+/// Fallback blink cadence used when no config value is supplied (e.g.
+/// `CursorBlink::default()` in tests).  Mirrors `EditorConfig`'s
+/// `cursor_blink_ms` default so behaviour matches a fresh install.
 const BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
 /// Tracks the on/off phase of a blinking cursor.
 ///
 /// When `blinking` is true the cursor alternates between visible and hidden
-/// on a fixed cadence.  Any cursor movement resets the phase to visible so
-/// the cursor is always immediately apparent after a keypress.
+/// on the `interval` cadence.  Any cursor movement resets the phase to
+/// visible so the cursor is always immediately apparent after a keypress.
 #[derive(Debug, Clone)]
 pub struct CursorBlink {
     blinking: bool,
     visible: bool,
+    interval: Duration,
     last_toggle: Instant,
 }
 
@@ -31,12 +35,41 @@ impl Default for CursorBlink {
         Self {
             blinking: true,
             visible: true,
+            interval: BLINK_INTERVAL,
             last_toggle: Instant::now(),
         }
     }
 }
 
 impl CursorBlink {
+    /// Build from config: `blinking` toggles the effect on/off and
+    /// `interval_ms` sets the cadence.  A zero `interval_ms` falls back
+    /// to the default cadence so a stray `0` can't spin the redraw loop.
+    pub fn from_config(blinking: bool, interval_ms: u64) -> Self {
+        let interval = if interval_ms == 0 {
+            BLINK_INTERVAL
+        } else {
+            Duration::from_millis(interval_ms)
+        };
+        Self {
+            blinking,
+            visible: true,
+            interval,
+            last_toggle: Instant::now(),
+        }
+    }
+
+    /// Re-apply config to an existing blink so the settings-overlay
+    /// toggle takes effect live.  Resets the phase to visible so the
+    /// cursor reappears immediately when blinking is turned off.
+    pub fn apply_config(&mut self, blinking: bool, interval_ms: u64) {
+        self.blinking = blinking;
+        if interval_ms != 0 {
+            self.interval = Duration::from_millis(interval_ms);
+        }
+        self.reset();
+    }
+
     /// Whether the cursor should be painted this frame.
     pub fn is_visible(&self) -> bool {
         !self.blinking || self.visible
@@ -55,7 +88,7 @@ impl CursorBlink {
         if !self.blinking {
             return false;
         }
-        if self.last_toggle.elapsed() >= BLINK_INTERVAL {
+        if self.last_toggle.elapsed() >= self.interval {
             self.visible = !self.visible;
             self.last_toggle = Instant::now();
             true
@@ -68,7 +101,7 @@ impl CursorBlink {
     /// blinking is disabled.
     pub fn next_toggle(&self) -> Option<Instant> {
         if self.blinking {
-            Some(self.last_toggle + BLINK_INTERVAL)
+            Some(self.last_toggle + self.interval)
         } else {
             None
         }

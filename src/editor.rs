@@ -14,4 +14,4 @@ pub mod table_edit_ops;
 pub mod vim_ops;
 
 pub use mode::Mode;
-pub use state::{EditorState, RAW_REVEAL_DELAY};
+pub use state::{CursorBlink, EditorState, RAW_REVEAL_DELAY};

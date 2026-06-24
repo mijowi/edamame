@@ -76,6 +76,22 @@ appearance = "dark"
 # or contains non-ASCII characters. Default: false.
 # big_h1 = false
 
+# Blink the editor cursor. When false the cursor is drawn solid and never
+# hidden. The settings overlay exposes this on/off toggle. Default: true.
+# cursor_blink = true
+
+# Cursor blink half-period in milliseconds — the cursor toggles between
+# visible and hidden every `cursor_blink_ms`. Only consulted when
+# `cursor_blink` is true. This cadence is file-only (the overlay exposes
+# only the on/off toggle). Default: 530.
+# cursor_blink_ms = 530
+
+# Show the explainer modal when entering diff review. The modal's
+# "Don't show this again" checkbox flips this to false; set it back to
+# true here to re-enable the intro. File-only (not in the settings
+# overlay). Default: true.
+# show_diff_intro = true
+
 # ── Modal ─────────────────────────────────────────────────────────────────────
 # Which modal handler processes key events. "default" is the non-modal
 # chord/shortcut keymap; "vim" enables Vim-style modal editing and motions

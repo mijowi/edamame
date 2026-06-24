@@ -26,6 +26,9 @@ pub(crate) const LABEL_VISUAL_LINE_NAV: &str = "Use visual line navigation";
 pub(crate) const LABEL_LINE_NUMBERS: &str = "Show line numbers";
 pub(crate) const LABEL_SCROLL_SPEED: &str = "Scroll speed";
 pub(crate) const LABEL_VIM_MODE: &str = "Vim mode";
+pub(crate) const LABEL_BLINK_CURSOR: &str = "Blink cursor";
+pub(crate) const LABEL_SHOW_IMAGES: &str = "Show images";
+pub(crate) const LABEL_SHOW_REMOTE_IMAGES: &str = "Show remote images";
 
 /// Handler name written to `config.modal.handler` when vim mode is on.
 const VIM_HANDLER: &str = "vim";
@@ -70,6 +73,12 @@ pub(super) struct RowKind {
     /// When `None`, the row falls back to the legacy single-value
     /// display (numeric / path / external-action rows).
     pub(super) options: Option<&'static [&'static str]>,
+    /// When `Some` and the fn returns true for the current config, the
+    /// row is rendered inert (dimmed label + pills) and skipped by focus
+    /// navigation / cycling.  Used by the remote-images row, which the
+    /// images-`Never` cascade locks to `Never` (mirrors the welcome
+    /// modal's cascade — see `ui::welcome`).
+    pub(super) disabled: Option<fn(&Config) -> bool>,
 }
 
 pub(super) const BOOL_OPTIONS: &[&str] = &["true", "false"];
@@ -82,7 +91,34 @@ pub(super) const ASK_ALWAYS_NEVER_OPTIONS: &[&str] = &["Ask", "Always", "Never"]
 pub(super) struct RowDef {
     pub(super) label: &'static str,
     pub(super) description: Option<&'static str>,
+    /// Dynamic description override.  When `Some`, it is formatted from
+    /// live config and takes precedence over `description` — used to
+    /// embed a file-only numeric value (e.g. the blink cadence) in the
+    /// pinned footer copy.  Most rows leave this `None`.
+    pub(super) describe: Option<fn(&Config) -> String>,
     pub(super) kind: RowKind,
+}
+
+impl RowDef {
+    /// Resolve the row's footer description for the given config —
+    /// dynamic (`describe`) when present, else the static string.
+    pub(super) fn resolved_description(&self, config: &Config) -> Option<String> {
+        match self.describe {
+            Some(f) => Some(f(config)),
+            None => self.description.map(|s| s.to_owned()),
+        }
+    }
+
+    /// Whether this row is currently inert (cascade- or capability-locked).
+    pub(super) fn is_disabled(&self, config: &Config) -> bool {
+        self.kind.disabled.map(|f| f(config)).unwrap_or(false)
+    }
+
+    /// Whether focus may land on this row right now: focusable in
+    /// principle and not currently disabled.
+    pub(super) fn focus_eligible(&self, config: &Config) -> bool {
+        self.kind.focusable && !self.is_disabled(config)
+    }
 }
 
 fn no_write(_: &mut Config, _: &str) -> Result<(), String> {
@@ -96,6 +132,7 @@ fn display_only_row(label: &'static str) -> RowDef {
     RowDef {
         label,
         description: None,
+        describe: None,
         kind: RowKind {
             focusable: false,
             action: RowAction::Cycle,
@@ -103,14 +140,9 @@ fn display_only_row(label: &'static str) -> RowDef {
             write_string: no_write,
             cycle: None,
             options: None,
+            disabled: None,
         },
     }
-}
-
-fn parse_u64(s: &str) -> Result<u64, String> {
-    s.trim()
-        .parse::<u64>()
-        .map_err(|e| format!("invalid number: {e}"))
 }
 
 fn parse_usize(s: &str) -> Result<usize, String> {
@@ -212,6 +244,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         RowDef {
             label: "Open config folder",
             description: Some("Press Enter to open externally"),
+            describe: None,
             kind: RowKind {
                 focusable: true,
                 action: RowAction::OpenConfigFolder,
@@ -223,11 +256,13 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 write_string: no_write,
                 cycle: None,
                 options: None,
+                disabled: None,
             },
         },
         RowDef {
             label: "Open config.toml in default editor",
             description: Some("Press Enter to open externally"),
+            describe: None,
             kind: RowKind {
                 focusable: true,
                 action: RowAction::OpenExternalEditor,
@@ -235,6 +270,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 write_string: no_write,
                 cycle: None,
                 options: None,
+                disabled: None,
             },
         },
         // Blank divider — sets the "open externally" pair apart
@@ -242,39 +278,65 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         // arrow-key navigation skips it; the View renders an empty
         // line for any non-focusable row with an empty label.
         display_only_row(""),
+        // ── Editable settings, alphabetical by label, except
+        //    `Show line numbers` sits below the two image-visibility
+        //    rows so the image group stays contiguous ──
         RowDef {
-            label: "Hint duration",
-            description: Some("Hint line message duration in ms"),
-            kind: RowKind {
-                focusable: true,
-                action: RowAction::Edit,
-                read: |c, _| c.editor.transient_ms.to_string(),
-                write_string: |c, v| {
-                    c.editor.transient_ms = parse_u64(v)?;
-                    Ok(())
-                },
-                cycle: None,
-                options: None,
-            },
-        },
-        RowDef {
-            label: "Limit editor width",
-            description: Some("Cap the editor content to a fixed width"),
+            label: "Autosave",
+            description: Some("Automatically save changes when idle"),
+            describe: None,
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,
-                read: |c, _| c.editor.max_width_enabled.to_string(),
+                read: |c, _| c.editor.autosave_enabled.to_string(),
                 write_string: no_write,
                 cycle: Some(|c, _, _| {
-                    c.editor.max_width_enabled = !c.editor.max_width_enabled;
+                    c.editor.autosave_enabled = !c.editor.autosave_enabled;
                     true
                 }),
                 options: Some(BOOL_OPTIONS),
+                disabled: None,
+            },
+        },
+        RowDef {
+            label: LABEL_BIG_H1,
+            description: Some("Render H1 titles as large block-character text"),
+            describe: None,
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Cycle,
+                read: |c, _| c.editor.big_h1.to_string(),
+                write_string: no_write,
+                cycle: Some(|c, _, _| {
+                    c.editor.big_h1 = !c.editor.big_h1;
+                    true
+                }),
+                options: Some(BOOL_OPTIONS),
+                disabled: None,
+            },
+        },
+        RowDef {
+            label: LABEL_BLINK_CURSOR,
+            // Static fallback; `describe` embeds the file-only cadence.
+            description: Some("Blink the editor cursor"),
+            describe: Some(|c| format!("Blink cursor every {} ms", c.editor.cursor_blink_ms)),
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Cycle,
+                read: |c, _| c.editor.cursor_blink.to_string(),
+                write_string: no_write,
+                cycle: Some(|c, _, _| {
+                    c.editor.cursor_blink = !c.editor.cursor_blink;
+                    true
+                }),
+                options: Some(BOOL_OPTIONS),
+                disabled: None,
             },
         },
         RowDef {
             label: "Editor max width",
             description: Some("Maximum content width in characters when limit is on"),
+            describe: None,
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Edit,
@@ -289,56 +351,149 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 },
                 cycle: None,
                 options: None,
+                disabled: None,
             },
         },
         RowDef {
-            label: "Autosave",
-            description: Some("Automatically save changes when idle"),
+            label: "Limit editor width",
+            description: Some("Cap the editor content to a fixed width"),
+            describe: None,
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,
-                read: |c, _| c.editor.autosave_enabled.to_string(),
+                read: |c, _| c.editor.max_width_enabled.to_string(),
                 write_string: no_write,
                 cycle: Some(|c, _, _| {
-                    c.editor.autosave_enabled = !c.editor.autosave_enabled;
+                    c.editor.max_width_enabled = !c.editor.max_width_enabled;
                     true
                 }),
                 options: Some(BOOL_OPTIONS),
+                disabled: None,
             },
         },
         RowDef {
-            label: "Diff intro",
-            description: Some("Show the explainer modal when entering diff review"),
+            label: LABEL_SCROLL_SPEED,
+            description: Some("Lines per mouse-wheel tick (also applies to touchpads)"),
+            describe: None,
             kind: RowKind {
                 focusable: true,
-                action: RowAction::Cycle,
-                read: |c, _| c.editor.show_diff_intro.to_string(),
-                write_string: no_write,
-                cycle: Some(|c, _, _| {
-                    c.editor.show_diff_intro = !c.editor.show_diff_intro;
-                    true
-                }),
-                options: Some(BOOL_OPTIONS),
+                action: RowAction::Edit,
+                read: |c, _| c.editor.mouse_scroll_lines.to_string(),
+                write_string: |c, v| {
+                    let n = parse_usize(v)?;
+                    if n < MOUSE_SCROLL_LINES_MIN {
+                        return Err(format!("must be at least {MOUSE_SCROLL_LINES_MIN}"));
+                    }
+                    c.editor.mouse_scroll_lines = n;
+                    Ok(())
+                },
+                cycle: None,
+                options: None,
+                disabled: None,
             },
         },
         RowDef {
-            label: LABEL_BIG_H1,
-            description: Some("Render H1 titles as large block-character text"),
+            label: "Show diagrams",
+            description: Some("Render Mermaid code blocks as inline diagrams"),
+            describe: None,
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,
-                read: |c, _| c.editor.big_h1.to_string(),
+                read: |c, _| diagrams_enabled_label(c.diagrams.enabled).to_owned(),
+                write_string: |c, v| {
+                    c.diagrams.enabled = parse_diagrams_enabled(v)?;
+                    Ok(())
+                },
+                cycle: Some(|c, delta, _| {
+                    c.diagrams.enabled =
+                        cycle_enum(c.diagrams.enabled, DIAGRAMS_ENABLED_ORDER, delta);
+                    true
+                }),
+                options: Some(ASK_ALWAYS_NEVER_OPTIONS),
+                disabled: None,
+            },
+        },
+        RowDef {
+            label: LABEL_SHOW_IMAGES,
+            description: Some("Show images in preview and render mode"),
+            describe: None,
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Cycle,
+                read: |c, _| images_enabled_label(c.images.enabled).to_owned(),
+                write_string: |c, v| {
+                    c.images.enabled = parse_images_enabled(v)?;
+                    Ok(())
+                },
+                cycle: Some(|c, delta, _| {
+                    c.images.enabled = cycle_enum(c.images.enabled, IMAGES_ENABLED_ORDER, delta);
+                    true
+                }),
+                options: Some(ASK_ALWAYS_NEVER_OPTIONS),
+                disabled: None,
+            },
+        },
+        RowDef {
+            label: LABEL_SHOW_REMOTE_IMAGES,
+            description: Some("Fetch and display remote images"),
+            describe: None,
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Cycle,
+                read: |c, _| remote_policy_label(c.images.remote_policy).to_owned(),
+                write_string: |c, v| {
+                    c.images.remote_policy = parse_remote_policy(v)?;
+                    Ok(())
+                },
+                cycle: Some(|c, delta, _| {
+                    c.images.remote_policy =
+                        cycle_enum(c.images.remote_policy, REMOTE_POLICY_ORDER, delta);
+                    true
+                }),
+                options: Some(ASK_ALWAYS_NEVER_OPTIONS),
+                // Locked to Never (and skipped by focus) while images are
+                // off — mirrors the welcome modal's images→remote cascade.
+                disabled: Some(|c| matches!(c.images.enabled, ImagesEnabled::Never)),
+            },
+        },
+        RowDef {
+            label: LABEL_LINE_NUMBERS,
+            description: Some("Show line numbers in the left gutter"),
+            describe: None,
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Cycle,
+                read: |c, _| c.editor.show_line_numbers.to_string(),
                 write_string: no_write,
                 cycle: Some(|c, _, _| {
-                    c.editor.big_h1 = !c.editor.big_h1;
+                    c.editor.show_line_numbers = !c.editor.show_line_numbers;
                     true
                 }),
                 options: Some(BOOL_OPTIONS),
+                disabled: None,
+            },
+        },
+        RowDef {
+            label: "Show table buttons",
+            description: Some("Show table row/column move/resize glyphs"),
+            describe: None,
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Cycle,
+                read: |c, _| c.table.show_buttons.to_string(),
+                write_string: no_write,
+                cycle: Some(|c, _, _| {
+                    c.table.show_buttons = !c.table.show_buttons;
+                    true
+                }),
+                options: Some(BOOL_OPTIONS),
+                disabled: None,
             },
         },
         RowDef {
             label: LABEL_VISUAL_LINE_NAV,
             description: Some("Up/Down move by visual lines (vs. logical)"),
+            describe: None,
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,
@@ -349,11 +504,13 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     true
                 }),
                 options: Some(BOOL_OPTIONS),
+                disabled: None,
             },
         },
         RowDef {
             label: LABEL_VIM_MODE,
             description: Some("Vim-style modal editing (Normal / Insert / Visual)"),
+            describe: None,
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,
@@ -373,141 +530,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     true
                 }),
                 options: Some(BOOL_OPTIONS),
-            },
-        },
-        RowDef {
-            label: LABEL_LINE_NUMBERS,
-            description: Some("Show line numbers in the left gutter"),
-            kind: RowKind {
-                focusable: true,
-                action: RowAction::Cycle,
-                read: |c, _| c.editor.show_line_numbers.to_string(),
-                write_string: no_write,
-                cycle: Some(|c, _, _| {
-                    c.editor.show_line_numbers = !c.editor.show_line_numbers;
-                    true
-                }),
-                options: Some(BOOL_OPTIONS),
-            },
-        },
-        RowDef {
-            label: LABEL_SCROLL_SPEED,
-            description: Some("Lines per mouse-wheel tick (also applies to touchpads)"),
-            kind: RowKind {
-                focusable: true,
-                action: RowAction::Edit,
-                read: |c, _| c.editor.mouse_scroll_lines.to_string(),
-                write_string: |c, v| {
-                    let n = parse_usize(v)?;
-                    if n < MOUSE_SCROLL_LINES_MIN {
-                        return Err(format!("must be at least {MOUSE_SCROLL_LINES_MIN}"));
-                    }
-                    c.editor.mouse_scroll_lines = n;
-                    Ok(())
-                },
-                cycle: None,
-                options: None,
-            },
-        },
-        RowDef {
-            label: "Show images",
-            description: Some("Show images in preview and render mode"),
-            kind: RowKind {
-                focusable: true,
-                action: RowAction::Cycle,
-                read: |c, _| images_enabled_label(c.images.enabled).to_owned(),
-                write_string: |c, v| {
-                    c.images.enabled = parse_images_enabled(v)?;
-                    Ok(())
-                },
-                cycle: Some(|c, delta, _| {
-                    c.images.enabled = cycle_enum(c.images.enabled, IMAGES_ENABLED_ORDER, delta);
-                    true
-                }),
-                options: Some(ASK_ALWAYS_NEVER_OPTIONS),
-            },
-        },
-        RowDef {
-            label: "Show diagrams",
-            description: Some("Render Mermaid code blocks as inline diagrams"),
-            kind: RowKind {
-                focusable: true,
-                action: RowAction::Cycle,
-                read: |c, _| diagrams_enabled_label(c.diagrams.enabled).to_owned(),
-                write_string: |c, v| {
-                    c.diagrams.enabled = parse_diagrams_enabled(v)?;
-                    Ok(())
-                },
-                cycle: Some(|c, delta, _| {
-                    c.diagrams.enabled =
-                        cycle_enum(c.diagrams.enabled, DIAGRAMS_ENABLED_ORDER, delta);
-                    true
-                }),
-                options: Some(ASK_ALWAYS_NEVER_OPTIONS),
-            },
-        },
-        RowDef {
-            label: "Show remote images",
-            description: Some("Fetch and display remote images"),
-            kind: RowKind {
-                focusable: true,
-                action: RowAction::Cycle,
-                read: |c, _| remote_policy_label(c.images.remote_policy).to_owned(),
-                write_string: |c, v| {
-                    c.images.remote_policy = parse_remote_policy(v)?;
-                    Ok(())
-                },
-                cycle: Some(|c, delta, _| {
-                    c.images.remote_policy =
-                        cycle_enum(c.images.remote_policy, REMOTE_POLICY_ORDER, delta);
-                    true
-                }),
-                options: Some(ASK_ALWAYS_NEVER_OPTIONS),
-            },
-        },
-        RowDef {
-            label: "Show table buttons",
-            description: Some("Show table row/column move/resize glyphs"),
-            kind: RowKind {
-                focusable: true,
-                action: RowAction::Cycle,
-                read: |c, _| c.table.show_buttons.to_string(),
-                write_string: no_write,
-                cycle: Some(|c, _, _| {
-                    c.table.show_buttons = !c.table.show_buttons;
-                    true
-                }),
-                options: Some(BOOL_OPTIONS),
-            },
-        },
-        RowDef {
-            label: "Export inlined images",
-            description: Some("Embed local images as data: URIs in HTML export"),
-            kind: RowKind {
-                focusable: true,
-                action: RowAction::Cycle,
-                read: |c, _| c.export.html.inline_images.to_string(),
-                write_string: no_write,
-                cycle: Some(|c, _, _| {
-                    c.export.html.inline_images = !c.export.html.inline_images;
-                    true
-                }),
-                options: Some(BOOL_OPTIONS),
-            },
-        },
-        RowDef {
-            label: "Export diagrams as SVG",
-            description: Some("Render Mermaid diagrams as SVG and inline in HTML export"),
-            kind: RowKind {
-                focusable: true,
-                action: RowAction::Cycle,
-                read: |c, _| c.export.html.diagrams.to_string(),
-                write_string: no_write,
-                cycle: Some(|c, _, _| {
-                    c.export.html.diagrams = !c.export.html.diagrams;
-                    true
-                }),
-                options: Some(BOOL_OPTIONS),
+                disabled: None,
             },
         },
     ]

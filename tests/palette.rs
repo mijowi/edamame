@@ -103,11 +103,11 @@ fn settings_overlay_field_change_response_is_emitted_once() {
     let mut config = Config::default();
 
     // Walk down past the "Open externally" rows to reach the
-    // "Hint duration" row, which opens an inline
+    // "Editor max width" row, which opens an inline
     // editor on Enter (a numeric field is the cleanest test of the
     // confirm path because the alternative — cycling a bool — fires
     // FieldChanged on its own).  Use the row label table to find it.
-    let target_label = "Hint duration";
+    let target_label = "Editor max width";
     while !state.focused_row_label_eq(target_label) {
         let resp = state.handle_key(
             &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
@@ -117,18 +117,18 @@ fn settings_overlay_field_change_response_is_emitted_once() {
     }
 
     // Enter opens the inline editor; Enter again confirms.  Edit
-    // "1500" → "2500".
+    // "100" → "200".
     state.handle_key(
         &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
         &mut config,
     );
-    for _ in 0..4 {
+    for _ in 0..3 {
         state.handle_key(
             &KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
             &mut config,
         );
     }
-    for c in "2500".chars() {
+    for c in "200".chars() {
         state.handle_key(
             &KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
             &mut config,
@@ -142,7 +142,7 @@ fn settings_overlay_field_change_response_is_emitted_once() {
         matches!(resp, SettingsResponse::FieldChanged(_)),
         "expected FieldChanged, got {resp:?}"
     );
-    assert_eq!(config.editor.transient_ms, 2500);
+    assert_eq!(config.editor.max_width_cols, 200);
 
     // Subsequent Down must NOT re-emit FieldChanged.
     let resp = state.handle_key(
@@ -176,18 +176,21 @@ impl SettingsStateExt for SettingsState {
             "Open config folder",
             "Open config.toml in default editor",
             "",
-            "Hint duration",
-            "Limit editor width",
-            "Editor max width",
+            // Editable settings, alphabetized (mirrors `build_rows`),
+            // except "Show line numbers" grouped below the image rows.
+            "Autosave",
             "Big H1 headings",
-            "Use visual line navigation",
+            "Blink cursor",
+            "Editor max width",
+            "Limit editor width",
             "Scroll speed",
-            "Show images",
             "Show diagrams",
+            "Show images",
             "Show remote images",
+            "Show line numbers",
             "Show table buttons",
-            "Export inlined images",
-            "Export diagrams as SVG",
+            "Use visual line navigation",
+            "Vim mode",
         ];
         ORDER.get(self.focused).is_some_and(|l| *l == label)
     }
