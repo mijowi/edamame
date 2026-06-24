@@ -355,6 +355,11 @@ impl App {
         let hint = self.hint_content();
         let vim_mode_label = self.vim.as_ref().map(|v| v.mode_label());
         let visual_line_mode = self.vim.as_ref().is_some_and(|v| v.is_visual_line());
+        let editor_cursor_style = super::cursor_style::editor_cursor_style(
+            self.theme,
+            self.editor.mode,
+            self.vim.as_ref().map(|v| v.sub_mode),
+        );
         let modal_cursor_visible = self.editor.cursor_blink.is_visible();
         let theme_ref = self.theme;
         let drop_indicator = drop_indicator_for(&self.drag_target);
@@ -382,6 +387,7 @@ impl App {
                 hint,
                 vim_mode_label,
                 visual_line_mode,
+                editor_cursor_style,
                 max_width_enabled,
                 max_width_cols,
                 scrollbar_active,

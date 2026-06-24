@@ -156,6 +156,18 @@ pub struct Theme {
     pub status_mode_rendered: Style,
     /// Mode badge in Raw mode.
     pub status_mode_raw: Style,
+    /// Vim NORMAL (and Operator-pending) sub-mode badge.  These three
+    /// `status_mode_vim_*` fields are the canonical per-vim-mode colors:
+    /// the status chip uses them directly, and the editor cursor mirrors
+    /// them (the cursor drops the badge's `BOLD`), so chip and cursor can
+    /// never drift.  RAW within INSERT is signalled by `status_mode_raw`
+    /// instead — the chip keeps its sub-mode label and shows no `(RAW)`.
+    pub status_mode_vim_normal: Style,
+    /// Vim INSERT sub-mode badge (and the cursor color in INSERT, except
+    /// in Raw view where `status_mode_raw` takes over).
+    pub status_mode_vim_insert: Style,
+    /// Vim VISUAL / V-LINE sub-mode badge (and cursor color).
+    pub status_mode_vim_visual: Style,
     pub status_filename: Style,
     pub status_info: Style,
     pub status_modified: Style,
@@ -277,18 +289,6 @@ pub struct Theme {
     /// deferred feature; the field exists so themes can opt in early.
     pub active_line: Style,
 
-    /// Editor block cursor when in Preview mode.  Mirrors the status-bar
-    /// mode chip so the cursor reads as the same affordance in both
-    /// places.  Preview is read-only so this primarily applies to ad-hoc
-    /// cursor indicators (e.g. tooling overlays).  The `.bg` is the
-    /// block-fill color; the `.fg` keeps the character under the cursor
-    /// legible.
-    pub cursor_preview: Style,
-    /// Editor block cursor when in Rendered mode.  Mirrors the Rendered
-    /// mode chip's bg.
-    pub cursor_rendered: Style,
-    /// Editor block cursor when in Raw mode.  Mirrors the Raw mode chip's bg.
-    pub cursor_raw: Style,
     /// Unified block cursor used by every modal text input.  Distinct from
     /// the editor cursors because modal inputs aren't tied to editor mode; an
     /// `accent`-colored block by default (monochrome themes fall back to
@@ -791,6 +791,14 @@ impl Theme {
                 .add_modifier(bold),
             status_mode_rendered: Style::default().bg(p.primary).fg(p.bg).add_modifier(bold),
             status_mode_raw: Style::default().bg(p.warning).fg(p.bg).add_modifier(bold),
+            // Per-vim-mode badge colors, mirrored by the editor cursor:
+            // NORMAL = primary (resting/navigation home), INSERT = success
+            // (the green-for-insert vim convention), VISUAL / V-LINE =
+            // secondary (selection).  `fg = bg` keeps the cursor's
+            // underlying glyph legible when the cursor reads these.
+            status_mode_vim_normal: Style::default().bg(p.primary).fg(p.bg).add_modifier(bold),
+            status_mode_vim_insert: Style::default().bg(p.success).fg(p.bg).add_modifier(bold),
+            status_mode_vim_visual: Style::default().bg(p.secondary).fg(p.bg).add_modifier(bold),
             // Filename rendered bold so it anchors the left side of the
             // status bar alongside the bold accented "current section"
             // chip on its right; the two together frame the rest of the
@@ -925,13 +933,10 @@ impl Theme {
             // places (per theming.md).  Each variant pairs the chip's
             // bg with a contrasting fg so the underlying character
             // stays legible.
-            cursor_preview: Style::default().bg(p.bg_muted).fg(p.surface_elevated),
-            cursor_rendered: Style::default().bg(p.primary).fg(p.bg),
-            cursor_raw: Style::default().bg(p.warning).fg(p.bg),
             // Unified modal input cursor — a solid `accent` block shared by
             // every modal text field, so typing in a prompt looks the same
             // everywhere and reads as its own context, distinct from the
-            // per-mode editor cursors (preview / rendered / raw).
+            // editor cursor (which derives from the per-mode status chip).
             cursor: Style::default().bg(p.accent).fg(p.bg),
 
             // Line-number gutter — muted fg on the document bg so

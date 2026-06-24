@@ -168,10 +168,10 @@ pub struct ThemeFile {
     pub selection: StyleSpec,
     pub selection_muted: StyleSpec,
     pub status_mode_search: StyleSpec,
+    pub status_mode_vim_normal: StyleSpec,
+    pub status_mode_vim_insert: StyleSpec,
+    pub status_mode_vim_visual: StyleSpec,
     pub active_line: StyleSpec,
-    pub cursor_preview: StyleSpec,
-    pub cursor_rendered: StyleSpec,
-    pub cursor_raw: StyleSpec,
     pub cursor: StyleSpec,
 
     // Line numbers
@@ -235,8 +235,10 @@ macro_rules! style_fields {
             modal_description, modal_section_heading,
             modal_input_unfocused, modal_input_focused, modal_button_focused,
             normal, selection, selection_muted,
-            status_mode_search, active_line,
-            cursor_preview, cursor_rendered, cursor_raw, cursor,
+            status_mode_search,
+            status_mode_vim_normal, status_mode_vim_insert, status_mode_vim_visual,
+            active_line,
+            cursor,
             line_number,
             scrollbar_track, scrollbar_thumb, scrollbar_thumb_active,
             diff_add_line, diff_delete_line,
@@ -400,10 +402,10 @@ mod tests {
         check!(selection);
         check!(selection_muted);
         check!(status_mode_search);
+        check!(status_mode_vim_normal);
+        check!(status_mode_vim_insert);
+        check!(status_mode_vim_visual);
         check!(active_line);
-        check!(cursor_preview);
-        check!(cursor_rendered);
-        check!(cursor_raw);
         check!(cursor);
         check!(line_number);
         check!(scrollbar_track);
@@ -660,9 +662,9 @@ bold = true
         check!(selection);
         check!(selection_muted);
         check!(status_mode_search);
-        check!(cursor_preview);
-        check!(cursor_rendered);
-        check!(cursor_raw);
+        check!(status_mode_vim_normal);
+        check!(status_mode_vim_insert);
+        check!(status_mode_vim_visual);
         check!(cursor);
         check!(line_number);
         check!(scrollbar_track);
