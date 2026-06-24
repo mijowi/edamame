@@ -140,19 +140,31 @@ Cursor: The cursor is a uniform **block** everywhere — the cell at the
 insertion point is recolored while the character under it stays visible.
 There is no bar/caret shape; context is signalled by *color*, not shape.
 
-In the editor, each mode has its own cursor color mirroring the
-status-line mode chip (`cursor_preview`, `cursor_rendered`, `cursor_raw`):
-- Preview: `bg_muted` bg, `surface_elevated` fg (no cursor is drawn in
+In the editor there is **no dedicated cursor field**: the cursor color is
+*derived* from the status-line mode chip, so the two always agree. Every
+branch reads a `status_mode_*` style (minus the chip's `BOLD`). The
+resolution lives in one place, `app::cursor_style::editor_cursor_style`.
+
+For the default (non-vim) handler the color follows the *view* mode,
+reading the same fields the chip uses:
+- Preview: `status_mode_preview` (`text_muted` bg — no cursor is drawn in
   Preview in practice)
-- Rendered: `primary` bg, `bg` fg
-- Raw: `warning` bg, `bg` fg
+- Rendered: `status_mode_rendered` (`primary` bg, `bg` fg)
+- Raw: `status_mode_raw` (`warning` bg, `bg` fg)
+
+When the vim handler is active the color follows the *sub-mode*, reading
+the `status_mode_vim_*` chip fields:
+- NORMAL / Operator-pending: `status_mode_vim_normal` (`primary`)
+- INSERT: `status_mode_vim_insert` (`success`)
+- VISUAL / V-LINE: `status_mode_vim_visual` (`secondary`)
+- RAW is surfaced only in INSERT: an INSERT cursor in the full Raw view
+  takes `status_mode_raw` (`warning`). NORMAL / VISUAL keep their sub-mode
+  color in every view, matching the chip (which shows no `(RAW)` suffix).
 
 The `.bg` is the block fill; the `.fg` keeps the character under the
-cursor legible. A vim command sub-mode (Normal / Visual /
-Operator-pending) uses the same block shape as Insert — the status chip
-disambiguates the mode. The cursor is painted onto the resolved cell
-*after* wrapping, so it never perturbs the word-wrap layout (which is
-computed from the bare source text). A block sitting on a selected or
+cursor legible. The cursor is painted onto the resolved cell *after*
+wrapping, so it never perturbs the word-wrap layout (which is computed
+from the bare source text). A block sitting on a selected or
 search-highlighted cell takes that cell — the cursor color wins over the
 wash.
 

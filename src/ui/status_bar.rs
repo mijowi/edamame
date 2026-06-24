@@ -98,9 +98,9 @@ impl<'a> Widget for StatusBar<'a> {
         // Mode badge — color swaps per-mode so each mode reads at a
         // glance (orange = Rendered, yellow = Raw, muted = Preview).
         // Kept as an accent badge even in diff mode.  When the vim
-        // handler is active its sub-mode badge wins, reusing the existing
-        // style slots (no new theme fields): NORMAL = preview/muted,
-        // INSERT = rendered/primary, VISUAL/V-LINE = raw/warning.
+        // handler is active its sub-mode badge wins, using the
+        // `status_mode_vim_*` colors (NORMAL = primary, INSERT = success,
+        // VISUAL/V-LINE = secondary) that the editor cursor also mirrors.
         let (mode_text, mode_style) = match s.vim_mode_label {
             Some(label) => (format!(" {} ", label), vim_badge_style(theme, label)),
             None => (format!(" {} ", s.mode), theme.status_mode_style(s.mode)),
@@ -211,16 +211,16 @@ impl<'a> Widget for StatusBar<'a> {
     }
 }
 
-/// Map a vim sub-mode badge label onto an existing status-mode style
-/// slot.  Reuses the rendering-mode palette rather than introducing new
-/// theme fields: NORMAL borrows the muted Preview slot, INSERT the
-/// primary Rendered slot, and VISUAL / V-LINE the warning Raw slot.
+/// Map a vim sub-mode badge label onto its `status_mode_vim_*` style.
+/// These are the canonical per-vim-mode colors (NORMAL = primary,
+/// INSERT = success, VISUAL / V-LINE = secondary); the editor cursor
+/// mirrors the same fields, so chip and cursor always agree.
 fn vim_badge_style(theme: &Theme, label: &str) -> Style {
     match label {
-        "INSERT" => theme.status_mode_rendered,
-        "VISUAL" | "V-LINE" => theme.status_mode_raw,
-        // NORMAL (and any future label) falls back to the muted slot.
-        _ => theme.status_mode_preview,
+        "INSERT" => theme.status_mode_vim_insert,
+        "VISUAL" | "V-LINE" => theme.status_mode_vim_visual,
+        // NORMAL (and any future label, e.g. Operator-pending).
+        _ => theme.status_mode_vim_normal,
     }
 }
 
@@ -348,6 +348,27 @@ mod tests {
     fn shows_mode() {
         let output = make_bar(Mode::Preview, "test.md", 42, false);
         assert!(output.contains("PREVIEW"), "output was: {:?}", output);
+    }
+
+    #[test]
+    fn vim_badge_uses_per_sub_mode_colors() {
+        let t = Theme::default();
+        assert_eq!(
+            super::vim_badge_style(&t, "NORMAL"),
+            t.status_mode_vim_normal
+        );
+        assert_eq!(
+            super::vim_badge_style(&t, "INSERT"),
+            t.status_mode_vim_insert
+        );
+        assert_eq!(
+            super::vim_badge_style(&t, "VISUAL"),
+            t.status_mode_vim_visual
+        );
+        assert_eq!(
+            super::vim_badge_style(&t, "V-LINE"),
+            t.status_mode_vim_visual
+        );
     }
 
     #[test]

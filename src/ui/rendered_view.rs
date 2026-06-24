@@ -3,7 +3,7 @@ mod list_marker;
 mod paint;
 mod raw_text;
 
-use ratatui::{buffer::Buffer as TuiBuf, layout::Rect, widgets::StatefulWidget};
+use ratatui::{buffer::Buffer as TuiBuf, layout::Rect, style::Style, widgets::StatefulWidget};
 
 use crate::config::Theme;
 use crate::document::detect_setext;
@@ -70,7 +70,7 @@ pub struct RenderedViewState {
     /// indicator was painted this frame, or `None` when the cursor was
     /// drawn via a raw-reveal / cell-overlay path (which composite the
     /// cursor themselves) or wasn't visible.  `EditorView` re-stamps this
-    /// cell with `theme.cursor_rendered` after the search-match / selection
+    /// cell with the resolved cursor style after the search-match / selection
     /// overlays run, so an overlay can't bury the cursor.
     pub cursor_screen: Option<(u16, u16)>,
 }
@@ -105,6 +105,10 @@ pub struct RenderedView<'a> {
     /// overlay paint, so the highlight covers full rows.  `selection` itself
     /// is never snapped — see `docs/vim-implementation-plan.md` §2.6.
     pub visual_line_mode: bool,
+    /// Resolved block-cursor style for this frame, already accounting for
+    /// the view mode and vim sub-mode (`app::cursor_style`).  Used for the
+    /// inline cursor indicator and the table-cell cursor overlay.
+    pub cursor_style: Style,
 }
 
 impl<'a> StatefulWidget for RenderedView<'a> {
@@ -376,7 +380,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         let reveal_raw = editor.cursor_block_revealed();
         let cursor_visible = editor.cursor_visible();
 
-        let cursor_indicator_style = self.theme.cursor_rendered;
+        let cursor_indicator_style = self.cursor_style;
 
         let total_rendered = editor.parsed.lines.len();
         // Long-line wrapping is enabled in rendered-edit mode.
@@ -628,7 +632,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         overlay,
                         sel_in_cell,
                         self.theme,
-                        cursor_visible,
+                        cursor_visible.then_some(self.cursor_style),
                     );
                 } else {
                     rows_used = 1;
@@ -689,7 +693,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         &overlay,
                         sel_in_cell,
                         self.theme,
-                        cursor_visible,
+                        cursor_visible.then_some(self.cursor_style),
                     );
                 } else {
                     // Non-table block (or pipe-mismatched table line — e.g.

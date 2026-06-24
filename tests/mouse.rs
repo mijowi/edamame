@@ -1932,6 +1932,7 @@ fn click_on_reserved_image_row_does_not_poison_inline_map_cache() {
     terminal
         .draw(|frame| {
             let view = RenderedView {
+                cursor_style: theme.status_mode_rendered,
                 visual_line_mode: false,
                 drop_indicator: None,
                 show_table_buttons: false,

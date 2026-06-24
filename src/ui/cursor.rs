@@ -11,8 +11,9 @@
 //! The cursor is always a **block**: the cell at the insertion point is
 //! recolored with the cursor style while the underlying character stays
 //! visible.  Shape is uniform across the app, so context is signalled by
-//! *color* — the editor's `cursor_preview` / `cursor_rendered` / `cursor_raw`
-//! per-mode styles, and `cursor` for modal inputs (see `docs/theming.md`).
+//! *color* — the editor cursor mirrors the per-mode status chip
+//! (`app::cursor_style`), and modal inputs use `cursor` (see
+//! `docs/theming.md`).
 //!
 //! # Two block-cursor mechanisms
 //!

@@ -1,6 +1,7 @@
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
+    style::Style,
     widgets::{Block, StatefulWidget, Widget},
 };
 
@@ -63,6 +64,11 @@ pub struct EditorView<'a> {
     /// the highlight overlay only (§2.6).  Always `false` for the default
     /// handler and in non-Visual vim sub-modes.
     pub visual_line_mode: bool,
+    /// Resolved block-cursor style for this frame (see
+    /// `app::cursor_style::editor_cursor_style`).  Already accounts for the
+    /// view mode and the vim sub-mode, so the sub-views paint it directly
+    /// instead of picking a cursor color themselves.
+    pub editor_cursor_style: Style,
     /// When true, the document area is capped to `max_width_cols` and
     /// centred horizontally; the gutters are filled with `theme.normal`.
     pub max_width_enabled: bool,
@@ -270,6 +276,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                         show_table_buttons: self.show_table_buttons,
                         drop_indicator: self.table_drop_indicator,
                         visual_line_mode: self.visual_line_mode,
+                        cursor_style: self.editor_cursor_style,
                     },
                     doc_area,
                     buf,
@@ -282,6 +289,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                         state: &*self.state,
                         theme: self.theme,
                         visual_line_mode: self.visual_line_mode,
+                        cursor_style: self.editor_cursor_style,
                     },
                     doc_area,
                     buf,
@@ -325,7 +333,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
         if mode == Mode::Rendered {
             if let Some((x, y)) = state.rendered.cursor_screen {
                 if let Some(cell) = buf.cell_mut((x, y)) {
-                    cell.set_style(self.theme.cursor_rendered);
+                    cell.set_style(self.editor_cursor_style);
                 }
             }
         }

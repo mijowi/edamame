@@ -4,8 +4,6 @@
 
 - Refactor/clean up source and tests
 
-- Cursor colors in vim modes
-
 - We have a lot of true/false and triple ask/always/never settings throughout edamame. True/false options are currently displayed as `[ true ] [ false ]` or as `[x]`/[ ]`. I think we should 1) unify these two different UX patterns into one, and 2) improve on the design. We could possibly implement something that looks like a slider widget instead, with a label. Any ideas for how to improve the triple-option settings as well?
 
 - Make these changes to the settings overlay modal:

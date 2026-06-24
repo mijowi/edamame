@@ -145,6 +145,7 @@ fn render_editor(state: &mut EditorState, width: u16, height: u16) -> ratatui::b
                 hint,
                 vim_mode_label: None,
                 visual_line_mode: false,
+                editor_cursor_style: theme().status_mode_rendered,
                 max_width_enabled: false,
                 max_width_cols: 0,
                 scrollbar_active: false,
@@ -173,7 +174,7 @@ fn rendered_view_paints_all_matches_with_focused_emphasis() {
     );
     assert_eq!(
         cursor_cell.style().bg,
-        t.cursor_rendered.bg,
+        t.status_mode_rendered.bg,
         "the cursor cell must carry the cursor bg so it stays visible over the highlight"
     );
     for x in 1..3u16 {
@@ -265,7 +266,7 @@ fn end_of_line_cursor_stays_visible_during_search() {
     );
     assert_eq!(
         cell.style().bg,
-        t.cursor_rendered.bg,
+        t.status_mode_rendered.bg,
         "the end-of-line cursor cell must carry the cursor bg"
     );
 }
@@ -291,7 +292,7 @@ fn blank_line_cursor_stays_visible_during_search() {
     );
     assert_eq!(
         cell.style().bg,
-        t.cursor_rendered.bg,
+        t.status_mode_rendered.bg,
         "the blank-line cursor cell must carry the cursor bg"
     );
 }

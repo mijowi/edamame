@@ -542,7 +542,9 @@ pub(super) fn overlay_raw_cell(
     overlay: &CellOverlay,
     selection_cols: Option<(usize, usize)>,
     theme: &Theme,
-    cursor_visible: bool,
+    // The block-cursor style when the cursor is visible this frame, or `None`
+    // when it's blinked off / the cursor isn't in this cell's row.
+    cursor: Option<Style>,
 ) {
     if visual_y >= area.height {
         return;
@@ -550,7 +552,6 @@ pub(super) fn overlay_raw_cell(
     let abs_y = area.y + visual_y;
     let cell_width = overlay.rendered_end.saturating_sub(overlay.rendered_start);
     let raw_chars: Vec<char> = overlay.raw_text.chars().collect();
-    let cursor_style = theme.cursor_rendered;
     // `theme.normal` carries the theme's `default_bg`; letting it
     // through here would clobber the table-row stripe painted under
     // the cell.  Strip the bg so the underlying cell's bg is
@@ -573,7 +574,7 @@ pub(super) fn overlay_raw_cell(
             style = style.patch(theme.selection);
         }
         // Block cursor: recolor the cell, leaving the char visible.
-        if cursor_visible && overlay.cursor_in_cell == Some(i) {
+        if let Some(cursor_style) = cursor.filter(|_| overlay.cursor_in_cell == Some(i)) {
             style = cursor_style;
         }
         if let Some(cell) = buf.cell_mut((abs_x, abs_y)) {

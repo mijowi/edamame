@@ -2,6 +2,7 @@ pub mod modal;
 
 mod actions;
 mod autosave;
+mod cursor_style;
 mod diff_advance;
 mod event_loop;
 mod external_editor;

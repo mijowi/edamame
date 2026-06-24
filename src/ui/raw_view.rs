@@ -1,6 +1,7 @@
 use ratatui::{
     buffer::Buffer as TuiBuf,
     layout::Rect,
+    style::Style,
     text::{Line, Span},
     widgets::StatefulWidget,
 };
@@ -20,6 +21,11 @@ pub struct RawView<'a> {
     /// to whole lines for the highlight only (see §2.6); `selection` itself
     /// is never snapped.
     pub visual_line_mode: bool,
+    /// Resolved block-cursor style for this frame (`app::cursor_style`).
+    /// For the default handler this is `status_mode_raw`; under vim it follows
+    /// the sub-mode (INSERT keeps the raw warning color; NORMAL / VISUAL carry
+    /// their sub-mode color even here).
+    pub cursor_style: Style,
 }
 
 #[derive(Debug, Default)]
@@ -41,7 +47,7 @@ impl<'a> StatefulWidget for RawView<'a> {
         let width = area.width as usize;
         let (cursor_line, cursor_col) = self.state.cursor.line_col(&self.state.buffer);
         let line_count = self.state.buffer.line_count();
-        let cursor_style = self.theme.cursor_raw;
+        let cursor_style = self.cursor_style;
         let cursor_visible = self.state.cursor_visible();
         let sel_style = self.theme.selection;
         let selection_range = self.state.selection.map(|s| {
@@ -210,6 +216,7 @@ mod tests {
                     visual_line_mode: false,
                     state: &state,
                     theme,
+                    cursor_style: theme.status_mode_raw,
                 };
                 StatefulWidget::render(view, frame.area(), frame.buffer_mut(), &mut view_state);
             })
@@ -247,6 +254,7 @@ mod tests {
                     visual_line_mode: false,
                     state: &state,
                     theme,
+                    cursor_style: theme.status_mode_raw,
                 };
                 StatefulWidget::render(view, frame.area(), frame.buffer_mut(), &mut view_state);
             })
@@ -294,6 +302,7 @@ mod tests {
                     visual_line_mode: true,
                     state: &state,
                     theme,
+                    cursor_style: theme.status_mode_raw,
                 };
                 StatefulWidget::render(view, frame.area(), frame.buffer_mut(), &mut view_state);
             })
@@ -334,6 +343,7 @@ mod tests {
                     visual_line_mode: false,
                     state: &state,
                     theme,
+                    cursor_style: theme.status_mode_raw,
                 };
                 StatefulWidget::render(view, frame.area(), frame.buffer_mut(), &mut view_state);
             })
