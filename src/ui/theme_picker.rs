@@ -529,16 +529,16 @@ impl<'a> StatefulWidget for ThemePickerView<'a> {
             width: inner.width,
             height: 1,
         };
-        let prompt = Span::styled("› ", self.theme.modal_item);
-        let typed = Span::styled(state.query.clone(), self.theme.modal_item);
-        let mut spans = vec![prompt, typed];
-        if self.cursor_visible {
-            let cursor_style = ratatui::style::Style::default()
-                .fg(self.theme.palette.primary)
-                .bg(self.theme.palette.surface_elevated)
-                .add_modifier(ratatui::style::Modifier::BOLD);
-            spans.push(Span::styled("▏", cursor_style));
-        }
+        // Unified modal cursor via the shared block-cursor helper (append-only
+        // query → cursor at end), constant width across blink phases.
+        let mut spans = vec![Span::styled("› ", self.theme.modal_item)];
+        spans.extend(crate::ui::cursor::text_field_spans(
+            &state.query,
+            state.query.chars().count(),
+            self.cursor_visible,
+            self.theme.modal_item,
+            self.theme.cursor,
+        ));
         Paragraph::new(Line::from(spans))
             .style(self.theme.modal_bg)
             .render(input_area, buf);

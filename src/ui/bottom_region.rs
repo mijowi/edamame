@@ -78,11 +78,13 @@ pub enum HintContent {
         chords: Vec<HintChord>,
     },
     /// Vim command line (`/` `?` `:`): a prefix glyph plus the typed text
-    /// with a block cursor at char index `cursor`.
+    /// with a block cursor at char index `cursor`.  `cursor_visible`
+    /// carries the blink phase so the cursor pulses like other inputs.
     CommandLine {
         prefix: char,
         text: String,
         cursor: usize,
+        cursor_visible: bool,
     },
 }
 
@@ -520,15 +522,17 @@ pub fn lay_out_chords(chords: &[HintChord], theme: &Theme, bar_style: Style) -> 
     spans
 }
 
-/// Build the spans for a vim command line: a leading ` {prefix}` glyph,
-/// then the typed text with a block cursor cell at char index `cursor`
-/// (styled `theme.cursor_rendered`).  When the cursor sits past the last
-/// char it renders as a trailing styled space, so an empty `/` still shows
-/// a cursor.
+/// Build the spans for a vim command line: a leading ` {prefix}` glyph, then
+/// the typed text with a block cursor (the unified modal `theme.cursor`) at
+/// char index `cursor`.  The cursor is a single, blink-stable cell — the
+/// character under it recolored when `cursor_visible`, shown plainly when not
+/// (a space past end-of-line) — so an empty `/` still reserves the cursor cell
+/// and the row never jitters on blink.
 fn command_line_spans(
     prefix: char,
     text: &str,
     cursor: usize,
+    cursor_visible: bool,
     theme: &Theme,
     bar_style: Style,
 ) -> Vec<Span<'static>> {
@@ -536,18 +540,16 @@ fn command_line_spans(
         Some(bg) => theme.hint_label.bg(bg),
         None => theme.hint_label,
     };
+    // The cursor is the unified block — the same blink-stable one-cell slot
+    // every other modal input uses, recoloring the character it sits on.
     let mut spans = vec![Span::styled(format!(" {prefix}"), base)];
-    for (i, c) in text.chars().enumerate() {
-        let style = if i == cursor {
-            theme.cursor_rendered
-        } else {
-            base
-        };
-        spans.push(Span::styled(c.to_string(), style));
-    }
-    if cursor >= text.chars().count() {
-        spans.push(Span::styled(" ".to_string(), theme.cursor_rendered));
-    }
+    spans.extend(crate::ui::cursor::text_field_spans(
+        text,
+        cursor,
+        cursor_visible,
+        base,
+        theme.cursor,
+    ));
     spans
 }
 
@@ -615,7 +617,15 @@ impl<'a> Widget for HintLine<'a> {
                 prefix,
                 text,
                 cursor,
-            } => command_line_spans(*prefix, text, *cursor, self.theme, self.bar_style),
+                cursor_visible,
+            } => command_line_spans(
+                *prefix,
+                text,
+                *cursor,
+                *cursor_visible,
+                self.theme,
+                self.bar_style,
+            ),
         };
 
         // Sum what we've rendered so we can pad the trailing fill with

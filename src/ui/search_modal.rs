@@ -23,6 +23,7 @@ use ratatui::{
 
 use crate::config::Theme;
 use crate::ui::button_row::{button_row_width, render_button_row};
+use crate::ui::cursor::text_field_spans;
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind,
 };
@@ -443,16 +444,13 @@ fn render_field_row(
     spans.push(Span::raw("  "));
     spans.push(Span::styled(" ", value_style));
     if focused {
-        let (pre, post) = split_at_char(value, cursor);
-        if !pre.is_empty() {
-            spans.push(Span::styled(pre, value_style));
-        }
-        if cursor_visible {
-            spans.push(Span::styled("▏", theme.cursor));
-        }
-        if !post.is_empty() {
-            spans.push(Span::styled(post, value_style));
-        }
+        spans.extend(text_field_spans(
+            value,
+            cursor,
+            cursor_visible,
+            value_style,
+            theme.cursor,
+        ));
         spans.push(Span::styled(" ", value_style));
     } else {
         spans.push(Span::styled(value.to_owned(), value_style));
@@ -461,16 +459,6 @@ fn render_field_row(
     Paragraph::new(Line::from(spans))
         .style(theme.modal_bg)
         .render(area, buf);
-}
-
-/// Split `s` at char-index `cursor` into two owned halves.
-fn split_at_char(s: &str, cursor: usize) -> (String, String) {
-    let byte_idx = s
-        .char_indices()
-        .nth(cursor)
-        .map(|(b, _)| b)
-        .unwrap_or(s.len());
-    (s[..byte_idx].to_owned(), s[byte_idx..].to_owned())
 }
 
 #[cfg(test)]

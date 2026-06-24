@@ -12,7 +12,9 @@ use crate::editor::EditorState;
 use crate::markdown::table_layout::{compute_cell_overlay, table_raw_col_to_rendered_col};
 
 use super::image_view::{self, ImageLayoutSnapshot};
-use super::line_render::{render_line_from_visual, render_line_reporting_cursor};
+use super::line_render::{
+    render_line_from_visual, render_line_reporting_cursor, render_line_with_cursor_from_visual,
+};
 use super::link_view::{self, LinkLayoutSnapshot};
 use super::table_view::{self, TableLayoutSnapshot};
 
@@ -448,19 +450,18 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         ""
                     };
                     let cursor_on_this = sub == 0 && cursor_raw_line == 0;
-                    let styled = make_raw_line_with_selection(
-                        raw_text,
-                        if cursor_on_this && cursor_visible {
-                            Some(cursor_col)
-                        } else {
-                            None
-                        },
-                        None,
-                        self.theme,
-                    );
-                    rows_used =
-                        render_line_from_visual(&styled, area, buf, vis_y as u16, wrap, skip_rows)
-                            as usize;
+                    let styled = make_raw_line_with_selection(raw_text, None, self.theme);
+                    let cursor_override = (cursor_on_this && cursor_visible)
+                        .then_some((cursor_col, cursor_indicator_style));
+                    rows_used = render_line_with_cursor_from_visual(
+                        &styled,
+                        area,
+                        buf,
+                        vis_y as u16,
+                        wrap,
+                        cursor_override,
+                        skip_rows,
+                    ) as usize;
                 }
             } else if reveal_raw && is_setext && in_cursor_block {
                 // Setext headings reveal every rendered row of the block
@@ -482,19 +483,18 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     let end_col = raw_text[..end_byte - raw_line_start_abs].chars().count();
                     Some((start_col, end_col))
                 });
-                let styled = make_raw_line_with_selection(
-                    raw_text,
-                    if cursor_on_this && cursor_visible {
-                        Some(cursor_col)
-                    } else {
-                        None
-                    },
-                    sel_cols,
-                    self.theme,
-                );
-                rows_used =
-                    render_line_from_visual(&styled, area, buf, vis_y as u16, wrap, skip_rows)
-                        as usize;
+                let styled = make_raw_line_with_selection(raw_text, sel_cols, self.theme);
+                let cursor_override = (cursor_on_this && cursor_visible)
+                    .then_some((cursor_col, cursor_indicator_style));
+                rows_used = render_line_with_cursor_from_visual(
+                    &styled,
+                    area,
+                    buf,
+                    vis_y as u16,
+                    wrap,
+                    cursor_override,
+                    skip_rows,
+                ) as usize;
             } else if reveal_raw && is_mermaid_block && in_cursor_block {
                 // Mermaid blocks reveal as if they were a regular fenced
                 // ```mermaid``` code block — the same way they'd appear
@@ -543,16 +543,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     // Fence row with cursor on it: reveal the raw fence
                     // text (matches a regular fenced code block's reveal
                     // behaviour for the opening / closing fence rows).
-                    make_raw_line_with_selection(
-                        raw_text,
-                        if cursor_visible {
-                            Some(cursor_col)
-                        } else {
-                            None
-                        },
-                        sel_cols,
-                        self.theme,
-                    )
+                    make_raw_line_with_selection(raw_text, sel_cols, self.theme)
                 } else if is_opening_fence_row {
                     // No cursor: paint the language label as a code block
                     // would emit it.  Falls back to raw source for any
@@ -571,17 +562,8 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     )
                 } else if in_source {
                     // Body row.  Apply the code-block background so the
-                    // block reads as code; overlay cursor / selection.
-                    make_code_styled_body_line(
-                        raw_text,
-                        if cursor_on_this && cursor_visible {
-                            Some(cursor_col)
-                        } else {
-                            None
-                        },
-                        sel_cols,
-                        self.theme,
-                    )
+                    // block reads as code; selection overlaid per char.
+                    make_code_styled_body_line(raw_text, sel_cols, self.theme)
                 } else {
                     // Past the end of the source: pad with code-block
                     // background so the reservation looks continuous.
@@ -591,9 +573,20 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     )
                 };
 
-                rows_used =
-                    render_line_from_visual(&styled, area, buf, vis_y as u16, wrap, skip_rows)
-                        as usize;
+                // The cursor (bar/block) is painted onto the resolved cell —
+                // on the fence-with-cursor and body rows alike — keeping the
+                // wrapped layout computed from the bare source text.
+                let cursor_override = (cursor_on_this && cursor_visible)
+                    .then_some((cursor_col, cursor_indicator_style));
+                rows_used = render_line_with_cursor_from_visual(
+                    &styled,
+                    area,
+                    buf,
+                    vis_y as u16,
+                    wrap,
+                    cursor_override,
+                    skip_rows,
+                ) as usize;
             } else if let (true, Some(sub_idx)) = (reveal_raw, wrapped_sub_idx_opt) {
                 // Multi-sub wrapped-cell overlay: paint the rendered row
                 // first (so neighbouring cells and borders stay), then
@@ -716,19 +709,18 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         let end_col = raw_text[..end_byte - raw_line_start_abs].chars().count();
                         Some((start_col, end_col))
                     });
-                    let styled = make_raw_line_with_selection(
-                        raw_text,
-                        if cursor_visible {
-                            Some(cursor_col)
-                        } else {
-                            None
-                        },
-                        sel_cols,
-                        self.theme,
-                    );
-                    rows_used =
-                        render_line_from_visual(&styled, area, buf, vis_y as u16, wrap, skip_rows)
-                            as usize;
+                    let styled = make_raw_line_with_selection(raw_text, sel_cols, self.theme);
+                    let cursor_override =
+                        cursor_visible.then_some((cursor_col, cursor_indicator_style));
+                    rows_used = render_line_with_cursor_from_visual(
+                        &styled,
+                        area,
+                        buf,
+                        vis_y as u16,
+                        wrap,
+                        cursor_override,
+                        skip_rows,
+                    ) as usize;
                 }
             } else if virtual_idx == cursor_rendered_line
                 && (!reveal_raw || !code_block_allows_reveal)

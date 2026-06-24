@@ -277,21 +277,22 @@ pub struct Theme {
     /// deferred feature; the field exists so themes can opt in early.
     pub active_line: Style,
 
-    /// Block cursor when the editor is in Preview mode.  Mirrors the
-    /// status-bar mode chip so the cursor reads as the same affordance
-    /// in both places.  Preview is read-only so this primarily
-    /// applies to ad-hoc cursor indicators (e.g. tooling overlays).
+    /// Editor block cursor when in Preview mode.  Mirrors the status-bar
+    /// mode chip so the cursor reads as the same affordance in both
+    /// places.  Preview is read-only so this primarily applies to ad-hoc
+    /// cursor indicators (e.g. tooling overlays).  The `.bg` is the
+    /// block-fill color; the `.fg` keeps the character under the cursor
+    /// legible.
     pub cursor_preview: Style,
-    /// Block cursor when the editor is in Rendered mode.  Mirrors the
-    /// Rendered mode chip's bg.
-    pub cursor_rendered: Style,
-    /// Block cursor when the editor is in Raw mode.  Mirrors the Raw
+    /// Editor block cursor when in Rendered mode.  Mirrors the Rendered
     /// mode chip's bg.
+    pub cursor_rendered: Style,
+    /// Editor block cursor when in Raw mode.  Mirrors the Raw mode chip's bg.
     pub cursor_raw: Style,
-    /// Generic input-line cursor (`▏` glyph) used inside modal text
-    /// inputs.  Default is `REVERSED` only, which swaps fg/bg of
-    /// whatever's underneath — kept distinct from the editor cursor
-    /// because modal inputs aren't tied to editor mode.
+    /// Unified block cursor used by every modal text input.  Distinct from
+    /// the editor cursors because modal inputs aren't tied to editor mode; an
+    /// `accent`-colored block by default (monochrome themes fall back to
+    /// `REVERSED`).
     pub cursor: Style,
 
     /// Line-number gutter — right-aligned numbers in `text_muted`.
@@ -927,10 +928,11 @@ impl Theme {
             cursor_preview: Style::default().bg(p.bg_muted).fg(p.surface_elevated),
             cursor_rendered: Style::default().bg(p.primary).fg(p.bg),
             cursor_raw: Style::default().bg(p.warning).fg(p.bg),
-            // Generic input cursor — REVERSED so the `▏` glyph inside
-            // a modal text input inverts whatever's underneath without
-            // needing to know the surrounding bg.
-            cursor: Style::default().add_modifier(Modifier::REVERSED),
+            // Unified modal input cursor — a solid `accent` block shared by
+            // every modal text field, so typing in a prompt looks the same
+            // everywhere and reads as its own context, distinct from the
+            // per-mode editor cursors (preview / rendered / raw).
+            cursor: Style::default().bg(p.accent).fg(p.bg),
 
             // Line-number gutter — muted fg on the document bg so
             // numbers recede behind the content.

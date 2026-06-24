@@ -162,14 +162,19 @@ fn rendered_view_paints_all_matches_with_focused_emphasis() {
     st.mode = Mode::Rendered;
     let buf = render_editor(&mut st, 40, 8);
     // First match (focused) at cols 0..3, second at cols 8..11 of row 0.
-    // Col 0 carries the block cursor (cursor wins over the highlight per
-    // cell, just like Raw mode), so it shows the cursor bg, not the
-    // selection wash; the rest of the focused match carries the emphasis.
+    // Col 0 carries the block cursor: the char stays visible and the cell is
+    // recolored with the cursor bg, painted over the focused match's highlight
+    // so the cursor stays visible on top of the wash.
     let cursor_cell = buf.cell((0, 0)).unwrap();
+    assert_eq!(
+        cursor_cell.symbol(),
+        "f",
+        "the block cursor keeps the underlying character visible"
+    );
     assert_eq!(
         cursor_cell.style().bg,
         t.cursor_rendered.bg,
-        "the cursor sitting on the focused match must stay visible over the highlight"
+        "the cursor cell must carry the cursor bg so it stays visible over the highlight"
     );
     for x in 1..3u16 {
         let cell = buf.cell((x, 0)).unwrap();
@@ -252,10 +257,16 @@ fn end_of_line_cursor_stays_visible_during_search() {
     st.cursor.offset = 7; // end of "foo bar", one past 'r'
     st.update_cursor_block();
     let buf = render_editor(&mut st, 40, 8);
+    let cell = buf.cell((7, 0)).unwrap();
     assert_eq!(
-        buf.cell((7, 0)).unwrap().style().bg,
+        cell.symbol(),
+        " ",
+        "an end-of-line block cursor paints a blank trailing cell"
+    );
+    assert_eq!(
+        cell.style().bg,
         t.cursor_rendered.bg,
-        "an end-of-line cursor must be painted on the trailing cell"
+        "the end-of-line cursor cell must carry the cursor bg"
     );
 }
 
@@ -272,10 +283,16 @@ fn blank_line_cursor_stays_visible_during_search() {
     st.update_cursor_block();
     let buf = render_editor(&mut st, 40, 8);
     // Row 0 = "foo", row 1 = the blank line carrying the cursor.
+    let cell = buf.cell((0, 1)).unwrap();
     assert_eq!(
-        buf.cell((0, 1)).unwrap().style().bg,
+        cell.symbol(),
+        " ",
+        "a block cursor on a blank line paints a blank cell during search"
+    );
+    assert_eq!(
+        cell.style().bg,
         t.cursor_rendered.bg,
-        "a cursor on a blank line must stay visible during search"
+        "the blank-line cursor cell must carry the cursor bg"
     );
 }
 

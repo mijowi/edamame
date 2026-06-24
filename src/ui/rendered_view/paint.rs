@@ -19,24 +19,26 @@ use super::raw_text::raw_line_byte_start;
 ///
 /// If `cursor_col` is `None`, no cursor is drawn (other lines of the block).
 #[cfg(test)]
-pub(super) fn make_raw_line(
-    raw_text: &str,
-    cursor_col: Option<usize>,
-    theme: &Theme,
-) -> Line<'static> {
-    make_raw_line_with_selection(raw_text, cursor_col, None, theme)
+pub(super) fn make_raw_line(raw_text: &str, theme: &Theme) -> Line<'static> {
+    make_raw_line_with_selection(raw_text, None, theme)
 }
 
-/// Variant of [`make_raw_line`] that also paints `selection_cols` with the
-/// theme's selection background.  `selection_cols` is a `[start, end)` range
-/// in char columns within `raw_text`.
+/// Build a `Line` showing `raw_text` (the cursor's block, raw-revealed), with
+/// `selection_cols` painted in the theme's selection background.
+/// `selection_cols` is a `[start, end)` range in char columns within
+/// `raw_text`.
+///
+/// The cursor itself is NOT embedded here: it is painted onto the resolved
+/// cell by `line_render`'s cursor override at render time.  This keeps the
+/// wrapped layout computed from the *bare* source text, matching the wrap that
+/// the scroll / navigation code (which never sees the cursor glyph) uses — a
+/// `▏` bar glyph baked into the line would otherwise shift word-wrap breaks
+/// and desync the two.
 pub(super) fn make_raw_line_with_selection(
     raw_text: &str,
-    cursor_col: Option<usize>,
     selection_cols: Option<(usize, usize)>,
     theme: &Theme,
 ) -> Line<'static> {
-    let cursor_style = theme.cursor_rendered;
     let sel_style = theme.selection;
     let chars: Vec<char> = raw_text.chars().collect();
     let total = chars.len();
@@ -44,23 +46,13 @@ pub(super) fn make_raw_line_with_selection(
     // Always emit one span per char so per-char styling stays predictable when
     // cursor and selection overlap.  The runs of same-style chars don't need to
     // be coalesced — ratatui's Line works fine with short spans.
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(total + 1);
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(total);
     for (i, ch) in chars.iter().enumerate() {
         let mut style = theme.normal;
         if matches!(selection_cols, Some((s, e)) if i >= s && i < e) {
             style = style.patch(sel_style);
         }
-        if cursor_col == Some(i) {
-            style = cursor_style;
-        }
         spans.push(Span::styled(ch.to_string(), style));
-    }
-
-    // Cursor past end-of-line: append a styled space so the cursor still shows.
-    if let Some(col) = cursor_col {
-        if col >= total {
-            spans.push(Span::styled(" ".to_string(), cursor_style));
-        }
     }
     Line::from(spans)
 }
@@ -76,31 +68,21 @@ pub(super) fn make_raw_line_with_selection(
 /// continues to work without offset adjustments.
 pub(super) fn make_code_styled_body_line(
     raw_text: &str,
-    cursor_col: Option<usize>,
     selection_cols: Option<(usize, usize)>,
     theme: &Theme,
 ) -> Line<'static> {
     let base = theme.code_block_text;
-    let cursor_style = theme.cursor_rendered;
     let sel_style = theme.selection;
     let chars: Vec<char> = raw_text.chars().collect();
     let total = chars.len();
 
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(total + 1);
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(total);
     for (i, ch) in chars.iter().enumerate() {
         let mut style = base;
         if matches!(selection_cols, Some((s, e)) if i >= s && i < e) {
             style = style.patch(sel_style);
         }
-        if cursor_col == Some(i) {
-            style = cursor_style;
-        }
         spans.push(Span::styled(ch.to_string(), style));
-    }
-    if let Some(col) = cursor_col {
-        if col >= total {
-            spans.push(Span::styled(" ".to_string(), cursor_style));
-        }
     }
     Line::from(spans).style(base)
 }
@@ -590,6 +572,7 @@ pub(super) fn overlay_raw_cell(
         if matches!(selection_cols, Some((s, e)) if i >= s && i < e) {
             style = style.patch(theme.selection);
         }
+        // Block cursor: recolor the cell, leaving the char visible.
         if cursor_visible && overlay.cursor_in_cell == Some(i) {
             style = cursor_style;
         }
@@ -615,27 +598,23 @@ mod tests {
     use crate::config::Theme;
 
     #[test]
-    fn make_raw_line_with_cursor_at_start() {
+    fn make_raw_line_keeps_source_text_verbatim() {
+        // The cursor is no longer baked into the line (it is painted onto the
+        // resolved cell by the render override), so the line content is exactly
+        // the source text — no substituted glyph, no appended cursor cell.
         let theme = Theme::default();
-        let line = make_raw_line("hello", Some(0), &theme);
-        // First span should be empty (before cursor), second should be 'h'.
+        let line = make_raw_line("hello", &theme);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "hello");
     }
 
     #[test]
-    fn make_raw_line_with_cursor_at_end() {
+    fn make_raw_line_with_selection_paints_range() {
         let theme = Theme::default();
-        let line = make_raw_line("hi", Some(2), &theme);
-        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "hi "); // space added for end-of-line cursor
-    }
-
-    #[test]
-    fn make_raw_line_without_cursor() {
-        let theme = Theme::default();
-        let line = make_raw_line("hello", None, &theme);
-        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "hello");
+        let line = make_raw_line_with_selection("hello", Some((1, 3)), &theme);
+        // Cols 1..3 carry the selection background; others don't.
+        assert_eq!(line.spans[1].style.bg, theme.selection.bg);
+        assert_eq!(line.spans[2].style.bg, theme.selection.bg);
+        assert_ne!(line.spans[0].style.bg, theme.selection.bg);
     }
 }

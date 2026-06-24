@@ -102,12 +102,13 @@ fn chars_within_cell_budget(chars: &[(char, Style)], start: usize, cell_budget: 
 /// for non-list lines) preserves the legacy zero-padding wrap.
 ///
 /// `cursor_col_override`: when `Some((col, style))`, the character at char
-/// index `col` (NOT cell column) on the first output row is rendered with
-/// `style` (used to show a cursor indicator during the jitter-suppression
-/// delay in hybrid rendered mode).  The style applies only to the first cell
-/// of a wide char — terminals can't independently style the right half.
-/// Used by tests in this module; production code uses
-/// `render_line_from_visual` to support sub-row scrolling.
+/// index `col` (NOT cell column) on the first output row is rendered as the
+/// block cursor — the cell is recolored with `style` while the character stays
+/// visible (used to show a cursor indicator during the jitter-suppression
+/// delay in hybrid rendered mode).  The override applies only to the first
+/// cell of a wide char — terminals can't independently style the right half.
+/// Used by tests in this module; production code uses `render_line_from_visual`
+/// to support sub-row scrolling.
 #[allow(dead_code)]
 pub fn render_line(
     line: &Line<'static>,
@@ -329,6 +330,7 @@ fn paint_row(
             .filter(|(col, _)| *col == abs_col)
             .map(|(_, s)| s);
         if let Some(cell) = buf.cell_mut((x, abs_y)) {
+            // Block cursor: recolor the cell, leaving the char visible.
             cell.set_char(*ch);
             cell.set_style(cursor_style.unwrap_or(*style));
         }
@@ -349,6 +351,7 @@ fn paint_row(
     while x < area_end {
         if let Some(cell) = buf.cell_mut((x, abs_y)) {
             if let Some((_, s)) = eol_cursor.filter(|&(col, _)| col == fill_col) {
+                // Block cursor on the trailing blank cell.
                 cell.set_char(' ');
                 cell.set_style(s);
                 cursor_cell = Some((x, abs_y));

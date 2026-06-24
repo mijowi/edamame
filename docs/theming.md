@@ -136,17 +136,34 @@ Transient message:
 - Warning: `warning` fg, bold
 - Error: `error` fg, bold
 
-Cursor (in editor): Each mode has its own cursor style field mirroring
-the status-line mode chip (`cursor_preview`, `cursor_rendered`,
-`cursor_raw`):
-- Preview: `bg_muted` bg, `surface_elevated` fg
+Cursor: The cursor is a uniform **block** everywhere — the cell at the
+insertion point is recolored while the character under it stays visible.
+There is no bar/caret shape; context is signalled by *color*, not shape.
+
+In the editor, each mode has its own cursor color mirroring the
+status-line mode chip (`cursor_preview`, `cursor_rendered`, `cursor_raw`):
+- Preview: `bg_muted` bg, `surface_elevated` fg (no cursor is drawn in
+  Preview in practice)
 - Rendered: `primary` bg, `bg` fg
 - Raw: `warning` bg, `bg` fg
 
-Cursor (modal text inputs): `theme.cursor` — REVERSED only, so the
-`▏` glyph inverts whatever's underneath without needing to know the
-modal's surface color. Kept distinct from the editor cursor because
-modal inputs aren't tied to editor mode.
+The `.bg` is the block fill; the `.fg` keeps the character under the
+cursor legible. A vim command sub-mode (Normal / Visual /
+Operator-pending) uses the same block shape as Insert — the status chip
+disambiguates the mode. The cursor is painted onto the resolved cell
+*after* wrapping, so it never perturbs the word-wrap layout (which is
+computed from the bare source text). A block sitting on a selected or
+search-highlighted cell takes that cell — the cursor color wins over the
+wash.
+
+Cursor (modal text inputs): `theme.cursor` — a unified `accent`-colored
+block shared by every modal text field (command palette, save-as,
+search/replace, insert-table, settings, theme/section pickers, the vim
+command line). Monochrome themes fall back to `REVERSED`. Kept distinct
+from the editor cursors (its own `accent` color) because modal inputs
+aren't tied to editor mode. The cursor cell is always rendered (the
+character recolored when the blink is on, shown plainly when off; a space
+past end-of-line) so the field width never changes between blink phases.
 
 ### Modal windows
 Background: `surface_elevated`
@@ -210,12 +227,11 @@ so it reads as "marked but quiet" — distinct from `BOLD` (focused
 selection) and plain (unselected) without needing REVERSED (which is
 already taken by the unselected `modal_item` state in monochrome).
 
-#### Command palette input — exception
-Unlike other modal inputs, the command palette's typing row sits flush
-against the modal body — no colored bg fill — and the `▏` cursor
-glyph is `primary` so the typing affordance still pops. This break is
-deliberate: the palette is a search affordance, not a form field, so
-it reads as part of the modal rather than as a sunken input chip.
+#### Command palette input
+The command palette's typing row sits flush against the modal body — no
+colored bg fill — so it reads as a search affordance rather than a sunken
+input chip. Its cursor uses the same unified `theme.cursor` (`accent`
+block) as every other modal input; it is no longer a styling exception.
 
 ## Built-in themes
 - 256 Dark

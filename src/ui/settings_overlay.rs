@@ -498,10 +498,17 @@ fn build_row_lines<'a>(
             lines.push(Line::from(spans));
             continue;
         }
-        let value = if editing && cursor_visible {
-            format!("{}▏", state.editing.as_deref().unwrap_or(""))
-        } else if editing {
-            state.editing.as_deref().unwrap_or("").to_owned()
+        let value = if editing {
+            // Constant-width block cursor slot (a space when blinked off) so the
+            // field doesn't jitter.  The glyph is styled by `format_modal_row`
+            // along with the value text; the field is append-only, so the block
+            // sits at the end — matching the unified block cursor elsewhere.
+            let base = state.editing.as_deref().unwrap_or("");
+            if cursor_visible {
+                format!("{base}{}", crate::ui::cursor::CURSOR_BLOCK)
+            } else {
+                format!("{base} ")
+            }
         } else {
             (row.kind.read)(config, &state.theme_names)
         };
