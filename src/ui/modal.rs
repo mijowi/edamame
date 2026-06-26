@@ -61,30 +61,16 @@ pub enum ModalResponse {
 }
 
 /// A single modal button (label only; actions live on the caller side).
+/// Rendered wrapped in `[ … ]` via [`Button`].
 #[derive(Debug, Clone)]
 pub struct ModalButton {
     pub label: String,
-    /// Whether the label is wrapped in `[ … ]` when rendered.  Bare
-    /// buttons (`bracketed = false`) are used for a checkbox toggle whose
-    /// glyph already carries its own `[ ]`/`[x]`, so it doesn't read as
-    /// double-bracketed.
-    pub bracketed: bool,
 }
 
 impl ModalButton {
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
-            bracketed: true,
-        }
-    }
-
-    /// A bare button rendered without the `[ … ]` wrapper — for a
-    /// checkbox toggle that already shows `[ ]`/`[x]` in its label.
-    pub fn bare(label: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            bracketed: false,
         }
     }
 }
@@ -282,10 +268,7 @@ impl<'a> StatefulWidget for ModalView<'a> {
         let button_specs: Vec<Button> = self
             .buttons
             .iter()
-            .map(|b| Button {
-                label: b.label.as_str(),
-                bracketed: b.bracketed,
-            })
+            .map(|b| Button::bracketed(b.label.as_str()))
             .collect();
         let button_width = buttons_row_width(&button_specs);
         let content_width = body_width.max(button_width);

@@ -12,50 +12,30 @@ use ratatui::{
 
 use crate::config::Theme;
 
-/// One button in a row: its label plus whether to wrap it in `[ … ]`.
-///
-/// Most buttons are bracketed (`[ Save ]`).  A *bare* button skips the
-/// wrapper — used for a checkbox toggle whose glyph already carries its
-/// own `[ ]`/`[x]`, so it doesn't render as double-bracketed
-/// (`[ [x] … ]`).
+/// One button in a row, rendered wrapped in `[ … ]` (e.g. `[ Save ]`).
 #[derive(Debug, Clone, Copy)]
 pub struct Button<'a> {
     pub label: &'a str,
-    pub bracketed: bool,
 }
 
 impl<'a> Button<'a> {
     pub fn bracketed(label: &'a str) -> Self {
-        Self {
-            label,
-            bracketed: true,
-        }
+        Self { label }
     }
 
-    /// Column width of the rendered button: bracketed buttons add 4
-    /// (one space + two brackets + one space), bare buttons are just the
-    /// label width.
+    /// Column width of the rendered button: the label plus 4 (one space
+    /// + two brackets + one space).
     fn width(&self) -> u16 {
-        let base = self.label.chars().count() as u16;
-        if self.bracketed {
-            base + 4
-        } else {
-            base
-        }
+        self.label.chars().count() as u16 + 4
     }
 
     fn rendered(&self) -> String {
-        if self.bracketed {
-            format!("[ {} ]", self.label)
-        } else {
-            self.label.to_owned()
-        }
+        format!("[ {} ]", self.label)
     }
 }
 
-/// Width in columns of a row of [`Button`]s — each bracketed button is
-/// `label + 4` columns, each bare button is `label`, and adjacent
-/// buttons are separated by a 2-column gap.
+/// Width in columns of a row of [`Button`]s — each button is `label + 4`
+/// columns, and adjacent buttons are separated by a 2-column gap.
 pub fn buttons_row_width(buttons: &[Button]) -> u16 {
     let labels_w: usize = buttons.iter().map(|b| b.width() as usize).sum();
     let gaps = buttons.len().saturating_sub(1) * 2;

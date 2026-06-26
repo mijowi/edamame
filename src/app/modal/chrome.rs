@@ -19,10 +19,13 @@
 //! paths funnel through that one `resolve`, so mouse and keyboard
 //! behave identically and footer buttons are clickable for free.
 //!
-//! Modals with bespoke key handling (e.g. [`super::DiffIntroModal`],
-//! which repurposes Up/Down for button focus) still embed the chrome
-//! and reuse `render` / `on_wheel` / `on_click`; they just intercept
-//! the keys they care about before delegating the rest to `on_key`.
+//! Modals with bespoke key handling can still embed the chrome and
+//! reuse `render` / `on_wheel` / `on_click`; they just intercept the
+//! keys they care about before delegating the rest to `on_key`.  (A
+//! modal that needs a pinned interactive control row above the button
+//! row — like the diff-intro modal's opt-out toggle — instead builds on
+//! the `scroll_container` primitives directly; see
+//! [`crate::ui::diff_intro_modal`].)
 
 use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;

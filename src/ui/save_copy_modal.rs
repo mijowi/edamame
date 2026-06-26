@@ -27,6 +27,7 @@ use ratatui::{
 
 use crate::config::Theme;
 use crate::ui::button_row::{button_row_width, render_button_row};
+use crate::ui::controls;
 use crate::ui::cursor::text_field_spans;
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind,
@@ -388,11 +389,7 @@ fn render_path_row(
         width: inner.width,
         height: 1,
     };
-    let value_style = if focused {
-        theme.modal_input_focused
-    } else {
-        theme.modal_input_unfocused
-    };
+    let value_style = controls::text_value_style(focused, theme);
 
     let mut spans: Vec<Span<'_>> = Vec::with_capacity(6);
     spans.push(Span::styled("Path", theme.modal_item));

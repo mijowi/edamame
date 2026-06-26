@@ -10,12 +10,14 @@
 
 - The editor cursor is hidden when the terminal window loses focus, but the cursor is still shown in modals. Thread window focus into modals as well.
 
-- Switch theme modal dark/light buttons should use new pill widget
-
 - Zenburn green more green and bg darker
 - Nord green more green and bg darker
 
 - Add setting for disabling diff mode
+- Add note to "Entering diff mode" modal that says diff mode can be disabled in settings. Should we just add the option to disable diff mode in the intro modal?
+- Update welcome modal feature notes to include diff mode
+
+- Make "Create custom theme" modal searchable, just like the theme picker
 
 ## Security
 - Ensure everything necessary is sanitized to prevent code execution, namely mermaid code blocks and remote images. Anywhere else?
@@ -36,4 +38,3 @@
 - Rendered diff mode; use edamame as git difftool?
 - Move diff mode status chip `n/N` to hint line?
 - When entering diff mode, the first change (`1/N`) should be shown to the user, not the change closest to the document position.
-- Update welcome modal to include diff mode

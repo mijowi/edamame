@@ -184,7 +184,7 @@ impl Modal for ThemePickerModal {
     }
 
     fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
-        if let Some(target) = self.state.pill_hit(col, row) {
+        if let Some(target) = self.state.toggle_hit(col, row) {
             // Mirror the keyboard `ModeChanged` flow: modal-state half
             // runs synchronously (we already have `&mut self`), app
             // half is deferred into `ContinueAnd` because
