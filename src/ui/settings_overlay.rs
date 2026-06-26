@@ -53,7 +53,7 @@ use ratatui::{
 
 use crate::config::{Config, ImagesEnabled, RemoteImagePolicy, Theme};
 use crate::ui::content_width::{max_row_width, optional_text_width};
-use crate::ui::controls::{self, PillStyle};
+use crate::ui::controls::{self, Control};
 use crate::ui::overlay_nav::next_focusable;
 
 /// Width of the label column in the settings overlay (column count of the
@@ -335,7 +335,7 @@ impl SettingsState {
     }
 
     /// Apply the images→remote cascade after `Show images` changed.
-    /// Delegates to the shared [`cycle_pill::apply_images_cascade`] so
+    /// Delegates to the shared [`controls::apply_images_cascade`] so
     /// the welcome modal and the settings overlay can't drift.
     fn apply_images_cascade(&mut self, config: &mut Config, was_never: bool) {
         config.images.remote_policy = controls::apply_images_cascade(
@@ -547,39 +547,33 @@ fn build_row_lines<'a>(
         // toggle widget keeps its value color.
         let marker = if focused { "› " } else { "  " };
         let label_padded = format!("{marker}{:<pad$}", row.label, pad = LABEL_PAD);
-        let label_style = if disabled {
-            theme.modal_close_hint
-        } else if focused {
-            theme.modal_item_selected
-        } else {
-            theme.modal_item
-        };
+        let label_style = controls::control_label_style(focused, disabled, theme);
         let mut spans: Vec<Span<'static>> = vec![Span::styled(label_padded, label_style)];
 
-        if let Some(pill) = row.kind.options {
+        if let Some(control) = row.kind.options {
             // Option rows render the current value as a toggle (on/off
-            // slider) or a multi-value pill, chosen by the pill's style.
+            // slider) or a multi-value pill, chosen by the control kind.
             let current = (row.kind.read)(config, &state.theme_names);
-            let current_index = pill
-                .labels
-                .iter()
-                .position(|l| l.eq_ignore_ascii_case(&current))
-                .unwrap_or(0);
-            match pill.style {
-                // ON_OFF maps `true -> 0`, so index 0 is the "on" state.
-                PillStyle::Toggle => spans.extend(controls::toggle_spans(
-                    current_index == 0,
+            match control {
+                Control::Toggle => spans.extend(controls::toggle_spans(
+                    current.eq_ignore_ascii_case("on"),
                     focused,
                     disabled,
                     theme,
                 )),
-                PillStyle::Cycle => spans.extend(controls::pill_spans(
-                    pill.labels,
-                    current_index,
-                    focused,
-                    disabled,
-                    theme,
-                )),
+                Control::Pill(labels) => {
+                    let current_index = labels
+                        .iter()
+                        .position(|l| l.eq_ignore_ascii_case(&current))
+                        .unwrap_or(0);
+                    spans.extend(controls::pill_spans(
+                        labels,
+                        current_index,
+                        focused,
+                        disabled,
+                        theme,
+                    ));
+                }
             }
         } else if editing {
             // Focused text-input row: render the live, editable draft with
@@ -621,10 +615,8 @@ fn settings_content_width(state: &SettingsState, config: &Config) -> u16 {
             return r.label.chars().count();
         }
         let value_w = match r.kind.options {
-            Some(pill) => match pill.style {
-                PillStyle::Toggle => controls::toggle_width(),
-                PillStyle::Cycle => controls::pill_width(pill.labels),
-            },
+            Some(Control::Toggle) => controls::toggle_width(),
+            Some(Control::Pill(labels)) => controls::pill_width(labels),
             None => (r.kind.read)(config, &state.theme_names).chars().count(),
         };
         FOCUS_MARKER_WIDTH + LABEL_PAD + value_w

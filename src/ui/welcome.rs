@@ -32,7 +32,7 @@ use ratatui::{
 use crate::config::{DiagramsEnabled, ImagesEnabled, RemoteImagePolicy, Theme};
 use crate::terminal::Capabilities;
 use crate::ui::cap_summary::{render_cap_row as shared_render_cap_row, CapSummary};
-use crate::ui::cycle_pill;
+use crate::ui::controls;
 use crate::ui::scroll_container::{
     centered_rect_for_content, compute_pad_h, draw_frame, ContentSize, FrameOpts, ModalKind,
     ScrollContainerState, MAX_PAD_H,
@@ -53,9 +53,9 @@ pub enum WelcomeFocus {
 
 const FOCUS_ORDER: [WelcomeFocus; 7] = [
     WelcomeFocus::Theme,
+    WelcomeFocus::Diagrams,
     WelcomeFocus::Images,
     WelcomeFocus::RemoteImages,
-    WelcomeFocus::Diagrams,
     WelcomeFocus::VimMotions,
     WelcomeFocus::ShowAgain,
     WelcomeFocus::Save,
@@ -215,14 +215,16 @@ impl WelcomeState {
         }
     }
 
-    /// Cycle the tri-state value of the focused row by `delta` (-1 / +1).
-    /// No-op if focus isn't on a tri-state row.  Applies the cascade
-    /// rule when images leaves / enters Never.
+    /// Cycle / toggle the value of the focused option row by `delta`
+    /// (-1 / +1).  No-op if focus isn't on an option row.  The tri-state
+    /// pills (images / remote / diagrams) advance through their order; the
+    /// on/off toggles (vim motions / show-again) flip regardless of sign.
+    /// Applies the cascade rule when images leaves / enters Never.
     fn cycle_focused(&mut self, delta: isize) {
         let delta = delta as i32;
         match self.focused {
             WelcomeFocus::Images => {
-                let next = cycle_pill::cycle_enum(
+                let next = controls::cycle_enum(
                     self.images,
                     &[
                         ImagesEnabled::Ask,
@@ -234,7 +236,7 @@ impl WelcomeState {
                 self.set_images(next);
             }
             WelcomeFocus::RemoteImages if !self.remote_locked_by_images() => {
-                self.remote = cycle_pill::cycle_enum(
+                self.remote = controls::cycle_enum(
                     self.remote,
                     &[
                         RemoteImagePolicy::Ask,
@@ -245,7 +247,7 @@ impl WelcomeState {
                 );
             }
             WelcomeFocus::Diagrams => {
-                self.diagrams = cycle_pill::cycle_enum(
+                self.diagrams = controls::cycle_enum(
                     self.diagrams,
                     &[
                         DiagramsEnabled::Ask,
@@ -255,13 +257,15 @@ impl WelcomeState {
                     delta,
                 );
             }
+            WelcomeFocus::VimMotions => self.use_vim = !self.use_vim,
+            WelcomeFocus::ShowAgain => self.dont_show_again = !self.dont_show_again,
             _ => {}
         }
     }
 
     fn set_images(&mut self, next: ImagesEnabled) {
         let was_never = matches!(self.images, ImagesEnabled::Never);
-        self.remote = cycle_pill::apply_images_cascade(
+        self.remote = controls::apply_images_cascade(
             next,
             was_never,
             self.remote,
@@ -294,19 +298,11 @@ impl WelcomeState {
                 WelcomeResponse::Continue
             }
             KeyCode::Left => {
-                match self.focused {
-                    WelcomeFocus::ShowAgain => self.focused = WelcomeFocus::Save,
-                    WelcomeFocus::Save => self.focused = WelcomeFocus::ShowAgain,
-                    _ => self.cycle_focused(-1),
-                }
+                self.cycle_focused(-1);
                 WelcomeResponse::Continue
             }
             KeyCode::Right => {
-                match self.focused {
-                    WelcomeFocus::ShowAgain => self.focused = WelcomeFocus::Save,
-                    WelcomeFocus::Save => self.focused = WelcomeFocus::ShowAgain,
-                    _ => self.cycle_focused(1),
-                }
+                self.cycle_focused(1);
                 WelcomeResponse::Continue
             }
             KeyCode::Char(' ') => {
@@ -479,9 +475,12 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         //  2                 switch theme button + spacer below
         //  3 * 3             three tri-state sections (row + explanation + spacer)
         //  3                 vim-motions toggle (row + explanation + spacer)
-        //  1                 footer (toggle + Save)
+        //  1                 "Don't show this again" toggle row
+        //  1                 spacer
+        //  1                 Save button row
         let cap_rows = state.cap_summary.rows.len() as u16;
-        let natural_height = 1 + para_rows + 1 + 1 + cap_rows + hint_rows + 1 + 1 + 2 + 9 + 3 + 1;
+        let natural_height =
+            1 + para_rows + 1 + 1 + cap_rows + hint_rows + 1 + 1 + 2 + 9 + 3 + 1 + 1 + 1;
 
         let content = ContentSize {
             width: CONTENT_WIDTH,
@@ -655,11 +654,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         ]);
         render_line(&mut scratch, body_x, y, body_w, current_line, self.theme);
         y += 1;
-        let button_style = cycle_pill::button_style(theme_focused, self.theme);
-        let button_label = "[ Switch theme ▸ ]";
-        let button_w = button_label.chars().count() as u16;
-        let button_x = body_x;
-        Paragraph::new("").style(self.theme.modal_bg).render(
+        state.theme_button_rect = Some(crate::ui::button_row::render_button_at(
             Rect {
                 x: body_x,
                 y,
@@ -667,36 +662,60 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
                 height: 1,
             },
             &mut scratch,
-        );
-        Paragraph::new(Line::from(Span::styled(button_label, button_style)))
-            .style(self.theme.modal_bg)
-            .render(
-                Rect {
-                    x: button_x,
-                    y,
-                    width: button_w,
-                    height: 1,
-                },
-                &mut scratch,
-            );
-        state.theme_button_rect = Some(Rect {
-            x: button_x,
-            y,
-            width: button_w,
-            height: 1,
-        });
+            crate::ui::button_row::Button::bracketed("Switch theme ▸"),
+            theme_focused,
+            self.theme,
+        ));
         state.focus_offsets[WelcomeFocus::Theme.order_index()] = y;
         y += 2;
 
-        // ── Cycle-pill rows ─────────────────────────────────────────
+        // ── Option rows (diagrams sit above the image rows) ─────────
+        let pill_w = controls::pill_width(controls::ASK_ALWAYS_NEVER) as u16;
+
+        state.focus_offsets[WelcomeFocus::Diagrams.order_index()] = y;
+        state.diagrams_rect = render_control_row(
+            &mut scratch,
+            scratch_rect,
+            y,
+            "Show diagrams",
+            controls::pill_spans(
+                controls::ASK_ALWAYS_NEVER,
+                diagrams_index(state.diagrams),
+                state.focused == WelcomeFocus::Diagrams,
+                !state.image_capable,
+                self.theme,
+            ),
+            pill_w,
+            state.focused == WelcomeFocus::Diagrams,
+            !state.image_capable,
+            self.theme,
+        );
+        y += 1;
+        render_explanation(
+            &mut scratch,
+            body_x,
+            y,
+            body_w,
+            "Render mermaid code blocks as inline diagrams.",
+            muted_style,
+            self.theme,
+        );
+        y += 2;
+
         state.focus_offsets[WelcomeFocus::Images.order_index()] = y;
-        state.images_rect = render_cycle_row(
+        state.images_rect = render_control_row(
             &mut scratch,
             scratch_rect,
             y,
             "Show images",
-            cycle_pill::ASK_ALWAYS_NEVER,
-            images_index(state.images),
+            controls::pill_spans(
+                controls::ASK_ALWAYS_NEVER,
+                images_index(state.images),
+                state.focused == WelcomeFocus::Images,
+                !state.image_capable,
+                self.theme,
+            ),
+            pill_w,
             state.focused == WelcomeFocus::Images,
             !state.image_capable,
             self.theme,
@@ -715,13 +734,19 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
 
         state.focus_offsets[WelcomeFocus::RemoteImages.order_index()] = y;
         let remote_disabled = !state.image_capable || state.remote_locked_by_images();
-        state.remote_rect = render_cycle_row(
+        state.remote_rect = render_control_row(
             &mut scratch,
             scratch_rect,
             y,
             "Show remote images",
-            cycle_pill::ASK_ALWAYS_NEVER,
-            remote_index(state.remote),
+            controls::pill_spans(
+                controls::ASK_ALWAYS_NEVER,
+                remote_index(state.remote),
+                state.focused == WelcomeFocus::RemoteImages,
+                remote_disabled,
+                self.theme,
+            ),
+            pill_w,
             state.focused == WelcomeFocus::RemoteImages,
             remote_disabled,
             self.theme,
@@ -738,39 +763,21 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         );
         y += 2;
 
-        state.focus_offsets[WelcomeFocus::Diagrams.order_index()] = y;
-        state.diagrams_rect = render_cycle_row(
-            &mut scratch,
-            scratch_rect,
-            y,
-            "Show diagrams",
-            cycle_pill::ASK_ALWAYS_NEVER,
-            diagrams_index(state.diagrams),
-            state.focused == WelcomeFocus::Diagrams,
-            !state.image_capable,
-            self.theme,
-        );
-        y += 1;
-        render_explanation(
-            &mut scratch,
-            body_x,
-            y,
-            body_w,
-            "Render mermaid code blocks as inline diagrams.",
-            muted_style,
-            self.theme,
-        );
-        y += 2;
-
         // ── Vim motions toggle ──────────────────────────────────────
+        let toggle_w = controls::toggle_width() as u16;
         state.focus_offsets[WelcomeFocus::VimMotions.order_index()] = y;
-        state.vim_rect = render_cycle_row(
+        state.vim_rect = render_control_row(
             &mut scratch,
             scratch_rect,
             y,
             "Vim mode",
-            cycle_pill::ON_OFF,
-            bool_index(state.use_vim),
+            controls::toggle_spans(
+                state.use_vim,
+                state.focused == WelcomeFocus::VimMotions,
+                false,
+                self.theme,
+            ),
+            toggle_w,
             state.focused == WelcomeFocus::VimMotions,
             false,
             self.theme,
@@ -787,68 +794,42 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         );
         y += 2;
 
-        // ── Footer row: Don't-show-again toggle + [ Save ] ──────────
-        let save_focused = state.focused == WelcomeFocus::Save;
-        let save_style = cycle_pill::button_style(save_focused, self.theme);
-        let save_label = "[ Save ]";
-        let save_w = save_label.chars().count() as u16;
-
-        let sa_focused = state.focused == WelcomeFocus::ShowAgain;
-        let sa_label_style = if sa_focused {
-            self.theme.modal_button_focused
-        } else {
-            self.theme.modal_item
-        };
-        let sa_pill = cycle_pill::pill_spans(
-            cycle_pill::ON_OFF,
-            bool_index(state.dont_show_again),
-            sa_focused,
+        // ── "Don't show this again" toggle (standard label-left row) ─
+        state.focus_offsets[WelcomeFocus::ShowAgain.order_index()] = y;
+        state.show_again_rect = render_control_row(
+            &mut scratch,
+            scratch_rect,
+            y,
+            "Don't show this again",
+            controls::toggle_spans(
+                state.dont_show_again,
+                state.focused == WelcomeFocus::ShowAgain,
+                false,
+                self.theme,
+            ),
+            toggle_w,
+            state.focused == WelcomeFocus::ShowAgain,
             false,
             self.theme,
         );
-        let suffix = " Don't show this again";
-        let toggle_w = (cycle_pill::pill_width(cycle_pill::ON_OFF) + suffix.chars().count()) as u16;
+        y += 2; // toggle row + spacer
 
-        let gap_w: u16 = 4;
-        let combined_w = toggle_w + gap_w + save_w;
-        let start_x = body_x + body_w.saturating_sub(combined_w) / 2;
-        let toggle_x = start_x;
-        let save_x = toggle_x + toggle_w + gap_w;
-
-        Paragraph::new("").style(self.theme.modal_bg).render(
-            Rect {
-                x: body_x,
-                y,
-                width: body_w,
-                height: 1,
-            },
-            &mut scratch,
-        );
-
-        let toggle_area = Rect {
-            x: toggle_x,
-            y,
-            width: toggle_w,
-            height: 1,
-        };
-        let mut toggle_spans = sa_pill;
-        toggle_spans.push(Span::styled(suffix.to_owned(), sa_label_style));
-        Paragraph::new(Line::from(toggle_spans))
-            .style(self.theme.modal_bg)
-            .render(toggle_area, &mut scratch);
-        state.show_again_rect = Some(toggle_area);
-        state.focus_offsets[WelcomeFocus::ShowAgain.order_index()] = y;
-
+        // ── Save button row (centred on its own line) ───────────────
+        let save_focused = state.focused == WelcomeFocus::Save;
         let save_area = Rect {
-            x: save_x,
+            x: body_x,
             y,
-            width: save_w,
+            width: body_w,
             height: 1,
         };
-        Paragraph::new(Line::from(Span::styled(save_label, save_style)))
-            .style(self.theme.modal_bg)
-            .render(save_area, &mut scratch);
-        state.save_button_rect = Some(save_area);
+        let save_rects = crate::ui::button_row::render_button_row(
+            save_area,
+            &mut scratch,
+            &["Save"],
+            if save_focused { 0 } else { usize::MAX },
+            self.theme,
+        );
+        state.save_button_rect = save_rects.into_iter().next();
         state.focus_offsets[WelcomeFocus::Save.order_index()] = y;
 
         // ── Blit visible window of scratch into the body ────────────
@@ -945,28 +926,21 @@ fn diagrams_index(value: DiagramsEnabled) -> usize {
     }
 }
 
-/// Index into [`cycle_pill::ON_OFF`] for a boolean (`true` -> on/0).
-fn bool_index(value: bool) -> usize {
-    if value {
-        0
-    } else {
-        1
-    }
-}
-
-/// Render a label + cycle-pill row into the welcome modal's scratch
-/// buffer, returning the pill's body-relative hit rect (or `None` when
-/// the row is disabled or the body is too narrow to fit the pill).  The
-/// label uses the same focus / disabled styling as the surrounding rows;
-/// the pill itself is built by [`cycle_pill::pill_spans`].
+/// Render a label + control (pill or toggle) row into the welcome modal's
+/// scratch buffer, returning the control's body-relative hit rect (or
+/// `None` when the row is disabled or the body is too narrow to fit the
+/// control).  The label uses the same focus / disabled styling as the
+/// surrounding rows; the caller supplies the already-built control
+/// `spans` (via [`controls::pill_spans`] / [`controls::toggle_spans`]) and
+/// their rendered `width`.
 #[allow(clippy::too_many_arguments)]
-fn render_cycle_row(
+fn render_control_row(
     buf: &mut Buffer,
     body: Rect,
     y: u16,
     label: &str,
-    pill: cycle_pill::Pill,
-    current_index: usize,
+    spans: Vec<Span<'static>>,
+    width: u16,
     focused: bool,
     disabled: bool,
     theme: &Theme,
@@ -981,20 +955,14 @@ fn render_cycle_row(
         },
         buf,
     );
-    let label_style = if disabled {
-        Style::default()
-            .fg(theme.palette.text_muted)
-            .bg(theme.palette.surface_elevated)
-            .add_modifier(Modifier::DIM)
-    } else if focused {
-        Style::default()
-            .fg(theme.palette.primary)
-            .bg(theme.palette.surface_elevated)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        theme.modal_bg
-    };
-    Paragraph::new(Line::from(Span::styled(label.to_owned(), label_style)))
+    // The label column is one unit with the control: pad the label across
+    // the whole column so the focus fill spans the column → widget, exactly
+    // like the settings overlay.  The style comes from the shared
+    // [`controls::control_label_style`] — the modal only reports focus.
+    let label_col_w = CONTROL_COL.min(body.width) as usize;
+    let label_padded = format!("{label:<label_col_w$}");
+    let label_style = controls::control_label_style(focused, disabled, theme);
+    Paragraph::new(Line::from(Span::styled(label_padded, label_style)))
         .style(theme.modal_bg)
         .render(
             Rect {
@@ -1006,17 +974,15 @@ fn render_cycle_row(
             buf,
         );
 
-    let pill_w = cycle_pill::pill_width(pill) as u16;
-    if body.width < CONTROL_COL + pill_w {
+    if body.width < CONTROL_COL + width {
         return None;
     }
     let rect = Rect {
         x: body.x + CONTROL_COL,
         y,
-        width: pill_w,
+        width,
         height: 1,
     };
-    let spans = cycle_pill::pill_spans(pill, current_index, focused, disabled, theme);
     Paragraph::new(Line::from(spans))
         .style(theme.modal_bg)
         .render(rect, buf);

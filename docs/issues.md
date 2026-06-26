@@ -6,22 +6,20 @@
 
 - Nested lists move horizontally when de-rendering
 
-- Combine editor max width options into one row in settings overlay
-
 - Implement HTML export. Add an export modal with options including "Export inlined images as data:URIs or leave as link" and "Export diagrams as inlined SVG or leave as code" (improve the wording).
 
-- The editor cursor is hideden when the terminal window loses focus, but the cursor is still shown in modals. Thread window focus into modals as well.
+- The editor cursor is hidden when the terminal window loses focus, but the cursor is still shown in modals. Thread window focus into modals as well.
 
 - Switch theme modal dark/light buttons should use new pill widget
 
-- Replace diff mode intro and welcome modal "Don't show this again" with "Save and don't show this again" and "Continue and don't show this again"
-
-- Move "Show diagrams" above "Show images" in welcome modal
-- Move the Save button to the bottom in its own row
-
 - Zenburn green more green and bg darker
+- Nord green more green and bg darker
 
 - Add setting for disabling diff mode
+
+## Security
+- Ensure everything necessary is sanitized to prevent code execution, namely mermaid code blocks and remote images. Anywhere else?
+- Are there other security concerns?
 
 ## Vim issues
 - `Tab` table cell navigation is swallowed in vim normal mode (`Shift-Tab` works)

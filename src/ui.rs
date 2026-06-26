@@ -6,7 +6,6 @@ pub mod command_palette;
 pub mod content_width;
 pub mod controls;
 pub mod cursor;
-pub mod cycle_pill;
 pub mod diff_view;
 pub mod dim;
 pub mod editor_view;
