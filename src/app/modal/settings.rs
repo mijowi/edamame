@@ -175,6 +175,7 @@ mod tests {
         "",
         "Autosave",
         "  Char limit",
+        "Diff when file changes",
         "Limit editor width",
         "Show diagrams",
         "Show images",

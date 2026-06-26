@@ -387,6 +387,25 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             },
         },
         RowDef {
+            label: "Diff when file changes",
+            description: Some(
+                "Review external changes hunk by hunk (off: silently reload a clean buffer)",
+            ),
+            describe: None,
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Cycle,
+                read: |c, _| bool_label(c.editor.diff_on_change).to_owned(),
+                write_string: no_write,
+                cycle: Some(|c, _, _| {
+                    c.editor.diff_on_change = !c.editor.diff_on_change;
+                    true
+                }),
+                options: Some(controls::Control::Toggle),
+                disabled: None,
+            },
+        },
+        RowDef {
             label: "Show diagrams",
             description: Some("Render Mermaid code blocks as inline diagrams"),
             describe: None,
