@@ -876,6 +876,7 @@ mod tests {
                 "Limit editor width",
                 "  Char limit",
                 "Scroll speed",
+                "Diff when file changes",
                 "Show diagrams",
                 "Show images",
                 "  Show remote images",

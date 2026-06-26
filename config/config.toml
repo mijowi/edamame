@@ -86,6 +86,15 @@ appearance = "dark"
 # only the on/off toggle). Default: 530.
 # cursor_blink_ms = 530
 
+# Review external changes in diff mode. When true (default), a file
+# modified on disk while this buffer is clean opens diff-review mode so
+# you see each change hunk by hunk before it replaces what's on screen.
+# When false, a clean buffer is silently reloaded from disk instead. A
+# buffer with unsaved edits always prompts the conflict modal regardless
+# (whose [Merge] button still enters diff review on demand). Exposed as
+# the "Diff when file changes" toggle in the settings overlay. Default: true.
+# diff_on_change = true
+
 # Show the explainer modal when entering diff review. The modal's
 # "Don't show this again" checkbox flips this to false; set it back to
 # true here to re-enable the intro. File-only (not in the settings

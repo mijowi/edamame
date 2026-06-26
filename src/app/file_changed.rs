@@ -233,7 +233,7 @@ impl App {
             self.modal_stack.remove_first::<DirtyConflictModal>();
             self.modal_stack
                 .push(Box::new(DirtyConflictModal::new(change.contents)));
-        } else {
+        } else if self.config.editor.diff_on_change {
             // Clean buffer: no unsaved work to reconcile, but the
             // change is still reviewed hunk by hunk.  The buffer is
             // NOT silently overwritten — `enter_diff_mode` opens diff
@@ -241,6 +241,12 @@ impl App {
             // sees the external change before it replaces what they
             // are looking at.  See §11a of the diff-mode plan.
             self.enter_diff_mode(change.contents);
+        } else {
+            // Diff-on-change disabled and the buffer is clean — there
+            // is no unsaved work to lose, so silently reload the disk
+            // contents (the dirty branch above still prompts, so edits
+            // are never discarded without confirmation).
+            self.reload_buffer_from_disk(change.contents);
         }
     }
 
@@ -411,6 +417,45 @@ mod tests {
         );
         // Hash was stamped to the new contents.
         assert_eq!(app.last_disk_hash, Some(seahash::hash(b"beta")));
+    }
+
+    #[test]
+    fn clean_buffer_with_diff_disabled_reloads_silently() {
+        // With diff-on-change off, a clean buffer is silently reloaded
+        // from disk rather than entering diff review.
+        let (mut app, tmp) = app_with_temp_file("alpha");
+        app.config.editor.diff_on_change = false;
+        assert!(!app.editor.dirty);
+        app.handle_file_changed(file_changed_event(tmp.path().to_path_buf(), "beta"));
+        assert!(
+            app.editor.diff.is_none(),
+            "diff-on-change off must not enter diff review",
+        );
+        assert_ne!(app.editor.mode, crate::editor::Mode::Diff);
+        assert_eq!(
+            app.editor.buffer.contents(),
+            "beta",
+            "clean buffer must be reloaded with the disk contents",
+        );
+        assert_eq!(app.last_disk_hash, Some(seahash::hash(b"beta")));
+    }
+
+    #[test]
+    fn dirty_buffer_with_diff_disabled_still_prompts() {
+        // Diff-on-change off only affects the clean path — a dirty
+        // buffer still opens the conflict modal so unsaved edits are
+        // never discarded silently.
+        let (mut app, tmp) = app_with_temp_file("alpha");
+        app.config.editor.diff_on_change = false;
+        let len = app.editor.buffer.len_chars();
+        app.editor.buffer.insert_char(len, '!');
+        app.editor.dirty = true;
+        app.handle_file_changed(file_changed_event(tmp.path().to_path_buf(), "external"));
+        assert!(
+            app.modal_stack.contains::<DirtyConflictModal>(),
+            "a dirty buffer must still prompt when diff-on-change is off",
+        );
+        assert!(app.editor.buffer.contents().ends_with('!'));
     }
 
     #[test]

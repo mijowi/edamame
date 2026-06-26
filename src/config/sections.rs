@@ -78,6 +78,15 @@ pub struct EditorConfig {
     /// timer (debounce, not throttle), so a typing burst produces at
     /// most one autosave at the end.  Default: 5000.
     pub autosave_idle_ms: u64,
+    /// When true (default), an external write detected while the
+    /// buffer is **clean** opens diff-review mode so the change is
+    /// surfaced hunk by hunk before it replaces what is on screen.
+    /// When false, a clean buffer is silently reloaded from disk
+    /// instead.  A **dirty** buffer always prompts the conflict modal
+    /// regardless of this setting (whose `[Merge]` button still enters
+    /// diff review on demand) — unsaved edits are never discarded
+    /// silently.
+    pub diff_on_change: bool,
     /// When true (default), the explanatory modal shown on entering
     /// diff-review mode is displayed.  The modal's "Don't show this
     /// again" checkbox flips this off so subsequent reviews open
@@ -157,6 +166,7 @@ impl Default for EditorConfig {
             big_h1: false,
             autosave_enabled: false,
             autosave_idle_ms: AUTOSAVE_IDLE_MS_DEFAULT,
+            diff_on_change: true,
             show_diff_intro: true,
             cursor_blink: true,
             cursor_blink_ms: 530,

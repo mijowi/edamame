@@ -283,17 +283,15 @@ impl<'a> StatefulWidget for DiffIntroView<'a> {
         // ── Pinned footer: blank, toggle row, spacer, Continue button ────
         // A blank spacer row separates the opt-out toggle from the body.
         let blank_y = inner.y + text_body_height;
-        Paragraph::new("")
-            .style(self.theme.modal_bg)
-            .render(
-                Rect {
-                    x: inner.x,
-                    y: blank_y,
-                    width: inner.width,
-                    height: 1,
-                },
-                buf,
-            );
+        Paragraph::new("").style(self.theme.modal_bg).render(
+            Rect {
+                x: inner.x,
+                y: blank_y,
+                width: inner.width,
+                height: 1,
+            },
+            buf,
+        );
         let footer_y = blank_y + 1;
         // Toggle row, centred.
         let toggle_x = inner
