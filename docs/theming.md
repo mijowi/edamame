@@ -210,9 +210,10 @@ Scrollbar
 Some modals carry **persistent selections** independent of which row
 has focus — for example, the welcome modal's three tri-state rows each
 remember an `Ask | Always | Never` value while focus moves around, and
-the "Don't show this again" toggle remembers a checked / unchecked
-state.  These differ from list-style modals (palette, settings,
-keybinds) where focus and "the chosen row" are the same concept.
+the "Don't show this again" toggle remembers an on / off state.  These
+differ from list-style modals (palette, settings, keybinds) where focus
+and "the chosen row" are the same concept.  These selections render
+through the shared control widgets (see "Unified controls" below).
 
 Convention for such modals — pick which tier each affordance belongs
 to:
@@ -238,6 +239,48 @@ Monochrome fallback: `modal_item_selected_unfocused` uses plain `DIM`
 so it reads as "marked but quiet" — distinct from `BOLD` (focused
 selection) and plain (unselected) without needing REVERSED (which is
 already taken by the unselected `modal_item` state in monochrome).
+
+#### Unified controls (`ui::controls`)
+Interactive controls share one visual language: each is a **label plus a
+widget rendered as one unit**, and the owning container aligns a column of
+them by reserving a fixed label width.  The label owns the padding, so a
+focused row's whole label column takes the focus fill.  There are four
+flavors — **toggle** (on/off slider), **pill** (2+ value selector),
+**text input**, and **button** (usually label-less; the label *is* the
+value inside the widget, see `ui::button_row`).
+
+One rule ties the family together: **`REVERSED` means "filled
+affordance".**  Buttons are filled in both states (they're always a press
+target); pills and text inputs are unfilled until focused.  Focus is one
+language everywhere — a `primary` fill — *except* the toggle, whose
+value-colored track would lose its meaning if inverted.
+
+| State | Pill / Text input | Button | Toggle widget |
+|---|---|---|---|
+| Focused | `primary` fill, REVERSED, bold (`modal_button_focused`) | `primary` fill, REVERSED, bold | track value-colored; the *row label* takes the fill |
+| Unfocused | `secondary` fg, no fill | `secondary` fill, REVERSED | track value-colored |
+| Disabled | `text_muted` fg, no fill, DIM | `text_muted` fg, no fill, DIM | track no fill, DIM |
+
+- **Toggle** renders a 4-cell colored track with a sliding `●` knob (right
+  when on, left when off) plus an external `on` / `off` label.  The track
+  is `success`-filled on, `text_muted`-filled off, and the label takes the
+  same value color — "on is green" stays legible regardless of focus.  The
+  toggle is the deliberate focus exception: its widget never changes on
+  focus (the row's label column carries focus instead), and its value
+  survives monochrome via knob position + the literal `on`/`off` text.
+- **Pill** shows the current value framed by `‹ value ›` arrows —
+  **always**, focused or not.  Arrows mean "cycle to change"; brackets
+  (`[ Save ]`) mean "press to act".  Don't give a pill the bracketed look,
+  and don't give a button arrows.  The flavor (toggle vs. pill) is chosen
+  explicitly via `controls::PillStyle`, **not** by the option count — a
+  two-option setting that isn't on/off (a `dark` / `light` mode picker,
+  say) is still a neutral pill, not a green toggle, so the green never
+  implies a value judgment it shouldn't.
+
+The option-set data (`Pill`, `ON_OFF`, `ASK_ALWAYS_NEVER`) and the cycle /
+cascade logic (`cycle_enum`, `apply_images_cascade`) are re-exported from
+`ui::cycle_pill`, which still owns the **legacy chip rendering** used by
+the welcome modal until it migrates onto `ui::controls`.
 
 #### Command palette input
 The command palette's typing row sits flush against the modal body — no
