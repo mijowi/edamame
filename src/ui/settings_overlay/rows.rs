@@ -29,7 +29,7 @@ pub(crate) const LABEL_SCROLL_SPEED: &str = "Scroll speed";
 pub(crate) const LABEL_VIM_MODE: &str = "Vim mode";
 pub(crate) const LABEL_BLINK_CURSOR: &str = "Blink cursor";
 pub(crate) const LABEL_SHOW_IMAGES: &str = "Show images";
-pub(crate) const LABEL_SHOW_REMOTE_IMAGES: &str = "Show remote images";
+pub(crate) const LABEL_SHOW_REMOTE_IMAGES: &str = "  Show remote images";
 
 /// Handler name written to `config.modal.handler` when vim mode is on.
 const VIM_HANDLER: &str = "vim";
@@ -328,7 +328,24 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             },
         },
         RowDef {
-            label: "Editor max width",
+            label: "Limit editor width",
+            description: Some("Cap the editor content to a fixed width"),
+            describe: None,
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Cycle,
+                read: |c, _| bool_label(c.editor.max_width_enabled).to_owned(),
+                write_string: no_write,
+                cycle: Some(|c, _, _| {
+                    c.editor.max_width_enabled = !c.editor.max_width_enabled;
+                    true
+                }),
+                options: Some(controls::ON_OFF),
+                disabled: None,
+            },
+        },
+        RowDef {
+            label: "  Char limit",
             description: Some("Maximum content width in characters when limit is on"),
             describe: None,
             kind: RowKind {
@@ -345,23 +362,6 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 },
                 cycle: None,
                 options: None,
-                disabled: None,
-            },
-        },
-        RowDef {
-            label: "Limit editor width",
-            description: Some("Cap the editor content to a fixed width"),
-            describe: None,
-            kind: RowKind {
-                focusable: true,
-                action: RowAction::Cycle,
-                read: |c, _| bool_label(c.editor.max_width_enabled).to_owned(),
-                write_string: no_write,
-                cycle: Some(|c, _, _| {
-                    c.editor.max_width_enabled = !c.editor.max_width_enabled;
-                    true
-                }),
-                options: Some(controls::ON_OFF),
                 disabled: None,
             },
         },
@@ -430,7 +430,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: LABEL_SHOW_REMOTE_IMAGES,
-            description: Some("Fetch and display remote images"),
+            description: Some("Fetch images from http(s):// URLs"),
             describe: None,
             kind: RowKind {
                 focusable: true,

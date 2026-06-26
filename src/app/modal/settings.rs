@@ -174,12 +174,12 @@ mod tests {
         "Open config.toml in default editor",
         "",
         "Autosave",
-        "Editor max width",
+        "  Char limit",
         "Limit editor width",
         "Show diagrams",
         "Show images",
         "Show line numbers",
-        "Show remote images",
+        "  Show remote images",
         "Show table buttons",
     ];
 
