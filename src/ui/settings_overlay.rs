@@ -13,7 +13,7 @@
 //! Open Config folder              <config_dir>
 //! Open config.toml in default editor
 //!
-//! Autosave                        |    off
+//! Autosave                        |   off
 //!   Automatically save changes when idle
 //!
 //! Editor max width                100

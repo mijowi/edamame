@@ -10,7 +10,7 @@
 //!
 //! There are four control flavors:
 //!
-//! - **Toggle** — an on/off slider: a 4-cell track with a sliding 1-cell
+//! - **Toggle** — an on/off slider: a 3-cell track with a sliding 1-cell
 //!   handle (a light `text` cell with a `|` grip mark) plus an external `on`/`off` text label.  The fill behind
 //!   the handle is `success` when on and `text_muted` when off; the label
 //!   takes the same value color.  The toggle is the one control
@@ -126,10 +126,10 @@ pub fn pill_spans(
 
 // ── Toggle ──────────────────────────────────────────────────────────────────
 
-/// Fixed rendered width of a toggle: a 4-cell track plus a 4-cell label
+/// Fixed rendered width of a toggle: a 3-cell track plus a 4-cell label
 /// slot (`" on "` / `" off"`).  Constant so a column of toggles aligns
 /// and never jitters as the value flips.
-pub const TOGGLE_WIDTH: usize = 8;
+pub const TOGGLE_WIDTH: usize = 7;
 
 /// Total rendered width (in cells) of a toggle.  See [`TOGGLE_WIDTH`].
 pub fn toggle_width() -> usize {
@@ -138,8 +138,8 @@ pub fn toggle_width() -> usize {
 
 /// Build the styled spans for an on/off toggle slider.
 ///
-/// The 4-cell track is a 1-cell handle — a solid `text`-colored cell
-/// carrying a `|` grip mark in slightly darker `text_muted` — plus 3 cells of
+/// The 3-cell track is a 1-cell handle — a solid `text`-colored cell
+/// carrying a `|` grip mark in slightly darker `text_muted` — plus 2 cells of
 /// colored fill (`success` when on, `text_muted` when off), with the
 /// handle flush right when on and flush left when off, so the colored
 /// fill reads as the "behind the switch" surface (iOS-style).  The light
@@ -161,7 +161,7 @@ pub fn toggle_spans(on: bool, _focused: bool, disabled: bool, theme: &Theme) -> 
             .add_modifier(Modifier::DIM);
         // No fill: the empty cells show nothing, the dim `|` handle alone
         // marks the position.
-        let track = if on { "   |" } else { "|   " };
+        let track = if on { "  |" } else { "|  " };
         return vec![Span::styled(track, muted), Span::styled(label, muted)];
     }
 
@@ -170,7 +170,7 @@ pub fn toggle_spans(on: bool, _focused: bool, disabled: bool, theme: &Theme) -> 
     // darker `text_muted` fg — reads as a grippable handle without letting
     // the colored track show through.
     let handle = Span::styled("|", Style::default().fg(p.text_muted).bg(p.text));
-    let fill = Span::styled("   ", Style::default().bg(value));
+    let fill = Span::styled("  ", Style::default().bg(value));
     // Handle flush right when on, flush left when off.
     let mut spans = if on {
         vec![fill, handle]

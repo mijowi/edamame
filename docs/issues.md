@@ -10,7 +10,7 @@
 
 - Implement HTML export. Add an export modal with options including "Export inlined images as data:URIs or leave as link" and "Export diagrams as inlined SVG or leave as code" (improve the wording).
 
-- The editor cursor is not shown when the terminal window is not focused, but the cursor is still shown in modals. Thread window focus into modals as well.
+- The editor cursor is hideden when the terminal window loses focus, but the cursor is still shown in modals. Thread window focus into modals as well.
 
 - Switch theme modal dark/light buttons should use new pill widget
 
