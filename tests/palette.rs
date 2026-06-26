@@ -107,7 +107,7 @@ fn settings_overlay_field_change_response_is_emitted_once() {
     // editor on Enter (a numeric field is the cleanest test of the
     // confirm path because the alternative — cycling a bool — fires
     // FieldChanged on its own).  Use the row label table to find it.
-    let target_label = "Editor max width";
+    let target_label = "  Char limit";
     while !state.focused_row_label_eq(target_label) {
         let resp = state.handle_key(
             &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
@@ -181,12 +181,12 @@ impl SettingsStateExt for SettingsState {
             "Autosave",
             "Big H1 headings",
             "Blink cursor",
-            "Editor max width",
             "Limit editor width",
+            "  Char limit",
             "Scroll speed",
             "Show diagrams",
             "Show images",
-            "Show remote images",
+            "  Show remote images",
             "Show line numbers",
             "Show table buttons",
             "Use visual line navigation",

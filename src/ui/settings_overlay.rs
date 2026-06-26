@@ -16,7 +16,7 @@
 //! Autosave                        |   off
 //!   Automatically save changes when idle
 //!
-//! Editor max width                100
+//!   Char limit                     100
 //! Maximum content width in characters when limit is on
 //! ...
 //! ```
@@ -706,7 +706,7 @@ mod tests {
         let mut config = Config::default();
         let mut state = SettingsState::new();
         // No "Enter to begin": focusing the row opens its draft.
-        focus_row(&mut state, &config, "Editor max width");
+        focus_row(&mut state, &config, "  Char limit");
         assert_eq!(state.editing.as_deref(), Some("100"));
         for _ in 0..3 {
             state.handle_key(&key(KeyCode::Backspace), &mut config);
@@ -725,7 +725,7 @@ mod tests {
     fn text_input_commits_on_focus_leave() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, &config, "Editor max width");
+        focus_row(&mut state, &config, "  Char limit");
         for _ in 0..3 {
             state.handle_key(&key(KeyCode::Backspace), &mut config);
         }
@@ -736,14 +736,14 @@ mod tests {
         let resp = state.handle_key(&key(KeyCode::Up), &mut config);
         assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
         assert_eq!(config.editor.max_width_cols, 200);
-        assert_ne!(state.rows[state.focused].label, "Editor max width");
+        assert_ne!(state.rows[state.focused].label, "  Char limit");
     }
 
     #[test]
     fn invalid_draft_reverts_on_focus_leave() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, &config, "Editor max width");
+        focus_row(&mut state, &config, "  Char limit");
         for _ in 0..3 {
             state.handle_key(&key(KeyCode::Backspace), &mut config);
         }
@@ -805,7 +805,7 @@ mod tests {
     fn left_right_cycle_show_remote_images() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, &config, "Show remote images");
+        focus_row(&mut state, &config, "  Show remote images");
         assert_eq!(config.images.remote_policy, RemoteImagePolicy::Ask);
         state.handle_key(&key(KeyCode::Right), &mut config);
         assert_eq!(config.images.remote_policy, RemoteImagePolicy::Always);
@@ -817,7 +817,7 @@ mod tests {
     fn invalid_inline_value_is_rejected() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, &config, "Editor max width");
+        focus_row(&mut state, &config, "  Char limit");
         // Replace `100` with garbage (draft is already open on focus).
         for _ in 0..3 {
             state.handle_key(&key(KeyCode::Backspace), &mut config);
@@ -846,7 +846,7 @@ mod tests {
     fn escape_closes_overlay_and_abandons_uncommitted_draft() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, &config, "Editor max width");
+        focus_row(&mut state, &config, "  Char limit");
         // Type an uncommitted change, then Esc.
         for c in "9".chars() {
             state.handle_key(&key(KeyCode::Char(c)), &mut config);
@@ -881,12 +881,12 @@ mod tests {
                 "Autosave",
                 "Big H1 headings",
                 "Blink cursor",
-                "Editor max width",
                 "Limit editor width",
+                "  Char limit",
                 "Scroll speed",
                 "Show diagrams",
                 "Show images",
-                "Show remote images",
+                "  Show remote images",
                 "Show line numbers",
                 "Show table buttons",
                 "Use visual line navigation",
@@ -1103,7 +1103,7 @@ mod tests {
         let remote_idx = state
             .rows
             .iter()
-            .position(|r| r.label == "Show remote images")
+            .position(|r| r.label == "  Show remote images")
             .unwrap();
         assert!(state.rows[remote_idx].is_disabled(&config));
         state.focused = remote_idx - 1; // row just above the locked one
