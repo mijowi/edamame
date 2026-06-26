@@ -20,7 +20,7 @@ use crate::ui::controls;
 /// Non-focusable; identified in `build_row_lines` by string equality
 /// against this constant so it can be rendered without the usual
 /// label/value formatting.
-pub(crate) const HEADER_NOTE: &str = "Common options shown below — edit config.toml for all others";
+pub(crate) const HEADER_NOTE: &str = "Common options shown below — all others in config.toml";
 
 pub(crate) const LABEL_BIG_H1: &str = "Big H1 headings";
 pub(crate) const LABEL_VISUAL_LINE_NAV: &str = "Use visual line navigation";
@@ -44,7 +44,7 @@ const MOUSE_SCROLL_LINES_MIN: usize = 1;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum RowAction {
-    /// "Open config.toml in default editor" sentinel.
+    /// "Open config.toml in editor" sentinel.
     OpenExternalEditor,
     /// "Open Config folder" sentinel — fires the `OpenConfigFolder`
     /// action via the OS file manager (`xdg-open` on Linux,
@@ -237,25 +237,23 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         display_only_row(""),
         RowDef {
             label: "Open config folder",
-            description: Some("Press Enter to open externally"),
+            description: Some("Press Enter to open in file manager"),
             describe: None,
             kind: RowKind {
                 focusable: true,
                 action: RowAction::OpenConfigFolder,
-                read: |_, _| {
-                    Config::config_dir()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default()
-                },
+                // The folder path is not shown (it can be long); the
+                // `[ Open ]` button is the affordance.
+                read: |_, _| String::new(),
                 write_string: no_write,
                 cycle: None,
-                options: None,
+                options: Some(controls::Control::Button("Open")),
                 disabled: None,
             },
         },
         RowDef {
-            label: "Open config.toml in default editor",
-            description: Some("Press Enter to open externally"),
+            label: "Open config.toml",
+            description: Some("Press Enter to open in default editor"),
             describe: None,
             kind: RowKind {
                 focusable: true,
@@ -263,7 +261,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 read: |_, _| String::new(),
                 write_string: no_write,
                 cycle: None,
-                options: None,
+                options: Some(controls::Control::Button("Open")),
                 disabled: None,
             },
         },
@@ -329,7 +327,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: "Limit editor width",
-            description: Some("Cap the editor content to a fixed width"),
+            description: Some("Limit the editor content width"),
             describe: None,
             kind: RowKind {
                 focusable: true,
@@ -346,7 +344,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: "  Char limit",
-            description: Some("Maximum content width in characters when limit is on"),
+            description: Some("Maximum content width when limit is on"),
             describe: None,
             kind: RowKind {
                 focusable: true,
@@ -367,7 +365,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: LABEL_SCROLL_SPEED,
-            description: Some("Lines per mouse-wheel tick (also applies to touchpads)"),
+            description: Some("Lines per mouse-wheel tick"),
             describe: None,
             kind: RowKind {
                 focusable: true,
@@ -388,8 +386,11 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: "Diff when file changes",
+            // Two-line footer description: the on/off meanings differ enough
+            // to spell out separately.  Split on `\n` by the footer renderer.
             description: Some(
-                "Review external changes hunk by hunk (off: silently reload a clean buffer)",
+                "On: Review external changes hunk by hunk\n\
+                 Off: Silently reload a clean buffer",
             ),
             describe: None,
             kind: RowKind {
@@ -523,7 +524,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: LABEL_VIM_MODE,
-            description: Some("Vim-style modal editing (Normal / Insert / Visual)"),
+            description: Some("Use Vim-style modal editing"),
             describe: None,
             kind: RowKind {
                 focusable: true,

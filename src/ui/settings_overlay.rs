@@ -10,8 +10,8 @@
 //! Layout:
 //!
 //! ```text
-//! Open Config folder              <config_dir>
-//! Open config.toml in default editor
+//! Open Config folder              [ Open ]
+//! Open config.toml in editor      [ Open ]
 //!
 //! Autosave                        |   off
 //!   Automatically save changes when idle
@@ -91,7 +91,7 @@ pub(crate) fn all_row_labels() -> Vec<&'static str> {
 pub enum SettingsResponse {
     Continue,
     Cancelled,
-    /// User chose `Open config.toml in default editor` — caller
+    /// User chose `Open config.toml in editor` — caller
     /// should suspend the TUI and run `$VISUAL`/`$EDITOR`, falling
     /// back to `open::that(&config_path)`.
     OpenInExternalEditor,
@@ -399,13 +399,16 @@ impl<'a> StatefulWidget for SettingsView<'a> {
         let row_lines = build_row_lines(state, self.config, self.theme, self.cursor_visible);
         let content_width = settings_content_width(state, self.config);
 
-        // Pinned-bottom region: 1 description row when the focused row
-        // has one, plus 2 rows for the error footer (blank + ✗ msg).
+        // Pinned-bottom region: one row per description line (a
+        // description may be multi-line, `\n`-separated) when the focused
+        // row has one, plus 2 rows for the error footer (blank + ✗ msg).
         let focused_row = state.rows.get(state.focused);
         let focused_desc = focused_row.and_then(|r| r.resolved_description(self.config));
-        let has_description = focused_desc.is_some();
-        let pinned_bottom: u16 = (if has_description { 1 } else { 0 })
-            + (if state.last_error.is_some() { 2 } else { 0 });
+        let desc_rows = focused_desc
+            .as_deref()
+            .map(|d| d.lines().count() as u16)
+            .unwrap_or(0);
+        let pinned_bottom: u16 = desc_rows + (if state.last_error.is_some() { 2 } else { 0 });
 
         let content = ContentSize {
             width: content_width,
@@ -478,19 +481,20 @@ impl<'a> StatefulWidget for SettingsView<'a> {
 
         // Pinned footer: description (when present) followed by error.
         let mut footer_y = inner.y + table_height;
-        if has_description {
-            if let Some(desc) = focused_desc.as_deref() {
+        if let Some(desc) = focused_desc.as_deref() {
+            // No leading indent: the description left-aligns with the
+            // header note ("Common options shown below …") at the body
+            // edge rather than under the row labels.  A multi-line
+            // description renders one row per `\n`-separated line.
+            for line in desc.lines() {
                 let desc_area = Rect {
                     x: inner.x,
                     y: footer_y,
                     width: inner.width,
                     height: 1,
                 };
-                // No leading indent: the description left-aligns with the
-                // header note ("Common options shown below …") at the body
-                // edge rather than under the row labels.
                 Paragraph::new(Line::from(Span::styled(
-                    desc.to_owned(),
+                    line.to_owned(),
                     self.theme.modal_description,
                 )))
                 .style(self.theme.modal_bg)
@@ -574,6 +578,9 @@ fn build_row_lines<'a>(
                         theme,
                     ));
                 }
+                Control::Button(label) => {
+                    spans.extend(controls::button_spans(label, focused, theme));
+                }
             }
         } else if editing {
             // Focused text-input row: render the live, editable draft with
@@ -617,6 +624,7 @@ fn settings_content_width(state: &SettingsState, config: &Config) -> u16 {
         let value_w = match r.kind.options {
             Some(Control::Toggle) => controls::toggle_width(),
             Some(Control::Pill(labels)) => controls::pill_width(labels),
+            Some(Control::Button(label)) => controls::button_width(label),
             None => (r.kind.read)(config, &state.theme_names).chars().count(),
         };
         FOCUS_MARKER_WIDTH + LABEL_PAD + value_w
@@ -625,8 +633,10 @@ fn settings_content_width(state: &SettingsState, config: &Config) -> u16 {
     // size against its raw length.  Resolve it so a dynamic description
     // (e.g. the blink cadence) can't clip.
     let desc_max = max_row_width(&state.rows, |r| {
+        // A description may be multi-line (`\n`-separated); size against
+        // its widest line, not the whole string.
         r.resolved_description(config)
-            .map(|d| d.chars().count())
+            .map(|d| d.lines().map(|l| l.chars().count()).max().unwrap_or(0))
             .unwrap_or(0)
     });
     let err_max = optional_text_width(state.last_error.as_deref(), 2);
@@ -763,7 +773,7 @@ mod tests {
     fn enter_on_config_toml_row_emits_open_external_editor() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, &config, "Open config.toml in default editor");
+        focus_row(&mut state, &config, "Open config.toml");
         let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
         assert_eq!(resp, SettingsResponse::OpenInExternalEditor);
     }
@@ -783,12 +793,9 @@ mod tests {
         let mut config = Config::default();
         let mut state = SettingsState::new();
         // Default focus is the first editable row — Up must skip the
-        // blank divider and land on "Open config.toml in default editor".
+        // blank divider and land on "Open config.toml in editor".
         state.handle_key(&key(KeyCode::Up), &mut config);
-        assert_eq!(
-            state.rows[state.focused].label,
-            "Open config.toml in default editor"
-        );
+        assert_eq!(state.rows[state.focused].label, "Open config.toml");
         state.handle_key(&key(KeyCode::Up), &mut config);
         assert_eq!(state.rows[state.focused].label, "Open config folder");
     }
@@ -866,7 +873,7 @@ mod tests {
                 rows::HEADER_NOTE,
                 "",
                 "Open config folder",
-                "Open config.toml in default editor",
+                "Open config.toml",
                 "",
                 // Editable settings, alphabetized by label — except
                 // "Show line numbers", grouped below the image rows.

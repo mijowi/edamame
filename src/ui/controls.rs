@@ -66,6 +66,10 @@ pub enum Control {
     Toggle,
     /// Multi-value (2+) cycle pill over a fixed, ordered label set.
     Pill(&'static [&'static str]),
+    /// Press-to-act target rendered as a bracketed `[ label ]` chip in the
+    /// value column (e.g. an "Open externally" action row).  Activated with
+    /// Enter; the label is fixed (it does not reflect a config value).
+    Button(&'static str),
 }
 
 /// Canonical `Ask` / `Always` / `Never` tri-state (image, remote-image,
@@ -143,6 +147,26 @@ pub fn button_style(focused: bool, theme: &Theme) -> Style {
             .bg(theme.palette.surface)
             .add_modifier(Modifier::BOLD)
     }
+}
+
+// ── Button ──────────────────────────────────────────────────────────────────
+
+/// Rendered width (in cells) of an inline `[ label ]` button chip: the
+/// label plus the four framing cells (`[ `…` ]`).  Matches
+/// [`super::button_row::Button`]'s width math so the two stay aligned.
+pub fn button_width(label: &str) -> usize {
+    label.chars().count() + 4
+}
+
+/// Build the styled span(s) for an inline button chip rendered in a
+/// control row's value column.  Shares [`button_style`] (and therefore the
+/// `[ … ]` focus fill) with the centred [`super::button_row`] helpers so a
+/// settings-row button reads identically to a footer button.
+pub fn button_spans(label: &str, focused: bool, theme: &Theme) -> Vec<Span<'static>> {
+    vec![Span::styled(
+        format!("[ {label} ]"),
+        button_style(focused, theme),
+    )]
 }
 
 // ── Cycle / cascade logic ──────────────────────────────────────────────────

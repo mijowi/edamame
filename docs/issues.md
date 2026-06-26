@@ -13,7 +13,6 @@
 - Zenburn green more green and bg darker
 - Nord green more green and bg darker
 
-- Add setting for disabling diff mode
 - Add note to "Entering diff mode" modal that says diff mode can be disabled in settings. Should we just add the option to disable diff mode in the intro modal?
 - Update welcome modal feature notes to include diff mode
 

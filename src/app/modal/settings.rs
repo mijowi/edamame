@@ -171,7 +171,7 @@ mod tests {
         crate::ui::settings_overlay::HEADER_NOTE,
         "",
         "Open config folder",
-        "Open config.toml in default editor",
+        "Open config.toml",
         "",
         "Autosave",
         "  Char limit",
