@@ -19,6 +19,7 @@ use ratatui::{
 
 use crate::config::Theme;
 use crate::ui::button_row::{button_row_width, render_button_row};
+use crate::ui::controls;
 use crate::ui::modal_row::{format_modal_row, RowLayout};
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind, ScrollContainerState,
@@ -597,11 +598,7 @@ fn render_name_row(
         width: inner.width,
         height: 1,
     };
-    let value_style = if focused {
-        theme.modal_input_focused
-    } else {
-        theme.modal_input_unfocused
-    };
+    let value_style = controls::text_value_style(focused, theme);
     let total = value.chars().count();
     let mut spans: Vec<Span<'_>> = Vec::with_capacity(6);
     spans.push(Span::styled(" ", value_style));

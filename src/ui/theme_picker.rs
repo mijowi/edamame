@@ -23,6 +23,7 @@ use ratatui::{
 
 use crate::config::{AppearanceMode, Theme};
 use crate::ui::content_width::max_row_width;
+use crate::ui::controls;
 use crate::ui::modal_row::{format_modal_row, RowLayout};
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind, ScrollContainerState,
@@ -39,8 +40,8 @@ pub enum ThemePickerResponse {
     /// whenever the focused theme name differs from the one most
     /// recently previewed.
     Preview(String),
-    /// User flipped the Dark/Light pill (via Tab / Left / Right or by
-    /// clicking the pill).  Caller is responsible for recomputing the
+    /// User flipped the Dark-mode toggle (via Left / Right or by
+    /// clicking the toggle).  Caller is responsible for recomputing the
     /// filtered theme list, deciding which theme to preview under the
     /// new mode (typically via [`crate::config::theme::resolve_theme_for_mode_switch`]),
     /// rebuilding the state's `themes` vec, and re-focusing the picker.
@@ -76,15 +77,13 @@ pub struct ThemePickerState {
     /// already-active theme emits a preview.
     last_previewed: String,
     pub esc_button_rect: Option<Rect>,
-    /// Active appearance mode — drives the pill highlight and is
+    /// Active appearance mode — drives the toggle value and is
     /// returned as part of `Selected` so the App can persist
     /// `config.appearance` alongside `config.theme`.
     pub mode: AppearanceMode,
-    /// Hit-rect for the `[ Dark ]` side of the pill, captured during
-    /// render so a click can flip mode without re-deriving layout.
-    pub pill_dark_rect: Option<Rect>,
-    /// Hit-rect for the `[ Light ]` side of the pill.
-    pub pill_light_rect: Option<Rect>,
+    /// Hit-rect for the Dark-mode toggle, captured during render so a
+    /// click can flip mode without re-deriving layout.
+    pub toggle_rect: Option<Rect>,
     /// Theme name to re-focus on the next `refresh_display`.  Set by
     /// `invalidate_display` to the previously-focused theme name so the
     /// focus survives filter changes (Backspace broadening the query,
@@ -108,8 +107,7 @@ impl ThemePickerState {
             last_previewed,
             esc_button_rect: None,
             mode,
-            pill_dark_rect: None,
-            pill_light_rect: None,
+            toggle_rect: None,
             pending_focus_name: None,
         };
         state.refresh_display();
@@ -131,7 +129,10 @@ impl ThemePickerState {
         }
         match key.code {
             KeyCode::Esc => ThemePickerResponse::Cancelled,
-            KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+            // Only the arrow keys flip the Dark-mode toggle.  Tab is
+            // deliberately *not* a switch toggler here so users don't
+            // generalize "Tab toggles switches" to other modals.
+            KeyCode::Left | KeyCode::Right => {
                 ThemePickerResponse::ModeChanged(self.mode.opposite())
             }
             KeyCode::Enter => {
@@ -222,23 +223,13 @@ impl ThemePickerState {
         &self.last_previewed
     }
 
-    /// If `(col, row)` falls inside the *inactive* half of the
-    /// Dark/Light pill, return the mode the user clicked toward (i.e.
-    /// the opposite of the current mode).  Clicks on the active half
-    /// are no-ops and return `None` along with clicks outside both
-    /// pill rects.
-    pub fn pill_hit(&self, col: u16, row: u16) -> Option<AppearanceMode> {
-        let inside = |rect: Option<Rect>| {
-            rect.map(|r| col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height)
-                .unwrap_or(false)
-        };
-        if inside(self.pill_dark_rect) && self.mode == AppearanceMode::Light {
-            return Some(AppearanceMode::Dark);
-        }
-        if inside(self.pill_light_rect) && self.mode == AppearanceMode::Dark {
-            return Some(AppearanceMode::Light);
-        }
-        None
+    /// If `(col, row)` falls inside the Dark-mode toggle, return the
+    /// mode the click flips toward (the opposite of the current mode).
+    /// Clicks outside the toggle rect return `None`.
+    pub fn toggle_hit(&self, col: u16, row: u16) -> Option<AppearanceMode> {
+        let r = self.toggle_rect?;
+        let inside = col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height;
+        inside.then(|| self.mode.opposite())
     }
 
     /// Replace the theme list and re-focus on `focus_on` (typically the
@@ -359,13 +350,13 @@ impl<'a> StatefulWidget for ThemePickerView<'a> {
 
         let content_width = theme_picker_content_width(state)
             .max(NO_MATCHES_WIDTH)
-            .max(PILL_MIN_WIDTH)
-            .max(PILL_HINT_LABEL.chars().count() as u16);
+            .max(toggle_row_width())
+            .max(MODE_HINT_LABEL.chars().count() as u16);
         let row_count = state.display_rows.len().max(1) as u16;
         let scrolling_height = row_count.min(MAX_LIST_ROWS);
         let content = ContentSize {
             width: content_width,
-            // pinned_top = pill row + hint row + blank spacer + input
+            // pinned_top = toggle row + hint row + blank spacer + input
             // row + divider row.  The blank spacer separates the
             // appearance affordance from the search field so the two
             // don't read as a single block of chrome.
@@ -418,71 +409,61 @@ impl<'a> StatefulWidget for ThemePickerView<'a> {
         state.esc_button_rect = layout.esc_hit_rect;
         let inner = layout.body;
         if inner.height < 5 || inner.width == 0 {
-            state.pill_dark_rect = None;
-            state.pill_light_rect = None;
+            state.toggle_rect = None;
             return;
         }
 
-        // Pill row — `[ Dark ]  [ Light ]`, centred.  Stored hit-rects
-        // let mouse clicks flip mode without re-deriving the layout.
-        let pill_y = inner.y;
-        let pill_x = inner
+        // Toggle row — `Dark mode  ‹on/off slider›`, centred.  The stored
+        // hit-rect lets a mouse click flip the mode without re-deriving
+        // the layout.
+        let toggle_y = inner.y;
+        let dark_on = state.mode == AppearanceMode::Dark;
+        let label_w = MODE_LABEL.chars().count() as u16;
+        let slider_w = controls::toggle_width() as u16;
+        let total_w = label_w + MODE_LABEL_GAP_W + slider_w;
+        let toggle_x = inner
             .x
-            .saturating_add(inner.width.saturating_sub(PILL_TOTAL_W) / 2);
-        let dark_active = state.mode == AppearanceMode::Dark;
-        let dark_style = if dark_active {
-            self.theme.modal_item_selected
-        } else {
-            self.theme.modal_item
-        };
-        let light_style = if dark_active {
-            self.theme.modal_item
-        } else {
-            self.theme.modal_item_selected
-        };
-        let pill_line = Line::from(vec![
-            Span::styled(PILL_DARK_LABEL, dark_style),
-            Span::styled(PILL_GAP, self.theme.modal_item),
-            Span::styled(PILL_LIGHT_LABEL, light_style),
-        ]);
-        let pill_area = Rect {
-            x: pill_x,
-            y: pill_y,
-            width: PILL_TOTAL_W,
-            height: 1,
-        };
-        // Fill the rest of the pill row with modal_bg so the surface
-        // reads as one continuous chrome strip.
+            .saturating_add(inner.width.saturating_sub(total_w) / 2);
+        let mut toggle_spans = vec![Span::styled(
+            format!("{MODE_LABEL}{}", " ".repeat(MODE_LABEL_GAP_W as usize)),
+            self.theme.modal_item,
+        )];
+        toggle_spans.extend(controls::toggle_spans(dark_on, false, false, self.theme));
+        // Fill the whole row with modal_bg so the surface reads as one
+        // continuous chrome strip, then paint the centred control.
         let row_fill = Rect {
             x: inner.x,
-            y: pill_y,
+            y: toggle_y,
             width: inner.width,
             height: 1,
         };
         Paragraph::new("")
             .style(self.theme.modal_bg)
             .render(row_fill, buf);
-        Paragraph::new(pill_line)
+        Paragraph::new(Line::from(toggle_spans))
             .style(self.theme.modal_bg)
-            .render(pill_area, buf);
-        state.pill_dark_rect = Some(Rect {
-            x: pill_x,
-            y: pill_y,
-            width: PILL_DARK_W,
-            height: 1,
-        });
-        state.pill_light_rect = Some(Rect {
-            x: pill_x + PILL_DARK_W + PILL_GAP_W,
-            y: pill_y,
-            width: PILL_LIGHT_W,
+            .render(
+                Rect {
+                    x: toggle_x,
+                    y: toggle_y,
+                    width: total_w,
+                    height: 1,
+                },
+                buf,
+            );
+        // Hit-rect spans the slider portion (clicking it flips the mode).
+        state.toggle_rect = Some(Rect {
+            x: toggle_x + label_w + MODE_LABEL_GAP_W,
+            y: toggle_y,
+            width: slider_w,
             height: 1,
         });
 
         // Hint row — centred, muted text describing how to flip the
-        // pill.  Sits directly under the pill so the affordance is
+        // toggle.  Sits directly under it so the affordance is
         // discoverable for keyboard users.
         let hint_y = inner.y + 1;
-        let hint_len = PILL_HINT_LABEL.chars().count() as u16;
+        let hint_len = MODE_HINT_LABEL.chars().count() as u16;
         let hint_x = inner
             .x
             .saturating_add(inner.width.saturating_sub(hint_len) / 2);
@@ -498,7 +479,7 @@ impl<'a> StatefulWidget for ThemePickerView<'a> {
         let hint_style = ratatui::style::Style::default()
             .fg(self.theme.palette.text_muted)
             .bg(self.theme.palette.surface_elevated);
-        Paragraph::new(Line::from(Span::styled(PILL_HINT_LABEL, hint_style)))
+        Paragraph::new(Line::from(Span::styled(MODE_HINT_LABEL, hint_style)))
             .style(self.theme.modal_bg)
             .render(
                 Rect {
@@ -623,23 +604,20 @@ impl<'a> StatefulWidget for ThemePickerView<'a> {
 const NO_MATCHES_WIDTH: u16 = 12;
 const MAX_LIST_ROWS: u16 = 20;
 const CURRENT_SUFFIX_W: usize = "current".len();
-const PILL_DARK_LABEL: &str = "[ Dark ]";
-const PILL_LIGHT_LABEL: &str = "[ Light ]";
-const PILL_GAP: &str = "  ";
-// Width constants — `.len()` is byte length, which equals visual width
-// only for ASCII.  The pill labels and gap are ASCII-only; the runtime
-// test `pill_labels_are_ascii` guards that invariant so these consts
-// stay correct.  The hint label is non-ASCII (← →) so it uses
-// `chars().count()` at the (single) use site.
-const PILL_DARK_W: u16 = PILL_DARK_LABEL.len() as u16;
-const PILL_LIGHT_W: u16 = PILL_LIGHT_LABEL.len() as u16;
-const PILL_GAP_W: u16 = PILL_GAP.len() as u16;
-const PILL_TOTAL_W: u16 = PILL_DARK_W + PILL_GAP_W + PILL_LIGHT_W;
-const PILL_MIN_WIDTH: u16 = PILL_TOTAL_W;
-/// Muted, centred hint shown directly under the pill.  Tells the user
+/// Label preceding the Dark-mode toggle slider on the appearance row.
+const MODE_LABEL: &str = "Dark mode";
+/// Gap (in cells) between the label and the toggle slider.
+const MODE_LABEL_GAP_W: u16 = 1;
+/// Muted, centred hint shown directly under the toggle.  Tells the user
 /// which keys flip appearance — without this the Tab / arrow-key
 /// affordance is invisible.
-const PILL_HINT_LABEL: &str = "Tab / ← →  to switch";
+const MODE_HINT_LABEL: &str = "← →  to toggle";
+
+/// Total rendered width of the centred appearance row: label + gap +
+/// toggle slider.
+fn toggle_row_width() -> u16 {
+    MODE_LABEL.chars().count() as u16 + MODE_LABEL_GAP_W + controls::toggle_width() as u16
+}
 
 fn theme_picker_content_width(state: &ThemePickerState) -> u16 {
     max_row_width(&state.themes, |name| {
@@ -712,20 +690,19 @@ mod tests {
     }
 
     #[test]
-    fn tab_emits_mode_changed_to_opposite() {
+    fn tab_does_not_toggle_mode() {
+        // Tab is deliberately inert on the Dark-mode toggle so users
+        // don't generalize "Tab toggles switches" to other modals; only
+        // the arrow keys flip it.
         let mut state = ThemePickerState::open(themes(), "Ayu".into(), AppearanceMode::Dark);
-        let resp = state.handle_key(&key(KeyCode::Tab));
         assert_eq!(
-            resp,
-            ThemePickerResponse::ModeChanged(AppearanceMode::Light)
+            state.handle_key(&key(KeyCode::Tab)),
+            ThemePickerResponse::Continue
         );
-    }
-
-    #[test]
-    fn back_tab_emits_mode_changed_to_opposite() {
-        let mut state = ThemePickerState::open(themes(), "Ayu".into(), AppearanceMode::Light);
-        let resp = state.handle_key(&key(KeyCode::BackTab));
-        assert_eq!(resp, ThemePickerResponse::ModeChanged(AppearanceMode::Dark));
+        assert_eq!(
+            state.handle_key(&key(KeyCode::BackTab)),
+            ThemePickerResponse::Continue
+        );
     }
 
     #[test]
@@ -802,20 +779,6 @@ mod tests {
             ThemePickerResponse::Continue => {}
             other => panic!("unexpected {other:?}"),
         }
-    }
-
-    #[test]
-    fn pill_labels_are_ascii() {
-        // The PILL_*_W consts use `.len()` (byte length); that's only
-        // a valid visual width if every byte is ASCII.  Editing the
-        // labels to include non-ASCII (e.g. ❯ or →) without updating
-        // the width strategy would silently misalign the pill.
-        assert!(PILL_DARK_LABEL.is_ascii());
-        assert!(PILL_LIGHT_LABEL.is_ascii());
-        assert!(PILL_GAP.is_ascii());
-        assert_eq!(PILL_DARK_LABEL.len(), PILL_DARK_LABEL.chars().count());
-        assert_eq!(PILL_LIGHT_LABEL.len(), PILL_LIGHT_LABEL.chars().count());
-        assert_eq!(PILL_GAP.len(), PILL_GAP.chars().count());
     }
 
     #[test]
