@@ -72,7 +72,7 @@ pub fn button_row_width(labels: &[&str]) -> u16 {
 
 /// Render the button row, horizontally centred in `area`, with the
 /// button at `focused_idx` drawn focused (`primary` chip) and
-/// the rest as a neutral `text_muted` chip (see `cycle_pill::button_style`).
+/// the rest as a neutral `text_muted` chip (see `controls::button_style`).
 ///
 /// Returns the absolute terminal rect of each rendered button, in the
 /// same order as `labels`, so callers that need to hit-test mouse
@@ -107,7 +107,7 @@ pub fn render_buttons(
 ) -> Vec<Rect> {
     let mut spans: Vec<Span<'_>> = Vec::with_capacity(buttons.len() * 2 + 1);
     for (i, button) in buttons.iter().enumerate() {
-        let style = crate::ui::cycle_pill::button_style(i == focused_idx, theme);
+        let style = crate::ui::controls::button_style(i == focused_idx, theme);
         spans.push(Span::styled(button.rendered(), style));
         if i + 1 < buttons.len() {
             spans.push(Span::raw("  "));
@@ -137,6 +137,35 @@ pub fn render_buttons(
         x += w + 2;
     }
     rects
+}
+
+/// Render a single [`Button`] left-aligned at the start of `area` (rather
+/// than centred like [`render_buttons`]), filling the row with the modal
+/// background.  Returns the button's absolute rect for hit-testing.
+///
+/// Used where a button reads as an inline affordance pinned to the body's
+/// left edge rather than a centred footer row — e.g. the welcome modal's
+/// "Switch theme" button.  Shares the bracket formatting, width math, and
+/// `controls::button_style` focus styling with the rest of this module so
+/// callers never hand-roll a button.
+pub fn render_button_at(
+    area: Rect,
+    buf: &mut Buffer,
+    button: Button,
+    focused: bool,
+    theme: &Theme,
+) -> Rect {
+    let style = crate::ui::controls::button_style(focused, theme);
+    Paragraph::new(Line::from(Span::styled(button.rendered(), style)))
+        .alignment(Alignment::Left)
+        .style(theme.modal_bg)
+        .render(area, buf);
+    Rect {
+        x: area.x,
+        y: area.y,
+        width: button.width(),
+        height: 1,
+    }
 }
 
 #[cfg(test)]

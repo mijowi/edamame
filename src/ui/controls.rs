@@ -41,20 +41,37 @@
 //! toggle additionally encodes its value by handle position and the literal
 //! `on`/`off` text.
 //!
-//! The option-set data ([`Pill`], [`ON_OFF`], [`ASK_ALWAYS_NEVER`]) and
-//! the cycle / cascade logic ([`cycle_enum`], [`apply_images_cascade`])
-//! are re-exported from [`super::cycle_pill`] so callers have a single
-//! import path; that module still owns the legacy chip rendering used by
-//! the welcome modal until it migrates onto this scheme.
+//! The option-set data ([`Control`], [`ASK_ALWAYS_NEVER`]) and the cycle /
+//! cascade logic ([`cycle_enum`], [`apply_images_cascade`]) live here too,
+//! so every interactive control has a single import path.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
-use crate::config::Theme;
+use crate::config::{ImagesEnabled, RemoteImagePolicy, Theme};
 
-pub use super::cycle_pill::{
-    apply_images_cascade, cycle_enum, Pill, PillStyle, ASK_ALWAYS_NEVER, ON_OFF,
-};
+// ── Control kinds ─────────────────────────────────────────────────────────
+
+/// How an option-valued row renders its current value.  Chosen at the
+/// definition site so a two-value setting that is *not* semantically
+/// on/off can still cycle as a pill rather than collapse into a toggle.
+///
+/// On/off is no longer a pill flavor — a binary setting uses the dedicated
+/// [`toggle_spans`] slider via [`Control::Toggle`].  A pill is reserved for
+/// genuine multi-value (2+) choices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Control {
+    /// Binary on/off, rendered as the toggle slider.  The value is read as
+    /// `"on"` / `"off"`; `"on"` is the enabled state.
+    Toggle,
+    /// Multi-value (2+) cycle pill over a fixed, ordered label set.
+    Pill(&'static [&'static str]),
+}
+
+/// Canonical `Ask` / `Always` / `Never` tri-state (image, remote-image,
+/// and diagram policies).  Shared by the settings overlay and the welcome
+/// modal so the labels can't drift.
+pub const ASK_ALWAYS_NEVER: &[&str] = &["Ask", "Always", "Never"];
 
 // ── Shared control styles ─────────────────────────────────────────────────
 
@@ -88,6 +105,82 @@ pub fn text_value_style(focused: bool, theme: &Theme) -> Style {
         focused_style(theme)
     } else {
         value_unfocused_style(theme)
+    }
+}
+
+/// Style for a control row's *label column* (marker + label + padding),
+/// the single source of truth shared by every modal that lays controls
+/// out in a labeled column.  A row is one unit: when it's focused the
+/// whole label column takes the `primary` focus fill — so the parent only
+/// has to say whether the row is `focused` / `disabled`, never craft the
+/// style itself.
+///
+/// - **Focused** → `modal_item_selected` (filled `primary`, inverse text,
+///   bold) — the same fill the control widget shows, so label and widget
+///   read as a single focused control.
+/// - **Disabled** → `modal_close_hint` (muted, no fill).
+/// - **Resting** → `modal_item` (plain text on the modal surface).
+pub fn control_label_style(focused: bool, disabled: bool, theme: &Theme) -> Style {
+    if disabled {
+        theme.modal_close_hint
+    } else if focused {
+        theme.modal_item_selected
+    } else {
+        theme.modal_item
+    }
+}
+
+/// Chip style for a bracketed action button (`[ Save ]`): the shared
+/// `primary` focus fill when focused, a resting `text`-on-`surface` chip
+/// (BOLD to read as "live" in monochrome) otherwise.  Buttons in the
+/// modal button rows are never disabled, so only the focus axis varies.
+pub fn button_style(focused: bool, theme: &Theme) -> Style {
+    if focused {
+        focused_style(theme)
+    } else {
+        Style::default()
+            .fg(theme.palette.text)
+            .bg(theme.palette.surface)
+            .add_modifier(Modifier::BOLD)
+    }
+}
+
+// ── Cycle / cascade logic ──────────────────────────────────────────────────
+
+/// Cycle `current` through `order` by `delta` (signed step), wrapping at
+/// both ends.  Falls back to the first element when `current` isn't found
+/// in `order`; returns `current` unchanged for an empty `order`.  Shared
+/// by every pill caller so the wrap-around math lives in one place.
+pub fn cycle_enum<T: PartialEq + Copy>(current: T, order: &[T], delta: i32) -> T {
+    if order.is_empty() {
+        return current;
+    }
+    let i = order.iter().position(|v| *v == current).unwrap_or(0) as i32;
+    let n = order.len() as i32;
+    order[((i + delta).rem_euclid(n)) as usize]
+}
+
+/// Apply the images→remote cascade and return the remote policy to store.
+///
+/// Centralizes the rule shared by the settings overlay and the welcome
+/// modal: turning images *off* (`Never`) forces remote images to `Never`
+/// while stashing the prior choice in `pre_cascade_remote`; turning
+/// images back *on* restores that stashed choice.  `was_never` is the
+/// value of `images.enabled` *before* the change.
+pub fn apply_images_cascade(
+    new_images: ImagesEnabled,
+    was_never: bool,
+    current_remote: RemoteImagePolicy,
+    pre_cascade_remote: &mut Option<RemoteImagePolicy>,
+) -> RemoteImagePolicy {
+    let now_never = matches!(new_images, ImagesEnabled::Never);
+    if !was_never && now_never {
+        *pre_cascade_remote = Some(current_remote);
+        RemoteImagePolicy::Never
+    } else if was_never && !now_never {
+        pre_cascade_remote.take().unwrap_or(current_remote)
+    } else {
+        current_remote
     }
 }
 
@@ -204,7 +297,7 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
 
     use super::*;
-    use crate::config::Theme;
+    use crate::config::{ImagesEnabled, RemoteImagePolicy, Theme};
 
     fn theme() -> &'static Theme {
         Box::leak(Box::new(Theme::default()))
@@ -216,7 +309,7 @@ mod tests {
 
     #[test]
     fn pill_width_is_stable_across_value_and_focus() {
-        let labels = ASK_ALWAYS_NEVER.labels;
+        let labels = ASK_ALWAYS_NEVER;
         let want = pill_width(labels);
         for idx in 0..labels.len() {
             for focused in [true, false] {
@@ -247,5 +340,41 @@ mod tests {
         let spans = toggle_spans(true, false, true, theme());
         assert_eq!(spans[0].style.bg, None);
         assert!(spans[0].style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn cascade_stashes_and_restores_remote() {
+        let mut stash = None;
+        // Images on -> off: remote forced Never, prior stashed.
+        let r = apply_images_cascade(
+            ImagesEnabled::Never,
+            false,
+            RemoteImagePolicy::Always,
+            &mut stash,
+        );
+        assert_eq!(r, RemoteImagePolicy::Never);
+        assert_eq!(stash, Some(RemoteImagePolicy::Always));
+        // Images off -> on: prior restored, stash cleared.
+        let r = apply_images_cascade(
+            ImagesEnabled::Ask,
+            true,
+            RemoteImagePolicy::Never,
+            &mut stash,
+        );
+        assert_eq!(r, RemoteImagePolicy::Always);
+        assert_eq!(stash, None);
+    }
+
+    #[test]
+    fn cascade_noop_when_never_unchanged() {
+        let mut stash = None;
+        let r = apply_images_cascade(
+            ImagesEnabled::Always,
+            false,
+            RemoteImagePolicy::Ask,
+            &mut stash,
+        );
+        assert_eq!(r, RemoteImagePolicy::Ask);
+        assert_eq!(stash, None);
     }
 }

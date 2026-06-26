@@ -66,13 +66,14 @@ pub(super) struct RowKind {
     pub(super) read: fn(&Config, &[String]) -> String,
     pub(super) write_string: fn(&mut Config, &str) -> Result<(), String>,
     pub(super) cycle: Option<CycleFn>,
-    /// Pill spec for option-style rows: booleans use [`controls::ON_OFF`]
-    /// and tri-states use [`controls::ASK_ALWAYS_NEVER`].  When `Some`,
-    /// the overlay renders the *current* value as a single [`controls`]
-    /// pill (the index matching `read(..)`); the spec carries both the
-    /// labels and the toggle/cycle style.  When `None`, the row is a
-    /// single-value display instead (numeric / path / external-action rows).
-    pub(super) options: Option<controls::Pill>,
+    /// Control spec for option-style rows: booleans use
+    /// [`controls::Control::Toggle`] (the on/off slider) and tri-states use
+    /// [`controls::Control::Pill`] over [`controls::ASK_ALWAYS_NEVER`].
+    /// When `Some`, the overlay renders the *current* value as that control
+    /// (a toggle reads `on`/`off`; a pill matches `read(..)` against its
+    /// labels).  When `None`, the row is a single-value display instead
+    /// (numeric / path / external-action rows).
+    pub(super) options: Option<controls::Control>,
     /// When `Some` and the fn returns true for the current config, the
     /// row is rendered inert (dimmed label + pills) and skipped by focus
     /// navigation / cycling.  Used by the remote-images row, which the
@@ -81,9 +82,8 @@ pub(super) struct RowKind {
     pub(super) disabled: Option<fn(&Config) -> bool>,
 }
 
-/// Display label for a boolean setting's cycle pill.  Matches the order
-/// in [`controls::ON_OFF`] (`on` at index 0) so the pill widget colors
-/// the `true` state with `success`.
+/// Display string for a boolean setting.  `"on"` is the enabled state, so
+/// the [`controls::Control::Toggle`] slider reads it as on.
 fn bool_label(value: bool) -> &'static str {
     if value {
         "on"
@@ -288,7 +288,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.editor.autosave_enabled = !c.editor.autosave_enabled;
                     true
                 }),
-                options: Some(controls::ON_OFF),
+                options: Some(controls::Control::Toggle),
                 disabled: None,
             },
         },
@@ -305,7 +305,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.editor.big_h1 = !c.editor.big_h1;
                     true
                 }),
-                options: Some(controls::ON_OFF),
+                options: Some(controls::Control::Toggle),
                 disabled: None,
             },
         },
@@ -323,7 +323,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.editor.cursor_blink = !c.editor.cursor_blink;
                     true
                 }),
-                options: Some(controls::ON_OFF),
+                options: Some(controls::Control::Toggle),
                 disabled: None,
             },
         },
@@ -340,7 +340,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.editor.max_width_enabled = !c.editor.max_width_enabled;
                     true
                 }),
-                options: Some(controls::ON_OFF),
+                options: Some(controls::Control::Toggle),
                 disabled: None,
             },
         },
@@ -403,7 +403,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                         controls::cycle_enum(c.diagrams.enabled, DIAGRAMS_ENABLED_ORDER, delta);
                     true
                 }),
-                options: Some(controls::ASK_ALWAYS_NEVER),
+                options: Some(controls::Control::Pill(controls::ASK_ALWAYS_NEVER)),
                 disabled: None,
             },
         },
@@ -424,7 +424,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                         controls::cycle_enum(c.images.enabled, IMAGES_ENABLED_ORDER, delta);
                     true
                 }),
-                options: Some(controls::ASK_ALWAYS_NEVER),
+                options: Some(controls::Control::Pill(controls::ASK_ALWAYS_NEVER)),
                 disabled: None,
             },
         },
@@ -445,7 +445,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                         controls::cycle_enum(c.images.remote_policy, REMOTE_POLICY_ORDER, delta);
                     true
                 }),
-                options: Some(controls::ASK_ALWAYS_NEVER),
+                options: Some(controls::Control::Pill(controls::ASK_ALWAYS_NEVER)),
                 // Locked to Never (and skipped by focus) while images are
                 // off — mirrors the welcome modal's images→remote cascade.
                 disabled: Some(|c| matches!(c.images.enabled, ImagesEnabled::Never)),
@@ -464,7 +464,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.editor.show_line_numbers = !c.editor.show_line_numbers;
                     true
                 }),
-                options: Some(controls::ON_OFF),
+                options: Some(controls::Control::Toggle),
                 disabled: None,
             },
         },
@@ -481,7 +481,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.table.show_buttons = !c.table.show_buttons;
                     true
                 }),
-                options: Some(controls::ON_OFF),
+                options: Some(controls::Control::Toggle),
                 disabled: None,
             },
         },
@@ -498,7 +498,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.editor.visual_line_nav = !c.editor.visual_line_nav;
                     true
                 }),
-                options: Some(controls::ON_OFF),
+                options: Some(controls::Control::Toggle),
                 disabled: None,
             },
         },
@@ -524,7 +524,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     };
                     true
                 }),
-                options: Some(controls::ON_OFF),
+                options: Some(controls::Control::Toggle),
                 disabled: None,
             },
         },

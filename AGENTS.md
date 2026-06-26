@@ -211,11 +211,17 @@ src/
   ui.rs             # facade — re-exports widgets and state types
   ui/
     bottom_region.rs    # hint line + status bar layout; HintChord / HintContent
-    button_row.rs       # shared focusable [ Button ] row helper
+    button_row.rs       # shared [ Button ] elements: centered row
+                        #   (render_button_row) + left-aligned inline
+                        #   (render_button_at); built on controls::button_style
     cap_summary.rs      # capabilities-notice body lines
     command_palette.rs  # PaletteView + PaletteState (nucleo-matcher fuzzy)
     command_palette/actions.rs   # palette-eligible Action list
     content_width.rs    # measure expected wrapped width
+    controls.rs         # unified control family: Control enum (Toggle / Pill),
+                        #   toggle_spans / pill_spans, the shared style helpers
+                        #   (control_label_style, button_style, focused_style),
+                        #   cycle_enum + apply_images_cascade
     cursor.rs           # text_field_spans, split_at_char, CURSOR_BLOCK —
                         #   shared block-cursor helpers
     dim.rs              # ContentSize, FrameOpts, centered_rect_for_content,
@@ -350,6 +356,19 @@ These decisions are easy to break if you don't know they exist.
 - **Link hit-test is a source-scan shortcut.** `mouse_ops::links::link_at_offset` scans the line's raw bytes for balanced `[...](...)` — it is NOT driven by the AST. Upgrade to an AST-backed registry if reference-style links or autolinks need precise hit-testing.
 - **Checkbox toggling short-circuits cursor placement.** `mouse_ops::checkbox::toggle_checkbox_at` runs BEFORE `click_to_char_offset` in the `MouseAction::Click` arm. A click on the `[ ]` glyph toggles and returns immediately — the cursor does NOT move. Clicks elsewhere on the task line fall through to normal placement.
 
+### Unified UI controls
+
+The interactive elements inside modals/overlays are one family, defined in `ui::controls`. The governing rule: **a control resolves its own styling from `controls`; the parent container only reports whether the control is `focused` / `disabled`.** Never hand-roll a focus style in a modal.
+
+- **Four control flavors, declared at the definition site.** A toggle, a pill, a text input, and a button.
+  - **Toggle** (`controls::toggle_spans`) — an on/off slider. It is the one control whose *widget* keeps its value color when focused (inverting it would destroy the on-is-green reading), so its focus is shown only by the row's label column.
+  - **Pill** (`controls::pill_spans` over a `&[&str]`, e.g. the shared `ASK_ALWAYS_NEVER`) — a multi-value (2+) `‹ value ›` selector cycled with ←/→. On/off is **not** a pill flavor — a binary setting uses the Toggle. An option row declares which one it is via the `Control` enum (`Control::Toggle` / `Control::Pill(labels)`); don't reintroduce a `PillStyle::Toggle` that overloads the pill as a switch.
+  - **Text input** — an inline editable value (`controls::text_value_style`; the blink-stable cursor comes from `ui::cursor::text_field_spans`).
+  - **Button** — a bracketed press-to-act target; lives in `ui::button_row`, styled by `controls::button_style`.
+- **Focus is one language; the label column is the single source of truth.** `REVERSED` means "filled affordance". `controls::focused_style` (= `theme.modal_button_focused`, a `primary` fill) is the shared focus fill. `controls::control_label_style(focused, disabled, theme)` resolves a labeled row's label column — focused → `modal_item_selected` fill, disabled → `modal_close_hint`, resting → `modal_item` — and **both** the settings overlay and the welcome modal call it. A focused row is one unit: pad the label across the whole column so the fill spans label → widget (the way the settings overlay does), rather than styling only the label glyphs.
+- **Buttons go through `ui::button_row`, never a hand-built literal.** `render_button_row` (centered footer row) and `render_button_at` (left-aligned inline button, e.g. the welcome modal's "Switch theme") both build on `Button` + `controls::button_style`. Construct a `Button::bracketed(label)` and let the helper add the `[ … ]`, size the width, place it, and return the hit-rect — don't bake brackets into a string or count widths by hand.
+- **Cycle + cascade logic is shared too.** `controls::cycle_enum` (wrap-around order step) and `controls::apply_images_cascade` (images-`Never` forces remote-`Never`, stashing/restoring the prior choice) are used by both the settings overlay and the welcome modal so their behavior can't drift.
+
 ### Modals, overlays, and the keybinds editor
 
 - **Live `KeyMap` on `App`, draft inside the overlay.** `App::keymap: Option<KeyMap>` is built once in `run()` and held for the life of the process. The keybinds overlay opens with a *clone* of it (`KeybindsState::draft_keymap`) plus a cloned `KeyBindingOverrides`, and every rebind mutates only the draft. Nothing is written back to `App::keymap` / `App::keybindings` (or to `keybindings.toml`) until the user activates the overlay's `[ Save ]` button — Esc and `[ Cancel ]` discard the draft so a mis-press is recoverable. On Save the overlay returns `KeybindsResponse::Save { keymap, overrides }` carrying the drafts; the modal adapter swaps them onto `App` and persists. Don't regress to mutating the live keymap on every keystroke — a fumbled chord would then only be recoverable by hand-editing `keybindings.toml`.
@@ -361,7 +380,7 @@ These decisions are easy to break if you don't know they exist.
 - **Construct `ModalView` via `ModalView::new(...)`, not a struct literal.** The constructor pre-fills `max_pad_h` to `MAX_PAD_H` (4); chain `.with_max_pad_h(n)` to override for a modal whose content reads cramped. Struct-literal construction would force every call site to spell out `max_pad_h: MAX_PAD_H` and break silently the next time the default changes.
 - **Horizontal padding lives on `ContentSize`, not on `FrameOpts`.** `FrameOpts.content` embeds the same `ContentSize` value fed to `centered_rect_for_content`, so the pre-render sizing pass and the post-render `draw_frame` padding can never disagree. Set `max_pad_h` once on the `ContentSize` (or take the default `MAX_PAD_H` via `..Default::default()`) and pass that one value to both calls. Do NOT reintroduce a parallel `FrameOpts.max_pad_h` field. The keybinds overlay raises `max_pad_h` to 8 because its bindings table is dense and the "Already bound to …" error string would otherwise reflow the modal during capture.
 - **Preview-mode Ctrl-key allowlist.** `input::mode_handler::default::preview_safe_action` decides which Ctrl-* chords fire in Preview mode. Read-only overlay openers (`ShowCommandPalette`, `OpenSettings`, `OpenKeybinds`, `OpenConfigFolder`, `ShowMarkdownCheatSheet`, `SwitchTheme`, `CreateCustomTheme`) belong on the allowlist — adding a new modal-opening action means adding it here too, otherwise the chord will silently no-op in Preview.
-- **Focus vs. persistent selection (modal styling convention).** When a modal carries a *persistent selection* that's independent of focus — e.g. the welcome modal's `Ask | Always | Never` pill rows, the `Don't show this again` checkbox, or any future form whose value survives focus moves — use this three-tier styling: - Focused element → `theme.modal_button_focused`   (`primary` bg + REVERSED + bold). Filled, strongest. - Persistent selection *without* focus →   `theme.modal_item_selected_unfocused` (`secondary` **fg** on   `surface_elevated`, bold). Outlined, no fill — never reads the same as   the focused element. - Neither → `theme.modal_item` (plain text on `surface_elevated`).
+- **Focus vs. persistent selection (modal styling convention).** When a modal carries a *persistent selection* that's independent of focus — e.g. the export-theme modal's highlighted theme name (`modal_item_selected_unfocused` at `export_theme_modal.rs`), or any form whose marked value survives focus moves — use this three-tier styling: (Note: ordinary labeled control rows — settings, welcome — are *not* this case; their focus styling is `controls::control_label_style`, see "Unified UI controls".) - Focused element → `theme.modal_button_focused`   (`primary` bg + REVERSED + bold). Filled, strongest. - Persistent selection *without* focus →   `theme.modal_item_selected_unfocused` (`secondary` **fg** on   `surface_elevated`, bold). Outlined, no fill — never reads the same as   the focused element. - Neither → `theme.modal_item` (plain text on `surface_elevated`).
 
 Don't reuse `modal_item_selected` for "selected but unfocused" — it also uses a filled `primary` bg, which collides with the focused affordance. For composite affordances (checkbox glyph + label), apply the unfocused-selection style to the *glyph only*, not the full row. See [`docs/theming.md`](docs/theming.md) §"Focus vs. persistent selection" for the rationale and the monochrome fallback.
 
