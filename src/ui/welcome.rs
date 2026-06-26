@@ -32,6 +32,7 @@ use ratatui::{
 use crate::config::{DiagramsEnabled, ImagesEnabled, RemoteImagePolicy, Theme};
 use crate::terminal::Capabilities;
 use crate::ui::cap_summary::{render_cap_row as shared_render_cap_row, CapSummary};
+use crate::ui::cycle_pill;
 use crate::ui::scroll_container::{
     centered_rect_for_content, compute_pad_h, draw_frame, ContentSize, FrameOpts, ModalKind,
     ScrollContainerState, MAX_PAD_H,
@@ -123,9 +124,9 @@ pub struct WelcomeState {
     // ── Hit-test rects, captured each render for click dispatch ──
     pub theme_button_rect: Option<Rect>,
     pub esc_button_rect: Option<Rect>,
-    pub images_pill_rects: [Option<Rect>; 3],
-    pub remote_pill_rects: [Option<Rect>; 3],
-    pub diagrams_pill_rects: [Option<Rect>; 3],
+    pub images_rect: Option<Rect>,
+    pub remote_rect: Option<Rect>,
+    pub diagrams_rect: Option<Rect>,
     pub vim_rect: Option<Rect>,
     pub show_again_rect: Option<Rect>,
     pub save_button_rect: Option<Rect>,
@@ -164,9 +165,9 @@ impl WelcomeState {
             scroll_state: ScrollContainerState::default(),
             theme_button_rect: None,
             esc_button_rect: None,
-            images_pill_rects: [None, None, None],
-            remote_pill_rects: [None, None, None],
-            diagrams_pill_rects: [None, None, None],
+            images_rect: None,
+            remote_rect: None,
+            diagrams_rect: None,
             vim_rect: None,
             show_again_rect: None,
             save_button_rect: None,
@@ -218,16 +219,41 @@ impl WelcomeState {
     /// No-op if focus isn't on a tri-state row.  Applies the cascade
     /// rule when images leaves / enters Never.
     fn cycle_focused(&mut self, delta: isize) {
+        let delta = delta as i32;
         match self.focused {
             WelcomeFocus::Images => {
-                let next = cycle_images(self.images, delta);
+                let next = cycle_pill::cycle_enum(
+                    self.images,
+                    &[
+                        ImagesEnabled::Ask,
+                        ImagesEnabled::Always,
+                        ImagesEnabled::Never,
+                    ],
+                    delta,
+                );
                 self.set_images(next);
             }
             WelcomeFocus::RemoteImages if !self.remote_locked_by_images() => {
-                self.remote = cycle_remote(self.remote, delta);
+                self.remote = cycle_pill::cycle_enum(
+                    self.remote,
+                    &[
+                        RemoteImagePolicy::Ask,
+                        RemoteImagePolicy::Always,
+                        RemoteImagePolicy::Never,
+                    ],
+                    delta,
+                );
             }
             WelcomeFocus::Diagrams => {
-                self.diagrams = cycle_diagrams(self.diagrams, delta);
+                self.diagrams = cycle_pill::cycle_enum(
+                    self.diagrams,
+                    &[
+                        DiagramsEnabled::Ask,
+                        DiagramsEnabled::Always,
+                        DiagramsEnabled::Never,
+                    ],
+                    delta,
+                );
             }
             _ => {}
         }
@@ -235,15 +261,12 @@ impl WelcomeState {
 
     fn set_images(&mut self, next: ImagesEnabled) {
         let was_never = matches!(self.images, ImagesEnabled::Never);
-        let now_never = matches!(next, ImagesEnabled::Never);
-        if !was_never && now_never {
-            self.pre_cascade_remote = Some(self.remote);
-            self.remote = RemoteImagePolicy::Never;
-        } else if was_never && !now_never {
-            if let Some(prev) = self.pre_cascade_remote.take() {
-                self.remote = prev;
-            }
-        }
+        self.remote = cycle_pill::apply_images_cascade(
+            next,
+            was_never,
+            self.remote,
+            &mut self.pre_cascade_remote,
+        );
         self.images = next;
     }
 
@@ -309,7 +332,12 @@ impl WelcomeState {
                     self.use_vim = !self.use_vim;
                     WelcomeResponse::Continue
                 }
-                _ => WelcomeResponse::Continue,
+                // Enter cycles a focused pill row, matching Space / Right
+                // (and the settings overlay, where Enter cycles too).
+                WelcomeFocus::Images | WelcomeFocus::RemoteImages | WelcomeFocus::Diagrams => {
+                    self.cycle_focused(1);
+                    WelcomeResponse::Continue
+                }
             },
             // No Esc dismissal — the spec replaces Cancel with the
             // explicit "Show on next launch" toggle.  Esc is consumed
@@ -347,35 +375,23 @@ impl WelcomeState {
             self.use_vim = !self.use_vim;
             return WelcomeResponse::Continue;
         }
+        // A cycle pill shows only the current value, so a click advances
+        // it by one (same as Space / Right), rather than selecting a
+        // specific option.  `cycle_focused` applies the images cascade.
         if self.image_capable {
-            if let Some(idx) = hit_index(&self.images_pill_rects, col, row) {
+            if rect_contains(self.images_rect, col, row) {
                 self.focused = WelcomeFocus::Images;
-                let next = match idx {
-                    0 => ImagesEnabled::Ask,
-                    1 => ImagesEnabled::Always,
-                    _ => ImagesEnabled::Never,
-                };
-                self.set_images(next);
+                self.cycle_focused(1);
                 return WelcomeResponse::Continue;
             }
-            if !self.remote_locked_by_images() {
-                if let Some(idx) = hit_index(&self.remote_pill_rects, col, row) {
-                    self.focused = WelcomeFocus::RemoteImages;
-                    self.remote = match idx {
-                        0 => RemoteImagePolicy::Ask,
-                        1 => RemoteImagePolicy::Always,
-                        _ => RemoteImagePolicy::Never,
-                    };
-                    return WelcomeResponse::Continue;
-                }
+            if !self.remote_locked_by_images() && rect_contains(self.remote_rect, col, row) {
+                self.focused = WelcomeFocus::RemoteImages;
+                self.cycle_focused(1);
+                return WelcomeResponse::Continue;
             }
-            if let Some(idx) = hit_index(&self.diagrams_pill_rects, col, row) {
+            if rect_contains(self.diagrams_rect, col, row) {
                 self.focused = WelcomeFocus::Diagrams;
-                self.diagrams = match idx {
-                    0 => DiagramsEnabled::Ask,
-                    1 => DiagramsEnabled::Always,
-                    _ => DiagramsEnabled::Never,
-                };
+                self.cycle_focused(1);
                 return WelcomeResponse::Continue;
             }
         }
@@ -396,12 +412,8 @@ pub struct WelcomeView<'a> {
 /// breathing room.  Pinned so the modal width doesn't jitter when the
 /// content changes (e.g. switching between truecolor/256/none).
 const CONTENT_WIDTH: u16 = 64;
-/// Width of each tri-state pill cell (`[ Always ]` = 10 cols).
-const PILL_W: u16 = 10;
-const PILL_GAP: u16 = 2;
-const PILL_ROW_W: u16 = PILL_W * 3 + PILL_GAP * 2;
 /// Left column where each row's interactive control starts.  Lines up
-/// the three pill rows so the user sees a coherent column.
+/// the cycle-pill rows so the user sees a coherent column.
 const CONTROL_COL: u16 = 22;
 /// Body text describing the editor — wraps at the body's inner width
 /// at render time (see `wrapped_para_rows`).
@@ -643,11 +655,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         ]);
         render_line(&mut scratch, body_x, y, body_w, current_line, self.theme);
         y += 1;
-        let button_style = if theme_focused {
-            self.theme.modal_button_focused
-        } else {
-            self.theme.modal_item
-        };
+        let button_style = cycle_pill::button_style(theme_focused, self.theme);
         let button_label = "[ Switch theme ▸ ]";
         let button_w = button_label.chars().count() as u16;
         let button_x = body_x;
@@ -680,19 +688,19 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         state.focus_offsets[WelcomeFocus::Theme.order_index()] = y;
         y += 2;
 
-        // ── Tri-state rows ──────────────────────────────────────────
+        // ── Cycle-pill rows ─────────────────────────────────────────
         state.focus_offsets[WelcomeFocus::Images.order_index()] = y;
-        let images_rects = render_tristate(
+        state.images_rect = render_cycle_row(
             &mut scratch,
             scratch_rect,
             y,
             "Show images",
-            images_pill_labels(state.images),
+            cycle_pill::ASK_ALWAYS_NEVER,
+            images_index(state.images),
             state.focused == WelcomeFocus::Images,
             !state.image_capable,
             self.theme,
         );
-        state.images_pill_rects = images_rects;
         y += 1;
         render_explanation(
             &mut scratch,
@@ -707,17 +715,17 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
 
         state.focus_offsets[WelcomeFocus::RemoteImages.order_index()] = y;
         let remote_disabled = !state.image_capable || state.remote_locked_by_images();
-        let remote_rects = render_tristate(
+        state.remote_rect = render_cycle_row(
             &mut scratch,
             scratch_rect,
             y,
             "Show remote images",
-            remote_pill_labels(state.remote, remote_disabled),
+            cycle_pill::ASK_ALWAYS_NEVER,
+            remote_index(state.remote),
             state.focused == WelcomeFocus::RemoteImages,
             remote_disabled,
             self.theme,
         );
-        state.remote_pill_rects = remote_rects;
         y += 1;
         render_explanation(
             &mut scratch,
@@ -731,17 +739,17 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         y += 2;
 
         state.focus_offsets[WelcomeFocus::Diagrams.order_index()] = y;
-        let diagrams_rects = render_tristate(
+        state.diagrams_rect = render_cycle_row(
             &mut scratch,
             scratch_rect,
             y,
             "Show diagrams",
-            diagrams_pill_labels(state.diagrams),
+            cycle_pill::ASK_ALWAYS_NEVER,
+            diagrams_index(state.diagrams),
             state.focused == WelcomeFocus::Diagrams,
             !state.image_capable,
             self.theme,
         );
-        state.diagrams_pill_rects = diagrams_rects;
         y += 1;
         render_explanation(
             &mut scratch,
@@ -755,45 +763,18 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         y += 2;
 
         // ── Vim motions toggle ──────────────────────────────────────
-        let vim_focused = state.focused == WelcomeFocus::VimMotions;
-        let vim_label_style = if vim_focused {
-            self.theme.modal_button_focused
-        } else {
-            self.theme.modal_item
-        };
-        let vim_glyph_style = if vim_focused {
-            self.theme.modal_button_focused
-        } else if state.use_vim {
-            self.theme.modal_item_selected_unfocused
-        } else {
-            self.theme.modal_item
-        };
-        let vim_glyph = if state.use_vim { "[x]" } else { "[ ]" };
-        let vim_suffix = " Vim mode";
-        let vim_w = (vim_glyph.chars().count() + vim_suffix.chars().count()) as u16;
-        Paragraph::new("").style(self.theme.modal_bg).render(
-            Rect {
-                x: body_x,
-                y,
-                width: body_w,
-                height: 1,
-            },
-            &mut scratch,
-        );
-        let vim_area = Rect {
-            x: body_x,
-            y,
-            width: vim_w,
-            height: 1,
-        };
-        Paragraph::new(Line::from(vec![
-            Span::styled(vim_glyph.to_owned(), vim_glyph_style),
-            Span::styled(vim_suffix.to_owned(), vim_label_style),
-        ]))
-        .style(self.theme.modal_bg)
-        .render(vim_area, &mut scratch);
-        state.vim_rect = Some(vim_area);
         state.focus_offsets[WelcomeFocus::VimMotions.order_index()] = y;
+        state.vim_rect = render_cycle_row(
+            &mut scratch,
+            scratch_rect,
+            y,
+            "Vim mode",
+            cycle_pill::ON_OFF,
+            bool_index(state.use_vim),
+            state.focused == WelcomeFocus::VimMotions,
+            false,
+            self.theme,
+        );
         y += 1;
         render_explanation(
             &mut scratch,
@@ -808,11 +789,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
 
         // ── Footer row: Don't-show-again toggle + [ Save ] ──────────
         let save_focused = state.focused == WelcomeFocus::Save;
-        let save_style = if save_focused {
-            self.theme.modal_button_focused
-        } else {
-            self.theme.modal_item
-        };
+        let save_style = cycle_pill::button_style(save_focused, self.theme);
         let save_label = "[ Save ]";
         let save_w = save_label.chars().count() as u16;
 
@@ -822,16 +799,15 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         } else {
             self.theme.modal_item
         };
-        let glyph_style = if sa_focused {
-            self.theme.modal_button_focused
-        } else if state.dont_show_again {
-            self.theme.modal_item_selected_unfocused
-        } else {
-            self.theme.modal_item
-        };
-        let glyph = if state.dont_show_again { "[x]" } else { "[ ]" };
+        let sa_pill = cycle_pill::pill_spans(
+            cycle_pill::ON_OFF,
+            bool_index(state.dont_show_again),
+            sa_focused,
+            false,
+            self.theme,
+        );
         let suffix = " Don't show this again";
-        let toggle_w = (glyph.chars().count() + suffix.chars().count()) as u16;
+        let toggle_w = (cycle_pill::pill_width(cycle_pill::ON_OFF) + suffix.chars().count()) as u16;
 
         let gap_w: u16 = 4;
         let combined_w = toggle_w + gap_w + save_w;
@@ -855,12 +831,11 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             width: toggle_w,
             height: 1,
         };
-        Paragraph::new(Line::from(vec![
-            Span::styled(glyph.to_owned(), glyph_style),
-            Span::styled(suffix.to_owned(), sa_label_style),
-        ]))
-        .style(self.theme.modal_bg)
-        .render(toggle_area, &mut scratch);
+        let mut toggle_spans = sa_pill;
+        toggle_spans.push(Span::styled(suffix.to_owned(), sa_label_style));
+        Paragraph::new(Line::from(toggle_spans))
+            .style(self.theme.modal_bg)
+            .render(toggle_area, &mut scratch);
         state.show_again_rect = Some(toggle_area);
         state.focus_offsets[WelcomeFocus::ShowAgain.order_index()] = y;
 
@@ -904,15 +879,9 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         state.save_button_rect = translate_rect(state.save_button_rect, body, scroll);
         state.show_again_rect = translate_rect(state.show_again_rect, body, scroll);
         state.vim_rect = translate_rect(state.vim_rect, body, scroll);
-        for r in state.images_pill_rects.iter_mut() {
-            *r = translate_rect(*r, body, scroll);
-        }
-        for r in state.remote_pill_rects.iter_mut() {
-            *r = translate_rect(*r, body, scroll);
-        }
-        for r in state.diagrams_pill_rects.iter_mut() {
-            *r = translate_rect(*r, body, scroll);
-        }
+        state.images_rect = translate_rect(state.images_rect, body, scroll);
+        state.remote_rect = translate_rect(state.remote_rect, body, scroll);
+        state.diagrams_rect = translate_rect(state.diagrams_rect, body, scroll);
 
         // Scrollbar in the right padding column, only when overflowing.
         if state.scroll_state.max_scroll() > 0 {
@@ -952,61 +921,56 @@ fn translate_rect(rect: Option<Rect>, body: Rect, scroll: u16) -> Option<Rect> {
     })
 }
 
-fn images_pill_labels(value: ImagesEnabled) -> [PillCell; 3] {
-    [
-        PillCell::new("Ask", matches!(value, ImagesEnabled::Ask)),
-        PillCell::new("Always", matches!(value, ImagesEnabled::Always)),
-        PillCell::new("Never", matches!(value, ImagesEnabled::Never)),
-    ]
+fn images_index(value: ImagesEnabled) -> usize {
+    match value {
+        ImagesEnabled::Ask => 0,
+        ImagesEnabled::Always => 1,
+        ImagesEnabled::Never => 2,
+    }
 }
 
-fn remote_pill_labels(value: RemoteImagePolicy, disabled: bool) -> [PillCell; 3] {
-    if disabled {
-        // When greyed out, highlight none so the row reads as inert.
-        [
-            PillCell::new("Ask", false),
-            PillCell::new("Always", false),
-            PillCell::new("Never", false),
-        ]
+fn remote_index(value: RemoteImagePolicy) -> usize {
+    match value {
+        RemoteImagePolicy::Ask => 0,
+        RemoteImagePolicy::Always => 1,
+        RemoteImagePolicy::Never => 2,
+    }
+}
+
+fn diagrams_index(value: DiagramsEnabled) -> usize {
+    match value {
+        DiagramsEnabled::Ask => 0,
+        DiagramsEnabled::Always => 1,
+        DiagramsEnabled::Never => 2,
+    }
+}
+
+/// Index into [`cycle_pill::ON_OFF`] for a boolean (`true` -> on/0).
+fn bool_index(value: bool) -> usize {
+    if value {
+        0
     } else {
-        [
-            PillCell::new("Ask", matches!(value, RemoteImagePolicy::Ask)),
-            PillCell::new("Always", matches!(value, RemoteImagePolicy::Always)),
-            PillCell::new("Never", matches!(value, RemoteImagePolicy::Never)),
-        ]
+        1
     }
 }
 
-fn diagrams_pill_labels(value: DiagramsEnabled) -> [PillCell; 3] {
-    [
-        PillCell::new("Ask", matches!(value, DiagramsEnabled::Ask)),
-        PillCell::new("Always", matches!(value, DiagramsEnabled::Always)),
-        PillCell::new("Never", matches!(value, DiagramsEnabled::Never)),
-    ]
-}
-
-struct PillCell {
-    label: &'static str,
-    selected: bool,
-}
-
-impl PillCell {
-    fn new(label: &'static str, selected: bool) -> Self {
-        Self { label, selected }
-    }
-}
-
+/// Render a label + cycle-pill row into the welcome modal's scratch
+/// buffer, returning the pill's body-relative hit rect (or `None` when
+/// the row is disabled or the body is too narrow to fit the pill).  The
+/// label uses the same focus / disabled styling as the surrounding rows;
+/// the pill itself is built by [`cycle_pill::pill_spans`].
 #[allow(clippy::too_many_arguments)]
-fn render_tristate(
+fn render_cycle_row(
     buf: &mut Buffer,
     body: Rect,
     y: u16,
     label: &str,
-    cells: [PillCell; 3],
+    pill: cycle_pill::Pill,
+    current_index: usize,
     focused: bool,
     disabled: bool,
     theme: &Theme,
-) -> [Option<Rect>; 3] {
+) -> Option<Rect> {
     // Row fill — uniform modal_bg across the whole row width.
     Paragraph::new("").style(theme.modal_bg).render(
         Rect {
@@ -1042,51 +1006,25 @@ fn render_tristate(
             buf,
         );
 
-    let mut rects = [None, None, None];
-    if body.width < CONTROL_COL + PILL_ROW_W {
-        return rects;
+    let pill_w = cycle_pill::pill_width(pill) as u16;
+    if body.width < CONTROL_COL + pill_w {
+        return None;
     }
-    let pill_x0 = body.x + CONTROL_COL;
-    let dim_style = Style::default()
-        .fg(theme.palette.text_muted)
-        .bg(theme.palette.surface_elevated)
-        .add_modifier(Modifier::DIM);
-    for (i, cell) in cells.iter().enumerate() {
-        let x = pill_x0 + (PILL_W + PILL_GAP) * i as u16;
-        let style = if disabled {
-            dim_style
-        } else if cell.selected && focused {
-            theme.modal_button_focused
-        } else if cell.selected {
-            theme.modal_item_selected_unfocused
-        } else {
-            theme.modal_item
-        };
-        let text = format!("[ {} ]", center_label(cell.label, (PILL_W - 4) as usize));
-        let line = Line::from(Span::styled(text, style));
-        let rect = Rect {
-            x,
-            y,
-            width: PILL_W,
-            height: 1,
-        };
-        Paragraph::new(line).style(theme.modal_bg).render(rect, buf);
-        if !disabled {
-            rects[i] = Some(rect);
-        }
+    let rect = Rect {
+        x: body.x + CONTROL_COL,
+        y,
+        width: pill_w,
+        height: 1,
+    };
+    let spans = cycle_pill::pill_spans(pill, current_index, focused, disabled, theme);
+    Paragraph::new(Line::from(spans))
+        .style(theme.modal_bg)
+        .render(rect, buf);
+    if disabled {
+        None
+    } else {
+        Some(rect)
     }
-    rects
-}
-
-fn center_label(label: &str, target_chars: usize) -> String {
-    let label_chars = label.chars().count();
-    if label_chars >= target_chars {
-        return label.to_owned();
-    }
-    let pad = target_chars - label_chars;
-    let left = pad / 2;
-    let right = pad - left;
-    format!("{}{}{}", " ".repeat(left), label, " ".repeat(right))
 }
 
 fn render_explanation(
@@ -1170,51 +1108,6 @@ fn rect_contains(rect: Option<Rect>, col: u16, row: u16) -> bool {
         return false;
     };
     col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
-}
-
-fn hit_index(rects: &[Option<Rect>; 3], col: u16, row: u16) -> Option<usize> {
-    for (i, r) in rects.iter().enumerate() {
-        if rect_contains(*r, col, row) {
-            return Some(i);
-        }
-    }
-    None
-}
-
-fn cycle_images(value: ImagesEnabled, delta: isize) -> ImagesEnabled {
-    let order = [
-        ImagesEnabled::Ask,
-        ImagesEnabled::Always,
-        ImagesEnabled::Never,
-    ];
-    let cur = order.iter().position(|v| *v == value).unwrap_or(0) as isize;
-    let len = order.len() as isize;
-    let next = ((cur + delta).rem_euclid(len)) as usize;
-    order[next]
-}
-
-fn cycle_remote(value: RemoteImagePolicy, delta: isize) -> RemoteImagePolicy {
-    let order = [
-        RemoteImagePolicy::Ask,
-        RemoteImagePolicy::Always,
-        RemoteImagePolicy::Never,
-    ];
-    let cur = order.iter().position(|v| *v == value).unwrap_or(0) as isize;
-    let len = order.len() as isize;
-    let next = ((cur + delta).rem_euclid(len)) as usize;
-    order[next]
-}
-
-fn cycle_diagrams(value: DiagramsEnabled, delta: isize) -> DiagramsEnabled {
-    let order = [
-        DiagramsEnabled::Ask,
-        DiagramsEnabled::Always,
-        DiagramsEnabled::Never,
-    ];
-    let cur = order.iter().position(|v| *v == value).unwrap_or(0) as isize;
-    let len = order.len() as isize;
-    let next = ((cur + delta).rem_euclid(len)) as usize;
-    order[next]
 }
 
 #[cfg(test)]

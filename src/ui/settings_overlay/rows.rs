@@ -8,6 +8,7 @@
 
 use crate::config::sections::MAX_WIDTH_COLS_MIN;
 use crate::config::{Config, DiagramsEnabled, ImagesEnabled, RemoteImagePolicy};
+use crate::ui::controls;
 
 /// Row labels for the settings overlay, exported as constants so the
 /// App-level live-update wiring in `app/modal/settings.rs` and the
@@ -41,7 +42,7 @@ const DEFAULT_HANDLER: &str = "default";
 /// the live wheel_step in agreement.
 const MOUSE_SCROLL_LINES_MIN: usize = 1;
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum RowAction {
     /// "Open config.toml in default editor" sentinel.
     OpenExternalEditor,
@@ -65,14 +66,13 @@ pub(super) struct RowKind {
     pub(super) read: fn(&Config, &[String]) -> String,
     pub(super) write_string: fn(&mut Config, &str) -> Result<(), String>,
     pub(super) cycle: Option<CycleFn>,
-    /// Pill labels for option-style rows (booleans + Ask/Always/Never
-    /// tri-states).  When `Some`, the overlay renders every option
-    /// inline and styles the one matching `read(..)` with the
-    /// persistent-selection palette (`modal_item_selected_unfocused`,
-    /// upgraded to `modal_button_focused` when the row has focus).
-    /// When `None`, the row falls back to the legacy single-value
-    /// display (numeric / path / external-action rows).
-    pub(super) options: Option<&'static [&'static str]>,
+    /// Pill spec for option-style rows: booleans use [`controls::ON_OFF`]
+    /// and tri-states use [`controls::ASK_ALWAYS_NEVER`].  When `Some`,
+    /// the overlay renders the *current* value as a single [`controls`]
+    /// pill (the index matching `read(..)`); the spec carries both the
+    /// labels and the toggle/cycle style.  When `None`, the row is a
+    /// single-value display instead (numeric / path / external-action rows).
+    pub(super) options: Option<controls::Pill>,
     /// When `Some` and the fn returns true for the current config, the
     /// row is rendered inert (dimmed label + pills) and skipped by focus
     /// navigation / cycling.  Used by the remote-images row, which the
@@ -81,8 +81,16 @@ pub(super) struct RowKind {
     pub(super) disabled: Option<fn(&Config) -> bool>,
 }
 
-pub(super) const BOOL_OPTIONS: &[&str] = &["true", "false"];
-pub(super) const ASK_ALWAYS_NEVER_OPTIONS: &[&str] = &["Ask", "Always", "Never"];
+/// Display label for a boolean setting's cycle pill.  Matches the order
+/// in [`controls::ON_OFF`] (`on` at index 0) so the pill widget colors
+/// the `true` state with `success`.
+fn bool_label(value: bool) -> &'static str {
+    if value {
+        "on"
+    } else {
+        "off"
+    }
+}
 
 /// Static table of rows.  `read` formats the field's current value
 /// for display; `cycle` is `Some` for fields whose value cycles on
@@ -149,20 +157,6 @@ fn parse_usize(s: &str) -> Result<usize, String> {
     s.trim()
         .parse::<usize>()
         .map_err(|e| format!("invalid number: {e}"))
-}
-
-/// Cycle through `order` by `delta` (signed step), wrapping at both
-/// ends.  Returns the value at `current`'s index plus delta, modulo
-/// the order length.  Falls back to the first element when `current`
-/// isn't in the order.  Empty `order` is a programmer error and
-/// returns `current` unchanged.
-fn cycle_enum<T: PartialEq + Copy>(current: T, order: &[T], delta: i32) -> T {
-    if order.is_empty() {
-        return current;
-    }
-    let i = order.iter().position(|v| *v == current).unwrap_or(0) as i32;
-    let n = order.len() as i32;
-    order[((i + delta).rem_euclid(n)) as usize]
 }
 
 const IMAGES_ENABLED_ORDER: &[ImagesEnabled] = &[
@@ -288,13 +282,13 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,
-                read: |c, _| c.editor.autosave_enabled.to_string(),
+                read: |c, _| bool_label(c.editor.autosave_enabled).to_owned(),
                 write_string: no_write,
                 cycle: Some(|c, _, _| {
                     c.editor.autosave_enabled = !c.editor.autosave_enabled;
                     true
                 }),
-                options: Some(BOOL_OPTIONS),
+                options: Some(controls::ON_OFF),
                 disabled: None,
             },
         },
@@ -305,13 +299,13 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,
-                read: |c, _| c.editor.big_h1.to_string(),
+                read: |c, _| bool_label(c.editor.big_h1).to_owned(),
                 write_string: no_write,
                 cycle: Some(|c, _, _| {
                     c.editor.big_h1 = !c.editor.big_h1;
                     true
                 }),
-                options: Some(BOOL_OPTIONS),
+                options: Some(controls::ON_OFF),
                 disabled: None,
             },
         },
@@ -323,13 +317,13 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,
-                read: |c, _| c.editor.cursor_blink.to_string(),
+                read: |c, _| bool_label(c.editor.cursor_blink).to_owned(),
                 write_string: no_write,
                 cycle: Some(|c, _, _| {
                     c.editor.cursor_blink = !c.editor.cursor_blink;
                     true
                 }),
-                options: Some(BOOL_OPTIONS),
+                options: Some(controls::ON_OFF),
                 disabled: None,
             },
         },
@@ -361,13 +355,13 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,
-                read: |c, _| c.editor.max_width_enabled.to_string(),
+                read: |c, _| bool_label(c.editor.max_width_enabled).to_owned(),
                 write_string: no_write,
                 cycle: Some(|c, _, _| {
                     c.editor.max_width_enabled = !c.editor.max_width_enabled;
                     true
                 }),
-                options: Some(BOOL_OPTIONS),
+                options: Some(controls::ON_OFF),
                 disabled: None,
             },
         },
@@ -406,10 +400,10 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 },
                 cycle: Some(|c, delta, _| {
                     c.diagrams.enabled =
-                        cycle_enum(c.diagrams.enabled, DIAGRAMS_ENABLED_ORDER, delta);
+                        controls::cycle_enum(c.diagrams.enabled, DIAGRAMS_ENABLED_ORDER, delta);
                     true
                 }),
-                options: Some(ASK_ALWAYS_NEVER_OPTIONS),
+                options: Some(controls::ASK_ALWAYS_NEVER),
                 disabled: None,
             },
         },
@@ -426,10 +420,11 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     Ok(())
                 },
                 cycle: Some(|c, delta, _| {
-                    c.images.enabled = cycle_enum(c.images.enabled, IMAGES_ENABLED_ORDER, delta);
+                    c.images.enabled =
+                        controls::cycle_enum(c.images.enabled, IMAGES_ENABLED_ORDER, delta);
                     true
                 }),
-                options: Some(ASK_ALWAYS_NEVER_OPTIONS),
+                options: Some(controls::ASK_ALWAYS_NEVER),
                 disabled: None,
             },
         },
@@ -447,10 +442,10 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 },
                 cycle: Some(|c, delta, _| {
                     c.images.remote_policy =
-                        cycle_enum(c.images.remote_policy, REMOTE_POLICY_ORDER, delta);
+                        controls::cycle_enum(c.images.remote_policy, REMOTE_POLICY_ORDER, delta);
                     true
                 }),
-                options: Some(ASK_ALWAYS_NEVER_OPTIONS),
+                options: Some(controls::ASK_ALWAYS_NEVER),
                 // Locked to Never (and skipped by focus) while images are
                 // off — mirrors the welcome modal's images→remote cascade.
                 disabled: Some(|c| matches!(c.images.enabled, ImagesEnabled::Never)),
@@ -463,13 +458,13 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,
-                read: |c, _| c.editor.show_line_numbers.to_string(),
+                read: |c, _| bool_label(c.editor.show_line_numbers).to_owned(),
                 write_string: no_write,
                 cycle: Some(|c, _, _| {
                     c.editor.show_line_numbers = !c.editor.show_line_numbers;
                     true
                 }),
-                options: Some(BOOL_OPTIONS),
+                options: Some(controls::ON_OFF),
                 disabled: None,
             },
         },
@@ -480,13 +475,13 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,
-                read: |c, _| c.table.show_buttons.to_string(),
+                read: |c, _| bool_label(c.table.show_buttons).to_owned(),
                 write_string: no_write,
                 cycle: Some(|c, _, _| {
                     c.table.show_buttons = !c.table.show_buttons;
                     true
                 }),
-                options: Some(BOOL_OPTIONS),
+                options: Some(controls::ON_OFF),
                 disabled: None,
             },
         },
@@ -497,13 +492,13 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,
-                read: |c, _| c.editor.visual_line_nav.to_string(),
+                read: |c, _| bool_label(c.editor.visual_line_nav).to_owned(),
                 write_string: no_write,
                 cycle: Some(|c, _, _| {
                     c.editor.visual_line_nav = !c.editor.visual_line_nav;
                     true
                 }),
-                options: Some(BOOL_OPTIONS),
+                options: Some(controls::ON_OFF),
                 disabled: None,
             },
         },
@@ -519,7 +514,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 // `true`/`false` pills and `config.modal.handler`.  The
                 // App-level live-update arm rebuilds the VimState so the
                 // toggle takes effect without a restart.
-                read: |c, _| (c.modal.handler == VIM_HANDLER).to_string(),
+                read: |c, _| bool_label(c.modal.handler == VIM_HANDLER).to_owned(),
                 write_string: no_write,
                 cycle: Some(|c, _, _| {
                     c.modal.handler = if c.modal.handler == VIM_HANDLER {
@@ -529,7 +524,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     };
                     true
                 }),
-                options: Some(BOOL_OPTIONS),
+                options: Some(controls::ON_OFF),
                 disabled: None,
             },
         },

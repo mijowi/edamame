@@ -13,7 +13,7 @@
 //! Open Config folder              <config_dir>
 //! Open config.toml in default editor
 //!
-//! Autosave                        [ true ] [ false ]
+//! Autosave                        |    off
 //!   Automatically save changes when idle
 //!
 //! Editor max width                100
@@ -34,10 +34,12 @@
 //! settings beneath.
 //!
 //! Each row's description appears beneath it only when the row is
-//! focused, conserving vertical space.  Booleans and enum-valued
-//! fields cycle on Enter; numeric and theme-name fields open an
-//! inline editor (Theme also cycles via Left/Right when not editing
-//! through the available `themes/*.toml` files).
+//! focused, conserving vertical space.  Booleans render as on/off toggle
+//! sliders and enum-valued fields as cycle pills — both change on
+//! Left/Right (or Enter).  Numeric fields are text inputs that are
+//! editable the moment the row has focus (no "press Enter to begin"); the
+//! draft commits on Enter or when focus leaves the row, and an invalid
+//! draft reverts on leave.
 
 mod rows;
 
@@ -45,18 +47,14 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::Style,
     text::{Line, Span},
     widgets::{Paragraph, StatefulWidget, Widget},
 };
 
 use crate::config::{Config, ImagesEnabled, RemoteImagePolicy, Theme};
 use crate::ui::content_width::{max_row_width, optional_text_width};
-use crate::ui::modal_row::{format_modal_row, RowLayout};
+use crate::ui::controls::{self, PillStyle};
 use crate::ui::overlay_nav::next_focusable;
-
-/// Gap (in cells) inserted between adjacent option pills.
-const PILL_GAP: usize = 2;
 
 /// Width of the label column in the settings overlay (column count of the
 /// padded `{label:<LABEL_PAD$}` slot before the value column begins).
@@ -69,57 +67,6 @@ use crate::ui::scroll_container::{
 };
 
 use self::rows::{build_rows, RowAction, RowDef};
-
-/// Width of one pill cell: `"[ " + label + " ]"`.  Labels are
-/// padded with single spaces around the text inside the brackets.
-fn pill_width(label: &str) -> usize {
-    label.chars().count() + 4
-}
-
-/// Total rendered width of a pill row for `options`, including gaps.
-fn pill_row_width(options: &[&str]) -> usize {
-    let pills: usize = options.iter().map(|l| pill_width(l)).sum();
-    let gaps = options.len().saturating_sub(1) * PILL_GAP;
-    pills + gaps
-}
-
-/// Build the styled spans that make up the pill row for an
-/// option-style setting.  The pill whose label matches `current` is
-/// drawn in `modal_button_focused` when the row has focus, otherwise in
-/// `modal_item_selected_unfocused`.  All other pills fall back to
-/// `modal_item`.  See the [theming docs](../../../docs/theming.md)
-/// "Focus vs. persistent selection" section for the rationale.
-fn pill_spans(
-    options: &[&str],
-    current: &str,
-    focused: bool,
-    disabled: bool,
-    theme: &Theme,
-) -> Vec<Span<'static>> {
-    let gap = " ".repeat(PILL_GAP);
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(options.len() * 2);
-    for (i, label) in options.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(gap.clone(), theme.modal_item));
-        }
-        let selected = label.eq_ignore_ascii_case(current);
-        // A disabled row reads as inert: every pill (even the selected
-        // one) renders in the muted hint style (`text_muted`, not the
-        // accent-colored `modal_description`) with no focus/selection
-        // affordance.
-        let style: Style = if disabled {
-            theme.modal_close_hint
-        } else if selected && focused {
-            theme.modal_button_focused
-        } else if selected {
-            theme.modal_item_selected_unfocused
-        } else {
-            theme.modal_item
-        };
-        spans.push(Span::styled(format!("[ {label} ]"), style));
-    }
-    spans
-}
 
 // Re-exports for the bin-only `app::modal::settings` live-update wiring.
 // The lib itself never reads them, so allow(dead_code) on the helper
@@ -169,8 +116,10 @@ pub struct SettingsState {
     /// rebuild; [`Self::clamp_focus`] re-snaps to the next selectable
     /// row.
     pub focused: usize,
-    /// `Some(buffer)` while an inline editor is open.  Only used by
-    /// numeric and theme-name fields.
+    /// Editable draft for the focused text-input (numeric) row.  Seeded
+    /// by [`Self::open_draft_for_focused`] whenever focus lands on such a
+    /// row (so it's editable on focus) and committed at a boundary (Enter
+    /// or focus-leave); `None` on toggle / pill / action rows.
     pub editing: Option<String>,
     /// Last error from a rejected edit.  Cleared on the next
     /// successful edit / cancel.
@@ -224,98 +173,134 @@ impl SettingsState {
         state
     }
 
-    /// Apply a key event, possibly mutating `config`.  Bool / enum /
-    /// theme fields cycle on Enter; numeric fields open an inline
-    /// editor.
+    /// Apply a key event, possibly mutating `config`.
+    ///
+    /// A numeric (text-input) row is *editable as soon as it has focus* —
+    /// there is no "press Enter to begin": [`Self::open_draft_for_focused`]
+    /// seeds an editable draft whenever focus lands on such a row, and
+    /// typing edits the draft in place.  The draft is **committed** (parsed,
+    /// validated, written to `config`) only at a boundary — Enter, or when
+    /// focus leaves the row — so a multi-keystroke value still produces a
+    /// single config write / flash.  An invalid draft is reverted when
+    /// focus leaves; Esc closes the overlay and abandons any uncommitted
+    /// draft.  Toggle / pill rows change immediately on Left/Right (or
+    /// Enter), like before.
     pub fn handle_key(&mut self, key: &KeyEvent, config: &mut Config) -> SettingsResponse {
-        if let Some(buf) = self.editing.as_mut() {
-            match key.code {
-                KeyCode::Esc => {
-                    self.editing = None;
-                    self.last_error = None;
-                }
-                KeyCode::Backspace => {
-                    buf.pop();
-                }
-                KeyCode::Enter => {
-                    let value = buf.clone();
-                    let row = match self.rows.get(self.focused) {
-                        Some(r) => r,
-                        None => return SettingsResponse::Continue,
-                    };
-                    return match (row.kind.write_string)(config, &value) {
-                        Ok(()) => {
-                            self.editing = None;
-                            self.last_error = None;
-                            SettingsResponse::FieldChanged(row.label)
-                        }
-                        Err(e) => {
-                            self.last_error = Some(e);
-                            SettingsResponse::Continue
-                        }
-                    };
-                }
-                KeyCode::Char(c) => {
-                    use crossterm::event::KeyModifiers;
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                    {
-                        buf.push(c);
-                    }
-                }
-                _ => {}
-            }
-            return SettingsResponse::Continue;
-        }
-
-        // PgUp/PgDn/Home/End move the viewport without touching focus.
+        // PgUp/PgDn/Home/End move the viewport without touching focus or
+        // the open draft.
         if self.scroll_state.handle_paging_key(key) {
             return SettingsResponse::Continue;
         }
 
         match key.code {
-            KeyCode::Esc => SettingsResponse::Cancelled,
-            KeyCode::Up => {
-                self.move_focus(-1, config);
-                SettingsResponse::Continue
+            KeyCode::Esc => {
+                // Abandon any uncommitted text draft and close.
+                self.editing = None;
+                self.last_error = None;
+                SettingsResponse::Cancelled
             }
-            KeyCode::Down => {
-                self.move_focus(1, config);
-                SettingsResponse::Continue
-            }
+            KeyCode::Up => self.move_focus_committing(-1, config),
+            KeyCode::Down => self.move_focus_committing(1, config),
             KeyCode::Left => self.cycle_focused(config, -1),
             KeyCode::Right => self.cycle_focused(config, 1),
-            KeyCode::Enter => {
-                let row = match self.rows.get(self.focused) {
-                    Some(r) => r,
-                    None => return SettingsResponse::Continue,
-                };
-                match &row.kind.action {
-                    RowAction::OpenExternalEditor => SettingsResponse::OpenInExternalEditor,
-                    RowAction::OpenConfigFolder => SettingsResponse::OpenConfigFolder,
-                    RowAction::Cycle => self.cycle_focused(config, 1),
-                    RowAction::Edit => {
-                        let current = (row.kind.read)(config, &self.theme_names);
-                        self.editing = Some(current);
+            KeyCode::Enter => self.activate_focused(config),
+            KeyCode::Backspace => {
+                if let Some(buf) = self.editing.as_mut() {
+                    buf.pop();
+                    self.last_error = None;
+                }
+                SettingsResponse::Continue
+            }
+            KeyCode::Char(c) => {
+                use crossterm::event::KeyModifiers;
+                if let Some(buf) = self.editing.as_mut() {
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    {
+                        buf.push(c);
                         self.last_error = None;
-                        SettingsResponse::Continue
                     }
                 }
+                SettingsResponse::Continue
             }
             _ => SettingsResponse::Continue,
         }
     }
 
-    /// Insert a bracketed paste into the inline field editor, if one is
-    /// open.  No-op when no field is being edited (the settings rows are
-    /// otherwise cycled, not typed into).  The paste is flattened to one
-    /// line and length-capped by [`crate::ui::sanitize_paste`]; the
-    /// value is still validated on Enter via the row's `write_string`.
+    /// Insert a bracketed paste into the focused row's editable draft, if
+    /// one is open.  No-op on toggle / pill rows (cycled, not typed into).
+    /// The paste is flattened to one line and length-capped by
+    /// [`crate::ui::sanitize_paste`]; the value is still validated when the
+    /// draft commits via the row's `write_string`.
     pub fn paste(&mut self, text: &str) {
         if let Some(buf) = self.editing.as_mut() {
             buf.push_str(&crate::ui::sanitize_paste(text));
+            self.last_error = None;
         }
+    }
+
+    /// Enter on the focused row: open externally, cycle a toggle / pill, or
+    /// commit a text-input draft in place (staying on the row).
+    fn activate_focused(&mut self, config: &mut Config) -> SettingsResponse {
+        let action = self.rows.get(self.focused).map(|r| r.kind.action);
+        match action {
+            Some(RowAction::OpenExternalEditor) => SettingsResponse::OpenInExternalEditor,
+            Some(RowAction::OpenConfigFolder) => SettingsResponse::OpenConfigFolder,
+            Some(RowAction::Cycle) => self.cycle_focused(config, 1),
+            Some(RowAction::Edit) => self.commit_draft(config),
+            None => SettingsResponse::Continue,
+        }
+    }
+
+    /// Commit the focused text-input row's draft to `config`.  Returns
+    /// [`SettingsResponse::FieldChanged`] when a *changed* draft validates
+    /// and is written (the draft is refreshed to the normalized value, so
+    /// the row stays editable); on a validation error the draft is kept and
+    /// `last_error` set; an unchanged draft is a no-op.  No-op on non-edit
+    /// rows.
+    fn commit_draft(&mut self, config: &mut Config) -> SettingsResponse {
+        let draft = match self.editing.as_deref() {
+            Some(d) => d.to_owned(),
+            None => return SettingsResponse::Continue,
+        };
+        let (is_edit, label, read, write_string) = match self.rows.get(self.focused) {
+            Some(r) => (
+                matches!(r.kind.action, RowAction::Edit),
+                r.label,
+                r.kind.read,
+                r.kind.write_string,
+            ),
+            None => return SettingsResponse::Continue,
+        };
+        if !is_edit || draft == read(config, &self.theme_names) {
+            return SettingsResponse::Continue;
+        }
+        match write_string(config, &draft) {
+            Ok(()) => {
+                self.last_error = None;
+                self.editing = Some(read(config, &self.theme_names));
+                SettingsResponse::FieldChanged(label)
+            }
+            Err(e) => {
+                self.last_error = Some(e);
+                SettingsResponse::Continue
+            }
+        }
+    }
+
+    /// Seed (or clear) the editable draft for the currently-focused row:
+    /// a text-input row gets its current value as an editable draft, every
+    /// other row clears the draft.  Called whenever focus settles on a new
+    /// row so text inputs are editable on focus without an explicit "begin
+    /// edit" step.
+    pub(super) fn open_draft_for_focused(&mut self, config: &Config) {
+        self.editing = match self.rows.get(self.focused) {
+            Some(r) if matches!(r.kind.action, RowAction::Edit) => {
+                Some((r.kind.read)(config, &self.theme_names))
+            }
+            _ => None,
+        };
     }
 
     /// Cycle the focused row's value by `delta` (-1 / +1).  Only
@@ -350,19 +335,31 @@ impl SettingsState {
     }
 
     /// Apply the images→remote cascade after `Show images` changed.
-    /// Entering `Never` forces remote to `Never` (stashing the prior
-    /// value); leaving `Never` restores it.  Mirrors
-    /// `ui::welcome::WelcomeState::set_images`.
+    /// Delegates to the shared [`cycle_pill::apply_images_cascade`] so
+    /// the welcome modal and the settings overlay can't drift.
     fn apply_images_cascade(&mut self, config: &mut Config, was_never: bool) {
-        let now_never = matches!(config.images.enabled, ImagesEnabled::Never);
-        if !was_never && now_never {
-            self.pre_cascade_remote = Some(config.images.remote_policy);
-            config.images.remote_policy = RemoteImagePolicy::Never;
-        } else if was_never && !now_never {
-            if let Some(prev) = self.pre_cascade_remote.take() {
-                config.images.remote_policy = prev;
-            }
-        }
+        config.images.remote_policy = controls::apply_images_cascade(
+            config.images.enabled,
+            was_never,
+            config.images.remote_policy,
+            &mut self.pre_cascade_remote,
+        );
+    }
+
+    /// Move focus by `delta`, committing the row being left.  The current
+    /// text-input draft (if any) is committed first — a valid change is
+    /// written and surfaces as [`SettingsResponse::FieldChanged`]; an
+    /// invalid or unchanged draft is silently dropped (revert-on-leave).
+    /// Focus then moves and the new row's draft is opened.
+    fn move_focus_committing(&mut self, delta: i32, config: &mut Config) -> SettingsResponse {
+        let committed = self.commit_draft(config);
+        // Leaving the row abandons any still-uncommitted (invalid) draft
+        // and its error.
+        self.editing = None;
+        self.last_error = None;
+        self.move_focus(delta, config);
+        self.open_draft_for_focused(config);
+        committed
     }
 
     fn move_focus(&mut self, delta: i32, config: &Config) {
@@ -542,49 +539,73 @@ fn build_row_lines<'a>(
         }
         let focused = idx == state.focused;
         let editing = focused && state.editing.is_some();
-        // Option-style rows (booleans / Ask-Always-Never): render
-        // every pill inline and style the current value with the
-        // persistent-selection palette.  Edit-style rows can never
-        // also be option rows, so the editing branch never collides.
-        if let Some(options) = row.kind.options {
-            let current = (row.kind.read)(config, &state.theme_names);
-            let disabled = row.is_disabled(config);
-            let marker = if focused { "› " } else { "  " };
-            let label_padded = format!("{marker}{:<pad$}", row.label, pad = LABEL_PAD);
-            let label_style = if disabled {
-                theme.modal_close_hint
-            } else if focused {
-                theme.modal_item_selected
-            } else {
-                theme.modal_item
-            };
-            let mut spans: Vec<Span<'static>> = vec![Span::styled(label_padded, label_style)];
-            spans.extend(pill_spans(options, &current, focused, disabled, theme));
-            lines.push(Line::from(spans));
-            continue;
-        }
-        let value = if editing {
-            // Constant-width block cursor slot (a space when blinked off) so the
-            // field doesn't jitter.  The glyph is styled by `format_modal_row`
-            // along with the value text; the field is append-only, so the block
-            // sits at the end — matching the unified block cursor elsewhere.
-            let base = state.editing.as_deref().unwrap_or("");
-            if cursor_visible {
-                format!("{base}{}", crate::ui::cursor::CURSOR_BLOCK)
-            } else {
-                format!("{base} ")
-            }
+        let disabled = row.is_disabled(config);
+
+        // The label column (marker + padding) is one unit per the control
+        // scheme: when the row is focused the whole column takes the focus
+        // fill — for a toggle that's the only place focus shows, since the
+        // toggle widget keeps its value color.
+        let marker = if focused { "› " } else { "  " };
+        let label_padded = format!("{marker}{:<pad$}", row.label, pad = LABEL_PAD);
+        let label_style = if disabled {
+            theme.modal_close_hint
+        } else if focused {
+            theme.modal_item_selected
         } else {
-            (row.kind.read)(config, &state.theme_names)
+            theme.modal_item
         };
-        lines.push(format_modal_row(
-            row.label,
-            &value,
-            focused,
-            editing,
-            theme,
-            RowLayout::FixedPad(LABEL_PAD),
-        ));
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(label_padded, label_style)];
+
+        if let Some(pill) = row.kind.options {
+            // Option rows render the current value as a toggle (on/off
+            // slider) or a multi-value pill, chosen by the pill's style.
+            let current = (row.kind.read)(config, &state.theme_names);
+            let current_index = pill
+                .labels
+                .iter()
+                .position(|l| l.eq_ignore_ascii_case(&current))
+                .unwrap_or(0);
+            match pill.style {
+                // ON_OFF maps `true -> 0`, so index 0 is the "on" state.
+                PillStyle::Toggle => spans.extend(controls::toggle_spans(
+                    current_index == 0,
+                    focused,
+                    disabled,
+                    theme,
+                )),
+                PillStyle::Cycle => spans.extend(controls::pill_spans(
+                    pill.labels,
+                    current_index,
+                    focused,
+                    disabled,
+                    theme,
+                )),
+            }
+        } else if editing {
+            // Focused text-input row: render the live, editable draft with
+            // a distinctly-colored (accent `theme.cursor`) blink-stable
+            // block cursor at the append-only end, so the cursor itself is
+            // the "type here" signal and never blends into the focus fill.
+            let draft = state.editing.as_deref().unwrap_or("");
+            let cursor = draft.chars().count();
+            spans.extend(crate::ui::cursor::text_field_spans(
+                draft,
+                cursor,
+                cursor_visible,
+                controls::text_value_style(true, theme),
+                theme.cursor,
+            ));
+        } else {
+            // Unfocused text input or an external-action row: the value
+            // styled as a text-input control (focus fill when focused,
+            // `secondary` foreground at rest).
+            let value = (row.kind.read)(config, &state.theme_names);
+            spans.push(Span::styled(
+                value,
+                controls::text_value_style(focused, theme),
+            ));
+        }
+        lines.push(Line::from(spans));
     }
     lines
 }
@@ -600,7 +621,10 @@ fn settings_content_width(state: &SettingsState, config: &Config) -> u16 {
             return r.label.chars().count();
         }
         let value_w = match r.kind.options {
-            Some(opts) => pill_row_width(opts),
+            Some(pill) => match pill.style {
+                PillStyle::Toggle => controls::toggle_width(),
+                PillStyle::Cycle => controls::pill_width(pill.labels),
+            },
             None => (r.kind.read)(config, &state.theme_names).chars().count(),
         };
         FOCUS_MARKER_WIDTH + LABEL_PAD + value_w
@@ -627,20 +651,23 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    fn focus_row(state: &mut SettingsState, label: &str) {
+    fn focus_row(state: &mut SettingsState, config: &Config, label: &str) {
         let idx = state
             .rows
             .iter()
             .position(|r| r.label == label)
             .unwrap_or_else(|| panic!("missing row {label}"));
         state.focused = idx;
+        // Mirror real navigation: landing on a row opens its draft so a
+        // text-input row is editable on focus.
+        state.open_draft_for_focused(config);
     }
 
     #[test]
     fn cycle_toggles_use_visual_line_navigation() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, "Use visual line navigation");
+        focus_row(&mut state, &config, "Use visual line navigation");
         assert!(config.editor.visual_line_nav); // default true
         let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
         assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
@@ -651,7 +678,7 @@ mod tests {
     fn cycle_toggles_vim_mode_handler() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, "Vim mode");
+        focus_row(&mut state, &config, "Vim mode");
         assert_eq!(config.modal.handler, "default"); // default: off
         let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
         assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
@@ -664,7 +691,7 @@ mod tests {
     fn cycle_advances_show_images_through_ask_always_never() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, "Show images");
+        focus_row(&mut state, &config, "Show images");
         assert_eq!(config.images.enabled, ImagesEnabled::Ask);
         state.handle_key(&key(KeyCode::Enter), &mut config);
         assert_eq!(config.images.enabled, ImagesEnabled::Always);
@@ -675,11 +702,11 @@ mod tests {
     }
 
     #[test]
-    fn editor_max_width_opens_inline_editor_and_round_trips() {
+    fn editor_max_width_is_editable_on_focus_and_round_trips() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, "Editor max width");
-        state.handle_key(&key(KeyCode::Enter), &mut config);
+        // No "Enter to begin": focusing the row opens its draft.
+        focus_row(&mut state, &config, "Editor max width");
         assert_eq!(state.editing.as_deref(), Some("100"));
         for _ in 0..3 {
             state.handle_key(&key(KeyCode::Backspace), &mut config);
@@ -687,16 +714,55 @@ mod tests {
         for c in "200".chars() {
             state.handle_key(&key(KeyCode::Char(c)), &mut config);
         }
+        // Enter commits in place and the row stays editable.
         let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
         assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
         assert_eq!(config.editor.max_width_cols, 200);
+        assert_eq!(state.editing.as_deref(), Some("200"));
+    }
+
+    #[test]
+    fn text_input_commits_on_focus_leave() {
+        let mut config = Config::default();
+        let mut state = SettingsState::new();
+        focus_row(&mut state, &config, "Editor max width");
+        for _ in 0..3 {
+            state.handle_key(&key(KeyCode::Backspace), &mut config);
+        }
+        for c in "200".chars() {
+            state.handle_key(&key(KeyCode::Char(c)), &mut config);
+        }
+        // Leaving the row (without Enter) commits the valid draft.
+        let resp = state.handle_key(&key(KeyCode::Up), &mut config);
+        assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
+        assert_eq!(config.editor.max_width_cols, 200);
+        assert_ne!(state.rows[state.focused].label, "Editor max width");
+    }
+
+    #[test]
+    fn invalid_draft_reverts_on_focus_leave() {
+        let mut config = Config::default();
+        let mut state = SettingsState::new();
+        focus_row(&mut state, &config, "Editor max width");
+        for _ in 0..3 {
+            state.handle_key(&key(KeyCode::Backspace), &mut config);
+        }
+        for c in "abc".chars() {
+            state.handle_key(&key(KeyCode::Char(c)), &mut config);
+        }
+        // Leaving with an invalid draft silently reverts — no write, no
+        // lingering error.
+        let resp = state.handle_key(&key(KeyCode::Up), &mut config);
+        assert_eq!(resp, SettingsResponse::Continue);
+        assert_eq!(config.editor.max_width_cols, 100);
+        assert!(state.last_error.is_none());
     }
 
     #[test]
     fn enter_on_open_config_folder_row_emits_open_config_folder() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, "Open config folder");
+        focus_row(&mut state, &config, "Open config folder");
         let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
         assert_eq!(resp, SettingsResponse::OpenConfigFolder);
     }
@@ -705,7 +771,7 @@ mod tests {
     fn enter_on_config_toml_row_emits_open_external_editor() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, "Open config.toml in default editor");
+        focus_row(&mut state, &config, "Open config.toml in default editor");
         let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
         assert_eq!(resp, SettingsResponse::OpenInExternalEditor);
     }
@@ -739,7 +805,7 @@ mod tests {
     fn left_right_cycle_show_remote_images() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, "Show remote images");
+        focus_row(&mut state, &config, "Show remote images");
         assert_eq!(config.images.remote_policy, RemoteImagePolicy::Ask);
         state.handle_key(&key(KeyCode::Right), &mut config);
         assert_eq!(config.images.remote_policy, RemoteImagePolicy::Always);
@@ -751,19 +817,21 @@ mod tests {
     fn invalid_inline_value_is_rejected() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, "Editor max width");
-        state.handle_key(&key(KeyCode::Enter), &mut config);
-        // Replace `100` with garbage.
+        focus_row(&mut state, &config, "Editor max width");
+        // Replace `100` with garbage (draft is already open on focus).
         for _ in 0..3 {
             state.handle_key(&key(KeyCode::Backspace), &mut config);
         }
         for c in "abc".chars() {
             state.handle_key(&key(KeyCode::Char(c)), &mut config);
         }
+        // Enter on an invalid draft flags the error and keeps the draft
+        // (the row stays editable so the user can fix it).
         let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
         assert!(matches!(resp, SettingsResponse::Continue));
         assert!(state.last_error.is_some());
         assert_eq!(config.editor.max_width_cols, 100); // unchanged
+        assert_eq!(state.editing.as_deref(), Some("abc"));
     }
 
     #[test]
@@ -775,15 +843,21 @@ mod tests {
     }
 
     #[test]
-    fn escape_inside_inline_editor_only_cancels_the_edit() {
+    fn escape_closes_overlay_and_abandons_uncommitted_draft() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, "Editor max width");
-        state.handle_key(&key(KeyCode::Enter), &mut config);
+        focus_row(&mut state, &config, "Editor max width");
+        // Type an uncommitted change, then Esc.
+        for c in "9".chars() {
+            state.handle_key(&key(KeyCode::Char(c)), &mut config);
+        }
         assert!(state.editing.is_some());
         let resp = state.handle_key(&key(KeyCode::Esc), &mut config);
-        assert_eq!(resp, SettingsResponse::Continue);
+        // Esc closes the overlay (it no longer just cancels an edit) and
+        // the uncommitted draft is dropped — config is untouched.
+        assert_eq!(resp, SettingsResponse::Cancelled);
         assert!(state.editing.is_none());
+        assert_eq!(config.editor.max_width_cols, 100);
     }
 
     #[test]
@@ -948,61 +1022,10 @@ mod tests {
     }
 
     #[test]
-    fn option_rows_show_every_pill_label() {
-        // The tri-state and boolean rows render all option labels
-        // inline so the user can see the alternatives without
-        // cycling.  This test asserts the rendered buffer contains
-        // each pill string verbatim for a representative row of each
-        // kind.
-        let config = Config::default();
-        let mut state = SettingsState::new();
-        let contents = render(&mut state, &config, 120, 40);
-        // Tri-state: Show images.
-        assert!(contents.contains("[ Ask ]"));
-        assert!(contents.contains("[ Always ]"));
-        assert!(contents.contains("[ Never ]"));
-        // Boolean: any of the bool rows is enough.
-        assert!(contents.contains("[ true ]"));
-        assert!(contents.contains("[ false ]"));
-    }
-
-    #[test]
-    fn option_row_marks_current_value_with_unfocused_selection_style() {
-        // Render the overlay focused on a non-option row and look at
-        // the styled span carrying the current value for "Show images"
-        // (default: Ask).  It must use `modal_item_selected_unfocused`
-        // — the persistent-selection palette — and the other pills
-        // must use `modal_item`.
-        let config = Config::default();
-        let mut state = SettingsState::new();
-        focus_row(&mut state, "Editor max width"); // unfocus the pill rows
-        let theme = theme_ref();
-        let lines = build_row_lines(&state, &config, theme, true);
-        let row = lines
-            .iter()
-            .find(|l| {
-                l.spans
-                    .first()
-                    .is_some_and(|s| s.content.contains("Show images"))
-            })
-            .expect("Show images row");
-        let pills: Vec<&Span<'_>> = row
-            .spans
-            .iter()
-            .filter(|s| s.content.starts_with('['))
-            .collect();
-        assert_eq!(pills.len(), 3);
-        let ask = pills.iter().find(|s| s.content.contains("Ask")).unwrap();
-        let always = pills.iter().find(|s| s.content.contains("Always")).unwrap();
-        assert_eq!(ask.style, theme.modal_item_selected_unfocused);
-        assert_eq!(always.style, theme.modal_item);
-    }
-
-    #[test]
     fn option_row_marks_current_value_with_focused_style_when_focused() {
         let config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, "Show images");
+        focus_row(&mut state, &config, "Show images");
         let theme = theme_ref();
         let lines = build_row_lines(&state, &config, theme, true);
         let row = lines
@@ -1042,7 +1065,7 @@ mod tests {
         let mut config = Config::default();
         config.editor.cursor_blink_ms = 777;
         let mut state = SettingsState::new();
-        focus_row(&mut state, "Blink cursor");
+        focus_row(&mut state, &config, "Blink cursor");
         let contents = render(&mut state, &config, 100, 30);
         assert!(
             contents.contains("Blink cursor every 777 ms"),
@@ -1054,7 +1077,7 @@ mod tests {
     fn blink_cursor_row_toggles_config_flag() {
         let mut config = Config::default();
         let mut state = SettingsState::new();
-        focus_row(&mut state, "Blink cursor");
+        focus_row(&mut state, &config, "Blink cursor");
         assert!(config.editor.cursor_blink); // default on
         let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
         assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
@@ -1069,7 +1092,7 @@ mod tests {
         let mut config = Config::default();
         config.images.remote_policy = RemoteImagePolicy::Always;
         let mut state = SettingsState::new();
-        focus_row(&mut state, "Show images");
+        focus_row(&mut state, &config, "Show images");
         // Ask → Always → Never.
         state.handle_key(&key(KeyCode::Enter), &mut config);
         state.handle_key(&key(KeyCode::Enter), &mut config);
@@ -1088,7 +1111,7 @@ mod tests {
         assert_ne!(state.focused, remote_idx, "Down must skip the locked row");
 
         // Leave Never (Never → Ask) — prior remote choice is restored.
-        focus_row(&mut state, "Show images");
+        focus_row(&mut state, &config, "Show images");
         state.handle_key(&key(KeyCode::Enter), &mut config);
         assert_eq!(config.images.enabled, ImagesEnabled::Ask);
         assert_eq!(config.images.remote_policy, RemoteImagePolicy::Always);

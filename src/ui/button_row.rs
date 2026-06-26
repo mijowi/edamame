@@ -71,8 +71,8 @@ pub fn button_row_width(labels: &[&str]) -> u16 {
 }
 
 /// Render the button row, horizontally centred in `area`, with the
-/// button at `focused_idx` drawn in `theme.modal_button_focused` and
-/// the rest in `theme.modal_item`.
+/// button at `focused_idx` drawn focused (`primary` chip) and
+/// the rest as a neutral `text_muted` chip (see `cycle_pill::button_style`).
 ///
 /// Returns the absolute terminal rect of each rendered button, in the
 /// same order as `labels`, so callers that need to hit-test mouse
@@ -90,7 +90,7 @@ pub fn render_button_row(
 }
 
 /// Render a row of [`Button`]s, horizontally centred in `area`, with the
-/// button at `focused_idx` drawn in `theme.modal_button_focused` and the
+/// button at `focused_idx` drawn focused (`primary` chip) and the
 /// rest in `theme.modal_item`.  Bare buttons render their label without
 /// the `[ … ]` wrapper.
 ///
@@ -107,11 +107,7 @@ pub fn render_buttons(
 ) -> Vec<Rect> {
     let mut spans: Vec<Span<'_>> = Vec::with_capacity(buttons.len() * 2 + 1);
     for (i, button) in buttons.iter().enumerate() {
-        let style = if i == focused_idx {
-            theme.modal_button_focused
-        } else {
-            theme.modal_item
-        };
+        let style = crate::ui::cycle_pill::button_style(i == focused_idx, theme);
         spans.push(Span::styled(button.rendered(), style));
         if i + 1 < buttons.len() {
             spans.push(Span::raw("  "));

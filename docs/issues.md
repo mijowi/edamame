@@ -4,11 +4,33 @@
 
 - Refactor/clean up source and tests
 
-- We have a lot of true/false and triple ask/always/never settings throughout edamame. True/false options are currently displayed as `[ true ] [ false ]` or as `[x]`/[ ]`. I think we should 1) unify these two different UX patterns into one, and 2) improve on the design. We could possibly implement something that looks like a slider widget instead, with a label. Any ideas for how to improve the triple-option settings as well?
-
 - Nested lists move horizontally when de-rendering
 
+- Combine editor max width options into one row in settings overlay
+
 - Implement HTML export. Add an export modal with options including "Export inlined images as data:URIs or leave as link" and "Export diagrams as inlined SVG or leave as code" (improve the wording).
+
+- The editor cursor is not shown when the terminal window is not focused, but the cursor is still shown in modals. Thread window focus into modals as well.
+
+- Switch theme modal dark/light buttons should use new pill widget
+
+- Replace diff mode intro and welcome modal "Don't show this again" with "Save and don't show this again" and "Continue and don't show this again"
+
+- Move "Show diagrams" above "Show images" in welcome modal
+- Move the Save button to the bottom in its own row
+
+- Zenburn green more green and bg darker
+
+- Add setting for disabling diff mode
+
+## Vim issues
+- `Tab` table cell navigation is swallowed in vim normal mode (`Shift-Tab` works)
+- How should we treat vim motions in tables? Disable any that don't work between words? e.g. disable `o`, `O`. `A`, `I`, `$`, `^` should act on the *cell*?
+- When typing in a table cell that is wider than the column header, and a space character is entered,
+- Conventional vim selection instead of half selection?
+- `p` pastes after cursor cell instead of before
+- `a` at the end of a line starts typing on the following line — puts the cursor after the newline character
+- Add a selection paint *flash* to `yy` to signal the yank operation succeeded
 
 ## Diff mode
 - Finish diff mode plan (editing hunks in diff mode)
