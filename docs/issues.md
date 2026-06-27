@@ -10,6 +10,10 @@
 
 - The editor cursor is hidden when the terminal window loses focus, but the cursor is still shown in modals. Thread window focus into modals as well.
 
+- Change searchable dropdown underline from secondary to primary
+
+- Update the welcome modal theme button and label to use the standard label+button control on a single row. The button should keep its arrow, which indicates it "goes out" to another modal. The accent color on the theme name *can* be dropped, but it would be preferable if we could distinguish the theme name somehow. What do you think we should do?
+
 - Zenburn green more green and bg darker
 - Nord green more green and bg darker
 
