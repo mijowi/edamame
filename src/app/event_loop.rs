@@ -360,7 +360,10 @@ impl App {
             self.editor.mode,
             self.vim.as_ref().map(|v| v.sub_mode),
         );
-        let modal_cursor_visible = self.editor.cursor_blink.is_visible();
+        // Hide the modal's block cursor when the terminal window has lost
+        // focus, mirroring the editor cursor (see `EditorState::cursor_visible`).
+        let modal_cursor_visible =
+            self.editor.terminal_focused && self.editor.cursor_blink.is_visible();
         let theme_ref = self.theme;
         let drop_indicator = drop_indicator_for(&self.drag_target);
         let scrollbar_active = self.scrollbar_hover

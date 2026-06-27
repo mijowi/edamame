@@ -6,8 +6,6 @@
 
 - Nested lists move horizontally when de-rendering
 
-- The editor cursor is hidden when the terminal window loses focus, but the cursor is still shown in modals. Thread window focus into modals as well.
-
 - Change searchable dropdown underline from secondary to primary
 - Verify that searchable dropdown is a single component reused in theme picker, theme export, and command palette
 
