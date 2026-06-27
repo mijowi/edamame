@@ -419,6 +419,7 @@ in EDIT, the cursor's line or table cell reveals its raw Markdown and \
 everything else stays formatted; RAW has no formatting. \n\
 • Mouse, image, and Mermaid diagram support, depending on your terminal's capabilities\n\
 • GitHub Flavored Markdown, including tables, task lists, and more, plus highlights\n\
+• Diff mode — review external file changes hunk by hunk\n\
 • Bottom bar with status and contextual hints\n\
 • Command palette for access to commands and settings (Ctrl-P)\n\
 • Vim mode — optional Vim-style editing (see docs for what's supported)";

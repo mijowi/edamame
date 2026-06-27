@@ -13,12 +13,13 @@ use std::any::Any;
 
 use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
-use ratatui::text::Line;
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
 use ratatui::Frame;
 
 use super::types::{Modal, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
-use crate::config::Action;
+use crate::config::{Action, Theme};
 use crate::input::diff_hint;
 use crate::ui::{DiffIntroResponse, DiffIntroState, DiffIntroView};
 
@@ -33,7 +34,12 @@ impl DiffIntroModal {
         }
     }
 
-    fn body(&self) -> Vec<Line<'static>> {
+    fn body(&self, theme: &Theme) -> Vec<Line<'static>> {
+        // Keybinding glyphs are painted in the accent color so they stand
+        // out from their plain-text labels; the glyphs themselves come
+        // from the shared `diff_keys` table so this explanatory list can
+        // never teach a key the handler doesn't actually honor.
+        let accent = Style::default().fg(theme.palette.accent);
         vec![
             Line::raw("The file on disk has changed. edamame will now enter diff mode, in which you can review and accept or reject changes."),
             Line::raw(""),
@@ -41,32 +47,25 @@ impl DiffIntroModal {
             Line::raw("The focused hunk is highlighted; the others are dimmed."),
             Line::raw(""),
             Line::raw("Keybindings:"),
-            // Glyphs come from the shared `diff_keys` table so this
-            // explanatory list can never teach a key the handler doesn't
-            // actually honor; the phrasing stays local to the modal.
-            Line::raw(format!(
-                "  Next / previous hunk:  {} / {}",
-                diff_hint(&Action::DiffNext),
-                diff_hint(&Action::DiffPrev),
-            )),
-            Line::raw(format!(
-                "  Accept / reject hunk:  {} / {}",
-                diff_hint(&Action::DiffAcceptHunk),
-                diff_hint(&Action::DiffRejectHunk),
-            )),
-            Line::raw(format!(
-                "  Accept / reject all:   {} / {}",
-                diff_hint(&Action::DiffAcceptAll),
-                diff_hint(&Action::DiffRejectAll),
-            )),
-            Line::raw(format!(
-                "  Undo a decision:       {}",
-                diff_hint(&Action::DiffResetHunk),
-            )),
-            Line::raw(format!(
-                "  Exit diff mode:        {}",
-                diff_hint(&Action::DiffExit),
-            )),
+            binding_line(
+                "  Next / previous hunk:  ",
+                &[&Action::DiffNext, &Action::DiffPrev],
+                accent,
+            ),
+            binding_line(
+                "  Accept / reject hunk:  ",
+                &[&Action::DiffAcceptHunk, &Action::DiffRejectHunk],
+                accent,
+            ),
+            binding_line(
+                "  Accept / reject all:   ",
+                &[&Action::DiffAcceptAll, &Action::DiffRejectAll],
+                accent,
+            ),
+            binding_line("  Undo a decision:       ", &[&Action::DiffResetHunk], accent),
+            binding_line("  Exit diff mode:        ", &[&Action::DiffExit], accent),
+            Line::raw(""),
+            Line::raw("Don't want this? Diff mode can be turned off in settings (\"Diff when file changes\"), or use the toggle below to just stop showing this notice."),
         ]
     }
 
@@ -90,6 +89,19 @@ impl DiffIntroModal {
     }
 }
 
+/// Build one keybinding row: a fixed-width plain `prefix` (label + padding)
+/// followed by the action glyphs in the accent color, joined by " / ".
+fn binding_line(prefix: &str, actions: &[&Action], accent: Style) -> Line<'static> {
+    let mut spans = vec![Span::raw(prefix.to_owned())];
+    for (i, action) in actions.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" / "));
+        }
+        spans.push(Span::styled(diff_hint(action), accent));
+    }
+    Line::from(spans)
+}
+
 impl Default for DiffIntroModal {
     fn default() -> Self {
         Self::new()
@@ -98,7 +110,7 @@ impl Default for DiffIntroModal {
 
 impl Modal for DiffIntroModal {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
-        let body = self.body();
+        let body = self.body(ctx.theme);
         let view = DiffIntroView {
             theme: ctx.theme,
             body: &body,
@@ -176,8 +188,9 @@ mod tests {
         // modal is where the user learns it.  The glyph comes from the
         // shared `diff_keys` table (`⌫`).
         let modal = DiffIntroModal::new();
+        let theme = Theme::default();
         let undo_glyph = diff_hint(&Action::DiffResetHunk);
-        let has_undo = modal.body().iter().any(|line| {
+        let has_undo = modal.body(&theme).iter().any(|line| {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             text.contains("Undo") && text.contains(undo_glyph)
         });
