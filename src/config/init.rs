@@ -1,5 +1,6 @@
-//! First-run scaffolding: write the three shipped default config files
-//! into the user's config directory, only when each file is absent.
+//! First-run scaffolding: write the shipped default config files
+//! (`config.toml`, `keybindings.toml`, `export/default.css.example`) into
+//! the user's config directory, only when each file is absent.
 
 use std::path::Path;
 
@@ -24,6 +25,21 @@ pub(super) fn ensure_default_files_in(dir: &Path) {
         return;
     }
 
+    // The export stylesheet folder mirrors `themes/`: an (initially empty)
+    // place for users to drop custom `.css` files, each of which becomes a
+    // pick in the Export HTML modal.  The single built-in default is the
+    // frozen compiled-in stylesheet (`export::html::BUILTIN_STYLESHEET`),
+    // so we deliberately do NOT write a selectable `default.css` here — that
+    // would surface a second, identical "default" in the picker.  Instead we
+    // seed a `.example` reference (excluded from the picker by
+    // `list_export_stylesheets`'s `.css` filter): a fork-able starting point
+    // the user copies to `<name>.css` and edits.
+    let export_dir = dir.join("export");
+    if let Err(e) = std::fs::create_dir_all(&export_dir) {
+        tracing::warn!(error = %e, dir = %export_dir.display(), "failed to create export dir");
+        return;
+    }
+
     write_if_absent(
         &dir.join("config.toml"),
         include_str!("../../config/config.toml"),
@@ -31,6 +47,10 @@ pub(super) fn ensure_default_files_in(dir: &Path) {
     write_if_absent(
         &dir.join("keybindings.toml"),
         include_str!("../../config/keybindings.toml"),
+    );
+    write_if_absent(
+        &export_dir.join("default.css.example"),
+        include_str!("../../config/export/default.css"),
     );
 }
 

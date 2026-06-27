@@ -4,6 +4,12 @@ mod diagram;
 mod diff;
 mod document;
 mod editor;
+// The binary drives the HTML pipeline but not the custom-export (PDF/DOCX)
+// one, which is library-only surface exercised by the lib tests.  The
+// bin-only dead-code / unused-import allows are scoped to those exact items
+// in `export.rs` / `export/custom.rs` / `html.rs` / `runner.rs` rather than
+// blanket-silencing the whole `export` module here.
+mod export;
 mod image;
 mod input;
 mod markdown;

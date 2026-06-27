@@ -21,7 +21,10 @@ pub enum Stylesheet {
     Builtin,
     /// Read a user CSS file at export time.
     Path(PathBuf),
-    /// Use the supplied CSS verbatim.  Primarily for tests and embeddings.
+    /// Use the supplied CSS verbatim.  Primarily for tests and embeddings —
+    /// the binary only ever builds `Builtin` / `Path` (via
+    /// `from_config_value`), so this is lib-only surface in the bin build.
+    #[allow(dead_code)]
     Inline(String),
 }
 

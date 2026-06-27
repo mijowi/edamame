@@ -850,6 +850,23 @@ mod tests {
         assert!(dir.path().join("keybindings.toml").exists());
         assert!(dir.path().join("themes").is_dir());
         assert!(!dir.path().join("themes").join("default.toml").exists());
+        // The export stylesheet folder is created (like `themes/`) and seeded
+        // with a `.example` reference users can fork — but NOT a selectable
+        // `default.css`, since the single built-in default is compiled in.
+        assert!(dir.path().join("export").is_dir());
+        let export = dir.path().join("export");
+        assert!(
+            !export.join("default.css").exists(),
+            "no selectable default.css — would duplicate the compiled-in Builtin"
+        );
+        let css = std::fs::read_to_string(export.join("default.css.example"))
+            .expect("default.css.example scaffolded");
+        assert!(css.contains("markdown-body"), "bundled stylesheet body");
+        // The `.example` reference is excluded from the modal's picker.
+        assert!(
+            crate::config::list_export_stylesheets(dir.path()).is_empty(),
+            "the .example reference must not appear as a stylesheet pick"
+        );
     }
 
     #[test]

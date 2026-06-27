@@ -144,8 +144,16 @@ enabled = "ask"
 # HTML is edamame's single built-in export target. It also serves as the
 # intermediate format for custom commands (see [[export.custom]] below), so
 # PDF / DOCX / etc. are one external-tool invocation away.
+# These are the defaults the Export HTML modal opens with; choosing different
+# options in that modal writes them back here.
 # [export.html]
-# stylesheet     = "builtin"    # or an absolute path to a .css file
+# stylesheet     = "builtin"    # "builtin" (the bundled default), or a path to
+#                               # a .css file. Drop custom stylesheets in the
+#                               # `export/` folder beside this file and they
+#                               # show up in the Export HTML modal's picker. A
+#                               # `default.css.example` reference is written
+#                               # there on first run — copy it to `<name>.css`
+#                               # and edit it as a starting point.
 # inline_images  = false        # when true, local images are base64-embedded
 # diagrams       = true         # render ```mermaid blocks as inline SVG
 #                               # (false → leave as <pre><code class="language-mermaid">)

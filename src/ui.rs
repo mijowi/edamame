@@ -10,6 +10,7 @@ pub mod diff_intro_modal;
 pub mod diff_view;
 pub mod dim;
 pub mod editor_view;
+pub mod export_html_modal;
 pub mod export_theme_modal;
 pub mod gutter;
 pub mod image_view;
@@ -44,6 +45,7 @@ pub use diff_intro_modal::{DiffIntroResponse, DiffIntroState, DiffIntroView};
 #[allow(unused_imports)]
 pub use diff_view::{DiffView, DiffViewState};
 pub use editor_view::{EditorView, EditorViewState};
+pub use export_html_modal::{ExportChoices, ExportHtmlResponse, ExportHtmlState, ExportHtmlView};
 pub use export_theme_modal::{ExportThemeResponse, ExportThemeState, ExportThemeView};
 pub use gutter::split_gutter;
 pub use image_view::ImageLayoutSnapshot;
