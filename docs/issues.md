@@ -6,13 +6,9 @@
 
 - Nested lists move horizontally when de-rendering
 
-- Implement HTML export. Add an export modal with options including "Export inlined images as data:URIs or leave as link" and "Export diagrams as inlined SVG or leave as code" (improve the wording).
-
 - The editor cursor is hidden when the terminal window loses focus, but the cursor is still shown in modals. Thread window focus into modals as well.
 
 - Change searchable dropdown underline from secondary to primary
-
-- Update the welcome modal theme button and label to use the standard label+button control on a single row. The button should keep its arrow, which indicates it "goes out" to another modal. The accent color on the theme name *can* be dropped, but it would be preferable if we could distinguish the theme name somehow. What do you think we should do?
 
 - Zenburn green more green and bg darker
 - Nord green more green and bg darker
@@ -21,6 +17,8 @@
 - Update welcome modal feature notes to include diff mode
 
 - Make "Create custom theme" modal searchable, just like the theme picker
+
+- Verify that controls accept input and modify their own state, instead of the parent taking the input and telling the control what state to present. Boths keys and mouse hit detection.
 
 ## Security
 - Ensure everything necessary is sanitized to prevent code execution, namely mermaid code blocks and remote images. Anywhere else?

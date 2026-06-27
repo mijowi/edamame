@@ -5,7 +5,7 @@
 //! App surfaces in a startup modal.  See [`read_and_warn`] for the shared
 //! read → deserialize-with-unknown-keys → warn loop.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use super::config::Config;
@@ -16,6 +16,32 @@ use super::sections::{
 use super::theme::Theme;
 use super::theme_file::ThemeFile;
 use super::warnings::{ConfigWarning, WarningKind};
+
+/// Discover user-droppable export stylesheets in `<config_dir>/export/`.
+///
+/// Returns every `.css` file in that folder, sorted by path.  The
+/// `default.css.example` reference scaffolded on first run is deliberately
+/// excluded by the `.css` extension filter — it's a fork-able template, not
+/// a selectable stylesheet.  A missing or unreadable directory yields an
+/// empty vector — callers fall back to the compiled-in `Builtin` stylesheet.
+pub fn list_export_stylesheets(config_dir: &Path) -> Vec<PathBuf> {
+    let export_dir = config_dir.join("export");
+    let Ok(entries) = std::fs::read_dir(&export_dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(std::result::Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("css"))
+        })
+        .collect();
+    files.sort();
+    files
+}
 
 /// Parse a TOML payload into `T`, recording unknown keys via
 /// `serde_ignored`.  Returns the parsed struct and the list of
@@ -264,5 +290,36 @@ pub(super) fn read_theme_named(
             });
             theme_default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_export_stylesheets_finds_css_sorted_and_ignores_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let export = dir.path().join("export");
+        std::fs::create_dir_all(&export).unwrap();
+        std::fs::write(export.join("zebra.css"), "").unwrap();
+        std::fs::write(export.join("default.css"), "").unwrap();
+        std::fs::write(export.join("notes.txt"), "").unwrap();
+        std::fs::write(export.join("UPPER.CSS"), "").unwrap();
+        // The scaffolded fork-able reference is not a `.css` and is excluded.
+        std::fs::write(export.join("default.css.example"), "").unwrap();
+
+        let found = list_export_stylesheets(dir.path());
+        let names: Vec<String> = found
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["UPPER.CSS", "default.css", "zebra.css"]);
+    }
+
+    #[test]
+    fn list_export_stylesheets_missing_dir_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(list_export_stylesheets(dir.path()).is_empty());
     }
 }

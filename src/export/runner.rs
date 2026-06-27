@@ -18,6 +18,10 @@ pub enum PreflightError {
     /// The source has no associated path, so we cannot derive a default
     /// target filename next to it.  Only relevant when the caller relied
     /// on [`target_for_source`] — explicit targets never hit this path.
+    /// Constructed only by callers that derive a target from a pathless
+    /// source — library surface the binary doesn't reach (it guards on a
+    /// saved `file_path` before exporting).
+    #[allow(dead_code)]
     #[error("source document has no path; cannot derive an export target")]
     NoSourcePath,
 }

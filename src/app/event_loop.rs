@@ -485,6 +485,9 @@ impl App {
                 self.handle_watcher_event(event);
                 self.needs_draw = true;
             }
+            AppEvent::ExportDone(id, outcome) => {
+                self.handle_export_done(id, outcome);
+            }
             AppEvent::ReleaseCheckResult(result) => {
                 self.release_check_in_flight = false;
                 let status = match result {

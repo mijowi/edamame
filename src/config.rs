@@ -21,5 +21,6 @@ pub use config::{
     LoadedConfig, RemoteImagePolicy, WarningKind,
 };
 pub use keymap::{Action, CoalesceKind, KeyBindingOverrides, KeyMap, KeyMapError};
+pub use readers::list_export_stylesheets;
 pub use theme::Theme;
 pub use theme_file::ThemeFile;
