@@ -24,7 +24,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Paragraph, StatefulWidget, Widget, Wrap},
 };
@@ -471,8 +471,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         //  cap_rows          one row per capability in the summary
         //  hint_rows         degraded hint (0 when all OK)
         //  1                 spacer
-        //  1                 current theme line
-        //  2                 switch theme button + spacer below
+        //  2                 theme label+button row + spacer below
         //  3 * 3             three tri-state sections (row + explanation + spacer)
         //  3                 vim-motions toggle (row + explanation + spacer)
         //  1                 "Don't show this again" toggle row
@@ -480,7 +479,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         //  1                 Save button row
         let cap_rows = state.cap_summary.rows.len() as u16;
         let natural_height =
-            1 + para_rows + 1 + 1 + cap_rows + hint_rows + 1 + 1 + 2 + 9 + 3 + 1 + 1 + 1;
+            1 + para_rows + 1 + 1 + cap_rows + hint_rows + 1 + 2 + 9 + 3 + 1 + 1 + 1;
 
         let content = ContentSize {
             width: CONTENT_WIDTH,
@@ -640,21 +639,13 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         );
         y += 1;
 
-        // ── Theme ────────────────────────────────────────────────────
+        // ── Theme (standard label + button row) ──────────────────────
+        // The current theme name lives *inside* the button: the bracketed
+        // affordance distinguishes it without needing an accent color, and
+        // the ▸ arrow signals that activating it opens the theme picker.
         let theme_focused = state.focused == WelcomeFocus::Theme;
-        let current_line = Line::from(vec![
-            Span::styled("Current theme: ", self.theme.modal_bg),
-            Span::styled(
-                self.theme_name.to_owned(),
-                Style::default()
-                    .fg(self.theme.palette.primary)
-                    .bg(self.theme.palette.surface_elevated)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]);
-        render_line(&mut scratch, body_x, y, body_w, current_line, self.theme);
-        y += 1;
-        state.theme_button_rect = Some(crate::ui::button_row::render_button_at(
+        // Uniform row fill so the label column inherits modal_bg.
+        Paragraph::new("").style(self.theme.modal_bg).render(
             Rect {
                 x: body_x,
                 y,
@@ -662,12 +653,39 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
                 height: 1,
             },
             &mut scratch,
-            crate::ui::button_row::Button::bracketed("Switch theme ▸"),
+        );
+        // Label column — same focus treatment as the option rows below.
+        let label_col_w = CONTROL_COL.min(body_w) as usize;
+        Paragraph::new(Line::from(Span::styled(
+            format!("{:<label_col_w$}", "Choose theme"),
+            controls::control_label_style(theme_focused, false, self.theme),
+        )))
+        .style(self.theme.modal_bg)
+        .render(
+            Rect {
+                x: body_x,
+                y,
+                width: CONTROL_COL.min(body_w),
+                height: 1,
+            },
+            &mut scratch,
+        );
+        // Button carries the current theme name + the "opens a modal" arrow.
+        let theme_button_label = format!("{} ▸", self.theme_name);
+        state.theme_button_rect = Some(crate::ui::button_row::render_button_at(
+            Rect {
+                x: body_x + CONTROL_COL,
+                y,
+                width: body_w.saturating_sub(CONTROL_COL),
+                height: 1,
+            },
+            &mut scratch,
+            crate::ui::button_row::Button::bracketed(&theme_button_label),
             theme_focused,
             self.theme,
         ));
         state.focus_offsets[WelcomeFocus::Theme.order_index()] = y;
-        y += 2;
+        y += 2; // label+button row + spacer below
 
         // ── Option rows (diagrams sit above the image rows) ─────────
         let pill_w = controls::pill_width(controls::ASK_ALWAYS_NEVER) as u16;
@@ -1046,27 +1064,6 @@ fn render_label(buf: &mut Buffer, x: u16, y: u16, width: u16, text: &str, theme:
             },
             buf,
         );
-}
-
-fn render_line(buf: &mut Buffer, x: u16, y: u16, width: u16, line: Line<'_>, theme: &Theme) {
-    Paragraph::new("").style(theme.modal_bg).render(
-        Rect {
-            x,
-            y,
-            width,
-            height: 1,
-        },
-        buf,
-    );
-    Paragraph::new(line).style(theme.modal_bg).render(
-        Rect {
-            x,
-            y,
-            width,
-            height: 1,
-        },
-        buf,
-    );
 }
 
 fn rect_contains(rect: Option<Rect>, col: u16, row: u16) -> bool {
