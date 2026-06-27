@@ -9,14 +9,10 @@
 - The editor cursor is hidden when the terminal window loses focus, but the cursor is still shown in modals. Thread window focus into modals as well.
 
 - Change searchable dropdown underline from secondary to primary
+- Verify that searchable dropdown is a single component reused in theme picker, theme export, and command palette
 
 - Zenburn green more green and bg darker
 - Nord green more green and bg darker
-
-- Add note to "Entering diff mode" modal that says diff mode can be disabled in settings. Should we just add the option to disable diff mode in the intro modal?
-- Update welcome modal feature notes to include diff mode
-
-- Make "Create custom theme" modal searchable, just like the theme picker
 
 - Verify that controls accept input and modify their own state, instead of the parent taking the input and telling the control what state to present. Boths keys and mouse hit detection.
 
