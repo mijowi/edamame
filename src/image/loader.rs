@@ -19,6 +19,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use crate::config::RemoteImagePolicy;
+use crate::image::svg::{rasterize_svg, SvgError, SvgScaleMode, SvgSizing};
 
 /// Decoded image paired with its origin info — sufficient for
 /// `ImageCache::decoded` to key the entry and for debugging.
@@ -58,6 +59,12 @@ pub enum ImageLoadError {
         url: String,
         #[source]
         source: image::ImageError,
+    },
+    #[error("svg render failed for {url}: {source}")]
+    Svg {
+        url: String,
+        #[source]
+        source: SvgError,
     },
     #[error("unsupported url scheme: {0}")]
     UnsupportedScheme(String),
@@ -106,14 +113,14 @@ pub fn resolve(
             return Err(ImageLoadError::RemoteBlocked(url.to_owned()));
         }
         let bytes = fetch_remote(url)?;
-        decode(url, &bytes)?
+        decode_any(url, &bytes, max_cells, font_size)?
     } else {
         let path = resolve_local_path(url, doc_path)?;
         let bytes = std::fs::read(&path).map_err(|source| ImageLoadError::Io {
             path: path.clone(),
             source,
         })?;
-        decode(url, &bytes)?
+        decode_any(url, &bytes, max_cells, font_size)?
     };
 
     let image = match (max_cells, font_size) {
@@ -215,8 +222,69 @@ fn fetch_remote(url: &str) -> Result<Vec<u8>, ImageLoadError> {
         })
 }
 
+/// True when `url`'s path ends in `.svg` (case-insensitive), ignoring any
+/// `?query` / `#fragment` suffix on a remote URL.  Detection is by
+/// extension only: a remote URL that serves SVG without a `.svg` path
+/// (e.g. `?format=svg`) falls through to the raster decoder and fails
+/// like any non-image — that is the documented trade-off.
+fn is_svg_url(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    path.to_ascii_lowercase().ends_with(".svg")
+}
+
+/// Decode `bytes` into a `DynamicImage`, picking the SVG rasterizer for
+/// `.svg` URLs and the raster (`image` crate) decoder otherwise.
+fn decode_any(
+    url: &str,
+    bytes: &[u8],
+    max_cells: Option<(u16, u16)>,
+    font_size: Option<(u16, u16)>,
+) -> Result<DynamicImage, ImageLoadError> {
+    if is_svg_url(url) {
+        decode_svg(url, bytes, max_cells, font_size)
+    } else {
+        decode(url, bytes)
+    }
+}
+
 fn decode(url: &str, bytes: &[u8]) -> Result<DynamicImage, ImageLoadError> {
     image::load_from_memory(bytes).map_err(|source| ImageLoadError::Decode {
+        url: url.to_owned(),
+        source,
+    })
+}
+
+/// Rasterize SVG `bytes` to a `DynamicImage`.  Unlike a diagram, a user's
+/// SVG file has a meaningful natural size, so it is only downscaled to
+/// fit the envelope (`SvgSizing::Natural`) — `Resize::Fit` then displays
+/// it 1:1, crisp at natural size — and its transparency is preserved
+/// (no background fill) to composite over the document like a
+/// transparent PNG.  The subsequent `pre_resize` is a no-op here because
+/// the rasterizer has already capped the pixel size at the envelope.
+///
+/// Only UTF-8 SVG bytes are accepted; a UTF-16-encoded or BOM-prefixed
+/// file is reported as an `Svg` parse error rather than silently failing
+/// elsewhere.  Both are rare for hand- and tool-authored SVGs.
+fn decode_svg(
+    url: &str,
+    bytes: &[u8],
+    max_cells: Option<(u16, u16)>,
+    font_size: Option<(u16, u16)>,
+) -> Result<DynamicImage, ImageLoadError> {
+    let svg = std::str::from_utf8(bytes).map_err(|e| ImageLoadError::Svg {
+        url: url.to_owned(),
+        source: SvgError::Parse(format!("invalid UTF-8: {e}")),
+    })?;
+    rasterize_svg(
+        svg,
+        SvgSizing {
+            envelope: max_cells,
+            font_size,
+            mode: SvgScaleMode::Natural,
+        },
+        None,
+    )
+    .map_err(|source| ImageLoadError::Svg {
         url: url.to_owned(),
         source,
     })
@@ -238,6 +306,61 @@ mod tests {
             .write_to(&mut out, image::ImageFormat::Png)
             .expect("encode png");
         out.into_inner()
+    }
+
+    /// A minimal valid SVG with explicit dimensions.
+    fn tiny_svg() -> &'static [u8] {
+        br##"<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <rect width="24" height="24" fill="#3498db"/>
+</svg>"##
+    }
+
+    #[test]
+    fn is_svg_url_matches_extension_ignoring_query() {
+        assert!(is_svg_url("icon.svg"));
+        assert!(is_svg_url("./art/Logo.SVG"));
+        assert!(is_svg_url("/abs/diagram.svg"));
+        assert!(is_svg_url("https://img.shields.io/badge/x.svg?style=flat"));
+        assert!(is_svg_url("https://example.com/a.svg#frag"));
+        assert!(!is_svg_url("photo.png"));
+        assert!(!is_svg_url("https://example.com/render?format=svg"));
+    }
+
+    #[test]
+    fn local_svg_file_rasterizes_at_natural_size() {
+        let mut file = tempfile::Builder::new()
+            .suffix(".svg")
+            .tempfile()
+            .expect("tempfile");
+        std::io::Write::write_all(&mut file, tiny_svg()).expect("write svg");
+        let path = file.path().to_str().unwrap().to_owned();
+
+        // Natural 24×24 fits the 80×24-cell envelope, so it stays 24×24.
+        let loaded = resolve(
+            &path,
+            None,
+            RemoteImagePolicy::Never,
+            false,
+            Some((80, 24)),
+            Some((8, 16)),
+        )
+        .expect("load svg");
+        assert_eq!(loaded.image.width(), 24);
+        assert_eq!(loaded.image.height(), 24);
+    }
+
+    #[test]
+    fn invalid_svg_file_reports_svg_error() {
+        let mut file = tempfile::Builder::new()
+            .suffix(".svg")
+            .tempfile()
+            .expect("tempfile");
+        std::io::Write::write_all(&mut file, b"this is not svg").expect("write");
+        let path = file.path().to_str().unwrap().to_owned();
+
+        let err = resolve(&path, None, RemoteImagePolicy::Never, false, None, None).unwrap_err();
+        assert!(matches!(err, ImageLoadError::Svg { .. }));
     }
 
     #[test]

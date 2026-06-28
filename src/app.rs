@@ -540,7 +540,7 @@ impl App {
         //   * `mermaid_rs_renderer`'s internal fontdb (for text layout
         //     metrics during SVG generation),
         //   * our own shared `fontdb::Database` used by `usvg` when
-        //     rasterising the SVG to PNG.
+        //     rasterizing the SVG to PNG.
         // Both scan OS font dirs (~100–300 ms each, worse cold).
         // `diagram::warm_fontdb` primes both so the first real diagram
         // render doesn't pay them.  Without this warmup (or with
