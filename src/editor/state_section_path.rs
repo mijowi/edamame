@@ -3,8 +3,8 @@
 //! Used by the status bar to render a breadcrumb like
 //! `notes.md › Checkpoint 1 › Item 1` so the user always sees where in
 //! the document tree the cursor sits.  Complements the section picker
-//! ([`crate::ui::SectionPickerState`]) which lets them jump anywhere
-//! in the same tree.
+//! (`crate::ui::section_picker`) which lets them jump anywhere in the
+//! same tree.
 //!
 //! Mirrors the heading-walk shape used by `App::open_section_picker`
 //! (`src/app/section_jump.rs`) but lives one layer down so the UI layer

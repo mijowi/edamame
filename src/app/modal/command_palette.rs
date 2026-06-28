@@ -1,9 +1,9 @@
-//! Fuzzy-searchable command palette.  Adapter that wraps
-//! [`crate::ui::PaletteState`] so it can ride on the App's
-//! [`super::ModalStack`].  Selecting a row dispatches the chosen
-//! [`crate::config::Action`] back through
-//! [`crate::app::App::dispatch_action`] — the unified dispatcher
-//! shared with the run-loop keystroke path.
+//! Fuzzy-searchable command palette.  Adapter that drives a
+//! [`SearchableList<PaletteEntry>`](crate::ui::searchable_list::SearchableList)
+//! so it can ride on the App's [`super::ModalStack`].  Selecting a row
+//! dispatches the chosen [`crate::config::Action`] back through
+//! [`crate::app::App::dispatch_action`] — the unified dispatcher shared with
+//! the run-loop keystroke path.
 
 use std::any::Any;
 
@@ -13,28 +13,42 @@ use ratatui::Frame;
 
 use super::types::{Modal, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
-use crate::config::KeyMap;
-use crate::ui::{PaletteResponse, PaletteState, PaletteView};
+use crate::config::{Action, KeyMap};
+use crate::ui::command_palette::{build_palette_list, render_palette, PaletteEntry};
+use crate::ui::searchable_list::{ListEvent, SearchableList};
 
 pub struct CommandPaletteModal {
-    state: PaletteState,
+    list: SearchableList<PaletteEntry>,
+    /// Cached `esc` close-hint rect, refreshed each render for click
+    /// hit-testing.
+    esc_button_rect: Option<Rect>,
 }
 
 impl CommandPaletteModal {
     pub fn new(keymap: &KeyMap) -> Self {
         Self {
-            state: PaletteState::open(keymap),
+            list: build_palette_list(keymap),
+            esc_button_rect: None,
         }
+    }
+
+    /// Build the close+dispatch outcome for a selected action.
+    fn dispatch(action: Action, doc_height: usize, doc_width: usize) -> ModalOutcome {
+        ModalOutcome::CloseAnd(Box::new(move |app| {
+            app.dispatch_action(action, doc_height, doc_width);
+        }))
     }
 }
 
 impl Modal for CommandPaletteModal {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
-        let view = PaletteView {
-            theme: ctx.theme,
-            cursor_visible: ctx.cursor_visible,
-        };
-        frame.render_stateful_widget(view, area, &mut self.state);
+        self.esc_button_rect = render_palette(
+            &mut self.list,
+            area,
+            frame.buffer_mut(),
+            ctx.theme,
+            ctx.cursor_visible,
+        );
     }
 
     fn handle_key(
@@ -44,26 +58,40 @@ impl Modal for CommandPaletteModal {
         doc_height: usize,
         doc_width: usize,
     ) -> ModalOutcome {
-        match self.state.handle_key(&key) {
-            PaletteResponse::Continue => ModalOutcome::Continue,
-            PaletteResponse::Cancelled => ModalOutcome::Close,
-            PaletteResponse::Selected(action) => ModalOutcome::CloseAnd(Box::new(move |app| {
-                app.dispatch_action(action, doc_height, doc_width);
-            })),
+        match self.list.handle_key(&key) {
+            ListEvent::Cancelled => ModalOutcome::Close,
+            ListEvent::Submitted(i) => {
+                let action = self.list.items()[i].action.clone();
+                Self::dispatch(action, doc_height, doc_width)
+            }
+            // FocusChanged has no live-preview behaviour in the palette.
+            ListEvent::Continue | ListEvent::FocusChanged(_) => ModalOutcome::Continue,
         }
     }
 
     fn handle_paste(&mut self, text: &str) -> ModalOutcome {
-        self.state.paste(text);
+        self.list.paste(text);
         ModalOutcome::Continue
     }
 
     fn handle_wheel(&mut self, delta: i32) {
-        self.state.scroll_state.scroll_by(delta);
+        self.list.scroll_by(delta);
     }
 
     fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
-        super::types::close_if_esc_clicked(self.state.esc_button_rect, col, row)
+        if super::types::esc_rect_hit(self.esc_button_rect, col, row) {
+            return ModalOutcome::Close;
+        }
+        match self.list.handle_click(col, row) {
+            ListEvent::Submitted(i) => {
+                let action = self.list.items()[i].action.clone();
+                // `handle_click` has no doc dims; use the last-rendered ones.
+                ModalOutcome::CloseAnd(Box::new(move |app| {
+                    app.dispatch_action(action, app.last_doc_height, app.last_doc_width);
+                }))
+            }
+            _ => ModalOutcome::Continue,
+        }
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -93,7 +121,7 @@ mod tests {
     #[test]
     fn paste_routes_into_the_open_palette_query() {
         // End-to-end: a bracketed paste while the palette is open must
-        // reach `PaletteState::query` through `dispatch_modal_paste`,
+        // reach the list's query through `dispatch_modal_paste`,
         // flattened and length-capped by `sanitize_paste`.
         let mut app = make_app();
         app.open_command_palette();
@@ -102,7 +130,7 @@ mod tests {
             .modal_stack
             .find_first_mut::<CommandPaletteModal>()
             .expect("palette still open");
-        assert_eq!(modal.state.query, "save");
+        assert_eq!(modal.list.query(), "save");
     }
 
     #[test]

@@ -1,21 +1,15 @@
-//! Export a theme to a user-editable `.toml` file.
+//! Export a theme to a user-editable `.toml` file ("Create custom theme").
 //!
-//! Three focus targets: a fuzzy-searchable theme-list picker (defaults
-//! to the active theme), a single-line name input (defaults to the
-//! selected theme's name), and an `Export` button.  Tab / Shift-Tab
-//! cycles focus; Up/Down inside the list moves selection and inside
-//! the input or button moves focus to the previous/next target.
+//! Three focus targets: a fuzzy-searchable theme-list picker (the shared
+//! [`SearchableList`] component, defaulting to the active theme), a single-line
+//! name input (defaults to the selected theme's name), and an `Export` button.
+//! Tab / Shift-Tab cycles focus; Up/Down inside the list moves selection and
+//! inside the input or button moves focus to the previous/next target.
 //!
-//! With the list focused, typing filters it via [`nucleo_matcher`] —
-//! mirroring the `Switch theme` picker (`ui::theme_picker`) — so the
-//! same model is shared by both theme dropdowns.
-//!
-//! UI-only — the adapter in `app/modal/export_theme.rs` writes the
-//! resulting `<name>.toml` and applies the new theme.
+//! UI-only — the adapter in `app/modal/export_theme.rs` writes the resulting
+//! `<name>.toml` and applies the new theme.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
-use nucleo_matcher::{Matcher, Utf32Str};
 use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Rect},
@@ -27,17 +21,19 @@ use crate::config::Theme;
 use crate::ui::button_row::{button_row_width, render_button_row};
 use crate::ui::controls;
 use crate::ui::modal_row::{format_modal_row, RowLayout};
-use crate::ui::scroll_container::{
-    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind, ScrollContainerState,
+use crate::ui::scroll_container::{draw_frame, FrameOpts, ModalKind};
+use crate::ui::searchable_list::{
+    anchor_searchable_modal, FocusPolicy, ListChrome, ListEvent, RowCtx, SearchableList,
 };
 
 const BUTTON_LABELS: &[&str] = &["Export"];
 const MAX_LIST_ROWS: u16 = 12;
-/// Fixed total width of the name-input row (including both padding
-/// cells).  Keeps the modal a stable size as the user types — long
-/// values scroll horizontally inside the input rather than widening
-/// the modal frame.
+/// Placeholder shown in the empty search field.
+const PLACEHOLDER: &str = "Type to filter themes…";
+/// Fixed total width of the name-input row (including both padding cells).
 const NAME_INPUT_WIDTH: u16 = 28;
+/// Pinned rows above the list: heading, search input, divider.
+const PINNED_TOP: u16 = 3;
 
 /// Focus targets in the modal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,146 +67,65 @@ pub enum ExportThemeResponse {
     Continue,
     Cancelled,
     /// User pressed Export with a valid `(source_theme, new_name)`.
-    /// Validation against existing theme names happens here in the
-    /// UI; on collision the modal stays open with `last_error` set.
     Export {
         source: String,
         new_name: String,
     },
 }
 
-#[derive(Debug, Clone)]
 pub struct ExportThemeState {
-    pub themes: Vec<String>,
-    /// Live fuzzy-filter query for the theme list.  Grows as the user
-    /// types while the list is focused (mirrors `ui::theme_picker`).
-    pub query: String,
-    /// Indices into `themes`, filtered + score-ordered by `query`.
-    /// Empty query lists every theme in registry order.
-    display_rows: Vec<usize>,
-    /// Cache guard: the query `display_rows` was last computed for, so
-    /// repeated `refresh_display` calls within a frame are no-ops.
-    matched_for_query: Option<String>,
-    /// Currently-selected row — an index into `display_rows`, *not*
-    /// `themes`.  Resolve the actual theme via [`Self::selected_theme`].
-    pub selected: usize,
+    /// Theme list + fuzzy filter (shared component).
+    list: SearchableList<String>,
     /// New name entered by the user.
     pub name: String,
     /// Character-index cursor into `name`.
     pub cursor: usize,
     pub focus: ExportThemeField,
     pub last_error: Option<String>,
-    pub scroll_state: ScrollContainerState,
     pub esc_button_rect: Option<Rect>,
-    /// Flipped to `true` the first time the user types/backspaces in
-    /// the Name field.  Once set, moving the list selection no longer
-    /// re-syncs the Name field — the user's edit wins.
+    /// Flipped to `true` the first time the user types/backspaces in the Name
+    /// field.  Once set, moving the list selection no longer re-syncs Name.
     name_user_edited: bool,
     /// Horizontal scroll offset (in chars) for the name input.
-    /// Updated at render time so the cursor stays in view when the
-    /// value is wider than the input area.
     name_scroll: usize,
 }
 
 impl ExportThemeState {
     pub fn new(themes: Vec<String>, active: &str) -> Self {
-        let selected_theme = if themes.iter().any(|t| t == active) {
-            active.to_owned()
-        } else {
-            themes.first().cloned().unwrap_or_default()
-        };
-        let initial_name = if selected_theme.is_empty() {
-            String::new()
-        } else {
-            default_copy_name(&selected_theme)
-        };
+        let mut list = SearchableList::new(themes, |s: &String| s.as_str())
+            .with_focus_policy(FocusPolicy::ResetToTop);
+        let active = active.to_owned();
+        list.focus_matching(|t| *t == active);
+        let initial_name = list
+            .focused_item()
+            .map(|t| default_copy_name(t))
+            .unwrap_or_default();
         let cursor = initial_name.chars().count();
-        let mut state = Self {
-            themes,
-            query: String::new(),
-            display_rows: Vec::new(),
-            matched_for_query: None,
-            selected: 0,
+        Self {
+            list,
             name: initial_name,
             cursor,
             focus: ExportThemeField::ThemeList,
             last_error: None,
-            scroll_state: ScrollContainerState::default(),
             esc_button_rect: None,
             name_user_edited: false,
             name_scroll: 0,
-        };
-        state.refresh_display();
-        // Land the selection on the active theme within the freshly-built
-        // (unfiltered) display list.
-        if let Some(pos) = state.display_rows.iter().position(|&i| {
-            state
-                .themes
-                .get(i)
-                .map(|n| n == &selected_theme)
-                .unwrap_or(false)
-        }) {
-            state.selected = pos;
         }
-        state
     }
 
-    /// The theme name backing the currently-selected row, resolved
-    /// through the active filter.  `None` when the filter matches
-    /// nothing.
+    /// All theme names (for duplicate-name validation).
+    pub fn theme_names(&self) -> Vec<String> {
+        self.list.items().to_vec()
+    }
+
+    /// Scroll the theme list (mouse wheel).
+    pub fn scroll_by(&mut self, delta: i32) {
+        self.list.scroll_by(delta);
+    }
+
+    /// The theme name backing the currently-selected row.
     pub fn selected_theme(&self) -> Option<&String> {
-        self.display_rows
-            .get(self.selected)
-            .and_then(|&i| self.themes.get(i))
-    }
-
-    /// Rebuild `display_rows` from `query`.  Empty query → every theme
-    /// in registry order; otherwise nucleo fuzzy-scores each name and
-    /// orders by descending score (ties broken lexicographically).
-    /// Cheap to call repeatedly: a no-op when the query is unchanged.
-    fn refresh_display(&mut self) {
-        if self.matched_for_query.as_deref() == Some(self.query.as_str()) {
-            return;
-        }
-        self.display_rows.clear();
-        if self.query.is_empty() {
-            self.display_rows.extend(0..self.themes.len());
-        } else {
-            let mut matcher = Matcher::default();
-            let pattern = Pattern::parse(&self.query, CaseMatching::Ignore, Normalization::Smart);
-            let mut scored: Vec<(usize, u32)> = Vec::new();
-            let mut buf: Vec<char> = Vec::new();
-            for (idx, name) in self.themes.iter().enumerate() {
-                buf.clear();
-                let haystack = Utf32Str::new(name, &mut buf);
-                if let Some(score) = pattern.score(haystack, &mut matcher) {
-                    scored.push((idx, score));
-                }
-            }
-            scored.sort_by(|a, b| {
-                b.1.cmp(&a.1)
-                    .then_with(|| self.themes[a.0].cmp(&self.themes[b.0]))
-            });
-            for (i, _) in scored {
-                self.display_rows.push(i);
-            }
-        }
-        self.matched_for_query = Some(self.query.clone());
-        if self.selected >= self.display_rows.len() {
-            self.selected = 0;
-        }
-    }
-
-    /// Re-filter after a query edit: rebuild the list, snap the
-    /// selection back to the top match, reset scroll, and re-seed the
-    /// name from the new top theme (unless the user has edited it).
-    fn refilter(&mut self) {
-        self.matched_for_query = None;
-        self.refresh_display();
-        self.selected = 0;
-        self.scroll_state.scroll = 0;
-        self.sync_name_from_selection();
-        self.last_error = None;
+        self.list.focused_item()
     }
 
     /// Apply a key event.
@@ -222,11 +137,14 @@ impl ExportThemeState {
             return ExportThemeResponse::Continue;
         }
 
-        // PageUp/PgDn/Home/End drive list scroll only when the list
-        // has focus.
+        // PageUp/PgDn/Home/End scroll the list only when it has focus.
         if matches!(self.focus, ExportThemeField::ThemeList)
-            && self.scroll_state.handle_paging_key(key)
+            && matches!(
+                key.code,
+                KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
+            )
         {
+            self.list.handle_key(key);
             return ExportThemeResponse::Continue;
         }
 
@@ -240,51 +158,30 @@ impl ExportThemeState {
                 self.focus = self.focus.prev();
                 ExportThemeResponse::Continue
             }
-            KeyCode::Up => match self.focus {
-                ExportThemeField::ThemeList => {
-                    if self.selected > 0 {
-                        self.selected -= 1;
-                        self.scroll_state.ensure_visible(self.selected as u16);
-                        self.sync_name_from_selection();
-                    }
-                    ExportThemeResponse::Continue
+            KeyCode::Up => {
+                match self.focus {
+                    ExportThemeField::ThemeList => self.list_key(key),
+                    _ => self.focus = self.focus.prev(),
                 }
-                _ => {
-                    self.focus = self.focus.prev();
-                    ExportThemeResponse::Continue
+                ExportThemeResponse::Continue
+            }
+            KeyCode::Down => {
+                match self.focus {
+                    ExportThemeField::ThemeList => self.list_key(key),
+                    _ => self.focus = self.focus.next(),
                 }
-            },
-            KeyCode::Down => match self.focus {
-                ExportThemeField::ThemeList => {
-                    if self.selected + 1 < self.display_rows.len() {
-                        self.selected += 1;
-                        self.scroll_state.ensure_visible(self.selected as u16);
-                        self.sync_name_from_selection();
-                    }
-                    ExportThemeResponse::Continue
+                ExportThemeResponse::Continue
+            }
+            KeyCode::Left if matches!(self.focus, ExportThemeField::Name) => {
+                self.cursor = self.cursor.saturating_sub(1);
+                ExportThemeResponse::Continue
+            }
+            KeyCode::Right if matches!(self.focus, ExportThemeField::Name) => {
+                if self.cursor < self.name.chars().count() {
+                    self.cursor += 1;
                 }
-                _ => {
-                    self.focus = self.focus.next();
-                    ExportThemeResponse::Continue
-                }
-            },
-            KeyCode::Left => match self.focus {
-                ExportThemeField::Name => {
-                    self.cursor = self.cursor.saturating_sub(1);
-                    ExportThemeResponse::Continue
-                }
-                _ => ExportThemeResponse::Continue,
-            },
-            KeyCode::Right => match self.focus {
-                ExportThemeField::Name => {
-                    let len = self.name.chars().count();
-                    if self.cursor < len {
-                        self.cursor += 1;
-                    }
-                    ExportThemeResponse::Continue
-                }
-                _ => ExportThemeResponse::Continue,
-            },
+                ExportThemeResponse::Continue
+            }
             KeyCode::Home if matches!(self.focus, ExportThemeField::Name) => {
                 self.cursor = 0;
                 ExportThemeResponse::Continue
@@ -294,8 +191,7 @@ impl ExportThemeState {
                 ExportThemeResponse::Continue
             }
             KeyCode::Backspace if matches!(self.focus, ExportThemeField::ThemeList) => {
-                self.query.pop();
-                self.refilter();
+                self.list_key(key);
                 ExportThemeResponse::Continue
             }
             KeyCode::Backspace if matches!(self.focus, ExportThemeField::Name) => {
@@ -324,14 +220,15 @@ impl ExportThemeState {
                 ExportThemeResponse::Continue
             }
             KeyCode::Char(c) if matches!(self.focus, ExportThemeField::ThemeList) => {
-                self.query.push(c);
-                self.refilter();
+                // Delegate the keystroke to the list so the component owns the
+                // query edit + filtering.
+                let synthetic = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+                self.list_key(&synthetic);
                 ExportThemeResponse::Continue
             }
             KeyCode::Enter => match self.focus {
-                // Enter on the picker advances to the Name field
-                // rather than firing Export — gives the user a chance
-                // to rename before committing.
+                // Enter on the picker advances to the Name field rather than
+                // firing Export — gives the user a chance to rename first.
                 ExportThemeField::ThemeList => {
                     self.focus = ExportThemeField::Name;
                     ExportThemeResponse::Continue
@@ -345,11 +242,15 @@ impl ExportThemeState {
         }
     }
 
-    /// Insert a bracketed paste into the focused field.  With the Name
-    /// field focused it lands at the cursor; with the list focused it
-    /// extends the fuzzy-filter query.  No-op on the button.  The paste
-    /// is flattened to one line and length-capped by
-    /// [`crate::ui::sanitize_paste`].
+    /// Route a key to the list component and re-seed the name from the new
+    /// selection (filtering / navigation both re-sync the unedited name).
+    fn list_key(&mut self, key: &KeyEvent) {
+        self.list.handle_key(key);
+        self.last_error = None;
+        self.sync_name_from_selection();
+    }
+
+    /// Insert a bracketed paste into the focused field.
     pub fn paste(&mut self, text: &str) {
         let clean = crate::ui::sanitize_paste(text);
         if clean.is_empty() {
@@ -365,10 +266,22 @@ impl ExportThemeState {
                 self.name_user_edited = true;
             }
             ExportThemeField::ThemeList => {
-                self.query.push_str(&clean);
-                self.refilter();
+                self.list.paste(&clean);
+                self.last_error = None;
+                self.sync_name_from_selection();
             }
             ExportThemeField::Export => {}
+        }
+    }
+
+    /// Hit-test a click against the rendered list; a click on a theme row
+    /// selects it (and re-seeds the name).
+    pub fn handle_click(&mut self, col: u16, row: u16) {
+        if let ListEvent::Submitted(i) = self.list.handle_click(col, row) {
+            self.list.focus_item(i);
+            self.focus = ExportThemeField::ThemeList;
+            self.last_error = None;
+            self.sync_name_from_selection();
         }
     }
 
@@ -377,8 +290,8 @@ impl ExportThemeState {
             self.last_error = Some("No theme selected".to_owned());
             return ExportThemeResponse::Continue;
         };
-        // Strip whitespace and leading dots so the resulting file name
-        // can't be `.`, `..`, or a hidden dotfile.
+        // Strip whitespace and leading dots so the file name can't be `.`,
+        // `..`, or a hidden dotfile.
         let new_name = self.name.trim().trim_start_matches('.').to_owned();
         if new_name.is_empty() {
             self.last_error = Some("Name required".to_owned());
@@ -415,9 +328,7 @@ impl ExportThemeState {
     }
 }
 
-/// Default name for a copied theme: `"{source} copy"`.  Chosen so
-/// pressing Enter on the seeded value doesn't immediately collide
-/// with the source theme's name.
+/// Default name for a copied theme: `"{source} copy"`.
 fn default_copy_name(source: &str) -> String {
     format!("{source} copy")
 }
@@ -450,21 +361,18 @@ impl<'a> StatefulWidget for ExportThemeView<'a> {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         // Layout:
-        //   pinned_top: heading row + search-filter input row + divider row
+        //   pinned_top: heading + search input + divider
         //   scrolling: theme list (capped at MAX_LIST_ROWS)
-        //   pinned_bottom: spacer + label + name row + spacer
-        //                + button row + (optional) error row.
-        state.refresh_display();
-        let pinned_top: u16 = 3;
-        let list_total = state.display_rows.len().max(1) as u16;
-        let list_visible = list_total.min(MAX_LIST_ROWS);
+        //   pinned_bottom: spacer + label + name row + spacer + button
+        //                + (optional) error row.
         let error_row = if state.last_error.is_some() { 1 } else { 0 };
         let pinned_bottom: u16 = 5 + error_row;
 
         let content_width = {
             let label_w = "Choose an existing theme to export from:".chars().count() as u16;
             let longest_theme = state
-                .themes
+                .list
+                .items()
                 .iter()
                 .map(|t| t.chars().count())
                 .max()
@@ -475,196 +383,115 @@ impl<'a> StatefulWidget for ExportThemeView<'a> {
                 .max(longest_theme)
                 .max(NAME_INPUT_WIDTH)
                 .max(buttons_w)
+                .max(PLACEHOLDER.chars().count() as u16 + 2)
         };
 
-        let content = ContentSize {
-            width: content_width,
-            height: list_visible,
-            pinned_top,
+        let total_rows = state.list.visible_len() as u16;
+        let geom = anchor_searchable_modal(
+            area,
+            content_width,
+            total_rows,
+            MAX_LIST_ROWS,
+            PINNED_TOP,
             pinned_bottom,
-            ..Default::default()
-        };
-        // Anchor the modal's top edge at the y it would have when the
-        // *initial* (no-query) list is rendered — i.e. centred for the
-        // full theme list, capped at MAX_LIST_ROWS.  This keeps the
-        // search row pinned as the user filters: a naively-centred modal
-        // would shift up and down by half the height delta on every
-        // keystroke that changes the match count.  Mirrors
-        // `ui::theme_picker`.
-        let initial_height = (state.themes.len() as u16).clamp(1, MAX_LIST_ROWS);
-        let anchor_content = ContentSize {
-            height: initial_height,
-            ..content
-        };
-        let anchor = centered_rect_for_content(anchor_content, area);
-        let actual = centered_rect_for_content(content, area);
-        let max_y = area.y + area.height.saturating_sub(actual.height);
-        let modal_area = Rect {
-            x: actual.x,
-            y: anchor.y.min(max_y),
-            width: actual.width,
-            height: actual.height,
-        };
+            0,
+        );
         let layout = draw_frame(
-            modal_area,
+            geom.modal_area,
             buf,
             FrameOpts {
                 title: "Create custom theme",
                 kind: ModalKind::Normal,
                 show_close_hint: true,
-                content,
+                content: geom.content,
                 theme: self.theme,
             },
         );
         state.esc_button_rect = layout.esc_hit_rect;
         let inner = layout.body;
-        if inner.height == 0 || inner.width == 0 {
+        if inner.height < PINNED_TOP + pinned_bottom + 1 || inner.width == 0 {
             return;
         }
 
         // Heading row.
-        let heading_area = Rect {
-            x: inner.x,
-            y: inner.y,
-            width: inner.width,
-            height: 1,
-        };
         Paragraph::new(Line::from(Span::styled(
             "Choose an existing theme to export from:",
             self.theme.modal_section_heading,
         )))
         .style(self.theme.modal_bg)
-        .render(heading_area, buf);
+        .render(
+            Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: 1,
+            },
+            buf,
+        );
 
-        // Search-filter input row.  The block cursor is only shown when
-        // the list is focused — that's the field this query belongs to.
+        // Input + divider + list, rendered by the shared component starting at
+        // the row below the heading.
+        let list_height = inner.height - PINNED_TOP - pinned_bottom;
         let focused_list = matches!(state.focus, ExportThemeField::ThemeList);
-        let search_area = Rect {
-            x: inner.x,
-            y: inner.y + 1,
-            width: inner.width,
-            height: 1,
-        };
-        let mut search_spans = vec![Span::styled("› ", self.theme.modal_item)];
-        search_spans.extend(crate::ui::cursor::text_field_spans(
-            &state.query,
-            state.query.chars().count(),
-            self.cursor_visible && focused_list,
-            self.theme.modal_item,
-            self.theme.cursor,
-        ));
-        Paragraph::new(Line::from(search_spans))
-            .style(self.theme.modal_bg)
-            .render(search_area, buf);
-
-        // Divider — bottom border of the search field, sitting at the
-        // bottom of the pinned-top stack (heading, input, divider) just
-        // above the list.  Part of the "searchable dropdown" look shared
-        // with `ui::theme_picker`.
-        let divider_style = ratatui::style::Style::default()
-            .fg(self.theme.palette.secondary)
-            .bg(self.theme.palette.surface_elevated);
-        let divider_y = inner.y + 2;
-        for x in inner.x..(inner.x + inner.width) {
-            buf[(x, divider_y)].set_symbol("─").set_style(divider_style);
-        }
-
-        // List area.
-        let inner_h = inner.height;
-        if inner_h < pinned_top + pinned_bottom {
-            return;
-        }
-        let list_height = inner_h.saturating_sub(pinned_top + pinned_bottom);
-        state
-            .scroll_state
-            .observe(state.display_rows.len() as u16, list_height);
-        state.scroll_state.ensure_visible(state.selected as u16);
-
-        let list_area = Rect {
-            x: inner.x,
-            y: inner.y + pinned_top,
-            width: inner.width,
-            height: list_height,
-        };
-        let scroll = state.scroll_state.scroll as usize;
-        let visible_rows = list_area.height as usize;
-        let mut lines: Vec<Line<'_>> = Vec::with_capacity(visible_rows);
-        if state.display_rows.is_empty() {
-            let msg = if state.themes.is_empty() {
-                "(no themes available)"
-            } else {
-                "(no matches)"
-            };
-            lines.push(Line::from(Span::styled(
-                msg.to_owned(),
-                self.theme.modal_item,
-            )));
+        let empty_text = if state.list.items().is_empty() {
+            "(no themes available)"
         } else {
-            for (offset, &row_idx) in state
-                .display_rows
-                .iter()
-                .skip(scroll)
-                .take(visible_rows)
-                .enumerate()
-            {
-                let absolute_idx = offset + scroll;
-                let name = &state.themes[row_idx];
-                let is_selected = absolute_idx == state.selected;
-                // When the list itself isn't focused, render the
-                // current selection in the "selected but unfocused"
-                // style (outlined, not filled) per theming.md.
-                if is_selected && !focused_list {
-                    let marker = "  ";
-                    lines.push(Line::from(vec![
-                        Span::styled(marker.to_owned(), self.theme.modal_item),
-                        Span::styled(name.clone(), self.theme.modal_item_selected_unfocused),
-                    ]));
-                } else {
-                    lines.push(format_modal_row(
-                        name,
-                        "",
-                        is_selected,
-                        false,
-                        self.theme,
-                        RowLayout::RightAlign(list_area.width),
-                    ));
+            "(no matches)"
+        };
+        let theme = self.theme;
+        state.list.render(
+            Rect {
+                x: inner.x,
+                y: inner.y + 1,
+                width: inner.width,
+                height: 2 + list_height,
+            },
+            buf,
+            ListChrome {
+                theme,
+                cursor_visible: self.cursor_visible,
+                field_focused: focused_list,
+                placeholder: PLACEHOLDER,
+                empty_text,
+                scrollbar_col: layout.scrollbar_col,
+            },
+            |ctx| match ctx {
+                RowCtx::Item {
+                    item,
+                    focused,
+                    width,
+                } => {
+                    // When the list isn't focused, render the selection in the
+                    // "selected but unfocused" style (outlined, not filled).
+                    if focused && !focused_list {
+                        Line::from(vec![
+                            Span::styled("  ".to_owned(), theme.modal_item),
+                            Span::styled(item.clone(), theme.modal_item_selected_unfocused),
+                        ])
+                    } else {
+                        format_modal_row(
+                            item,
+                            "",
+                            focused,
+                            false,
+                            theme,
+                            RowLayout::RightAlign(width),
+                        )
+                    }
                 }
-            }
-        }
-        Paragraph::new(lines)
-            .style(self.theme.modal_bg)
-            .render(list_area, buf);
+                RowCtx::Header { title, .. } => {
+                    Line::from(Span::styled(title.to_owned(), theme.modal_item))
+                }
+            },
+        );
 
-        if state.scroll_state.max_scroll() > 0 {
-            let bar_area = Rect {
-                x: layout.scrollbar_col,
-                y: list_area.y,
-                width: 1,
-                height: list_area.height,
-            };
-            crate::ui::scrollbar::render_for_scroll_state(
-                bar_area,
-                &state.scroll_state,
-                self.theme,
-                buf,
-            );
-        }
-
-        let mut row_y = inner.y + pinned_top + list_height;
+        // Bottom region.
+        let mut row_y = inner.y + PINNED_TOP + list_height;
         // Spacer.
         if row_y < inner.y + inner.height {
-            Paragraph::new("").style(self.theme.modal_bg).render(
-                Rect {
-                    x: inner.x,
-                    y: row_y,
-                    width: inner.width,
-                    height: 1,
-                },
-                buf,
-            );
+            fill_row(buf, inner, row_y, self.theme);
             row_y += 1;
         }
-
         // Label for the name input.
         if row_y < inner.y + inner.height {
             Paragraph::new(Line::from(Span::styled(
@@ -683,7 +510,6 @@ impl<'a> StatefulWidget for ExportThemeView<'a> {
             );
             row_y += 1;
         }
-
         // Name input row.
         if row_y < inner.y + inner.height {
             render_name_row(
@@ -699,7 +525,6 @@ impl<'a> StatefulWidget for ExportThemeView<'a> {
             );
             row_y += 1;
         }
-
         // Optional error row.
         if let Some(err) = state.last_error.as_deref() {
             if row_y < inner.y + inner.height {
@@ -721,21 +546,11 @@ impl<'a> StatefulWidget for ExportThemeView<'a> {
                 row_y += 1;
             }
         }
-
         // Spacer before button row.
         if row_y < inner.y + inner.height {
-            Paragraph::new("").style(self.theme.modal_bg).render(
-                Rect {
-                    x: inner.x,
-                    y: row_y,
-                    width: inner.width,
-                    height: 1,
-                },
-                buf,
-            );
+            fill_row(buf, inner, row_y, self.theme);
             row_y += 1;
         }
-
         // Button row.
         if row_y < inner.y + inner.height {
             let focused_idx = if matches!(state.focus, ExportThemeField::Export) {
@@ -757,6 +572,18 @@ impl<'a> StatefulWidget for ExportThemeView<'a> {
             );
         }
     }
+}
+
+fn fill_row(buf: &mut Buffer, inner: Rect, y: u16, theme: &Theme) {
+    Paragraph::new("").style(theme.modal_bg).render(
+        Rect {
+            x: inner.x,
+            y,
+            width: inner.width,
+            height: 1,
+        },
+        buf,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -783,18 +610,14 @@ fn render_name_row(
     spans.push(Span::styled(" ", value_style));
 
     if focused {
-        // Layout in the input area: 1 leading-padding cell + N
-        // character cells + 1 cursor-glyph cell + 1 trailing-padding
-        // cell.  So `visible` characters fit when inner.width = N + 3.
+        // 1 leading-padding cell + N character cells + 1 cursor-glyph cell + 1
+        // trailing-padding cell.  `visible` chars fit when inner.width = N + 3.
         let visible = (inner.width as usize).saturating_sub(3);
-        // Keep the cursor inside [scroll, scroll + visible].
         if cursor < *name_scroll {
             *name_scroll = cursor;
         } else if visible > 0 && cursor > *name_scroll + visible {
             *name_scroll = cursor - visible;
         }
-        // Avoid blank trailing space when the value shrinks: clamp
-        // scroll so we always fill the window when possible.
         let max_scroll = total.saturating_sub(visible);
         if *name_scroll > max_scroll {
             *name_scroll = max_scroll;
@@ -814,11 +637,6 @@ fn render_name_row(
         if !pre.is_empty() {
             spans.push(Span::styled(pre, value_style));
         }
-        // Constant-width cursor slot: a solid block when visible, a same-width
-        // space when not, so the field doesn't jitter on blink.  The
-        // horizontal-scroll layout above reserves this as its own cell (the
-        // `-3` width budget), so the block sits in its own cell here rather
-        // than recoloring the char to its right.
         if cursor_visible {
             spans.push(Span::styled(
                 crate::ui::cursor::CURSOR_BLOCK.to_string(),
@@ -832,7 +650,6 @@ fn render_name_row(
         }
         spans.push(Span::styled(" ", value_style));
     } else {
-        // Unfocused: no cursor cell to reserve.
         let visible = (inner.width as usize).saturating_sub(2);
         let shown: String = value.chars().take(visible).collect();
         spans.push(Span::styled(shown, value_style));
@@ -864,7 +681,7 @@ mod tests {
     fn opens_focused_on_list_with_active_selected_and_name_seeded() {
         let s = ExportThemeState::new(sample_themes(), "Edamame");
         assert_eq!(s.focus, ExportThemeField::ThemeList);
-        assert_eq!(s.themes[s.selected], "Edamame");
+        assert_eq!(s.selected_theme().map(String::as_str), Some("Edamame"));
         assert_eq!(s.name, "Edamame copy");
         assert_eq!(s.cursor, "Edamame copy".chars().count());
     }
@@ -873,7 +690,7 @@ mod tests {
     fn down_on_list_advances_selection_and_syncs_name() {
         let mut s = ExportThemeState::new(sample_themes(), "Ayu");
         s.handle_key(&key(KeyCode::Down), &[]);
-        assert_eq!(s.themes[s.selected], "Catppuccin");
+        assert_eq!(s.selected_theme().map(String::as_str), Some("Catppuccin"));
         assert_eq!(s.name, "Catppuccin copy");
     }
 
@@ -891,7 +708,6 @@ mod tests {
     #[test]
     fn default_name_does_not_collide_with_source() {
         let mut s = ExportThemeState::new(sample_themes(), "Ayu");
-        // First Enter advances from the list to the Name field.
         s.handle_key(&key(KeyCode::Enter), &sample_themes());
         assert_eq!(s.focus, ExportThemeField::Name);
         let resp = s.handle_key(&key(KeyCode::Enter), &sample_themes());
@@ -936,8 +752,6 @@ mod tests {
     #[test]
     fn enter_with_unique_name_emits_export() {
         let mut s = ExportThemeState::new(sample_themes(), "Ayu");
-        // Rename to something not in the list.  Default seed is
-        // "Ayu copy" (8 chars).
         s.focus = ExportThemeField::Name;
         for _ in 0.."Ayu copy".chars().count() {
             s.handle_key(&key(KeyCode::Backspace), &[]);
@@ -958,8 +772,6 @@ mod tests {
     #[test]
     fn duplicate_name_rejected_with_error() {
         let mut s = ExportThemeState::new(sample_themes(), "Ayu");
-        // Replace the default "Ayu copy" seed with "Ayu" — a name
-        // already in the existing list — to force a collision.
         s.focus = ExportThemeField::Name;
         for _ in 0.."Ayu copy".chars().count() {
             s.handle_key(&key(KeyCode::Backspace), &[]);
@@ -1012,9 +824,7 @@ mod tests {
         }
         let resp = s.handle_key(&key(KeyCode::Enter), &sample_themes());
         match resp {
-            ExportThemeResponse::Export { new_name, .. } => {
-                assert_eq!(new_name, "hidden");
-            }
+            ExportThemeResponse::Export { new_name, .. } => assert_eq!(new_name, "hidden"),
             other => panic!("expected Export, got {other:?}"),
         }
     }
@@ -1041,7 +851,6 @@ mod tests {
         for c in "drac".chars() {
             s.handle_key(&key(KeyCode::Char(c)), &[]);
         }
-        assert_eq!(s.display_rows.len(), 1);
         assert_eq!(s.selected_theme().map(String::as_str), Some("Dracula"));
     }
 
@@ -1051,7 +860,6 @@ mod tests {
         for c in "cat".chars() {
             s.handle_key(&key(KeyCode::Char(c)), &[]);
         }
-        // Top match becomes selected and re-seeds the (unedited) name.
         assert_eq!(s.selected_theme().map(String::as_str), Some("Catppuccin"));
         assert_eq!(s.name, "Catppuccin copy");
     }
@@ -1070,30 +878,11 @@ mod tests {
     }
 
     #[test]
-    fn backspace_on_list_broadens_filter() {
-        let mut s = ExportThemeState::new(sample_themes(), "Ayu");
-        for c in "drac".chars() {
-            s.handle_key(&key(KeyCode::Char(c)), &[]);
-        }
-        assert_eq!(s.display_rows.len(), 1);
-        s.handle_key(&key(KeyCode::Backspace), &[]);
-        // "dra" still matches only Dracula, but the broadened query
-        // must re-run the filter rather than leave a stale list.
-        assert_eq!(s.query, "dra");
-        for _ in 0..3 {
-            s.handle_key(&key(KeyCode::Backspace), &[]);
-        }
-        assert!(s.query.is_empty());
-        assert_eq!(s.display_rows.len(), sample_themes().len());
-    }
-
-    #[test]
     fn export_uses_filtered_selection() {
         let mut s = ExportThemeState::new(sample_themes(), "Ayu");
         for c in "drac".chars() {
             s.handle_key(&key(KeyCode::Char(c)), &[]);
         }
-        // Enter advances to Name, second Enter exports the filtered pick.
         s.handle_key(&key(KeyCode::Enter), &sample_themes());
         let resp = s.handle_key(&key(KeyCode::Enter), &sample_themes());
         match resp {
