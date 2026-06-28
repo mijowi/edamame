@@ -6,10 +6,9 @@
 
 - Nested lists move horizontally when de-rendering
 
-- Zenburn green more green and bg darker
-- Nord green more green and bg darker
-
 - Verify that controls accept input and modify their own state, instead of the parent taking the input and telling the control what state to present. Boths keys and mouse hit detection.
+
+- Implement SVG render
 
 ## Security
 - Ensure everything necessary is sanitized to prevent code execution, namely mermaid code blocks and remote images. Anywhere else?
