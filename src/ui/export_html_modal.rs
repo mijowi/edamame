@@ -899,6 +899,7 @@ mod tests {
         s.inline_images = true;
         s.focus = OptFocus::Stylesheet;
         s.handle_key(&key(KeyCode::Right)); // paper.css
+
         // Enter off the button advances focus instead of exporting.
         assert_eq!(
             s.handle_key(&key(KeyCode::Enter)),
