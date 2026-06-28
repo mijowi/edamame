@@ -80,7 +80,7 @@ const ART_STYLE: Style = Style::new().fg(Color::Green);
 
 const TITLE: &str = "e.d.a.m.a.m.e.";
 const SUBTITLE: &str = "A Markdown editor";
-const AUTHOR: &str = "Created by gorgonian";
+const AUTHOR: &str = "Created by mijowi";
 
 /// Wrap width for the rotating tagline.  Chosen so the widest version
 /// row (not the taglines) decides the content width, and the modal
