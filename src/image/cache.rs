@@ -42,6 +42,14 @@ pub fn render_halfblocks_scratch(picker: &Picker, image: DynamicImage, rect: Rec
 /// borrowed `DynamicImage`.  The decode worker calls this to compute the
 /// scratch's target height before it has handed the image off to the
 /// cache.
+///
+/// Mirrors the paint path's `Resize::Fit(None)`, which scales an image
+/// *down* to fit the cell envelope but never *up*: the reserved height is
+/// therefore capped at the image's own pixel height.  Without this cap a
+/// small image (a 190×65 logo, a 24×24 icon, a downscaled-to-natural SVG)
+/// would reserve as many rows as it *would* occupy if blown up to the
+/// column width, leaving a tall blank band below the image that Fit
+/// actually renders at natural size.
 pub fn aspect_rows_of(
     image: &DynamicImage,
     max_width_cells: u16,
@@ -57,7 +65,11 @@ pub fn aspect_rows_of(
         return 0;
     }
     let h_if_width_binds = (u64::from(ih) * u64::from(box_w_px)) / u64::from(iw);
-    let fitted_h_px = h_if_width_binds.min(u64::from(box_h_px));
+    // Cap at the natural height too: `Resize::Fit(None)` never upscales, so
+    // an image narrower than the column is painted at natural size, not
+    // stretched to fill the width.  Reserving the width-bound height here
+    // would over-reserve and leave a blank gap below the image.
+    let fitted_h_px = h_if_width_binds.min(u64::from(box_h_px)).min(u64::from(ih));
     let rows = fitted_h_px.div_ceil(u64::from(fh));
     (rows.clamp(1, u64::from(max_height_cells)) as usize).max(1)
 }
@@ -486,6 +498,30 @@ impl ImageCache {
 mod tests {
     use super::*;
 
+    // ── aspect_rows_of ────────────────────────────────────────────────
+
+    #[test]
+    fn small_image_reserves_natural_height_not_width_filled() {
+        // A 190×65 logo (mijowi.svg) in an 80×40-cell envelope at (8,16):
+        // box is 640×640 px.  Width-filled it would be 65*640/190 = 219 px
+        // = 14 rows, but `Resize::Fit(None)` never upscales, so it paints
+        // at its natural 65 px (≈5 rows).  The reservation must match the
+        // paint, not the hypothetical width-fill.
+        let img = DynamicImage::new_rgba8(190, 65);
+        let rows = aspect_rows_of(&img, 80, 40, (8, 16));
+        assert_eq!(rows, 65_u32.div_ceil(16) as usize);
+    }
+
+    #[test]
+    fn wide_image_still_binds_on_width() {
+        // A 1920×1080 photo is wider than the column, so Fit downscales it
+        // to fill the width — the natural-height cap must not interfere.
+        let img = DynamicImage::new_rgba8(1920, 1080);
+        let rows = aspect_rows_of(&img, 80, 40, (8, 16));
+        // 1080 * 640 / 1920 = 360 px → ceil(360/16) = 23 rows.
+        assert_eq!(rows, 23);
+    }
+
     #[test]
     fn request_returns_true_first_time_only() {
         let mut cache = ImageCache::new();
@@ -759,29 +795,28 @@ mod tests {
     }
 
     #[test]
-    fn aspect_rows_square_image_fills_square_region() {
+    fn aspect_rows_square_image_kept_at_natural_height() {
         // A 400×400 image, box 80×24 cells, 10×20 px cells:
         //   box_w_px = 800, box_h_px = 480
-        //   width-binds would give ih*box_w/iw = 400*800/400 = 800 px (40 rows)
-        //   but height-binding caps at 480 px → 24 rows
-        //   -> we hit the height cap (clamped).
+        //   width-fill would give ih*box_w/iw = 400*800/400 = 800 px,
+        //   but `Resize::Fit(None)` never upscales past the 400 px the
+        //   image actually has → 400 px → ceil(400/20) = 20 rows.
         let mut cache = ImageCache::new();
         cache.request("sq.png");
         cache.set_decoded("sq.png", DynamicImage::new_rgba8(400, 400));
-        assert_eq!(cache.aspect_rows("sq.png", 80, 24, (10, 20)), Some(24));
+        assert_eq!(cache.aspect_rows("sq.png", 80, 24, (10, 20)), Some(20));
     }
 
     #[test]
-    fn aspect_rows_small_image_rounds_up_to_one_row() {
-        // A 1×1 image scaled into an 80×24 box: fitted_h_px = 1*800/1 =
-        // 800 → but box_h_px caps at 480 → clamp to 480 px → 24 rows.
-        // Separate test: a 10×2 image at 10×20 cells:
-        //   box_w_px = 800, box_h_px = 480
-        //   ih * box_w_px / iw = 2 * 800 / 10 = 160 px → 8 rows
+    fn aspect_rows_small_image_reserves_natural_height() {
+        // A 10×2 image at 10×20 px cells, box 80×24:
+        //   width-fill would give 2*800/10 = 160 px (8 rows), but Fit
+        //   paints it at its own 2 px, so we reserve ceil(2/20) = 1 row
+        //   instead of a 7-row blank band below a 2 px-tall image.
         let mut cache = ImageCache::new();
         cache.request("thin.png");
         cache.set_decoded("thin.png", DynamicImage::new_rgba8(10, 2));
-        assert_eq!(cache.aspect_rows("thin.png", 80, 24, (10, 20)), Some(8));
+        assert_eq!(cache.aspect_rows("thin.png", 80, 24, (10, 20)), Some(1));
     }
 
     #[test]
