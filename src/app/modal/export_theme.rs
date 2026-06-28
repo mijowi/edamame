@@ -49,7 +49,7 @@ impl Modal for ExportThemeModal {
         _doc_height: usize,
         _doc_width: usize,
     ) -> ModalOutcome {
-        let existing = self.state.themes.clone();
+        let existing = self.state.theme_names();
         match self.state.handle_key(&key, &existing) {
             ExportThemeResponse::Continue => ModalOutcome::Continue,
             ExportThemeResponse::Cancelled => ModalOutcome::Close,
@@ -67,11 +67,17 @@ impl Modal for ExportThemeModal {
     }
 
     fn handle_wheel(&mut self, delta: i32) {
-        self.state.scroll_state.scroll_by(delta);
+        self.state.scroll_by(delta);
     }
 
     fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
-        super::types::close_if_esc_clicked(self.state.esc_button_rect, col, row)
+        if super::types::esc_rect_hit(self.state.esc_button_rect, col, row) {
+            return ModalOutcome::Close;
+        }
+        // A click on a theme row selects it (and re-seeds the name); export is
+        // a deliberate second step via the button / Enter.
+        self.state.handle_click(col, row);
+        ModalOutcome::Continue
     }
 
     fn as_any(&self) -> &dyn Any {

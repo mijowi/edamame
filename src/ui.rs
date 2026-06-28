@@ -40,7 +40,6 @@ pub mod welcome;
 
 pub use bottom_region::{hint_line_for, BottomRegion, HintChord, HintContent, HintSet};
 pub use cap_summary::{build_cap_lines, CapSummary};
-pub use command_palette::{PaletteResponse, PaletteState, PaletteView};
 pub use diff_intro_modal::{DiffIntroResponse, DiffIntroState, DiffIntroView};
 #[allow(unused_imports)]
 pub use diff_view::{DiffView, DiffViewState};
@@ -65,12 +64,9 @@ pub use scrollbar::{
     position_for_click, position_for_drag, thumb_range, Scrollbar, ScrollbarMetrics,
 };
 pub use search_modal::{SearchModalResponse, SearchModalState, SearchModalView};
-pub use section_picker::{
-    HeadingEntry, SectionPickerResponse, SectionPickerState, SectionPickerView,
-};
+pub use section_picker::HeadingEntry;
 pub use settings_overlay::SettingsResponse;
 pub use settings_overlay::{SettingsState, SettingsView};
 pub use table_view::DropIndicator;
 pub use text_input::sanitize_paste;
-pub use theme_picker::{ThemePickerResponse, ThemePickerState, ThemePickerView};
 pub use welcome::{WelcomeResponse, WelcomeState, WelcomeView};

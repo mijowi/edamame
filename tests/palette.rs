@@ -2,7 +2,7 @@
 //! configuration overlays.
 //!
 //! These bypass the live event loop: they construct an `EditorState`
-//! and a `PaletteState` directly, dispatch the same sequence of
+//! and the palette's `SearchableList` directly, dispatch the same sequence of
 //! actions a user would, and assert on observable state.  Where the
 //! plan calls for `App`-level checks we drive the relevant `App`
 //! method directly.
@@ -10,7 +10,9 @@
 use edamame::config::{Action, KeyBindingOverrides, KeyMap, Theme};
 use edamame::document::Buffer;
 use edamame::editor::EditorState;
-use edamame::ui::{KeybindsResponse, KeybindsState, PaletteResponse, PaletteState, SettingsState};
+use edamame::ui::command_palette::build_palette_list;
+use edamame::ui::searchable_list::ListEvent;
+use edamame::ui::{KeybindsResponse, KeybindsState, SettingsState};
 
 fn theme() -> &'static Theme {
     // SAFETY: Box::leak intentionally produces a `&'static Theme` for
@@ -58,15 +60,15 @@ fn palette_save_entry_resolves_to_same_action_as_keyboard_save() {
 
     // Palette path: open palette, type "save f" (the trailing " f"
     // disambiguates "Save file" from "Save as…"), press Enter.
-    let mut palette = PaletteState::open(&keymap());
+    let mut palette = build_palette_list(&keymap());
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     for c in "save f".chars() {
         palette.handle_key(&KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     let response = palette.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let palette_action = match response {
-        PaletteResponse::Selected(a) => a,
-        other => panic!("expected Selected, got {other:?}"),
+        ListEvent::Submitted(i) => palette.items()[i].action.clone(),
+        other => panic!("expected Submitted, got {other:?}"),
     };
 
     // Both paths must resolve to the same Action variant.

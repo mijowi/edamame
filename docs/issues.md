@@ -6,9 +6,6 @@
 
 - Nested lists move horizontally when de-rendering
 
-- Change searchable dropdown underline from secondary to primary
-- Verify that searchable dropdown is a single component reused in theme picker, theme export, and command palette
-
 - Zenburn green more green and bg darker
 - Nord green more green and bg darker
 

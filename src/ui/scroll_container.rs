@@ -1,7 +1,7 @@
 //! Shared building blocks for popup overlays.
 //!
-//! `ModalView`, `PaletteView`, `SettingsView`, and `KeybindsView` all need
-//! the same primitives:
+//! `ModalView`, the `searchable_list` component, `SettingsView`, and
+//! `KeybindsView` all need the same primitives:
 //!
 //! - a centred bordered frame whose title carries scroll-indicator arrows
 //!   (`↓`, `↑`, `↑↓`) when the body overflows;
