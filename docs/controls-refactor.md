@@ -110,13 +110,34 @@ invisible to single-arrow use. Note it in the PR description.
 Land each phase as its own commit. Phase 5's settings render change is the
 riskiest piece and should be reviewed separately.
 
-### Phase 0 — core types (pure addition, no call sites touched)
+### Phase 0 — core types (pure addition, no call sites touched) — ✅ DONE
 
 `controls.rs`: add the enums, `Control::apply`, `control_input_for`,
 `control_row_spans`. Unit-test flip / cycle / wrap / button + the key map.
 Zero risk; nothing depends on it yet.
 
-### Phase 1 — `export_html_modal` (smallest; owns its values)
+**Implemented.** Added `ControlValue` / `ControlInput` / `ControlEvent`,
+`Control::apply`, `control_input_for`, `control_row_spans`, and 8 unit tests
+(toggle direction-binding + activate-flip, pill cycle/wrap both ways,
+single-label pill no-op, button activation, mismatched-value-shape no-op, key
+mapping, row-span padding + no-truncation).
+
+> **Deviation:** each new item carries a temporary `#[allow(dead_code)]`.
+> The bin target re-includes these modules (`main.rs` declares `mod ui;`), so
+> an unused `pub` item trips `dead_code` under `clippy --all-targets -D
+> warnings` — `pub` only exempts a *library* crate's API. Standalone Phase 0
+> has no call sites, so the allows are required to keep the commit CI-green.
+> **Remove each `#[allow(dead_code)]` as its item gains a real call site** in
+> Phases 1–5 (`apply` + `control_input_for` in Phase 1; `control_row_spans`
+> in Phase 1/2; the enums become used transitively).
+
+> **Note:** `apply`'s pill cycle keeps its own `rem_euclid` over the value
+> *index*; `cycle_enum` stays for the value-slice callers. Both live in
+> `controls.rs`, so there's still one module owning the wrap math — no
+> cross-module duplication. (`export::cycle_stylesheet`'s copy is removed in
+> Phase 1.)
+
+### Phase 1 — `export_html_modal` (smallest; owns its values) — ✅ DONE
 
 - Replace `adjust` toggle arms + `handle_char` space arms +
   `cycle_stylesheet` with `Control::apply` against a `Control` per
@@ -127,6 +148,45 @@ Zero risk; nothing depends on it yet.
   semantics — likely passes unchanged.
 - Route `render_row`'s label+control composition through
   `control_row_spans`.
+
+**Implemented.** `adjust` / `handle_char` / `cycle_stylesheet` are gone,
+replaced by `apply_input(ControlInput)` + `push_title_char`. The two toggles
+go through `Control::Toggle.apply`; `handle_options_key` routes Left/Right
+(any field) and Space (option controls) through `control_input_for` →
+`apply_input`. `render_row` now builds its spans with `control_row_spans`.
+All 15 export tests pass unchanged; `arrows_set_toggle_off_and_on` and
+`stylesheet_pill_cycles_and_wraps` confirmed green. Full suite green;
+`clippy --all-targets -D warnings` clean.
+
+> **Deviation — stylesheet pill cannot use `Control::apply`.** `Control::Pill`
+> holds a `&'static [&'static str]`, but the export stylesheet list is a
+> runtime `Vec<(String, String)>`. So the stylesheet cycles its *index* via a
+> new shared primitive `controls::cycle_index(current, len, delta)` instead of
+> `Control::apply`. To keep one home for the wrap math, `cycle_enum` and
+> `Control::apply`'s pill arm now both delegate to `cycle_index` too. This is
+> a small, plan-consistent refinement to the Phase 0 surface (the plan said
+> "via the existing `cycle_enum` math"; `cycle_index` *is* that math, factored
+> out so a dynamic-length pill can share it). `cycle_stylesheet`'s `rem_euclid`
+> duplication is removed as intended. The `ControlInput → signed step`
+> mapping (`Left → −1`, `Right`/`Activate → +1`) is likewise factored into
+> `controls::input_delta`, shared by `Control::apply`'s pill arm and the
+> export stylesheet's direct `cycle_index` call so the direction binding
+> isn't repeated.
+
+> **Deviation — `#[allow(dead_code)]` not fully removed.** Phase 0's note said
+> to drop the allows as items gain call sites. Removed for `apply`,
+> `control_input_for`, `control_row_spans`, and the `ControlInput` /
+> `ControlEvent` enums. **Kept (now variant-level) on `ControlValue::Choice`
+> and `ControlValue::Button`:** export constructs only `ControlValue::Toggle`,
+> and the `Choice` built inside `apply`'s pill arm is reachable only from a
+> `Choice` input (a self-referential construction rustc treats as dead).
+> `Choice` goes live in Phase 2 (welcome pills call `apply`); `Button` in
+> Phase 3 (settings buttons). Remove each variant's allow then.
+
+> **Minor behavior/visual change.** Export's focused option row now fills the
+> 2-cell gap between label and control (it was previously an unstyled
+> `Span::raw("  ")`), matching the settings/welcome unified composition. Text
+> and widths are unchanged; render tests pass.
 
 ### Phase 2 — `welcome`
 

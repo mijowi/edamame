@@ -6,15 +6,13 @@
 
 - Nested lists move horizontally when de-rendering
 
-- Verify that controls accept input and modify their own state, instead of the parent taking the input and telling the control what state to present. Boths keys and mouse hit detection.
-
-- Implement SVG render
+- Implement controls refactor plan
 
 - Add "Insert image" to command palette
 
-## Security
-- Ensure everything necessary is sanitized to prevent code execution, namely mermaid code blocks and remote images. Anywhere else?
-- Are there other security concerns?
+- Implement fixes/mitigations for vulnerabilities identified in the security review.
+
+- Add/update performance benchmark tests
 
 ## Vim issues
 - `Tab` table cell navigation is swallowed in vim normal mode (`Shift-Tab` works)

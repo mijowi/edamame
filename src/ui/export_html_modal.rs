@@ -35,7 +35,8 @@ use ratatui::{
 use crate::config::Theme;
 use crate::ui::button_row::{button_row_width, render_button_row};
 use crate::ui::controls::{
-    self, control_label_style, pill_spans, pill_width, toggle_spans, toggle_width,
+    self, control_input_for, control_row_spans, cycle_index, input_delta, pill_spans, pill_width,
+    toggle_spans, toggle_width, Control, ControlEvent, ControlInput, ControlValue,
 };
 use crate::ui::cursor::text_field_spans;
 use crate::ui::sanitize_paste;
@@ -298,15 +299,14 @@ impl ExportHtmlState {
                 self.focus = self.focus.prev();
                 ExportHtmlResponse::Continue
             }
-            KeyCode::Left => self.adjust(-1),
-            KeyCode::Right => self.adjust(1),
             KeyCode::Backspace if self.focus == OptFocus::Title => {
                 self.title.pop();
                 ExportHtmlResponse::Continue
             }
-            // Enter only exports from the focused `[ Export ]` button; on
-            // any other field it advances focus (so a run of Enters walks
-            // down to the button) rather than firing the export early.
+            // Enter only exports from the focused `[ Export ]` button; on any
+            // other field it advances focus (so a run of Enters walks down to
+            // the button) rather than firing the export early or activating a
+            // control — the export Enter exception (see docs/controls-refactor).
             KeyCode::Enter => {
                 if self.focus == OptFocus::Export {
                     self.submit()
@@ -315,54 +315,62 @@ impl ExportHtmlState {
                     ExportHtmlResponse::Continue
                 }
             }
-            KeyCode::Char(c) => self.handle_char(c),
-            _ => ExportHtmlResponse::Continue,
-        }
-    }
-
-    /// Left/Right behavior, which depends on the focused control: toggles
-    /// snap off (Left) / on (Right); the pill cycles; the title and the
-    /// lone `[ Export ]` button ignore horizontal motion.
-    fn adjust(&mut self, delta: i32) -> ExportHtmlResponse {
-        match self.focus {
-            OptFocus::Title | OptFocus::Export => {}
-            OptFocus::Images => self.inline_images = delta > 0,
-            OptFocus::Diagrams => self.render_diagrams = delta > 0,
-            OptFocus::Stylesheet => self.cycle_stylesheet(delta),
-        }
-        ExportHtmlResponse::Continue
-    }
-
-    fn handle_char(&mut self, c: char) -> ExportHtmlResponse {
-        match self.focus {
-            OptFocus::Title => {
-                if !c.is_control() && self.title.chars().count() < TITLE_CHAR_CAP {
-                    self.title.push(c);
+            // Space submits from the button and types into the title; on an
+            // option control it falls through to `control_input_for` (Activate).
+            KeyCode::Char(' ') if self.focus == OptFocus::Export => self.submit(),
+            KeyCode::Char(c) if self.focus == OptFocus::Title => {
+                self.push_title_char(c);
+                ExportHtmlResponse::Continue
+            }
+            // Left / Right (any field) and Space (option controls) route
+            // through the shared control-input mapping → `Control::apply` /
+            // `cycle_index`.  Other keys map to `None` and no-op.
+            _ => {
+                if let Some(input) = control_input_for(key.code) {
+                    self.apply_input(input);
                 }
                 ExportHtmlResponse::Continue
             }
-            // Space acts as "activate" on the non-text controls.
-            OptFocus::Images if c == ' ' => {
-                self.inline_images = !self.inline_images;
-                ExportHtmlResponse::Continue
-            }
-            OptFocus::Diagrams if c == ' ' => {
-                self.render_diagrams = !self.render_diagrams;
-                ExportHtmlResponse::Continue
-            }
-            OptFocus::Stylesheet if c == ' ' => {
-                self.cycle_stylesheet(1);
-                ExportHtmlResponse::Continue
-            }
-            OptFocus::Export if c == ' ' => self.submit(),
-            _ => ExportHtmlResponse::Continue,
         }
     }
 
-    fn cycle_stylesheet(&mut self, delta: i32) {
-        let n = self.stylesheets.len() as i32;
-        if n > 0 {
-            self.stylesheet_idx = ((self.stylesheet_idx as i32 + delta).rem_euclid(n)) as usize;
+    /// Apply a control input to the focused option field via the shared
+    /// transition layer.  Toggles go through [`Control::apply`] (direction-
+    /// bound arrows + Activate-flip); the stylesheet pill cycles its index
+    /// with [`cycle_index`] because its labels are dynamic (not `'static`),
+    /// so it can't be a [`Control::Pill`].  Title / Export ignore this.
+    fn apply_input(&mut self, input: ControlInput) {
+        match self.focus {
+            OptFocus::Images => {
+                if let ControlEvent::Changed(ControlValue::Toggle(v)) =
+                    Control::Toggle.apply(ControlValue::Toggle(self.inline_images), input)
+                {
+                    self.inline_images = v;
+                }
+            }
+            OptFocus::Diagrams => {
+                if let ControlEvent::Changed(ControlValue::Toggle(v)) =
+                    Control::Toggle.apply(ControlValue::Toggle(self.render_diagrams), input)
+                {
+                    self.render_diagrams = v;
+                }
+            }
+            OptFocus::Stylesheet => {
+                self.stylesheet_idx = cycle_index(
+                    self.stylesheet_idx,
+                    self.stylesheets.len(),
+                    input_delta(input),
+                );
+            }
+            OptFocus::Title | OptFocus::Export => {}
+        }
+    }
+
+    /// Append a typed character to the title field, mirroring the paste path:
+    /// control chars are dropped and the length is capped at [`TITLE_CHAR_CAP`].
+    fn push_title_char(&mut self, c: char) {
+        if !c.is_control() && self.title.chars().count() < TITLE_CHAR_CAP {
+            self.title.push(c);
         }
     }
 
@@ -669,10 +677,10 @@ impl<'a> ExportHtmlView<'a> {
             width: inner.width,
             height: 1,
         };
-        let label_style = control_label_style(focused, false, self.theme);
-        let padded = format!("{label:<label_w$}");
-        let mut spans = vec![Span::styled(padded, label_style), Span::raw("  ")];
-        spans.extend(control);
+        // `label_w + 2` reserves the 2-cell gap between label and control as
+        // part of the (styled) label column, so a focused row's fill spans
+        // label → widget — the unified control-row composition.
+        let spans = control_row_spans(label, label_w + 2, control, focused, false, self.theme);
         Paragraph::new(Line::from(spans))
             .style(self.theme.modal_bg)
             .render(area, buf);

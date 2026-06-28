@@ -45,6 +45,7 @@
 //! cascade logic ([`cycle_enum`], [`apply_images_cascade`]) live here too,
 //! so every interactive control has a single import path.
 
+use crossterm::event::KeyCode;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
@@ -70,6 +71,136 @@ pub enum Control {
     /// value column (e.g. an "Open externally" action row).  Activated with
     /// Enter; the label is fixed (it does not reflect a config value).
     Button(&'static str),
+}
+
+// ── Control values, inputs, and events ──────────────────────────────────────
+//
+// These types and the `Control::apply` / `control_input_for` /
+// `control_row_spans` helpers below are the shared transition layer the
+// modal overlays migrate onto over the phased controls refactor (see
+// `docs/controls-refactor.md`).  The export-HTML modal is the first consumer
+// (Phase 1); a few variants not yet *constructed* in non-test code carry a
+// variant-level `#[allow(dead_code)]` until a later phase wires them — the
+// bin target re-includes these modules (`main.rs` declares `mod ui;`), so an
+// unconstructed variant would otherwise trip `dead_code` under `clippy
+// --all-targets -D warnings` (`pub` only exempts a *library* crate's API).
+
+/// Normalized value a control carries, independent of the domain enum it
+/// projects (`ImagesEnabled`, a bool config field, a stylesheet index, …).
+/// The owning modal converts to/from this when it reads a control's current
+/// value and writes back the result of an input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlValue {
+    /// On/off value for a [`Control::Toggle`].
+    Toggle(bool),
+    /// Selected index into a [`Control::Pill`]'s label slice.  Passed into
+    /// [`Control::apply`] by a pill caller (the welcome modal, Phase 2);
+    /// until then it is built only in tests.  (Export's stylesheet pill is
+    /// dynamic-label and cycles via [`cycle_index`], not `apply`.)
+    #[allow(dead_code)]
+    Choice(usize),
+    /// A valueless [`Control::Button`].  Constructed by a button caller
+    /// (the settings overlay, Phase 3); until then it is built only in tests.
+    #[allow(dead_code)]
+    Button,
+}
+
+/// A semantic input aimed at the focused control.  The parent maps raw
+/// key/mouse events to these (see [`control_input_for`]); the control maps
+/// these to a value change (see [`Control::apply`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlInput {
+    /// ←: decrement a pill / turn a toggle off.
+    Left,
+    /// →: increment a pill / turn a toggle on.
+    Right,
+    /// Enter / Space / click: flip a toggle, advance a pill, press a button.
+    Activate,
+}
+
+/// What a control did with a [`ControlInput`].  `Changed` carries the new
+/// value to write back; `Activated` fires a button; `Ignored` means the
+/// input was a no-op (e.g. ← on an already-off toggle, or any arrow on a
+/// button).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlEvent {
+    Changed(ControlValue),
+    Activated,
+    Ignored,
+}
+
+impl Control {
+    /// Single source of truth for "what does this input do to this value".
+    ///
+    /// - **Toggle:** `Left` → off, `Right` → on, `Activate` → flip.  Arrows
+    ///   are direction-bound (so → always means *on*); a press that doesn't
+    ///   change the value returns [`ControlEvent::Ignored`].
+    /// - **Pill:** `Left` → −1, `Right` / `Activate` → +1, wrapping at both
+    ///   ends.  A single-label pill (no other value to move to) is a no-op.
+    /// - **Button:** `Activate` → [`ControlEvent::Activated`]; arrows are
+    ///   ignored.
+    ///
+    /// A value whose shape doesn't match the control kind (e.g. a
+    /// `Choice` handed to a `Toggle`) is ignored rather than panicking.
+    pub fn apply(&self, current: ControlValue, input: ControlInput) -> ControlEvent {
+        match (self, current) {
+            (Control::Toggle, ControlValue::Toggle(on)) => {
+                let next = match input {
+                    ControlInput::Left => false,
+                    ControlInput::Right => true,
+                    ControlInput::Activate => !on,
+                };
+                if next == on {
+                    ControlEvent::Ignored
+                } else {
+                    ControlEvent::Changed(ControlValue::Toggle(next))
+                }
+            }
+            (Control::Pill(labels), ControlValue::Choice(i)) => {
+                if labels.len() < 2 {
+                    return ControlEvent::Ignored;
+                }
+                let next = cycle_index(i, labels.len(), input_delta(input));
+                if next == i {
+                    ControlEvent::Ignored
+                } else {
+                    ControlEvent::Changed(ControlValue::Choice(next))
+                }
+            }
+            (Control::Button(_), _) => match input {
+                ControlInput::Activate => ControlEvent::Activated,
+                _ => ControlEvent::Ignored,
+            },
+            _ => ControlEvent::Ignored,
+        }
+    }
+}
+
+/// Map a key code to the [`ControlInput`] it drives on the focused control.
+/// Returns `None` for keys the caller handles itself (Tab / Esc / typing),
+/// so a modal's `handle_key` can route control input through one match arm
+/// instead of repeating the Left/Right/Enter/Space arms per field.
+pub fn control_input_for(code: KeyCode) -> Option<ControlInput> {
+    match code {
+        KeyCode::Left => Some(ControlInput::Left),
+        KeyCode::Right => Some(ControlInput::Right),
+        KeyCode::Enter | KeyCode::Char(' ') => Some(ControlInput::Activate),
+        _ => None,
+    }
+}
+
+/// The signed cycle step a [`ControlInput`] drives on an *index-valued*
+/// control (a pill, or any [`cycle_index`] caller): `Left` → −1, `Right` /
+/// `Activate` → +1.  Shared by [`Control::apply`]'s pill arm and by callers
+/// that cycle a dynamic-length list directly (e.g. the export-HTML
+/// stylesheet pill), so the direction mapping lives in one place.  Not used
+/// for a toggle, whose arrows are direction-bound to a bool (and whose
+/// `Activate` flips) rather than stepping an index.
+pub fn input_delta(input: ControlInput) -> i32 {
+    match input {
+        ControlInput::Left => -1,
+        ControlInput::Right | ControlInput::Activate => 1,
+    }
 }
 
 /// Canonical `Ask` / `Always` / `Never` tri-state (image, remote-image,
@@ -134,6 +265,30 @@ pub fn control_label_style(focused: bool, disabled: bool, theme: &Theme) -> Styl
     }
 }
 
+/// Compose a `label` column + `control` widget into one row's spans, the
+/// single label+control composition shared by every modal that lays out a
+/// labeled control.  The label is left-padded to `label_col_w` cells and
+/// styled via [`control_label_style`] (so a focused row's fill spans the
+/// whole label column up to the widget), then the caller's already-built
+/// `control` spans are appended.  Callers that prefix a focus marker pass it
+/// inside `label` and widen `label_col_w` to match.
+pub fn control_row_spans(
+    label: &str,
+    label_col_w: usize,
+    control: Vec<Span<'static>>,
+    focused: bool,
+    disabled: bool,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let label_padded = format!("{label:<label_col_w$}");
+    let mut spans = vec![Span::styled(
+        label_padded,
+        control_label_style(focused, disabled, theme),
+    )];
+    spans.extend(control);
+    spans
+}
+
 /// Chip style for a bracketed action button (`[ Save ]`): the shared
 /// `primary` focus fill when focused, a resting `text`-on-`surface` chip
 /// (BOLD to read as "live" in monochrome) otherwise.  Buttons in the
@@ -171,6 +326,19 @@ pub fn button_spans(label: &str, focused: bool, theme: &Theme) -> Vec<Span<'stat
 
 // ── Cycle / cascade logic ──────────────────────────────────────────────────
 
+/// Step a `current` index through `len` slots by `delta` (signed), wrapping
+/// at both ends.  The single wrap-around primitive: [`cycle_enum`] and
+/// [`Control::apply`]'s pill arm both delegate here, and callers that cycle a
+/// *dynamic*-length list by index (e.g. the export-HTML stylesheet pill,
+/// whose labels aren't `'static`) call it directly.  Returns `current`
+/// unchanged when `len` is 0.
+pub fn cycle_index(current: usize, len: usize, delta: i32) -> usize {
+    if len == 0 {
+        return current;
+    }
+    ((current as i32 + delta).rem_euclid(len as i32)) as usize
+}
+
 /// Cycle `current` through `order` by `delta` (signed step), wrapping at
 /// both ends.  Falls back to the first element when `current` isn't found
 /// in `order`; returns `current` unchanged for an empty `order`.  Shared
@@ -179,9 +347,8 @@ pub fn cycle_enum<T: PartialEq + Copy>(current: T, order: &[T], delta: i32) -> T
     if order.is_empty() {
         return current;
     }
-    let i = order.iter().position(|v| *v == current).unwrap_or(0) as i32;
-    let n = order.len() as i32;
-    order[((i + delta).rem_euclid(n)) as usize]
+    let i = order.iter().position(|v| *v == current).unwrap_or(0);
+    order[cycle_index(i, order.len(), delta)]
 }
 
 /// Apply the images→remote cascade and return the remote policy to store.
@@ -400,5 +567,157 @@ mod tests {
         );
         assert_eq!(r, RemoteImagePolicy::Ask);
         assert_eq!(stash, None);
+    }
+
+    // ── Control::apply ──────────────────────────────────────────────────
+
+    #[test]
+    fn apply_toggle_is_direction_bound_with_activate_flip() {
+        use ControlEvent::*;
+        use ControlInput::*;
+        // → always means on; ← always means off.
+        assert_eq!(
+            Control::Toggle.apply(ControlValue::Toggle(false), Right),
+            Changed(ControlValue::Toggle(true))
+        );
+        assert_eq!(
+            Control::Toggle.apply(ControlValue::Toggle(true), Left),
+            Changed(ControlValue::Toggle(false))
+        );
+        // A press that doesn't change the value is a no-op.
+        assert_eq!(
+            Control::Toggle.apply(ControlValue::Toggle(true), Right),
+            Ignored
+        );
+        assert_eq!(
+            Control::Toggle.apply(ControlValue::Toggle(false), Left),
+            Ignored
+        );
+        // Activate flips regardless of current value.
+        assert_eq!(
+            Control::Toggle.apply(ControlValue::Toggle(false), Activate),
+            Changed(ControlValue::Toggle(true))
+        );
+        assert_eq!(
+            Control::Toggle.apply(ControlValue::Toggle(true), Activate),
+            Changed(ControlValue::Toggle(false))
+        );
+    }
+
+    #[test]
+    fn apply_pill_cycles_and_wraps_both_ways() {
+        use ControlEvent::*;
+        use ControlInput::*;
+        let pill = Control::Pill(ASK_ALWAYS_NEVER); // len 3
+        assert_eq!(
+            pill.apply(ControlValue::Choice(0), Right),
+            Changed(ControlValue::Choice(1))
+        );
+        // Activate advances like Right.
+        assert_eq!(
+            pill.apply(ControlValue::Choice(1), Activate),
+            Changed(ControlValue::Choice(2))
+        );
+        // Wrap forward off the end…
+        assert_eq!(
+            pill.apply(ControlValue::Choice(2), Right),
+            Changed(ControlValue::Choice(0))
+        );
+        // …and backward off the start.
+        assert_eq!(
+            pill.apply(ControlValue::Choice(0), Left),
+            Changed(ControlValue::Choice(2))
+        );
+    }
+
+    #[test]
+    fn apply_single_label_pill_is_a_noop() {
+        let pill = Control::Pill(&["Only"]);
+        assert_eq!(
+            pill.apply(ControlValue::Choice(0), ControlInput::Right),
+            ControlEvent::Ignored
+        );
+    }
+
+    #[test]
+    fn apply_button_activates_only_on_activate() {
+        let btn = Control::Button("Open");
+        assert_eq!(
+            btn.apply(ControlValue::Button, ControlInput::Activate),
+            ControlEvent::Activated
+        );
+        assert_eq!(
+            btn.apply(ControlValue::Button, ControlInput::Left),
+            ControlEvent::Ignored
+        );
+        assert_eq!(
+            btn.apply(ControlValue::Button, ControlInput::Right),
+            ControlEvent::Ignored
+        );
+    }
+
+    #[test]
+    fn apply_ignores_mismatched_value_shape() {
+        // A Choice handed to a Toggle (and vice versa) is ignored, not a panic.
+        assert_eq!(
+            Control::Toggle.apply(ControlValue::Choice(1), ControlInput::Activate),
+            ControlEvent::Ignored
+        );
+        assert_eq!(
+            Control::Pill(ASK_ALWAYS_NEVER).apply(ControlValue::Toggle(true), ControlInput::Right),
+            ControlEvent::Ignored
+        );
+    }
+
+    // ── control_input_for ───────────────────────────────────────────────
+
+    #[test]
+    fn control_input_for_maps_the_control_keys() {
+        assert_eq!(control_input_for(KeyCode::Left), Some(ControlInput::Left));
+        assert_eq!(control_input_for(KeyCode::Right), Some(ControlInput::Right));
+        assert_eq!(
+            control_input_for(KeyCode::Enter),
+            Some(ControlInput::Activate)
+        );
+        assert_eq!(
+            control_input_for(KeyCode::Char(' ')),
+            Some(ControlInput::Activate)
+        );
+        // Keys the caller handles itself fall through.
+        assert_eq!(control_input_for(KeyCode::Tab), None);
+        assert_eq!(control_input_for(KeyCode::Esc), None);
+        assert_eq!(control_input_for(KeyCode::Char('x')), None);
+    }
+
+    // ── input_delta ─────────────────────────────────────────────────────
+
+    #[test]
+    fn input_delta_steps_left_back_and_right_or_activate_forward() {
+        assert_eq!(input_delta(ControlInput::Left), -1);
+        assert_eq!(input_delta(ControlInput::Right), 1);
+        assert_eq!(input_delta(ControlInput::Activate), 1);
+    }
+
+    // ── control_row_spans ───────────────────────────────────────────────
+
+    #[test]
+    fn control_row_spans_pads_label_and_appends_control() {
+        let theme = theme();
+        let control = vec![Span::raw("‹ Ask ›")];
+        let spans = control_row_spans("Show images", 20, control, true, false, theme);
+        // First span is the padded label column…
+        assert_eq!(spans[0].content.chars().count(), 20);
+        assert!(spans[0].content.starts_with("Show images"));
+        assert_eq!(spans[0].style, control_label_style(true, false, theme));
+        // …followed by the control widget spans.
+        assert_eq!(spans[1].content.as_ref(), "‹ Ask ›");
+    }
+
+    #[test]
+    fn control_row_spans_does_not_truncate_an_overlong_label() {
+        let theme = theme();
+        let spans = control_row_spans("A very long label", 4, Vec::new(), false, false, theme);
+        // `{:<width}` only pads; it never clips, so the label survives intact.
+        assert_eq!(spans[0].content.as_ref(), "A very long label");
     }
 }
