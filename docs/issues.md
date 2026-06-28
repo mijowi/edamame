@@ -10,6 +10,8 @@
 
 - Implement SVG render
 
+- Add "Insert image" to command palette
+
 ## Security
 - Ensure everything necessary is sanitized to prevent code execution, namely mermaid code blocks and remote images. Anywhere else?
 - Are there other security concerns?
