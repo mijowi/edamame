@@ -9,6 +9,7 @@ use pulldown_cmark::{
 
 use super::runner::{write_atomically, ExportOutcome};
 use crate::diagram;
+use crate::image::{rasterize_svg, SvgScaleMode, SvgSizing};
 
 /// The compiled-in stylesheet bundled with edamame.  Used when
 /// [`HtmlExportOptions::stylesheet`] is [`Stylesheet::Builtin`].
@@ -123,8 +124,15 @@ pub fn render_html(markdown: &str, opts: &HtmlExportOptions) -> Result<String> {
     }
 
     if opts.render_diagrams {
-        events = replace_mermaid_with_svg(events);
+        events = replace_mermaid_with_image(events);
     }
+
+    // Neutralize dangerous link schemes (`javascript:`, `vbscript:`,
+    // non-image `data:`, …) before serialization.  pulldown-cmark's HTML
+    // writer performs no URL sanitization, so without this a
+    // `[x](javascript:…)` link survives verbatim into the exported `<a
+    // href>` and runs on click in a browser.
+    sanitize_link_urls(&mut events);
 
     let mut body = String::new();
     cmark_html::push_html(&mut body, events.into_iter());
@@ -177,20 +185,78 @@ fn render_and_write(markdown: &str, target: &Path, opts: &HtmlExportOptions) -> 
     Ok(())
 }
 
+// ── Link URL sanitization ─────────────────────────────────────────────────
+
+/// Schemes permitted on an exported link destination.  Everything else —
+/// notably `javascript:`, `vbscript:`, and `data:` — is neutralized.
+const SAFE_LINK_SCHEMES: &[&str] = &["http", "https", "mailto", "tel"];
+
+/// Rewrite the destination of every `Tag::Link` whose URL carries a scheme
+/// outside [`SAFE_LINK_SCHEMES`] to a harmless `#`.  Relative paths,
+/// anchors, and fragment targets carry no scheme and are left untouched.
+fn sanitize_link_urls(events: &mut [Event<'_>]) {
+    for event in events.iter_mut() {
+        if let Event::Start(Tag::Link { dest_url, .. }) = event {
+            if !is_safe_link_url(dest_url.as_ref()) {
+                *dest_url = CowStr::Borrowed("#");
+            }
+        }
+    }
+}
+
+/// True when `url` is safe to emit verbatim into an `<a href>`: either it
+/// has no URL scheme (relative path, `#anchor`, `?query`) or its scheme is
+/// on the allowlist.  A "scheme" is an RFC-3986 token — `alpha *( alpha /
+/// digit / "+" / "-" / "." )` — terminated by `:` *before* any `/`, `?`,
+/// or `#`; a colon that appears after one of those is part of the path
+/// (e.g. `foo/bar:baz`) and does not make a scheme.
+fn is_safe_link_url(url: &str) -> bool {
+    let url = url.trim();
+    let Some(idx) = url.find([':', '/', '?', '#']) else {
+        return true; // no delimiter at all → relative
+    };
+    if url.as_bytes()[idx] != b':' {
+        return true; // a path/query/fragment delimiter came first → relative
+    }
+    let scheme = &url[..idx];
+    let scheme_shaped = scheme
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    if !scheme_shaped {
+        // The colon isn't part of a real scheme (e.g. a port-looking
+        // path segment) → treat as relative.
+        return true;
+    }
+    SAFE_LINK_SCHEMES
+        .iter()
+        .any(|s| scheme.eq_ignore_ascii_case(s))
+}
+
 // ── Mermaid diagrams ──────────────────────────────────────────────────────
 
 /// Walk the event stream; for every `Start(CodeBlock(Fenced("mermaid")))`
 /// ... `End(CodeBlock)` triple, try to render the enclosed text as a
-/// mermaid SVG and substitute a single `Event::Html` carrying
-/// `<figure class="mermaid-diagram">…SVG…</figure>`.  On render failure
+/// mermaid diagram and substitute a single `Event::Html` carrying
+/// `<figure class="mermaid-diagram"><img …></figure>`.  On render failure
 /// (or on non-mermaid code blocks) the original events are preserved so
 /// pulldown-cmark emits the usual `<pre><code class="language-mermaid">`
 /// — the diagram source is never lost.
 ///
+/// The diagram is **rasterized to a PNG** and embedded as a `data:` image
+/// rather than inlined as raw `<svg>`.  Inline SVG can carry `<script>`,
+/// `foreignObject`, and `on*=` event handlers that execute when the
+/// exported file is opened in a browser; rasterizing flattens the diagram
+/// to pixels, so no executable markup from the (document-controlled,
+/// third-party-rendered) SVG can survive into the export.
+///
 /// Matching is case-insensitive on the language tag, same as the in-app
 /// `promote_diagram_code_blocks` pass, so round-tripping between the
 /// editor and the exported HTML is consistent.
-fn replace_mermaid_with_svg(events: Vec<Event<'_>>) -> Vec<Event<'_>> {
+fn replace_mermaid_with_image(events: Vec<Event<'_>>) -> Vec<Event<'_>> {
     let mut out: Vec<Event<'_>> = Vec::with_capacity(events.len());
     let mut iter = events.into_iter();
     while let Some(event) = iter.next() {
@@ -231,12 +297,16 @@ fn replace_mermaid_with_svg(events: Vec<Event<'_>>) -> Vec<Event<'_>> {
                 }
             }
         }
-        match diagram::render_mermaid_svg(&source) {
-            Ok(svg) => {
-                let html = format!("<figure class=\"mermaid-diagram\">{svg}</figure>");
+        match render_mermaid_png_data_uri(&source) {
+            Some(data_uri) => {
+                let html = format!(
+                    "<figure class=\"mermaid-diagram\">\
+                     <img alt=\"mermaid diagram\" src=\"{data_uri}\">\
+                     </figure>"
+                );
                 out.push(Event::Html(CowStr::Boxed(html.into_boxed_str())));
             }
-            Err(_) => {
+            None => {
                 // Falls back to the default code-block serialisation.
                 // The mermaid source is preserved verbatim so the user
                 // (or a downstream mermaid.js) can still see / render
@@ -248,6 +318,34 @@ fn replace_mermaid_with_svg(events: Vec<Event<'_>>) -> Vec<Event<'_>> {
         }
     }
     out
+}
+
+/// Render mermaid `source` to a PNG `data:` URI, or `None` on any failure
+/// (so the caller falls back to the escaped code block).  The SVG produced
+/// by the renderer never reaches the HTML — it is rasterized to pixels
+/// first (white background, like the TUI path), which strips any script /
+/// `foreignObject` / event-handler payload a hostile node label might have
+/// smuggled through the renderer's escaping.
+fn render_mermaid_png_data_uri(source: &str) -> Option<String> {
+    let svg = diagram::render_mermaid_svg(source).ok()?;
+    let image = rasterize_svg(
+        &svg,
+        SvgSizing {
+            envelope: None,
+            font_size: None,
+            mode: SvgScaleMode::Natural,
+        },
+        Some([255, 255, 255, 255]),
+    )
+    .ok()?;
+    let mut png = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut png, image::ImageFormat::Png)
+        .ok()?;
+    Some(format!(
+        "data:image/png;base64,{}",
+        BASE64.encode(png.into_inner())
+    ))
 }
 
 // ── Image inlining ────────────────────────────────────────────────────────
@@ -288,13 +386,32 @@ fn is_remote_url(url: &str) -> bool {
         || lower.starts_with("file://")
 }
 
+/// Resolve a relative image `url` against `source_dir`, returning the path
+/// **only if it stays within `source_dir`**.  A self-contained HTML export
+/// is an artifact the victim typically shares, so an out-of-tree path
+/// (absolute, `../` traversal, or a symlink escape) would let a hostile
+/// document exfiltrate arbitrary on-disk files by riding them base64-
+/// encoded into the shared output.  Absolute paths and explicit `..`
+/// components are rejected up front; the post-`canonicalize` containment
+/// check additionally defeats symlinks that point outside the tree.
+///
+/// An out-of-tree reference returns `None` → the caller leaves the
+/// original (non-inlined) reference in place, so the export simply doesn't
+/// embed it rather than leaking it.
 fn resolve_relative(url: &str, source_dir: &Path) -> Option<PathBuf> {
     let p = Path::new(url);
     if p.is_absolute() {
-        Some(p.to_path_buf())
-    } else {
-        Some(source_dir.join(p))
+        return None;
     }
+    if p.components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let joined = source_dir.join(p);
+    let canon_dir = source_dir.canonicalize().ok()?;
+    let canon = joined.canonicalize().ok()?;
+    canon.starts_with(&canon_dir).then_some(canon)
 }
 
 fn mime_from_extension(path: &Path) -> Option<&'static str> {
@@ -508,6 +625,136 @@ mod tests {
         let md = "![x](local.png)";
         let html = render_html(md, &opts_inline_css()).unwrap();
         assert!(html.contains("src=\"local.png\""));
+    }
+
+    // ── Vuln 2: link-scheme sanitization ──────────────────────────────
+
+    #[test]
+    fn neutralizes_javascript_link_scheme() {
+        let md = "[click](javascript:alert(document.cookie))";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert!(
+            !html.contains("javascript:"),
+            "javascript: href must be neutralized — got:\n{html}"
+        );
+        assert!(html.contains("href=\"#\""));
+    }
+
+    #[test]
+    fn neutralizes_data_html_link_scheme() {
+        let md = "[x](data:text/html;base64,PHNjcmlwdD4=)";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert!(!html.contains("data:text/html"), "data: link must be neutralized:\n{html}");
+    }
+
+    #[test]
+    fn preserves_safe_link_schemes_and_relative_targets() {
+        let md = "[a](https://example.com) [b](mailto:x@y.z) [c](./page.md) [d](#anchor) [e](foo/bar:baz)";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert!(html.contains("href=\"https://example.com\""));
+        assert!(html.contains("href=\"mailto:x@y.z\""));
+        assert!(html.contains("href=\"./page.md\""));
+        assert!(html.contains("href=\"#anchor\""));
+        // A colon after a path segment is not a scheme → left intact.
+        assert!(html.contains("href=\"foo/bar:baz\""));
+    }
+
+    #[test]
+    fn is_safe_link_url_classifies_schemes() {
+        assert!(is_safe_link_url("https://example.com"));
+        assert!(is_safe_link_url("HTTP://EXAMPLE.COM"));
+        assert!(is_safe_link_url("mailto:a@b.c"));
+        assert!(is_safe_link_url("/abs/path"));
+        assert!(is_safe_link_url("./rel"));
+        assert!(is_safe_link_url("#frag"));
+        assert!(is_safe_link_url("?q=1"));
+        assert!(is_safe_link_url("path/to:thing"));
+        assert!(!is_safe_link_url("javascript:alert(1)"));
+        assert!(!is_safe_link_url("  javascript:alert(1)"));
+        assert!(!is_safe_link_url("vbscript:msgbox"));
+        assert!(!is_safe_link_url("data:text/html,x"));
+        assert!(!is_safe_link_url("file:///etc/passwd"));
+    }
+
+    // ── Vuln 3: mermaid export carries no raw SVG / script ─────────────
+
+    #[test]
+    fn mermaid_export_never_emits_raw_svg_or_script() {
+        // Whether the live renderer is available or not, a hostile node
+        // label must never produce inline SVG or executable markup: a
+        // successful render is rasterized to a PNG data URI; a failed one
+        // falls back to an HTML-escaped code block.
+        let md = "```mermaid\nflowchart TD\n  A[\"<script>alert(1)</script>\"] --> B\n```";
+        let opts = HtmlExportOptions {
+            stylesheet: Stylesheet::Inline(String::new()),
+            render_diagrams: true,
+            ..HtmlExportOptions::default()
+        };
+        let html = render_html(md, &opts).unwrap();
+        assert!(!html.contains("<svg"), "no raw SVG may reach the export:\n{html}");
+        assert!(!html.contains("foreignObject"));
+        assert!(
+            !html.contains("<script>"),
+            "no executable <script> may reach the export:\n{html}"
+        );
+    }
+
+    // ── Vuln 4: image inlining stays within the source tree ────────────
+
+    fn write_one_px_png(path: &Path) {
+        const ONE_PX_PNG: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        std::fs::write(path, ONE_PX_PNG).unwrap();
+    }
+
+    #[test]
+    fn inline_images_rejects_absolute_path() {
+        let outside = tempdir().unwrap();
+        let secret = outside.path().join("secret.png");
+        write_one_px_png(&secret);
+        let source = tempdir().unwrap();
+
+        let md = format!("![x]({})", secret.display());
+        let opts = HtmlExportOptions {
+            stylesheet: Stylesheet::Inline(String::new()),
+            inline_images: true,
+            source_dir: Some(source.path().to_path_buf()),
+            render_diagrams: false,
+            ..HtmlExportOptions::default()
+        };
+        let html = render_html(&md, &opts).unwrap();
+        assert!(
+            !html.contains("data:image/png"),
+            "absolute out-of-tree path must not be inlined:\n{html}"
+        );
+    }
+
+    #[test]
+    fn inline_images_rejects_parent_traversal() {
+        let root = tempdir().unwrap();
+        let secret = root.path().join("secret.png");
+        write_one_px_png(&secret);
+        let source = root.path().join("docs");
+        std::fs::create_dir(&source).unwrap();
+
+        let md = "![x](../secret.png)";
+        let opts = HtmlExportOptions {
+            stylesheet: Stylesheet::Inline(String::new()),
+            inline_images: true,
+            source_dir: Some(source.clone()),
+            render_diagrams: false,
+            ..HtmlExportOptions::default()
+        };
+        let html = render_html(md, &opts).unwrap();
+        assert!(
+            !html.contains("data:image/png"),
+            "../ traversal must not be inlined:\n{html}"
+        );
     }
 
     #[test]
