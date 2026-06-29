@@ -111,7 +111,7 @@ impl Modal for KeybindsOverlayModal {
         self.state.scroll_state.scroll_by(delta);
     }
 
-    fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
+    fn handle_click(&mut self, col: u16, row: u16, _app: &mut App) -> ModalOutcome {
         match self.state.handle_click(col, row) {
             KeybindsResponse::Continue => ModalOutcome::Continue,
             KeybindsResponse::Cancelled => ModalOutcome::Close,

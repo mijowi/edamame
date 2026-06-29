@@ -34,6 +34,39 @@ impl SettingsOverlayModal {
     }
 }
 
+/// Map a settings-overlay [`SettingsResponse`] to a [`ModalOutcome`],
+/// running its App-side effects.  Shared by the key and click paths so a
+/// mouse click on a row behaves exactly like operating it from the
+/// keyboard.
+fn resolve(app: &mut App, response: SettingsResponse) -> ModalOutcome {
+    match response {
+        SettingsResponse::Continue => ModalOutcome::Continue,
+        SettingsResponse::Cancelled => ModalOutcome::Close,
+        SettingsResponse::OpenInExternalEditor => {
+            // The actual editor invocation needs the live `Terminal`
+            // handle, owned by the run loop.  Record intent here and let
+            // the loop drain the flag at the end of this iteration.
+            ModalOutcome::CloseAnd(Box::new(|app| {
+                app.pending_open_config_in_editor = true;
+                app.needs_draw = true;
+            }))
+        }
+        SettingsResponse::OpenConfigFolder => ModalOutcome::CloseAnd(Box::new(|app| {
+            if let Some(dir) = Config::config_dir() {
+                app.spawn_open_worker(dir.display().to_string());
+            } else {
+                app.notify("No config directory available", ModalKind::Error);
+            }
+            app.needs_draw = true;
+        })),
+        SettingsResponse::FieldChanged(label) => {
+            app.save_config_with_flash("failed to persist settings overlay change");
+            apply_live_update(label, app);
+            ModalOutcome::Continue
+        }
+    }
+}
+
 /// Push a single settings-overlay change into App-owned cached
 /// state.  Called from the `FieldChanged` arm above; extracted so
 /// the live-update wiring can be unit-tested without going through
@@ -85,33 +118,7 @@ impl Modal for SettingsOverlayModal {
         _doc_width: usize,
     ) -> ModalOutcome {
         let response = self.state.handle_key(&key, &mut app.config);
-        match response {
-            SettingsResponse::Continue => ModalOutcome::Continue,
-            SettingsResponse::Cancelled => ModalOutcome::Close,
-            SettingsResponse::OpenInExternalEditor => {
-                // The actual editor invocation needs the live
-                // `Terminal` handle, owned by the run loop.  Record
-                // intent here and let the loop drain the flag at the
-                // end of this iteration.
-                ModalOutcome::CloseAnd(Box::new(|app| {
-                    app.pending_open_config_in_editor = true;
-                    app.needs_draw = true;
-                }))
-            }
-            SettingsResponse::OpenConfigFolder => ModalOutcome::CloseAnd(Box::new(|app| {
-                if let Some(dir) = Config::config_dir() {
-                    app.spawn_open_worker(dir.display().to_string());
-                } else {
-                    app.notify("No config directory available", ModalKind::Error);
-                }
-                app.needs_draw = true;
-            })),
-            SettingsResponse::FieldChanged(label) => {
-                app.save_config_with_flash("failed to persist settings overlay change");
-                apply_live_update(label, app);
-                ModalOutcome::Continue
-            }
-        }
+        resolve(app, response)
     }
 
     fn handle_paste(&mut self, text: &str) -> ModalOutcome {
@@ -123,8 +130,13 @@ impl Modal for SettingsOverlayModal {
         self.state.scroll_state.scroll_by(delta);
     }
 
-    fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
-        super::types::close_if_esc_clicked(self.state.esc_button_rect, col, row)
+    fn handle_click(&mut self, col: u16, row: u16, app: &mut App) -> ModalOutcome {
+        // An `esc` close-hint click dismisses, like every other modal.
+        if super::types::esc_rect_hit(self.state.esc_button_rect, col, row) {
+            return ModalOutcome::Close;
+        }
+        let response = self.state.handle_click(col, row, &mut app.config);
+        resolve(app, response)
     }
 
     fn as_any(&self) -> &dyn Any {

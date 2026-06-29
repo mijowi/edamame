@@ -59,10 +59,10 @@ pub struct ModalRenderCtx<'a> {
 pub enum ModalOutcome {
     /// Modal stays on the stack, no follow-up action.
     Continue,
-    /// Modal stays on the stack; run the callback against `App`.  Used
-    /// by handlers that need `&mut App` from a context that doesn't
-    /// already have it (e.g. `handle_click`, whose signature doesn't
-    /// take an App reference) but want to keep the modal open.
+    /// Modal stays on the stack; run the callback against `App` *after*
+    /// the modal is pushed back.  Used by handlers that want to keep the
+    /// modal open while running a follow-up against the now-unborrowed
+    /// `App` (e.g. opening another modal on top of this one).
     ContinueAnd(Box<dyn FnOnce(&mut App)>),
     /// Modal is removed from the stack; no follow-up.
     Close,
@@ -108,10 +108,13 @@ pub trait Modal {
     fn handle_wheel(&mut self, _delta: i32) {}
 
     /// Apply a left-button mouse click at terminal coordinates
-    /// `(col, row)`.  Default: no-op.  Modals that draw an `esc` close
-    /// button in their title bar override this to dismiss when the
+    /// `(col, row)`.  Receives `&mut App` (like [`Self::handle_key`]) so a
+    /// click can mutate config / flash / dispatch follow-ups directly — the
+    /// dispatcher pops the modal before calling this, so `self` and `app`
+    /// are disjoint borrows.  Default: no-op.  Modals that draw an `esc`
+    /// close button in their title bar override this to dismiss when the
     /// click lands inside the cached hit-rect.
-    fn handle_click(&mut self, _col: u16, _row: u16) -> ModalOutcome {
+    fn handle_click(&mut self, _col: u16, _row: u16, _app: &mut App) -> ModalOutcome {
         ModalOutcome::Continue
     }
 

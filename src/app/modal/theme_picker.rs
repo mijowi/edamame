@@ -212,7 +212,7 @@ impl Modal for ThemePickerModal {
         self.list.scroll_by(delta);
     }
 
-    fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
+    fn handle_click(&mut self, col: u16, row: u16, _app: &mut App) -> ModalOutcome {
         if let Some(target) = self.toggle_hit(col, row) {
             let preview = self.switch_mode(target);
             return ModalOutcome::ContinueAnd(Box::new(move |app| {

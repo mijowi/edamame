@@ -23,7 +23,7 @@ use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::Frame;
 
-use super::types::{close_if_esc_clicked, Modal, ModalOutcome, ModalRenderCtx};
+use super::types::{Modal, ModalOutcome, ModalRenderCtx};
 use crate::app::{App, AppEvent};
 use crate::config::Config;
 use crate::export::{self, HtmlExportOptions, PreflightError, Stylesheet};
@@ -57,6 +57,36 @@ impl ExportHtmlModal {
         match outcome {
             Ok(path) => self.state.set_success(path),
             Err(message) => self.state.set_error(message),
+        }
+    }
+
+    /// Map a state-level [`ExportHtmlResponse`] to a [`ModalOutcome`],
+    /// running its App-side effects.  Shared by the key and click paths so a
+    /// mouse click on a control / button behaves exactly like its keystroke.
+    fn resolve(&mut self, app: &mut App, response: ExportHtmlResponse) -> ModalOutcome {
+        match response {
+            ExportHtmlResponse::Continue => ModalOutcome::Continue,
+            ExportHtmlResponse::Cancelled => ModalOutcome::Close,
+            ExportHtmlResponse::Submit(choices) => {
+                self.submit(app, choices);
+                ModalOutcome::Continue
+            }
+            ExportHtmlResponse::ProceedOverwrite => {
+                self.proceed_overwrite(app);
+                ModalOutcome::Continue
+            }
+            ExportHtmlResponse::OpenInBrowser => {
+                if let Some(path) = &self.state.result_path {
+                    app.spawn_open_worker(path.display().to_string());
+                }
+                ModalOutcome::Continue
+            }
+            ExportHtmlResponse::OpenFolder => {
+                if let Some(dir) = self.state.result_path.as_deref().and_then(Path::parent) {
+                    app.spawn_open_worker(dir.display().to_string());
+                }
+                ModalOutcome::Continue
+            }
         }
     }
 
@@ -138,30 +168,8 @@ impl Modal for ExportHtmlModal {
         _doc_height: usize,
         _doc_width: usize,
     ) -> ModalOutcome {
-        match self.state.handle_key(&key) {
-            ExportHtmlResponse::Continue => ModalOutcome::Continue,
-            ExportHtmlResponse::Cancelled => ModalOutcome::Close,
-            ExportHtmlResponse::Submit(choices) => {
-                self.submit(app, choices);
-                ModalOutcome::Continue
-            }
-            ExportHtmlResponse::ProceedOverwrite => {
-                self.proceed_overwrite(app);
-                ModalOutcome::Continue
-            }
-            ExportHtmlResponse::OpenInBrowser => {
-                if let Some(path) = &self.state.result_path {
-                    app.spawn_open_worker(path.display().to_string());
-                }
-                ModalOutcome::Continue
-            }
-            ExportHtmlResponse::OpenFolder => {
-                if let Some(dir) = self.state.result_path.as_deref().and_then(Path::parent) {
-                    app.spawn_open_worker(dir.display().to_string());
-                }
-                ModalOutcome::Continue
-            }
-        }
+        let response = self.state.handle_key(&key);
+        self.resolve(app, response)
     }
 
     fn handle_paste(&mut self, text: &str) -> ModalOutcome {
@@ -169,8 +177,9 @@ impl Modal for ExportHtmlModal {
         ModalOutcome::Continue
     }
 
-    fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
-        close_if_esc_clicked(self.state.esc_button_rect, col, row)
+    fn handle_click(&mut self, col: u16, row: u16, app: &mut App) -> ModalOutcome {
+        let response = self.state.handle_click(col, row);
+        self.resolve(app, response)
     }
 
     fn as_any(&self) -> &dyn Any {

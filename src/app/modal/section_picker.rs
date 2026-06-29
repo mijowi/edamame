@@ -108,7 +108,7 @@ impl Modal for SectionPickerModal {
         self.list.scroll_by(delta);
     }
 
-    fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
+    fn handle_click(&mut self, col: u16, row: u16, _app: &mut App) -> ModalOutcome {
         // A plain `Close` would drop the modal without restoring the
         // live-preview scroll — and any pending debounce would still fire
         // after the modal is gone.  Route the esc click through the same

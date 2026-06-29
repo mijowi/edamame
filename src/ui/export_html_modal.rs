@@ -170,6 +170,16 @@ pub struct ExportHtmlState {
     btn_focus: usize,
     /// Absolute rect of the rendered `esc` close hint, for click hit-testing.
     pub esc_button_rect: Option<Rect>,
+    // ── Click hit-rects, captured each render ──
+    /// Options-form control rects (None until the form has rendered once).
+    title_rect: Option<Rect>,
+    images_rect: Option<Rect>,
+    diagrams_rect: Option<Rect>,
+    stylesheet_rect: Option<Rect>,
+    export_button_rect: Option<Rect>,
+    /// Button-row rects for the current message phase (overwrite / success /
+    /// error), in button order.
+    msg_button_rects: Vec<Rect>,
 }
 
 impl ExportHtmlState {
@@ -195,6 +205,12 @@ impl ExportHtmlState {
             focus: OptFocus::Title,
             btn_focus: 0,
             esc_button_rect: None,
+            title_rect: None,
+            images_rect: None,
+            diagrams_rect: None,
+            stylesheet_rect: None,
+            export_button_rect: None,
+            msg_button_rects: Vec::new(),
         }
     }
 
@@ -267,6 +283,91 @@ impl ExportHtmlState {
                 _ => ExportHtmlResponse::Continue,
             },
         }
+    }
+
+    /// Hit-test a click at terminal `(col, row)` against the rects cached by
+    /// the last render and route it through the same [`ExportHtmlResponse`]
+    /// surface as the keyboard.  An `esc` close-hint click cancels in every
+    /// phase.  In the Options form a control click focuses the field and
+    /// applies an `Activate` (flip a toggle / advance the pill); the title
+    /// click only focuses; the `[ Export ]` button submits.  The message
+    /// phases mirror their button keys.
+    pub fn handle_click(&mut self, col: u16, row: u16) -> ExportHtmlResponse {
+        if rect_contains(self.esc_button_rect, col, row) {
+            return ExportHtmlResponse::Cancelled;
+        }
+        match self.phase {
+            ExportPhase::Options => self.handle_options_click(col, row),
+            ExportPhase::ConfirmOverwrite => self.handle_message_click(col, row, |idx| {
+                if idx == 0 {
+                    ExportHtmlResponse::ProceedOverwrite
+                } else {
+                    ExportHtmlResponse::Cancelled
+                }
+            }),
+            ExportPhase::Exporting => ExportHtmlResponse::Continue,
+            ExportPhase::Success => self.handle_message_click(col, row, |idx| {
+                if idx == 0 {
+                    ExportHtmlResponse::OpenInBrowser
+                } else {
+                    ExportHtmlResponse::OpenFolder
+                }
+            }),
+            ExportPhase::Error => {
+                // The single `[ Back ]` button returns to the form in place,
+                // exactly like its Enter arm.
+                if rect_contains(self.msg_button_rects.first().copied(), col, row) {
+                    self.phase = ExportPhase::Options;
+                }
+                ExportHtmlResponse::Continue
+            }
+        }
+    }
+
+    /// Click routing for the Options form: focus the clicked field, and for
+    /// a control apply an `Activate`; the `[ Export ]` button submits.
+    fn handle_options_click(&mut self, col: u16, row: u16) -> ExportHtmlResponse {
+        if rect_contains(self.title_rect, col, row) {
+            self.focus = OptFocus::Title;
+            return ExportHtmlResponse::Continue;
+        }
+        if rect_contains(self.images_rect, col, row) {
+            self.focus = OptFocus::Images;
+            self.apply_input(ControlInput::Activate);
+            return ExportHtmlResponse::Continue;
+        }
+        if rect_contains(self.diagrams_rect, col, row) {
+            self.focus = OptFocus::Diagrams;
+            self.apply_input(ControlInput::Activate);
+            return ExportHtmlResponse::Continue;
+        }
+        if rect_contains(self.stylesheet_rect, col, row) {
+            self.focus = OptFocus::Stylesheet;
+            self.apply_input(ControlInput::Activate);
+            return ExportHtmlResponse::Continue;
+        }
+        if rect_contains(self.export_button_rect, col, row) {
+            self.focus = OptFocus::Export;
+            return self.submit();
+        }
+        ExportHtmlResponse::Continue
+    }
+
+    /// Click routing for a message phase's button row: focus and activate the
+    /// clicked button via `activate`, mapping its index to a response.
+    fn handle_message_click(
+        &mut self,
+        col: u16,
+        row: u16,
+        activate: impl Fn(usize) -> ExportHtmlResponse,
+    ) -> ExportHtmlResponse {
+        for (i, r) in self.msg_button_rects.iter().enumerate() {
+            if rect_contains(Some(*r), col, row) {
+                self.btn_focus = i;
+                return activate(i);
+            }
+        }
+        ExportHtmlResponse::Continue
     }
 
     /// Shared key handling for the two-or-one-button message phases.
@@ -565,7 +666,17 @@ impl<'a> ExportHtmlView<'a> {
         let mut y = inner.y;
         let bottom = inner.y + inner.height;
 
+        // Each row's hit-rect spans the full `label + control` run from the
+        // body's left edge, so a click on the label operates the control too
+        // (matching the settings overlay).  `label_w + 2` is the styled label
+        // column (see `render_row`); `control_w` the uniform control width.
+        let row_x = inner.x;
+        let row_hit_w = ((label_w + 2 + control_w) as u16).min(inner.width);
+        // A fresh form render owns no message-phase buttons.
+        state.msg_button_rects.clear();
+
         // Title row.
+        let title_y = y;
         let title_focused = state.focus == OptFocus::Title;
         let value_style = controls::text_value_style(title_focused, self.theme);
         let mut title_control = vec![Span::styled(" ", value_style)];
@@ -586,9 +697,11 @@ impl<'a> ExportHtmlView<'a> {
             title_focused,
             title_control,
         );
+        state.title_rect = Some(control_rect(row_x, title_y, row_hit_w));
         y = y.saturating_add(1); // spacer between settings
 
         // Inline images toggle, with a note describing its current state.
+        let images_y = y;
         let images_focused = state.focus == OptFocus::Images;
         self.render_row(
             buf,
@@ -600,10 +713,12 @@ impl<'a> ExportHtmlView<'a> {
             images_focused,
             toggle_spans(state.inline_images, images_focused, false, self.theme),
         );
+        state.images_rect = Some(control_rect(row_x, images_y, row_hit_w));
         self.render_note(buf, inner, &mut y, bottom, images_note(state.inline_images));
         y = y.saturating_add(1); // spacer between settings
 
         // Inline diagrams toggle, likewise annotated.
+        let diagrams_y = y;
         let diagrams_focused = state.focus == OptFocus::Diagrams;
         self.render_row(
             buf,
@@ -615,6 +730,7 @@ impl<'a> ExportHtmlView<'a> {
             diagrams_focused,
             toggle_spans(state.render_diagrams, diagrams_focused, false, self.theme),
         );
+        state.diagrams_rect = Some(control_rect(row_x, diagrams_y, row_hit_w));
         self.render_note(
             buf,
             inner,
@@ -625,6 +741,7 @@ impl<'a> ExportHtmlView<'a> {
         y = y.saturating_add(1); // spacer between settings
 
         // Stylesheet pill row.
+        let stylesheet_y = y;
         let style_focused = state.focus == OptFocus::Stylesheet;
         self.render_row(
             buf,
@@ -642,6 +759,7 @@ impl<'a> ExportHtmlView<'a> {
                 self.theme,
             ),
         );
+        state.stylesheet_rect = Some(control_rect(row_x, stylesheet_y, row_hit_w));
 
         // Spacer, then the button row.
         y = y.saturating_add(1);
@@ -658,7 +776,8 @@ impl<'a> ExportHtmlView<'a> {
             OptFocus::Export => 0,
             _ => usize::MAX,
         };
-        render_button_row(button_area, buf, OPTION_BUTTONS, focused_idx, self.theme);
+        let rects = render_button_row(button_area, buf, OPTION_BUTTONS, focused_idx, self.theme);
+        state.export_button_rect = rects.into_iter().next();
     }
 
     /// Render one `label  <control>` row at `*y`, advancing `*y` past it.
@@ -791,7 +910,10 @@ impl<'a> ExportHtmlView<'a> {
                 width: inner.width,
                 height: 1,
             };
-            render_button_row(button_area, buf, buttons, state.btn_focus, self.theme);
+            state.msg_button_rects =
+                render_button_row(button_area, buf, buttons, state.btn_focus, self.theme);
+        } else {
+            state.msg_button_rects.clear();
         }
     }
 }
@@ -815,6 +937,24 @@ fn diagrams_note(on: bool) -> &'static str {
         DIAGRAMS_NOTE_ON
     } else {
         DIAGRAMS_NOTE_OFF
+    }
+}
+
+/// One-cell-high control hit-rect at `(x, y)` spanning `width` cells.
+fn control_rect(x: u16, y: u16, width: u16) -> Rect {
+    Rect {
+        x,
+        y,
+        width,
+        height: 1,
+    }
+}
+
+/// True when `(col, row)` falls inside `rect` (a miss when `rect` is `None`).
+fn rect_contains(rect: Option<Rect>, col: u16, row: u16) -> bool {
+    match rect {
+        Some(r) => col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height,
+        None => false,
     }
 }
 
@@ -1072,6 +1212,84 @@ mod tests {
         assert_eq!(images_note(false), IMAGES_NOTE_OFF);
         assert_eq!(diagrams_note(true), DIAGRAMS_NOTE_ON);
         assert_eq!(diagrams_note(false), DIAGRAMS_NOTE_OFF);
+    }
+
+    /// Render the modal once into a headless backend so the click hit-rects
+    /// are populated on `s`.
+    fn render_modal(s: &mut ExportHtmlState, w: u16, h: u16) {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let view = ExportHtmlView {
+                    theme: theme(),
+                    cursor_visible: true,
+                };
+                frame.render_stateful_widget(view, frame.area(), s);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn click_flips_a_toggle_and_focuses_its_row() {
+        let mut s = state(); // inline_images starts off
+        render_modal(&mut s, 70, 22);
+        let r = s.images_rect.expect("images rect captured at render");
+        let resp = s.handle_click(r.x, r.y);
+        assert_eq!(resp, ExportHtmlResponse::Continue);
+        assert!(s.inline_images, "clicking the toggle flips it on");
+        assert_eq!(s.focus, OptFocus::Images);
+    }
+
+    #[test]
+    fn click_cycles_the_stylesheet_pill() {
+        let mut s = state(); // idx 0, two stylesheets
+        render_modal(&mut s, 70, 22);
+        let r = s
+            .stylesheet_rect
+            .expect("stylesheet rect captured at render");
+        s.handle_click(r.x, r.y);
+        assert_eq!(
+            s.stylesheet_idx, 1,
+            "click advances the pill like Right/Space"
+        );
+    }
+
+    #[test]
+    fn click_on_export_button_submits() {
+        let mut s = state();
+        render_modal(&mut s, 70, 22);
+        let r = s
+            .export_button_rect
+            .expect("export button rect captured at render");
+        let resp = s.handle_click(r.x, r.y);
+        assert!(matches!(resp, ExportHtmlResponse::Submit(_)));
+        assert_eq!(s.focus, OptFocus::Export);
+    }
+
+    #[test]
+    fn click_on_esc_hint_cancels() {
+        let mut s = state();
+        render_modal(&mut s, 70, 22);
+        let r = s.esc_button_rect.expect("esc hint rect captured at render");
+        assert_eq!(s.handle_click(r.x, r.y), ExportHtmlResponse::Cancelled);
+    }
+
+    #[test]
+    fn click_on_success_buttons_opens_browser_and_folder() {
+        let mut s = state();
+        s.set_success(PathBuf::from("/docs/guide.html"));
+        render_modal(&mut s, 70, 14);
+        let browser = s.msg_button_rects[0];
+        assert_eq!(
+            s.handle_click(browser.x, browser.y),
+            ExportHtmlResponse::OpenInBrowser
+        );
+        let folder = s.msg_button_rects[1];
+        assert_eq!(
+            s.handle_click(folder.x, folder.y),
+            ExportHtmlResponse::OpenFolder
+        );
     }
 
     #[test]

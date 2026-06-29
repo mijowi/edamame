@@ -107,7 +107,7 @@ impl Modal for TerminalCapabilitiesModal {
         self.chrome.on_wheel(delta);
     }
 
-    fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
+    fn handle_click(&mut self, col: u16, row: u16, _app: &mut App) -> ModalOutcome {
         let response = self.chrome.on_click(col, row);
         self.resolve(response)
     }

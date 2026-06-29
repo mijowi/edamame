@@ -78,7 +78,7 @@ impl Modal for CommandPaletteModal {
         self.list.scroll_by(delta);
     }
 
-    fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
+    fn handle_click(&mut self, col: u16, row: u16, _app: &mut App) -> ModalOutcome {
         if super::types::esc_rect_hit(self.esc_button_rect, col, row) {
             return ModalOutcome::Close;
         }
