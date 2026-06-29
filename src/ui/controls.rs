@@ -93,11 +93,10 @@ pub enum Control {
 pub enum ControlValue {
     /// On/off value for a [`Control::Toggle`].
     Toggle(bool),
-    /// Selected index into a [`Control::Pill`]'s label slice.  Passed into
-    /// [`Control::apply`] by a pill caller (the welcome modal, Phase 2);
-    /// until then it is built only in tests.  (Export's stylesheet pill is
+    /// Selected index into a [`Control::Pill`]'s label slice.  Constructed by
+    /// the welcome modal's pill rows, fed through [`Control::apply`], and
+    /// mapped back to the domain enum.  (Export's stylesheet pill is
     /// dynamic-label and cycles via [`cycle_index`], not `apply`.)
-    #[allow(dead_code)]
     Choice(usize),
     /// A valueless [`Control::Button`].  Constructed by a button caller
     /// (the settings overlay, Phase 3); until then it is built only in tests.
