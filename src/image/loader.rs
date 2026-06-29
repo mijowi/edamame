@@ -75,6 +75,25 @@ pub enum ImageLoadError {
 /// if a server ghosts us.
 const REMOTE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Cap on the size of a *local* image file read off disk.  Remote fetches
+/// are already bounded by ureq's 10 MB body limit, but local files
+/// otherwise had no cap at all — a multi-gigabyte file would be slurped
+/// into memory in one `std::fs::read` before the decode limits below even
+/// apply.  64 MB is comfortably above any real raster a terminal would
+/// display.
+const MAX_LOCAL_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Hard ceilings applied to every raster decode (see [`decode`]).  A
+/// highly-compressed raster (PNG zlib ratios routinely exceed 1000:1)
+/// expands enormously on decode, and `image`'s decoder allocates the full
+/// pixel buffer *before* the loader's `pre_resize` can shrink it — so the
+/// only place to bound peak memory is at decode time, via `image::Limits`.
+/// 50 000 px per side is far larger than any terminal can show, and the
+/// allocation cap bounds the worst-case RGBA buffer to a couple hundred
+/// MB so a decode bomb errors out instead of aborting the process.
+const MAX_DECODE_DIMENSION: u32 = 50_000;
+const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
+
 /// Resolve `url` to a decoded `DynamicImage`.
 ///
 /// * `doc_path` — path of the currently-open document (used as the base
@@ -116,6 +135,22 @@ pub fn resolve(
         decode_any(url, &bytes, max_cells, font_size)?
     } else {
         let path = resolve_local_path(url, doc_path)?;
+        let meta = std::fs::metadata(&path).map_err(|source| ImageLoadError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if meta.len() > MAX_LOCAL_IMAGE_BYTES {
+            return Err(ImageLoadError::Io {
+                path: path.clone(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "image file too large: {} bytes (max {MAX_LOCAL_IMAGE_BYTES})",
+                        meta.len()
+                    ),
+                ),
+            });
+        }
         let bytes = std::fs::read(&path).map_err(|source| ImageLoadError::Io {
             path: path.clone(),
             source,
@@ -247,8 +282,24 @@ fn decode_any(
     }
 }
 
+/// Decode raster `bytes` into a `DynamicImage` through `image::ImageReader`
+/// with [`image::Limits`] in force, so a compression bomb is rejected with
+/// a `Decode` error rather than driving an OOM that `catch_unwind` cannot
+/// contain.  Replaces the unbounded `image::load_from_memory`.
 fn decode(url: &str, bytes: &[u8]) -> Result<DynamicImage, ImageLoadError> {
-    image::load_from_memory(bytes).map_err(|source| ImageLoadError::Decode {
+    let mut limits = image::Limits::no_limits();
+    limits.max_image_width = Some(MAX_DECODE_DIMENSION);
+    limits.max_image_height = Some(MAX_DECODE_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| ImageLoadError::Decode {
+            url: url.to_owned(),
+            source: image::ImageError::IoError(e),
+        })?;
+    reader.limits(limits);
+    reader.decode().map_err(|source| ImageLoadError::Decode {
         url: url.to_owned(),
         source,
     })
