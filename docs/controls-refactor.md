@@ -235,7 +235,7 @@ Full suite green; `clippy --all-targets -D warnings` and `fmt --check` clean.
 > construct `Choice` and feed it to `apply`. `ControlValue::Button`'s allow
 > stays until Phase 3.
 
-### Phase 3 — `settings` (input unification only; keep Config-projection)
+### Phase 3 — `settings` (input unification only; keep Config-projection) — ✅ DONE
 
 - Add `read_value(&Config) -> ControlValue` / `write_value(&mut Config,
   ControlValue)` to `RowKind`, replacing the per-row `cycle` fn-pointers.
@@ -247,10 +247,75 @@ Full suite green; `clippy --all-targets -D warnings` and `fmt --check` clean.
   out before mutating `config`; `read_value` / `write_value` must keep that
   ordering.
 
-### Phase 4 — shared focus stepper
+**Implemented.** `RowKind.cycle: Option<CycleFn>` is replaced by
+`read_value: Option<ReadValueFn>` + `write_value: Option<WriteValueFn>`
+(`fn(&Config) -> ControlValue` / `fn(&mut Config, ControlValue)`), `Some`
+on toggle/pill rows and `None` on numeric/edit, button, and display rows.
+Each toggle row reads/writes `ControlValue::Toggle(bool)`; each pill row maps
+its enum to a `ControlValue::Choice(index)` and back via two new
+`rows.rs` helpers `order_index` / `order_value` (mirroring welcome's
+`pill_index`/`pill_value`) over the existing `*_ORDER` arrays. The vim-mode
+row keeps its handler-name special case inside `write_value`.
+`settings_overlay::cycle_focused(config, delta)` became
+`apply_control_input(config, ControlInput)`: it copies the row's `Copy` bits
+(`&'static str` label, `Option<Control>`, two `fn` pointers, `disabled`) out
+before mutating, then `control.apply(read_value(config), input)` → on
+`Changed(next)` calls `write_value` + the preserved `LABEL_SHOW_IMAGES`
+cascade and returns `FieldChanged`; `Ignored`/`Activated` → `Continue`. The
+key handler routes `Left`/`Right` to `ControlInput::Left`/`Right` and
+`activate_focused`'s `Cycle` arm to `ControlInput::Activate`. Borrow ordering
+(copy-before-mutate) preserved. All settings tests pass; one added
+(`toggle_arrows_are_direction_bound`) for the behavior change below.
+
+> **Behavior change (the documented one).** Settings toggle arrows go from
+> flip-on-either-arrow (the old `cycle` closures ignored `delta` and did
+> `field = !field`) to direction-bound: Left = off, Right = on (Enter/Space
+> still flip). All existing toggle tests drive Enter, so nothing broke; the
+> new test locks it in. Pill rows still cycle on Left/Right unchanged.
+
+> **Deviation — `cycle_enum` removed (was: "kept as the value-slice
+> primitive").** After Phase 2 (welcome) and this phase both routed through
+> `Control::apply`, `controls::cycle_enum` had zero remaining callers, so it
+> tripped `dead_code` under `clippy --all-targets -D warnings`. The plan's
+> net-effect text expected it to survive, but no value-slice caller remains,
+> so it was deleted (binary-crate-internal, not public API) and its two doc
+> references (module header + `cycle_index` doc) repointed to `cycle_index`,
+> which is now the sole wrap-around primitive. No test covered `cycle_enum`.
+> This does not affect Phase 5 (which uses `Control::apply(.., Activate)`).
+
+> **Note — `write_string` retained on pill rows.** Pill rows still carry
+> their `write_string` parse fns (e.g. `parse_images_enabled`); they are only
+> invoked by `commit_draft` for `RowAction::Edit` rows and so are inert on
+> `Cycle` pills, but removing them was out of scope (they remain a required
+> `RowKind` field for the numeric edit rows). `read` (display string) is
+> likewise unchanged — Phase 3 touches only the *input* path, not rendering.
+
+### Phase 4 — shared focus stepper — ✅ DONE
 
 Add `next_focusable_wrapping` beside `next_focusable` (or a `wrap: bool`
 param) and migrate `welcome::step_focus` + `export::OptFocus::step` onto it.
+
+**Implemented.** Added `overlay_nav::next_focusable_wrapping(rows, current,
+delta, is_focusable) -> Option<usize>` — a sibling of `next_focusable`
+(chose a separate fn over a `wrap: bool` param; the two have different
+"nothing found" semantics and read clearer apart). It steps `delta` at a
+time with `rem_euclid` wrap, walking at most `rows.len()` steps so an
+all-disabled ring terminates with `None`. `welcome::step_focus` now resolves
+the current `FOCUS_ORDER` index, calls the shared stepper with `|f|
+!self.row_disabled(*f)`, and applies the returned index to both `self.focused`
+and `focus_offsets[i]` (its `delta` param narrowed `isize` → `i32`).
+`export_html_modal::OptFocus::step` resolves its `ORDER` index and calls the
+stepper with an always-true predicate (every form field is focusable),
+mapping the result back to the variant. Both modals' existing focus tests
+pass unchanged; 6 unit tests added for the stepper (wrap forward/back, skip
++ wrap, lone-focusable, all-disabled, zero-delta/empty).
+
+> **Note — lone-focusable returns `Some(current)`, not `None`.** The walk
+> steps `1..=len` positions (like welcome's original loop), so when only
+> `current` is focusable it is reached on the final wrap step and returned
+> unchanged — a harmless no-op move (focus stays put, `ensure_visible`
+> re-targets the same row). This exactly matches the pre-refactor welcome
+> behavior; export never hits it (all fields focusable).
 
 ### Phase 5 — click support (the real work)
 

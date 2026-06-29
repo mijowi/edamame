@@ -53,7 +53,7 @@ use ratatui::{
 
 use crate::config::{Config, ImagesEnabled, RemoteImagePolicy, Theme};
 use crate::ui::content_width::{max_row_width, optional_text_width};
-use crate::ui::controls::{self, Control};
+use crate::ui::controls::{self, Control, ControlEvent, ControlInput};
 use crate::ui::overlay_nav::next_focusable;
 
 /// Width of the label column in the settings overlay (column count of the
@@ -201,8 +201,8 @@ impl SettingsState {
             }
             KeyCode::Up => self.move_focus_committing(-1, config),
             KeyCode::Down => self.move_focus_committing(1, config),
-            KeyCode::Left => self.cycle_focused(config, -1),
-            KeyCode::Right => self.cycle_focused(config, 1),
+            KeyCode::Left => self.apply_control_input(config, ControlInput::Left),
+            KeyCode::Right => self.apply_control_input(config, ControlInput::Right),
             KeyCode::Enter => self.activate_focused(config),
             KeyCode::Backspace => {
                 if let Some(buf) = self.editing.as_mut() {
@@ -247,7 +247,7 @@ impl SettingsState {
         match action {
             Some(RowAction::OpenExternalEditor) => SettingsResponse::OpenInExternalEditor,
             Some(RowAction::OpenConfigFolder) => SettingsResponse::OpenConfigFolder,
-            Some(RowAction::Cycle) => self.cycle_focused(config, 1),
+            Some(RowAction::Cycle) => self.apply_control_input(config, ControlInput::Activate),
             Some(RowAction::Edit) => self.commit_draft(config),
             None => SettingsResponse::Continue,
         }
@@ -303,34 +303,52 @@ impl SettingsState {
         };
     }
 
-    /// Cycle the focused row's value by `delta` (-1 / +1).  Only
-    /// applies to bool/enum/theme rows; no-op on numeric/edit-only
-    /// rows so an accidental Left arrow doesn't surprise the user.
-    /// A disabled row (e.g. the cascade-locked remote-images row) never
-    /// cycles.  Cycling `Show images` cascades the remote-images policy
+    /// Apply a [`ControlInput`] to the focused option row through the shared
+    /// transition layer ([`Control::apply`]), writing the result back into
+    /// `config`.  Only applies to toggle / pill rows; no-op on numeric /
+    /// edit-only and button rows (their `read_value` / `write_value` are
+    /// `None`) so an accidental Left arrow doesn't surprise the user.  A
+    /// disabled row (e.g. the cascade-locked remote-images row) never
+    /// changes.  Changing `Show images` cascades the remote-images policy
     /// to / from `Never`, matching the welcome modal.
-    fn cycle_focused(&mut self, config: &mut Config, delta: i32) -> SettingsResponse {
-        // Copy the bits we need before mutating `config` / `self` so the
-        // borrow of `self.rows` doesn't outlive the row's cycle call.
-        let (label, cycle, disabled) = match self.rows.get(self.focused) {
-            Some(r) => (r.label, r.kind.cycle, r.is_disabled(config)),
+    fn apply_control_input(
+        &mut self,
+        config: &mut Config,
+        input: ControlInput,
+    ) -> SettingsResponse {
+        // Copy the bits we need (all `Copy`: a `&'static str`, two `fn`
+        // pointers, a `Control`) before mutating `config` / `self` so the
+        // borrow of `self.rows` doesn't outlive the apply call.
+        let (label, control, read_value, write_value, disabled) = match self.rows.get(self.focused)
+        {
+            Some(r) => (
+                r.label,
+                r.kind.options,
+                r.kind.read_value,
+                r.kind.write_value,
+                r.is_disabled(config),
+            ),
             None => return SettingsResponse::Continue,
         };
         if disabled {
             return SettingsResponse::Continue;
         }
-        let was_images_never = matches!(config.images.enabled, ImagesEnabled::Never);
-        let cycled = match cycle {
-            Some(f) => f(config, delta, &self.theme_names),
-            None => false,
+        // Only option rows carry all three; numeric / button rows opt out.
+        let (Some(control), Some(read_value), Some(write_value)) =
+            (control, read_value, write_value)
+        else {
+            return SettingsResponse::Continue;
         };
-        if cycled && label == rows::LABEL_SHOW_IMAGES {
-            self.apply_images_cascade(config, was_images_never);
-        }
-        if cycled {
-            SettingsResponse::FieldChanged(label)
-        } else {
-            SettingsResponse::Continue
+        let was_images_never = matches!(config.images.enabled, ImagesEnabled::Never);
+        match control.apply(read_value(config), input) {
+            ControlEvent::Changed(next) => {
+                write_value(config, next);
+                if label == rows::LABEL_SHOW_IMAGES {
+                    self.apply_images_cascade(config, was_images_never);
+                }
+                SettingsResponse::FieldChanged(label)
+            }
+            ControlEvent::Activated | ControlEvent::Ignored => SettingsResponse::Continue,
         }
     }
 
@@ -663,6 +681,34 @@ mod tests {
         // Mirror real navigation: landing on a row opens its draft so a
         // text-input row is editable on focus.
         state.open_draft_for_focused(config);
+    }
+
+    #[test]
+    fn toggle_arrows_are_direction_bound() {
+        // Phase 3 routed settings option rows through `Control::apply`, so
+        // toggle arrows became direction-bound everywhere: Left = off,
+        // Right = on (Enter/Space still flip).  Previously a settings toggle
+        // flipped on either arrow; no test exercised that, so this locks in
+        // the new behavior.
+        let mut config = Config::default();
+        config.editor.autosave_enabled = false;
+        let mut state = SettingsState::new();
+        focus_row(&mut state, &config, "Autosave");
+        // Left on an already-off toggle is a no-op (not a flip-on).
+        let resp = state.handle_key(&key(KeyCode::Left), &mut config);
+        assert_eq!(resp, SettingsResponse::Continue);
+        assert!(!config.editor.autosave_enabled, "Left means off");
+        // Right turns it on; a second Right is a no-op.
+        let resp = state.handle_key(&key(KeyCode::Right), &mut config);
+        assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
+        assert!(config.editor.autosave_enabled, "Right means on");
+        let resp = state.handle_key(&key(KeyCode::Right), &mut config);
+        assert_eq!(resp, SettingsResponse::Continue);
+        assert!(config.editor.autosave_enabled, "Right when on is a no-op");
+        // Left turns it back off.
+        let resp = state.handle_key(&key(KeyCode::Left), &mut config);
+        assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
+        assert!(!config.editor.autosave_enabled, "Left means off");
     }
 
     #[test]
