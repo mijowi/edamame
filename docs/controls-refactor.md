@@ -188,7 +188,7 @@ All 15 export tests pass unchanged; `arrows_set_toggle_off_and_on` and
 > `Span::raw("  ")`), matching the settings/welcome unified composition. Text
 > and widths are unchanged; render tests pass.
 
-### Phase 2 — `welcome`
+### Phase 2 — `welcome` — ✅ DONE
 
 - `cycle_focused` becomes: resolve the focused field's `Control` + current
   `ControlValue`, call `apply`, write the result back (the images path
@@ -197,6 +197,43 @@ All 15 export tests pass unchanged; `arrows_set_toggle_off_and_on` and
 - Keep the bespoke scratch-buffer render + scroll-translated hit-rects —
   unifying that is high-effort, low-value (out of scope).
 - `render_control_row` label-span building → `control_row_spans`.
+
+**Implemented.** `cycle_focused(delta)` is replaced by
+`apply_input(ControlInput)`: the three pills go through
+`Control::Pill(ASK_ALWAYS_NEVER).apply` (with new `*_from_index` inverses of
+the existing `*_index` maps to convert the returned `Choice` back to the
+domain enum), and the two toggles through `Control::Toggle.apply`; the images
+arm still routes through `set_images` for the cascade. `handle_key` now
+collapses the per-key Left/Right/Space/Enter arms into a single
+`control_input_for` catch-all — only the Activate-on-`Theme`/`Save` rows keep
+explicit arms (they fire `OpenThemePicker` / `Save` rather than mutating a
+control). `handle_click` routes the pill *and* toggle hits through
+`apply_input(Activate)`, removing the two inline `= !` flips there too.
+`render_control_row` builds its label+control spans via `control_row_spans`
+(one combined `Line` instead of two separately-rendered rects). All 12
+pre-existing welcome tests pass unchanged; one test
+(`toggle_arrows_are_direction_bound`) added to cover the behavior change.
+Full suite green; `clippy --all-targets -D warnings` and `fmt --check` clean.
+
+> **Behavior change (the documented one).** Welcome toggle arrows
+> (Vim mode / Don't-show-again) go from flip-on-either-arrow to direction-
+> bound: Left = off, Right = on (Space/Enter still flip). No existing test
+> exercised arrows on a welcome toggle, so nothing broke; the new test locks
+> it in. Pill behavior, cascade, and the Theme/Save responses are unchanged.
+
+> **Deviation — `handle_click` also unified (slightly beyond the bullet).**
+> The plan's `cycle_focused` bullet only called out the *keyboard* `= !`
+> flips, but `handle_click` carried two more (`vim` / `show-again`). Routing
+> those clicks through the same `apply_input(Activate)` keeps one transition
+> path for keyboard and mouse and removes the remaining hand-rolled flips —
+> consistent with the refactor's goal. Click-on-toggle is `Activate` (flip),
+> identical to the prior `= !`.
+
+> **Deviation — `ControlValue::Choice` allow removed.** Phase 1 kept a
+> variant-level `#[allow(dead_code)]` on `ControlValue::Choice`, to be dropped
+> "in Phase 2 (welcome pills call `apply`)". Removed: the welcome pills now
+> construct `Choice` and feed it to `apply`. `ControlValue::Button`'s allow
+> stays until Phase 3.
 
 ### Phase 3 — `settings` (input unification only; keep Config-projection)
 

@@ -32,7 +32,7 @@ use ratatui::{
 use crate::config::{DiagramsEnabled, ImagesEnabled, RemoteImagePolicy, Theme};
 use crate::terminal::Capabilities;
 use crate::ui::cap_summary::{render_cap_row as shared_render_cap_row, CapSummary};
-use crate::ui::controls;
+use crate::ui::controls::{self, Control, ControlEvent, ControlInput, ControlValue};
 use crate::ui::scroll_container::{
     centered_rect_for_content, compute_pad_h, draw_frame, ContentSize, FrameOpts, ModalKind,
     ScrollContainerState, MAX_PAD_H,
@@ -215,50 +215,54 @@ impl WelcomeState {
         }
     }
 
-    /// Cycle / toggle the value of the focused option row by `delta`
-    /// (-1 / +1).  No-op if focus isn't on an option row.  The tri-state
-    /// pills (images / remote / diagrams) advance through their order; the
-    /// on/off toggles (vim motions / show-again) flip regardless of sign.
-    /// Applies the cascade rule when images leaves / enters Never.
-    fn cycle_focused(&mut self, delta: isize) {
-        let delta = delta as i32;
+    /// Apply a [`ControlInput`] to the focused option row through the shared
+    /// transition layer ([`Control::apply`]), writing the result back.  No-op
+    /// if focus isn't on an option row.  The tri-state pills (images / remote
+    /// / diagrams) cycle through [`controls::ASK_ALWAYS_NEVER`]; the on/off
+    /// toggles (vim motions / show-again) are direction-bound (Left=off /
+    /// Right=on, Activate flips).  The images path goes through `set_images`
+    /// so the remote cascade still fires.
+    fn apply_input(&mut self, input: ControlInput) {
+        let pill = Control::Pill(controls::ASK_ALWAYS_NEVER);
         match self.focused {
             WelcomeFocus::Images => {
-                let next = controls::cycle_enum(
-                    self.images,
-                    &[
-                        ImagesEnabled::Ask,
-                        ImagesEnabled::Always,
-                        ImagesEnabled::Never,
-                    ],
-                    delta,
-                );
-                self.set_images(next);
+                if let ControlEvent::Changed(ControlValue::Choice(i)) = pill.apply(
+                    ControlValue::Choice(pill_index(&IMAGES_ORDER, self.images)),
+                    input,
+                ) {
+                    self.set_images(pill_value(&IMAGES_ORDER, i));
+                }
             }
             WelcomeFocus::RemoteImages if !self.remote_locked_by_images() => {
-                self.remote = controls::cycle_enum(
-                    self.remote,
-                    &[
-                        RemoteImagePolicy::Ask,
-                        RemoteImagePolicy::Always,
-                        RemoteImagePolicy::Never,
-                    ],
-                    delta,
-                );
+                if let ControlEvent::Changed(ControlValue::Choice(i)) = pill.apply(
+                    ControlValue::Choice(pill_index(&REMOTE_ORDER, self.remote)),
+                    input,
+                ) {
+                    self.remote = pill_value(&REMOTE_ORDER, i);
+                }
             }
             WelcomeFocus::Diagrams => {
-                self.diagrams = controls::cycle_enum(
-                    self.diagrams,
-                    &[
-                        DiagramsEnabled::Ask,
-                        DiagramsEnabled::Always,
-                        DiagramsEnabled::Never,
-                    ],
-                    delta,
-                );
+                if let ControlEvent::Changed(ControlValue::Choice(i)) = pill.apply(
+                    ControlValue::Choice(pill_index(&DIAGRAMS_ORDER, self.diagrams)),
+                    input,
+                ) {
+                    self.diagrams = pill_value(&DIAGRAMS_ORDER, i);
+                }
             }
-            WelcomeFocus::VimMotions => self.use_vim = !self.use_vim,
-            WelcomeFocus::ShowAgain => self.dont_show_again = !self.dont_show_again,
+            WelcomeFocus::VimMotions => {
+                if let ControlEvent::Changed(ControlValue::Toggle(v)) =
+                    Control::Toggle.apply(ControlValue::Toggle(self.use_vim), input)
+                {
+                    self.use_vim = v;
+                }
+            }
+            WelcomeFocus::ShowAgain => {
+                if let ControlEvent::Changed(ControlValue::Toggle(v)) =
+                    Control::Toggle.apply(ControlValue::Toggle(self.dont_show_again), input)
+                {
+                    self.dont_show_again = v;
+                }
+            }
             _ => {}
         }
     }
@@ -281,66 +285,38 @@ impl WelcomeState {
             return WelcomeResponse::Continue;
         }
         match key.code {
-            KeyCode::Tab => {
+            KeyCode::Tab | KeyCode::Down => {
                 self.step_focus(1);
                 WelcomeResponse::Continue
             }
-            KeyCode::BackTab => {
+            KeyCode::BackTab | KeyCode::Up => {
                 self.step_focus(-1);
                 WelcomeResponse::Continue
             }
-            KeyCode::Down => {
-                self.step_focus(1);
-                WelcomeResponse::Continue
+            // Activate (Enter / Space) on the Theme / Save rows fires its own
+            // response; on a control row it falls through to the shared
+            // `control_input_for` mapping below (where it becomes Activate).
+            KeyCode::Enter | KeyCode::Char(' ') if self.focused == WelcomeFocus::Theme => {
+                WelcomeResponse::OpenThemePicker
             }
-            KeyCode::Up => {
-                self.step_focus(-1);
-                WelcomeResponse::Continue
+            KeyCode::Enter | KeyCode::Char(' ') if self.focused == WelcomeFocus::Save => {
+                WelcomeResponse::Save
             }
-            KeyCode::Left => {
-                self.cycle_focused(-1);
-                WelcomeResponse::Continue
-            }
-            KeyCode::Right => {
-                self.cycle_focused(1);
-                WelcomeResponse::Continue
-            }
-            KeyCode::Char(' ') => {
-                match self.focused {
-                    WelcomeFocus::ShowAgain => self.dont_show_again = !self.dont_show_again,
-                    WelcomeFocus::VimMotions => self.use_vim = !self.use_vim,
-                    WelcomeFocus::Theme => return WelcomeResponse::OpenThemePicker,
-                    WelcomeFocus::Save => return WelcomeResponse::Save,
-                    WelcomeFocus::Images | WelcomeFocus::RemoteImages | WelcomeFocus::Diagrams => {
-                        self.cycle_focused(1)
-                    }
-                }
-                WelcomeResponse::Continue
-            }
-            KeyCode::Enter => match self.focused {
-                WelcomeFocus::Theme => WelcomeResponse::OpenThemePicker,
-                WelcomeFocus::Save => WelcomeResponse::Save,
-                WelcomeFocus::ShowAgain => {
-                    self.dont_show_again = !self.dont_show_again;
-                    WelcomeResponse::Continue
-                }
-                WelcomeFocus::VimMotions => {
-                    self.use_vim = !self.use_vim;
-                    WelcomeResponse::Continue
-                }
-                // Enter cycles a focused pill row, matching Space / Right
-                // (and the settings overlay, where Enter cycles too).
-                WelcomeFocus::Images | WelcomeFocus::RemoteImages | WelcomeFocus::Diagrams => {
-                    self.cycle_focused(1);
-                    WelcomeResponse::Continue
-                }
-            },
             // No Esc dismissal — the spec replaces Cancel with the
             // explicit "Show on next launch" toggle.  Esc is consumed
             // but does nothing so the modal can't be closed without
             // pressing Save (which respects the show-again toggle).
             KeyCode::Esc => WelcomeResponse::Continue,
-            _ => WelcomeResponse::Continue,
+            // Left / Right (any control row) and Activate (Enter / Space on a
+            // control row) route through the single key → ControlInput map →
+            // `apply_input`.  Keys the control doesn't take map to None and
+            // no-op.
+            _ => {
+                if let Some(input) = controls::control_input_for(key.code) {
+                    self.apply_input(input);
+                }
+                WelcomeResponse::Continue
+            }
         }
     }
 
@@ -363,31 +339,31 @@ impl WelcomeState {
         }
         if rect_contains(self.show_again_rect, col, row) {
             self.focused = WelcomeFocus::ShowAgain;
-            self.dont_show_again = !self.dont_show_again;
+            self.apply_input(ControlInput::Activate);
             return WelcomeResponse::Continue;
         }
         if rect_contains(self.vim_rect, col, row) {
             self.focused = WelcomeFocus::VimMotions;
-            self.use_vim = !self.use_vim;
+            self.apply_input(ControlInput::Activate);
             return WelcomeResponse::Continue;
         }
         // A cycle pill shows only the current value, so a click advances
         // it by one (same as Space / Right), rather than selecting a
-        // specific option.  `cycle_focused` applies the images cascade.
+        // specific option.  `apply_input` applies the images cascade.
         if self.image_capable {
             if rect_contains(self.images_rect, col, row) {
                 self.focused = WelcomeFocus::Images;
-                self.cycle_focused(1);
+                self.apply_input(ControlInput::Activate);
                 return WelcomeResponse::Continue;
             }
             if !self.remote_locked_by_images() && rect_contains(self.remote_rect, col, row) {
                 self.focused = WelcomeFocus::RemoteImages;
-                self.cycle_focused(1);
+                self.apply_input(ControlInput::Activate);
                 return WelcomeResponse::Continue;
             }
             if rect_contains(self.diagrams_rect, col, row) {
                 self.focused = WelcomeFocus::Diagrams;
-                self.cycle_focused(1);
+                self.apply_input(ControlInput::Activate);
                 return WelcomeResponse::Continue;
             }
         }
@@ -699,7 +675,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             "Show diagrams",
             controls::pill_spans(
                 controls::ASK_ALWAYS_NEVER,
-                diagrams_index(state.diagrams),
+                pill_index(&DIAGRAMS_ORDER, state.diagrams),
                 state.focused == WelcomeFocus::Diagrams,
                 !state.image_capable,
                 self.theme,
@@ -729,7 +705,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             "Show images",
             controls::pill_spans(
                 controls::ASK_ALWAYS_NEVER,
-                images_index(state.images),
+                pill_index(&IMAGES_ORDER, state.images),
                 state.focused == WelcomeFocus::Images,
                 !state.image_capable,
                 self.theme,
@@ -760,7 +736,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             "Show remote images",
             controls::pill_spans(
                 controls::ASK_ALWAYS_NEVER,
-                remote_index(state.remote),
+                pill_index(&REMOTE_ORDER, state.remote),
                 state.focused == WelcomeFocus::RemoteImages,
                 remote_disabled,
                 self.theme,
@@ -921,28 +897,38 @@ fn translate_rect(rect: Option<Rect>, body: Rect, scroll: u16) -> Option<Rect> {
     })
 }
 
-fn images_index(value: ImagesEnabled) -> usize {
-    match value {
-        ImagesEnabled::Ask => 0,
-        ImagesEnabled::Always => 1,
-        ImagesEnabled::Never => 2,
-    }
+// One ordered table per tri-state enum, mirroring `controls::ASK_ALWAYS_NEVER`'s
+// label order.  Each table is the *single source* for both directions of its
+// enum's pill mapping — `pill_index` (value → `ControlValue::Choice` index) and
+// `pill_value` (index → value) read the same slice, so a reordering can't drift
+// the two halves apart.
+const IMAGES_ORDER: [ImagesEnabled; 3] = [
+    ImagesEnabled::Ask,
+    ImagesEnabled::Always,
+    ImagesEnabled::Never,
+];
+const REMOTE_ORDER: [RemoteImagePolicy; 3] = [
+    RemoteImagePolicy::Ask,
+    RemoteImagePolicy::Always,
+    RemoteImagePolicy::Never,
+];
+const DIAGRAMS_ORDER: [DiagramsEnabled; 3] = [
+    DiagramsEnabled::Ask,
+    DiagramsEnabled::Always,
+    DiagramsEnabled::Never,
+];
+
+/// Index of `value` within its pill `order` (the `ControlValue::Choice` index
+/// fed into [`Control::apply`]).  Falls back to 0 for a value absent from the
+/// table — unreachable for the tri-state enums, which list every variant.
+fn pill_index<T: PartialEq>(order: &[T], value: T) -> usize {
+    order.iter().position(|v| *v == value).unwrap_or(0)
 }
 
-fn remote_index(value: RemoteImagePolicy) -> usize {
-    match value {
-        RemoteImagePolicy::Ask => 0,
-        RemoteImagePolicy::Always => 1,
-        RemoteImagePolicy::Never => 2,
-    }
-}
-
-fn diagrams_index(value: DiagramsEnabled) -> usize {
-    match value {
-        DiagramsEnabled::Ask => 0,
-        DiagramsEnabled::Always => 1,
-        DiagramsEnabled::Never => 2,
-    }
+/// Inverse of [`pill_index`]: the value at `i` in `order`, clamped to the last
+/// entry for any out-of-range index (the pill only ever yields `0..len`).
+fn pill_value<T: Copy>(order: &[T], i: usize) -> T {
+    order[i.min(order.len().saturating_sub(1))]
 }
 
 /// Render a label + control (pill or toggle) row into the welcome modal's
@@ -965,50 +951,39 @@ fn render_control_row(
     theme: &Theme,
 ) -> Option<Rect> {
     // Row fill — uniform modal_bg across the whole row width.
-    Paragraph::new("").style(theme.modal_bg).render(
-        Rect {
-            x: body.x,
-            y,
-            width: body.width,
-            height: 1,
-        },
-        buf,
-    );
-    // The label column is one unit with the control: pad the label across
-    // the whole column so the focus fill spans the column → widget, exactly
-    // like the settings overlay.  The style comes from the shared
-    // [`controls::control_label_style`] — the modal only reports focus.
-    let label_col_w = CONTROL_COL.min(body.width) as usize;
-    let label_padded = format!("{label:<label_col_w$}");
-    let label_style = controls::control_label_style(focused, disabled, theme);
-    Paragraph::new(Line::from(Span::styled(label_padded, label_style)))
+    let row_rect = Rect {
+        x: body.x,
+        y,
+        width: body.width,
+        height: 1,
+    };
+    Paragraph::new("")
         .style(theme.modal_bg)
-        .render(
-            Rect {
-                x: body.x,
-                y,
-                width: CONTROL_COL.min(body.width),
-                height: 1,
-            },
-            buf,
-        );
+        .render(row_rect, buf);
+    // The label column is one unit with the control: pad the label across
+    // the whole column (CONTROL_COL cells) so a focused row's fill spans the
+    // column → widget, then append the caller's control spans — the shared
+    // [`controls::control_row_spans`] composition, exactly like the settings
+    // and export modals.  The modal only reports focus / disabled.
+    let label_col_w = CONTROL_COL.min(body.width) as usize;
+    let row_spans =
+        controls::control_row_spans(label, label_col_w, spans, focused, disabled, theme);
+    Paragraph::new(Line::from(row_spans))
+        .style(theme.modal_bg)
+        .render(row_rect, buf);
 
     if body.width < CONTROL_COL + width {
         return None;
     }
-    let rect = Rect {
-        x: body.x + CONTROL_COL,
-        y,
-        width,
-        height: 1,
-    };
-    Paragraph::new(Line::from(spans))
-        .style(theme.modal_bg)
-        .render(rect, buf);
     if disabled {
         None
     } else {
-        Some(rect)
+        Some(Rect {
+            x: body.x + CONTROL_COL,
+            y,
+            width,
+            height: 1,
+        })
     }
 }
 
@@ -1194,6 +1169,40 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert!(!s.use_vim, "Enter toggles back off");
+    }
+
+    #[test]
+    fn toggle_arrows_are_direction_bound() {
+        // Phase 2 unified toggle arrows to direction-bound everywhere: Left
+        // sets off, Right sets on (Space/Enter still flip).  Previously
+        // welcome flipped on either arrow.
+        let caps = caps_full();
+        let mut s = make_state(&caps);
+        s.focused = WelcomeFocus::VimMotions;
+        assert!(!s.use_vim);
+        // Left on an already-off toggle is a no-op (not a flip-on).
+        s.handle_key(&KeyEvent::new(
+            KeyCode::Left,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(!s.use_vim, "Left means off, even when already off");
+        // Right turns it on; a second Right is a no-op.
+        s.handle_key(&KeyEvent::new(
+            KeyCode::Right,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(s.use_vim, "Right means on");
+        s.handle_key(&KeyEvent::new(
+            KeyCode::Right,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(s.use_vim, "Right when already on is a no-op");
+        // Left turns it back off.
+        s.handle_key(&KeyEvent::new(
+            KeyCode::Left,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(!s.use_vim, "Left means off");
     }
 
     #[test]
