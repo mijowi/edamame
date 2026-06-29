@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -54,25 +55,26 @@ pub fn preflight(target: &Path, overwrite: bool) -> Result<(), PreflightError> {
     }
 }
 
-/// Write `bytes` to `path` atomically: a sibling temp file is created
-/// and renamed over `path` only after the write succeeds.  A partial or
-/// interrupted write therefore never leaves a truncated export file at
-/// the target path.
+/// Write `bytes` to `path` atomically: a temp file is created in the
+/// target directory and renamed over `path` only after the write
+/// succeeds.  A partial or interrupted write therefore never leaves a
+/// truncated export file at the target path.
+///
+/// The temp file is created with a random, `O_EXCL` name via
+/// `NamedTempFile` rather than a predictable `.{name}.edamame-export.tmp`
+/// sibling: a predictable name in a directory the user can't fully trust
+/// could be pre-planted as a symlink and redirect the write elsewhere.
+/// `persist` is a same-directory rename, so atomicity is preserved.
 ///
 /// Used by every export backend, so failure modes are uniform.
 pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
 
-    let file_name = path
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "export".into());
-    let tmp_name = format!(".{file_name}.edamame-export.tmp");
-    let tmp_path = parent.join(tmp_name);
-
-    std::fs::write(&tmp_path, bytes)?;
-    std::fs::rename(&tmp_path, path)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    tmp.write_all(bytes)?;
+    tmp.flush()?;
+    tmp.persist(path).map_err(|e| e.error)?;
     Ok(())
 }
 

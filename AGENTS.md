@@ -6,6 +6,8 @@ Guidance for human and agentic contributors working in this repository. `CLAUDE.
 
 `edamame` is a Rust TUI application for viewing and editing Markdown files in the terminal. It uses `ratatui` for rendering, `pulldown-cmark` for parsing, and `ropey` for rope-based text editing. The crate ships as both a binary (`edamame`) and a library (so integration tests can import it).
 
+> **Security:** edamame opens untrusted documents, so any change to a content-handling path (image/SVG decode, remote fetch, Mermaid, link opening, HTML export, subprocess spawning) must preserve the hardening in [`docs/security.md`](docs/security.md). Read it — and its "Invariants for contributors" — before touching those areas.
+
 ## Build Commands
 
 ```bash

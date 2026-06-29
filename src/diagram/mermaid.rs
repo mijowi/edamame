@@ -90,10 +90,25 @@ pub fn synthetic_url(source: &DiagramSource) -> String {
     }
 }
 
+/// Maximum mermaid source length we will attempt to render.  The renderer
+/// has no internal length, node-count, or timeout bound, so a pathological
+/// diagram can drive unbounded CPU/RAM on the decode worker (the UI stays
+/// responsive, but the process can OOM).  64 KiB is far larger than any
+/// hand-authored diagram; an over-cap block fails to render and falls back
+/// to the plain code block — a placeholder in the TUI, an escaped `<pre>`
+/// in HTML export.
+const MAX_MERMAID_SOURCE_BYTES: usize = 64 * 1024;
+
 /// Render a mermaid source to SVG, wrapping any panic or error in a
 /// `DiagramError`.  Used by both the raster path below and the HTML
-/// exporter's inline-SVG branch.
+/// exporter's diagram branch.
 pub fn render_mermaid_svg(source: &str) -> Result<String, DiagramError> {
+    if source.len() > MAX_MERMAID_SOURCE_BYTES {
+        return Err(DiagramError::RenderFailed(format!(
+            "mermaid source too large: {} bytes (max {MAX_MERMAID_SOURCE_BYTES})",
+            source.len()
+        )));
+    }
     let outcome = catch_unwind(AssertUnwindSafe(|| mermaid_rs_renderer::render(source))).map_err(
         |payload| DiagramError::RenderFailed(format!("panic: {}", panic_message(&payload))),
     )?;
@@ -177,6 +192,17 @@ mod tests {
         assert!(a.starts_with("diagram-mermaid-"));
         // SHA-256 hex is 64 chars; prefix is 16 chars; total 80.
         assert_eq!(a.len(), "diagram-mermaid-".len() + 64);
+    }
+
+    #[test]
+    fn oversized_mermaid_source_is_rejected_before_render() {
+        // Comfortably over the 64 KiB cap; must error out *without*
+        // reaching the renderer (so this test needs no fonts and can't
+        // hit an upstream panic).
+        let huge = format!("flowchart TD\n{}", "A-->B\n".repeat(20_000));
+        assert!(huge.len() > 64 * 1024);
+        let err = render_mermaid_svg(&huge).unwrap_err();
+        assert!(matches!(err, DiagramError::RenderFailed(_)));
     }
 
     #[test]

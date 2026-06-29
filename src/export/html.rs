@@ -339,9 +339,7 @@ fn render_mermaid_png_data_uri(source: &str) -> Option<String> {
     )
     .ok()?;
     let mut png = std::io::Cursor::new(Vec::new());
-    image
-        .write_to(&mut png, image::ImageFormat::Png)
-        .ok()?;
+    image.write_to(&mut png, image::ImageFormat::Png).ok()?;
     Some(format!(
         "data:image/png;base64,{}",
         BASE64.encode(png.into_inner())
@@ -644,7 +642,10 @@ mod tests {
     fn neutralizes_data_html_link_scheme() {
         let md = "[x](data:text/html;base64,PHNjcmlwdD4=)";
         let html = render_html(md, &opts_inline_css()).unwrap();
-        assert!(!html.contains("data:text/html"), "data: link must be neutralized:\n{html}");
+        assert!(
+            !html.contains("data:text/html"),
+            "data: link must be neutralized:\n{html}"
+        );
     }
 
     #[test]
@@ -691,7 +692,10 @@ mod tests {
             ..HtmlExportOptions::default()
         };
         let html = render_html(md, &opts).unwrap();
-        assert!(!html.contains("<svg"), "no raw SVG may reach the export:\n{html}");
+        assert!(
+            !html.contains("<svg"),
+            "no raw SVG may reach the export:\n{html}"
+        );
         assert!(!html.contains("foreignObject"));
         assert!(
             !html.contains("<script>"),

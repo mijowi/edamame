@@ -63,7 +63,7 @@ Mitigations (`src/image/loader.rs`):
   cell envelope, so a giant declared SVG size cannot force an oversized
   allocation.
 
-### Remote access is consent-gated
+### Remote access is consent-gated and IP-filtered
 
 Remote image fetching is off unless the user allows it. The
 `images.enabled` / remote-image policy defaults to **Ask**: edamame prompts
@@ -73,10 +73,19 @@ timeout across connect / receive-response / receive-body and a 10 MB body
 cap. ureq uses rustls (no system OpenSSL).
 
 This is equivalent to an email client's "load remote images" gate: it
-prevents a zero-interaction tracking pixel / SSRF probe, but once you allow
-remote images for a document, every `http(s)` URL in it is fetched. See
-[SSRF](#ssrf-no-destination-filtering-behind-the-consent-gate) below for
-the residual risk.
+prevents a zero-interaction tracking pixel.
+
+Even after consent, fetches are filtered against internal address ranges to
+prevent SSRF. `PublicOnlyResolver` (`src/image/loader.rs`) wraps ureq's
+default resolver and drops any *resolved* address that is loopback /
+RFC1918 private / link-local (including the `169.254.169.254` cloud-metadata
+endpoint) / carrier-grade NAT / unique-local or link-local IPv6 /
+unspecified / broadcast / documentation; a host that resolves only to
+internal addresses is reported `HostNotFound`. Filtering the resolved IP
+(not the hostname) defeats literal-IP URLs, DNS names pointed at private
+space (DNS rebinding), and `3xx` redirects uniformly — ureq re-resolves
+every hop through the same resolver. IPv4-mapped IPv6 addresses are
+unwrapped and re-checked so `::ffff:127.0.0.1` cannot slip past.
 
 ### HTML export strips and flattens executable content
 
@@ -138,12 +147,24 @@ It is pinned exactly (`=0.2.2`) because it is pre-1.0 with known panic
 bugs; those panics are contained by `catch_unwind` at two layers
 (`src/diagram/mermaid.rs`).
 
-### SVG parsing does not expand external entities or fetch resources
+The renderer has no internal length, node-count, or timeout bound, so a
+pathological diagram could otherwise drive unbounded CPU/RAM on the decode
+worker. `render_mermaid_svg` rejects any source over 64 KiB before
+dispatch (`MAX_MERMAID_SOURCE_BYTES`) — a single choke point covering both
+the TUI raster path and the HTML exporter — and an over-cap block falls
+back to the plain code block.
+
+### SVG parsing reads no external entities, network, or local files
 
 `usvg`/`roxmltree` (`src/image/svg.rs`) does not expand external DTD
 entities (no XXE), performs no network requests, and ignores `http(s)`
-`<image href>` (no SSRF). See the [hardening list](#svg-image-href-reads-a-local-file)
-for the one residual: local-file `<image href>` reads.
+`<image href>` (no SSRF). usvg's default string resolver *would* read
+local files referenced by `<image href="/abs/path">`, so the rasterizer
+installs a custom `image_href_resolver.resolve_string` that refuses every
+path/URL href (embedded `data:` images still resolve). This removes
+local-file reads from untrusted SVGs entirely — render-only on the TUI
+path, but the change also closes the exfiltration channel that arises when
+such an SVG is inlined into an HTML export.
 
 ### Other bounded surfaces
 
@@ -156,24 +177,17 @@ for the one residual: local-file `<image href>` reads.
   each reparse (bounded growth), failed decodes memoized (no retry storm).
 - **File watcher** (`src/watcher/file_watcher.rs`): reads only the user's
   own opened file; never writes; no exploitable check-then-act gap.
+- **Atomic export writes** (`src/export/runner.rs`): `write_atomically`
+  creates its temp file with a random, `O_EXCL` name via `NamedTempFile`
+  in the target directory, then `persist`s (same-dir rename) over the
+  output. No predictable sibling name a local attacker could pre-plant as
+  a symlink to redirect the write.
 
 ## Things to watch out for (future hardening)
 
 These are not zero-interaction vulnerabilities today — each is gated by
 consent, a deliberate click, or trusted config — but each would raise the
 floor, and a careless change nearby could turn one into a real hole.
-
-### SSRF: no destination filtering behind the consent gate
-
-Once remote images are allowed for a document, *every* `http(s)` URL is
-fetched verbatim with no destination filter, and ureq follows up to 10
-redirects with `https_only: false`. A benign-looking URL can `302` to
-`http://169.254.169.254/…` (cloud metadata), `http://127.0.0.1/…`, or a LAN
-host. Consent is all-or-nothing per document.
-
-> **Future work:** reject loopback / link-local / RFC1918 / unique-local
-> ranges on the *resolved* peer IP, re-checked after each redirect (or set
-> `max_redirects(0)` and validate manually). See `src/image/loader.rs`.
 
 ### No confirmation before opening risky link targets
 
@@ -186,40 +200,10 @@ mirrors standard Markdown-viewer behavior.
 
 > **Future work:** a confirmation modal showing the resolved destination
 > for non-`http(s)` schemes and non-Markdown local files would close the
-> "bundled malicious sibling file" scenario. See `src/app/nav.rs`,
-> `src/editor/link.rs`.
-
-### SVG `<image href>` reads a local file
-
-usvg's default `image_href_resolver` reads local files referenced by
-`<image href="/abs/path">` inside an untrusted `.svg`. On the TUI path this
-is render-only (no network, no exfil) so it is harmless — but it *becomes*
-an exfil vector if such an SVG is then inlined into an HTML export, which is
-why the export-confinement fix above matters.
-
-> **Future work:** a custom `image_href_resolver` that refuses non-`data:`
-> hrefs would remove the surprise entirely. See `src/image/svg.rs`.
-
-### Mermaid input has no size / complexity / timeout cap
-
-The entire fenced block is passed to the renderer with no length,
-node-count, or timeout bound. A pathological diagram can drive unbounded
-CPU/RAM on the decode worker (the UI stays responsive, but the process can
-OOM).
-
-> **Future work:** cap source length before dispatch. See
-> `src/markdown/parser/post_pass.rs` → `resolve_mermaid`.
-
-### Predictable temp name in `write_atomically`
-
-`write_atomically` (`src/export/runner.rs`) writes a predictable sibling
-`.{name}.edamame-export.tmp` via `std::fs::write`, which follows symlinks.
-A local attacker with write access to the output directory could pre-plant
-that name as a symlink to redirect the write. Low severity (requires local
-write access to your own export dir).
-
-> **Future work:** prefer `O_EXCL` creation or a `NamedTempFile` in the
-> same directory.
+> "bundled malicious sibling file" scenario. Scope it narrowly — open
+> `http(s)` and `.md`/image targets directly, prompt only for other
+> schemes and local non-Markdown/non-image files — so it doesn't become a
+> nag. See `src/app/nav.rs`, `src/editor/link.rs`.
 
 ## Invariants for contributors
 
@@ -236,11 +220,13 @@ When touching any content-handling path, keep these from regressing:
   tests in `src/export/html.rs` (`neutralizes_javascript_link_scheme`,
   `mermaid_export_never_emits_raw_svg_or_script`,
   `inline_images_rejects_absolute_path`, …) are the template.
-- **Keep network access consent-gated.** A new fetch path must respect the
-  remote-image policy (or introduce its own explicit gate); don't add a
-  silent `http` request.
+- **Keep network access consent-gated *and* IP-filtered.** A new fetch
+  path must respect the remote-image policy (or introduce its own explicit
+  gate) and route through `PublicOnlyResolver` (or an equivalent
+  resolved-IP filter); don't add a silent or unfiltered `http` request.
 - **Bound new external input.** Size, timeout, and allocation caps before
-  the input is trusted — mirror the image-loader and update-check patterns.
+  the input is trusted — mirror the image-loader, Mermaid-source, and
+  update-check patterns.
 
 When you fix or add one of the "watch out" items above, move it from that
 section into "Hardening in place" and add the regression test alongside.

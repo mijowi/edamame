@@ -8,11 +8,15 @@
 
 - Add "Insert image" to command palette
 
-- Implement fixes/mitigations for vulnerabilities identified in the security review.
-
 - Add/update performance benchmark tests
 
+- Rendering 
+
 ## Vim issues
+- DIFF is not displayed in the status line when using vim mode
+- A vim `:` command is not cleared from the hint line when entering diff mode, and `:` commands are not accessible during diff
+- Substitution within visual selection
+- Implement substitution as it's being typed, with match highlights
 - `Tab` table cell navigation is swallowed in vim normal mode (`Shift-Tab` works)
 - How should we treat vim motions in tables? Disable any that don't work between words? e.g. disable `o`, `O`. `A`, `I`, `$`, `^` should act on the *cell*?
 - When typing in a table cell that is wider than the column header, and a space character is entered,
