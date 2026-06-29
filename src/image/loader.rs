@@ -11,6 +11,7 @@
 //! blocking (rather than async) avoids an async runtime dependency and
 //! keeps the rest of the code-base free of `async fn`s.
 
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -232,12 +233,19 @@ fn fetch_remote(url: &str) -> Result<Vec<u8>, ImageLoadError> {
     // into receive-response / receive-body phases.  We bound the connect
     // and both receive phases at `REMOTE_TIMEOUT` so a slow server can't
     // hang the decode worker.
-    let agent: ureq::Agent = ureq::Agent::config_builder()
+    let config = ureq::Agent::config_builder()
         .timeout_connect(Some(REMOTE_TIMEOUT))
         .timeout_recv_response(Some(REMOTE_TIMEOUT))
         .timeout_recv_body(Some(REMOTE_TIMEOUT))
-        .build()
-        .into();
+        .build();
+    // Build the agent with a resolver that refuses internal IP ranges so a
+    // remote image can't be used to probe loopback / LAN / cloud-metadata
+    // endpoints (SSRF).  See `PublicOnlyResolver`.
+    let agent = ureq::Agent::with_parts(
+        config,
+        ureq::unversioned::transport::DefaultConnector::default(),
+        PublicOnlyResolver::default(),
+    );
     let mut response = agent
         .get(url)
         .call()
@@ -255,6 +263,78 @@ fn fetch_remote(url: &str) -> Result<Vec<u8>, ImageLoadError> {
             url: url.to_owned(),
             source: Box::new(source),
         })
+}
+
+// ── SSRF guard ──────────────────────────────────────────────────────────────
+
+/// A name resolver that drops any address in an internal range, wrapping
+/// ureq's `DefaultResolver`.  Once the user allows remote images for a
+/// document, *every* `http(s)` URL in it is fetched — so without this a
+/// benign-looking URL (or a `3xx` redirect from one) could reach
+/// `127.0.0.1`, a LAN host, or the `169.254.169.254` cloud-metadata
+/// endpoint.  Filtering on the *resolved* IP rather than the hostname
+/// defeats literal-IP URLs, DNS names pointed at private space (DNS
+/// rebinding), and every redirect hop uniformly, because ureq re-resolves
+/// each hop through this resolver.
+#[derive(Debug, Default)]
+struct PublicOnlyResolver {
+    inner: ureq::unversioned::resolver::DefaultResolver,
+}
+
+impl ureq::unversioned::resolver::Resolver for PublicOnlyResolver {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        config: &ureq::config::Config,
+        timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+        let resolved = self.inner.resolve(uri, config, timeout)?;
+        let mut allowed = self.empty();
+        for addr in &resolved {
+            if !is_blocked_ip(addr.ip()) {
+                allowed.push(*addr);
+            }
+        }
+        if allowed.is_empty() {
+            // Every candidate address was internal — treat the host as
+            // unresolvable rather than connecting to it.
+            return Err(ureq::Error::HostNotFound);
+        }
+        Ok(allowed)
+    }
+}
+
+/// True for any IP edamame must not connect to when fetching a remote
+/// image: loopback, RFC1918 private, link-local (incl. the
+/// `169.254.169.254` cloud-metadata address), carrier-grade NAT,
+/// unique-local / link-local IPv6, and the unspecified / broadcast /
+/// documentation ranges.  IPv4-mapped IPv6 addresses are unwrapped and
+/// re-checked so `::ffff:127.0.0.1` can't slip past.
+fn is_blocked_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.octets()[0] == 0
+                // 100.64.0.0/10 — carrier-grade NAT
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
+        }
+        IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_blocked_ip(IpAddr::V4(mapped));
+            }
+            let seg0 = v6.segments()[0];
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (seg0 & 0xfe00) == 0xfc00 // fc00::/7  unique-local
+                || (seg0 & 0xffc0) == 0xfe80 // fe80::/10 link-local
+        }
+    }
 }
 
 /// True when `url`'s path ends in `.svg` (case-insensitive), ignoring any
@@ -412,6 +492,41 @@ mod tests {
 
         let err = resolve(&path, None, RemoteImagePolicy::Never, false, None, None).unwrap_err();
         assert!(matches!(err, ImageLoadError::Svg { .. }));
+    }
+
+    #[test]
+    fn ssrf_filter_blocks_internal_ranges() {
+        use std::net::{Ipv4Addr, Ipv6Addr};
+        let blocked: [IpAddr; 10] = [
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)),
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)), // cloud metadata
+            IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)),      // CGNAT
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+            IpAddr::V6("fc00::1".parse().unwrap()),
+            IpAddr::V6("fe80::1".parse().unwrap()),
+        ];
+        for ip in blocked {
+            assert!(is_blocked_ip(ip), "{ip} must be blocked");
+        }
+
+        let allowed: [IpAddr; 4] = [
+            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+            IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+            IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), // example.com
+            IpAddr::V6("2606:4700:4700::1111".parse().unwrap()),
+        ];
+        for ip in allowed {
+            assert!(!is_blocked_ip(ip), "{ip} must be allowed");
+        }
+
+        // IPv4-mapped loopback must not slip past the v6 arm.
+        assert!(is_blocked_ip(IpAddr::V6(
+            "::ffff:127.0.0.1".parse().unwrap()
+        )));
     }
 
     #[test]

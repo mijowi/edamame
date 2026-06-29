@@ -137,13 +137,20 @@ pub fn rasterize_svg(
     sizing: SvgSizing,
     background: Option<[u8; 4]>,
 ) -> Result<DynamicImage, SvgError> {
-    let opt = usvg::Options {
+    let mut opt = usvg::Options {
         // Use the process-wide shared fontdb (see `SHARED_FONTDB`).  This
         // is an `Arc::clone` — O(1) atomic increment — instead of a fresh
         // disk scan per render.
         fontdb: shared_fontdb(),
         ..Default::default()
     };
+    // Refuse to resolve a `<image href>` that is a file path or URL.
+    // usvg's default string resolver *reads local files*, so an untrusted
+    // SVG could pull arbitrary on-disk files into the render — render-only
+    // on screen, but an exfil channel if that SVG is then inlined into an
+    // HTML export.  Embedded `data:` images still resolve via the default
+    // `resolve_data`; only the path/URL branch is neutralized.
+    opt.image_href_resolver.resolve_string = Box::new(|_href, _opts| None);
 
     let tree = usvg::Tree::from_str(svg, &opt).map_err(|e| SvgError::Parse(format!("{e}")))?;
     let size = tree.size();
@@ -277,6 +284,31 @@ mod tests {
         let image = rasterize_svg(svg, natural(None), None).expect("rasterize");
         assert_eq!(image.width(), 37);
         assert_eq!(image.height(), 23);
+    }
+
+    #[test]
+    fn image_href_to_local_file_is_not_loaded() {
+        // Write a real opaque-red PNG and reference it by absolute path
+        // from an `<image>` element.  Our resolver refuses path/URL hrefs,
+        // so the element is dropped and the pixel where it would have
+        // drawn stays transparent — the default usvg resolver would have
+        // read the file and painted it red.
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("secret.png");
+        let buf = image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255]));
+        image::DynamicImage::ImageRgba8(buf).save(&png).unwrap();
+
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10" viewBox="0 0 10 10"><image x="0" y="0" width="10" height="10" xlink:href="{}"/></svg>"##,
+            png.display()
+        );
+        let image = rasterize_svg(&svg, natural(None), None).expect("rasterize");
+        let rgba = image.to_rgba8();
+        assert_eq!(
+            rgba.get_pixel(5, 5)[3],
+            0,
+            "a local-file <image href> must not be loaded into the render"
+        );
     }
 
     #[test]
