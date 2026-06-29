@@ -6,8 +6,6 @@
 
 - Nested lists move horizontally when de-rendering
 
-- Implement controls refactor plan
-
 - Add "Insert image" to command palette
 
 - Implement fixes/mitigations for vulnerabilities identified in the security review.
