@@ -118,7 +118,7 @@ impl Modal for ConfigWarningModal {
         self.chrome.on_wheel(delta);
     }
 
-    fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
+    fn handle_click(&mut self, col: u16, row: u16, _app: &mut App) -> ModalOutcome {
         match self.chrome.on_click(col, row) {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled | ModalResponse::ButtonPressed(_) => ModalOutcome::Close,

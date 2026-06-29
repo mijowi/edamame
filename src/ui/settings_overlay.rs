@@ -61,6 +61,11 @@ use crate::ui::overlay_nav::next_focusable;
 /// Wide enough to fit the longest setting label without clipping; narrow
 /// enough to leave room for the value on terminals around 80 columns.
 const LABEL_PAD: usize = 28;
+/// Width of the focus-marker column (`› ` / two spaces) rendered before
+/// every row's label.  The control's value column starts after the marker
+/// and the padded label — shared by the content-width sizing pass and the
+/// click hit-rect capture.
+const FOCUS_MARKER_WIDTH: usize = 2;
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind, ScrollContainerState,
     VERTICAL_CHROME_ROWS,
@@ -142,6 +147,10 @@ pub struct SettingsState {
     /// prior `Show remote images` choice.  Mirrors the welcome modal's
     /// `pre_cascade_remote` (see `ui::welcome`).
     pre_cascade_remote: Option<RemoteImagePolicy>,
+    /// `(row index, control rect)` for each focusable row visible in the
+    /// last render, in absolute terminal coords.  Drives click dispatch;
+    /// rebuilt every frame so scrolling can't leave stale geometry.
+    row_hit_rects: Vec<(usize, Rect)>,
     rows: Vec<RowDef>,
 }
 
@@ -155,6 +164,7 @@ impl SettingsState {
             scroll_state: ScrollContainerState::default(),
             esc_button_rect: None,
             pre_cascade_remote: None,
+            row_hit_rects: Vec::new(),
             rows: build_rows(),
         };
         // Default focus to the first editable setting rather than the
@@ -392,6 +402,59 @@ impl SettingsState {
     fn first_focusable_index(&self) -> Option<usize> {
         self.rows.iter().position(|r| r.kind.focusable)
     }
+
+    /// Route a click at terminal `(col, row)` to the focusable row whose
+    /// control rect (cached by the last render) it lands in.  Focuses the
+    /// clicked row — committing any open draft on the row being left, exactly
+    /// as an arrow move would — then acts on it: an option row cycles via the
+    /// shared [`Control::apply`] (`Activate`); an external-action row fires
+    /// its [`SettingsResponse`]; an edit row just takes focus (its draft is
+    /// now open).  A click that misses every row, or lands on a disabled
+    /// (cascade-locked) one, is a no-op.
+    pub fn handle_click(&mut self, col: u16, row: u16, config: &mut Config) -> SettingsResponse {
+        let Some(&(idx, _)) = self
+            .row_hit_rects
+            .iter()
+            .find(|(_, r)| rect_contains(*r, col, row))
+        else {
+            return SettingsResponse::Continue;
+        };
+        // Re-check eligibility against the live config: a row locked since
+        // the last render (e.g. the cascade-locked remote-images row)
+        // absorbs the click without moving focus.
+        if !self
+            .rows
+            .get(idx)
+            .map(|r| r.focus_eligible(config))
+            .unwrap_or(false)
+        {
+            return SettingsResponse::Continue;
+        }
+        let committed = self.focus_clicked_row(idx, config);
+        match self.rows.get(self.focused).map(|r| r.kind.action) {
+            Some(RowAction::OpenExternalEditor) => SettingsResponse::OpenInExternalEditor,
+            Some(RowAction::OpenConfigFolder) => SettingsResponse::OpenConfigFolder,
+            Some(RowAction::Cycle) => self.apply_control_input(config, ControlInput::Activate),
+            // An edit row only takes focus (its draft opens); surface the
+            // commit of whatever row we left so its live-update still fires.
+            Some(RowAction::Edit) | None => committed,
+        }
+    }
+
+    /// Move focus to an explicit row index — the click counterpart of
+    /// [`Self::move_focus_committing`].  Commits the row being left (a valid
+    /// change surfaces as [`SettingsResponse::FieldChanged`]; an invalid or
+    /// unchanged draft is dropped), moves focus, and opens the new row's
+    /// draft.
+    fn focus_clicked_row(&mut self, idx: usize, config: &mut Config) -> SettingsResponse {
+        let committed = self.commit_draft(config);
+        self.editing = None;
+        self.last_error = None;
+        self.focused = idx;
+        self.scroll_state.ensure_visible(self.focused as u16);
+        self.open_draft_for_focused(config);
+        committed
+    }
 }
 
 impl Default for SettingsState {
@@ -482,6 +545,36 @@ impl<'a> StatefulWidget for SettingsView<'a> {
         Paragraph::new(visible)
             .style(self.theme.modal_bg)
             .render(table_area, buf);
+
+        // Capture per-visible-row hit-rects for click dispatch.  A click
+        // anywhere on the row — focus marker, label, or control — focuses and
+        // operates it, so the rect spans the whole `marker + label + value`
+        // run from the body's left edge.  The label column is the wider of
+        // `LABEL_PAD` and the actual label, since a label longer than the pad
+        // is not truncated (the control shifts right with it).  Indices align
+        // 1:1 with the `skip(scroll).take(visible_rows)` draw above.
+        let end = (scroll + visible_rows).min(state.rows.len());
+        let mut hit_rects: Vec<(usize, Rect)> = Vec::new();
+        for idx in scroll..end {
+            let row = &state.rows[idx];
+            if !row.kind.focusable {
+                continue;
+            }
+            let label_w = row.label.chars().count().max(LABEL_PAD);
+            let value_w = row_value_width(row, self.config, &state.theme_names).max(1);
+            let w = ((FOCUS_MARKER_WIDTH + label_w + value_w) as u16).min(table_area.width);
+            hit_rects.push((
+                idx,
+                Rect {
+                    x: table_area.x,
+                    y: table_area.y + (idx - scroll) as u16,
+                    width: w,
+                    height: 1,
+                },
+            ));
+        }
+        state.row_hit_rects = hit_rects;
+
         if state.scroll_state.max_scroll() > 0 {
             let bar_area = Rect {
                 x: layout.scrollbar_col,
@@ -634,18 +727,11 @@ fn build_row_lines<'a>(
 /// doesn't get clipped.  Sizes against the *whole* row set so the
 /// modal width doesn't jiggle as focus moves.
 fn settings_content_width(state: &SettingsState, config: &Config) -> u16 {
-    const FOCUS_MARKER_WIDTH: usize = 2;
     let row_max = max_row_width(&state.rows, |r| {
         if !r.kind.focusable && r.label == HEADER_NOTE {
             return r.label.chars().count();
         }
-        let value_w = match r.kind.options {
-            Some(Control::Toggle) => controls::toggle_width(),
-            Some(Control::Pill(labels)) => controls::pill_width(labels),
-            Some(Control::Button(label)) => controls::button_width(label),
-            None => (r.kind.read)(config, &state.theme_names).chars().count(),
-        };
-        FOCUS_MARKER_WIDTH + LABEL_PAD + value_w
+        FOCUS_MARKER_WIDTH + LABEL_PAD + row_value_width(r, config, &state.theme_names)
     });
     // The description is left-aligned at the body edge (no indent), so
     // size against its raw length.  Resolve it so a dynamic description
@@ -659,6 +745,24 @@ fn settings_content_width(state: &SettingsState, config: &Config) -> u16 {
     });
     let err_max = optional_text_width(state.last_error.as_deref(), 2);
     row_max.max(desc_max).max(err_max)
+}
+
+/// Rendered width (in cells) of a row's value column: the control's fixed
+/// width for an option/button row, or the displayed string length for a
+/// numeric / external-action row.  Shared by the content-width sizing pass
+/// and the click hit-rect capture so the two can't disagree.
+fn row_value_width(row: &RowDef, config: &Config, theme_names: &[String]) -> usize {
+    match row.kind.options {
+        Some(Control::Toggle) => controls::toggle_width(),
+        Some(Control::Pill(labels)) => controls::pill_width(labels),
+        Some(Control::Button(label)) => controls::button_width(label),
+        None => (row.kind.read)(config, theme_names).chars().count(),
+    }
+}
+
+/// True when `(col, row)` falls inside `rect`.
+fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
+    col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
 
 #[cfg(test)]
@@ -1128,6 +1232,132 @@ mod tests {
         let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
         assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
         assert!(!config.editor.cursor_blink);
+    }
+
+    // ── Click dispatch ──────────────────────────────────────────────────
+
+    /// Resolve the cached control rect for a labeled row after a render.
+    fn rect_for(state: &SettingsState, label: &str) -> Rect {
+        let idx = state
+            .rows
+            .iter()
+            .position(|r| r.label == label)
+            .unwrap_or_else(|| panic!("missing row {label}"));
+        state
+            .row_hit_rects
+            .iter()
+            .find(|(i, _)| *i == idx)
+            .map(|(_, r)| *r)
+            .unwrap_or_else(|| panic!("row {label} not in hit rects (off-screen?)"))
+    }
+
+    #[test]
+    fn click_cycles_a_pill_row_and_focuses_it() {
+        let mut config = Config::default();
+        let mut state = SettingsState::new();
+        render(&mut state, &config, 120, 40);
+        assert_eq!(config.images.enabled, ImagesEnabled::Ask);
+        let r = rect_for(&state, "Show images");
+        let resp = state.handle_click(r.x, r.y, &mut config);
+        assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
+        assert_eq!(config.images.enabled, ImagesEnabled::Always);
+        assert_eq!(state.rows[state.focused].label, "Show images");
+    }
+
+    #[test]
+    fn click_flips_a_toggle_row() {
+        let mut config = Config::default();
+        let mut state = SettingsState::new();
+        render(&mut state, &config, 120, 40);
+        let before = config.editor.autosave_enabled;
+        let r = rect_for(&state, "Autosave");
+        let resp = state.handle_click(r.x, r.y, &mut config);
+        assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
+        assert_eq!(config.editor.autosave_enabled, !before);
+    }
+
+    #[test]
+    fn click_on_a_long_label_row_operates_its_shifted_control() {
+        // A label longer than `LABEL_PAD` is not truncated, so the control
+        // renders further right than the padded column.  The hit-rect must
+        // stretch to cover it: a click on the control cell still toggles, and
+        // a click on the label cell does too (the whole row is one target).
+        const LONG: &str = "Autosave with an unusually long label";
+        assert!(
+            LONG.chars().count() > LABEL_PAD,
+            "label must exceed the pad to exercise the shift"
+        );
+        let mut config = Config::default();
+        let mut state = SettingsState::new();
+        // Repoint an existing toggle row at the long label.
+        let idx = state
+            .rows
+            .iter()
+            .position(|r| r.label == "Autosave")
+            .expect("autosave row");
+        state.rows[idx].label = LONG;
+        render(&mut state, &config, 120, 40);
+
+        let r = rect_for(&state, LONG);
+        // The control sits past the `marker + label` run — beyond where the
+        // old fixed `LABEL_PAD`-based rect would have ended.
+        let control_col = r.x + (FOCUS_MARKER_WIDTH + LONG.chars().count()) as u16;
+        assert!(
+            control_col < r.x + r.width,
+            "hit-rect must reach the shifted control"
+        );
+        let before = config.editor.autosave_enabled;
+        let resp = state.handle_click(control_col, r.y, &mut config);
+        assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
+        assert_eq!(config.editor.autosave_enabled, !before);
+
+        // A click on the label cell operates the same control.
+        state.handle_click(r.x, r.y, &mut config);
+        assert_eq!(config.editor.autosave_enabled, before);
+    }
+
+    #[test]
+    fn click_external_action_row_emits_its_response() {
+        let mut config = Config::default();
+        let mut state = SettingsState::new();
+        render(&mut state, &config, 120, 40);
+        let r = rect_for(&state, "Open config folder");
+        assert_eq!(
+            state.handle_click(r.x, r.y, &mut config),
+            SettingsResponse::OpenConfigFolder
+        );
+    }
+
+    #[test]
+    fn click_on_a_locked_row_is_a_noop() {
+        // Images Never locks the remote-images row; a click on it must not
+        // move focus or change config.
+        let mut config = Config::default();
+        config.images.enabled = ImagesEnabled::Never;
+        config.images.remote_policy = RemoteImagePolicy::Never;
+        let mut state = SettingsState::new();
+        render(&mut state, &config, 120, 40);
+        let focused_before = state.focused;
+        let r = rect_for(&state, "  Show remote images");
+        let resp = state.handle_click(r.x, r.y, &mut config);
+        assert_eq!(resp, SettingsResponse::Continue);
+        assert_eq!(
+            state.focused, focused_before,
+            "locked row absorbs the click"
+        );
+        assert_eq!(config.images.remote_policy, RemoteImagePolicy::Never);
+    }
+
+    #[test]
+    fn click_that_misses_every_row_is_a_noop() {
+        let mut config = Config::default();
+        let mut state = SettingsState::new();
+        render(&mut state, &config, 120, 40);
+        let focused_before = state.focused;
+        // Column 0 is the focus-marker gutter, left of every control rect.
+        let resp = state.handle_click(0, 0, &mut config);
+        assert_eq!(resp, SettingsResponse::Continue);
+        assert_eq!(state.focused, focused_before);
     }
 
     #[test]

@@ -461,7 +461,7 @@ impl App {
         let Some(mut top) = self.modal_stack.pop() else {
             return;
         };
-        let outcome = top.handle_click(col, row);
+        let outcome = top.handle_click(col, row, self);
         match outcome {
             ModalOutcome::Continue => self.modal_stack.push(top),
             ModalOutcome::ContinueAnd(cb) => {

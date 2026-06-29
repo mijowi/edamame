@@ -133,7 +133,7 @@ impl Modal for DiffIntroModal {
         self.state.handle_wheel(delta);
     }
 
-    fn handle_click(&mut self, col: u16, row: u16) -> ModalOutcome {
+    fn handle_click(&mut self, col: u16, row: u16, _app: &mut App) -> ModalOutcome {
         let response = self.state.handle_click(col, row);
         self.resolve(response)
     }
