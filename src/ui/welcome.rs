@@ -33,6 +33,7 @@ use crate::config::{DiagramsEnabled, ImagesEnabled, RemoteImagePolicy, Theme};
 use crate::terminal::Capabilities;
 use crate::ui::cap_summary::{render_cap_row as shared_render_cap_row, CapSummary};
 use crate::ui::controls::{self, Control, ControlEvent, ControlInput, ControlValue};
+use crate::ui::overlay_nav::next_focusable_wrapping;
 use crate::ui::scroll_container::{
     centered_rect_for_content, compute_pad_h, draw_frame, ContentSize, FrameOpts, ModalKind,
     ScrollContainerState, MAX_PAD_H,
@@ -195,23 +196,19 @@ impl WelcomeState {
     /// Step focus by `delta` (-1 for Shift-Tab, +1 for Tab).  Skips
     /// disabled rows so the user never lands on a non-interactive
     /// pill row.  Scrolls the newly focused row into view using the
-    /// body-relative y captured by the previous render.
-    fn step_focus(&mut self, delta: isize) {
-        let len = FOCUS_ORDER.len() as isize;
+    /// body-relative y captured by the previous render.  Backed by the
+    /// shared [`next_focusable_wrapping`] so welcome and export share one
+    /// wrapping focus ring.
+    fn step_focus(&mut self, delta: i32) {
         let cur = FOCUS_ORDER
             .iter()
             .position(|f| *f == self.focused)
-            .unwrap_or(0) as isize;
-        // Walk at most `len` steps so we don't loop forever if every row
-        // happens to be disabled (can't happen today; defensive).
-        for offset in 1..=len {
-            let i = ((cur + delta * offset).rem_euclid(len)) as usize;
-            let candidate = FOCUS_ORDER[i];
-            if !self.row_disabled(candidate) {
-                self.focused = candidate;
-                self.scroll_state.ensure_visible(self.focus_offsets[i]);
-                return;
-            }
+            .unwrap_or(0);
+        if let Some(i) =
+            next_focusable_wrapping(&FOCUS_ORDER, cur, delta, |f| !self.row_disabled(*f))
+        {
+            self.focused = FOCUS_ORDER[i];
+            self.scroll_state.ensure_visible(self.focus_offsets[i]);
         }
     }
 

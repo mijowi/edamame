@@ -221,7 +221,7 @@ src/
     controls.rs         # unified control family: Control enum (Toggle / Pill),
                         #   toggle_spans / pill_spans, the shared style helpers
                         #   (control_label_style, button_style, focused_style),
-                        #   cycle_enum + apply_images_cascade
+                        #   cycle_index + apply_images_cascade
     cursor.rs           # text_field_spans, split_at_char, CURSOR_BLOCK —
                         #   shared block-cursor helpers
     dim.rs              # ContentSize, FrameOpts, centered_rect_for_content,
@@ -367,7 +367,7 @@ The interactive elements inside modals/overlays are one family, defined in `ui::
   - **Button** — a bracketed press-to-act target; lives in `ui::button_row`, styled by `controls::button_style`.
 - **Focus is one language; the label column is the single source of truth.** `REVERSED` means "filled affordance". `controls::focused_style` (= `theme.modal_button_focused`, a `primary` fill) is the shared focus fill. `controls::control_label_style(focused, disabled, theme)` resolves a labeled row's label column — focused → `modal_item_selected` fill, disabled → `modal_close_hint`, resting → `modal_item` — and **both** the settings overlay and the welcome modal call it. A focused row is one unit: pad the label across the whole column so the fill spans label → widget (the way the settings overlay does), rather than styling only the label glyphs.
 - **Buttons go through `ui::button_row`, never a hand-built literal.** `render_button_row` (centered footer row) and `render_button_at` (left-aligned inline button, e.g. the welcome modal's "Switch theme") both build on `Button` + `controls::button_style`. Construct a `Button::bracketed(label)` and let the helper add the `[ … ]`, size the width, place it, and return the hit-rect — don't bake brackets into a string or count widths by hand.
-- **Cycle + cascade logic is shared too.** `controls::cycle_enum` (wrap-around order step) and `controls::apply_images_cascade` (images-`Never` forces remote-`Never`, stashing/restoring the prior choice) are used by both the settings overlay and the welcome modal so their behavior can't drift.
+- **Cycle + cascade logic is shared too.** Pill / toggle inputs route through `controls::Control::apply` (the single transition layer), whose pill arm and every index-valued caller delegate the wrap-around math to `controls::cycle_index`; `controls::apply_images_cascade` (images-`Never` forces remote-`Never`, stashing/restoring the prior choice) is likewise shared by both the settings overlay and the welcome modal so their behavior can't drift.
 
 ### Modals, overlays, and the keybinds editor
 

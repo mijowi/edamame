@@ -272,15 +272,17 @@ value-colored track would lose its meaning if inverted.
   **always**, focused or not.  Arrows mean "cycle to change"; brackets
   (`[ Save ]`) mean "press to act".  Don't give a pill the bracketed look,
   and don't give a button arrows.  The flavor (toggle vs. pill) is chosen
-  explicitly via `controls::PillStyle`, **not** by the option count — a
+  explicitly via the `controls::Control` enum (`Toggle` vs. `Pill`), **not**
+  by the option count — a
   two-option setting that isn't on/off (a `dark` / `light` mode picker,
   say) is still a neutral pill, not a green toggle, so the green never
   implies a value judgment it shouldn't.
 
-The option-set data (`Pill`, `ON_OFF`, `ASK_ALWAYS_NEVER`) and the cycle /
-cascade logic (`cycle_enum`, `apply_images_cascade`) are re-exported from
-`ui::cycle_pill`, which still owns the **legacy chip rendering** used by
-the welcome modal until it migrates onto `ui::controls`.
+The option-set data (the `Control` enum, `ASK_ALWAYS_NEVER`) and the cycle /
+cascade logic (`cycle_index`, `apply_images_cascade`) live in `ui::controls`,
+the single home shared by the settings overlay and the welcome modal — pill /
+toggle input flows through `Control::apply`, whose pill arm delegates the
+wrap-around math to `cycle_index`.
 
 #### Command palette input
 The command palette's typing row sits flush against the modal body — no

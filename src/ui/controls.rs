@@ -42,7 +42,7 @@
 //! `on`/`off` text.
 //!
 //! The option-set data ([`Control`], [`ASK_ALWAYS_NEVER`]) and the cycle /
-//! cascade logic ([`cycle_enum`], [`apply_images_cascade`]) live here too,
+//! cascade logic ([`cycle_index`], [`apply_images_cascade`]) live here too,
 //! so every interactive control has a single import path.
 
 use crossterm::event::KeyCode;
@@ -326,28 +326,19 @@ pub fn button_spans(label: &str, focused: bool, theme: &Theme) -> Vec<Span<'stat
 // ── Cycle / cascade logic ──────────────────────────────────────────────────
 
 /// Step a `current` index through `len` slots by `delta` (signed), wrapping
-/// at both ends.  The single wrap-around primitive: [`cycle_enum`] and
-/// [`Control::apply`]'s pill arm both delegate here, and callers that cycle a
-/// *dynamic*-length list by index (e.g. the export-HTML stylesheet pill,
-/// whose labels aren't `'static`) call it directly.  Returns `current`
-/// unchanged when `len` is 0.
+/// at both ends.  The single wrap-around primitive: [`Control::apply`]'s
+/// pill arm delegates here, and callers that cycle a *dynamic*-length list
+/// by index (e.g. the export-HTML stylesheet pill, whose labels aren't
+/// `'static`) call it directly.  Option rows that project an enum through
+/// the [`Control::apply`] transition layer (settings, welcome) map their
+/// value to a [`ControlValue::Choice`] index and back, so the cycling stays
+/// here rather than living per-enum.  Returns `current` unchanged when
+/// `len` is 0.
 pub fn cycle_index(current: usize, len: usize, delta: i32) -> usize {
     if len == 0 {
         return current;
     }
     ((current as i32 + delta).rem_euclid(len as i32)) as usize
-}
-
-/// Cycle `current` through `order` by `delta` (signed step), wrapping at
-/// both ends.  Falls back to the first element when `current` isn't found
-/// in `order`; returns `current` unchanged for an empty `order`.  Shared
-/// by every pill caller so the wrap-around math lives in one place.
-pub fn cycle_enum<T: PartialEq + Copy>(current: T, order: &[T], delta: i32) -> T {
-    if order.is_empty() {
-        return current;
-    }
-    let i = order.iter().position(|v| *v == current).unwrap_or(0);
-    order[cycle_index(i, order.len(), delta)]
 }
 
 /// Apply the images→remote cascade and return the remote policy to store.

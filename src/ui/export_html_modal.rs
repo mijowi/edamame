@@ -39,6 +39,7 @@ use crate::ui::controls::{
     toggle_spans, toggle_width, Control, ControlEvent, ControlInput, ControlValue,
 };
 use crate::ui::cursor::text_field_spans;
+use crate::ui::overlay_nav::next_focusable_wrapping;
 use crate::ui::sanitize_paste;
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind,
@@ -94,9 +95,14 @@ impl OptFocus {
     ];
 
     fn step(self, delta: i32) -> Self {
-        let i = Self::ORDER.iter().position(|f| *f == self).unwrap_or(0) as i32;
-        let n = Self::ORDER.len() as i32;
-        Self::ORDER[((i + delta).rem_euclid(n)) as usize]
+        // Every form field is focusable, so the predicate is always true;
+        // the shared wrapping stepper keeps welcome and export on one focus
+        // ring.  Wrapping always yields a slot here, but fall back to `self`
+        // defensively if the ring were ever empty.
+        let cur = Self::ORDER.iter().position(|f| *f == self).unwrap_or(0);
+        next_focusable_wrapping(&Self::ORDER, cur, delta, |_| true)
+            .map(|i| Self::ORDER[i])
+            .unwrap_or(self)
     }
 
     fn next(self) -> Self {

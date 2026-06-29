@@ -56,16 +56,28 @@ pub(super) enum RowAction {
     Edit,
 }
 
-/// `(config, delta, theme_names) -> changed?`.  Aliased so the
-/// `Option<…>` field below stays under clippy's complexity threshold.
-pub(super) type CycleFn = fn(&mut Config, i32, &[String]) -> bool;
+/// `(config) -> ControlValue`: read an option row's current value as a
+/// normalized [`controls::ControlValue`] for the shared transition layer.
+/// Aliased so the `Option<…>` fields below stay under clippy's
+/// type-complexity threshold.
+pub(super) type ReadValueFn = fn(&Config) -> controls::ControlValue;
+/// `(config, ControlValue)`: write back the value produced by
+/// [`controls::Control::apply`] on an option row.
+pub(super) type WriteValueFn = fn(&mut Config, controls::ControlValue);
 
 pub(super) struct RowKind {
     pub(super) focusable: bool,
     pub(super) action: RowAction,
     pub(super) read: fn(&Config, &[String]) -> String,
     pub(super) write_string: fn(&mut Config, &str) -> Result<(), String>,
-    pub(super) cycle: Option<CycleFn>,
+    /// Read the focused row's current value / write a new value as a
+    /// normalized [`controls::ControlValue`].  `Some` on option rows
+    /// (toggle / pill); `None` on numeric (edit), button, and display-only
+    /// rows.  The overlay's input path reads the current value, runs it
+    /// through [`controls::Control::apply`], and writes back the result —
+    /// so the toggle-flip / pill-cycle math lives in `controls`, not here.
+    pub(super) read_value: Option<ReadValueFn>,
+    pub(super) write_value: Option<WriteValueFn>,
     /// Control spec for option-style rows: booleans use
     /// [`controls::Control::Toggle`] (the on/off slider) and tri-states use
     /// [`controls::Control::Pill`] over [`controls::ASK_ALWAYS_NEVER`].
@@ -146,7 +158,8 @@ fn display_only_row(label: &'static str) -> RowDef {
             action: RowAction::Cycle,
             read: |_, _| String::new(),
             write_string: no_write,
-            cycle: None,
+            read_value: None,
+            write_value: None,
             options: None,
             disabled: None,
         },
@@ -176,6 +189,20 @@ const REMOTE_POLICY_ORDER: &[RemoteImagePolicy] = &[
     RemoteImagePolicy::Always,
     RemoteImagePolicy::Never,
 ];
+
+/// Index of `value` within its ordered enum table — the
+/// [`controls::ControlValue::Choice`] index fed through
+/// [`controls::Control::apply`].  Falls back to 0 for an absent value
+/// (unreachable for the tri-states, which list every variant).
+fn order_index<T: PartialEq>(order: &[T], value: T) -> usize {
+    order.iter().position(|v| *v == value).unwrap_or(0)
+}
+
+/// Inverse of [`order_index`]: the value at `i`, clamped to the last entry
+/// for an out-of-range index (the pill only ever yields `0..len`).
+fn order_value<T: Copy>(order: &[T], i: usize) -> T {
+    order[i.min(order.len().saturating_sub(1))]
+}
 
 fn images_enabled_label(v: ImagesEnabled) -> &'static str {
     match v {
@@ -246,7 +273,8 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 // `[ Open ]` button is the affordance.
                 read: |_, _| String::new(),
                 write_string: no_write,
-                cycle: None,
+                read_value: None,
+                write_value: None,
                 options: Some(controls::Control::Button("Open")),
                 disabled: None,
             },
@@ -260,7 +288,8 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 action: RowAction::OpenExternalEditor,
                 read: |_, _| String::new(),
                 write_string: no_write,
-                cycle: None,
+                read_value: None,
+                write_value: None,
                 options: Some(controls::Control::Button("Open")),
                 disabled: None,
             },
@@ -282,9 +311,11 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 action: RowAction::Cycle,
                 read: |c, _| bool_label(c.editor.autosave_enabled).to_owned(),
                 write_string: no_write,
-                cycle: Some(|c, _, _| {
-                    c.editor.autosave_enabled = !c.editor.autosave_enabled;
-                    true
+                read_value: Some(|c| controls::ControlValue::Toggle(c.editor.autosave_enabled)),
+                write_value: Some(|c, v| {
+                    if let controls::ControlValue::Toggle(b) = v {
+                        c.editor.autosave_enabled = b;
+                    }
                 }),
                 options: Some(controls::Control::Toggle),
                 disabled: None,
@@ -299,9 +330,11 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 action: RowAction::Cycle,
                 read: |c, _| bool_label(c.editor.big_h1).to_owned(),
                 write_string: no_write,
-                cycle: Some(|c, _, _| {
-                    c.editor.big_h1 = !c.editor.big_h1;
-                    true
+                read_value: Some(|c| controls::ControlValue::Toggle(c.editor.big_h1)),
+                write_value: Some(|c, v| {
+                    if let controls::ControlValue::Toggle(b) = v {
+                        c.editor.big_h1 = b;
+                    }
                 }),
                 options: Some(controls::Control::Toggle),
                 disabled: None,
@@ -317,9 +350,11 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 action: RowAction::Cycle,
                 read: |c, _| bool_label(c.editor.cursor_blink).to_owned(),
                 write_string: no_write,
-                cycle: Some(|c, _, _| {
-                    c.editor.cursor_blink = !c.editor.cursor_blink;
-                    true
+                read_value: Some(|c| controls::ControlValue::Toggle(c.editor.cursor_blink)),
+                write_value: Some(|c, v| {
+                    if let controls::ControlValue::Toggle(b) = v {
+                        c.editor.cursor_blink = b;
+                    }
                 }),
                 options: Some(controls::Control::Toggle),
                 disabled: None,
@@ -334,9 +369,11 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 action: RowAction::Cycle,
                 read: |c, _| bool_label(c.editor.max_width_enabled).to_owned(),
                 write_string: no_write,
-                cycle: Some(|c, _, _| {
-                    c.editor.max_width_enabled = !c.editor.max_width_enabled;
-                    true
+                read_value: Some(|c| controls::ControlValue::Toggle(c.editor.max_width_enabled)),
+                write_value: Some(|c, v| {
+                    if let controls::ControlValue::Toggle(b) = v {
+                        c.editor.max_width_enabled = b;
+                    }
                 }),
                 options: Some(controls::Control::Toggle),
                 disabled: None,
@@ -358,7 +395,8 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.editor.max_width_cols = n;
                     Ok(())
                 },
-                cycle: None,
+                read_value: None,
+                write_value: None,
                 options: None,
                 disabled: None,
             },
@@ -379,7 +417,8 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.editor.mouse_scroll_lines = n;
                     Ok(())
                 },
-                cycle: None,
+                read_value: None,
+                write_value: None,
                 options: None,
                 disabled: None,
             },
@@ -398,9 +437,11 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 action: RowAction::Cycle,
                 read: |c, _| bool_label(c.editor.diff_on_change).to_owned(),
                 write_string: no_write,
-                cycle: Some(|c, _, _| {
-                    c.editor.diff_on_change = !c.editor.diff_on_change;
-                    true
+                read_value: Some(|c| controls::ControlValue::Toggle(c.editor.diff_on_change)),
+                write_value: Some(|c, v| {
+                    if let controls::ControlValue::Toggle(b) = v {
+                        c.editor.diff_on_change = b;
+                    }
                 }),
                 options: Some(controls::Control::Toggle),
                 disabled: None,
@@ -418,10 +459,16 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.diagrams.enabled = parse_diagrams_enabled(v)?;
                     Ok(())
                 },
-                cycle: Some(|c, delta, _| {
-                    c.diagrams.enabled =
-                        controls::cycle_enum(c.diagrams.enabled, DIAGRAMS_ENABLED_ORDER, delta);
-                    true
+                read_value: Some(|c| {
+                    controls::ControlValue::Choice(order_index(
+                        DIAGRAMS_ENABLED_ORDER,
+                        c.diagrams.enabled,
+                    ))
+                }),
+                write_value: Some(|c, v| {
+                    if let controls::ControlValue::Choice(i) = v {
+                        c.diagrams.enabled = order_value(DIAGRAMS_ENABLED_ORDER, i);
+                    }
                 }),
                 options: Some(controls::Control::Pill(controls::ASK_ALWAYS_NEVER)),
                 disabled: None,
@@ -439,10 +486,16 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.images.enabled = parse_images_enabled(v)?;
                     Ok(())
                 },
-                cycle: Some(|c, delta, _| {
-                    c.images.enabled =
-                        controls::cycle_enum(c.images.enabled, IMAGES_ENABLED_ORDER, delta);
-                    true
+                read_value: Some(|c| {
+                    controls::ControlValue::Choice(order_index(
+                        IMAGES_ENABLED_ORDER,
+                        c.images.enabled,
+                    ))
+                }),
+                write_value: Some(|c, v| {
+                    if let controls::ControlValue::Choice(i) = v {
+                        c.images.enabled = order_value(IMAGES_ENABLED_ORDER, i);
+                    }
                 }),
                 options: Some(controls::Control::Pill(controls::ASK_ALWAYS_NEVER)),
                 disabled: None,
@@ -460,10 +513,16 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                     c.images.remote_policy = parse_remote_policy(v)?;
                     Ok(())
                 },
-                cycle: Some(|c, delta, _| {
-                    c.images.remote_policy =
-                        controls::cycle_enum(c.images.remote_policy, REMOTE_POLICY_ORDER, delta);
-                    true
+                read_value: Some(|c| {
+                    controls::ControlValue::Choice(order_index(
+                        REMOTE_POLICY_ORDER,
+                        c.images.remote_policy,
+                    ))
+                }),
+                write_value: Some(|c, v| {
+                    if let controls::ControlValue::Choice(i) = v {
+                        c.images.remote_policy = order_value(REMOTE_POLICY_ORDER, i);
+                    }
                 }),
                 options: Some(controls::Control::Pill(controls::ASK_ALWAYS_NEVER)),
                 // Locked to Never (and skipped by focus) while images are
@@ -480,9 +539,11 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 action: RowAction::Cycle,
                 read: |c, _| bool_label(c.editor.show_line_numbers).to_owned(),
                 write_string: no_write,
-                cycle: Some(|c, _, _| {
-                    c.editor.show_line_numbers = !c.editor.show_line_numbers;
-                    true
+                read_value: Some(|c| controls::ControlValue::Toggle(c.editor.show_line_numbers)),
+                write_value: Some(|c, v| {
+                    if let controls::ControlValue::Toggle(b) = v {
+                        c.editor.show_line_numbers = b;
+                    }
                 }),
                 options: Some(controls::Control::Toggle),
                 disabled: None,
@@ -497,9 +558,11 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 action: RowAction::Cycle,
                 read: |c, _| bool_label(c.table.show_buttons).to_owned(),
                 write_string: no_write,
-                cycle: Some(|c, _, _| {
-                    c.table.show_buttons = !c.table.show_buttons;
-                    true
+                read_value: Some(|c| controls::ControlValue::Toggle(c.table.show_buttons)),
+                write_value: Some(|c, v| {
+                    if let controls::ControlValue::Toggle(b) = v {
+                        c.table.show_buttons = b;
+                    }
                 }),
                 options: Some(controls::Control::Toggle),
                 disabled: None,
@@ -514,9 +577,11 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 action: RowAction::Cycle,
                 read: |c, _| bool_label(c.editor.visual_line_nav).to_owned(),
                 write_string: no_write,
-                cycle: Some(|c, _, _| {
-                    c.editor.visual_line_nav = !c.editor.visual_line_nav;
-                    true
+                read_value: Some(|c| controls::ControlValue::Toggle(c.editor.visual_line_nav)),
+                write_value: Some(|c, v| {
+                    if let controls::ControlValue::Toggle(b) = v {
+                        c.editor.visual_line_nav = b;
+                    }
                 }),
                 options: Some(controls::Control::Toggle),
                 disabled: None,
@@ -536,13 +601,13 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 // toggle takes effect without a restart.
                 read: |c, _| bool_label(c.modal.handler == VIM_HANDLER).to_owned(),
                 write_string: no_write,
-                cycle: Some(|c, _, _| {
-                    c.modal.handler = if c.modal.handler == VIM_HANDLER {
-                        DEFAULT_HANDLER.to_owned()
-                    } else {
-                        VIM_HANDLER.to_owned()
-                    };
-                    true
+                read_value: Some(|c| {
+                    controls::ControlValue::Toggle(c.modal.handler == VIM_HANDLER)
+                }),
+                write_value: Some(|c, v| {
+                    if let controls::ControlValue::Toggle(b) = v {
+                        c.modal.handler = if b { VIM_HANDLER } else { DEFAULT_HANDLER }.to_owned();
+                    }
                 }),
                 options: Some(controls::Control::Toggle),
                 disabled: None,
