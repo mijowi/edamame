@@ -317,12 +317,76 @@ pass unchanged; 6 unit tests added for the stepper (wrap forward/back, skip
 > re-targets the same row). This exactly matches the pre-refactor welcome
 > behavior; export never hits it (all fields focusable).
 
-### Phase 5 — click support (the real work)
+### Phase 5 — click support (the real work) — ✅ DONE
 
 Both `settings` and `export_html` are keyboard-only today. `welcome`
 already proves the pattern: cache a hit-rect per control during render,
 hit-test in `handle_click`, route to the same transition logic. With the
 Phase 0 primitives a click is `Control::apply(value, ControlInput::Activate)`.
+
+**Implemented.** Both modals are now clickable, routing through the same
+state-level response surface (`ExportHtmlResponse` / `SettingsResponse`) as
+their keyboards.
+
+- **`Modal::handle_click` now takes `&mut App`** (see deviation below) — the
+  enabler that lets a click mutate `config` / spawn workers exactly like a
+  keystroke, since the dispatcher already pops the modal first.
+- **export_html:** `render_options` captures a per-`OptFocus` control rect
+  (`title_rect` / `images_rect` / `diagrams_rect` / `stylesheet_rect` /
+  `export_button_rect`); `render_message` captures `msg_button_rects` for the
+  overwrite / success / error button rows. `ExportHtmlState::handle_click`
+  hit-tests them: a control click focuses + `apply_input(Activate)`, the
+  title click focuses, the `[ Export ]` button submits, message-phase buttons
+  mirror their Enter arms, and an `esc`-hint click cancels. The adapter
+  extracts a shared `resolve(app, response)` used by both `handle_key` and
+  `handle_click`.
+- **settings:** kept the single-`Paragraph` draw; after it, the render
+  derives a `Vec<(row idx, control Rect)>` (`row_hit_rects`) for every
+  *visible focusable* row from the known geometry (`x = table_area.x +
+  FOCUS_MARKER_WIDTH + LABEL_PAD`, `y = table_area.y + (idx - scroll)`, width
+  from the new shared `row_value_width`). `SettingsState::handle_click`
+  resolves the clicked row, re-checks `focus_eligible` against live config,
+  focuses it via `focus_clicked_row` (the click counterpart of
+  `move_focus_committing`), then cycles an option / fires an external action /
+  opens an edit draft. The adapter handles the `esc` hit, then delegates to a
+  shared module-level `resolve(app, response)`.
+- 11 unit tests added (5 export, 6 settings) covering toggle flip, pill
+  cycle, button submit, esc-cancel, success-phase buttons, external-action
+  rows, locked-row no-op, and miss-is-no-op.
+
+> **Deviation — the trait change (not spelled out in the plan).** The plan
+> said "mirror welcome," but welcome's click side effects are *App-only* and
+> copy state out before building a `ContinueAnd` closure. Settings/export
+> clicks must mutate `self.state` **and** `app.config` together, which a
+> closure can't express without a borrow conflict — and the plan's own
+> `SettingsState::handle_click(col, row, &mut Config)` signature can't be fed
+> from the adapter without App access in the trait method. So
+> `Modal::handle_click` gained a `&mut App` parameter (mirroring
+> `handle_key`); `dispatch_modal_click` passes `self`, exactly as
+> `dispatch_modal_key` does. ~30 other modals took a trivial `_app: &mut App`
+> param (all already imported `App` for `handle_key`). The stale
+> `ModalOutcome::ContinueAnd` doc note ("handle_click … doesn't take an App
+> reference") was updated. This was confirmed with the user before
+> implementing.
+
+> **Deviation — message-phase clicks too (slightly beyond the bullet).** The
+> export bullet scoped clicks to the Options form, but the overwrite /
+> success / error phases also render button rows; leaving them keyboard-only
+> would be a surprising half-feature given the goal "all three modals are
+> clickable." `render_message` now captures those rects and `handle_click`
+> routes them through the same activate closures as `handle_button_key`.
+
+> **Note — single click focuses *and* acts.** Per the plan, a click on a
+> settings/export control both focuses the row and activates it (cycle / flip
+> / submit / fire), committing any open text draft on the row being left
+> (`focus_clicked_row` mirrors `move_focus_committing`). One narrow edge:
+> single-clicking *directly from* an edited `Scroll speed` row *onto* an
+> option row surfaces only the option row's `FieldChanged`, so the committed
+> scroll-speed value is persisted to config but its in-session
+> `apply_live_update` (mouse wheel step) is skipped until the next focus
+> change or restart. Keyboard is unaffected (move and activate are distinct
+> events). Acceptable given the rarity; noted for a future tidy-up if it
+> matters.
 
 **`export_html`** (cheap — render already does per-row geometry):
 
