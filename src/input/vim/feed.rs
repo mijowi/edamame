@@ -397,6 +397,16 @@ fn feed_normal(
             vim.reset_pending();
             VimOutcome::Consumed
         }
+        // `Tab` inside a table advances to the next cell, mirroring
+        // `Shift-Tab` → `TablePrevCell` (which already passes through and is
+        // a no-op outside a table).  Passing through lets the default keymap
+        // map `Tab` → `InsertTab`, whose in-table branch calls
+        // `table_next_cell`.  Outside a table `InsertTab` would insert
+        // spaces, so Tab stays inert there (Normal must not edit).
+        KeyCode::Tab if editor.cursor_in_table() => {
+            vim.reset_pending();
+            VimOutcome::Passthrough
+        }
         // Editing keys never mutate the buffer in Normal (vim's rule): the
         // global keymap would turn these into `DeleteCharBack` / `Newline`
         // / `InsertTab`, so they must be consumed here.  `Backspace` moves
