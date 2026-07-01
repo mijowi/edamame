@@ -78,6 +78,10 @@ impl From<SvgError> for DiagramError {
     }
 }
 
+/// Prefix shared by every URL produced by [`synthetic_url`]; the
+/// counterpart predicate is [`is_diagram_url`].
+const SYNTHETIC_URL_PREFIX: &str = "diagram-mermaid-";
+
 /// Synthetic cache-key URL for a mermaid source.  Stable across process
 /// invocations — two runs of edamame see the same URL for the same
 /// diagram text.
@@ -85,9 +89,15 @@ pub fn synthetic_url(source: &DiagramSource) -> String {
     match source {
         DiagramSource::Mermaid(src) => {
             let digest = Sha256::digest(src.as_bytes());
-            format!("diagram-mermaid-{:x}", digest)
+            format!("{SYNTHETIC_URL_PREFIX}{digest:x}")
         }
     }
+}
+
+/// True for a synthetic diagram cache key produced by [`synthetic_url`],
+/// as opposed to a document-authored image URL / path.
+pub fn is_diagram_url(url: &str) -> bool {
+    url.starts_with(SYNTHETIC_URL_PREFIX)
 }
 
 /// Maximum mermaid source length we will attempt to render.  The renderer

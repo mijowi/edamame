@@ -4,19 +4,18 @@
 
 - Refactor/clean up source and tests
 
-- Automatic list management is finicky: line spacing, nested lists, sub-lists of different types
+- Handle lines containing line breaks
 
-- Add "Insert image" to command palette
+- Automatic list management is finicky: line spacing, nested lists, sub-lists of different types
 
 - Add/update performance benchmark tests
 
-- Changing image display settings should re-render the current file
-
-- Handle lines containing line breaks
+- Paint search result selection as it's typed, like `:s` 
+- Don't paint until 2 or more characters are entered, or until user presses Enter?
+- Performance degradation when search results are highlighted in long documents
 
 ## Vim issues
 - DIFF is not displayed in the status line when using vim mode. Maybe we should display it in the hint line?
-- Implement substitution as it's being typed, with match highlights?
 - How should we treat vim motions in tables? I'm thinking we no-op some and adjust others, such as these:
     - `o`/`O`: Add new row below/above
     - `I`/`A`/`$`/`^`: move to the beginning/end of the *cell*

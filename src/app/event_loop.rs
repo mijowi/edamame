@@ -459,6 +459,21 @@ impl App {
                 );
             }
             AppEvent::ImageReady(Ok(loaded)) => {
+                // The worker captured the image / remote settings at spawn
+                // time; recheck against the *current* settings before
+                // accepting the result — a slow remote fetch must not
+                // resurface after the user tightened the remote policy.
+                // Forgetting the entry (rather than leaving it `Pending`)
+                // lets the per-frame dispatch re-resolve the URL if the
+                // settings permit it again.
+                if !self.image_result_still_wanted(&loaded.url) {
+                    tracing::debug!(
+                        target: "image", url = %loaded.url,
+                        "decode result discarded — settings changed mid-flight",
+                    );
+                    self.editor.images.forget(&loaded.url);
+                    return;
+                }
                 self.editor.images.set_decoded_with_prebuilt(
                     &loaded.url,
                     loaded.image,
@@ -469,6 +484,20 @@ impl App {
             }
             AppEvent::ImageReady(Err((url, message))) => {
                 tracing::debug!(target: "image", %url, %message, "image decode failed");
+                // Only a still-`Pending` entry may take the failure —
+                // same condition as the `Ok` arm.  An evicted entry must
+                // not be resurrected (memoising the failure would pin the
+                // URL against the settings it was evicted under), and a
+                // `Ready` entry means a newer worker already delivered a
+                // good decode for this URL (an evict + re-request while
+                // this worker ran) — a stale failure must not overwrite
+                // it, since `request` never retries a `Failed` entry.
+                if !matches!(
+                    self.editor.images.status(&url),
+                    Some(crate::image::DecodeStatus::Pending)
+                ) {
+                    return;
+                }
                 self.editor.images.set_failed(&url, message);
                 // A failure collapses the block's reserved rows to 1
                 // (see `ImageCache::reserved_rows`), so the parsed
