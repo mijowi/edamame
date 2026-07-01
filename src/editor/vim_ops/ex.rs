@@ -83,6 +83,12 @@ pub struct Substitution {
     pub pattern: String,
     /// The vim replacement text (`\1` / `&` / `\U…\E`), expanded per match.
     pub replacement: String,
+    /// Whether the second delimiter was typed (`:s/foo/` vs `:s/foo`).
+    /// Both parse to an empty `replacement`, but the live preview must
+    /// distinguish "still typing the pattern" (highlight matches only)
+    /// from "replace with nothing" (preview the deletion).  The execute
+    /// path ignores this — an absent field and an empty one both delete.
+    pub replacement_present: bool,
     /// `g` flag — replace every match on a line, not just the first.
     pub global: bool,
     /// `i` flag — case-insensitive matching.
@@ -201,6 +207,7 @@ fn parse_substitute(range: SubstituteRange, rest: &str) -> Result<ExCommand, ExE
     };
 
     let (pattern, after_pattern) = take_field(body, DELIM);
+    let replacement_present = after_pattern.is_some();
     // No second delimiter (`:s/foo`) → empty replacement, no flags.
     let (replacement, flags) = match after_pattern {
         None => (String::new(), ""),
@@ -225,6 +232,7 @@ fn parse_substitute(range: SubstituteRange, rest: &str) -> Result<ExCommand, ExE
         range,
         pattern,
         replacement,
+        replacement_present,
         global,
         ignore_case,
     }))
@@ -288,86 +296,171 @@ pub fn execute_substitute(
         .build()
         .map_err(|e| ExError::InvalidRegex(e.to_string()))?;
 
-    let line_count = editor.buffer.line_count();
-    if line_count == 0 {
+    let cursor_line = editor.buffer.char_to_line(editor.cursor.offset);
+    let Some(edit) = build_substitution(&editor.buffer, cursor_line, &re, sub, visual_range, None)?
+    else {
         return Ok(0);
+    };
+    let count = edit.count;
+    let range_first = edit.range_first;
+    editor.apply_delta(edit.delta);
+    // Park the cursor at the start of the first affected line rather than at
+    // the end of the inserted region (`apply_delta`'s default), which for
+    // `:%s` would jump to end-of-document.
+    let target = editor
+        .buffer
+        .line_to_char(range_first.min(editor.buffer.line_count().saturating_sub(1)));
+    editor.cursor.offset = target.min(editor.buffer.len_chars());
+    editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
+    editor.update_cursor_block();
+    Ok(count)
+}
+
+/// Resolve a substitution's inclusive `(first, last)` buffer-line span.
+/// `None` only for an empty buffer (`line_count == 0`).  `cursor_line` is
+/// the line the cursor sits on (for [`SubstituteRange::CurrentLine`] and a
+/// [`SubstituteRange::VisualRange`] with no recorded bounds).
+pub(crate) fn resolve_substitute_lines(
+    buffer: &crate::document::Buffer,
+    cursor_line: usize,
+    range: SubstituteRange,
+    visual_range: Option<(usize, usize)>,
+) -> Option<(usize, usize)> {
+    let line_count = buffer.line_count();
+    if line_count == 0 {
+        return None;
     }
-    let current_line = || editor.buffer.char_to_line(editor.cursor.offset);
-    let (first, last) = match sub.range {
+    Some(match range {
         SubstituteRange::AllLines => (0, line_count - 1),
-        SubstituteRange::CurrentLine => {
-            let l = current_line();
-            (l, l)
-        }
+        SubstituteRange::CurrentLine => (cursor_line, cursor_line),
         SubstituteRange::VisualRange => match visual_range {
             Some((f, l)) => (f.min(line_count - 1), l.min(line_count - 1)),
-            None => {
-                let l = current_line();
-                (l, l)
-            }
+            None => (cursor_line, cursor_line),
         },
+    })
+}
+
+/// The fully-computed edit for one substitution, produced by
+/// [`build_substitution`] against an unmodified buffer.  Pure data — the
+/// shared seam between the commit path ([`execute_substitute`]) and the
+/// live preview (`vim_ops::preview`).
+pub(crate) struct SubstitutionEdit {
+    /// The single char-offset delta rewriting lines `range_first..=` the
+    /// last scanned line.
+    pub delta: EditDelta,
+    /// Total matches replaced.
+    pub count: usize,
+    /// Post-apply byte ranges of each inserted replacement segment,
+    /// absolute in the rewritten buffer (preceding text is untouched, so
+    /// offsets before the rewritten region are identical pre/post).
+    pub replaced_ranges: Vec<std::ops::Range<usize>>,
+    /// First line of the resolved range (where the commit path parks the
+    /// cursor).
+    pub range_first: usize,
+    /// First line that actually matched (where the preview scrolls to).
+    pub first_match_line: usize,
+}
+
+/// Walk the substitution's line range and build the combined edit without
+/// applying anything.  Returns `Ok(None)` when the pattern never matched
+/// (or the buffer is empty) — the commit path turns that into "Pattern not
+/// found".  `match_cap` bounds the walk for the live preview: once the
+/// total match count reaches the cap the remaining lines are left
+/// untouched (the delta still only spans scanned lines, so it stays
+/// correct).  The commit path passes `None` — a real `:%s` is never
+/// truncated.
+pub(crate) fn build_substitution(
+    buffer: &crate::document::Buffer,
+    cursor_line: usize,
+    re: &Regex,
+    sub: &Substitution,
+    visual_range: Option<(usize, usize)>,
+    match_cap: Option<usize>,
+) -> Result<Option<SubstitutionEdit>, ExError> {
+    let Some((first, last)) =
+        resolve_substitute_lines(buffer, cursor_line, sub.range, visual_range)
+    else {
+        return Ok(None);
     };
 
-    let start_char = editor.buffer.line_to_char(first);
+    let start_char = buffer.line_to_char(first);
+    // Text before the rewritten region is untouched, so its byte length is
+    // the same pre- and post-apply — replacement spans offset from here are
+    // valid absolute positions in the rewritten buffer.
+    let region_start_byte = buffer.rope().char_to_byte(start_char);
     let mut old = String::new();
     let mut new = String::new();
     let mut total = 0usize;
+    let mut replaced_ranges = Vec::new();
+    let mut first_match_line = None;
     for li in first..=last {
-        let line = editor.buffer.rope().line(li).to_string();
+        let line = buffer.rope().line(li).to_string();
         // Process the line content without its trailing newline so `^`/`$`
         // anchor per line and the newline is never consumed.
         let (content, nl) = match line.strip_suffix('\n') {
             Some(c) => (c, "\n"),
             None => (line.as_str(), ""),
         };
-        let (replaced, n) = substitute_line(&re, content, &sub.replacement, sub.global)?;
+        let (replaced, n, spans) = substitute_line(re, content, &sub.replacement, sub.global)?;
+        if n > 0 && first_match_line.is_none() {
+            first_match_line = Some(li);
+        }
         total += n;
+        let line_base = region_start_byte + new.len();
+        replaced_ranges.extend(
+            spans
+                .into_iter()
+                .map(|s| line_base + s.start..line_base + s.end),
+        );
         old.push_str(content);
         old.push_str(nl);
         new.push_str(&replaced);
         new.push_str(nl);
+        if match_cap.is_some_and(|cap| total >= cap) {
+            break;
+        }
     }
 
     if total == 0 {
-        return Ok(0);
+        return Ok(None);
     }
-
-    editor.apply_delta(EditDelta {
-        offset: start_char,
-        removed: old,
-        inserted: new,
-    });
-    // Park the cursor at the start of the first affected line rather than at
-    // the end of the inserted region (`apply_delta`'s default), which for
-    // `:%s` would jump to end-of-document.
-    let target = editor
-        .buffer
-        .line_to_char(first.min(editor.buffer.line_count().saturating_sub(1)));
-    editor.cursor.offset = target.min(editor.buffer.len_chars());
-    editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
-    editor.update_cursor_block();
-    Ok(total)
+    Ok(Some(SubstitutionEdit {
+        delta: EditDelta {
+            offset: start_char,
+            removed: old,
+            inserted: new,
+        },
+        count: total,
+        replaced_ranges,
+        range_first: first,
+        first_match_line: first_match_line.unwrap_or(first),
+    }))
 }
 
 /// Apply `re` to a single line's `content`, expanding `template` per match
 /// (vim `\1` / `&` / case modifiers via `expand_replacement`).  Returns the
-/// rewritten line and the match count.  `global` replaces every match;
-/// otherwise only the first.  A match-time engine error (e.g. a backtrack
-/// limit) surfaces as [`ExError::InvalidRegex`].
+/// rewritten line, the match count, and the byte span of each expanded
+/// replacement *within the rewritten line* (the preview highlights these).
+/// `global` replaces every match; otherwise only the first.  A match-time
+/// engine error (e.g. a backtrack limit) surfaces as
+/// [`ExError::InvalidRegex`].
 fn substitute_line(
     re: &Regex,
     content: &str,
     template: &str,
     global: bool,
-) -> Result<(String, usize), ExError> {
+) -> Result<(String, usize, Vec<std::ops::Range<usize>>), ExError> {
     let mut out = String::new();
     let mut last = 0;
     let mut count = 0;
+    let mut spans = Vec::new();
     for cap in re.captures_iter(content) {
         let caps = cap.map_err(|e| ExError::InvalidRegex(e.to_string()))?;
         let whole = caps.get(0).expect("group 0 is always present");
         out.push_str(&content[last..whole.start()]);
+        let span_start = out.len();
         out.push_str(&expand_replacement(template, &caps));
+        spans.push(span_start..out.len());
         last = whole.end();
         count += 1;
         if !global {
@@ -375,27 +468,30 @@ fn substitute_line(
         }
     }
     if count == 0 {
-        return Ok((content.to_owned(), 0));
+        return Ok((content.to_owned(), 0, spans));
     }
     out.push_str(&content[last..]);
-    Ok((out, count))
+    Ok((out, count, spans))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// `rep: None` models a missing replacement field (`:s/foo`, no second
+    /// delimiter) — `replacement_present` false, empty replacement.
     fn sub(
         range: SubstituteRange,
         pat: &str,
-        rep: &str,
+        rep: Option<&str>,
         global: bool,
         ignore_case: bool,
     ) -> ExCommand {
         ExCommand::Substitute(Substitution {
             range,
             pattern: pat.to_owned(),
-            replacement: rep.to_owned(),
+            replacement: rep.unwrap_or("").to_owned(),
+            replacement_present: rep.is_some(),
             global,
             ignore_case,
         })
@@ -498,17 +594,33 @@ mod tests {
     fn parses_line_substitution() {
         assert_eq!(
             parse_ex("s/foo/bar/"),
-            Ok(sub(CurrentLine, "foo", "bar", false, false))
+            Ok(sub(CurrentLine, "foo", Some("bar"), false, false))
         );
         // Trailing delimiter optional.
         assert_eq!(
             parse_ex("s/foo/bar"),
-            Ok(sub(CurrentLine, "foo", "bar", false, false))
+            Ok(sub(CurrentLine, "foo", Some("bar"), false, false))
         );
         // Missing replacement deletes the match.
         assert_eq!(
             parse_ex("s/foo"),
-            Ok(sub(CurrentLine, "foo", "", false, false))
+            Ok(sub(CurrentLine, "foo", None, false, false))
+        );
+    }
+
+    #[test]
+    fn replacement_present_tracks_the_second_delimiter() {
+        // `s/foo/` and `s/foo` both parse to an empty replacement, but only
+        // the former typed the second delimiter — the live preview keys the
+        // highlight-only vs. deletion-preview distinction off this bit.
+        assert_eq!(
+            parse_ex("s/foo/"),
+            Ok(sub(CurrentLine, "foo", Some(""), false, false))
+        );
+        // An escaped delimiter is field content, not a terminator.
+        assert_eq!(
+            parse_ex(r"s/foo\/bar"),
+            Ok(sub(CurrentLine, "foo/bar", None, false, false))
         );
     }
 
@@ -516,15 +628,15 @@ mod tests {
     fn parses_global_substitution_and_flags() {
         assert_eq!(
             parse_ex("%s/a/b/g"),
-            Ok(sub(AllLines, "a", "b", true, false))
+            Ok(sub(AllLines, "a", Some("b"), true, false))
         );
         assert_eq!(
             parse_ex("%s/a/b/gi"),
-            Ok(sub(AllLines, "a", "b", true, true))
+            Ok(sub(AllLines, "a", Some("b"), true, true))
         );
         assert_eq!(
             parse_ex("s/a/b/i"),
-            Ok(sub(CurrentLine, "a", "b", false, true))
+            Ok(sub(CurrentLine, "a", Some("b"), false, true))
         );
     }
 
@@ -533,12 +645,12 @@ mod tests {
         // The `'<,'>` marks vim inserts when `:` is pressed in Visual mode.
         assert_eq!(
             parse_ex("'<,'>s/foo/bar/g"),
-            Ok(sub(VisualRange, "foo", "bar", true, false))
+            Ok(sub(VisualRange, "foo", Some("bar"), true, false))
         );
         // A `%` after the range wins (last range specifier wins, as in vim).
         assert_eq!(
             parse_ex("'<,'>%s/a/b/"),
-            Ok(sub(AllLines, "a", "b", false, false))
+            Ok(sub(AllLines, "a", Some("b"), false, false))
         );
         // The write / quit family ignores a `'<,'>` prefix (Visual `:` inserts
         // it) and acts on the whole buffer.
@@ -563,7 +675,7 @@ mod tests {
         // `\/` in the pattern is a literal slash; regex escapes survive.
         assert_eq!(
             parse_ex(r"s/a\/b/c\.d/"),
-            Ok(sub(CurrentLine, "a/b", r"c\.d", false, false))
+            Ok(sub(CurrentLine, "a/b", Some(r"c\.d"), false, false))
         );
     }
 }

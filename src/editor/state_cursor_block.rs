@@ -91,6 +91,13 @@ impl EditorState {
         if self.search.is_some() {
             return false;
         }
+        // Likewise during a live `:s` preview: the preview parks the
+        // cursor on the first affected line while the user types, and
+        // the reveal delay would elapse mid-typing, flipping that block
+        // to raw source under the preview highlights.
+        if self.substitute_preview.is_some() {
+            return false;
+        }
         match self.cursor_block_entered_at {
             None => true,
             Some(t) => t.elapsed() >= RAW_REVEAL_DELAY,

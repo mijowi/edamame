@@ -23,6 +23,7 @@ pub mod edits;
 pub mod ex;
 pub mod motion;
 pub mod operator;
+pub mod preview;
 pub mod search;
 pub mod text_object;
 pub mod vim_regex;
@@ -39,6 +40,7 @@ pub use motion::{
     resolve_motion_range, vertical_line_range, FindKind, Motion, OpRange,
 };
 pub use operator::{execute_operator, OpResult, Operator};
+pub use preview::{clear_substitute_preview, update_substitute_preview, SubstitutePreview};
 pub use search::word_under_cursor_at;
 pub use text_object::{resolve_text_object_range, TextObject};
 pub use visual::{visual_line_bounds, visual_line_char_range};

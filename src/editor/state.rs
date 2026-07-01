@@ -5,6 +5,7 @@ use crate::config::Theme;
 use crate::diff::DiffState;
 use crate::document::{Buffer, Cursor, EditDelta, History, ParsedDoc, Selection, VisualSelection};
 use crate::editor::state_viewport::RawVisualRowCache;
+use crate::editor::vim_ops::SubstitutePreview;
 use crate::editor::Mode;
 use crate::editor::YankFlash;
 use crate::image::ImageCache;
@@ -314,6 +315,15 @@ pub struct EditorState {
     /// `tick_timers`.  Independent of `mode` and `search` — it is a
     /// transient visual overlay, not a flow.  See `editor::yank_flash`.
     pub yank_flash: Option<YankFlash>,
+    /// Live `:s` substitution preview (neovim's `inccommand=nosplit`),
+    /// active exactly while the vim `:` command line holds a
+    /// complete-enough substitution.  The preview may have transiently
+    /// rewritten the buffer through the raw `Buffer` primitives — no
+    /// undo delta, `dirty` untouched — with the inverse edit stashed
+    /// inside.  While `Some`, autosave is suspended, mutating mouse ops
+    /// are gated, and search freshness/overlays are paused.  See
+    /// `editor::vim_ops::preview`.
+    pub substitute_preview: Option<SubstitutePreview>,
     /// Block-level render memoization threaded into every
     /// `refresh_parsed`.  Blocks whose AST is unchanged since the previous
     /// reparse reuse their rendered lines instead of re-rendering — the
@@ -419,6 +429,7 @@ impl EditorState {
             pending_focus_scroll: false,
             search: None,
             yank_flash: None,
+            substitute_preview: None,
             render_cache: RenderCache::default(),
         };
         // Populate the cursor-block cache so the rendered view's
@@ -532,6 +543,10 @@ impl EditorState {
         // unrelated text.  (No scroll restore — the pre-search offset
         // belongs to the old contents.)
         self.search = None;
+        // Likewise drop any live `:s` preview — its stashed revert delta
+        // belongs to the old contents (the version stamp would refuse it
+        // anyway; dropping here keeps the invariant explicit).
+        self.substitute_preview = None;
         let new_len = new_buffer.len_chars();
         self.buffer = new_buffer;
         self.dirty = false;

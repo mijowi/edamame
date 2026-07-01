@@ -59,12 +59,25 @@ impl<'a> StatefulWidget for RawView<'a> {
             }
         });
 
-        let search_matches: &[std::ops::Range<usize>] = self
-            .state
-            .search
-            .as_ref()
-            .map_or(&[], |s| s.matches.as_slice());
+        // A live `:s` preview may have rewritten the buffer, so an active
+        // search session's byte ranges are stale against the previewed
+        // text — suspend the search wash for the preview's own highlights
+        // (it reappears untouched once the preview reverts).
+        let preview_active = self.state.substitute_preview.is_some();
+        let search_matches: &[std::ops::Range<usize>] = if preview_active {
+            &[]
+        } else {
+            self.state
+                .search
+                .as_ref()
+                .map_or(&[], |s| s.matches.as_slice())
+        };
         let focused_match = self.state.search.as_ref().map(|s| s.focused_idx);
+        let preview_highlights: &[std::ops::Range<usize>] = self
+            .state
+            .substitute_preview
+            .as_ref()
+            .map_or(&[], |p| p.highlights.as_slice());
         let rope_len_bytes = self.state.buffer.rope().len_bytes();
         // Recently-yanked span, painted as a brief flash the same way as
         // in the rendered views (`theme.selection`).  A linewise yank
@@ -133,6 +146,26 @@ impl<'a> StatefulWidget for RawView<'a> {
                         self.theme.selection_muted
                     };
                     line_highlights.push((start_col, end_col, style));
+                }
+            }
+
+            // Live `:s` preview highlights on this line — same shape as
+            // the search matches above (sorted, none spans a newline),
+            // painted with the full `theme.selection` (the preview has no
+            // focus concept).  Byte offsets are clamped against the live
+            // rope the same way.
+            if !preview_highlights.is_empty() {
+                let first = preview_highlights.partition_point(|r| r.end <= line_start_byte);
+                for r in preview_highlights.iter().skip(first) {
+                    if r.start >= line_end_byte {
+                        break;
+                    }
+                    if r.end > rope_len_bytes || r.end > line_end_byte {
+                        break;
+                    }
+                    let start_col = raw[..r.start - line_start_byte].chars().count();
+                    let end_col = raw[..r.end - line_start_byte].chars().count();
+                    line_highlights.push((start_col, end_col, self.theme.selection));
                 }
             }
 

@@ -313,7 +313,13 @@ impl App {
         // the match list can go stale outside the in-flow mutation paths.
         // Refresh here (version-guarded → a no-op when nothing changed) so the
         // focus-scroll below and the overlay painter both see live ranges.
-        self.editor.ensure_search_fresh();
+        // Paused while a `:s` preview is active — the previewed text is
+        // transient, and recomputing matches against it would re-anchor a
+        // coexisting hlsearch session to text that is about to revert (the
+        // overlay painters suspend the search wash for the same reason).
+        if self.editor.substitute_preview.is_none() {
+            self.editor.ensure_search_fresh();
+        }
         // Resolve a diff-entry scroll request now that the viewport
         // height is known (it isn't at the modal-close site that enters
         // diff mode).  One-shot: cleared after it fires.
@@ -837,7 +843,11 @@ impl App {
         // the keyboard gate in `search_safe_action`.  A navigate-only search
         // does not capture, so clicks stay live there (in vim or default
         // mode).  `Moved` events stay live for pointer-shape tracking.
-        if self.search_flow_captures()
+        // The same gate covers a live `:s` preview: the buffer transiently
+        // shows previewed text, so a click / drag / checkbox toggle would
+        // mutate (or place the cursor in) content that is about to revert.
+        // Scrolling stays live so the user can inspect the preview.
+        if (self.search_flow_captures() || self.editor.substitute_preview.is_some())
             && !matches!(
                 mouse_event.kind,
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::Moved

@@ -3244,3 +3244,185 @@ fn dd_renumbers_each_nested_sublist_under_its_own_parent() {
         "1. a\n    1. x\n    2. y\n2. c\n    1. p\n    2. q\n",
     );
 }
+
+// ── Live `:s` substitution preview (inccommand) ──────────────────────────────
+
+/// Open the `:` prompt and type `body` without submitting.
+fn type_ex(vim: &mut VimState, st: &mut EditorState, body: &str) {
+    feed(vim, st, ch(':'));
+    for c in body.chars() {
+        feed(vim, st, ch(c));
+    }
+}
+
+#[test]
+fn typing_a_substitution_pattern_previews_matches_live() {
+    let mut st = state("foo bar\nfoo");
+    let mut vim = VimState::default();
+    type_ex(&mut vim, &mut st, "%s/foo");
+    let preview = st.substitute_preview.as_ref().expect("preview active");
+    assert_eq!(
+        preview.highlights,
+        vec![0..3, 8..11],
+        "every line's first match highlights while the pattern is typed"
+    );
+    assert_eq!(st.buffer.contents(), "foo bar\nfoo", "text untouched");
+    assert!(!st.dirty, "a highlight-only preview must not dirty");
+}
+
+#[test]
+fn typing_a_replacement_previews_the_substituted_text() {
+    let mut st = state("foo bar\nfoo");
+    let mut vim = VimState::default();
+    type_ex(&mut vim, &mut st, "%s/foo/quux/g");
+    assert_eq!(
+        st.buffer.contents(),
+        "quux bar\nquux",
+        "the buffer shows the substituted text while typing"
+    );
+    assert!(!st.dirty, "the preview edit must not dirty the buffer");
+    assert_eq!(
+        st.history.undo_depth(),
+        0,
+        "no undo delta may be recorded for the preview"
+    );
+    let preview = st.substitute_preview.as_ref().expect("preview active");
+    assert_eq!(
+        preview.highlights,
+        vec![0..4, 9..13],
+        "the inserted segments highlight in the previewed text"
+    );
+}
+
+#[test]
+fn esc_reverts_the_preview_and_restores_the_view() {
+    let mut st = state("foo bar\nfoo");
+    let mut vim = VimState::default();
+    st.cursor.offset = 5;
+    st.update_cursor_block();
+    type_ex(&mut vim, &mut st, "%s/foo/quux/g");
+    assert_eq!(st.buffer.contents(), "quux bar\nquux");
+    feed(&mut vim, &mut st, esc());
+    assert_eq!(st.buffer.contents(), "foo bar\nfoo", "Esc reverts");
+    assert_eq!(st.cursor.offset, 5, "cursor restored");
+    assert!(st.substitute_preview.is_none());
+    assert!(vim.cmdline.is_none());
+    // No phantom undo step was recorded by the preview round-trip.
+    feed(&mut vim, &mut st, ch('u'));
+    assert_eq!(st.buffer.contents(), "foo bar\nfoo");
+}
+
+#[test]
+fn submitting_a_previewed_substitution_is_one_undo_unit() {
+    let mut st = state("foo bar\nfoo");
+    let mut vim = VimState::default();
+    type_ex(&mut vim, &mut st, "%s/foo/bar/g");
+    assert!(
+        st.substitute_preview.is_some(),
+        "preview active before Enter"
+    );
+    let out = feed(&mut vim, &mut st, key(KeyCode::Enter));
+    assert_eq!(out, VimOutcome::Flash("2 substitutions".to_owned()));
+    assert_eq!(st.buffer.contents(), "bar bar\nbar");
+    assert!(st.dirty, "the committed substitution dirties the buffer");
+    assert!(st.substitute_preview.is_none(), "preview ended on submit");
+    feed(&mut vim, &mut st, ch('u'));
+    assert_eq!(
+        st.buffer.contents(),
+        "foo bar\nfoo",
+        "one `u` reverts the whole substitution — identical to a preview-less submit"
+    );
+}
+
+#[test]
+fn backspace_across_the_second_delimiter_walks_the_preview_back() {
+    let mut st = state("a foo b");
+    let mut vim = VimState::default();
+    type_ex(&mut vim, &mut st, "%s/foo/XY");
+    assert_eq!(st.buffer.contents(), "a XY b", "replacement previewed");
+    feed(&mut vim, &mut st, key(KeyCode::Backspace));
+    feed(&mut vim, &mut st, key(KeyCode::Backspace));
+    // `:%s/foo/` — replacement field present but empty: deletion preview.
+    assert_eq!(st.buffer.contents(), "a  b", "deletion previewed");
+    feed(&mut vim, &mut st, key(KeyCode::Backspace));
+    // `:%s/foo` — back to highlight-only on the original text.
+    assert_eq!(st.buffer.contents(), "a foo b");
+    let preview = st.substitute_preview.as_ref().expect("highlight-only");
+    assert_eq!(preview.highlights, vec![2..5]);
+}
+
+#[test]
+fn visual_range_preview_touches_only_the_selected_lines() {
+    let mut st = state("foo\nfoo\nfoo");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('j'));
+    feed(&mut vim, &mut st, ch(':'));
+    for c in "s/foo/bar/g".chars() {
+        feed(&mut vim, &mut st, ch(c));
+    }
+    assert_eq!(
+        st.buffer.contents(),
+        "bar\nbar\nfoo",
+        "the preview honours the '<,'> line span"
+    );
+    feed(&mut vim, &mut st, esc());
+    assert_eq!(st.buffer.contents(), "foo\nfoo\nfoo");
+}
+
+#[test]
+fn cmdline_cursor_moves_do_not_recompute_the_preview() {
+    let mut st = state("foo bar");
+    let mut vim = VimState::default();
+    type_ex(&mut vim, &mut st, "%s/foo/XY/");
+    assert_eq!(st.buffer.contents(), "XY bar");
+    let version = st.buffer.version();
+    // Keys that leave the command line unchanged must not revert +
+    // reapply the preview (each recompute costs two full reparses).
+    feed(&mut vim, &mut st, key(KeyCode::Left));
+    feed(&mut vim, &mut st, key(KeyCode::Right));
+    feed(&mut vim, &mut st, key(KeyCode::Home));
+    assert_eq!(
+        st.buffer.version(),
+        version,
+        "a no-op cmdline key must not touch the buffer"
+    );
+    assert_eq!(st.buffer.contents(), "XY bar");
+}
+
+#[test]
+fn substitute_preview_suppresses_the_cursor_block_raw_reveal() {
+    let mut st = state("foo bar\n");
+    st.mode = Mode::Rendered;
+    let mut vim = VimState::default();
+    // No reveal timer armed → normally revealed; the preview parks the
+    // cursor on the first affected line while the user types, so the
+    // reveal must be suppressed or the block flips to raw source under
+    // the preview highlights.
+    st.cursor_block_entered_at = None;
+    assert!(st.cursor_block_revealed());
+    type_ex(&mut vim, &mut st, "%s/foo/bar/");
+    assert!(st.substitute_preview.is_some(), "preview active");
+    st.cursor_block_entered_at = None;
+    assert!(
+        !st.cursor_block_revealed(),
+        "an active preview must suppress the raw reveal"
+    );
+    feed(&mut vim, &mut st, esc());
+    st.cursor_block_entered_at = None;
+    assert!(st.cursor_block_revealed(), "reveal returns after Esc");
+}
+
+#[test]
+fn an_invalid_or_matchless_pattern_shows_no_preview() {
+    let mut st = state("abc");
+    let mut vim = VimState::default();
+    type_ex(&mut vim, &mut st, "%s/zzz/x/");
+    assert!(st.substitute_preview.is_none(), "no matches → no preview");
+    assert_eq!(st.buffer.contents(), "abc");
+    feed(&mut vim, &mut st, esc());
+    // Half-typed group: invalid regex must not preview (and not panic).
+    type_ex(&mut vim, &mut st, r"%s/a\v(");
+    assert!(st.substitute_preview.is_none());
+    assert_eq!(st.buffer.contents(), "abc");
+}
