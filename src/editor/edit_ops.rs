@@ -1223,6 +1223,168 @@ pub fn insert_table_at_cursor(
     state.ensure_cursor_visible(viewport_height, viewport_width);
 }
 
+/// Placeholder text shared by the image / link snippets.  Left selected
+/// after a selection-wrapping insert so the user's next keystrokes
+/// replace it with the real destination.
+pub const URL_PLACEHOLDER: &str = "file path or URL";
+
+/// True when the block under the cursor can host inline Markdown — an
+/// image or link snippet inserted there will parse as markup rather
+/// than literal text.  Denies code blocks, raw HTML, HTML comments,
+/// horizontal rules, and existing image / diagram blocks; a blank line
+/// (no real block) and every inline-bearing block (paragraph, heading,
+/// list, quote, table, footnote definition) are allowed.
+///
+/// Classification is by *top-level* block: a code fence nested inside
+/// a list item or block quote is not detected.  That matches the
+/// fidelity of the other location guards (`cursor_line_is_blank`,
+/// `cursor_in_table`), which also reason at the top level.
+// Library-only surface: the snippet inserts run the offset-based guard
+// internally, so the binary never calls the cursor-based wrapper — it
+// exists for the block-classification integration tests.
+#[allow(dead_code)]
+pub fn cursor_block_allows_inline_markdown(state: &mut EditorState) -> bool {
+    let offset = state.cursor.offset;
+    block_allows_inline_markdown_at(state, offset)
+}
+
+/// Offset-based body of [`cursor_block_allows_inline_markdown`] — the
+/// snippet insert classifies at the offset the snippet will actually
+/// land on (the selection start when wrapping), which is not always
+/// the cursor.
+fn block_allows_inline_markdown_at(state: &mut EditorState, char_offset: usize) -> bool {
+    use crate::markdown::Block;
+    // An in-line typing burst defers the re-parse; flush so the block
+    // classification below can't run against stale ranges.
+    state.flush_parsed_if_dirty();
+    let byte = state.buffer.rope().char_to_byte(char_offset);
+    let Some(block) = state.parsed.real_block_for_byte(byte) else {
+        // Blank line (a virtual block) or EOF — a snippet here becomes
+        // its own paragraph, the ideal spot for an image.
+        return true;
+    };
+    !matches!(
+        block,
+        Block::CodeBlock { .. }
+            | Block::Html(_)
+            | Block::HtmlComment(_)
+            | Block::HorizontalRule
+            | Block::ImageBlock { .. }
+    )
+}
+
+/// Insert an image snippet (`![alt text](file path or URL)`) at the
+/// cursor.  See [`insert_inline_snippet`] for the selection-wrapping,
+/// placeholder-selection, and pre-flight behavior.
+pub fn insert_image_at_cursor(
+    state: &mut EditorState,
+    viewport_height: usize,
+    viewport_width: usize,
+) -> bool {
+    insert_inline_snippet(state, "!", "alt text", viewport_height, viewport_width)
+}
+
+/// Insert a link snippet (`[link text](file path or URL)`) at the
+/// cursor.  See [`insert_inline_snippet`] for the selection-wrapping,
+/// placeholder-selection, and pre-flight behavior.
+pub fn insert_link_at_cursor(
+    state: &mut EditorState,
+    viewport_height: usize,
+    viewport_width: usize,
+) -> bool {
+    insert_inline_snippet(state, "", "link text", viewport_height, viewport_width)
+}
+
+/// Shared body of the image / link snippet inserts.  Returns `false` —
+/// leaving mode, selection, and buffer untouched — when the target
+/// block can't host inline Markdown (see
+/// [`cursor_block_allows_inline_markdown`]); the App-level handler
+/// flashes a warning on that path.  The pre-flight runs here, after the
+/// Preview cursor→scroll sync and against the actual insert offset, so
+/// the block it classifies is always the block the snippet lands in.
+///
+/// - With a single-line selection, the selected text becomes the
+///   visible text — `sel` → `{prefix}[sel](file path or URL)` — and the
+///   URL placeholder is left selected so the user types the destination
+///   next (typing replaces a selection, matching [`toggle_wrap`]).
+/// - Otherwise the full snippet is inserted at the cursor with the
+///   text placeholder selected instead.  A multi-line selection is
+///   dropped rather than wrapped (link text can't span blocks) so no
+///   buffer text is destroyed.
+fn insert_inline_snippet(
+    state: &mut EditorState,
+    prefix: &str,
+    text_placeholder: &str,
+    viewport_height: usize,
+    viewport_width: usize,
+) -> bool {
+    // In Preview the cursor may be far from the viewport; sync it to the
+    // scroll position *before* the pre-flight so the guard classifies
+    // the block the snippet will actually land in.  Deliberately not
+    // `enter_edit_if_preview` yet — a denied insert must not leave
+    // Preview.
+    if state.mode == Mode::Preview {
+        sync_cursor_to_scroll(state, viewport_height);
+    }
+    let wrap = state.selection.as_ref().and_then(|sel| {
+        let (start, end) = sel.range();
+        let end = end.min(state.buffer.len_chars());
+        if start >= end {
+            return None;
+        }
+        let text = state.buffer.slice_to_string(start, end);
+        if text.contains('\n') {
+            return None;
+        }
+        Some((start, text))
+    });
+    let insert_at = wrap
+        .as_ref()
+        .map_or(state.cursor.offset, |(start, _)| *start);
+    if !block_allows_inline_markdown_at(state, insert_at) {
+        return false;
+    }
+    state.selection = None;
+    enter_edit_if_preview(state, viewport_height);
+    // `prefix`, the brackets, and the placeholders are all ASCII, so
+    // their byte lengths double as char counts; only the wrapped
+    // selection text needs a `chars().count()`.
+    let (offset, removed, visible_text, select_placeholder_url) = match wrap {
+        Some((start, text)) => (start, text.clone(), text, true),
+        None => (
+            state.cursor.offset,
+            String::new(),
+            text_placeholder.to_owned(),
+            false,
+        ),
+    };
+    let inserted = format!("{prefix}[{visible_text}]({URL_PLACEHOLDER})");
+    state.cursor.offset = offset;
+    state.apply_delta(EditDelta {
+        offset,
+        removed,
+        inserted,
+    });
+    let (sel_start, sel_len) = if select_placeholder_url {
+        (
+            offset + prefix.len() + 1 + visible_text.chars().count() + 2,
+            URL_PLACEHOLDER.len(),
+        )
+    } else {
+        (offset + prefix.len() + 1, text_placeholder.len())
+    };
+    let sel_end = sel_start + sel_len;
+    state.selection = Some(Selection {
+        anchor: sel_start,
+        active: sel_end,
+    });
+    state.cursor.offset = sel_end;
+    state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
+    state.update_cursor_block();
+    state.ensure_cursor_visible(viewport_height, viewport_width);
+    true
+}
+
 /// Insert an auto-numbered `[^N]` footnote reference at the cursor.  Only
 /// the reference is inserted — the user writes the definition wherever
 /// they want.  Until a matching `[^N]:` definition exists the marker

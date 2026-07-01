@@ -28,6 +28,7 @@ pub(super) const CATEGORIES: &[(&str, &[(Action, &str)])] = &[
             (Action::Paste, "Paste"),
             (Action::BoldSelection, "Bold selection"),
             (Action::ItalicizeSelection, "Italicize selection"),
+            (Action::InsertImage, "Insert image"),
             (Action::Undo, "Undo"),
             (Action::Redo, "Redo"),
             (Action::Quit, "Quit"),
@@ -47,7 +48,13 @@ pub(super) const CATEGORIES: &[(&str, &[(Action, &str)])] = &[
             (Action::GoToSection, "Go to section"),
         ],
     ),
-    ("Links", &[(Action::FollowLinkUnderCursor, "Follow link")]),
+    (
+        "Links",
+        &[
+            (Action::FollowLinkUnderCursor, "Follow link"),
+            (Action::InsertLink, "Insert link"),
+        ],
+    ),
     (
         "Search",
         &[

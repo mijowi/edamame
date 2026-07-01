@@ -1282,3 +1282,148 @@ fn delete_footnote_off_a_footnote_is_noop() {
     assert!(!edit_ops::delete_footnote_at_cursor(&mut st, VP, VW));
     assert_eq!(st.contents(), "plain text\n");
 }
+
+// ── Insert image / link snippets ─────────────────────────────────────────────
+
+#[test]
+fn insert_link_snippet_selects_text_placeholder() {
+    let mut st = state("hello world\n");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 6; // just before "world"
+    edit_ops::insert_link_at_cursor(&mut st, VP, VW);
+    assert_eq!(st.contents(), "hello [link text](file path or URL)world\n");
+    let (s, e) = st
+        .selection
+        .expect("placeholder should be selected")
+        .range();
+    assert_eq!(st.buffer.slice_to_string(s, e), "link text");
+    // Typing replaces the selected placeholder in place.
+    apply(&mut st, Action::InsertChar('x'));
+    assert_eq!(st.contents(), "hello [x](file path or URL)world\n");
+}
+
+#[test]
+fn insert_image_wraps_selection_and_selects_url_placeholder() {
+    use edamame::document::Selection;
+    let mut st = state("hello world\n");
+    st.mode = Mode::Rendered;
+    st.selection = Some(Selection {
+        anchor: 6,
+        active: 11, // "world"
+    });
+    st.cursor.offset = 11;
+    edit_ops::insert_image_at_cursor(&mut st, VP, VW);
+    assert_eq!(st.contents(), "hello ![world](file path or URL)\n");
+    let (s, e) = st
+        .selection
+        .expect("URL placeholder should be selected")
+        .range();
+    assert_eq!(st.buffer.slice_to_string(s, e), "file path or URL");
+}
+
+#[test]
+fn insert_link_wraps_multibyte_selection() {
+    use edamame::document::Selection;
+    let mut st = state("héllo wörld\n");
+    st.mode = Mode::Rendered;
+    st.selection = Some(Selection {
+        anchor: 6,
+        active: 11, // "wörld" (char offsets)
+    });
+    st.cursor.offset = 11;
+    edit_ops::insert_link_at_cursor(&mut st, VP, VW);
+    assert_eq!(st.contents(), "héllo [wörld](file path or URL)\n");
+    let (s, e) = st
+        .selection
+        .expect("URL placeholder should be selected")
+        .range();
+    assert_eq!(st.buffer.slice_to_string(s, e), "file path or URL");
+}
+
+#[test]
+fn insert_link_ignores_multiline_selection_without_destroying_it() {
+    use edamame::document::Selection;
+    let mut st = state("one\ntwo\n");
+    st.mode = Mode::Rendered;
+    st.selection = Some(Selection {
+        anchor: 0,
+        active: 7, // spans the newline
+    });
+    st.cursor.offset = 7;
+    edit_ops::insert_link_at_cursor(&mut st, VP, VW);
+    // The selection is dropped, not replaced: no buffer text is lost.
+    assert_eq!(st.contents(), "one\ntwo[link text](file path or URL)\n");
+}
+
+#[test]
+fn inline_snippet_guard_classifies_blocks() {
+    let src = "para\n\n```\ncode\n```\n\n![a](b.png)\n\n---\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    // Inside the paragraph — allowed (inline images/links are legal).
+    st.cursor.offset = 2;
+    assert!(edit_ops::cursor_block_allows_inline_markdown(&mut st));
+
+    // On the blank line after it — allowed (snippet becomes its own block).
+    st.cursor.offset = 5;
+    assert!(edit_ops::cursor_block_allows_inline_markdown(&mut st));
+
+    // Inside the fenced code block — denied.
+    st.cursor.offset = src.find("code").unwrap() + 1;
+    assert!(!edit_ops::cursor_block_allows_inline_markdown(&mut st));
+
+    // On the existing image block — denied.
+    st.cursor.offset = src.find("![a]").unwrap() + 2;
+    assert!(!edit_ops::cursor_block_allows_inline_markdown(&mut st));
+
+    // On the horizontal rule — denied.
+    st.cursor.offset = src.find("---").unwrap() + 1;
+    assert!(!edit_ops::cursor_block_allows_inline_markdown(&mut st));
+}
+
+#[test]
+fn insert_image_from_preview_enters_rendered_mode() {
+    let mut st = state("\n");
+    assert_eq!(st.mode, Mode::Preview);
+    edit_ops::insert_image_at_cursor(&mut st, VP, VW);
+    assert_eq!(st.mode, Mode::Rendered);
+    assert_eq!(st.contents(), "![alt text](file path or URL)\n");
+}
+
+#[test]
+fn insert_link_denied_in_code_block_leaves_state_untouched() {
+    use edamame::document::Selection;
+    let src = "```\ncode\n```\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    st.selection = Some(Selection {
+        anchor: 4,
+        active: 8, // "code"
+    });
+    st.cursor.offset = 8;
+    assert!(!edit_ops::insert_link_at_cursor(&mut st, VP, VW));
+    // A denied insert is a full no-op: buffer, mode, and selection all keep
+    // their prior values.
+    assert_eq!(st.contents(), src);
+    assert_eq!(st.mode, Mode::Rendered);
+    assert_eq!(st.selection.map(|s| s.range()), Some((4, 8)));
+}
+
+#[test]
+fn insert_link_denied_when_selection_starts_in_code_block() {
+    use edamame::document::Selection;
+    // Cursor sits past the fence on the trailing blank line, but the
+    // wrapped selection starts inside the code block — the pre-flight
+    // classifies the insert offset (the selection start), not the cursor.
+    let src = "```\ncode\n```\n\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    st.selection = Some(Selection {
+        anchor: 4,
+        active: 8, // "code"
+    });
+    st.cursor.offset = 13;
+    assert!(!edit_ops::insert_link_at_cursor(&mut st, VP, VW));
+    assert_eq!(st.contents(), src);
+}
