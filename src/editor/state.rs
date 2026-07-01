@@ -7,6 +7,7 @@ use crate::document::{Buffer, Cursor, EditDelta, History, ParsedDoc, Selection, 
 use crate::editor::state_viewport::RawVisualRowCache;
 use crate::editor::Mode;
 use crate::image::ImageCache;
+use crate::editor::yank_flash::YankFlash;
 use crate::markdown::RenderCache;
 use crate::search::SearchState;
 
@@ -808,6 +809,13 @@ impl EditorState {
             .unwrap_or(source.len());
         let comment_line = &source[info.end..comment_line_end];
         crate::markdown::table_layout::parse_column_widths_comment(comment_line).is_some()
+    }
+
+    /// Whether the cursor currently sits inside a Markdown table.  Public
+    /// so the vim input reducer can decide whether `Tab` should perform
+    /// cell navigation (mirroring `Shift-Tab` → `TablePrevCell`).
+    pub fn cursor_in_table(&self) -> bool {
+        crate::editor::table_edit_ops::cursor_in_table(self)
     }
 
     /// Re-parse and re-render after an edit. Called automatically by `edit_ops`.
