@@ -363,8 +363,12 @@ impl App {
                 // bool — flip the handler, then let `apply_live_update`
                 // rebuild the live `VimState`.
                 let enabling = self.config.modal.handler != VIM_HANDLER;
-                self.config.modal.handler =
-                    if enabling { VIM_HANDLER } else { DEFAULT_HANDLER }.to_owned();
+                self.config.modal.handler = if enabling {
+                    VIM_HANDLER
+                } else {
+                    DEFAULT_HANDLER
+                }
+                .to_owned();
                 self.toggle_persisted_setting(settings_overlay::LABEL_VIM_MODE, enabling);
                 true
             }
@@ -400,6 +404,37 @@ impl App {
                     self.open_insert_table_modal();
                 } else {
                     self.notify("Insert Table requires a blank line", ModalKind::Warning);
+                }
+                self.needs_draw = true;
+                true
+            }
+            // Image / link snippets share one pre-flight: the target
+            // block must be able to host inline Markdown (code, HTML,
+            // and image blocks hold literal content).  The insert
+            // functions run it themselves — against the actual insert
+            // offset, after the Preview cursor→scroll sync — and
+            // return `false` when it fails.
+            Action::InsertImage | Action::InsertLink => {
+                let is_image = matches!(action, Action::InsertImage);
+                let inserted = if is_image {
+                    crate::editor::edit_ops::insert_image_at_cursor(
+                        &mut self.editor,
+                        doc_height,
+                        doc_width,
+                    )
+                } else {
+                    crate::editor::edit_ops::insert_link_at_cursor(
+                        &mut self.editor,
+                        doc_height,
+                        doc_width,
+                    )
+                };
+                if !inserted {
+                    let what = if is_image { "an image" } else { "a link" };
+                    self.notify(
+                        format!("Cannot insert {what} inside this block"),
+                        ModalKind::Warning,
+                    );
                 }
                 self.needs_draw = true;
                 true

@@ -39,6 +39,17 @@
 # BoldSelection          = "ctrl+b"
 # ItalicizeSelection     = "ctrl+i"
 
+# ── Insert ────────────────────────────────────────────────────────────────────
+# InsertTable opens the rows/columns prompt (the cursor must be on a blank
+# line). InsertLink and InsertImage drop a `[link text](file path or URL)` /
+# `![alt text](file path or URL)` snippet at the cursor, or wrap the selection
+# as the visible text; the placeholder is left selected so typing replaces it.
+# InsertLink and InsertImage have no default key — run them from the command
+# palette (Ctrl-P) or bind a chord here.
+# InsertTable            = "ctrl+shift+t"
+# InsertLink             = ""
+# InsertImage            = ""
+
 # ── View ──────────────────────────────────────────────────────────────────────
 # ToggleRawMode          = "ctrl+`"
 

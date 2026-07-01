@@ -183,6 +183,16 @@ pub enum Action {
     /// a blank line; the App-level handler flashes an error
     /// when that pre-flight fails.
     InsertTable,
+    /// Insert an inline image snippet (`![alt text](file path or URL)`)
+    /// at the cursor, or wrap the selection as the alt text.  Denied in
+    /// blocks whose content is literal (code, HTML, an existing image);
+    /// the App-level handler flashes a warning when that pre-flight
+    /// fails.
+    InsertImage,
+    /// Insert an inline link snippet (`[link text](file path or URL)`)
+    /// at the cursor, or wrap the selection as the link text.  Same
+    /// literal-block pre-flight as [`Action::InsertImage`].
+    InsertLink,
     /// Insert an auto-numbered `[^N]` footnote reference at the cursor
     /// (the next integer past the highest existing numeric footnote).
     /// The user writes the matching definition wherever they want.
@@ -342,7 +352,7 @@ action_variants! {
     ShowCommandPalette, ShowMarkdownCheatSheet, ShowAbout,
     OpenSettings, OpenKeybinds, OpenConfigFolder, SwitchTheme, CreateCustomTheme,
     ExportHtml, OpenInExternalEditor,
-    ToggleTableButtons, InsertTable,
+    ToggleTableButtons, InsertTable, InsertImage, InsertLink,
     ToggleBigH1, ToggleLineNumbers, ToggleBlinkCursor, ToggleAutosave,
     ToggleVisualLineNav, ToggleVimMode, ToggleLimitWidth, ToggleDiffOnChange,
     InsertFootnote, DeleteFootnote, RenumberFootnotes,
@@ -899,6 +909,10 @@ impl KeyMap {
         // flow, so a discoverable keybind sits next to the palette
         // entry.
         bind!("ctrl+shift+t", Action::InsertTable);
+
+        // `InsertLink` / `InsertImage` ship unbound: they're reachable
+        // from the command palette, and a user who wants a chord can
+        // bind one in keybindings.toml.
 
         Self { bindings: b }
     }

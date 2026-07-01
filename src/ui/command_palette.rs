@@ -195,6 +195,8 @@ fn section_of(action: &Action) -> &'static str {
         | Action::ItalicizeSelection
         | Action::ToggleCheckbox
         | Action::InsertTable
+        | Action::InsertImage
+        | Action::InsertLink
         | Action::InsertFootnote
         | Action::DeleteFootnote
         | Action::RenumberFootnotes => "Edit",
