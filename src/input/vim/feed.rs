@@ -42,11 +42,12 @@ use crate::config::Action;
 use crate::document::{EditDelta, Selection};
 use crate::editor::vim_ops::{
     doubled_line_range, execute_operator, execute_substitute, first_non_blank, indent_lines,
-    indent_list_item, join_lines, open_list_continue, parse_ex, paste, renumber_list_at_cursor,
-    replace_char, replace_char_range, replace_range_with, resolve_find_repeat, resolve_motion,
-    resolve_motion_range, resolve_text_object_range, set_case_range, toggle_case,
-    toggle_case_range, vertical_line_range, visual_line_bounds, visual_line_char_range,
-    word_under_cursor_at, ExCommand, FindKind, Motion, OpRange, OpResult, Operator, TextObject,
+    indent_list_item, join_lines, line_end_offset, open_list_continue, parse_ex, paste,
+    renumber_list_at_cursor, replace_char, replace_char_range, replace_range_with,
+    resolve_find_repeat, resolve_motion, resolve_motion_range, resolve_text_object_range,
+    set_case_range, toggle_case, toggle_case_range, vertical_line_range, visual_line_bounds,
+    visual_line_char_range, word_under_cursor_at, ExCommand, FindKind, Motion, OpRange, OpResult,
+    Operator, TextObject,
 };
 use crate::editor::{edit_ops, EditorState, Mode};
 
@@ -1006,7 +1007,13 @@ fn feed_command_char(
                 vim.reset_pending();
             }
             'a' => {
-                editor.cursor.move_right(&editor.buffer);
+                // Append after the cursor, but never across the newline: at
+                // end-of-line the insertion point is already past the last
+                // char, so stepping right would land on the next line.
+                let line = editor.buffer.char_to_line(editor.cursor.offset);
+                if editor.cursor.offset < line_end_offset(&editor.buffer, line) {
+                    editor.cursor.move_right(&editor.buffer);
+                }
                 enter_insert(vim, editor);
                 after_move(editor, vh, vw);
                 vim.reset_pending();

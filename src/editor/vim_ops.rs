@@ -35,8 +35,8 @@ pub use edits::{
 };
 pub use ex::{execute_substitute, parse_ex, ExCommand};
 pub use motion::{
-    doubled_line_range, first_non_blank, resolve_find_repeat, resolve_motion, resolve_motion_range,
-    vertical_line_range, FindKind, Motion, OpRange,
+    doubled_line_range, first_non_blank, line_end_offset, resolve_find_repeat, resolve_motion,
+    resolve_motion_range, vertical_line_range, FindKind, Motion, OpRange,
 };
 pub use operator::{execute_operator, OpResult, Operator};
 pub use search::word_under_cursor_at;

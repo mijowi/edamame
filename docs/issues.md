@@ -23,7 +23,6 @@
 - When typing in a table cell that is wider than the column header, and a space character is entered,
 - Conventional vim selection instead of half selection?
 - `p` pastes after cursor cell instead of before
-- `a` at the end of a line starts typing on the following line — puts the cursor after the newline character
 
 ## Diff mode
 - Finish diff mode plan (editing hunks in diff mode)

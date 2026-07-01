@@ -257,6 +257,32 @@ fn a_appends_after_the_cursor() {
 }
 
 #[test]
+fn a_at_end_of_line_does_not_cross_the_newline() {
+    let mut st = state("ab\ncd");
+    let mut vim = VimState::default();
+    st.cursor.offset = 2; // end of "ab", on the newline
+    feed(&mut vim, &mut st, ch('a'));
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+    assert_eq!(
+        st.cursor.offset, 2,
+        "stays before the newline, not on line 2"
+    );
+}
+
+#[test]
+fn a_on_the_last_char_appends_before_the_newline() {
+    let mut st = state("ab\ncd");
+    let mut vim = VimState::default();
+    st.cursor.offset = 1; // on 'b', the last char of line 1
+    feed(&mut vim, &mut st, ch('a'));
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+    assert_eq!(
+        st.cursor.offset, 2,
+        "insertion point after 'b', before the newline"
+    );
+}
+
+#[test]
 fn capital_i_moves_to_first_non_blank() {
     let mut st = state("   foo");
     let mut vim = VimState::default();
