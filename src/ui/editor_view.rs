@@ -319,6 +319,9 @@ impl<'a> StatefulWidget for EditorView<'a> {
         // `RawView`.  No-op outside an active search flow / yank flash.
         if matches!(mode, Mode::Preview | Mode::Rendered) {
             super::rendered_view::paint_search_overlays(self.state, buf, doc_area, self.theme);
+            super::rendered_view::paint_substitute_preview_overlays(
+                self.state, buf, doc_area, self.theme,
+            );
             super::rendered_view::paint_yank_flash(self.state, buf, doc_area, self.theme);
         }
 

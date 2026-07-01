@@ -522,3 +522,65 @@ fn focused_match_uses_selection_and_others_the_muted_variant() {
     assert_eq!(buf.cell((1, 0)).unwrap().style().bg, t.selection.bg);
     assert_eq!(buf.cell((8, 0)).unwrap().style().bg, t.selection_muted.bg);
 }
+
+// -- Live `:s` substitution preview painting --------------------------
+
+#[test]
+fn substitute_preview_paints_its_highlights_and_suspends_the_search_wash() {
+    let t = theme();
+    // An hlsearch session is active when the preview starts: its byte
+    // ranges are stale against the previewed text, so the search wash
+    // must be suspended while the preview's own highlights paint.
+    let mut st = state_with_search("foo bar foo\n", "foo", None);
+    st.mode = Mode::Rendered;
+    edamame::editor::vim_ops::update_substitute_preview(&mut st, "%s/bar/XY/", None, 8, 40);
+    assert_eq!(st.buffer.contents(), "foo XY foo\n");
+    let buf = render_editor(&mut st, 40, 8);
+    // The inserted "XY" (cols 4..6 of row 0) carries the selection bg.
+    for x in 4..6u16 {
+        let cell = buf.cell((x, 0)).unwrap();
+        assert_eq!(
+            cell.style().bg,
+            t.selection.bg,
+            "preview highlight col {x} must carry the selection bg"
+        );
+    }
+    // The search matches ("foo" at cols 0..3 and 8..11) must NOT be
+    // washed while the preview is active.  Col 0 holds the block cursor
+    // (the preview parks it on the first affected line), so assert on
+    // cols 1..3.
+    for x in 1..3u16 {
+        let cell = buf.cell((x, 0)).unwrap();
+        assert_ne!(
+            cell.style().bg,
+            t.selection.bg,
+            "search wash col {x} must be suspended during the preview"
+        );
+        assert_ne!(cell.style().bg, t.selection_muted.bg);
+    }
+    for x in 8..11u16 {
+        let cell = buf.cell((x, 0)).unwrap();
+        assert_ne!(cell.style().bg, t.selection_muted.bg);
+    }
+    // The search session itself survives; only its painting is paused.
+    assert!(st.search.is_some());
+}
+
+#[test]
+fn raw_view_paints_substitute_preview_highlights() {
+    let t = theme();
+    let mut st = EditorState::new(Buffer::from_str("foo bar\n"), theme());
+    st.mode = Mode::Raw;
+    edamame::editor::vim_ops::update_substitute_preview(&mut st, "%s/bar/XY/", None, 8, 40);
+    assert_eq!(st.buffer.contents(), "foo XY\n");
+    let buf = render_editor(&mut st, 40, 8);
+    for x in 4..6u16 {
+        let cell = buf.cell((x, 0)).unwrap();
+        assert_eq!(
+            cell.style().bg,
+            t.selection.bg,
+            "raw-view preview highlight col {x} must carry the selection bg"
+        );
+    }
+    assert_ne!(buf.cell((6, 0)).unwrap().style().bg, t.selection.bg);
+}

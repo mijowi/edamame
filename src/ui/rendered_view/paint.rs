@@ -400,6 +400,13 @@ pub(crate) fn paint_search_overlays(
     let Some(search) = editor.search.as_ref() else {
         return;
     };
+    // A live `:s` preview may have rewritten the buffer, so any search
+    // session's byte ranges are stale against the previewed text (its
+    // freshness refresh is paused too).  Suspend the wash — it reappears
+    // untouched once the preview reverts.
+    if editor.substitute_preview.is_some() {
+        return;
+    }
     if search.matches.is_empty() || area.width == 0 || area.height == 0 {
         return;
     }
@@ -456,6 +463,83 @@ pub(crate) fn paint_search_overlays(
                     m.start,
                     m.end,
                     style,
+                );
+            }
+        }
+        vis_y += painted as u16;
+        line_idx += 1;
+        first_sub_row = 0;
+    }
+}
+
+/// Post-render pass: paint the live `:s` substitution preview's highlight
+/// ranges over the rendered document — match ranges while the pattern is
+/// being typed, the inserted replacement segments once the replacement
+/// field exists (the buffer already shows the substituted text; this wash
+/// marks what changed).  Shares the visible-line walk with
+/// [`paint_search_overlays`], but with a single style (`theme.selection`)
+/// for every range — the preview has no focus concept, matching nvim's
+/// one `Substitute` highlight group.  No-op outside a preview session.
+pub(crate) fn paint_substitute_preview_overlays(
+    editor: &EditorState,
+    buf: &mut TuiBuf,
+    area: Rect,
+    theme: &Theme,
+) {
+    let Some(preview) = editor.substitute_preview.as_ref() else {
+        return;
+    };
+    if preview.highlights.is_empty() || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let source_len = editor.buffer.rope().len_bytes();
+    let width = area.width as usize;
+    let (mut line_idx, mut first_sub_row) =
+        editor.rendered_line_at_visual_row(editor.scroll, width.max(1));
+    let mut vis_y: u16 = 0;
+    while vis_y < area.height {
+        if line_idx >= editor.parsed.lines.len() {
+            break;
+        }
+        let rows = editor
+            .parsed
+            .visual_rows_for_line_at(line_idx, width)
+            .max(1);
+        let painted = rows
+            .saturating_sub(first_sub_row)
+            .min((area.height - vis_y) as usize);
+        if painted == 0 {
+            break;
+        }
+        let block_range = editor
+            .parsed
+            .source_map
+            .original_byte_for_rendered_line(line_idx)
+            .and_then(|b| editor.parsed.source_map.original_range_for_byte(b));
+        if let Some(block_range) = block_range {
+            // Ranges are sorted; jump to the first that could touch
+            // this block and stop at the first past it.
+            let start = preview
+                .highlights
+                .partition_point(|r| r.end <= block_range.start);
+            for r in preview.highlights.iter().skip(start) {
+                if r.start >= block_range.end {
+                    break;
+                }
+                if r.end > source_len {
+                    continue;
+                }
+                paint_byte_range_overlay(
+                    editor,
+                    buf,
+                    area,
+                    vis_y,
+                    painted as u16,
+                    first_sub_row,
+                    line_idx,
+                    r.start,
+                    r.end,
+                    theme.selection,
                 );
             }
         }

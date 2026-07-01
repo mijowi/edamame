@@ -37,6 +37,15 @@ impl App {
             self.autosave_pending_since = None;
             return;
         }
+        // A live `:s` preview has transiently rewritten the buffer (raw
+        // buffer edits bump `version` without touching `dirty`); on an
+        // already-dirty buffer the debounce would arm and autosave the
+        // preview text to disk.  Skip entirely — once the preview reverts
+        // or commits, the next tick sees a version change and re-arms.
+        if self.editor.substitute_preview.is_some() {
+            self.autosave_pending_since = None;
+            return;
+        }
         let enabled = self.config.editor.autosave_enabled;
         let version = self.editor.buffer.version();
 
@@ -100,7 +109,8 @@ impl App {
     /// autosave, if any.  Contributes to [`App::next_deadline`] so the
     /// `recv_timeout` blocks exactly long enough — no idle CPU.
     pub(super) fn autosave_deadline(&self) -> Option<Instant> {
-        if self.editor.mode == crate::editor::Mode::Diff {
+        if self.editor.mode == crate::editor::Mode::Diff || self.editor.substitute_preview.is_some()
+        {
             return None;
         }
         let since = self.autosave_pending_since?;
@@ -325,6 +335,41 @@ mod tests {
         assert!(
             app.autosave_deadline().is_none(),
             "deadline suppressed in diff mode"
+        );
+    }
+
+    #[test]
+    fn live_substitute_preview_suspends_autosave() {
+        // A `:s` preview transiently rewrites the buffer through raw
+        // `Buffer` edits (version bumps, `dirty` untouched); on an
+        // already-dirty buffer an armed timer must be disarmed and no
+        // save may fire while the preview is active — otherwise preview
+        // text would reach the disk.
+        let mut app = make_app();
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let path = tmp.path().to_owned();
+        app.editor.buffer = Buffer::for_new_file(&path);
+        let window = shrink_window(&mut app);
+        dirty_edit(&mut app); // appends 'x'
+        app.tick_autosave();
+        assert!(app.autosave_pending_since.is_some(), "armed");
+        crate::editor::vim_ops::update_substitute_preview(&mut app.editor, "%s/x/y/", None, 24, 80);
+        assert!(app.editor.substitute_preview.is_some(), "preview active");
+        std::thread::sleep(window + Duration::from_millis(20));
+        app.tick_autosave();
+        assert!(
+            app.autosave_pending_since.is_none(),
+            "an active preview must clear the armed timer"
+        );
+        assert!(app.editor.dirty, "no save fired during the preview");
+        assert!(
+            app.autosave_deadline().is_none(),
+            "deadline suppressed during the preview"
+        );
+        let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            !on_disk.contains('y'),
+            "preview text must never reach the disk"
         );
     }
 
