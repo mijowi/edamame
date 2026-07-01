@@ -2731,6 +2731,99 @@ fn ex_substitute_supports_regex() {
     assert_eq!(st.buffer.contents(), "a-b-c-");
 }
 
+/// Type the body of a `:`-command that is already open (its `'<,'>` prefix
+/// pre-filled by a Visual-mode `:`), then submit with Enter.
+fn submit_open_ex(vim: &mut VimState, st: &mut EditorState, body: &str) -> VimOutcome {
+    for c in body.chars() {
+        feed(vim, st, ch(c));
+    }
+    feed(vim, st, key(KeyCode::Enter))
+}
+
+#[test]
+fn colon_in_visual_prefills_the_visual_range() {
+    let mut st = state("foo\nfoo\nfoo");
+    let mut vim = VimState::default();
+    // V-LINE over lines 0..=1, then `:` opens the ex prompt pre-filled with
+    // the `'<,'>` range and drops the selection (as vim does).
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('j'));
+    assert_eq!(feed(&mut vim, &mut st, ch(':')), VimOutcome::Pending);
+    let cl = vim.cmdline.as_ref().expect("ex prompt armed from Visual");
+    assert_eq!(cl.input, "'<,'>", "the `'<,'>` range is pre-filled");
+    assert_eq!(cl.cursor, 5, "cursor parks at the end so typing appends");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal, "Visual exits on `:`");
+    assert!(st.selection.is_none(), "the highlight is dropped");
+    assert_eq!(
+        vim.last_visual_range,
+        Some((0, 1)),
+        "marks span the selection"
+    );
+}
+
+#[test]
+fn ex_substitute_over_visual_line_range() {
+    let mut st = state("foo\nfoo\nfoo\nfoo");
+    let mut vim = VimState::default();
+    // Select lines 0..=1 linewise, then `:'<,'>s/foo/bar/g`.
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('j'));
+    feed(&mut vim, &mut st, ch(':'));
+    let out = submit_open_ex(&mut vim, &mut st, "s/foo/bar/g");
+    assert_eq!(out, VimOutcome::Flash("2 substitutions".to_owned()));
+    assert_eq!(
+        st.buffer.contents(),
+        "bar\nbar\nfoo\nfoo",
+        ":'<,'>s only touches the selected lines"
+    );
+}
+
+#[test]
+fn ex_substitute_over_charwise_visual_uses_whole_lines() {
+    let mut st = state("foo foo\nfoo foo\nfoo foo");
+    let mut vim = VimState::default();
+    // Charwise Visual from mid-line 0 into line 1; the ex range is still
+    // line-oriented (whole lines 0..=1), matching vim.
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('j'));
+    feed(&mut vim, &mut st, ch(':'));
+    let out = submit_open_ex(&mut vim, &mut st, "s/foo/bar/g");
+    assert_eq!(out, VimOutcome::Flash("4 substitutions".to_owned()));
+    assert_eq!(
+        st.buffer.contents(),
+        "bar bar\nbar bar\nfoo foo",
+        "charwise selection substitutes over the whole touched lines"
+    );
+}
+
+#[test]
+fn ex_write_from_visual_ignores_the_range_prefix() {
+    let mut st = state_with_path("hello");
+    let mut vim = VimState::default();
+    // `:` in Visual auto-inserts `'<,'>`; the write/quit family ignores it and
+    // acts on the whole buffer, so a Visual `:w` still just saves.
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch(':'));
+    assert_eq!(submit_open_ex(&mut vim, &mut st, "w"), VimOutcome::Save);
+    assert_eq!(st.buffer.contents(), "hello");
+}
+
+#[test]
+fn ex_unknown_command_from_visual_keeps_the_range_in_the_error() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch(':'));
+    let out = submit_open_ex(&mut vim, &mut st, "nope");
+    assert_eq!(
+        out,
+        VimOutcome::Flash("Not an editor command: '<,'>nope".to_owned())
+    );
+    assert_eq!(st.buffer.contents(), "hello");
+}
+
 #[test]
 fn ex_parse_error_flashes_without_editing() {
     let mut st = state("hello");

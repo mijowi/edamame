@@ -183,6 +183,7 @@ Type `:` to open the command line.
 | `:wq` / `:x` | Write and quit |
 | `:s/pat/rep/[flags]` | Substitute on the current line |
 | `:%s/pat/rep/[flags]` | Substitute across the whole document |
+| `:'<,'>s/pat/rep/[flags]` | Substitute across the lines of the last visual selection |
 
 Supported substitution flags: `g` (all matches on a line, not just the first) and `i` (case-insensitive).
 
@@ -195,10 +196,11 @@ Notes on differences:
   - Replacement specials: backreferences `\1`…, the whole match `&`, and case modifiers `\u \U \l \L \e \E`.
   - Backreferences within the pattern (e.g. `\(.\)\1`) and lookaround work.
   - A few rare atoms (`\zs`, `\ze`, postfix `\@=`, `\%[…]`, `\%^`, …) are **not** supported and produce a friendly error rather than a wrong result.
+- **`:` works from Visual / Visual-Line too.** Pressing `:` on a selection opens the command line pre-filled with the `'<,'>` range (as in Vim), so `:'<,'>s/pat/rep/g` substitutes only within the selected lines. The range is line-oriented: a charwise selection still covers the whole lines it touches. `'<,'>` only scopes `:s`; the write/quit family (`:w`, `:wq`, `:q`, `:x`) ignores the auto-inserted prefix and acts on the whole buffer.
 - **The command line supports history.** Press Up/Down while typing a `:` or `/` command to recall earlier entries from this session.
 - **`:q` respects unsaved changes** — it opens edamame's quit-confirm dialog, exactly like the normal quit shortcut. `:wq` saves first, so it quits cleanly.
 - **`:x` writes only when the buffer is modified, then quits** — matching stock Vim, where `:wq` always writes (even an unchanged buffer) but `:x` skips the write on a clean buffer. `:xit` is accepted as a synonym.
-- **Not supported:** `:e <path>` (open file), `:q!` (force quit), bare `:s` (repeat last substitution), and line ranges other than the current line or `%`.
+- **Not supported:** `:e <path>` (open file), `:q!` (force quit), bare `:s` (repeat last substitution), and line ranges other than the current line, `%`, or the visual `'<,'>`.
 
 ---
 
