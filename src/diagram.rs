@@ -17,4 +17,6 @@ pub mod mermaid;
 // but rustc misreports it as unused on this re-export. See similar note in
 // `src/config.rs`.
 #[allow(unused_imports)]
-pub use mermaid::{render_mermaid_svg, resolve_mermaid, synthetic_url, warm_fontdb, DiagramSource};
+pub use mermaid::{
+    is_diagram_url, render_mermaid_svg, resolve_mermaid, synthetic_url, warm_fontdb, DiagramSource,
+};

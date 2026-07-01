@@ -461,6 +461,39 @@ impl ImageCache {
             .retain(|_, status| !matches!(status, DecodeStatus::Failed(_)));
     }
 
+    /// Drop a single URL's entries (decode status, protocols, scratches)
+    /// so a later `request` treats it as never seen.  Called by the App
+    /// when a worker's `ImageReady` result arrives that the *current*
+    /// settings forbid (the worker captured the policy at spawn time) —
+    /// the per-frame dispatch then re-resolves the URL if the settings
+    /// permit it again.
+    pub fn forget(&mut self, url: &str) {
+        self.decoded.remove(url);
+        self.protocols.retain(|(u, _, _), _| u != url);
+        self.prebuilt_scratches.retain(|(u, _, _), _| u != url);
+    }
+
+    /// Drop every entry (decoded pixels, protocols, scratches) whose URL
+    /// is remote (`http://` / `https://`).  Called by the App when the
+    /// remote-image policy changes so the next dispatch re-resolves each
+    /// remote URL under the new policy — a decoded image disappears when
+    /// the policy tightens, and a memoised `RemoteBlocked` failure can
+    /// retry when it loosens.
+    pub fn evict_remote(&mut self) {
+        self.decoded
+            .retain(|url, _| !crate::image::loader::is_remote(url));
+        self.protocols
+            .retain(|(url, _, _), _| !crate::image::loader::is_remote(url));
+        self.prebuilt_scratches
+            .retain(|(url, _, _), _| !crate::image::loader::is_remote(url));
+        // `pending` is deliberately left untouched: the encode worker
+        // will still produce a response for every request already
+        // shipped, and `apply_resize_response` pairs responses with
+        // requests by FIFO order.  Responses for evicted URLs become
+        // orphan pops and are silently discarded, same as after
+        // `invalidate_protocols`.
+    }
+
     /// Drop every entry whose URL is not in `live`.  Called by the App
     /// after each reparse to prune diagrams whose synthetic URL changed
     /// (content-edit inside a ```mermaid block → new sha → fresh cache
@@ -520,6 +553,34 @@ mod tests {
         let rows = aspect_rows_of(&img, 80, 40, (8, 16));
         // 1080 * 640 / 1920 = 360 px → ceil(360/16) = 23 rows.
         assert_eq!(rows, 23);
+    }
+
+    #[test]
+    fn forget_drops_one_url_and_allows_a_re_request() {
+        let mut cache = ImageCache::new();
+        cache.set_decoded("a.png", DynamicImage::new_rgba8(1, 1));
+        cache.set_decoded("b.png", DynamicImage::new_rgba8(1, 1));
+        cache.forget("a.png");
+        assert!(cache.status("a.png").is_none());
+        assert!(cache.status("b.png").is_some(), "other entries untouched");
+        assert!(cache.request("a.png"), "forgotten URL can be re-requested");
+    }
+
+    #[test]
+    fn evict_remote_drops_remote_entries_and_keeps_local() {
+        let mut cache = ImageCache::new();
+        cache.set_decoded("https://example.com/a.png", DynamicImage::new_rgba8(1, 1));
+        cache.set_failed("http://example.com/b.png", "blocked".into());
+        cache.set_decoded("local/c.png", DynamicImage::new_rgba8(1, 1));
+        cache.evict_remote();
+        assert!(cache.status("https://example.com/a.png").is_none());
+        assert!(cache.status("http://example.com/b.png").is_none());
+        assert!(matches!(
+            cache.status("local/c.png"),
+            Some(DecodeStatus::Ready(_))
+        ));
+        // Evicted URLs can be re-requested under the new policy.
+        assert!(cache.request("https://example.com/a.png"));
     }
 
     #[test]

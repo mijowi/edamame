@@ -110,6 +110,165 @@ impl App {
         }
     }
 
+    /// React to a settings-overlay change of `config.images.enabled`.
+    /// Called only when the value actually changed (the overlay emits
+    /// `FieldChanged` solely on a real transition).  Mirrors what the
+    /// startup prompts would have done under the new value:
+    ///
+    /// * `Always` — reserve image rows again and dispatch decodes.
+    /// * `Ask` — reserve rows and queue the images-enabled prompt (it
+    ///   surfaces once the settings overlay closes, matching the
+    ///   startup queue order).
+    /// * `Never` — collapse image blocks to their placeholders and
+    ///   drop any queued prompts.
+    ///
+    /// The persisted choice supersedes any earlier session-level
+    /// answer, so `session_images_enabled` is reset unconditionally.
+    pub(super) fn apply_images_setting_change(&mut self) {
+        self.session_images_enabled = None;
+        let layout_on = self.images_layout_enabled();
+        if self.editor.images_enabled != layout_on {
+            self.editor.images_enabled = layout_on;
+            self.editor.refresh_parsed();
+        }
+        // Any queued prompt reflects the pre-change value; rebuild from
+        // scratch below.
+        self.modal_stack
+            .remove_first::<super::modal::ImagesEnabledPromptModal>();
+        self.modal_stack
+            .remove_first::<super::modal::RemoteImagePromptModal>();
+        match self.config.images.enabled {
+            crate::config::ImagesEnabled::Always => {
+                self.queue_remote_image_prompt();
+                self.dispatch_image_decodes();
+            }
+            crate::config::ImagesEnabled::Ask => {
+                // Remote first, images on top — same relative order as
+                // the startup stack, so answering "Yes" to the images
+                // prompt reveals the remote prompt beneath it.
+                self.queue_remote_image_prompt();
+                if let Some(m) =
+                    super::modal::ImagesEnabledPromptModal::from_state(&self.editor, &self.config)
+                {
+                    self.modal_stack.push(Box::new(m));
+                }
+            }
+            crate::config::ImagesEnabled::Never => {}
+        }
+        self.images_dirty = true;
+        self.needs_draw = true;
+    }
+
+    /// React to a settings-overlay change of `config.diagrams.enabled`.
+    /// Called only when the value actually changed.  Counterpart of
+    /// [`Self::apply_images_setting_change`] for diagram blocks —
+    /// deliberately independent, mirroring the two startup prompts:
+    ///
+    /// * `Always` — reserve diagram rows again and dispatch renders.
+    /// * `Ask` — reserve rows and queue the diagrams-enabled prompt.
+    /// * `Never` — collapse diagram blocks to their placeholders and
+    ///   drop any queued prompt.
+    ///
+    /// The persisted choice supersedes any earlier session-level
+    /// answer, so `session_diagrams_enabled` is reset unconditionally.
+    pub(super) fn apply_diagrams_setting_change(&mut self) {
+        self.session_diagrams_enabled = None;
+        let layout_on = self.diagrams_layout_enabled();
+        if self.editor.diagrams_enabled != layout_on {
+            self.editor.diagrams_enabled = layout_on;
+            self.editor.refresh_parsed();
+        }
+        // Any queued prompt reflects the pre-change value; rebuild below.
+        self.modal_stack
+            .remove_first::<super::modal::DiagramsEnabledPromptModal>();
+        match self.config.diagrams.enabled {
+            crate::config::DiagramsEnabled::Always => self.dispatch_image_decodes(),
+            crate::config::DiagramsEnabled::Ask => {
+                if let Some(m) =
+                    super::modal::DiagramsEnabledPromptModal::from_state(&self.editor, &self.config)
+                {
+                    self.modal_stack.push(Box::new(m));
+                }
+            }
+            crate::config::DiagramsEnabled::Never => {}
+        }
+        self.images_dirty = true;
+        self.needs_draw = true;
+    }
+
+    /// React to a settings-overlay change of
+    /// `config.images.remote_policy`.  Called only when the value
+    /// actually changed.  Cached remote decodes are evicted so every
+    /// remote URL re-resolves under the new policy: `Always`
+    /// re-dispatches (refetch), `Ask` queues the remote-image prompt,
+    /// `Never` lets the per-frame dispatch re-request and fail each
+    /// remote URL into its blocked placeholder.
+    pub(super) fn apply_remote_policy_change(&mut self) {
+        // The persisted choice supersedes an earlier session-level
+        // "Yes" on the remote prompt.
+        self.session_allow_remote = false;
+        self.editor.images.evict_remote();
+        self.modal_stack
+            .remove_first::<super::modal::RemoteImagePromptModal>();
+        match self.config.images.remote_policy {
+            crate::config::RemoteImagePolicy::Always => self.dispatch_image_decodes(),
+            crate::config::RemoteImagePolicy::Ask => self.queue_remote_image_prompt(),
+            crate::config::RemoteImagePolicy::Never => {}
+        }
+        self.images_dirty = true;
+        self.needs_draw = true;
+    }
+
+    /// Queue the remote-image prompt if the current document and config
+    /// warrant one (policy `Ask`, at least one remote image, remote not
+    /// already allowed for this session, no prompt already queued).
+    fn queue_remote_image_prompt(&mut self) {
+        if self.session_allow_remote
+            || self
+                .modal_stack
+                .contains::<super::modal::RemoteImagePromptModal>()
+        {
+            return;
+        }
+        if let Some(m) =
+            super::modal::RemoteImagePromptModal::from_state(&self.editor, &self.config)
+        {
+            self.modal_stack.push(Box::new(m));
+        }
+    }
+
+    /// Result-arrival recheck: decode workers capture the image / remote
+    /// settings at spawn time, so a settings change (or a cache eviction)
+    /// mid-decode can deliver a result the *current* settings forbid —
+    /// e.g. a slow remote fetch landing after the user flipped remote
+    /// images to `Never`.  The event loop accepts an `ImageReady(Ok)`
+    /// result only when this returns true: the URL must still be tracked
+    /// as `Pending` (anything else means it was evicted, or the result is
+    /// a duplicate), its class (image / diagram) must still be enabled,
+    /// and a remote URL must still be permitted to load.
+    pub(super) fn image_result_still_wanted(&self, url: &str) -> bool {
+        if !matches!(
+            self.editor.images.status(url),
+            Some(crate::image::DecodeStatus::Pending)
+        ) {
+            return false;
+        }
+        if crate::diagram::is_diagram_url(url) {
+            return self.effective_diagrams_enabled();
+        }
+        if !self.effective_images_enabled() {
+            return false;
+        }
+        if crate::image::loader::is_remote(url) {
+            return match self.config.images.remote_policy {
+                crate::config::RemoteImagePolicy::Always => true,
+                crate::config::RemoteImagePolicy::Ask => self.session_allow_remote,
+                crate::config::RemoteImagePolicy::Never => false,
+            };
+        }
+        true
+    }
+
     /// Walk the current parse for `Block::ImageBlock`s, mark any new
     /// URLs as `Pending` in the cache, and spawn a worker thread per
     /// newly-requested URL.  Safe to call every frame: existing
@@ -325,6 +484,92 @@ mod tests {
         let ranges = (0..max_block).map(|i| i..i + 1).collect::<Vec<_>>();
         let map = SourceMap::new(rendered_to_block, ranges.clone(), ranges, 0);
         (blocks, map)
+    }
+
+    #[test]
+    fn in_flight_remote_result_is_discarded_after_policy_tightens() {
+        let mut app =
+            crate::app::test_utils::app_with_buffer("![a](https://example.com/a.png)\n", 0);
+        app.config.images.enabled = crate::config::ImagesEnabled::Always;
+        app.config.images.remote_policy = crate::config::RemoteImagePolicy::Always;
+        // Worker dispatched: the URL is tracked as Pending.
+        assert!(app.editor.images.request("https://example.com/a.png"));
+        // The policy tightens while the fetch is in flight (evicts the
+        // Pending entry) …
+        app.config.images.remote_policy = crate::config::RemoteImagePolicy::Never;
+        app.apply_remote_policy_change();
+        // … then the worker's decoded result lands.  It must be
+        // discarded, not cached as Ready.
+        app.handle_async_event(crate::app::AppEvent::ImageReady(Ok(
+            crate::image::LoadedImage {
+                url: "https://example.com/a.png".into(),
+                image: image::DynamicImage::new_rgba8(1, 1),
+                scratch: None,
+            },
+        )));
+        assert!(
+            app.editor
+                .images
+                .status("https://example.com/a.png")
+                .is_none(),
+            "a decoded remote image must not resurface under `Never`"
+        );
+    }
+
+    #[test]
+    fn stale_worker_failure_does_not_overwrite_a_fresh_decode() {
+        let mut app = crate::app::test_utils::app_with_buffer("![a](img.png)\n", 0);
+        app.config.images.enabled = crate::config::ImagesEnabled::Always;
+        // Worker A dispatched, then the entry is evicted mid-flight
+        // (e.g. the Ok-arm discard path) and worker B is dispatched.
+        assert!(app.editor.images.request("img.png"));
+        app.editor.images.forget("img.png");
+        assert!(app.editor.images.request("img.png"));
+        // Worker B's decode lands first.
+        app.handle_async_event(crate::app::AppEvent::ImageReady(Ok(
+            crate::image::LoadedImage {
+                url: "img.png".into(),
+                image: image::DynamicImage::new_rgba8(1, 1),
+                scratch: None,
+            },
+        )));
+        assert!(matches!(
+            app.editor.images.status("img.png"),
+            Some(crate::image::DecodeStatus::Ready(_))
+        ));
+        // Worker A's stale failure lands second: it must be dropped —
+        // `request` never retries a `Failed` entry, so overwriting the
+        // Ready decode would pin the image as broken.
+        app.handle_async_event(crate::app::AppEvent::ImageReady(Err((
+            "img.png".into(),
+            "stale worker error".into(),
+        ))));
+        assert!(
+            matches!(
+                app.editor.images.status("img.png"),
+                Some(crate::image::DecodeStatus::Ready(_))
+            ),
+            "a stale failure must not overwrite a fresh decode"
+        );
+    }
+
+    #[test]
+    fn image_result_still_wanted_rechecks_class_and_policy() {
+        let mut app = crate::app::test_utils::app_with_buffer("![a](img.png)\n", 0);
+        app.config.images.enabled = crate::config::ImagesEnabled::Always;
+        assert!(app.editor.images.request("img.png"));
+        assert!(app.image_result_still_wanted("img.png"));
+        // Images flipped off mid-decode: the local result is unwanted too.
+        app.config.images.enabled = crate::config::ImagesEnabled::Never;
+        assert!(
+            !app.image_result_still_wanted("img.png"),
+            "class disabled mid-flight"
+        );
+        // Back on — but an entry that is no longer Pending (evicted /
+        // already resolved) is never wanted.
+        app.config.images.enabled = crate::config::ImagesEnabled::Always;
+        app.editor.images.forget("img.png");
+        assert!(!app.image_result_still_wanted("img.png"));
     }
 
     #[test]

@@ -29,6 +29,7 @@ pub(crate) const LABEL_SCROLL_SPEED: &str = "Scroll speed";
 pub(crate) const LABEL_VIM_MODE: &str = "Vim mode";
 pub(crate) const LABEL_BLINK_CURSOR: &str = "Blink cursor";
 pub(crate) const LABEL_SHOW_IMAGES: &str = "Show images";
+pub(crate) const LABEL_SHOW_DIAGRAMS: &str = "Show diagrams";
 pub(crate) const LABEL_SHOW_REMOTE_IMAGES: &str = "  Show remote images";
 pub(crate) const LABEL_AUTOSAVE: &str = "Autosave";
 pub(crate) const LABEL_LIMIT_WIDTH: &str = "Limit editor width";
@@ -447,7 +448,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             },
         },
         RowDef {
-            label: "Show diagrams",
+            label: LABEL_SHOW_DIAGRAMS,
             description: Some("Render Mermaid code blocks as inline diagrams"),
             describe: None,
             kind: RowKind {

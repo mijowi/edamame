@@ -19,7 +19,8 @@ use crate::app::App;
 use crate::config::sections::VIM_HANDLER;
 use crate::config::Config;
 use crate::ui::settings_overlay::{
-    LABEL_BIG_H1, LABEL_BLINK_CURSOR, LABEL_SCROLL_SPEED, LABEL_VIM_MODE, LABEL_VISUAL_LINE_NAV,
+    LABEL_BIG_H1, LABEL_BLINK_CURSOR, LABEL_SCROLL_SPEED, LABEL_SHOW_DIAGRAMS, LABEL_SHOW_IMAGES,
+    LABEL_SHOW_REMOTE_IMAGES, LABEL_VIM_MODE, LABEL_VISUAL_LINE_NAV,
 };
 use crate::ui::{ModalKind, SettingsResponse, SettingsState, SettingsView};
 
@@ -91,6 +92,11 @@ pub(crate) fn apply_live_update(label: &str, app: &mut App) {
             // turns on/off immediately without a restart.
             app.set_vim_enabled(app.config.modal.handler == VIM_HANDLER);
         }
+        // The image and diagram rows emit `FieldChanged` only on a real
+        // value transition, so these handlers never run for a no-op cycle.
+        LABEL_SHOW_IMAGES => app.apply_images_setting_change(),
+        LABEL_SHOW_REMOTE_IMAGES => app.apply_remote_policy_change(),
+        LABEL_SHOW_DIAGRAMS => app.apply_diagrams_setting_change(),
         _ => {}
     }
 }
@@ -158,7 +164,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
-    use crate::app::test_utils::make_app;
+    use crate::app::test_utils::{app_with_buffer, make_app};
     use crate::ui::settings_overlay::all_row_labels;
 
     /// Labels whose underlying config field is also cached on `App`
@@ -171,6 +177,9 @@ mod tests {
         LABEL_BIG_H1,
         LABEL_BLINK_CURSOR,
         LABEL_SCROLL_SPEED,
+        LABEL_SHOW_DIAGRAMS,
+        LABEL_SHOW_IMAGES,
+        LABEL_SHOW_REMOTE_IMAGES,
         LABEL_VISUAL_LINE_NAV,
         LABEL_VIM_MODE,
     ];
@@ -190,10 +199,7 @@ mod tests {
         "  Char limit",
         "Diff when file changes",
         "Limit editor width",
-        "Show diagrams",
-        "Show images",
         "Show line numbers",
-        "  Show remote images",
         "Show table buttons",
     ];
 
@@ -276,6 +282,136 @@ mod tests {
         app.config.modal.handler = "default".into();
         apply_live_update(LABEL_VIM_MODE, &mut app);
         assert!(app.vim.is_none(), "vim mode off clears VimState");
+    }
+
+    #[test]
+    fn live_update_images_ask_queues_prompt_and_resets_session_answer() {
+        let mut app = app_with_buffer("![a](img.png)\n", 0);
+        // Simulate an earlier session-level decline, then a settings
+        // change to `Ask`.
+        app.session_images_enabled = Some(false);
+        app.editor.images_enabled = false;
+        app.config.images.enabled = crate::config::ImagesEnabled::Ask;
+        apply_live_update(LABEL_SHOW_IMAGES, &mut app);
+        assert_eq!(app.session_images_enabled, None);
+        assert!(app.editor.images_enabled, "Ask reserves image rows again");
+        assert!(app
+            .modal_stack
+            .contains::<crate::app::modal::ImagesEnabledPromptModal>());
+    }
+
+    #[test]
+    fn live_update_images_never_collapses_layout_and_drops_prompts() {
+        let mut app = app_with_buffer("![a](img.png)\n", 0);
+        app.config.images.enabled = crate::config::ImagesEnabled::Ask;
+        apply_live_update(LABEL_SHOW_IMAGES, &mut app);
+        assert!(app
+            .modal_stack
+            .contains::<crate::app::modal::ImagesEnabledPromptModal>());
+        // Flip to Never: layout collapses and the queued prompt is gone.
+        app.config.images.enabled = crate::config::ImagesEnabled::Never;
+        apply_live_update(LABEL_SHOW_IMAGES, &mut app);
+        assert!(!app.editor.images_enabled);
+        assert!(!app
+            .modal_stack
+            .contains::<crate::app::modal::ImagesEnabledPromptModal>());
+    }
+
+    #[test]
+    fn live_update_images_always_enables_layout_without_prompt() {
+        let mut app = app_with_buffer("![a](img.png)\n", 0);
+        app.session_images_enabled = Some(false);
+        app.editor.images_enabled = false;
+        app.config.images.enabled = crate::config::ImagesEnabled::Always;
+        apply_live_update(LABEL_SHOW_IMAGES, &mut app);
+        assert!(app.editor.images_enabled);
+        assert_eq!(app.session_images_enabled, None);
+        assert!(!app
+            .modal_stack
+            .contains::<crate::app::modal::ImagesEnabledPromptModal>());
+    }
+
+    #[test]
+    fn live_update_diagrams_ask_queues_prompt_and_resets_session_answer() {
+        let mut app = app_with_buffer("```mermaid\ngraph TD;\n```\n", 0);
+        app.session_diagrams_enabled = Some(false);
+        app.editor.diagrams_enabled = false;
+        app.config.diagrams.enabled = crate::config::DiagramsEnabled::Ask;
+        apply_live_update(LABEL_SHOW_DIAGRAMS, &mut app);
+        assert_eq!(app.session_diagrams_enabled, None);
+        assert!(
+            app.editor.diagrams_enabled,
+            "Ask reserves diagram rows again"
+        );
+        assert!(app
+            .modal_stack
+            .contains::<crate::app::modal::DiagramsEnabledPromptModal>());
+    }
+
+    #[test]
+    fn live_update_diagrams_never_collapses_layout_and_drops_prompt() {
+        let mut app = app_with_buffer("```mermaid\ngraph TD;\n```\n", 0);
+        app.config.diagrams.enabled = crate::config::DiagramsEnabled::Ask;
+        apply_live_update(LABEL_SHOW_DIAGRAMS, &mut app);
+        assert!(app
+            .modal_stack
+            .contains::<crate::app::modal::DiagramsEnabledPromptModal>());
+        app.config.diagrams.enabled = crate::config::DiagramsEnabled::Never;
+        apply_live_update(LABEL_SHOW_DIAGRAMS, &mut app);
+        assert!(!app.editor.diagrams_enabled);
+        assert!(!app
+            .modal_stack
+            .contains::<crate::app::modal::DiagramsEnabledPromptModal>());
+    }
+
+    #[test]
+    fn live_update_diagrams_always_enables_layout_without_prompt() {
+        let mut app = app_with_buffer("```mermaid\ngraph TD;\n```\n", 0);
+        app.session_diagrams_enabled = Some(false);
+        app.editor.diagrams_enabled = false;
+        app.config.diagrams.enabled = crate::config::DiagramsEnabled::Always;
+        apply_live_update(LABEL_SHOW_DIAGRAMS, &mut app);
+        assert!(app.editor.diagrams_enabled);
+        assert_eq!(app.session_diagrams_enabled, None);
+        assert!(!app
+            .modal_stack
+            .contains::<crate::app::modal::DiagramsEnabledPromptModal>());
+    }
+
+    #[test]
+    fn live_update_remote_ask_queues_prompt_and_resets_session_allow() {
+        let mut app = app_with_buffer("![a](https://example.com/a.png)\n", 0);
+        app.config.images.enabled = crate::config::ImagesEnabled::Always;
+        app.session_allow_remote = true;
+        app.config.images.remote_policy = crate::config::RemoteImagePolicy::Ask;
+        apply_live_update(LABEL_SHOW_REMOTE_IMAGES, &mut app);
+        assert!(!app.session_allow_remote);
+        assert!(app
+            .modal_stack
+            .contains::<crate::app::modal::RemoteImagePromptModal>());
+    }
+
+    #[test]
+    fn live_update_remote_never_evicts_cached_remote_decodes() {
+        let mut app = app_with_buffer("![a](https://example.com/a.png)\n", 0);
+        app.editor.images.set_decoded(
+            "https://example.com/a.png",
+            image::DynamicImage::new_rgba8(1, 1),
+        );
+        app.session_allow_remote = true;
+        app.config.images.remote_policy = crate::config::RemoteImagePolicy::Never;
+        apply_live_update(LABEL_SHOW_REMOTE_IMAGES, &mut app);
+        assert!(!app.session_allow_remote);
+        assert!(
+            app.editor
+                .images
+                .status("https://example.com/a.png")
+                .is_none(),
+            "remote decode evicted so the new policy re-resolves it"
+        );
+        assert!(!app
+            .modal_stack
+            .contains::<crate::app::modal::RemoteImagePromptModal>());
     }
 
     #[test]
