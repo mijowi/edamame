@@ -55,6 +55,9 @@ pub(super) const ALL_ACTIONS: &[Action] = &[
     // Formatting.
     Action::BoldSelection,
     Action::ItalicizeSelection,
+    Action::InlineCodeSelection,
+    Action::StrikethroughSelection,
+    Action::HighlightSelection,
     // Selection / mode.
     Action::SelectAll,
     Action::ExitToPreview,
@@ -119,6 +122,9 @@ pub(super) fn label_for(action: &Action) -> Option<&'static str> {
         Action::Paste => "Paste",
         Action::BoldSelection => "Bold selection",
         Action::ItalicizeSelection => "Italicize selection",
+        Action::InlineCodeSelection => "Inline code selection",
+        Action::StrikethroughSelection => "Strikethrough selection",
+        Action::HighlightSelection => "Highlight selection",
         Action::SelectAll => "Select all",
         Action::ExitToPreview => "Exit to preview",
         Action::ToggleRawMode => "Toggle raw mode",

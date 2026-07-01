@@ -52,6 +52,18 @@ pub enum Action {
     /// Wrap the selection in `*…*` (or unwrap it if it is exactly italic
     /// already).  No-op without a non-empty, single-line selection.
     ItalicizeSelection,
+    /// Wrap the selection in `` ` `` backticks (or unwrap it if it is
+    /// exactly an inline code span already).  No-op without a
+    /// non-empty, single-line selection.
+    InlineCodeSelection,
+    /// Wrap the selection in `~~…~~` (or unwrap it if it is exactly
+    /// struck-through already).  No-op without a non-empty,
+    /// single-line selection.
+    StrikethroughSelection,
+    /// Wrap the selection in `==…==` (or unwrap it if it is exactly
+    /// highlighted already).  No-op without a non-empty, single-line
+    /// selection.
+    HighlightSelection,
     // ── Selection ──────────────────────────────────────────────────
     SelectLeft,
     SelectRight,
@@ -336,6 +348,7 @@ action_variants! {
     DeleteCharBack, DeleteCharForward, DeleteWordBack, DeleteWordForward, DeleteLine,
     Cut, Copy, Paste,
     BoldSelection, ItalicizeSelection,
+    InlineCodeSelection, StrikethroughSelection, HighlightSelection,
     SelectLeft, SelectRight, SelectUp, SelectDown, SelectAll,
     Undo, Redo,
     Save, SaveAs, Open,
@@ -910,7 +923,8 @@ impl KeyMap {
         // entry.
         bind!("ctrl+shift+t", Action::InsertTable);
 
-        // `InsertLink` / `InsertImage` ship unbound: they're reachable
+        // `InsertLink` / `InsertImage` and the code / strikethrough /
+        // highlight selection wraps ship unbound: they're reachable
         // from the command palette, and a user who wants a chord can
         // bind one in keybindings.toml.
 

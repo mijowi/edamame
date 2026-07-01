@@ -1224,6 +1224,69 @@ fn bold_wraps_mixed_selection_verbatim() {
     assert_eq!(st.contents(), "**foo **x** baz**");
 }
 
+// ── Inline code / strikethrough / highlight formatting ──────────────────────
+
+#[test]
+fn inline_code_wraps_selection_and_reselects_inner() {
+    let mut st = state("hello world");
+    st.mode = Mode::Rendered;
+    select(&mut st, 6, 11); // "world"
+    apply(&mut st, Action::InlineCodeSelection);
+    assert_eq!(st.contents(), "hello `world`");
+    let sel = st.selection.expect("selection retained");
+    assert_eq!(sel.selected_text(&st.buffer), "world");
+}
+
+#[test]
+fn inline_code_toggles_off_when_selection_includes_markers() {
+    let mut st = state("hello `world`");
+    st.mode = Mode::Rendered;
+    select(&mut st, 6, 13); // "`world`"
+    apply(&mut st, Action::InlineCodeSelection);
+    assert_eq!(st.contents(), "hello world");
+    assert_eq!(st.selection.unwrap().range(), (6, 11));
+}
+
+#[test]
+fn strikethrough_wraps_selection() {
+    let mut st = state("hello world");
+    st.mode = Mode::Rendered;
+    select(&mut st, 6, 11);
+    apply(&mut st, Action::StrikethroughSelection);
+    assert_eq!(st.contents(), "hello ~~world~~");
+}
+
+#[test]
+fn strikethrough_strips_markers_just_outside_selection() {
+    let mut st = state("hello ~~world~~");
+    st.mode = Mode::Rendered;
+    select(&mut st, 8, 13); // inner "world" only
+    apply(&mut st, Action::StrikethroughSelection);
+    assert_eq!(st.contents(), "hello world");
+    assert_eq!(st.selection.unwrap().range(), (6, 11));
+}
+
+#[test]
+fn highlight_wraps_and_unwraps_selection() {
+    let mut st = state("hello world");
+    st.mode = Mode::Rendered;
+    select(&mut st, 6, 11);
+    apply(&mut st, Action::HighlightSelection);
+    assert_eq!(st.contents(), "hello ==world==");
+    // Inner text is reselected — a second press toggles back off.
+    apply(&mut st, Action::HighlightSelection);
+    assert_eq!(st.contents(), "hello world");
+}
+
+#[test]
+fn inline_code_refuses_multiline_selection() {
+    let mut st = state("foo\nbar");
+    st.mode = Mode::Rendered;
+    select(&mut st, 0, 7);
+    apply(&mut st, Action::InlineCodeSelection);
+    assert_eq!(st.contents(), "foo\nbar");
+}
+
 // ── Footnotes ────────────────────────────────────────────────────────────────
 
 fn put_cursor(st: &mut EditorState, byte: usize) {
