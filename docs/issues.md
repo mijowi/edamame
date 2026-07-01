@@ -5,7 +5,6 @@
 - Refactor/clean up source and tests
 
 - Automatic list management is finicky: line spacing, nested lists, sub-lists of different types
-- Render list item alignment in edit mode when de-rendered, but not in raw mode?
 
 - Add "Insert image" to command palette
 
@@ -14,10 +13,6 @@
 - Changing image display settings should re-render the current file
 
 - Handle lines containing line breaks
-```
-- DIFF is not displayed in the status line when using vim mode. Maybe we should
-  display it in the hint line?
-```
 
 ## Vim issues
 - DIFF is not displayed in the status line when using vim mode. Maybe we should display it in the hint line?

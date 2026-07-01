@@ -78,7 +78,8 @@ use self::rows::{build_rows, RowAction, RowDef};
 // suppresses the otherwise-spurious `cargo clippy --lib` warning.
 #[allow(unused_imports)]
 pub(crate) use self::rows::{
-    HEADER_NOTE, LABEL_BIG_H1, LABEL_BLINK_CURSOR, LABEL_SCROLL_SPEED, LABEL_VIM_MODE,
+    HEADER_NOTE, LABEL_AUTOSAVE, LABEL_BIG_H1, LABEL_BLINK_CURSOR, LABEL_DIFF_ON_CHANGE,
+    LABEL_LIMIT_WIDTH, LABEL_LINE_NUMBERS, LABEL_SCROLL_SPEED, LABEL_TABLE_BUTTONS, LABEL_VIM_MODE,
     LABEL_VISUAL_LINE_NAV,
 };
 

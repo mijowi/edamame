@@ -143,11 +143,21 @@ fn preview_safe_action(action: &Action) -> bool {
             // Both are palette-only by default but a user may bind a
             // chord — allow them to fire from Preview without first
             // entering edit mode.  `OpenInExternalEditor` saves and
-            // suspends the TUI; `ToggleTableButtons` is a tiny
-            // in-memory flip — neither needs the buffer to be in an
-            // editing mode.
+            // suspends the TUI; `ToggleTableButtons` flips a config
+            // flag — neither needs the buffer to be in an editing mode.
             | Action::OpenInExternalEditor
             | Action::ToggleTableButtons
+            // The persisted setting toggles are likewise palette-only by
+            // default but bind-able; each is a buffer-read-only config
+            // flip, safe to fire while browsing in Preview.
+            | Action::ToggleBigH1
+            | Action::ToggleLineNumbers
+            | Action::ToggleBlinkCursor
+            | Action::ToggleAutosave
+            | Action::ToggleVisualLineNav
+            | Action::ToggleVimMode
+            | Action::ToggleLimitWidth
+            | Action::ToggleDiffOnChange
             // `InsertTable` is allowed from Preview so
             // the default Ctrl+Shift+T chord opens the rows/columns
             // modal without requiring the user to enter edit mode

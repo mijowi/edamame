@@ -171,17 +171,22 @@ impl Default for EditorConfig {
     }
 }
 
+/// Handler name written to `config.modal.handler` for vim modal editing.
+pub const VIM_HANDLER: &str = "vim";
+/// Handler name for the default (non-modal) editing handler.
+pub const DEFAULT_HANDLER: &str = "default";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModalConfig {
-    /// Which modal handler to use. Currently only "default" is supported.
+    /// Which modal handler to use: [`DEFAULT_HANDLER`] or [`VIM_HANDLER`].
     pub handler: String,
 }
 
 impl Default for ModalConfig {
     fn default() -> Self {
         Self {
-            handler: "default".into(),
+            handler: DEFAULT_HANDLER.into(),
         }
     }
 }

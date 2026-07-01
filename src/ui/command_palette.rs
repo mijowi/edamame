@@ -201,7 +201,15 @@ fn section_of(action: &Action) -> &'static str {
         Action::ExitToPreview
         | Action::ToggleRawMode
         | Action::EnterEditMode
-        | Action::ToggleTableButtons => "View",
+        | Action::ToggleTableButtons
+        | Action::ToggleBigH1
+        | Action::ToggleLineNumbers
+        | Action::ToggleBlinkCursor
+        | Action::ToggleAutosave
+        | Action::ToggleVisualLineNav
+        | Action::ToggleVimMode
+        | Action::ToggleLimitWidth
+        | Action::ToggleDiffOnChange => "View",
         Action::FollowLinkUnderCursor
         | Action::NavigateBack
         | Action::NavigateForward

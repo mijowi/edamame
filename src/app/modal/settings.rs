@@ -16,6 +16,7 @@ use ratatui::Frame;
 
 use super::types::{Modal, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
+use crate::config::sections::VIM_HANDLER;
 use crate::config::Config;
 use crate::ui::settings_overlay::{
     LABEL_BIG_H1, LABEL_BLINK_CURSOR, LABEL_SCROLL_SPEED, LABEL_VIM_MODE, LABEL_VISUAL_LINE_NAV,
@@ -71,7 +72,7 @@ fn resolve(app: &mut App, response: SettingsResponse) -> ModalOutcome {
 /// state.  Called from the `FieldChanged` arm above; extracted so
 /// the live-update wiring can be unit-tested without going through
 /// the full overlay key dispatch.
-pub(super) fn apply_live_update(label: &str, app: &mut App) {
+pub(crate) fn apply_live_update(label: &str, app: &mut App) {
     match label {
         LABEL_BIG_H1 => app.editor.set_big_h1(app.config.editor.big_h1),
         LABEL_BLINK_CURSOR => app.editor.cursor_blink.apply_config(
@@ -88,7 +89,7 @@ pub(super) fn apply_live_update(label: &str, app: &mut App) {
             // The row cycle flipped `config.modal.handler`; rebuild the
             // live VimState (and resting mode) to match so vim editing
             // turns on/off immediately without a restart.
-            app.set_vim_enabled(app.config.modal.handler == "vim");
+            app.set_vim_enabled(app.config.modal.handler == VIM_HANDLER);
         }
         _ => {}
     }
