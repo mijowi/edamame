@@ -12,6 +12,7 @@ use ratatui::Frame;
 
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
+use crate::config::sections::VIM_HANDLER;
 use crate::config::Config;
 use crate::terminal::Capabilities;
 use crate::ui::{WelcomeResponse, WelcomeState, WelcomeView};
@@ -36,7 +37,7 @@ impl WelcomeModal {
                 config.images.enabled,
                 config.images.remote_policy,
                 config.diagrams.enabled,
-                config.modal.handler == "vim",
+                config.modal.handler == VIM_HANDLER,
             ),
             fingerprint: caps.fingerprint(),
         })

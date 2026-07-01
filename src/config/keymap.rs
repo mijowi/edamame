@@ -149,11 +149,35 @@ pub enum Action {
     /// buffer is reloaded from disk after the editor exits so any
     /// external edits are picked up.
     OpenInExternalEditor,
-    /// Toggle the in-memory `config.table.show_buttons` flag.
-    /// Intentionally does NOT persist to `config.toml` — the user can
-    /// flip handles for the current session without committing the
-    /// change.
+    /// Toggle `config.table.show_buttons` and persist it to
+    /// `config.toml`, mirroring the settings-overlay row.  Gated on
+    /// mouse capability — the handles are inert without mouse reporting.
     ToggleTableButtons,
+    // ── Setting toggles (palette) ──────────────────────────────────
+    // Persisted boolean settings surfaced in the command palette so a
+    // user who prefers the search-for-a-thing flow can flip them
+    // without opening the settings overlay.  Each flips the same
+    // `config` field its overlay row writes, persists `config.toml`,
+    // and pushes the change through the shared `apply_live_update`.
+    /// Toggle `config.editor.big_h1` (big block-character H1 titles).
+    ToggleBigH1,
+    /// Toggle `config.editor.show_line_numbers` (gutter line numbers).
+    ToggleLineNumbers,
+    /// Toggle `config.editor.cursor_blink` (blinking editor cursor).
+    ToggleBlinkCursor,
+    /// Toggle `config.editor.autosave_enabled` (idle autosave).
+    ToggleAutosave,
+    /// Toggle `config.editor.visual_line_nav` (visual vs. logical
+    /// Up/Down movement).
+    ToggleVisualLineNav,
+    /// Toggle Vim modal editing by swapping `config.modal.handler`
+    /// between `vim` and `default`; rebuilds the live `VimState`.
+    ToggleVimMode,
+    /// Toggle `config.editor.max_width_enabled` (content-width limit).
+    ToggleLimitWidth,
+    /// Toggle `config.editor.diff_on_change` (review external changes
+    /// hunk-by-hunk vs. silent reload).
+    ToggleDiffOnChange,
     /// Open the rows/columns modal that inserts a fresh
     /// GFM pipe table at the cursor.  Requires the cursor to be on
     /// a blank line; the App-level handler flashes an error
@@ -319,6 +343,8 @@ action_variants! {
     OpenSettings, OpenKeybinds, OpenConfigFolder, SwitchTheme, CreateCustomTheme,
     ExportHtml, OpenInExternalEditor,
     ToggleTableButtons, InsertTable,
+    ToggleBigH1, ToggleLineNumbers, ToggleBlinkCursor, ToggleAutosave,
+    ToggleVisualLineNav, ToggleVimMode, ToggleLimitWidth, ToggleDiffOnChange,
     InsertFootnote, DeleteFootnote, RenumberFootnotes,
     GoToSection,
     OpenSearch, SearchNext, SearchPrev,

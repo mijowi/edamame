@@ -31,6 +31,7 @@ use crossterm::event::Event;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
+use crate::config::sections::{DEFAULT_HANDLER, VIM_HANDLER};
 use crate::config::{Config, ConfigWarning, KeyBindingOverrides, KeyMap, Theme, ThemeFile};
 use crate::document::Buffer;
 use crate::editor::{mouse_ops, EditorState};
@@ -459,7 +460,7 @@ impl App {
         // it as the non-editing mode), so switch out of the default
         // Preview mode at startup; the `NORMAL` badge then shows from the
         // first frame.
-        let vim = (config.modal.handler == "vim").then(VimState::default);
+        let vim = (config.modal.handler == VIM_HANDLER).then(VimState::default);
         if vim.is_some() && editor.mode == crate::editor::Mode::Preview {
             editor.mode = crate::editor::Mode::Rendered;
         }
@@ -614,7 +615,7 @@ impl App {
     /// waiting for the next launch.
     pub(crate) fn set_vim_enabled(&mut self, enabled: bool) {
         if enabled {
-            self.config.modal.handler = "vim".into();
+            self.config.modal.handler = VIM_HANDLER.into();
             if self.vim.is_none() {
                 self.vim = Some(VimState::default());
             }
@@ -624,7 +625,7 @@ impl App {
                 self.editor.mode = crate::editor::Mode::Rendered;
             }
         } else {
-            self.config.modal.handler = "default".into();
+            self.config.modal.handler = DEFAULT_HANDLER.into();
             self.vim = None;
         }
     }

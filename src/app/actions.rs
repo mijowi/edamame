@@ -18,12 +18,13 @@
 use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
 
 use crate::app::modal;
+use crate::config::sections::{DEFAULT_HANDLER, VIM_HANDLER};
 use crate::config::{Action, Config, KeyBindingOverrides, KeyMap, Theme};
 use crate::editor::{edit_ops, EditorState};
 use crate::input::mode_handler::default::DefaultHandler;
 use crate::input::ModeHandler;
 use crate::terminal::ColorDepth;
-use crate::ui::ModalKind;
+use crate::ui::{settings_overlay, ModalKind};
 
 use super::flash::MessageKind;
 use super::modal::ModalOutcome;
@@ -301,23 +302,86 @@ impl App {
                 true
             }
             Action::ToggleTableButtons => {
-                // In-memory only — never write the change back to
-                // `config.toml`.  Settings the user wants to keep
-                // belong in the settings overlay.  Skip the toggle on
-                // terminals where mouse reporting is unavailable: the
-                // gutter glyphs would be inert and confusing.
+                // Skip the toggle on terminals where mouse reporting is
+                // unavailable: the gutter glyphs would be inert and
+                // confusing.  Otherwise flip and persist, matching the
+                // settings-overlay row.
                 if self.capabilities.mouse {
                     self.config.table.show_buttons = !self.config.table.show_buttons;
-                    let state = if self.config.table.show_buttons {
-                        "on"
-                    } else {
-                        "off"
-                    };
-                    self.flash(format!("Table buttons {state}"), MessageKind::Info);
+                    self.toggle_persisted_setting(
+                        settings_overlay::LABEL_TABLE_BUTTONS,
+                        self.config.table.show_buttons,
+                    );
                 } else {
                     self.notify("Mouse not supported on this terminal", ModalKind::Error);
+                    self.needs_draw = true;
                 }
-                self.needs_draw = true;
+                true
+            }
+            Action::ToggleBigH1 => {
+                self.config.editor.big_h1 = !self.config.editor.big_h1;
+                self.toggle_persisted_setting(
+                    settings_overlay::LABEL_BIG_H1,
+                    self.config.editor.big_h1,
+                );
+                true
+            }
+            Action::ToggleLineNumbers => {
+                self.config.editor.show_line_numbers = !self.config.editor.show_line_numbers;
+                self.toggle_persisted_setting(
+                    settings_overlay::LABEL_LINE_NUMBERS,
+                    self.config.editor.show_line_numbers,
+                );
+                true
+            }
+            Action::ToggleBlinkCursor => {
+                self.config.editor.cursor_blink = !self.config.editor.cursor_blink;
+                self.toggle_persisted_setting(
+                    settings_overlay::LABEL_BLINK_CURSOR,
+                    self.config.editor.cursor_blink,
+                );
+                true
+            }
+            Action::ToggleAutosave => {
+                self.config.editor.autosave_enabled = !self.config.editor.autosave_enabled;
+                self.toggle_persisted_setting(
+                    settings_overlay::LABEL_AUTOSAVE,
+                    self.config.editor.autosave_enabled,
+                );
+                true
+            }
+            Action::ToggleVisualLineNav => {
+                self.config.editor.visual_line_nav = !self.config.editor.visual_line_nav;
+                self.toggle_persisted_setting(
+                    settings_overlay::LABEL_VISUAL_LINE_NAV,
+                    self.config.editor.visual_line_nav,
+                );
+                true
+            }
+            Action::ToggleVimMode => {
+                // Vim mode is stored as the modal handler name, not a
+                // bool — flip the handler, then let `apply_live_update`
+                // rebuild the live `VimState`.
+                let enabling = self.config.modal.handler != VIM_HANDLER;
+                self.config.modal.handler =
+                    if enabling { VIM_HANDLER } else { DEFAULT_HANDLER }.to_owned();
+                self.toggle_persisted_setting(settings_overlay::LABEL_VIM_MODE, enabling);
+                true
+            }
+            Action::ToggleLimitWidth => {
+                self.config.editor.max_width_enabled = !self.config.editor.max_width_enabled;
+                self.toggle_persisted_setting(
+                    settings_overlay::LABEL_LIMIT_WIDTH,
+                    self.config.editor.max_width_enabled,
+                );
+                true
+            }
+            Action::ToggleDiffOnChange => {
+                self.config.editor.diff_on_change = !self.config.editor.diff_on_change;
+                self.toggle_persisted_setting(
+                    settings_overlay::LABEL_DIFF_ON_CHANGE,
+                    self.config.editor.diff_on_change,
+                );
                 true
             }
             Action::InsertTable => {
@@ -405,6 +469,36 @@ impl App {
             }
             _ => false,
         }
+    }
+
+    /// Flip-and-persist path shared by the command-palette setting
+    /// toggles.  The caller has already mutated the `config` field;
+    /// this writes `config.toml`, pushes the change into any App-side
+    /// live cache (reusing the settings-overlay
+    /// [`apply_live_update`](crate::app::modal::settings::apply_live_update)
+    /// so the two surfaces can't diverge), and flashes the new state.
+    /// Unlike the overlay — which flashes the generic "Configuration
+    /// updated" — the palette names the setting and its new value.
+    ///
+    /// The live update runs even when the save fails: the `config`
+    /// field is already flipped, so we push it into the live cache
+    /// regardless to keep the two in sync (the setting takes effect
+    /// for the session, just unpersisted).  This mirrors the overlay,
+    /// whose `apply_live_update` also runs unconditionally after save.
+    fn toggle_persisted_setting(&mut self, label: &str, new_state: bool) {
+        let saved = self.config.save();
+        modal::settings::apply_live_update(label, self);
+        match saved {
+            Ok(()) => {
+                let state = if new_state { "on" } else { "off" };
+                self.flash(format!("{}: {state}", label.trim()), MessageKind::Info);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to persist palette setting toggle");
+                self.notify(format!("Config save failed: {e}"), ModalKind::Error);
+            }
+        }
+        self.needs_draw = true;
     }
 
     /// Pop the topmost modal off the stack, dispatch the key to it,

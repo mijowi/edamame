@@ -6,7 +6,7 @@
 //! `settings_overlay.rs` keeps the parent file focused on widget
 //! plumbing — adding a new setting only touches this file.
 
-use crate::config::sections::MAX_WIDTH_COLS_MIN;
+use crate::config::sections::{DEFAULT_HANDLER, MAX_WIDTH_COLS_MIN, VIM_HANDLER};
 use crate::config::{Config, DiagramsEnabled, ImagesEnabled, RemoteImagePolicy};
 use crate::ui::controls;
 
@@ -30,11 +30,10 @@ pub(crate) const LABEL_VIM_MODE: &str = "Vim mode";
 pub(crate) const LABEL_BLINK_CURSOR: &str = "Blink cursor";
 pub(crate) const LABEL_SHOW_IMAGES: &str = "Show images";
 pub(crate) const LABEL_SHOW_REMOTE_IMAGES: &str = "  Show remote images";
-
-/// Handler name written to `config.modal.handler` when vim mode is on.
-const VIM_HANDLER: &str = "vim";
-/// Handler name written to `config.modal.handler` when vim mode is off.
-const DEFAULT_HANDLER: &str = "default";
+pub(crate) const LABEL_AUTOSAVE: &str = "Autosave";
+pub(crate) const LABEL_LIMIT_WIDTH: &str = "Limit editor width";
+pub(crate) const LABEL_DIFF_ON_CHANGE: &str = "Diff when file changes";
+pub(crate) const LABEL_TABLE_BUTTONS: &str = "Show table buttons";
 
 /// Minimum accepted value for [`LABEL_SCROLL_SPEED`].  The
 /// dispatcher additionally clamps zero to one as a safety net, but
@@ -303,7 +302,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         //    `Show line numbers` sits below the two image-visibility
         //    rows so the image group stays contiguous ──
         RowDef {
-            label: "Autosave",
+            label: LABEL_AUTOSAVE,
             description: Some("Automatically save changes when idle"),
             describe: None,
             kind: RowKind {
@@ -361,7 +360,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             },
         },
         RowDef {
-            label: "Limit editor width",
+            label: LABEL_LIMIT_WIDTH,
             description: Some("Limit the editor content width"),
             describe: None,
             kind: RowKind {
@@ -424,7 +423,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             },
         },
         RowDef {
-            label: "Diff when file changes",
+            label: LABEL_DIFF_ON_CHANGE,
             // Two-line footer description: the on/off meanings differ enough
             // to spell out separately.  Split on `\n` by the footer renderer.
             description: Some(
@@ -550,7 +549,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
             },
         },
         RowDef {
-            label: "Show table buttons",
+            label: LABEL_TABLE_BUTTONS,
             description: Some("Show table row/column move/resize glyphs"),
             describe: None,
             kind: RowKind {
