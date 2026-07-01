@@ -353,17 +353,17 @@ pub fn join_lines(editor: &mut EditorState, count: u32) {
 // ── Indent / outdent ────────────────────────────────────────────────────────────
 
 /// `>>` / `<<`: indent (`right`) or outdent buffer lines `first..=last` by one
-/// `tab_width` step, as a single delta.  Indent prepends `tab_width` spaces to
-/// every line that holds non-blank content (blank lines stay empty, matching
-/// vim); outdent strips up to `tab_width` leading spaces, or one leading tab,
-/// per line.  The cursor lands on the first non-blank of `first`.  CP4 does
-/// the plain-indent case; list-aware indenting is wired in CP10 (§2.5).
+/// `indent_width` step, as a single delta.  Indent prepends `indent_width`
+/// spaces to every line that holds non-blank content (blank lines stay empty,
+/// matching vim); outdent strips up to `indent_width` leading spaces, or one
+/// leading tab, per line.  The cursor lands on the first non-blank of `first`.
+/// CP4 does the plain-indent case; list-aware indenting is wired in CP10 (§2.5).
 pub fn indent_lines(
     editor: &mut EditorState,
     first: usize,
     last: usize,
     right: bool,
-    tab_width: usize,
+    indent_width: usize,
 ) {
     let line_count = editor.buffer.line_count();
     if line_count == 0 {
@@ -378,8 +378,8 @@ pub fn indent_lines(
         editor.buffer.len_chars()
     };
     let region = editor.buffer.slice_to_string(start, end);
-    let indent = " ".repeat(tab_width);
-    let mut out = String::with_capacity(region.len() + tab_width);
+    let indent = " ".repeat(indent_width);
+    let mut out = String::with_capacity(region.len() + indent_width);
     for line in region.split_inclusive('\n') {
         let (content, nl) = match line.strip_suffix('\n') {
             Some(c) => (c, "\n"),
@@ -391,7 +391,7 @@ pub fn indent_lines(
             }
             out.push_str(content);
         } else {
-            out.push_str(strip_indent(content, tab_width));
+            out.push_str(strip_indent(content, indent_width));
         }
         out.push_str(nl);
     }
@@ -493,11 +493,10 @@ pub fn indent_list_item(editor: &mut EditorState, right: bool) -> bool {
     let Some(info) = list_edit::find_list_at(&source, byte) else {
         return false;
     };
-    let tab_width = editor.tab_width;
     let res = if right {
-        list_edit::indent_item(&info, &source, byte, tab_width)
+        list_edit::indent_item(&info, &source, byte, crate::constants::INDENT_WIDTH)
     } else {
-        list_edit::outdent_item(&info, &source, byte, tab_width)
+        list_edit::outdent_item(&info, &source, byte, crate::constants::INDENT_WIDTH)
     };
     let Some(res) = res else {
         return false;
@@ -515,12 +514,12 @@ pub fn indent_list_item(editor: &mut EditorState, right: bool) -> bool {
     true
 }
 
-/// Drop up to `tab_width` leading spaces, or a single leading tab, from
+/// Drop up to `indent_width` leading spaces, or a single leading tab, from
 /// `content`.  Returns a sub-slice (all stripped chars are single-byte).
-fn strip_indent(content: &str, tab_width: usize) -> &str {
+fn strip_indent(content: &str, indent_width: usize) -> &str {
     let mut skip = 0;
     for (i, c) in content.char_indices() {
-        if i >= tab_width {
+        if i >= indent_width {
             break;
         }
         match c {

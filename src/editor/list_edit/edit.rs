@@ -281,23 +281,24 @@ pub fn toggle_checkbox(
     })
 }
 
-/// Build an `EditDelta` that indents the item at `cursor_byte` by `tab_width`
-/// spaces, producing a new nested list one level deeper.  For ordered lists,
-/// the indented item's number is reset to `1` (it starts a fresh nested
-/// sequence) and the remaining outer items are renumbered to fill the gap.
-/// For bullet lists the edit is just `tab_width` spaces prepended to the
-/// item's line.  Returns `None` when `cursor_byte` is not inside any item.
+/// Build an `EditDelta` that indents the item at `cursor_byte` by
+/// `indent_width` spaces, producing a new nested list one level deeper.  For
+/// ordered lists, the indented item's number is reset to `1` (it starts a
+/// fresh nested sequence) and the remaining outer items are renumbered to fill
+/// the gap.  For bullet lists the edit is just `indent_width` spaces prepended
+/// to the item's line.  Returns `None` when `cursor_byte` is not inside any
+/// item.
 pub fn indent_item(
     info: &ListInfo,
     source: &str,
     cursor_byte: usize,
-    tab_width: usize,
+    indent_width: usize,
 ) -> Option<ContinueResult> {
-    if tab_width == 0 {
+    if indent_width == 0 {
         return None;
     }
     let item_idx = cursor_item_idx(info, cursor_byte)?;
-    let tab_str: String = " ".repeat(tab_width);
+    let tab_str: String = " ".repeat(indent_width);
 
     // Bullet lists: the nested item can be emitted as an independent edit
     // (just prepend the extra indent) because there is no renumbering to do.
@@ -380,16 +381,16 @@ pub fn indent_item(
 }
 
 /// Build an `EditDelta` that outdents the item at `cursor_byte` by removing
-/// up to `tab_width` leading spaces from the front of that item's first
+/// up to `indent_width` leading spaces from the front of that item's first
 /// line.  Returns `None` when the item is already at the outermost level
 /// (no indent to strip) or when `cursor_byte` is outside every item.
 pub fn outdent_item(
     info: &ListInfo,
     source: &str,
     cursor_byte: usize,
-    tab_width: usize,
+    indent_width: usize,
 ) -> Option<ContinueResult> {
-    if tab_width == 0 {
+    if indent_width == 0 {
         return None;
     }
     let item_idx = cursor_item_idx(info, cursor_byte)?;
@@ -398,7 +399,7 @@ pub fn outdent_item(
     if indent_len == 0 {
         return None;
     }
-    let strip = tab_width.min(indent_len);
+    let strip = indent_width.min(indent_len);
     let removed = source[item.start..item.start + strip].to_owned();
     let delta = EditDelta {
         offset: item.start,

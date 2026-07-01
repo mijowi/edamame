@@ -383,11 +383,11 @@ pub fn apply(
             //     row when pressed in the last cell of the last row)
             //   - inside a list  → indent the current item one level,
             //     producing a new nested list (ordered lists reset to 1)
-            //   - otherwise       → insert `tab_width` spaces
+            //   - otherwise       → insert `INDENT_WIDTH` spaces
             if cursor_in_table(state) {
                 table_next_cell(state, viewport_height, viewport_width);
             } else if !list_indent(state) {
-                let indent: String = " ".repeat(state.tab_width);
+                let indent: String = " ".repeat(crate::constants::INDENT_WIDTH);
                 insert_text(state, &indent);
             }
         }
@@ -626,8 +626,8 @@ pub fn apply(
                 table_prev_cell(state, viewport_height, viewport_width);
             } else {
                 // Shift+Tab in a list outdents the current item by one level
-                // (removes up to `tab_width` leading spaces).  Outside a list
-                // it's a no-op.
+                // (removes up to `INDENT_WIDTH` leading spaces).  Outside a
+                // list it's a no-op.
                 list_outdent(state);
             }
         }
@@ -1441,7 +1441,7 @@ fn list_handle_newline(state: &mut EditorState) -> bool {
     }
 }
 
-/// Indent the cursor's list item one level (adds `tab_width` spaces of
+/// Indent the cursor's list item one level (adds `INDENT_WIDTH` spaces of
 /// indent, resets ordered numbering to 1, renumbers the surrounding outer
 /// list).  Returns `true` when handled so the caller can skip the fallback
 /// plain-tab insertion.
@@ -1450,15 +1450,15 @@ fn list_indent(state: &mut EditorState) -> bool {
         return false;
     };
     let byte = cursor_byte(state);
-    let tab_width = state.tab_width;
-    let Some(res) = list_edit::indent_item(&info, &source, byte, tab_width) else {
+    let Some(res) = list_edit::indent_item(&info, &source, byte, crate::constants::INDENT_WIDTH)
+    else {
         return false;
     };
     apply_byte_delta(state, res.delta, res.cursor_byte);
     true
 }
 
-/// Outdent the cursor's list item one level (removes up to `tab_width`
+/// Outdent the cursor's list item one level (removes up to `INDENT_WIDTH`
 /// leading spaces).  No-op (returns `false`) when the cursor isn't in a
 /// list or when the item is already at the outermost indent.
 fn list_outdent(state: &mut EditorState) -> bool {
@@ -1466,8 +1466,8 @@ fn list_outdent(state: &mut EditorState) -> bool {
         return false;
     };
     let byte = cursor_byte(state);
-    let tab_width = state.tab_width;
-    let Some(res) = list_edit::outdent_item(&info, &source, byte, tab_width) else {
+    let Some(res) = list_edit::outdent_item(&info, &source, byte, crate::constants::INDENT_WIDTH)
+    else {
         return false;
     };
     apply_byte_delta(state, res.delta, res.cursor_byte);

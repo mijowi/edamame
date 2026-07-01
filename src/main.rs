@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod constants;
 mod diagram;
 mod diff;
 mod document;

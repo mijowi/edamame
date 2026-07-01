@@ -20,9 +20,6 @@ appearance = "dark"
 
 # ── Editor ────────────────────────────────────────────────────────────────────
 [editor]
-# Number of spaces per tab stop. Default: 4.
-# tab_width = 4
-
 # Fingerprints of terminals that have already shown the capabilities notice.
 # Dismissing the notice (or completing the welcome modal) appends the current
 # terminal's fingerprint here so it won't fire again. Launching in a new,

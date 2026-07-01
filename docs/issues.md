@@ -4,19 +4,28 @@
 
 - Refactor/clean up source and tests
 
-- Nested lists move horizontally when de-rendering
+- Automatic list management is finicky: line spacing, nested lists, sub-lists of different types
+- Render list item alignment in edit mode when de-rendered, but not in raw mode?
 
 - Add "Insert image" to command palette
 
 - Add/update performance benchmark tests
 
-- Rendering 
+- Add items in settings modal to command palette?
+
+- Changing image display settings should re-render the current file
+
+- Handle lines containing line breaks
+```
+- DIFF is not displayed in the status line when using vim mode. Maybe we should
+  display it in the hint line?
+```
 
 ## Vim issues
-- DIFF is not displayed in the status line when using vim mode
-- A vim `:` command is not cleared from the hint line when entering diff mode, and `:` commands are not accessible during diff
+- DIFF is not displayed in the status line when using vim mode. Maybe we should display it in the hint line?
+- A vim `:` command is not cleared from the hint line when entering diff mode, and `:` commands are not accessible during diff, so the hint line does not show diff mode hints.
 - Substitution within visual selection
-- Implement substitution as it's being typed, with match highlights
+- Implement substitution as it's being typed, with match highlights?
 - `Tab` table cell navigation is swallowed in vim normal mode (`Shift-Tab` works)
 - How should we treat vim motions in tables? Disable any that don't work between words? e.g. disable `o`, `O`. `A`, `I`, `$`, `^` should act on the *cell*?
 - When typing in a table cell that is wider than the column header, and a space character is entered,
