@@ -56,15 +56,28 @@ pub enum ExCommand {
     /// `:x` — write then quit, but only write when the buffer is modified
     /// (the canonical vim behavior; `:wq` always writes).
     WriteQuitIfModified,
-    /// `:s/…` (current line) or `:%s/…` (whole file).
+    /// `:s/…` (current line), `:%s/…` (whole file), or `:'<,'>s/…` (the
+    /// last visual selection's line span).
     Substitute(Substitution),
 }
 
-/// A parsed `:s` / `:%s` substitution.
+/// Which lines a substitution runs over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubstituteRange {
+    /// `:s` — the current line only.
+    CurrentLine,
+    /// `:%s` — every line in the buffer.
+    AllLines,
+    /// `:'<,'>s` — the line span of the last visual selection, resolved
+    /// against the concrete bounds threaded into [`execute_substitute`].
+    VisualRange,
+}
+
+/// A parsed `:s` / `:%s` / `:'<,'>s` substitution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Substitution {
-    /// `:%s` (every line) vs. `:s` (the current line only).
-    pub all_lines: bool,
+    /// The line span the substitution runs over.
+    pub range: SubstituteRange,
     /// The vim regex pattern (escaped delimiters already reduced); translated
     /// to `fancy-regex` syntax at execution time.
     pub pattern: String,
@@ -96,18 +109,37 @@ pub enum ExError {
 pub fn parse_ex(input: &str) -> Result<ExCommand, ExError> {
     let s = input.trim();
 
-    // Substitution: `%s/…` (all lines) or `s/…` (current line).  A bare
-    // `:s` (vim's "repeat last substitution") is out of scope, so a
-    // delimiter must follow.
+    // Optional `'<,'>` visual-range prefix — the marks vim inserts when `:`
+    // is pressed in Visual / Visual-Line.  It only qualifies a `:s`; on any
+    // other command the whole line falls through to `UnknownCommand` below.
+    let (visual_range, s) = match s.strip_prefix("'<,'>") {
+        Some(rest) => (true, rest.trim_start()),
+        None => (false, s),
+    };
+
+    // Substitution: `%s/…` (all lines), `s/…` (current line), or `'<,'>s/…`
+    // (the visual selection).  A bare `:s` (vim's "repeat last substitution")
+    // is out of scope, so a delimiter must follow.  A `%` overrides any
+    // `'<,'>` prefix, matching vim's last-range-wins rule.
     if let Some(rest) = s.strip_prefix("%s") {
-        return parse_substitute(true, rest);
+        return parse_substitute(SubstituteRange::AllLines, rest);
     }
     if let Some(rest) = s.strip_prefix('s') {
         if rest.starts_with('/') {
-            return parse_substitute(false, rest);
+            let range = if visual_range {
+                SubstituteRange::VisualRange
+            } else {
+                SubstituteRange::CurrentLine
+            };
+            return parse_substitute(range, rest);
         }
     }
 
+    // Beyond `:s`, edamame has no ranged ex commands, but `:` in Visual
+    // auto-inserts `'<,'>` — so the write / quit family simply ignores the
+    // range and acts on the whole buffer (a Visual `:w` / `:wq` / `:q` does
+    // what the user means rather than erroring on the prefix they never typed).
+    //
     // The write / save-as family may carry a path argument, so it can't go
     // through the exact-match table below (`:w foo.md` must not be an
     // "unknown command").  A bare `:w` / `:wq` resolves here too.
@@ -118,6 +150,9 @@ pub fn parse_ex(input: &str) -> Result<ExCommand, ExError> {
     match s {
         "q" | "quit" => Ok(ExCommand::Quit),
         "x" | "xit" => Ok(ExCommand::WriteQuitIfModified),
+        // An unknown command keeps any `'<,'>` prefix in the message so the
+        // user sees exactly what failed to parse.
+        _ if visual_range => Err(ExError::UnknownCommand(input.trim().to_owned())),
         other => Err(ExError::UnknownCommand(other.to_owned())),
     }
 }
@@ -154,10 +189,14 @@ fn parse_write_forms(s: &str) -> Option<ExCommand> {
 
 /// Parse the `/pat/rep/flags` tail of a substitution.  `rest` is everything
 /// after the `s` / `%s` prefix and must begin with the `/` delimiter.
-fn parse_substitute(all_lines: bool, rest: &str) -> Result<ExCommand, ExError> {
+fn parse_substitute(range: SubstituteRange, rest: &str) -> Result<ExCommand, ExError> {
     const DELIM: char = '/';
     let Some(body) = rest.strip_prefix(DELIM) else {
-        let prefix = if all_lines { "%s" } else { "s" };
+        let prefix = match range {
+            SubstituteRange::AllLines => "%s",
+            SubstituteRange::VisualRange => "'<,'>s",
+            SubstituteRange::CurrentLine => "s",
+        };
         return Err(ExError::UnknownCommand(format!("{prefix}{rest}")));
     };
 
@@ -183,7 +222,7 @@ fn parse_substitute(all_lines: bool, rest: &str) -> Result<ExCommand, ExError> {
     }
 
     Ok(ExCommand::Substitute(Substitution {
-        all_lines,
+        range,
         pattern,
         replacement,
         global,
@@ -230,7 +269,16 @@ fn take_field(s: &str, delim: char) -> (String, Option<&str>) {
 /// substitution is applied as one [`EditDelta`] so it undoes in a single step.
 /// Each affected line is processed independently (first match only, or every
 /// match with the `g` flag), matching vim's per-line semantics.
-pub fn execute_substitute(editor: &mut EditorState, sub: &Substitution) -> Result<usize, ExError> {
+///
+/// `visual_range` supplies the inclusive `(first, last)` buffer-line span for a
+/// [`SubstituteRange::VisualRange`] substitution (the marks vim carries from
+/// the last Visual selection).  It is ignored for the other ranges, and a
+/// `VisualRange` with no bounds falls back to the current line.
+pub fn execute_substitute(
+    editor: &mut EditorState,
+    sub: &Substitution,
+    visual_range: Option<(usize, usize)>,
+) -> Result<usize, ExError> {
     if sub.pattern.is_empty() {
         return Err(ExError::EmptyPattern);
     }
@@ -244,11 +292,20 @@ pub fn execute_substitute(editor: &mut EditorState, sub: &Substitution) -> Resul
     if line_count == 0 {
         return Ok(0);
     }
-    let (first, last) = if sub.all_lines {
-        (0, line_count - 1)
-    } else {
-        let l = editor.buffer.char_to_line(editor.cursor.offset);
-        (l, l)
+    let current_line = || editor.buffer.char_to_line(editor.cursor.offset);
+    let (first, last) = match sub.range {
+        SubstituteRange::AllLines => (0, line_count - 1),
+        SubstituteRange::CurrentLine => {
+            let l = current_line();
+            (l, l)
+        }
+        SubstituteRange::VisualRange => match visual_range {
+            Some((f, l)) => (f.min(line_count - 1), l.min(line_count - 1)),
+            None => {
+                let l = current_line();
+                (l, l)
+            }
+        },
     };
 
     let start_char = editor.buffer.line_to_char(first);
@@ -328,15 +385,23 @@ fn substitute_line(
 mod tests {
     use super::*;
 
-    fn sub(all_lines: bool, pat: &str, rep: &str, global: bool, ignore_case: bool) -> ExCommand {
+    fn sub(
+        range: SubstituteRange,
+        pat: &str,
+        rep: &str,
+        global: bool,
+        ignore_case: bool,
+    ) -> ExCommand {
         ExCommand::Substitute(Substitution {
-            all_lines,
+            range,
             pattern: pat.to_owned(),
             replacement: rep.to_owned(),
             global,
             ignore_case,
         })
     }
+
+    use SubstituteRange::{AllLines, CurrentLine, VisualRange};
 
     #[test]
     fn parses_write_quit_variants() {
@@ -433,22 +498,59 @@ mod tests {
     fn parses_line_substitution() {
         assert_eq!(
             parse_ex("s/foo/bar/"),
-            Ok(sub(false, "foo", "bar", false, false))
+            Ok(sub(CurrentLine, "foo", "bar", false, false))
         );
         // Trailing delimiter optional.
         assert_eq!(
             parse_ex("s/foo/bar"),
-            Ok(sub(false, "foo", "bar", false, false))
+            Ok(sub(CurrentLine, "foo", "bar", false, false))
         );
         // Missing replacement deletes the match.
-        assert_eq!(parse_ex("s/foo"), Ok(sub(false, "foo", "", false, false)));
+        assert_eq!(
+            parse_ex("s/foo"),
+            Ok(sub(CurrentLine, "foo", "", false, false))
+        );
     }
 
     #[test]
     fn parses_global_substitution_and_flags() {
-        assert_eq!(parse_ex("%s/a/b/g"), Ok(sub(true, "a", "b", true, false)));
-        assert_eq!(parse_ex("%s/a/b/gi"), Ok(sub(true, "a", "b", true, true)));
-        assert_eq!(parse_ex("s/a/b/i"), Ok(sub(false, "a", "b", false, true)));
+        assert_eq!(
+            parse_ex("%s/a/b/g"),
+            Ok(sub(AllLines, "a", "b", true, false))
+        );
+        assert_eq!(
+            parse_ex("%s/a/b/gi"),
+            Ok(sub(AllLines, "a", "b", true, true))
+        );
+        assert_eq!(
+            parse_ex("s/a/b/i"),
+            Ok(sub(CurrentLine, "a", "b", false, true))
+        );
+    }
+
+    #[test]
+    fn parses_visual_range_substitution() {
+        // The `'<,'>` marks vim inserts when `:` is pressed in Visual mode.
+        assert_eq!(
+            parse_ex("'<,'>s/foo/bar/g"),
+            Ok(sub(VisualRange, "foo", "bar", true, false))
+        );
+        // A `%` after the range wins (last range specifier wins, as in vim).
+        assert_eq!(
+            parse_ex("'<,'>%s/a/b/"),
+            Ok(sub(AllLines, "a", "b", false, false))
+        );
+        // The write / quit family ignores a `'<,'>` prefix (Visual `:` inserts
+        // it) and acts on the whole buffer.
+        assert_eq!(parse_ex("'<,'>w"), Ok(ExCommand::Write));
+        assert_eq!(parse_ex("'<,'>wq"), Ok(ExCommand::WriteQuit));
+        assert_eq!(parse_ex("'<,'>q"), Ok(ExCommand::Quit));
+        assert_eq!(parse_ex("'<,'>x"), Ok(ExCommand::WriteQuitIfModified));
+        // A genuinely unknown command keeps the prefix in the error.
+        assert_eq!(
+            parse_ex("'<,'>nope"),
+            Err(ExError::UnknownCommand("'<,'>nope".to_owned()))
+        );
     }
 
     #[test]
@@ -461,7 +563,7 @@ mod tests {
         // `\/` in the pattern is a literal slash; regex escapes survive.
         assert_eq!(
             parse_ex(r"s/a\/b/c\.d/"),
-            Ok(sub(false, "a/b", r"c\.d", false, false))
+            Ok(sub(CurrentLine, "a/b", r"c\.d", false, false))
         );
     }
 }

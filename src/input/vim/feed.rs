@@ -226,7 +226,7 @@ fn feed_cmdline(
                     forward: false,
                     query: input,
                 },
-                CmdLineKind::Ex => submit_ex(editor, &input, vh, vw),
+                CmdLineKind::Ex => submit_ex(editor, &input, vim.last_visual_range, vh, vw),
                 _ => VimOutcome::Consumed,
             }
         }
@@ -239,7 +239,13 @@ fn feed_cmdline(
 /// execute here against the editor (a single-undo regex substitution) and
 /// report their result as a `Flash`.  A parse / regex error flashes too; an
 /// empty `:` line is a silent no-op.
-fn submit_ex(editor: &mut EditorState, input: &str, vh: usize, vw: usize) -> VimOutcome {
+fn submit_ex(
+    editor: &mut EditorState,
+    input: &str,
+    visual_range: Option<(usize, usize)>,
+    vh: usize,
+    vw: usize,
+) -> VimOutcome {
     if input.trim().is_empty() {
         return VimOutcome::Consumed;
     }
@@ -312,7 +318,7 @@ fn submit_ex(editor: &mut EditorState, input: &str, vh: usize, vw: usize) -> Vim
                 }
             }
         }
-        Ok(ExCommand::Substitute(sub)) => match execute_substitute(editor, &sub) {
+        Ok(ExCommand::Substitute(sub)) => match execute_substitute(editor, &sub, visual_range) {
             Ok(0) => VimOutcome::Flash(format!("Pattern not found: {}", sub.pattern)),
             Ok(n) => {
                 after_edit(editor, vh, vw);
@@ -551,6 +557,23 @@ fn feed_visual_command(
         // object char) sets the selection via `feed_text_object`.
         'i' | 'a' => {
             vim.pending_text_object = Some(c == 'i');
+            return Some(VimOutcome::Pending);
+        }
+        // `:`: open the ex command line pre-filled with the `'<,'>` range
+        // spanning the selection's lines (vim's Visual-mode `:`).  The range
+        // is captured now — the concrete bounds a `:'<,'>s` runs over — then
+        // Visual exits (the highlight goes, matching vim; the marks persist on
+        // `last_visual_range`).  Editing / submission is driven by
+        // `feed_cmdline`, exactly as for a Normal-mode `:`.
+        ':' => {
+            if let Some(sel) = editor.selection {
+                vim.last_visual_range = Some(visual_line_bounds(&sel, &editor.buffer));
+            }
+            exit_visual(vim, editor);
+            vim.cmdline = Some(CmdLineState::with_input(
+                CmdLineKind::Ex,
+                "'<,'>".to_owned(),
+            ));
             return Some(VimOutcome::Pending);
         }
         'o' => swap_visual_ends(vim, editor, vh, vw),
