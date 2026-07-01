@@ -108,6 +108,20 @@ impl CmdLineState {
             draft: String::new(),
         }
     }
+
+    /// A command line pre-filled with `input`, cursor parked at its end — used
+    /// for the `'<,'>` range vim inserts when `:` opens from Visual mode, so
+    /// the user types the rest of the command after it.
+    pub fn with_input(kind: CmdLineKind, input: String) -> Self {
+        let cursor = input.chars().count();
+        Self {
+            kind,
+            input,
+            cursor,
+            history_idx: None,
+            draft: String::new(),
+        }
+    }
 }
 
 /// The complete vim state held on `App`.
@@ -131,6 +145,11 @@ pub struct VimState {
     pub last_find: Option<(FindKind, char)>,
     /// Char offset of the visual anchor; `Some` in Visual / VisualLine.
     pub visual_anchor: Option<usize>,
+    /// Inclusive buffer-line span (`first`, `last`) of the most recent Visual
+    /// selection, captured when `:` opens the ex prompt from Visual mode — the
+    /// concrete bounds a `:'<,'>s` substitution runs over (vim's `'<`/`'>`
+    /// marks).  `None` until the first Visual `:`.
+    pub last_visual_range: Option<(usize, usize)>,
     pub register: VimRegister,
     /// Active while typing a `:` / `/` / `?` command line.
     pub cmdline: Option<CmdLineState>,
