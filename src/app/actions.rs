@@ -978,6 +978,16 @@ impl App {
         // replaces the document and its resolution will swap the
         // buffer out from under the match list.
         self.exit_search_flow();
+        // A half-typed vim command line (`:`/`/`/`?`) can't survive
+        // either: vim key handling is deferred while in diff mode
+        // (so the prompt could never be completed), and a stale
+        // `cmdline` outranks the diff hint row in `hint_content`,
+        // masking the diff-review chords.  Drop it — along with any
+        // in-progress multi-key parse — so the hint line reads diff.
+        if let Some(vim) = self.vim.as_mut() {
+            vim.cmdline = None;
+            vim.reset_pending();
+        }
         let old = self.editor.buffer.contents();
         let Some(diff_state) = crate::diff::DiffState::new(&old, &on_disk) else {
             // Edge case: the dirty-conflict modal was opened against
@@ -1376,6 +1386,26 @@ mod tests {
             1,
             "re-entry must not stack a second intro modal",
         );
+    }
+
+    #[test]
+    fn entering_diff_mode_clears_an_open_vim_command_line() {
+        use crate::input::vim::state::{CmdLineKind, CmdLineState, VimState};
+        use crate::ui::HintContent;
+        let mut app = make_app();
+        app.editor.buffer.insert(0, "alpha\nbeta\n");
+        app.vim = Some(VimState {
+            cmdline: Some(CmdLineState::new(CmdLineKind::Ex)),
+            count: Some(3),
+            ..Default::default()
+        });
+        app.enter_diff_mode("alpha\nGAMMA\n".to_owned());
+        let vim = app.vim.as_ref().unwrap();
+        assert!(vim.cmdline.is_none(), "command line must be cleared");
+        assert_eq!(vim.count, None, "pending parse must be reset");
+        // The hint line now reads the diff-review chords, not a stale
+        // command line.
+        assert!(matches!(app.hint_content(), HintContent::Chords(_)));
     }
 
     #[test]
