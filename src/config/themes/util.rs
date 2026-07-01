@@ -45,6 +45,34 @@ pub fn saturate(c: Color, amount: f32) -> Color {
     Color::Rgb(push(r), push(g), push(b))
 }
 
+/// Relative luminance of a color in `0.0..=1.0`, using the standard
+/// sRGB coefficients.  Only defined for `Color::Rgb`; indexed / named /
+/// `Reset` colors return `None` because their real luminance depends on
+/// the terminal palette and can't be known here.
+pub fn luminance(c: Color) -> Option<f32> {
+    let Color::Rgb(r, g, b) = c else { return None };
+    Some((0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32) / 255.0)
+}
+
+/// Pick whichever of `a` / `b` contrasts more strongly with `bg`,
+/// measured by absolute luminance difference.  Used to choose a legible
+/// foreground for a colored fill (e.g. the selection highlight) so a
+/// theme whose `accent` sits near its `text` luminance doesn't render
+/// selected text as low-contrast mud.  When luminance can't be computed
+/// (non-RGB colors) it returns `a`, preserving the caller's default.
+pub fn best_contrast(bg: Color, a: Color, b: Color) -> Color {
+    match (luminance(bg), luminance(a), luminance(b)) {
+        (Some(l_bg), Some(l_a), Some(l_b)) => {
+            if (l_a - l_bg).abs() >= (l_b - l_bg).abs() {
+                a
+            } else {
+                b
+            }
+        }
+        _ => a,
+    }
+}
+
 /// Chroma boost applied to derived chrome surfaces — picked so the
 /// tint reads as "warm dark grey" / "cool dark grey" rather than as
 /// a recognisable hue.  Bump cautiously; values above ~1.0 start to

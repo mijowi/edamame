@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use ratatui::style::{Color, Modifier, Style};
 
 use super::sections::AppearanceMode;
-use super::themes::util::blend;
+use super::themes::util::{best_contrast, blend};
 
 /// How heavily to mix `code` toward `bg` when deriving the code
 /// surface bg.  Closer to 1.0 = closer to `bg` (a barely-tinted
@@ -906,16 +906,24 @@ impl Theme {
             // `[normal] fg = "Reset"` and `bg = "Reset"` in their TOML.
             normal: Style::default().fg(p.text).bg(p.bg),
 
-            // Selection: `accent` bg with the document `text` fg so
-            // color-coded content stays legible inside the highlight.
-            selection: Style::default().bg(p.accent).fg(p.text),
+            // Selection: `accent` bg with whichever of `text` / `bg`
+            // contrasts better against it, so a theme whose `accent`
+            // sits near its `text` luminance (e.g. GitHub's cyan on
+            // light-grey ink) doesn't render selected text as
+            // low-contrast mud.  Indexed / named colors can't be
+            // measured and fall back to `text` (the prior behavior).
+            selection: Style::default()
+                .bg(p.accent)
+                .fg(best_contrast(p.accent, p.text, p.bg)),
 
             // Muted selection: the selection hue washed toward the
             // surface so non-focused search matches recede behind the
-            // `selection`-painted current match.
-            selection_muted: Style::default()
-                .bg(blend(p.surface, p.accent, 0.45))
-                .fg(p.text),
+            // `selection`-painted current match.  Same contrast pick
+            // against the washed bg.
+            selection_muted: {
+                let bg = blend(p.surface, p.accent, 0.45);
+                Style::default().bg(bg).fg(best_contrast(bg, p.text, p.bg))
+            },
 
             // Search match-counter badge — secondary accent so it
             // reads apart from the warning-hued diff badge.
