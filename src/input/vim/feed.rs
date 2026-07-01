@@ -621,9 +621,8 @@ fn run_visual_indent(
 ) {
     with_selection(vim, editor, |vim, editor, sel| {
         let (first, last) = visual_line_bounds(&sel, &editor.buffer);
-        let tab_width = editor.tab_width;
         ensure_editing(editor);
-        indent_lines(editor, first, last, right, tab_width);
+        indent_lines(editor, first, last, right, crate::constants::INDENT_WIDTH);
         leave_visual_to_normal(vim, editor, vh, vw);
     });
 }
@@ -1245,8 +1244,7 @@ fn feed_indent_pending(
         } else if let OpRange::Lines { first, last } =
             doubled_line_range(&editor.buffer, editor.cursor.offset, count)
         {
-            let tab_width = editor.tab_width;
-            indent_lines(editor, first, last, right, tab_width);
+            indent_lines(editor, first, last, right, crate::constants::INDENT_WIDTH);
             after_edit(editor, vh, vw);
         }
     }

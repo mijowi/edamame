@@ -1532,11 +1532,13 @@ mod tests {
     }
 
     #[test]
-    fn nested_bullet_list_uses_two_space_indent() {
+    fn nested_bullet_list_uses_four_space_indent() {
+        // Nested markers render at the same `INDENT_WIDTH` (4) indent the raw
+        // source uses, so de-rendering the block causes no horizontal shift.
         let lines = render("- outer\n    - inner\n- next\n");
         assert_eq!(lines.len(), 3);
         assert_eq!(line_text(&lines[0]), "• outer");
-        assert_eq!(line_text(&lines[1]), "  • inner");
+        assert_eq!(line_text(&lines[1]), "    • inner");
         assert_eq!(line_text(&lines[2]), "• next");
     }
 
@@ -1547,7 +1549,7 @@ mod tests {
         let lines = render("- [ ] outer\n    - [ ] inner\n- [ ] next\n");
         assert_eq!(lines.len(), 3);
         assert_eq!(line_text(&lines[0]), "• [ ] outer");
-        assert_eq!(line_text(&lines[1]), "  • [ ] inner");
+        assert_eq!(line_text(&lines[1]), "    • [ ] inner");
         assert_eq!(line_text(&lines[2]), "• [ ] next");
     }
 

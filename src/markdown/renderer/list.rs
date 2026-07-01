@@ -15,32 +15,21 @@ impl<'t> Renderer<'t> {
         out: &mut Vec<Line<'static>>,
         indent_prefix: &str,
     ) {
-        // Two width metrics drive list layout:
-        //
-        //   marker_width: cells consumed by the marker prefix that the
-        //   renderer prints in front of the first line of each item.
-        //     • unordered:  `• `              → 2 cells
-        //     • ordered:    ` 1. ` / `10. `   → max_digits + 2 cells
-        //
-        //   nested_indent_width: cells of leading whitespace inserted in
-        //   front of each nested block (sub-list, continuation paragraph,
-        //   …) in this list's items.
-        //     • unordered:  2 cells (matches the bullet column).
-        //     • ordered:    max(4, marker_width).  Ordered list nesting in
-        //       the source uses 4 spaces (the conventional `tab_width`
-        //       indent that satisfies CommonMark's ≥3-cell rule for
-        //       single-digit markers); rendering at the same width keeps
-        //       the de-rendered (raw-mode) view from showing the nested
-        //       marker shifted relative to its rendered position.  For
-        //       lists wide enough that the marker outgrows 4 cells, the
-        //       indent grows with it so multi-digit markers still align
-        //       under their parent's content column.
+        // Nested blocks (sub-lists, continuation paragraphs, …) inside this
+        // list's items are indented by exactly `INDENT_WIDTH` cells relative to
+        // the item's own line.  That mirrors the raw source, which indents a
+        // nested item by the same fixed step (list indent / Tab both insert
+        // `INDENT_WIDTH` spaces), so a nested marker sits at the same column in
+        // the rendered and de-rendered (raw) views and de-rendering causes no
+        // horizontal jump.  `digit_width` still right-aligns multi-digit
+        // ordered markers so their item text stays in one column.
         let first_num = start.unwrap_or(1);
         let last_num = first_num + items.len().saturating_sub(1) as u64;
         let digit_width = last_num.to_string().len().max(1);
-        let marker_width = if ordered { digit_width + 2 } else { 2 };
-        let nested_indent_width = if ordered { marker_width.max(4) } else { 2 };
-        let child_indent_prefix = format!("{indent_prefix}{}", " ".repeat(nested_indent_width));
+        let child_indent_prefix = format!(
+            "{indent_prefix}{}",
+            " ".repeat(crate::constants::INDENT_WIDTH)
+        );
 
         let mut counter = first_num;
         for item in items {

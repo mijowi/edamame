@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EditorConfig {
-    /// Number of spaces per tab stop.
-    pub tab_width: usize,
     /// When true, code block lines that exceed the terminal width are wrapped.
     /// Default: false (long lines extend beyond the visible area without wrapping).
     pub code_block_wrap: bool,
@@ -151,7 +149,6 @@ impl AppearanceMode {
 impl Default for EditorConfig {
     fn default() -> Self {
         Self {
-            tab_width: 4,
             code_block_wrap: false,
             line_wrap: true,
             preserve_blank_lines: true,

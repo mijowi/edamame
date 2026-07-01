@@ -428,7 +428,6 @@ impl App {
             config.images.max_width,
             image_font_size,
         );
-        editor.tab_width = config.editor.tab_width;
         editor.cursor_blink = crate::editor::CursorBlink::from_config(
             config.editor.cursor_blink,
             config.editor.cursor_blink_ms,

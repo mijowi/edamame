@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn default_config_is_valid() {
         let config = Config::default();
-        assert_eq!(config.editor.tab_width, 4);
+        assert_eq!(config.editor.mouse_scroll_lines, 1);
         assert!(!config.dev.logging);
         assert_eq!(config.modal.handler, "default");
         assert_eq!(config.theme, "Edamame");
@@ -440,7 +440,10 @@ mod tests {
         let config = Config::default();
         let serialized = toml::to_string(&config).expect("serialize");
         let deserialized: Config = toml::from_str(&serialized).expect("deserialize");
-        assert_eq!(deserialized.editor.tab_width, config.editor.tab_width);
+        assert_eq!(
+            deserialized.editor.mouse_scroll_lines,
+            config.editor.mouse_scroll_lines
+        );
         assert_eq!(deserialized.modal.handler, config.modal.handler);
         assert_eq!(deserialized.theme, config.theme);
     }
@@ -450,7 +453,7 @@ mod tests {
         let toml = "[dev]\nlogging = true\n";
         let config: Config = toml::from_str(toml).expect("deserialize");
         assert!(config.dev.logging);
-        assert_eq!(config.editor.tab_width, 4); // default
+        assert_eq!(config.editor.mouse_scroll_lines, 1); // default
         assert_eq!(config.modal.handler, "default"); // default
         assert_eq!(config.theme, "Edamame"); // default
     }
@@ -499,7 +502,7 @@ mod tests {
         let mut warnings = Vec::new();
         let config = read_main_config(&path, &mut warnings);
         assert_eq!(config.theme, "Edamame");
-        assert_eq!(config.editor.tab_width, 4);
+        assert_eq!(config.editor.mouse_scroll_lines, 1);
         assert!(warnings.is_empty());
     }
 
@@ -615,11 +618,15 @@ mod tests {
     fn read_main_config_parses_valid_toml() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        std::fs::write(&path, "theme = \"solarized\"\n\n[editor]\ntab_width = 2\n").unwrap();
+        std::fs::write(
+            &path,
+            "theme = \"solarized\"\n\n[editor]\nmouse_scroll_lines = 2\n",
+        )
+        .unwrap();
         let mut warnings = Vec::new();
         let config = read_main_config(&path, &mut warnings);
         assert_eq!(config.theme, "solarized");
-        assert_eq!(config.editor.tab_width, 2);
+        assert_eq!(config.editor.mouse_scroll_lines, 2);
         assert!(warnings.is_empty());
     }
 
@@ -652,12 +659,12 @@ mod tests {
     fn read_main_config_parse_error_warns_and_falls_back() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        // Type mismatch — `tab_width` expects an integer.
-        std::fs::write(&path, "[editor]\ntab_width = \"oops\"\n").unwrap();
+        // Type mismatch — `mouse_scroll_lines` expects an integer.
+        std::fs::write(&path, "[editor]\nmouse_scroll_lines = \"oops\"\n").unwrap();
         let mut warnings = Vec::new();
         let config = read_main_config(&path, &mut warnings);
         // Falls back to defaults.
-        assert_eq!(config.editor.tab_width, 4);
+        assert_eq!(config.editor.mouse_scroll_lines, 1);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].path, path);
         match &warnings[0].kind {
@@ -746,17 +753,17 @@ mod tests {
         // associates the key with the most recent table header.
         std::fs::write(
             &path,
-            "bogus_top = true\n\n[editor]\ntab_width = 2\ntab_widht = 8\n",
+            "bogus_top = true\n\n[editor]\nmouse_scroll_lines = 2\nmouse_scroll_linez = 8\n",
         )
         .unwrap();
         let mut warnings = Vec::new();
         let config = read_main_config(&path, &mut warnings);
-        assert_eq!(config.editor.tab_width, 2);
+        assert_eq!(config.editor.mouse_scroll_lines, 2);
         assert_eq!(warnings.len(), 1);
         match &warnings[0].kind {
             WarningKind::UnknownKeys(keys) => {
                 assert!(
-                    keys.iter().any(|k| k == "editor.tab_widht"),
+                    keys.iter().any(|k| k == "editor.mouse_scroll_linez"),
                     "missing nested key: {keys:?}"
                 );
                 assert!(
@@ -946,7 +953,7 @@ theme = \"Edamame\" # trailing comment on theme
 appearance = \"dark\"
 
 [editor]
-# tab_width = 4
+# code_block_wrap = false
 
 [table]
 show_buttons = true
@@ -956,7 +963,7 @@ show_buttons = true
         let out = save_merge(&config, &path).expect("merge ok");
         assert!(out.contains("# top-of-file comment that must survive"));
         assert!(out.contains("# trailing comment on theme"));
-        assert!(out.contains("# tab_width = 4"));
+        assert!(out.contains("# code_block_wrap = false"));
         // No default-valued cruft injected into [editor]:
         assert!(!out.contains("transient_ms"));
         assert!(!out.contains("mouse_scroll_lines"));
@@ -994,14 +1001,14 @@ theme = \"Edamame\"
 appearance = \"dark\"
 
 [editor]
-# tab_width = 4
+# mouse_scroll_lines = 1
 ";
         std::fs::write(&path, annotated).unwrap();
         let mut config = Config::default();
-        config.editor.tab_width = 8;
+        config.editor.mouse_scroll_lines = 3;
         let out = save_merge(&config, &path).expect("merge ok");
-        assert!(out.contains("# tab_width = 4"));
-        assert!(out.contains("tab_width = 8"));
+        assert!(out.contains("# mouse_scroll_lines = 1"));
+        assert!(out.contains("mouse_scroll_lines = 3"));
         // Defaults that the UI didn't touch must NOT be appended:
         assert!(!out.contains("transient_ms = 1500"));
         assert!(!out.contains("max_width_cols = 80"));
@@ -1030,12 +1037,12 @@ appearance = \"dark\"
         let path = dir.path().join("config.toml");
         std::fs::write(
             &path,
-            "theme = \"Edamame\"\nappearance = \"dark\"\n\n[editor]\ntab_width = 8 # explicit\n",
+            "theme = \"Edamame\"\nappearance = \"dark\"\n\n[editor]\nmouse_scroll_lines = 3 # explicit\n",
         )
         .unwrap();
-        let config = Config::default(); // tab_width = 4
+        let config = Config::default(); // mouse_scroll_lines = 1
         let out = save_merge(&config, &path).expect("merge ok");
-        assert!(out.contains("tab_width = 4"));
+        assert!(out.contains("mouse_scroll_lines = 1"));
         assert!(out.contains("# explicit"));
     }
 }

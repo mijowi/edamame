@@ -273,7 +273,6 @@ impl App {
                 })
                 .unwrap_or((10, 20)),
         );
-        new_editor.tab_width = self.config.editor.tab_width;
         // Preserve the current declined state across file loads: a
         // session-level `No`, a persisted `Never`, or anything else that
         // zeroed `images_enabled` on the previous editor stays in
