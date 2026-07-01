@@ -767,6 +767,37 @@ fn yy_then_p_duplicates_the_line_below() {
 }
 
 #[test]
+fn yy_arms_a_yank_flash_over_the_line() {
+    let mut st = state("one\ntwo");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('y'));
+    feed(&mut vim, &mut st, ch('y'));
+    let flash = st.active_yank_flash().expect("yy arms a flash");
+    // Covers the first line's bytes (including its trailing newline).
+    assert_eq!((flash.start, flash.end), (0, 4));
+}
+
+#[test]
+fn charwise_yank_arms_a_flash_over_the_span() {
+    let mut st = state("abc");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('y'));
+    feed(&mut vim, &mut st, ch('e')); // ye → "abc" inclusive
+    let flash = st.active_yank_flash().expect("charwise yank arms a flash");
+    assert_eq!((flash.start, flash.end), (0, 3));
+}
+
+#[test]
+fn visual_yank_arms_a_flash() {
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('l')); // extend selection to cover "he"
+    feed(&mut vim, &mut st, ch('y'));
+    assert!(st.active_yank_flash().is_some(), "visual y arms a flash");
+}
+
+#[test]
 fn capital_p_pastes_a_line_above() {
     let mut st = state("one\ntwo");
     let mut vim = VimState::default();

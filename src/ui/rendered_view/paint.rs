@@ -465,6 +465,68 @@ pub(crate) fn paint_search_overlays(
     }
 }
 
+/// Post-render pass: paint the recently-yanked span as a brief highlight
+/// "flash" over the rendered document, confirming a `y` operation the way
+/// neovim's yank highlight does.  Shares the same visible-line walk as
+/// [`paint_search_overlays`] but for the single [`EditorState::yank_flash`]
+/// range, using `theme.selection`.  No-op once the flash window has
+/// elapsed (`active_yank_flash` returns `None`).
+pub(crate) fn paint_yank_flash(editor: &EditorState, buf: &mut TuiBuf, area: Rect, theme: &Theme) {
+    let Some(flash) = editor.active_yank_flash() else {
+        return;
+    };
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let source_len = editor.buffer.rope().len_bytes();
+    if flash.start >= flash.end || flash.end > source_len {
+        return;
+    }
+    let width = area.width as usize;
+    let (mut line_idx, mut first_sub_row) =
+        editor.rendered_line_at_visual_row(editor.scroll, width.max(1));
+    let mut vis_y: u16 = 0;
+    while vis_y < area.height {
+        if line_idx >= editor.parsed.lines.len() {
+            break;
+        }
+        let rows = editor
+            .parsed
+            .visual_rows_for_line_at(line_idx, width)
+            .max(1);
+        let painted = rows
+            .saturating_sub(first_sub_row)
+            .min((area.height - vis_y) as usize);
+        if painted == 0 {
+            break;
+        }
+        let block_range = editor
+            .parsed
+            .source_map
+            .original_byte_for_rendered_line(line_idx)
+            .and_then(|b| editor.parsed.source_map.original_range_for_byte(b));
+        if let Some(block_range) = block_range {
+            if block_range.start < flash.end && block_range.end > flash.start {
+                paint_byte_range_overlay(
+                    editor,
+                    buf,
+                    area,
+                    vis_y,
+                    painted as u16,
+                    first_sub_row,
+                    line_idx,
+                    flash.start,
+                    flash.end,
+                    theme.selection,
+                );
+            }
+        }
+        vis_y += painted as u16;
+        line_idx += 1;
+        first_sub_row = 0;
+    }
+}
+
 /// Paint `sel_bg` onto the rendered cells for rendered char cols in
 /// `[start_col, end_col)`, walking each visual row of the wrapped line.
 #[allow(clippy::too_many_arguments)]

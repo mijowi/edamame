@@ -164,6 +164,61 @@ fn snapshot_status_bar_vim_visual() {
 }
 
 #[test]
+fn yank_flash_paints_the_yanked_span() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::terminal::Capabilities;
+    use edamame::ui::bottom_region::{HintContent, HintSet};
+    use edamame::ui::{EditorView, EditorViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let mut state = EditorState::new(Buffer::from_str("hello world\n"), theme);
+    state.mode = Mode::Rendered;
+    // Flash "hello" (chars 0..5).
+    state.flash_yank(0, 5);
+
+    let backend = TestBackend::new(40, 6);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = EditorViewState::new();
+    let caps = Capabilities::default();
+    terminal
+        .draw(|frame| {
+            let view = EditorView {
+                state: &mut state,
+                theme,
+                filename: "test.md",
+                show_table_buttons: false,
+                table_drop_indicator: None,
+                capabilities: &caps,
+                show_line_numbers: false,
+                is_scrolling: false,
+                hint: HintContent::Chords(HintSet::default()),
+                vim_mode_label: None,
+                visual_line_mode: false,
+                editor_cursor_style: theme.status_mode_rendered,
+                max_width_enabled: false,
+                max_width_cols: 0,
+                scrollbar_active: false,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    // Cols 1..5 of row 0 ("ello") must carry the flash (selection) bg — col 0
+    // holds the block cursor, which wins over the wash.
+    for x in 1..5u16 {
+        assert_eq!(
+            buf.cell((x, 0)).unwrap().style().bg,
+            theme.selection.bg,
+            "yanked col {x} must carry the flash bg"
+        );
+    }
+    // The space after "hello" (col 5) is outside the flash span.
+    assert_ne!(buf.cell((5, 0)).unwrap().style().bg, theme.selection.bg);
+}
+
+#[test]
 fn rendered_view_paints_selection_across_multiple_rendered_blocks() {
     use edamame::document::{Buffer, Selection};
     use edamame::editor::EditorState;

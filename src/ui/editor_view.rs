@@ -312,13 +312,14 @@ impl<'a> StatefulWidget for EditorView<'a> {
             }
         }
 
-        // ── Search-match overlay (Preview + Rendered modes) ───────
+        // ── Search-match + yank-flash overlays (Preview + Rendered) ─
         // Painted as a post-pass over the rendered cells; both views
         // walk `parsed.lines` with the same wrap so one overlay walk
-        // serves both.  Raw mode paints its highlights inline in
-        // `RawView`.  No-op outside an active search flow.
+        // serves both.  Raw mode paints both highlights inline in
+        // `RawView`.  No-op outside an active search flow / yank flash.
         if matches!(mode, Mode::Preview | Mode::Rendered) {
             super::rendered_view::paint_search_overlays(self.state, buf, doc_area, self.theme);
+            super::rendered_view::paint_yank_flash(self.state, buf, doc_area, self.theme);
         }
 
         // ── Cursor re-stamp ───────────────────────────────────────

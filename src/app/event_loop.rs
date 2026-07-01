@@ -232,6 +232,9 @@ impl App {
         if self.editor.cursor_blink.tick() {
             self.needs_draw = true;
         }
+        if self.editor.expire_yank_flash() {
+            self.needs_draw = true;
+        }
         self.tick_autosave();
         self.tick_section_jump();
         self.tick_diff_advance();

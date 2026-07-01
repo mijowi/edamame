@@ -12,6 +12,8 @@ pub mod state_viewport;
 pub mod table_edit;
 pub mod table_edit_ops;
 pub mod vim_ops;
+pub mod yank_flash;
 
 pub use mode::Mode;
 pub use state::{CursorBlink, EditorState, RAW_REVEAL_DELAY};
+pub use yank_flash::YankFlash;
