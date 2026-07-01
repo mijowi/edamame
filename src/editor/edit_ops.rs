@@ -602,6 +602,9 @@ pub fn apply(
         // ── Formatting ────────────────────────────────────────────
         Action::BoldSelection => toggle_wrap(state, "**"),
         Action::ItalicizeSelection => toggle_wrap(state, "*"),
+        Action::InlineCodeSelection => toggle_wrap(state, "`"),
+        Action::StrikethroughSelection => toggle_wrap(state, "~~"),
+        Action::HighlightSelection => toggle_wrap(state, "=="),
 
         // ── File operations ───────────────────────────────────────
         // `Action::Save` is intercepted by `App::handle_app_action`

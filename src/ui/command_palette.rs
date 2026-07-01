@@ -193,6 +193,9 @@ fn section_of(action: &Action) -> &'static str {
         | Action::SelectAll
         | Action::BoldSelection
         | Action::ItalicizeSelection
+        | Action::InlineCodeSelection
+        | Action::StrikethroughSelection
+        | Action::HighlightSelection
         | Action::ToggleCheckbox
         | Action::InsertTable
         | Action::InsertImage

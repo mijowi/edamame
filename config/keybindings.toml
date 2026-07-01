@@ -38,6 +38,13 @@
 # yours is affected, or run the actions from the command palette (Ctrl-P).
 # BoldSelection          = "ctrl+b"
 # ItalicizeSelection     = "ctrl+i"
+#
+# The remaining selection wraps — inline code (`), strikethrough (~~), and
+# highlight (==) — have no default key; run them from the command palette
+# (Ctrl-P) or bind a chord here.
+# InlineCodeSelection    = ""
+# StrikethroughSelection = ""
+# HighlightSelection     = ""
 
 # ── Insert ────────────────────────────────────────────────────────────────────
 # InsertTable opens the rows/columns prompt (the cursor must be on a blank
