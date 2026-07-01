@@ -93,6 +93,9 @@ impl App {
         // isn't typing.
         push(self.transient_deadline());
         push(self.editor.cursor_blink.next_toggle());
+        // Yank flash: wake to repaint (fade out) the post-yank highlight
+        // when its window elapses even if the user isn't typing.
+        push(self.editor.yank_flash_deadline());
         // Autosave: wake when the idle-debounce window expires so the
         // save fires without the user having to press a key.
         push(self.autosave_deadline());

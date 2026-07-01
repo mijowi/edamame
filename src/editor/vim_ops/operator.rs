@@ -64,6 +64,8 @@ fn exec_charwise(editor: &mut EditorState, op: Operator, start: usize, end: usiz
     match op {
         Operator::Yank => {
             // Yank leaves the buffer untouched; cursor parks at the span start.
+            // Flash the copied span so the user sees the yank land.
+            editor.flash_yank(start, end);
             editor.cursor.offset = start;
             editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
             editor.update_cursor_block();
@@ -123,6 +125,10 @@ fn exec_linewise(editor: &mut EditorState, op: Operator, first: usize, last: usi
 
     match op {
         Operator::Yank => {
+            // Flash the whole yanked line block; the overlay painter
+            // clamps each rendered line so the trailing newline of the
+            // last line never over-paints.
+            editor.flash_yank(content_start, block_end);
             editor.cursor.offset = content_start;
             editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
             editor.update_cursor_block();

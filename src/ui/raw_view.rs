@@ -66,6 +66,10 @@ impl<'a> StatefulWidget for RawView<'a> {
             .map_or(&[], |s| s.matches.as_slice());
         let focused_match = self.state.search.as_ref().map(|s| s.focused_idx);
         let rope_len_bytes = self.state.buffer.rope().len_bytes();
+        // Recently-yanked span, painted as a brief flash the same way as
+        // in the rendered views (`theme.selection`).  A linewise yank
+        // spans several buffer lines, so it is clipped per line below.
+        let yank_flash = self.state.active_yank_flash();
 
         let mut vis_row: usize = 0;
         let (mut buf_line, mut first_sub_row) = self
@@ -102,13 +106,13 @@ impl<'a> StatefulWidget for RawView<'a> {
             // stale list (one frame after a content swap) skips
             // rather than panics.
             let mut line_highlights: Vec<(usize, usize, ratatui::style::Style)> = Vec::new();
+            let line_start_byte = self
+                .state
+                .buffer
+                .rope()
+                .char_to_byte(line_start_char.min(self.state.buffer.len_chars()));
+            let line_end_byte = line_start_byte + raw.len();
             if !search_matches.is_empty() {
-                let line_start_byte = self
-                    .state
-                    .buffer
-                    .rope()
-                    .char_to_byte(line_start_char.min(self.state.buffer.len_chars()));
-                let line_end_byte = line_start_byte + raw.len();
                 let first = search_matches.partition_point(|m| m.end <= line_start_byte);
                 for (i, m) in search_matches.iter().enumerate().skip(first) {
                     if m.start >= line_end_byte {
@@ -129,6 +133,25 @@ impl<'a> StatefulWidget for RawView<'a> {
                         self.theme.selection_muted
                     };
                     line_highlights.push((start_col, end_col, style));
+                }
+            }
+
+            // Yank flash: the portion of the flashed byte span that falls
+            // on this line, clipped to the line's byte range and mapped to
+            // char cols.  `raw.get(..)` guards a stale (post-shrink) span.
+            if let Some(flash) = yank_flash {
+                let start_byte = flash.start.max(line_start_byte);
+                let end_byte = flash.end.min(line_end_byte);
+                if start_byte < end_byte {
+                    let s = raw
+                        .get(..start_byte - line_start_byte)
+                        .map(|p| p.chars().count());
+                    let e = raw
+                        .get(..end_byte - line_start_byte)
+                        .map(|p| p.chars().count());
+                    if let (Some(start_col), Some(end_col)) = (s, e) {
+                        line_highlights.push((start_col, end_col, self.theme.selection));
+                    }
                 }
             }
 
@@ -274,6 +297,46 @@ mod tests {
         // Col 5 (the space) should not be selected.
         let cell = tbuf.cell((5, 0)).expect("cell in bounds");
         assert_ne!(cell.style().bg, theme.selection.bg);
+    }
+
+    #[test]
+    fn raw_view_paints_yank_flash() {
+        let theme = theme();
+        let mut state = EditorState::new(Buffer::from_str("Hello world\n"), theme);
+        state.mode = crate::editor::Mode::Raw;
+        // Park the cursor off the flashed span so it doesn't recolor col 0.
+        state.cursor.offset = state.buffer.len_chars();
+        // Flash "Hello" (chars 0..5).
+        state.flash_yank(0, 5);
+        let mut view_state = RawViewState::default();
+
+        let backend = TestBackend::new(20, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let view = RawView {
+                    visual_line_mode: false,
+                    state: &state,
+                    theme,
+                    cursor_style: theme.status_mode_raw,
+                };
+                StatefulWidget::render(view, frame.area(), frame.buffer_mut(), &mut view_state);
+            })
+            .unwrap();
+
+        let tbuf = terminal.backend().buffer().clone();
+        for x in 0..5u16 {
+            assert_eq!(
+                tbuf.cell((x, 0)).expect("cell in bounds").style().bg,
+                theme.selection.bg,
+                "flashed col {x} missing flash bg",
+            );
+        }
+        // Col 5 (the space) is outside the flash span.
+        assert_ne!(
+            tbuf.cell((5, 0)).expect("cell in bounds").style().bg,
+            theme.selection.bg
+        );
     }
 
     #[test]

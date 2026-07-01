@@ -25,7 +25,7 @@ use self::paint::{
     paint_byte_range_overlay,
 };
 
-pub(crate) use self::paint::paint_search_overlays;
+pub(crate) use self::paint::{paint_search_overlays, paint_yank_flash};
 use self::raw_text::{cursor_position_in_block, raw_line_byte_start, raw_source_lines};
 
 /// State for the `RenderedView` widget.

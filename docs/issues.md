@@ -17,13 +17,13 @@
 ## Vim issues
 - DIFF is not displayed in the status line when using vim mode. Maybe we should display it in the hint line?
 - Implement substitution as it's being typed, with match highlights?
-- `Tab` table cell navigation is swallowed in vim normal mode (`Shift-Tab` works)
-- How should we treat vim motions in tables? Disable any that don't work between words? e.g. disable `o`, `O`. `A`, `I`, `$`, `^` should act on the *cell*?
+- How should we treat vim motions in tables? I'm thinking we no-op some and adjust others, such as these:
+    - `o`/`O`: Add new row below/above
+    - `I`/`A`/`$`/`^`: move to the beginning/end of the *cell*
 - When typing in a table cell that is wider than the column header, and a space character is entered,
 - Conventional vim selection instead of half selection?
 - `p` pastes after cursor cell instead of before
 - `a` at the end of a line starts typing on the following line — puts the cursor after the newline character
-- Add a selection paint *flash* to `yy` to signal the yank operation succeeded
 
 ## Diff mode
 - Finish diff mode plan (editing hunks in diff mode)

@@ -6,8 +6,8 @@ use crate::diff::DiffState;
 use crate::document::{Buffer, Cursor, EditDelta, History, ParsedDoc, Selection, VisualSelection};
 use crate::editor::state_viewport::RawVisualRowCache;
 use crate::editor::Mode;
+use crate::editor::YankFlash;
 use crate::image::ImageCache;
-use crate::editor::yank_flash::YankFlash;
 use crate::markdown::RenderCache;
 use crate::search::SearchState;
 
@@ -308,6 +308,12 @@ pub struct EditorState {
     /// intercepts the flow keys (`search::search_keys`) and the App's
     /// `search_safe_action` default-denies everything else.
     pub search: Option<SearchState>,
+    /// Recently-yanked span, painted as a brief highlight "flash" to
+    /// confirm the copy (neovim-style).  Armed by `flash_yank` on every
+    /// `y` operator and cleared once its window elapses by the App's
+    /// `tick_timers`.  Independent of `mode` and `search` — it is a
+    /// transient visual overlay, not a flow.  See `editor::yank_flash`.
+    pub yank_flash: Option<YankFlash>,
     /// Block-level render memoization threaded into every
     /// `refresh_parsed`.  Blocks whose AST is unchanged since the previous
     /// reparse reuse their rendered lines instead of re-rendering — the
@@ -412,6 +418,7 @@ impl EditorState {
             pre_diff_scroll: 0,
             pending_focus_scroll: false,
             search: None,
+            yank_flash: None,
             render_cache: RenderCache::default(),
         };
         // Populate the cursor-block cache so the rendered view's
