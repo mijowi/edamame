@@ -6,11 +6,14 @@
 
 - Handle lines containing line breaks
 
-- Automatic list management is finicky: line spacing, nested lists, sub-lists of different types
-
 - Add/update performance benchmark tests
 
-## Vim issues
+## Lists
+- When a list item is deleted with Ctrl-Backspace (and with Ctrl-Delete?), when the a new line is unintentionally added in its place, making a gap in the list
+- Automatic list management is finicky: line spacing, nested lists, sub-lists of different types
+
+## Vim mode
+- Ctrl-Backspace and Ctrl-Delete modify the buffer in normal mode. They should not.
 - DIFF is not displayed in the status line when using vim mode. Maybe we should display it in the hint line?
 - How should we treat vim motions in tables? I'm thinking we no-op some and adjust others for better UX, such as the ones below. What others should we tailor for tables? Don't change the behavior for raw mode; no elements get special treatment there. All vim motions should work as they would on raw text.
     - `o`/`O`: Add new row below/above, cursor lands on first cell in row

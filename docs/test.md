@@ -51,6 +51,7 @@ Another Heading 1
 
 * Unordered list
 * Foo
+    * Nested unordered list item
 * Bar
 
 + Unordered list with a very long item that should wrap when it exceeds the width of the terminal, which is usually capped at 100 characters.
