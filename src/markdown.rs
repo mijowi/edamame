@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod inline_col_map;
+pub mod list_layout;
 pub mod parse_offsets;
 pub mod parser;
 pub mod render_cache;

@@ -2182,3 +2182,89 @@ fn preview_triple_click_in_header_cell_selects_header_content() {
     let copied = mouse_ops::visual_selection_to_rendered_text(vs, &st.parsed.lines);
     assert_eq!(copied, "a");
 }
+
+// ── List marker-aware click mapping ──────────────────────────────────────
+
+#[test]
+fn click_on_ordered_list_content_lands_on_clicked_char() {
+    // A 10-item ordered list right-aligns its numbers in a 2-digit slot, so
+    // row 0 renders as ` 1. aaa` — one cell wider than the raw `1. aaa`.
+    // The click map must absorb that pad instead of falling back to a 1:1
+    // column mapping (which landed one char to the right).
+    let doc: String = (1..=10).map(|i| format!("{i}. item\n")).collect();
+    let mut st = state(&doc);
+    st.mode = Mode::Rendered;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+
+    // Cursor rests on row 0, so row 2 renders normally (a click on the
+    // cursor's own revealed line maps 1:1 against the raw text instead).
+    // Click the first content char of row 2 — rendered ` 3. item`, raw
+    // `3. item` starting at buffer offset 16, so 'i' is offset 19.
+    mouse_ops::apply(&mut st, click(4, 2), &mut anchor, &[], VP, VW);
+    assert_eq!(
+        st.cursor.offset, 19,
+        "click on 'i' of ' 3. item' must land on raw col 3 of its line"
+    );
+}
+
+#[test]
+fn click_on_nested_list_content_accounts_for_indent_difference() {
+    // The source nests with 2 spaces but the renderer indents children by
+    // INDENT_WIDTH (4), so the rendered marker is 2 cells wider than the
+    // raw one.  A click on the nested item's text used to land 2 chars off.
+    let mut st = state("- top\n  - inner\n");
+    st.mode = Mode::Rendered;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+
+    // Row 1 renders as `    • inner`; click the 'i' at rendered col 6.
+    mouse_ops::apply(&mut st, click(6, 1), &mut anchor, &[], VP, VW);
+    // Raw line is `  - inner` starting at buffer offset 6; 'i' sits at
+    // raw col 4 → offset 10.
+    assert_eq!(
+        st.cursor.offset, 10,
+        "click on 'i' of the nested item must land on its raw position"
+    );
+}
+
+#[test]
+fn click_on_nested_task_checkbox_toggles_it() {
+    // Nested task item: rendered `    • [ ] sub` vs raw `  - [ ] sub`.
+    // The checkbox hitbox is computed in raw bytes, so the rendered→raw
+    // click mapping must right-align the marker cells for the `]` of the
+    // checkbox to stay inside the hitbox.
+    let mut st = state("- top\n  - [ ] sub\n");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 0;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+
+    // Click the `]` at rendered col 8 of row 1.
+    mouse_ops::apply(&mut st, click(8, 1), &mut anchor, &[], VP, VW);
+    assert!(
+        st.contents().contains("  - [x] sub"),
+        "click on the nested checkbox must toggle it, got: {:?}",
+        st.contents()
+    );
+    assert_eq!(
+        st.cursor.offset, 0,
+        "checkbox toggle must not move the cursor"
+    );
+}
+
+#[test]
+fn click_on_bold_text_inside_ordered_item_uses_inline_map() {
+    // Inline markup inside a list item collapses (`**bold**` → `bold`), so
+    // content clicks must compose the marker shift with the inline map.
+    let mut st = state("para\n\n1. **bold** tail\n");
+    st.mode = Mode::Rendered;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+
+    // Cursor rests on "para" (row 0), so the list row 2 renders normally.
+    // Rendered `1. bold tail`; click the 't' of "tail" at rendered col 8.
+    mouse_ops::apply(&mut st, click(8, 2), &mut anchor, &[], VP, VW);
+    // Raw line `1. **bold** tail` starts at offset 6 — 't' of "tail" sits
+    // at raw col 12 → offset 18.
+    assert_eq!(
+        st.cursor.offset, 18,
+        "click on 't' of 'tail' must skip the raw `**` markers"
+    );
+}

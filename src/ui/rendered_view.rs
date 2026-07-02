@@ -1,5 +1,4 @@
 mod cell_overlay;
-mod list_marker;
 mod paint;
 mod raw_text;
 
@@ -19,11 +18,11 @@ use super::link_view::{self, LinkLayoutSnapshot};
 use super::table_view::{self, TableLayoutSnapshot};
 
 use self::cell_overlay::{compute_cell_chunk_overlay, compute_wrapped_cell_overlay};
-use self::list_marker::list_raw_col_to_rendered_col;
 use self::paint::{
     make_code_styled_body_line, make_raw_line_with_selection, overlay_raw_cell,
     paint_byte_range_overlay,
 };
+use crate::markdown::list_layout::list_raw_col_to_rendered_col;
 
 pub(crate) use self::paint::{
     paint_search_overlays, paint_substitute_preview_overlays, paint_yank_flash,

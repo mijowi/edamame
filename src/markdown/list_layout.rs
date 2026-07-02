@@ -1,19 +1,28 @@
+//! Raw ↔ rendered column geometry of list-item marker prefixes.
+//!
+//! The rendered marker width can differ from the raw marker width:
+//!
+//!   - task items: raw `- [ ] foo` → rendered `• [ ] foo` (checkbox kept,
+//!     bullet substituted — widths happen to match at top level, but not
+//!     when the indent differs),
+//!   - ordered items with 10+ items: raw `1. foo` → rendered ` 1. foo`
+//!     (numbers are right-aligned in a max-digit-wide slot),
+//!   - nested items: the renderer indents children by `INDENT_WIDTH`
+//!     regardless of the source's own indent width.
+//!
+//! Both the overlay painters (`ui::rendered_view`) and the mouse
+//! click-to-offset mapping (`editor::mouse_ops::coord`) need this
+//! geometry; it lives here in the `markdown` layer — it is a property of
+//! the renderer's output format — so both can share one implementation.
+
 /// Map a raw-column on a list-item line to its rendered column.  Returns
 /// `None` when `raw_text` isn't recognized as a list-item line — callers
 /// fall back to treating raw-col as visual-col.
 ///
-/// Needed because the rendered marker width can differ from the raw
-/// marker width:
-///
-///   - task items: raw `- [ ] foo` → rendered `[ ] foo` (the `- ` prefix
-///     is dropped; the checkbox is the visual anchor instead).
-///   - ordered items with 10+ items: raw `1. foo` → rendered ` 1. foo`
-///     (numbers are right-aligned in a max-digit-wide slot).
-///
-/// Both cases shift the content column, so the jitter-delay cursor
-/// indicator in Rendered mode must be drawn at the correct rendered
-/// column — not the raw column.
-pub(super) fn list_raw_col_to_rendered_col(
+/// Columns inside the raw marker prefix collapse to the rendered content
+/// column, so the jitter-delay cursor indicator in Rendered mode is drawn
+/// at the correct rendered column — not the raw column.
+pub fn list_raw_col_to_rendered_col(
     raw_text: &str,
     line: &ratatui::text::Line<'_>,
     raw_col: usize,
@@ -27,10 +36,27 @@ pub(super) fn list_raw_col_to_rendered_col(
     }
 }
 
+/// Map a rendered column inside the marker region back to a raw column —
+/// the inverse of `list_raw_col_to_rendered_col` for the prefix cells.
+///
+/// Marker-region columns map right-aligned: the 4-char task checkbox
+/// occupies the LAST 4 cells of both the raw and the rendered marker, so
+/// aligning from the right keeps `[ ]` clicks byte-exact even when the
+/// leading indent / number padding differs between the two.
+pub fn list_rendered_col_to_raw_col_marker(
+    raw_total: usize,
+    rendered_total: usize,
+    rendered_col: usize,
+) -> usize {
+    (rendered_col + raw_total)
+        .saturating_sub(rendered_total)
+        .min(raw_total)
+}
+
 /// Width (in chars) of the raw list-item prefix — leading whitespace +
 /// marker (`- ` / `N. ` / `N) `) + optional task-prefix (`[ ] ` etc.).
 /// Returns `None` when `raw_text` doesn't start with a list marker.
-pub(super) fn raw_list_marker_char_width(raw_text: &str) -> Option<usize> {
+pub fn raw_list_marker_char_width(raw_text: &str) -> Option<usize> {
     let indent_chars = raw_text
         .chars()
         .take_while(|c| *c == ' ' || *c == '\t')
@@ -67,7 +93,7 @@ pub(super) fn raw_list_marker_char_width(raw_text: &str) -> Option<usize> {
 /// then `• ` or padded digits with `. `, plus an optional trailing
 /// `[ ] ` task prefix.  Returns `None` when the rendered line doesn't
 /// start with a recognizable list marker.
-pub(super) fn rendered_list_marker_char_width(line: &ratatui::text::Line<'_>) -> Option<usize> {
+pub fn rendered_list_marker_char_width(line: &ratatui::text::Line<'_>) -> Option<usize> {
     let text: String = line.spans.iter().flat_map(|s| s.content.chars()).collect();
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
@@ -196,5 +222,62 @@ mod tests {
         ]);
         assert_eq!(list_raw_col_to_rendered_col("1. foo", &line, 3), Some(4));
         assert_eq!(list_raw_col_to_rendered_col("1. foo", &line, 5), Some(6));
+    }
+
+    // ── Inverse marker map ────────────────────────────────────────────────
+
+    #[test]
+    fn inverse_marker_map_identity_when_widths_match() {
+        // Top-level task item: raw and rendered markers are both 6 wide.
+        for col in 0..6 {
+            assert_eq!(list_rendered_col_to_raw_col_marker(6, 6, col), col);
+        }
+    }
+
+    #[test]
+    fn inverse_marker_map_right_aligns_padded_ordered() {
+        // Raw `1. ` (3) rendered as ` 1. ` (4): the pad cell (col 0) maps
+        // to raw col 0, and each following marker cell shifts left by 1.
+        assert_eq!(list_rendered_col_to_raw_col_marker(3, 4, 0), 0);
+        assert_eq!(list_rendered_col_to_raw_col_marker(3, 4, 1), 0);
+        assert_eq!(list_rendered_col_to_raw_col_marker(3, 4, 3), 2);
+    }
+
+    #[test]
+    fn inverse_marker_map_right_aligns_nested_task_checkbox() {
+        // Raw `  - [ ] ` (8 chars), rendered `    • [ ] ` (10 chars):
+        // the rendered `[` at col 6 maps to the raw `[` at col 4.
+        assert_eq!(list_rendered_col_to_raw_col_marker(8, 10, 6), 4);
+        assert_eq!(list_rendered_col_to_raw_col_marker(8, 10, 8), 6);
+    }
+
+    #[test]
+    fn inverse_marker_map_clamps_to_raw_total() {
+        assert_eq!(list_rendered_col_to_raw_col_marker(3, 4, 10), 3);
+    }
+
+    /// The inverse round-trips through the forward map for content columns
+    /// at the marker boundary: forward(raw_total) == rendered_total, and
+    /// inverse(rendered_total - 1) < raw_total.
+    #[test]
+    fn inverse_marker_map_round_trips_boundary() {
+        for (raw_text, rendered) in [
+            ("- foo", "• foo"),
+            ("1. foo", " 1. foo"),
+            ("- [ ] foo", "• [ ] foo"),
+            ("  - bar", "    • bar"),
+        ] {
+            let line = Line::from(vec![Span::raw(rendered.to_owned())]);
+            let raw_total = raw_list_marker_char_width(raw_text).unwrap();
+            let rendered_total = rendered_list_marker_char_width(&line).unwrap();
+            assert_eq!(
+                list_raw_col_to_rendered_col(raw_text, &line, raw_total),
+                Some(rendered_total)
+            );
+            assert!(
+                list_rendered_col_to_raw_col_marker(raw_total, rendered_total, rendered_total)
+                    == raw_total
+            );
+        }
     }
 }

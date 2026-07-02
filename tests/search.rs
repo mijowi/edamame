@@ -432,6 +432,84 @@ fn visual_selection_highlights_the_code_fence_rows() {
 }
 
 #[test]
+fn search_highlight_on_paragraph_line_starting_with_ordered_marker() {
+    let t = theme();
+    // "2. lazy word" cannot interrupt a paragraph (only "1." can), so the
+    // second raw line stays paragraph text and renders 1:1.  The overlay
+    // painter used to sniff it as a list-marker line anyway and snap the
+    // match's end column past the "marker", painting the space after "2."
+    // — the list arm is now gated on the block actually being a List.
+    let mut st = state_with_search("intro line\n2. lazy word\n", "2.", None);
+    st.mode = Mode::Rendered;
+    st.set_viewport_width(40);
+    let buf = render_editor(&mut st, 40, 8);
+    // Match "2." sits at rendered cols 0..2 of row 1.  (Col 0 isn't probed:
+    // the pre-reveal cursor indicator sits there and shares the highlight's
+    // `primary` background.)
+    assert_eq!(
+        buf.cell((1, 1)).unwrap().style().bg,
+        t.selection.bg,
+        "the '.' of the match must be highlighted"
+    );
+    assert_ne!(
+        buf.cell((2, 1)).unwrap().style().bg,
+        t.selection.bg,
+        "the space after the match must NOT be highlighted (marker snap)"
+    );
+}
+
+#[test]
+fn selection_skips_list_line_when_inline_map_mismatches() {
+    let t = theme();
+    // A reference-style link resolves in the full document but not in the
+    // single-line inline map, so the map's char count diverges from the
+    // rendered content ("• ab").  A charwise selection inside the item used
+    // to fall back to a marker-atomic map that ignored the link collapse,
+    // painting the cell to the right of the selected glyph; it now skips.
+    let doc = "para\n\n- [ab][ref]\n\n[ref]: http://example.com\n";
+    let mut st = EditorState::new(Buffer::from_str(doc), theme());
+    st.mode = Mode::Rendered;
+    st.set_viewport_width(40);
+    // Select just the "a" of the link (bytes 9..10); the list row renders
+    // at row 2 as "• ab" with "a" at col 2.
+    st.selection = Some(Selection {
+        anchor: 9,
+        active: 10,
+    });
+    let buf = render_editor(&mut st, 40, 10);
+    assert_ne!(
+        buf.cell((3, 2)).unwrap().style().bg,
+        t.selection.bg,
+        "the 'b' right of the selected 'a' must not be highlighted"
+    );
+}
+
+#[test]
+fn full_line_selection_still_covers_list_row_on_inline_map_mismatch() {
+    let t = theme();
+    // Same mismatch fixture as above, but the selection starts at the
+    // line's col 0 (VisualLine widens to whole lines): the row must wash
+    // fully rather than vanish under the skip rule.
+    let doc = "para\n\n- [ab][ref]\n\n[ref]: http://example.com\n";
+    let mut st = EditorState::new(Buffer::from_str(doc), theme());
+    st.mode = Mode::Rendered;
+    st.set_viewport_width(40);
+    // Whole list line including its newline (bytes 6..18).
+    st.selection = Some(Selection {
+        anchor: 6,
+        active: 18,
+    });
+    let buf = render_editor(&mut st, 40, 10);
+    for x in 0..4u16 {
+        assert_eq!(
+            buf.cell((x, 2)).unwrap().style().bg,
+            t.selection.bg,
+            "rendered list row col {x} must be washed by the line selection"
+        );
+    }
+}
+
+#[test]
 fn replace_flow_hints_include_undo_before_exit() {
     let st = state_with_search("foo bar foo\n", "foo", Some("baz"));
     let set = hint_line_for(&st, &keymap(), false);
