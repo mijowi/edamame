@@ -197,6 +197,17 @@ pub fn attach_trailing_tui_columns_comments(blocks: &mut Vec<Block>) {
 /// embedded in an item are skipped entirely.
 ///
 /// `ranges` is read-only here and stays 1:1 with `blocks`.
+///
+/// Scope: top-level lists only.  CommonMark evaluates looseness per-list at
+/// any depth, so a nested sub-list can be loose independently — but we only
+/// annotate the direct items of each top-level `Block::List`, so a loose
+/// *nested* list renders tight (its inter-item blanks are dropped).  This is
+/// a deliberate scope choice, not an oversight: nested support would need a
+/// nested source-range derivation here (`ranges` covers top-level blocks
+/// only) plus multi-level indent tracking in the `RenderedView` reveal
+/// mapping, and blank-separated nested items are rare enough that the added
+/// risk in that reveal code isn't worth it.  See the git history for the
+/// discussion.
 pub fn annotate_list_blanks(blocks: &mut [Block], ranges: &[Range<usize>], source: &str) {
     for (block, range) in blocks.iter_mut().zip(ranges.iter()) {
         let Block::List { items, .. } = block else {
