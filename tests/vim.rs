@@ -2360,19 +2360,21 @@ fn empty_search_submit_is_a_noop() {
 }
 
 #[test]
-fn command_line_typing_does_not_move_the_cursor_or_edit() {
-    let mut st = state("hello");
+fn command_line_typing_never_edits_the_buffer() {
+    // Incsearch parks the cursor on the live focus while typing, but the
+    // buffer itself must stay untouched and Esc must return the cursor
+    // to the origin.
+    let mut st = state("hello ell");
     let before = st.buffer.contents();
     let mut vim = VimState::default();
     feed(&mut vim, &mut st, ch('/'));
     for c in "ell".chars() {
         feed(&mut vim, &mut st, ch(c));
     }
-    assert_eq!(
-        st.cursor.offset, 0,
-        "cursor stays put while typing a search"
-    );
     assert_eq!(st.buffer.contents(), before, "no buffer edit");
+    feed(&mut vim, &mut st, esc());
+    assert_eq!(st.cursor.offset, 0, "Esc restores the origin");
+    assert_eq!(st.buffer.contents(), before);
 }
 
 #[test]
@@ -3425,4 +3427,128 @@ fn an_invalid_or_matchless_pattern_shows_no_preview() {
     type_ex(&mut vim, &mut st, r"%s/a\v(");
     assert!(st.substitute_preview.is_none());
     assert_eq!(st.buffer.contents(), "abc");
+}
+
+// ── Live `/` `?` incremental search (incsearch) ───────────────────────────────
+
+/// Open the search prompt (`/` or `?`) and type `query` without submitting.
+fn type_search(vim: &mut VimState, st: &mut EditorState, prompt: char, query: &str) {
+    feed(vim, st, ch(prompt));
+    for c in query.chars() {
+        feed(vim, st, ch(c));
+    }
+}
+
+#[test]
+fn typing_a_search_highlights_live_and_parks_on_the_next_match() {
+    let mut st = state("foo bar\nfoo");
+    let mut vim = VimState::default();
+    type_search(&mut vim, &mut st, '/', "foo");
+    let s = st.search.as_ref().expect("live session while typing");
+    assert_eq!(s.matches, vec![0..3, 8..11]);
+    // Forward search focuses the first match strictly after the origin.
+    assert_eq!(s.focused_range(), Some(8..11));
+    assert_eq!(st.cursor.offset, 8, "cursor parked on the focus");
+    assert!(vim.cmdline.is_some(), "prompt still open");
+}
+
+#[test]
+fn backward_search_parks_on_the_previous_match() {
+    let mut st = state("foo bar\nfoo");
+    let mut vim = VimState::default();
+    st.place_cursor(8); // at the start of the second "foo"
+    type_search(&mut vim, &mut st, '?', "foo");
+    let s = st.search.as_ref().expect("live session while typing");
+    assert_eq!(s.focused_range(), Some(0..3));
+    assert_eq!(st.cursor.offset, 0);
+}
+
+#[test]
+fn esc_restores_view_and_prior_hlsearch_session() {
+    let mut st = state("foo bar\nfoo");
+    let mut vim = VimState::default();
+    // A prior hlsearch session is live when `/` opens.
+    st.enter_search(SearchState::new("bar".to_owned(), None).expect("valid"));
+    st.place_cursor(5);
+    st.scroll = 1;
+    type_search(&mut vim, &mut st, '/', "foo");
+    assert_eq!(st.search.as_ref().map(|s| s.query.as_str()), Some("foo"));
+    feed(&mut vim, &mut st, esc());
+    assert_eq!(
+        st.search.as_ref().map(|s| s.query.as_str()),
+        Some("bar"),
+        "Esc restores the prior hlsearch session"
+    );
+    assert_eq!(st.cursor.offset, 5, "cursor restored");
+    assert_eq!(st.scroll, 1, "scroll restored");
+    assert!(vim.cmdline.is_none());
+    assert!(vim.incsearch.is_none());
+}
+
+#[test]
+fn a_matchless_query_shows_no_highlights_and_stays_at_the_origin() {
+    let mut st = state("foo bar");
+    let mut vim = VimState::default();
+    type_search(&mut vim, &mut st, '/', "barz");
+    assert!(st.search.is_none(), "no match → no highlights");
+    assert_eq!(st.cursor.offset, 0);
+    // Backspacing to a matching prefix resumes the live session.
+    feed(&mut vim, &mut st, key(KeyCode::Backspace));
+    let s = st.search.as_ref().expect("prefix matches again");
+    assert_eq!(s.focused_range(), Some(4..7));
+}
+
+#[test]
+fn submit_restores_the_origin_before_the_app_level_search_runs() {
+    let mut st = state("foo bar\nfoo");
+    let mut vim = VimState::default();
+    type_search(&mut vim, &mut st, '/', "foo");
+    assert_eq!(st.cursor.offset, 8, "parked on the focus while typing");
+    let out = feed(&mut vim, &mut st, key(KeyCode::Enter));
+    // The reducer hands the query to the App (which runs
+    // `enter_vim_search`); the incsearch session ends first, restoring
+    // the origin so the App resolves the same cursor-relative focus a
+    // preview-less submit would.
+    assert_eq!(
+        out,
+        VimOutcome::EnterSearch {
+            forward: true,
+            query: "foo".to_owned(),
+        }
+    );
+    assert_eq!(st.cursor.offset, 0, "origin restored for the App");
+    assert!(st.search.is_none(), "transient session ended");
+    assert!(vim.incsearch.is_none());
+}
+
+#[test]
+fn search_history_recall_updates_the_live_session() {
+    let mut st = state("foo bar");
+    let mut vim = VimState {
+        search_history: vec!["bar".to_owned()],
+        ..Default::default()
+    };
+    feed(&mut vim, &mut st, ch('/'));
+    assert!(st.search.is_none(), "empty prompt: nothing live yet");
+    feed(&mut vim, &mut st, key(KeyCode::Up));
+    let s = st.search.as_ref().expect("recalled query goes live");
+    assert_eq!(s.query, "bar");
+    assert_eq!(s.focused_range(), Some(4..7));
+}
+
+#[test]
+fn incsearch_suppresses_the_cursor_block_raw_reveal() {
+    let mut st = state("foo bar\n");
+    let mut vim = VimState::default();
+    st.cursor_block_entered_at = None;
+    assert!(st.cursor_block_revealed());
+    type_search(&mut vim, &mut st, '/', "bar");
+    st.cursor_block_entered_at = None;
+    assert!(
+        !st.cursor_block_revealed(),
+        "a live search session suppresses the raw reveal like any hlsearch"
+    );
+    feed(&mut vim, &mut st, esc());
+    st.cursor_block_entered_at = None;
+    assert!(st.cursor_block_revealed());
 }

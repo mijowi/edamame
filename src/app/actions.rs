@@ -1103,20 +1103,33 @@ impl App {
     /// `DirtyConflictModal` was carrying.  Push the intro modal first
     /// when the user hasn't opted out (§8).
     pub(crate) fn enter_diff_mode(&mut self, on_disk: String) {
-        // A search flow can't survive into diff review — the diff view
-        // replaces the document and its resolution will swap the
-        // buffer out from under the match list.
-        self.exit_search_flow();
         // A half-typed vim command line (`:`/`/`/`?`) can't survive
-        // either: vim key handling is deferred while in diff mode
-        // (so the prompt could never be completed), and a stale
+        // into diff review: vim key handling is deferred while in diff
+        // mode (so the prompt could never be completed), and a stale
         // `cmdline` outranks the diff hint row in `hint_content`,
         // masking the diff-review chords.  Drop it — along with any
         // in-progress multi-key parse — so the hint line reads diff.
+        // End the prompt's live sessions first, as Esc would: the
+        // incsearch session must not dangle on `VimState` (the next `/`
+        // would reuse its stale saved view), and a live `:s` preview
+        // must revert its transient buffer edit before the `old`
+        // snapshot below — otherwise the diff is taken against preview
+        // text and the preview's app-level gates hold forever.
         if let Some(vim) = self.vim.as_mut() {
+            crate::editor::vim_ops::end_incsearch(&mut self.editor, &mut vim.incsearch);
             vim.cmdline = None;
             vim.reset_pending();
         }
+        crate::editor::vim_ops::clear_substitute_preview(
+            &mut self.editor,
+            /*restore_view=*/ true,
+        );
+        // A search flow can't survive into diff review either — the
+        // diff view replaces the document and its resolution will swap
+        // the buffer out from under the match list.  Runs after
+        // `end_incsearch` so a restored prior hlsearch session is torn
+        // down along with the advance timer.
+        self.exit_search_flow();
         let old = self.editor.buffer.contents();
         let Some(diff_state) = crate::diff::DiffState::new(&old, &on_disk) else {
             // Edge case: the dirty-conflict modal was opened against
@@ -1535,6 +1548,59 @@ mod tests {
         // The hint line now reads the diff-review chords, not a stale
         // command line.
         assert!(matches!(app.hint_content(), HintContent::Chords(_)));
+    }
+
+    #[test]
+    fn entering_diff_mode_ends_a_live_incsearch_session() {
+        use crate::editor::vim_ops::update_incsearch;
+        use crate::input::vim::state::{CmdLineKind, CmdLineState, VimState};
+        let mut app = make_app();
+        app.editor.buffer.insert(0, "foo bar\nfoo\n");
+        app.editor.refresh_parsed();
+        let mut vim = VimState {
+            cmdline: Some(CmdLineState::new(CmdLineKind::SearchForward)),
+            ..Default::default()
+        };
+        update_incsearch(&mut app.editor, &mut vim.incsearch, "foo", true, 24, 80);
+        assert!(vim.incsearch.is_some(), "live session while typing");
+        assert_eq!(app.editor.cursor.offset, 8, "parked on the live focus");
+        app.vim = Some(vim);
+        app.enter_diff_mode("foo bar\nGAMMA\n".to_owned());
+        let vim = app.vim.as_ref().unwrap();
+        assert!(
+            vim.incsearch.is_none(),
+            "session must not dangle on VimState — the next `/` would reuse its stale saved view",
+        );
+        assert!(vim.cmdline.is_none());
+        assert_eq!(app.editor.cursor.offset, 0, "pre-prompt cursor restored");
+        assert!(app.editor.search.is_none(), "transient session torn down");
+    }
+
+    #[test]
+    fn entering_diff_mode_reverts_a_live_substitute_preview() {
+        use crate::editor::vim_ops::update_substitute_preview;
+        use crate::input::vim::state::{CmdLineKind, CmdLineState, VimState};
+        let mut app = make_app();
+        app.editor.buffer.insert(0, "alpha\nbeta\n");
+        app.editor.refresh_parsed();
+        app.vim = Some(VimState {
+            cmdline: Some(CmdLineState::new(CmdLineKind::Ex)),
+            ..Default::default()
+        });
+        update_substitute_preview(&mut app.editor, "%s/alpha/OMEGA/", None, 24, 80);
+        assert!(app.editor.substitute_preview.is_some(), "preview active");
+        assert!(app.editor.buffer.contents().contains("OMEGA"));
+        app.enter_diff_mode("alpha\nGAMMA\n".to_owned());
+        assert!(
+            app.editor.substitute_preview.is_none(),
+            "preview must revert on diff entry — its gates would otherwise hold forever",
+        );
+        assert_eq!(
+            app.editor.buffer.contents(),
+            "alpha\nbeta\n",
+            "diff is taken against the pristine buffer, not preview text",
+        );
+        assert!(app.editor.diff.is_some());
     }
 
     #[test]

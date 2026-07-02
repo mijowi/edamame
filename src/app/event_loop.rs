@@ -994,7 +994,17 @@ impl App {
     pub(super) fn dispatch_paste(&mut self, text: String, dims: &DocDims) {
         if let Some(vim) = self.vim.as_mut() {
             if let Some(cl) = vim.cmdline.as_mut() {
+                let before = cl.input.clone();
                 crate::input::vim::cmdline::paste_str(cl, &text);
+                // A paste changes the line like typing does — re-derive
+                // the live `:s` / incsearch preview from the new text.
+                crate::input::vim::feed::cmdline_live_update(
+                    vim,
+                    &mut self.editor,
+                    &before,
+                    dims.doc_height,
+                    dims.doc_width,
+                );
                 self.needs_draw = true;
                 return;
             }

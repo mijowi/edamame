@@ -10,15 +10,11 @@
 
 - Add/update performance benchmark tests
 
-- Paint search result selection as it's typed, like `:s` 
-- Don't paint until 2 or more characters are entered, or until user presses Enter?
-- Performance degradation when search results are highlighted in long documents
-
 ## Vim issues
 - DIFF is not displayed in the status line when using vim mode. Maybe we should display it in the hint line?
-- How should we treat vim motions in tables? I'm thinking we no-op some and adjust others, such as these:
-    - `o`/`O`: Add new row below/above
-    - `I`/`A`/`$`/`^`: move to the beginning/end of the *cell*
+- How should we treat vim motions in tables? I'm thinking we no-op some and adjust others for better UX, such as the ones below. What others should we tailor for tables? Don't change the behavior for raw mode; no elements get special treatment there. All vim motions should work as they would on raw text.
+    - `o`/`O`: Add new row below/above, cursor lands on first cell in row
+    - `I`/`A`/`$`/`^`: move cursor to the beginning/end of the *cell*
 - When typing in a table cell that is wider than the column header, and a space character is entered,
 - Conventional vim selection instead of half selection?
 - `p` pastes after cursor cell instead of before
