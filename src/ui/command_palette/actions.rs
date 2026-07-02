@@ -41,6 +41,7 @@ pub(super) const ALL_ACTIONS: &[Action] = &[
     Action::InsertFootnote,
     Action::DeleteFootnote,
     Action::RenumberFootnotes,
+    Action::FixListNumbering,
     // File ops.
     Action::Save,
     Action::SaveAs,
@@ -112,6 +113,7 @@ pub(super) fn label_for(action: &Action) -> Option<&'static str> {
         Action::InsertFootnote => "Insert footnote",
         Action::DeleteFootnote => "Delete footnote at cursor",
         Action::RenumberFootnotes => "Renumber footnotes",
+        Action::FixListNumbering => "Fix list numbering",
         Action::Save => "Save file",
         Action::SaveAs => "Save as…",
         Action::Open => "Open file",

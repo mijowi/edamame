@@ -223,10 +223,11 @@ fn triple_enter_in_middle_of_bullet_list_breaks_into_two_lists() {
 
 #[test]
 fn triple_enter_in_middle_of_ordered_list_renumbers_tail_from_one() {
-    // Cursor at end of "2. b".  After three Enters, the surviving head
-    // keeps its original numbering ("1. a", "2. b") and the trailing
-    // items restart at 1.  Single-blank-line list splitting at the
-    // parser then renders the result as two distinct ordered lists.
+    // Cursor at end of "2. b".  After three Enters, the surviving head keeps
+    // its original numbering ("1. a", "2. b") and `exit_list` restarts the
+    // trailing item at 1.  The third Enter parks the cursor on the blank
+    // separator line, so the post-edit renumber hook (which only fires when the
+    // cursor rests on a list line) leaves the tail as authored.
     let src = "1. a\n2. b\n3. c\n";
     let mut st = editor_at_end_of_line(src, "2. b");
 
@@ -238,7 +239,7 @@ fn triple_enter_in_middle_of_ordered_list_renumbers_tail_from_one() {
 
     apply(&mut st, Action::Newline);
     assert_eq!(st.contents(), "1. a\n2. b\n\n1. c\n");
-    // Cursor on the blank line between the two split lists.
+    // Cursor on the blank line separating the surviving head from the tail.
     assert_eq!(cursor_byte(&st), 10);
 }
 
@@ -732,16 +733,15 @@ fn delete_line_renumbers_outer_list_across_a_nested_child() {
     assert_eq!(st.contents(), "1. Ordered\n    1. nested\n2. Third\n");
 }
 
-// ── renumber_list_block: nesting-aware ───────────────────────────────────────
+// ── renumber_ordered_runs_in_range: nesting-aware ────────────────────────────
 
 #[test]
 fn renumber_block_counts_outer_run_across_a_nested_child() {
-    use edamame::editor::list_edit::renumber_list_block;
-    // Outer items 1 and 3 are split by a nested child; the cursor sits on the
-    // child (where a post-delete cursor lands).  The outer run must renumber.
+    use edamame::editor::list_edit::renumber_ordered_runs_in_range;
+    // Outer items 1 and 3 are split by a nested child; the outer run must
+    // renumber while the (already-correct) nested run is left alone.
     let src = "1. a\n    1. x\n3. c\n";
-    let cursor = src.find("1. x").unwrap();
-    let delta = renumber_list_block(src, cursor).expect("outer run is not sequential");
+    let delta = renumber_ordered_runs_in_range(src, 0, src.len()).expect("outer run is not seq");
     let mut out = src.to_owned();
     out.replace_range(
         delta.offset..delta.offset + delta.removed.len(),
@@ -752,29 +752,139 @@ fn renumber_block_counts_outer_run_across_a_nested_child() {
 
 #[test]
 fn renumber_block_restarts_each_sublist_and_is_noop_when_consistent() {
-    use edamame::editor::list_edit::renumber_list_block;
+    use edamame::editor::list_edit::renumber_ordered_runs_in_range;
     // Already-consistent nested structure: every ordered run is sequential and
     // each sub-list restarts at 1 under its parent → no edit.
     let src = "1. a\n    1. x\n    2. y\n2. b\n    1. p\n3. c\n";
     assert!(
-        renumber_list_block(src, 0).is_none(),
+        renumber_ordered_runs_in_range(src, 0, src.len()).is_none(),
         "consistent block needs no edit"
     );
 }
 
 #[test]
 fn renumber_block_preserves_bullet_children() {
-    use edamame::editor::list_edit::renumber_list_block;
+    use edamame::editor::list_edit::renumber_ordered_runs_in_range;
     // A bullet sub-list nested under ordered items is kept verbatim while the
     // outer ordered run is renumbered.
     let src = "1. a\n    - x\n    - y\n3. c\n";
-    let delta = renumber_list_block(src, 0).expect("outer run 1,3 is not sequential");
+    let delta = renumber_ordered_runs_in_range(src, 0, src.len()).expect("outer run 1,3 not seq");
     let mut out = src.to_owned();
     out.replace_range(
         delta.offset..delta.offset + delta.removed.len(),
         &delta.inserted,
     );
     assert_eq!(out, "1. a\n    - x\n    - y\n2. c\n");
+}
+
+#[test]
+fn renumber_block_leaves_ordered_markers_inside_a_code_fence() {
+    use edamame::editor::list_edit::renumber_list_block;
+    // A fenced code block nested in a list item can hold marker-shaped lines.
+    // The renderer prints them literally (never renumbered), so the renumber
+    // pass must leave them untouched — only the real outer items renumber.
+    let src = "1. a\n   ```\n   3. code\n   9. code\n   ```\n5. b\n";
+    let delta = renumber_list_block(src, 0).expect("outer run 1,5 is not sequential");
+    let mut out = src.to_owned();
+    out.replace_range(
+        delta.offset..delta.offset + delta.removed.len(),
+        &delta.inserted,
+    );
+    // Outer "5. b" → "2. b"; the "3."/"9." inside the fence are preserved.
+    assert_eq!(out, "1. a\n   ```\n   3. code\n   9. code\n   ```\n2. b\n");
+}
+
+#[test]
+fn renumber_block_handles_leading_zero_markers() {
+    use edamame::editor::list_edit::renumber_ordered_runs_in_range;
+    // A leading-zero marker ("01.") has more digit chars than its parsed
+    // value; the marker-length measurement must count source digits so the
+    // rewritten line doesn't gain a spurious space before the content.
+    let src = "01. a\n01. b\n";
+    let delta = renumber_ordered_runs_in_range(src, 0, src.len()).expect("renumbers");
+    let mut out = src.to_owned();
+    out.replace_range(
+        delta.offset..delta.offset + delta.removed.len(),
+        &delta.inserted,
+    );
+    assert_eq!(out, "1. a\n2. b\n");
+}
+
+#[test]
+fn renumber_block_crosses_two_blank_line_loose_gap() {
+    use edamame::editor::list_edit::renumber_ordered_runs_in_range;
+    // Two blank lines between ordered items still render as one continuous
+    // loose list in edamame (pulldown-cmark keeps them one list), so the
+    // renumber spans the gap to match — it does not restart the tail.
+    let src = "1. a\n2. b\n\n\n1. c\n2. d\n";
+    let delta = renumber_ordered_runs_in_range(src, 0, src.len()).expect("renumbers across gap");
+    let mut out = src.to_owned();
+    out.replace_range(
+        delta.offset..delta.offset + delta.removed.len(),
+        &delta.inserted,
+    );
+    assert_eq!(out, "1. a\n2. b\n\n\n3. c\n4. d\n");
+}
+
+// ── fix_list_numbering action (end-to-end) ───────────────────────────────────
+
+#[test]
+fn fix_list_numbering_renumbers_loose_list_matching_render() {
+    use edamame::editor::edit_ops::{fix_list_numbering, FixListNumbering};
+    // A loose (blank-separated) ordered list renders as one continuous
+    // sequence, so fixing it must renumber across the blank gaps — the whole
+    // point of driving the range off the parser rather than a blank-bounded
+    // scan.
+    let src = "1. a\n\n5. b\n\n2. c\n";
+    let mut st = editor_at(src, "5. b");
+    assert_eq!(fix_list_numbering(&mut st, VP, VW), FixListNumbering::Fixed);
+    assert_eq!(st.contents(), "1. a\n\n2. b\n\n3. c\n");
+
+    // One undo delta: a single Undo restores the original source exactly.
+    apply(&mut st, Action::Undo);
+    assert_eq!(st.contents(), src);
+}
+
+#[test]
+fn fix_list_numbering_works_in_raw_mode() {
+    use edamame::editor::edit_ops::{fix_list_numbering, FixListNumbering};
+    // Explicit command, unlike the automatic recovery paths: it must renumber
+    // in Raw mode too (where the user is looking at the raw source).
+    let mut st = editor_at("1. a\n1. b\n1. c\n", "1. b");
+    st.mode = Mode::Raw;
+    assert_eq!(fix_list_numbering(&mut st, VP, VW), FixListNumbering::Fixed);
+    assert_eq!(st.contents(), "1. a\n2. b\n3. c\n");
+}
+
+#[test]
+fn fix_list_numbering_flashes_on_bullet_list() {
+    use edamame::editor::edit_ops::{fix_list_numbering, FixListNumbering};
+    let mut st = editor_at("- a\n- b\n", "- b");
+    assert_eq!(
+        fix_list_numbering(&mut st, VP, VW),
+        FixListNumbering::NotOrdered
+    );
+    assert_eq!(st.contents(), "- a\n- b\n", "no mutation for a bullet list");
+}
+
+#[test]
+fn fix_list_numbering_reports_already_correct() {
+    use edamame::editor::edit_ops::{fix_list_numbering, FixListNumbering};
+    let mut st = editor_at("1. a\n2. b\n3. c\n", "2. b");
+    assert_eq!(
+        fix_list_numbering(&mut st, VP, VW),
+        FixListNumbering::AlreadyCorrect
+    );
+}
+
+#[test]
+fn fix_list_numbering_not_in_list() {
+    use edamame::editor::edit_ops::{fix_list_numbering, FixListNumbering};
+    let mut st = editor_at("just a paragraph\n", "paragraph");
+    assert_eq!(
+        fix_list_numbering(&mut st, VP, VW),
+        FixListNumbering::NotOrdered
+    );
 }
 
 // ─── Multi-line items ────────────────────────────────────────────────────────

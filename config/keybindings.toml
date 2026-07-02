@@ -83,6 +83,13 @@
 # DeleteFootnote         = ""
 # RenumberFootnotes      = ""
 
+# ── Lists ─────────────────────────────────────────────────────────────────────
+# FixListNumbering re-sequences the ordered list under the cursor so its source
+# numbering matches what is rendered (sequential from the first item's number,
+# spanning loose-list blank gaps). No default key — run it from the command
+# palette (Ctrl-P) or bind a chord here.
+# FixListNumbering       = ""
+
 # ── Table — cell navigation ──────────────────────────────────────────────────
 # TablePrevCell          = "shift+tab"
 #

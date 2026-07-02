@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn renumber_list_fixes_disordered_numbers() {
         let src = "1. a\n1. b\n1. c\n";
-        let delta = renumber_list_block(src, 0).expect("renumber");
+        let delta = renumber_ordered_runs_in_range(src, 0, src.len()).expect("renumber");
         let mut out = src.to_owned();
         out.replace_range(
             delta.offset..delta.offset + delta.removed.len(),
@@ -258,7 +258,22 @@ mod tests {
     #[test]
     fn renumber_list_noop_when_already_sequential() {
         let src = "1. a\n2. b\n3. c\n";
-        assert!(renumber_list_block(src, 0).is_none());
+        assert!(renumber_ordered_runs_in_range(src, 0, src.len()).is_none());
+    }
+
+    #[test]
+    fn renumber_range_spans_loose_list_blank_gaps() {
+        // A loose (blank-separated) ordered list is one continuous sequence
+        // when rendered.  Given the parser's whole-list range, the walk
+        // renumbers across the blank gaps rather than stopping at them.
+        let src = "1. a\n\n5. b\n\n2. c\n";
+        let delta = renumber_ordered_runs_in_range(src, 0, src.len()).expect("renumber");
+        let mut out = src.to_owned();
+        out.replace_range(
+            delta.offset..delta.offset + delta.removed.len(),
+            &delta.inserted,
+        );
+        assert_eq!(out, "1. a\n\n2. b\n\n3. c\n");
     }
 
     #[test]
@@ -477,17 +492,14 @@ mod tests {
     }
 
     #[test]
-    fn renumber_block_expansion_crosses_continuation_lines() {
-        // Cursor on "1. b": the upward expansion must cross "   cont" to
-        // reach "1. a" so the run renumbers as one list.
+    fn renumber_range_crosses_continuation_lines() {
+        // A continuation line ("   cont") between two markers must not break
+        // the run: the walk renumbers "1. a" / "1. b" as one list.
         let src = "1. a\n   cont\n1. b\n";
-        let delta = renumber_list_block(src, 14).expect("renumbers");
+        let delta = renumber_ordered_runs_in_range(src, 0, src.len()).expect("renumbers");
         let mut out = src.to_owned();
         out.replace_range(delta.offset..delta.offset + delta.removed.len(), "");
         out.insert_str(delta.offset, &delta.inserted);
         assert_eq!(out, "1. a\n   cont\n2. b\n");
-        // Cursor on the continuation line renumbers the same block.
-        let delta2 = renumber_list_block(src, 6).expect("renumbers from cont line");
-        assert_eq!(delta2, delta);
     }
 }
