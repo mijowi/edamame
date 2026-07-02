@@ -6,10 +6,14 @@
 //! `edit_ops`.
 //!
 //! A "list" here is a contiguous run of item lines at the same indent and
-//! marker family (bullet or ordered).  Blank lines or lines at a different
-//! indent terminate the run.  This keeps cursor detection cheap and means the
-//! cursor's list is always the innermost list at the cursor's own indent level
-//! — which is what we want for Enter-to-continue and ToggleCheckbox.
+//! marker family (bullet or ordered).  Items may span multiple lines:
+//! deeper-indented non-blank lines (continuation paragraphs, nested list
+//! lines) and interior blank runs followed by one belong to the item above
+//! them.  A blank run followed by a same-indent marker line, or any line at
+//! or below the list's own indent that isn't a marker, terminates the run.
+//! This keeps cursor detection cheap and means the cursor's list is always
+//! the innermost list at the cursor's own indent level — which is what we
+//! want for Enter-to-continue and ToggleCheckbox.
 //!
 //! The implementation is split across two submodules:
 //!
@@ -262,5 +266,228 @@ mod tests {
         let src = "- foo\n";
         let info = info_at(src, 1); // between `-` and ` `
         assert!(continue_item(&info, src, 1).is_none());
+    }
+
+    // ── Multi-line items ──────────────────────────────────────────────────
+
+    #[test]
+    fn find_list_includes_continuation_lines() {
+        let src = "- a\n  cont\n- b\n";
+        let info = info_at(src, 2); // inside "- a"
+        assert_eq!(info.items.len(), 2);
+        assert_eq!(
+            &src[info.items[0].start..info.items[0].end],
+            "- a\n  cont\n"
+        );
+        assert_eq!(
+            info.items[0].line_end, 3,
+            "line_end stays a first-line fact"
+        );
+        assert_eq!(&src[info.items[1].start..info.items[1].end], "- b\n");
+    }
+
+    #[test]
+    fn find_list_from_cursor_on_continuation_line() {
+        let src = "- a\n  cont\n- b\n";
+        let info = info_at(src, 7); // inside "  cont"
+        assert_eq!(info.items.len(), 2);
+        assert_eq!(cursor_item_idx(&info, 7), Some(0));
+    }
+
+    #[test]
+    fn interior_blank_then_continuation_stays_one_item() {
+        let src = "- a\n\n  cont\n- b\n";
+        let info = info_at(src, 2);
+        assert_eq!(info.items.len(), 2);
+        assert_eq!(
+            &src[info.items[0].start..info.items[0].end],
+            "- a\n\n  cont\n",
+            "the attached blank run and continuation belong to item 0"
+        );
+    }
+
+    #[test]
+    fn blank_before_same_level_marker_still_ends_scan() {
+        let src = "- a\n\n- b\n";
+        let info = info_at(src, 2);
+        assert_eq!(info.items.len(), 1, "separator blank splits the lists");
+        let info_b = info_at(src, 6);
+        assert_eq!(info_b.items.len(), 1);
+        assert_eq!(info_b.start, 5);
+    }
+
+    #[test]
+    fn cursor_on_blank_separator_below_list_finds_nothing() {
+        // The blank line below a list is outside it — a list edit fired
+        // there must not resolve to (and mutate) the item above.
+        assert!(find_list_at("- a\n\n- b\n", 4).is_none());
+        // Same for the virtual empty line past a trailing final newline.
+        assert!(find_list_at("- a\n", 4).is_none());
+        // An attached interior blank stays owned by the item above it.
+        assert!(find_list_at("- a\n\n  cont\n", 4).is_some());
+    }
+
+    #[test]
+    fn content_is_empty_false_with_continuation() {
+        let src = "- \n  cont\n";
+        let info = info_at(src, 2);
+        assert!(!info.items[0].content_is_empty(src));
+    }
+
+    #[test]
+    fn deeper_nested_marker_extends_outer_item() {
+        let src = "- a\n  - child\n- b\n";
+        let info = info_at(src, 2); // on "- a"
+        assert_eq!(info.items.len(), 2);
+        assert_eq!(
+            &src[info.items[0].start..info.items[0].end],
+            "- a\n  - child\n"
+        );
+        // Anchoring on the nested marker still scopes to the nested list.
+        let nested = info_at(src, 6); // on "  - child"
+        assert_eq!(nested.indent, "  ");
+        assert_eq!(nested.items.len(), 1);
+    }
+
+    #[test]
+    fn cursor_on_flush_left_non_list_line_finds_nothing() {
+        let src = "- a\npara\n";
+        assert!(find_list_at(src, 5).is_none());
+    }
+
+    #[test]
+    fn continuation_shaped_lines_without_marker_above_find_nothing() {
+        let src = "para\n  indented\n";
+        assert!(find_list_at(src, 7).is_none());
+    }
+
+    #[test]
+    fn continue_item_mid_first_line_carries_continuations() {
+        // Enter between "a" and "b" of the first line: "b" plus the
+        // continuation lines move to the new item.
+        let src = "- ab\n  cont\n- c\n";
+        let info = info_at(src, 3);
+        let res = continue_item(&info, src, 3).expect("continues");
+        let mut out = src.to_owned();
+        out.replace_range(
+            res.delta.offset..res.delta.offset + res.delta.removed.len(),
+            "",
+        );
+        out.insert_str(res.delta.offset, &res.delta.inserted);
+        assert_eq!(out, "- a\n- b\n  cont\n- c\n");
+        assert_eq!(res.cursor_byte, 6); // just past the new "- "
+    }
+
+    #[test]
+    fn continue_item_at_item_end_appends_sibling() {
+        // Enter at the very end of the continuation line appends a new
+        // empty sibling after the whole item.
+        let src = "- a\n  cont\n";
+        let info = info_at(src, 2);
+        let res = continue_item(&info, src, 10).expect("continues");
+        let mut out = src.to_owned();
+        out.replace_range(
+            res.delta.offset..res.delta.offset + res.delta.removed.len(),
+            "",
+        );
+        out.insert_str(res.delta.offset, &res.delta.inserted);
+        assert_eq!(out, "- a\n  cont\n- \n");
+        assert_eq!(res.cursor_byte, 13);
+    }
+
+    #[test]
+    fn continue_item_mid_continuation_returns_none() {
+        let src = "- a\n  cont\n- b\n";
+        let info = info_at(src, 7);
+        assert!(continue_item(&info, src, 7).is_none());
+    }
+
+    #[test]
+    fn indent_item_rejects_first_item() {
+        // No preceding sibling to nest under → no valid deeper position.
+        let src = "- a\n- b\n";
+        let info = info_at(src, 2); // on "- a"
+        assert!(indent_item(&info, src, 2, 4).is_none());
+        // Nested lists too: "  - x" is the first item of its own list.
+        let nested = "- top\n  - x\n  - y\n";
+        let info = info_at(nested, 10); // on "  - x"
+        assert!(indent_item(&info, nested, 10, 4).is_none());
+    }
+
+    #[test]
+    fn indent_item_shifts_all_item_lines_bullet() {
+        let src = "- a\n- b\n  cont\n- c\n";
+        let info = info_at(src, 5); // on "- b"
+        let res = indent_item(&info, src, 5, 4).expect("indents");
+        let mut out = src.to_owned();
+        out.replace_range(
+            res.delta.offset..res.delta.offset + res.delta.removed.len(),
+            "",
+        );
+        out.insert_str(res.delta.offset, &res.delta.inserted);
+        assert_eq!(out, "- a\n    - b\n      cont\n- c\n");
+        assert_eq!(
+            res.cursor_byte, 9,
+            "cursor tracks its char on the marker line"
+        );
+    }
+
+    #[test]
+    fn indent_item_shifts_all_item_lines_ordered() {
+        let src = "1. a\n2. b\n   cont\n3. c\n";
+        let info = info_at(src, 6); // on "2. b"
+        let res = indent_item(&info, src, 6, 4).expect("indents");
+        let mut out = src.to_owned();
+        out.replace_range(
+            res.delta.offset..res.delta.offset + res.delta.removed.len(),
+            "",
+        );
+        out.insert_str(res.delta.offset, &res.delta.inserted);
+        assert_eq!(out, "1. a\n    1. b\n       cont\n2. c\n");
+    }
+
+    #[test]
+    fn outdent_item_shifts_all_item_lines() {
+        let src = "- top\n    - b\n      cont\n";
+        let info = info_at(src, 11); // on "    - b"
+        let res = outdent_item(&info, src, 11, 4).expect("outdents");
+        let mut out = src.to_owned();
+        out.replace_range(
+            res.delta.offset..res.delta.offset + res.delta.removed.len(),
+            "",
+        );
+        out.insert_str(res.delta.offset, &res.delta.inserted);
+        assert_eq!(out, "- top\n- b\n  cont\n");
+    }
+
+    #[test]
+    fn exit_list_preserves_trailing_multiline_items() {
+        // Empty item mid-list with a blank line above; the trailing item
+        // keeps its continuation line through the renumber.
+        let src = "1. a\n\n2. \n3. b\n   cont\n";
+        let info = info_at(src, 8); // on the empty "2. "
+        let res = exit_list(&info, src, 8).expect("exits");
+        let mut out = src.to_owned();
+        out.replace_range(
+            res.delta.offset..res.delta.offset + res.delta.removed.len(),
+            "",
+        );
+        out.insert_str(res.delta.offset, &res.delta.inserted);
+        assert_eq!(out, "1. a\n\n1. b\n   cont\n");
+    }
+
+    #[test]
+    fn renumber_block_expansion_crosses_continuation_lines() {
+        // Cursor on "1. b": the upward expansion must cross "   cont" to
+        // reach "1. a" so the run renumbers as one list.
+        let src = "1. a\n   cont\n1. b\n";
+        let delta = renumber_list_block(src, 14).expect("renumbers");
+        let mut out = src.to_owned();
+        out.replace_range(delta.offset..delta.offset + delta.removed.len(), "");
+        out.insert_str(delta.offset, &delta.inserted);
+        assert_eq!(out, "1. a\n   cont\n2. b\n");
+        // Cursor on the continuation line renumbers the same block.
+        let delta2 = renumber_list_block(src, 6).expect("renumbers from cont line");
+        assert_eq!(delta2, delta);
     }
 }

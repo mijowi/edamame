@@ -1615,6 +1615,14 @@ fn list_indent(state: &mut EditorState) -> bool {
         return false;
     };
     let byte = cursor_byte(state);
+    // The first item of a list cannot be indented — it has no preceding
+    // sibling to nest under, so any extra indent degrades the marker (lazy
+    // paragraph continuation, or an indented code block at the top level).
+    // Swallow the Tab as handled: the plain-space fallback would corrupt
+    // the marker line the same way.
+    if list_edit::cursor_item_idx(&info, byte) == Some(0) {
+        return true;
+    }
     let Some(res) = list_edit::indent_item(&info, &source, byte, crate::constants::INDENT_WIDTH)
     else {
         return false;
@@ -1786,6 +1794,15 @@ fn list_move_horizontal(state: &mut EditorState, forward: bool) -> bool {
         return false;
     };
     let item = &info.items[item_idx];
+
+    // Multi-line items: the marker-hopping logic below is first-line
+    // geometry (`content_start` / `line_end`).  A cursor on a continuation
+    // line — or at the first line's end when continuation lines follow —
+    // moves char-by-char like plain text instead of hopping items.
+    let has_continuation = item.end > item.line_end + 1;
+    if byte > item.line_end || (byte == item.line_end && has_continuation && forward) {
+        return false;
+    }
 
     if forward {
         if byte >= item.line_end {

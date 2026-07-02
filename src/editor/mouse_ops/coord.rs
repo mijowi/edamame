@@ -3,6 +3,10 @@ use ratatui::text::Line;
 use crate::document::CellBand;
 use crate::editor::table_edit;
 use crate::editor::{EditorState, Mode};
+use crate::markdown::list_layout::{
+    list_rendered_col_to_raw_col_marker, raw_list_marker_char_width,
+    rendered_list_marker_char_width,
+};
 use crate::markdown::table_layout;
 use crate::ui::line_render;
 use crate::ui::table_view::HEADER_ROWS;
@@ -353,6 +357,17 @@ pub fn rendered_sub_line_to_offset(
             .block_line_to_buffer_line(block.range.start, raw_line_idx);
         let stripped = line_text.strip_suffix('\n').unwrap_or(line_text);
         let inline_map = state.inline_map_for(buffer_line_idx, stripped);
+        // List blocks take a marker-aware mapping: the rendered marker can
+        // be wider than the raw one (right-align-padded ordered numbers,
+        // renderer-normalized nesting indent), which the generic prefix
+        // inference below can't represent.  Resolved via the AST — a
+        // paragraph line that merely looks like `2. ...` stays generic.
+        let is_list = matches!(
+            state
+                .parsed
+                .real_block_for_byte(block.range.start + line_byte_start),
+            Some(crate::markdown::Block::List { .. })
+        );
         non_table_click_to_raw_col(
             rendered_line,
             line_text,
@@ -360,6 +375,7 @@ pub fn rendered_sub_line_to_offset(
             sub_row_within_line,
             viewport_width,
             &inline_map,
+            is_list,
         )
     };
 
@@ -567,6 +583,7 @@ fn non_table_click_to_raw_col(
     sub_row_within_line: usize,
     viewport_width: usize,
     inline_map: &crate::markdown::InlineColMap,
+    is_list: bool,
 ) -> usize {
     let indent = line_render::compute_hanging_indent(rendered_line);
     let rendered_chars: Vec<(char, ratatui::style::Style)> = rendered_line
@@ -597,6 +614,40 @@ fn non_table_click_to_raw_col(
     let map = inline_map.rendered_to_raw_vec();
     let map_content_count = inline_map.rendered_len();
     let raw_content_start = map.first().copied().unwrap_or(0);
+
+    // List-item lines: mirror the forward marker map used by the overlay
+    // painters (`markdown::list_layout`).  The rendered marker can be wider
+    // than the raw one (` 1. ` vs `1. `, renderer-normalized nesting
+    // indent), so the char-count prefix inference below would bail to a
+    // 1:1 mapping that lands clicks 1–2 columns off.  A raw line inside a
+    // list block without its own marker (continuation line) falls through
+    // to the generic path.
+    if is_list {
+        if let (Some(rmw), Some(rmw_r)) = (
+            raw_list_marker_char_width(line_text),
+            rendered_list_marker_char_width(rendered_line),
+        ) {
+            if rendered_idx < rmw_r {
+                // Click inside the rendered marker: right-aligned inverse so
+                // the `[ ] ` checkbox cells map byte-exact.
+                return list_rendered_col_to_raw_col_marker(rmw, rmw_r, rendered_idx);
+            }
+            let content_idx = rendered_idx - rmw_r;
+            let content_rendered = actual_rendered_count.saturating_sub(rmw_r);
+            if map_content_count == content_rendered {
+                // Content region through the inline collapse map (the map's
+                // raw columns are absolute, marker included).
+                return map
+                    .get(content_idx)
+                    .copied()
+                    .unwrap_or_else(|| line_text.chars().count());
+            }
+            // Inline-map count mismatch: marker shift only — exact for
+            // unformatted content, approximate otherwise (the reveal lets
+            // the user refine with a second click).
+            return (rendered_idx + rmw).saturating_sub(rmw_r);
+        }
+    }
 
     if actual_rendered_count >= map_content_count {
         let prefix_len = actual_rendered_count - map_content_count;

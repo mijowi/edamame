@@ -181,6 +181,8 @@ src/
   markdown/
     ast.rs          # Block, Inline, ListItem enums; inlines_to_plain()
     inline_col_map.rs # InlineColMap: raw byte ↔ rendered visual column
+    list_layout.rs  # list-marker raw ↔ rendered column geometry, shared by
+                    #   the overlay painters and the mouse click mapping
     parse_offsets.rs  # (byte_start, byte_end) spans from pulldown-cmark;
                     #   RangeTracker incremental depth-0 scanner
     parser.rs       # pulldown-cmark → Vec<Block>; parse_raw_with_ranges
@@ -246,7 +248,7 @@ src/
     preview.rs          # PreviewView + PreviewState
     raw_view.rs         # RawView + RawViewState (plain-text editor)
     rendered_view.rs    # RenderedView + RenderedViewState (hybrid view)
-    rendered_view/      # paint, cell_overlay, list_marker, raw_text — split
+    rendered_view/      # paint, cell_overlay, raw_text — split
                         #   submodules of the rendered view
     save_copy_modal.rs  # "Save copy as…" path entry
     scroll_container.rs # ScrollContainerState; ModalKind lives here

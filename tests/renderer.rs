@@ -233,6 +233,18 @@ fn empty_task_item_renders_checkbox() {
 }
 
 #[test]
+fn task_item_with_non_paragraph_first_block_renders_checkbox() {
+    // A task item whose first block is not a paragraph (here a nested code
+    // block) must still render its checkbox on the marker line.
+    let lines = render("- [ ] \n  ```\n  x\n  ```\n");
+    let output: Vec<String> = lines.iter().map(line_text).collect();
+    assert!(
+        output[0].contains("[ ]"),
+        "task item with non-paragraph first block should render '[ ]', got: {output:?}"
+    );
+}
+
+#[test]
 fn empty_task_item_in_middle_of_list_renders_checkbox() {
     let lines = render("- [ ] alpha\n- [ ] \n- [ ] beta\n");
     let output: Vec<String> = lines.iter().map(line_text).collect();

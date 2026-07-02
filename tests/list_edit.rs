@@ -596,13 +596,13 @@ fn right_arrow_at_last_item_line_end_exits_list() {
 
 #[test]
 fn tab_on_bullet_item_indents_by_tab_width() {
-    let src = "- foo\n";
-    let mut st = editor_at_end_of_line(src, "- foo");
+    let src = "- foo\n- bar\n";
+    let mut st = editor_at_end_of_line(src, "- bar");
     apply(&mut st, Action::InsertTab);
-    assert_eq!(st.contents(), "    - foo\n");
+    assert_eq!(st.contents(), "- foo\n    - bar\n");
     // Cursor should follow the content end.
     let byte = cursor_byte(&st);
-    assert_eq!(&st.contents()[..byte], "    - foo");
+    assert_eq!(&st.contents()[..byte], "- foo\n    - bar");
 }
 
 #[test]
@@ -618,10 +618,29 @@ fn tab_on_ordered_item_resets_number_and_renumbers_outer_list() {
 
 #[test]
 fn tab_on_task_item_preserves_checkbox() {
-    let src = "- [ ] foo\n";
-    let mut st = editor_at_end_of_line(src, "- [ ] foo");
+    let src = "- [ ] foo\n- [ ] bar\n";
+    let mut st = editor_at_end_of_line(src, "- [ ] bar");
     apply(&mut st, Action::InsertTab);
-    assert_eq!(st.contents(), "    - [ ] foo\n");
+    assert_eq!(st.contents(), "- [ ] foo\n    - [ ] bar\n");
+}
+
+#[test]
+fn tab_on_first_item_is_a_noop() {
+    // The first item of a list has no preceding sibling to nest under, so
+    // indenting it can never form a valid nested item — the marker would
+    // degrade into a lazy paragraph continuation of the parent (nested
+    // case) or an indented code block (top level).  Tab is swallowed
+    // whole: no indent, and no plain-space fallback either.
+    for (src, needle) in [
+        ("- foo\n- bar\n", "- foo"),                     // top level
+        ("- top\n  - child1\n  - child2\n", "- child1"), // first nested child
+        ("1. top\n    1. b\n    2. c\n", "1. b"),        // first nested ordered
+        ("- top\n  - only\n", "- only"),                 // sole nested child
+    ] {
+        let mut st = editor_at_end_of_line(src, needle);
+        apply(&mut st, Action::InsertTab);
+        assert_eq!(st.contents(), src, "Tab on {needle:?} must be a no-op");
+    }
 }
 
 #[test]
@@ -756,4 +775,106 @@ fn renumber_block_preserves_bullet_children() {
         &delta.inserted,
     );
     assert_eq!(out, "1. a\n    - x\n    - y\n2. c\n");
+}
+
+// ─── Multi-line items ────────────────────────────────────────────────────────
+
+#[test]
+fn enter_at_end_of_multiline_item_continues_list() {
+    // Enter at the very end of the item's continuation line appends a new
+    // sibling item after the whole item.
+    let src = "- a\n  cont\n";
+    let mut st = editor_at_end_of_line(src, "  cont");
+    apply(&mut st, Action::Newline);
+    assert_eq!(st.contents(), "- a\n  cont\n- \n");
+    let byte = cursor_byte(&st);
+    assert_eq!(&st.contents()[..byte], "- a\n  cont\n- ");
+}
+
+#[test]
+fn enter_mid_continuation_line_inserts_plain_newline() {
+    let src = "- a\n  cont\n- b\n";
+    let mut st = editor_at(src, "ont");
+    apply(&mut st, Action::Newline);
+    assert_eq!(st.contents(), "- a\n  c\nont\n- b\n");
+}
+
+#[test]
+fn enter_mid_first_line_carries_continuations_to_new_item() {
+    let src = "- one two\n  cont\n";
+    let mut st = editor_at(src, " two"); // cursor right after "one"
+    apply(&mut st, Action::Newline);
+    assert_eq!(st.contents(), "- one\n-  two\n  cont\n");
+}
+
+#[test]
+fn tab_on_multiline_item_indents_continuations_too() {
+    let src = "- a\n- b\n  cont\n";
+    let mut st = editor_at_end_of_line(src, "- b");
+    apply(&mut st, Action::InsertTab);
+    assert_eq!(st.contents(), "- a\n    - b\n      cont\n");
+}
+
+#[test]
+fn shift_tab_on_multiline_item_outdents_continuations_too() {
+    let src = "- a\n    - b\n      cont\n";
+    let mut st = editor_at_end_of_line(src, "    - b");
+    apply(&mut st, Action::TablePrevCell);
+    assert_eq!(st.contents(), "- a\n- b\n  cont\n");
+}
+
+#[test]
+fn toggle_checkbox_from_continuation_line_toggles_owning_item() {
+    let src = "- [ ] task\n  cont\n";
+    let mut st = editor_at(src, "ont");
+    apply(&mut st, Action::ToggleCheckbox);
+    assert_eq!(st.contents(), "- [x] task\n  cont\n");
+}
+
+#[test]
+fn arrow_keys_on_continuation_line_move_plainly() {
+    // Right arrow at the end of the marker line of a multi-line item steps
+    // onto the continuation line instead of hopping to the next item.
+    let src = "- a\n  cont\n- b\n";
+    let mut st = editor_at_end_of_line(src, "- a");
+    apply(&mut st, Action::MoveRight);
+    assert_eq!(cursor_byte(&st), 4, "steps onto the continuation line");
+    // And moving within the continuation line stays char-by-char.
+    apply(&mut st, Action::MoveRight);
+    assert_eq!(cursor_byte(&st), 5);
+    apply(&mut st, Action::MoveLeft);
+    assert_eq!(cursor_byte(&st), 4);
+}
+
+#[test]
+fn tab_on_blank_separator_line_inserts_plain_indent() {
+    // The blank line below a list is a separator, not part of the list:
+    // Tab there must fall back to plain indentation, not indent the item
+    // above the cursor.
+    let src = "- a\n\n- b\n";
+    let mut st = EditorState::new(Buffer::from_str(src), theme());
+    st.mode = Mode::Rendered;
+    st.cursor.offset = st.buffer.rope().byte_to_char(4); // start of the blank line
+    apply(&mut st, Action::InsertTab);
+    assert_eq!(st.contents(), "- a\n    \n- b\n");
+}
+
+#[test]
+fn toggle_checkbox_on_blank_separator_line_is_a_no_op() {
+    let src = "- [ ] a\n\nx\n";
+    let mut st = EditorState::new(Buffer::from_str(src), theme());
+    st.mode = Mode::Rendered;
+    st.cursor.offset = st.buffer.rope().byte_to_char(8); // start of the blank line
+    apply(&mut st, Action::ToggleCheckbox);
+    assert_eq!(st.contents(), src, "the task above must stay untouched");
+}
+
+#[test]
+fn delete_renumbers_across_continuation_lines() {
+    // Deleting item 2 lands the cursor near item 3; the renumber pass must
+    // cross item 1's continuation line to keep the sequence monotonic.
+    let src = "1. a\n   cont\n2. b\n3. c\n";
+    let mut st = editor_at(src, "2. b");
+    apply(&mut st, Action::DeleteLine);
+    assert_eq!(st.contents(), "1. a\n   cont\n2. c\n");
 }

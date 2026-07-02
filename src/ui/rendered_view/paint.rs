@@ -10,10 +10,8 @@ use crate::editor::table_edit;
 use crate::editor::EditorState;
 use crate::markdown::table_layout::CellOverlay;
 
-use super::list_marker::{
-    list_raw_col_to_rendered_col, raw_list_marker_char_width, rendered_list_marker_char_width,
-};
 use super::raw_text::raw_line_byte_start;
+use crate::markdown::list_layout::{raw_list_marker_char_width, rendered_list_marker_char_width};
 
 /// Build a `Line` showing `raw_text` with a block cursor at `cursor_col`.
 ///
@@ -232,6 +230,14 @@ pub(super) fn paint_byte_range_overlay(
     // covered text, so it lands inside the block's real range.
     let block_kind = editor.parsed.real_block_for_byte(line_sel_start);
 
+    // Marker widths for the list arm below — `Some` only when the block
+    // really is a `Block::List` AND this raw line carries its own marker.
+    let list_marker_widths = if matches!(block_kind, Some(crate::markdown::Block::List { .. })) {
+        raw_list_marker_char_width(raw_line).zip(rendered_list_marker_char_width(line))
+    } else {
+        None
+    };
+
     if is_table {
         // A cell may wrap onto several rendered sub-lines, and the match's
         // raw columns land in at most ONE wrap chunk per cell.  Map the raw
@@ -298,46 +304,51 @@ pub(super) fn paint_byte_range_overlay(
                 (Some(rs), Some(re)) => (rs + prefix, re + prefix),
                 _ => return,
             }
-        } else if let (Some(rs), Some(re)) = (
-            list_raw_col_to_rendered_col(raw_line, line, start_raw_col),
-            list_raw_col_to_rendered_col(raw_line, line, end_raw_col),
-        ) {
-            // List-item line: the marker-only map handles the `- ` / `1. `
-            // prefix shift.  Compose with the inline collapse map so bold /
-            // italic / link markup inside the item also lines up.
-            let raw_marker = raw_list_marker_char_width(raw_line);
-            let rendered_marker = rendered_list_marker_char_width(line);
-            let (mut rend_start, rend_end) =
-                if let (Some(rmw), Some(rmw_r)) = (raw_marker, rendered_marker) {
-                    let content_rendered = actual_rendered.saturating_sub(rmw_r);
-                    if inline_map.rendered_len() == content_rendered {
-                        let map_col = |raw_col: usize| -> usize {
-                            if raw_col < rmw {
-                                rmw_r
-                            } else {
-                                inline_map.raw_to_rendered(raw_col) + rmw_r
-                            }
-                        };
-                        (map_col(start_raw_col), map_col(end_raw_col))
-                    } else {
-                        (rs, re)
-                    }
+        } else if let Some((rmw, rmw_r)) = list_marker_widths {
+            // List-item line of a real List block: the marker widths handle
+            // the `- ` / `1. ` prefix shift, composed with the inline
+            // collapse map so bold / italic / link markup inside the item
+            // also lines up.  Gated on the AST kind — a Paragraph line that
+            // merely *sniffs* like a marker (`2. ` lazy continuation) takes
+            // the plain paragraph mapping below instead.  A raw line inside
+            // a List block without its own marker (continuation line) also
+            // falls through to the paragraph mapping.
+            let content_rendered = actual_rendered.saturating_sub(rmw_r);
+            let map_col = |raw_col: usize| -> Option<usize> {
+                if raw_col < rmw {
+                    Some(rmw_r)
                 } else {
-                    (rs, re)
-                };
-            // A selection that reaches the line's first column covers the rendered
-            // marker too — most notably VisualLine, which widens to whole lines, but
-            // also any charwise span whose intermediate lines are fully selected.
-            // The marker map above snaps such a start forward to the content column,
-            // leaving the `1. ` / `• ` prefix unpainted; pull it back to col 0 so the
-            // whole rendered row highlights.
-            if start_raw_col == 0 {
-                rend_start = 0;
+                    inline_map
+                        .raw_to_rendered_checked(raw_col, content_rendered)
+                        .map(|c| c + rmw_r)
+                }
+            };
+            match (map_col(start_raw_col), map_col(end_raw_col)) {
+                (Some(mut rend_start), Some(rend_end)) => {
+                    // A selection that reaches the line's first column covers the
+                    // rendered marker too — most notably VisualLine, which widens to
+                    // whole lines, but also any charwise span whose intermediate
+                    // lines are fully selected.  The marker map above snaps such a
+                    // start forward to the content column, leaving the `1. ` / `• `
+                    // prefix unpainted; pull it back to col 0 so the whole rendered
+                    // row highlights.
+                    if start_raw_col == 0 {
+                        rend_start = 0;
+                    }
+                    (rend_start, rend_end)
+                }
+                // Inline-map count mismatch (smart-punctuation collapse, …):
+                // skip the highlight rather than paint an off-by-N one —
+                // mirroring the heading branch — except a col-0 start
+                // (VisualLine) still washes the whole row so line selections
+                // never vanish.
+                _ if start_raw_col == 0 => (0, actual_rendered),
+                _ => return,
             }
-            (rend_start, rend_end)
         } else {
-            // Paragraph / heading / code block line: use the inline collapse
-            // map so selection highlights track rendered glyph positions.
+            // Paragraph line (or a marker-less line inside a list block):
+            // use the inline collapse map so selection highlights track
+            // rendered glyph positions.
             match (
                 inline_map.raw_to_rendered_checked(start_raw_col, actual_rendered),
                 inline_map.raw_to_rendered_checked(end_raw_col, actual_rendered),

@@ -109,8 +109,13 @@ impl<'t> Renderer<'t> {
                             // No blank line after list items (tight-list style).
                         }
                         other => {
-                            // Non-paragraph first block: render marker alone, then block.
-                            out.push(Line::from(vec![Span::styled(marker.clone(), marker_style)]));
+                            // Non-paragraph first block: render the marker (and
+                            // task prefix, if any) alone, then the block below.
+                            let mut spans = vec![Span::styled(marker.clone(), marker_style)];
+                            if let Some(tp) = task_prefix.clone() {
+                                spans.push(tp);
+                            }
+                            out.push(Line::from(spans));
                             self.render_block(other, out, &child_indent_prefix);
                         }
                     }

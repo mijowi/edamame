@@ -39,9 +39,10 @@ pub struct ListItemInfo {
     /// Byte offset of the first byte of this item's first line (including
     /// indent).
     pub start: usize,
-    /// Byte offset just past the last byte of this item — for MVP this is the
-    /// byte just past the item's line-terminating `\n`, or the end of the
-    /// buffer when the final item has no trailing newline.
+    /// Byte offset just past the last byte of this item, including its
+    /// continuation lines (lines indented deeper than the list's own indent,
+    /// nested list lines, and any interior blank run followed by such a
+    /// line).  Covers the final line's terminating `\n` when present.
     pub end: usize,
     /// Byte offset of the first char of the marker (i.e. `start + indent.len()`).
     pub marker_start: usize,
@@ -52,8 +53,10 @@ pub struct ListItemInfo {
     /// `marker_end` for non-task items; points just past the task-prefix
     /// (e.g. `[ ] `) for task items.
     pub content_start: usize,
-    /// Byte offset of the line-terminating `\n`, or the item's `end` if the
-    /// line has no trailing newline.  Used for "end of line" checks.
+    /// Byte offset of the FIRST line's terminating `\n`, or that line's end
+    /// when it has no trailing newline.  Deliberately a first-line fact even
+    /// for multi-line items — marker-adjacent checks (`content_start..
+    /// line_end`) only make sense on the marker line.
     pub line_end: usize,
     /// For ordered items, the item's parsed number.
     pub number: Option<u64>,
@@ -65,9 +68,11 @@ pub struct ListItemInfo {
 
 impl ListItemInfo {
     /// True if the item's content (after any task prefix) is empty or
-    /// whitespace-only.  Used to decide between "continue" and "exit" on Enter.
+    /// whitespace-only — including any continuation lines, so an item whose
+    /// first line is blank but that carries indented continuation content is
+    /// NOT empty.  Used to decide between "continue" and "exit" on Enter.
     pub fn content_is_empty(&self, source: &str) -> bool {
-        let slice = &source[self.content_start..self.line_end];
+        let slice = &source[self.content_start..self.end];
         slice.trim().is_empty()
     }
 }
@@ -82,51 +87,100 @@ pub struct ContinueResult {
 }
 
 /// Find the Markdown list containing byte offset `cursor_byte` in `source`.
-/// Returns `None` when the cursor is not on a list item line or when the line
-/// does not belong to a list at that indent level.
+/// Returns `None` when the cursor's line neither is a list-item line nor
+/// belongs to one as a continuation, or when the line does not belong to a
+/// list at that indent level.
+///
+/// Items may span multiple lines: a non-blank line whose leading whitespace
+/// starts with the list's indent and is strictly longer belongs to the item
+/// above it (indented continuation paragraphs and nested list lines alike),
+/// and an interior blank run belongs to the item iff the first non-blank
+/// line after the run is such a continuation.  A blank run followed by a
+/// same-indent marker line still terminates the list — that gap is the
+/// parser's blank-line list split, two visually distinct lists.
+///
+/// When the cursor sits on a continuation (or attached blank) line, the list
+/// is anchored on the nearest marker line above it, so `cursor_item_idx`
+/// resolves the cursor to the item that owns the continuation.
 pub fn find_list_at(source: &str, cursor_byte: usize) -> Option<ListInfo> {
     if source.is_empty() {
         return None;
     }
     let bytes = source.as_bytes();
     let clamped = cursor_byte.min(source.len());
-    let line_start = line_start_byte(bytes, clamped);
-    let line_end = line_end_byte(bytes, line_start);
-    let cursor_line = &source[line_start..line_end];
+    let cursor_line_start = line_start_byte(bytes, clamped);
+    let cursor_line_end = line_end_byte(bytes, cursor_line_start);
+    let cursor_line = &source[cursor_line_start..cursor_line_end];
 
-    let (indent, kind, _num) = parse_line_start(cursor_line)?;
+    // Anchor: the marker line that owns the cursor's line.  A cursor on a
+    // marker line anchors there (a nested marker anchors the nested list);
+    // a cursor on a blank or indented line walks up to the nearest marker.
+    let anchor_start = if parse_line_start(cursor_line).is_some() {
+        cursor_line_start
+    } else {
+        resolve_anchor_upward(source, bytes, cursor_line_start)?
+    };
+    let anchor_end = line_end_byte(bytes, anchor_start);
+    let (indent, kind, _num) = parse_line_start(&source[anchor_start..anchor_end])?;
 
-    // Scan upward for contiguous item lines at the same indent and kind.
-    let mut first_start = line_start;
-    while first_start > 0 {
-        let prev_end = first_start - 1;
-        // prev_end is the `\n` separating the previous line from this one.
-        // If prev_end is 0 and not a \n, there is no previous line.
-        if bytes.get(prev_end).copied() != Some(b'\n') {
+    // A cursor on a non-marker line must actually belong to the anchor's
+    // list: blank, or a continuation at the anchor's indent.
+    if anchor_start != cursor_line_start
+        && !cursor_line.trim().is_empty()
+        && !is_continuation_line(cursor_line, &indent)
+    {
+        return None;
+    }
+
+    // Scan upward for contiguous lines of this list: marker lines at the
+    // same indent and kind, their continuation lines, and attached blank
+    // runs.  Only a marker line commits the extension — a run of
+    // continuation-shaped lines with no marker above (e.g. an indented
+    // block under a paragraph) is discarded.  A blank line whose nearest
+    // non-blank line BELOW is a marker line is a list-splitting separator
+    // and stops the scan.
+    let mut first_start = anchor_start;
+    let mut probe = anchor_start;
+    let mut below_is_marker = true;
+    loop {
+        if probe == 0 || bytes[probe - 1] != b'\n' {
             break;
         }
-        let prev_start = line_start_byte(bytes, prev_end);
-        let prev = &source[prev_start..prev_end];
-        if matches_list_line(prev, &indent, kind) {
-            first_start = prev_start;
+        let ps = line_start_byte(bytes, probe - 1);
+        let line = &source[ps..probe - 1];
+        if matches_list_line(line, &indent, kind) {
+            first_start = ps;
+            below_is_marker = true;
+        } else if is_continuation_line(line, &indent) {
+            below_is_marker = false;
+        } else if line.trim().is_empty() {
+            if below_is_marker {
+                break;
+            }
         } else {
             break;
         }
+        probe = ps;
     }
 
-    // Scan downward for contiguous item lines at the same indent and kind.
-    let mut last_end = line_end;
+    // Scan downward: same-list marker lines, continuation lines, and blank
+    // runs that attach (first non-blank line after the run is a
+    // continuation).
+    let mut last_end = anchor_end;
     while last_end < source.len() && bytes[last_end] == b'\n' {
         let next_start = last_end + 1;
         if next_start >= source.len() {
-            // Buffer ends with the \n; no more lines after it.
-            last_end += 1;
             break;
         }
         let next_end = line_end_byte(bytes, next_start);
         let next = &source[next_start..next_end];
-        if matches_list_line(next, &indent, kind) {
+        if matches_list_line(next, &indent, kind) || is_continuation_line(next, &indent) {
             last_end = next_end;
+        } else if next.trim().is_empty() {
+            let Some(resume_end) = blank_run_attaches(source, bytes, next_start, &indent) else {
+                break;
+            };
+            last_end = resume_end;
         } else {
             break;
         }
@@ -135,6 +189,14 @@ pub fn find_list_at(source: &str, cursor_byte: usize) -> Option<ListInfo> {
     // that item.end covers the terminating newline.
     if last_end < source.len() && bytes[last_end] == b'\n' {
         last_end += 1;
+    }
+
+    // A cursor on a blank line past the list's end — the separator below it
+    // — is not in the list: edits fired there (Tab, ToggleCheckbox, …) must
+    // fall back to plain-text handling instead of mutating the item above.
+    // Attached interior blank lines start before `last_end` and stay owned.
+    if cursor_line.trim().is_empty() && cursor_line_start >= last_end {
+        return None;
     }
 
     let items = parse_items(source, first_start, last_end, &indent, kind)?;
@@ -149,6 +211,70 @@ pub fn find_list_at(source: &str, cursor_byte: usize) -> Option<ListInfo> {
         kind,
         items,
     })
+}
+
+/// Walk upward from a non-marker line to the nearest marker line above it,
+/// crossing only blank lines and indented (continuation-shaped) lines.
+/// Returns `None` when a flush-left non-marker line (or the buffer start)
+/// is reached first — the cursor's line has no list above it to belong to.
+fn resolve_anchor_upward(source: &str, bytes: &[u8], cursor_line_start: usize) -> Option<usize> {
+    let mut line_start = cursor_line_start;
+    loop {
+        if line_start == 0 || bytes[line_start - 1] != b'\n' {
+            return None;
+        }
+        let ps = line_start_byte(bytes, line_start - 1);
+        let line = &source[ps..line_start - 1];
+        if parse_line_start(line).is_some() {
+            return Some(ps);
+        }
+        if !line.trim().is_empty() && !line.starts_with(' ') && !line.starts_with('\t') {
+            return None;
+        }
+        line_start = ps;
+    }
+}
+
+/// Does `line` extend the item above it in a list indented by `list_indent`?
+/// True for a non-blank line whose leading whitespace starts with
+/// `list_indent` and is strictly longer — indented continuation paragraphs
+/// and deeper nested marker lines alike.  (Lazy continuations at or below
+/// the list's own indent are deliberately not recognized.)
+pub(super) fn is_continuation_line(line: &str, list_indent: &str) -> bool {
+    let lead_len: usize = line
+        .chars()
+        .take_while(|&c| c == ' ' || c == '\t')
+        .map(char::len_utf8)
+        .sum();
+    lead_len < line.len() // non-blank
+        && lead_len > list_indent.len()
+        && line[..lead_len].starts_with(list_indent)
+}
+
+/// If the blank run starting at `run_start` attaches to the item above it —
+/// i.e. the first non-blank line after the run is a continuation line at
+/// `list_indent` — return that continuation line's content end (so the
+/// caller's scan resumes past it).  Returns `None` when the run is a
+/// list-terminating separator (next non-blank is a marker line, a shallower
+/// line, or the buffer ends).
+fn blank_run_attaches(
+    source: &str,
+    bytes: &[u8],
+    run_start: usize,
+    list_indent: &str,
+) -> Option<usize> {
+    let mut line_start = run_start;
+    loop {
+        let line_end = line_end_byte(bytes, line_start);
+        let line = &source[line_start..line_end];
+        if !line.trim().is_empty() {
+            return is_continuation_line(line, list_indent).then_some(line_end);
+        }
+        if line_end >= source.len() {
+            return None;
+        }
+        line_start = line_end + 1;
+    }
 }
 
 /// Parse the marker at the start of `line` (a raw line without its trailing
@@ -197,8 +323,10 @@ pub(super) fn matches_list_line(line: &str, indent: &str, kind: MarkerKind) -> b
     }
 }
 
-/// Parse the range `start..end` into `ListItemInfo`s — assumes every line in
-/// the range is a valid list item line at `indent` / `kind`.
+/// Parse the range `start..end` into `ListItemInfo`s — assumes the range
+/// starts on a marker line at `indent` / `kind` and that every other line in
+/// it is a marker line, a continuation line, or an attached blank (which is
+/// what `find_list_at`'s scans produce).
 pub(super) fn parse_items(
     source: &str,
     start: usize,
@@ -265,13 +393,26 @@ fn parse_single_item(
         (None, None, marker_end)
     };
 
-    // The item extends to just past the terminating `\n`.  The final item
-    // in the buffer may have no trailing newline.
-    let item_end = if line_end_pos < end && bytes[line_end_pos] == b'\n' {
-        line_end_pos + 1
-    } else {
-        line_end_pos
+    // The item extends past its first line's terminating `\n` and then over
+    // every following line inside the caller's range that is not itself a
+    // same-list marker line — by the scan's construction those are the
+    // item's continuation lines and attached blank runs.  The final line in
+    // the buffer may have no trailing newline.
+    let past_line = |content_end: usize| {
+        if content_end < end && bytes[content_end] == b'\n' {
+            content_end + 1
+        } else {
+            content_end
+        }
     };
+    let mut item_end = past_line(line_end_pos);
+    while item_end < end {
+        let next_end = line_end_byte(bytes, item_end);
+        if matches_list_line(&source[item_end..next_end], indent, kind) {
+            break;
+        }
+        item_end = past_line(next_end);
+    }
     Some(ListItemInfo {
         start: cursor,
         end: item_end,

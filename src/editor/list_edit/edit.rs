@@ -34,6 +34,21 @@ pub fn continue_item(info: &ListInfo, source: &str, cursor_byte: usize) -> Optio
         return None;
     }
 
+    // Multi-line items: list continuation fires from the marker line or from
+    // the very end of the item's last line (a new sibling after the whole
+    // item).  Anywhere else on a continuation line, Enter is a plain newline
+    // — splitting a continuation paragraph shouldn't mint a new marker.
+    if cursor_byte > item.line_end {
+        let content_end = if item.end > item.start && source.as_bytes()[item.end - 1] == b'\n' {
+            item.end - 1
+        } else {
+            item.end
+        };
+        if cursor_byte != content_end {
+            return None;
+        }
+    }
+
     // Build the prefix for the new item.  For ordered lists the number is
     // `item.number.unwrap_or(1) + 1` — the caller's renumbering below will
     // fix up subsequent items so this is just the slot-in value at insertion.
@@ -287,7 +302,10 @@ pub fn toggle_checkbox(
 /// fresh nested sequence) and the remaining outer items are renumbered to fill
 /// the gap.  For bullet lists the edit is just `indent_width` spaces prepended
 /// to the item's line.  Returns `None` when `cursor_byte` is not inside any
-/// item.
+/// item, or when it is on the list's FIRST item — with no preceding sibling
+/// to nest under there is no valid deeper position: the extra indent would
+/// degrade the marker into a lazy paragraph continuation of the parent (or
+/// an indented code block at the top level).
 pub fn indent_item(
     info: &ListInfo,
     source: &str,
@@ -298,33 +316,50 @@ pub fn indent_item(
         return None;
     }
     let item_idx = cursor_item_idx(info, cursor_byte)?;
+    if item_idx == 0 {
+        return None;
+    }
     let tab_str: String = " ".repeat(indent_width);
 
-    // Bullet lists: the nested item can be emitted as an independent edit
-    // (just prepend the extra indent) because there is no renumbering to do.
+    // Bullet lists: no renumbering to do — rebuild the item's own lines with
+    // the extra indent prepended to every non-blank line (the marker line
+    // and its continuation lines shift together, keeping their relative
+    // depth), leaving attached blank lines untouched.
     if let MarkerKind::Bullet(_) = info.kind {
         let item = &info.items[item_idx];
+        let text = &source[item.start..item.end];
+        let mut out = String::new();
         // When the item has no content, pulldown-cmark interprets the
         // indented `    - ` as a setext H2 underline of the previous item's
         // paragraph rather than a nested list marker (see CommonMark 4.3).
         // Inserting a blank line separator between the parent and the
         // indented marker forces the nested-list interpretation.  Non-empty
         // items aren't affected because the trailing content breaks the
-        // setext pattern.
-        let inserted = if item.content_is_empty(source) && item_idx > 0 {
-            format!("\n{tab_str}")
-        } else {
-            tab_str.clone()
-        };
-        let cursor_target = cursor_byte + inserted.len();
-        let delta = EditDelta {
-            offset: item.start,
-            removed: String::new(),
-            inserted,
-        };
+        // setext pattern.  (There is always a previous item: first items
+        // are rejected above.)
+        let mut shift_before_cursor = 0usize;
+        if item.content_is_empty(source) {
+            out.push('\n');
+            shift_before_cursor += 1;
+        }
+        let mut pos = item.start;
+        for line in text.split_inclusive('\n') {
+            if !line.trim().is_empty() {
+                out.push_str(&tab_str);
+                if cursor_byte >= pos {
+                    shift_before_cursor += indent_width;
+                }
+            }
+            out.push_str(line);
+            pos += line.len();
+        }
         return Some(ContinueResult {
-            delta,
-            cursor_byte: cursor_target,
+            delta: EditDelta {
+                offset: item.start,
+                removed: text.to_owned(),
+                inserted: out,
+            },
+            cursor_byte: cursor_byte + shift_before_cursor,
         });
     }
 
@@ -345,8 +380,9 @@ pub fn indent_item(
         let rest = &source[item.marker_end..item.end];
         // Insert a blank-line separator before an empty indented item so
         // pulldown-cmark recognises it as a nested list rather than lazy
-        // paragraph continuation of the preceding item.
-        if i == item_idx && i > 0 && item.content_is_empty(source) {
+        // paragraph continuation of the preceding item.  (item_idx > 0
+        // always: first items are rejected up front.)
+        if i == item_idx && item.content_is_empty(source) {
             out.push('\n');
         }
         let new_marker = if i == item_idx {
@@ -363,10 +399,27 @@ pub fn indent_item(
             // the old marker_end.  For positions before marker_end (indent
             // or digits), the saturating_sub yields 0 so the cursor lands
             // immediately after the new marker.
-            let in_item = cursor_byte.saturating_sub(item.marker_end);
-            cursor_out = marker_out_start + new_marker.len() + in_item.min(rest.len());
+            let in_item = cursor_byte.saturating_sub(item.marker_end).min(rest.len());
+            // The indented item's continuation lines shift with it: prepend
+            // the extra indent to every non-blank line after the first
+            // (blank lines stay untouched), tracking how many insertions
+            // land at or before the cursor.
+            let mut extra_before_cursor = 0usize;
+            let mut pos = 0usize;
+            for (li, line) in rest.split_inclusive('\n').enumerate() {
+                if li > 0 && !line.trim().is_empty() {
+                    out.push_str(&tab_str);
+                    if in_item >= pos {
+                        extra_before_cursor += indent_width;
+                    }
+                }
+                out.push_str(line);
+                pos += line.len();
+            }
+            cursor_out = marker_out_start + new_marker.len() + in_item + extra_before_cursor;
+        } else {
+            out.push_str(rest);
         }
-        out.push_str(rest);
     }
 
     let removed = source[info.start..info.end].to_owned();
@@ -400,22 +453,40 @@ pub fn outdent_item(
         return None;
     }
     let strip = indent_width.min(indent_len);
-    let removed = source[item.start..item.start + strip].to_owned();
-    let delta = EditDelta {
-        offset: item.start,
-        removed,
-        inserted: String::new(),
-    };
-    // The cursor shifts left by `strip` bytes if it sat past the stripped
-    // region; otherwise it tracks the line's new start.
-    let cursor_target = if cursor_byte >= item.start + strip {
-        cursor_byte - strip
-    } else {
-        item.start
-    };
+
+    // Rebuild the item's own lines, stripping up to `strip` leading
+    // whitespace chars from every non-blank line (marker line and
+    // continuations shift together; blank lines stay untouched).  A
+    // continuation line with less leading whitespace than `strip` — not
+    // producible by our own indent, but present in hand-written sources —
+    // loses only what it has.
+    let text = &source[item.start..item.end];
+    let mut out = String::new();
+    let mut removed_before_cursor = 0usize;
+    let mut pos = item.start;
+    for line in text.split_inclusive('\n') {
+        let lead = line.chars().take_while(|&c| c == ' ' || c == '\t').count();
+        let s = if line.trim().is_empty() {
+            0
+        } else {
+            strip.min(lead)
+        };
+        out.push_str(&line[s..]);
+        if cursor_byte >= pos + s {
+            removed_before_cursor += s;
+        } else if cursor_byte > pos {
+            // Cursor inside the stripped region: it tracks the line start.
+            removed_before_cursor += cursor_byte - pos;
+        }
+        pos += line.len();
+    }
     Some(ContinueResult {
-        delta,
-        cursor_byte: cursor_target,
+        delta: EditDelta {
+            offset: item.start,
+            removed: text.to_owned(),
+            inserted: out,
+        },
+        cursor_byte: cursor_byte - removed_before_cursor,
     })
 }
 
@@ -443,11 +514,17 @@ pub fn renumber_list_block(source: &str, cursor_byte: usize) -> Option<EditDelta
     let bytes = source.as_bytes();
     let clamped = cursor_byte.min(source.len());
     let cur_start = line_start_byte(bytes, clamped);
-    // The cursor must rest on a list-item line for the block to exist.
+    // The cursor must rest on a list-item line — or on an indented
+    // continuation line of one — for the block to exist.
     let cur_content_end = line_end_byte(bytes, cur_start);
-    parse_line_start(&source[cur_start..cur_content_end])?;
+    let cur_line = &source[cur_start..cur_content_end];
+    if parse_line_start(cur_line).is_none() && !is_block_continuation_line(cur_line) {
+        return None;
+    }
 
-    // Expand upward over contiguous list-item lines.
+    // Expand upward over contiguous list-block lines: marker lines and
+    // indented non-blank continuation lines alike (a multi-line item must
+    // not fragment the walk).  Blank lines still bound the block.
     let mut block_start = cur_start;
     while block_start > 0 {
         let prev_nl = block_start - 1; // the '\n' ending the previous line
@@ -455,7 +532,8 @@ pub fn renumber_list_block(source: &str, cursor_byte: usize) -> Option<EditDelta
             break;
         }
         let prev_start = line_start_byte(bytes, prev_nl);
-        if parse_line_start(&source[prev_start..prev_nl]).is_some() {
+        let prev = &source[prev_start..prev_nl];
+        if parse_line_start(prev).is_some() || is_block_continuation_line(prev) {
             block_start = prev_start;
         } else {
             break;
@@ -473,7 +551,8 @@ pub fn renumber_list_block(source: &str, cursor_byte: usize) -> Option<EditDelta
     let mut block_end = line_end_incl(cur_content_end);
     while block_end < source.len() {
         let next_end = line_end_byte(bytes, block_end);
-        if parse_line_start(&source[block_end..next_end]).is_some() {
+        let next = &source[block_end..next_end];
+        if parse_line_start(next).is_some() || is_block_continuation_line(next) {
             block_end = line_end_incl(next_end);
         } else {
             break;
@@ -552,6 +631,15 @@ pub fn renumber_list_block(source: &str, cursor_byte: usize) -> Option<EditDelta
         removed: block.to_owned(),
         inserted: out,
     })
+}
+
+/// A non-blank line that starts with whitespace — treated as part of the
+/// surrounding list block by the renumber walk (a continuation or
+/// nested-content line), with no list-identity check: the walk itself only
+/// rewrites lines that parse as ordered markers, so over-inclusion is
+/// harmless.
+fn is_block_continuation_line(line: &str) -> bool {
+    (line.starts_with(' ') || line.starts_with('\t')) && !line.trim().is_empty()
 }
 
 fn render_marker(indent: &str, kind: MarkerKind, number: u64) -> String {
