@@ -123,24 +123,7 @@ impl App {
             .rope()
             .char_to_byte(self.editor.cursor.offset);
         if let Some(s) = self.editor.search.as_mut() {
-            let idx = if forward {
-                // First match starting strictly after the cursor; wrap to 0.
-                let i = s.matches.partition_point(|m| m.start <= cursor_byte);
-                if i >= s.matches.len() {
-                    0
-                } else {
-                    i
-                }
-            } else {
-                // Last match starting strictly before the cursor; wrap to last.
-                let i = s.matches.partition_point(|m| m.start < cursor_byte);
-                if i == 0 {
-                    s.matches.len() - 1
-                } else {
-                    i - 1
-                }
-            };
-            s.focused_idx = idx;
+            s.focus_relative_to(cursor_byte, forward);
         }
         self.editor.sync_cursor_to_search_focus();
         // `enter_search` set `pending_focus_scroll`; the next `prepare_viewport`

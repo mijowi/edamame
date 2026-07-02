@@ -21,6 +21,7 @@
 
 pub mod edits;
 pub mod ex;
+pub mod incsearch;
 pub mod motion;
 pub mod operator;
 pub mod preview;
@@ -35,6 +36,7 @@ pub use edits::{
     toggle_case_range,
 };
 pub use ex::{execute_substitute, parse_ex, ExCommand};
+pub use incsearch::{end_incsearch, update_incsearch, IncsearchSession};
 pub use motion::{
     doubled_line_range, first_non_blank, line_end_offset, resolve_find_repeat, resolve_motion,
     resolve_motion_range, vertical_line_range, FindKind, Motion, OpRange,

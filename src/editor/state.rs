@@ -589,18 +589,67 @@ impl EditorState {
         let Some(diff) = self.diff.as_ref() else {
             return;
         };
-        /// Rows of context kept above the focused hunk when scrolling
-        /// it into view from off-screen.
-        const TOP_MARGIN: usize = 3;
         let row = diff.focused_hunk_visual_row(viewport_width);
         let total = diff.total_visual_rows(viewport_width);
+        self.scroll_row_comfortably_into_view(row, total, viewport_height);
+    }
+
+    /// Scroll so visual `row` is comfortably visible — a few rows of
+    /// context above it when possible.  Repositions only when the row
+    /// isn't already in view: above the current top (+margin) or below
+    /// the bottom.  The shared core of the hunk / match / `:s`-preview /
+    /// incsearch focus scrolls.
+    fn scroll_row_comfortably_into_view(
+        &mut self,
+        row: usize,
+        total: usize,
+        viewport_height: usize,
+    ) {
+        /// Rows of context kept above the focused row when scrolling
+        /// it into view from off-screen.
+        const TOP_MARGIN: usize = 3;
         let max_scroll = total.saturating_sub(1);
-        // Reposition only when the hunk isn't already comfortably in
-        // view: above the current top (+margin) or below the bottom.
         let comfortably_visible =
             row >= self.scroll + TOP_MARGIN && row < self.scroll + viewport_height;
         if !comfortably_visible {
             self.scroll = row.saturating_sub(TOP_MARGIN).min(max_scroll);
+        }
+    }
+
+    /// Scroll the cursor's visual row comfortably into view (see
+    /// [`Self::scroll_row_comfortably_into_view`]).  Used by the flows
+    /// that park the cursor somewhere possibly off-screen: search focus,
+    /// the live `:s` preview, vim incsearch.
+    pub fn scroll_cursor_comfortably_into_view(
+        &mut self,
+        viewport_height: usize,
+        viewport_width: usize,
+    ) {
+        if viewport_height == 0 || viewport_width == 0 {
+            return;
+        }
+        let row = self.cursor_visual_row(viewport_width);
+        let total = self.total_visual_rows_for_mode(viewport_width);
+        self.scroll_row_comfortably_into_view(row, total, viewport_height);
+    }
+
+    /// Place the cursor at char `offset` (clamped to the buffer),
+    /// refreshing the preferred column and the cursor-block cache — the
+    /// shared "park the cursor" primitive used by the search flows, the
+    /// live `:s` preview, and `execute_substitute`.
+    pub fn place_cursor(&mut self, offset: usize) {
+        self.cursor.offset = offset.min(self.buffer.len_chars());
+        self.cursor.preferred_col = self.cursor.cell_col(&self.buffer);
+        self.update_cursor_block();
+    }
+
+    /// Put the cursor (and optionally the scroll) back where a transient
+    /// flow found them — the restore half of the `:s` preview and vim
+    /// incsearch sessions.
+    pub fn restore_view(&mut self, cursor: usize, scroll: Option<usize>) {
+        self.place_cursor(cursor);
+        if let Some(scroll) = scroll {
+            self.scroll = scroll;
         }
     }
 
@@ -696,32 +745,23 @@ impl EditorState {
         };
         let total_bytes = self.buffer.rope().len_bytes();
         let byte = range.start.min(total_bytes);
-        self.cursor.offset = self.buffer.rope().byte_to_char(byte);
-        self.cursor.preferred_col = self.cursor.cell_col(&self.buffer);
-        self.update_cursor_block();
+        let offset = self.buffer.rope().byte_to_char(byte);
+        self.place_cursor(offset);
     }
 
     /// Scroll so the focused search match is comfortably visible — a
-    /// few rows of context above it when possible.  Mirrors
-    /// [`Self::scroll_focused_hunk_into_view`]; the cursor has already
-    /// been synced to the match, so its visual row is the target.
+    /// few rows of context above it when possible.  The cursor has
+    /// already been synced to the match, so its visual row is the
+    /// target.  No-op outside a search flow.
     pub fn scroll_focused_match_into_view(
         &mut self,
         viewport_height: usize,
         viewport_width: usize,
     ) {
-        if viewport_height == 0 || self.search.is_none() {
+        if self.search.is_none() {
             return;
         }
-        const TOP_MARGIN: usize = 3;
-        let row = self.cursor_visual_row(viewport_width);
-        let total = self.total_visual_rows_for_mode(viewport_width);
-        let max_scroll = total.saturating_sub(1);
-        let comfortably_visible =
-            row >= self.scroll + TOP_MARGIN && row < self.scroll + viewport_height;
-        if !comfortably_visible {
-            self.scroll = row.saturating_sub(TOP_MARGIN).min(max_scroll);
-        }
+        self.scroll_cursor_comfortably_into_view(viewport_height, viewport_width);
     }
 
     /// Toggle row striping for table data rows and re-render so the

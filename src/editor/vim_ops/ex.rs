@@ -310,9 +310,7 @@ pub fn execute_substitute(
     let target = editor
         .buffer
         .line_to_char(range_first.min(editor.buffer.line_count().saturating_sub(1)));
-    editor.cursor.offset = target.min(editor.buffer.len_chars());
-    editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
-    editor.update_cursor_block();
+    editor.place_cursor(target);
     Ok(count)
 }
 

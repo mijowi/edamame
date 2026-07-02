@@ -153,6 +153,11 @@ pub struct VimState {
     pub register: VimRegister,
     /// Active while typing a `:` / `/` / `?` command line.
     pub cmdline: Option<CmdLineState>,
+    /// Live `/` / `?` incremental-search session (vim's `incsearch`):
+    /// `Some` from the first keystroke of an open search prompt until the
+    /// prompt closes.  Holds the pre-prompt view and any prior hlsearch
+    /// session for restore.  See `editor::vim_ops::incsearch`.
+    pub incsearch: Option<crate::editor::vim_ops::IncsearchSession>,
     /// Session-only `:` ex-command history, oldest first, newest last.
     /// Recalled with Up/Down while the `:` prompt is open.
     pub ex_history: Vec<String>,

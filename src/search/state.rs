@@ -106,6 +106,31 @@ impl SearchState {
                 .unwrap_or(self.matches.len() - 1);
         }
     }
+
+    /// Focus the first match starting strictly after `cursor_byte`
+    /// (forward) or the last starting strictly before it (backward),
+    /// wrapping around the document — vim's `/` / `?` initial-focus
+    /// semantics.  No-op when there are no matches.
+    pub fn focus_relative_to(&mut self, cursor_byte: usize, forward: bool) {
+        if self.matches.is_empty() {
+            return;
+        }
+        self.focused_idx = if forward {
+            let i = self.matches.partition_point(|m| m.start <= cursor_byte);
+            if i >= self.matches.len() {
+                0
+            } else {
+                i
+            }
+        } else {
+            let i = self.matches.partition_point(|m| m.start < cursor_byte);
+            if i == 0 {
+                self.matches.len() - 1
+            } else {
+                i - 1
+            }
+        };
+    }
 }
 
 /// All non-overlapping byte ranges of `needle` in `haystack`, in
@@ -263,6 +288,20 @@ mod tests {
         // New version: recompute happens.
         assert!(s.ensure_fresh("bbb", 2));
         assert!(s.matches.is_empty());
+    }
+
+    #[test]
+    fn focus_relative_to_wraps_around_the_document() {
+        // "abcabcabc": matches at 0, 3, 6.
+        let mut s = fresh("abcabcabc", "abc");
+        s.focus_relative_to(0, true);
+        assert_eq!(s.focused_idx, 1, "first match strictly after the cursor");
+        s.focus_relative_to(6, true);
+        assert_eq!(s.focused_idx, 0, "forward wraps past the last match");
+        s.focus_relative_to(6, false);
+        assert_eq!(s.focused_idx, 1, "last match strictly before the cursor");
+        s.focus_relative_to(0, false);
+        assert_eq!(s.focused_idx, 2, "backward wraps past the first match");
     }
 
     #[test]

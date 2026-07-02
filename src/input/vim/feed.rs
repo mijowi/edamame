@@ -41,13 +41,14 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::config::Action;
 use crate::document::{EditDelta, Selection};
 use crate::editor::vim_ops::{
-    clear_substitute_preview, doubled_line_range, execute_operator, execute_substitute,
-    first_non_blank, indent_lines, indent_list_item, join_lines, line_end_offset,
-    open_list_continue, parse_ex, paste, renumber_list_at_cursor, replace_char, replace_char_range,
-    replace_range_with, resolve_find_repeat, resolve_motion, resolve_motion_range,
-    resolve_text_object_range, set_case_range, toggle_case, toggle_case_range,
-    update_substitute_preview, vertical_line_range, visual_line_bounds, visual_line_char_range,
-    word_under_cursor_at, ExCommand, FindKind, Motion, OpRange, OpResult, Operator, TextObject,
+    clear_substitute_preview, doubled_line_range, end_incsearch, execute_operator,
+    execute_substitute, first_non_blank, indent_lines, indent_list_item, join_lines,
+    line_end_offset, open_list_continue, parse_ex, paste, renumber_list_at_cursor, replace_char,
+    replace_char_range, replace_range_with, resolve_find_repeat, resolve_motion,
+    resolve_motion_range, resolve_text_object_range, set_case_range, toggle_case,
+    toggle_case_range, update_incsearch, update_substitute_preview, vertical_line_range,
+    visual_line_bounds, visual_line_char_range, word_under_cursor_at, ExCommand, FindKind, Motion,
+    OpRange, OpResult, Operator, TextObject,
 };
 use crate::editor::{edit_ops, EditorState, Mode};
 
@@ -195,62 +196,60 @@ fn feed_cmdline(
             CmdLineKind::SearchForward | CmdLineKind::SearchBackward => &vim.search_history,
         };
         let cl = vim.cmdline.as_mut().expect("cmdline is Some");
-        let ex_input_before = (kind == CmdLineKind::Ex).then(|| cl.input.clone());
+        let input_before = cl.input.clone();
         if key.code == KeyCode::Up {
             cmdline::history_prev(cl, history);
         } else {
             cmdline::history_next(cl, history);
         }
         // History recall rewrites the whole line — re-derive the live
-        // `:s` preview from it, exactly as for a typed edit below.  A
-        // recall that left the line unchanged (e.g. empty history) skips
-        // the recompute like any other no-op key.
-        if let Some(before) = ex_input_before {
-            if cl.input != before {
-                let input = cl.input.clone();
-                update_substitute_preview(editor, &input, vim.last_visual_range, vh, vw);
-            }
-        }
+        // preview from it, exactly as for a typed edit below.
+        cmdline_live_update(vim, editor, &input_before, vh, vw);
         return VimOutcome::Consumed;
     }
     let cl = vim.cmdline.as_mut().expect("cmdline is Some");
     let kind = cl.kind;
-    let ex_input_before = (kind == CmdLineKind::Ex).then(|| cl.input.clone());
+    let input_before = cl.input.clone();
     match cmdline::feed_key(cl, key) {
         CmdLineStep::Editing => {
-            // Every `:` line *edit* re-derives the live substitution
-            // preview (reverting the previous one first).  A line that
-            // isn't a complete-enough `:s` simply clears it.  Keys that
-            // leave the line unchanged (cursor moves, ignored chords)
-            // skip the recompute — with a large `:%s` preview up, one
-            // recompute costs two full reparses plus a regex scan.
-            if let Some(before) = ex_input_before {
-                if cl.input != before {
-                    let input = cl.input.clone();
-                    update_substitute_preview(editor, &input, vim.last_visual_range, vh, vw);
-                }
-            }
+            cmdline_live_update(vim, editor, &input_before, vh, vw);
             VimOutcome::Consumed
         }
         CmdLineStep::Cancel => {
             vim.cmdline = None;
-            if kind == CmdLineKind::Ex {
-                // Esc reverts the previewed text and restores the
-                // pre-preview cursor and scroll.
-                clear_substitute_preview(editor, /*restore_view=*/ true);
+            match kind {
+                CmdLineKind::Ex => {
+                    // Esc reverts the previewed text and restores the
+                    // pre-preview cursor and scroll.
+                    clear_substitute_preview(editor, /*restore_view=*/ true);
+                }
+                CmdLineKind::SearchForward | CmdLineKind::SearchBackward => {
+                    // Esc drops the live search, restoring the pre-prompt
+                    // view and any prior hlsearch session.
+                    end_incsearch(editor, &mut vim.incsearch);
+                }
             }
             VimOutcome::Consumed
         }
         CmdLineStep::Submit(input) => {
             vim.cmdline = None;
-            if kind == CmdLineKind::Ex {
-                // Revert the preview BEFORE `submit_ex` so
-                // `execute_substitute` runs against the pristine buffer —
-                // one undo step and the same flash text as a
-                // preview-less submit.  No scroll restore: the execute
-                // path places the cursor (and the view stays where the
-                // preview scrolled it, which is where the edit landed).
-                clear_substitute_preview(editor, /*restore_view=*/ false);
+            match kind {
+                CmdLineKind::Ex => {
+                    // Revert the preview BEFORE `submit_ex` so
+                    // `execute_substitute` runs against the pristine buffer —
+                    // one undo step and the same flash text as a
+                    // preview-less submit.  No scroll restore: the execute
+                    // path places the cursor (and the view stays where the
+                    // preview scrolled it, which is where the edit landed).
+                    clear_substitute_preview(editor, /*restore_view=*/ false);
+                }
+                CmdLineKind::SearchForward | CmdLineKind::SearchBackward => {
+                    // Restore the pre-prompt view (and prior session) BEFORE
+                    // the `EnterSearch` outcome runs — the App resolves the
+                    // cursor-relative focus against the original cursor, so
+                    // the submit stays byte-identical to a preview-less one.
+                    end_incsearch(editor, &mut vim.incsearch);
+                }
             }
             // Record every non-empty submitted line (valid or not, as vim does)
             // so Up can recall it next time the prompt opens.
@@ -270,6 +269,35 @@ fn feed_cmdline(
                 CmdLineKind::Ex => submit_ex(editor, &input, vim.last_visual_range, vh, vw),
                 _ => VimOutcome::Consumed,
             }
+        }
+    }
+}
+
+/// Re-derive the open command line's live preview after its text changed:
+/// the `:s` substitution preview for a `:` line, the incsearch session for
+/// a `/` / `?` line.  A no-op when `before` matches the current input —
+/// keys that leave the line unchanged (cursor moves, ignored chords) must
+/// skip the recompute, which for a large `:%s` preview costs two full
+/// reparses plus a regex scan.  Shared by the typing, history-recall, and
+/// bracketed-paste paths so they can't diverge.
+pub fn cmdline_live_update(
+    vim: &mut VimState,
+    editor: &mut EditorState,
+    before: &str,
+    vh: usize,
+    vw: usize,
+) {
+    let (kind, input) = match vim.cmdline.as_ref() {
+        Some(cl) if cl.input != before => (cl.kind, cl.input.clone()),
+        _ => return,
+    };
+    match kind {
+        CmdLineKind::Ex => update_substitute_preview(editor, &input, vim.last_visual_range, vh, vw),
+        CmdLineKind::SearchForward => {
+            update_incsearch(editor, &mut vim.incsearch, &input, true, vh, vw)
+        }
+        CmdLineKind::SearchBackward => {
+            update_incsearch(editor, &mut vim.incsearch, &input, false, vh, vw)
         }
     }
 }

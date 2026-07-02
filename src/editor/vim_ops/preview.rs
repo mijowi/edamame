@@ -227,7 +227,7 @@ pub fn update_substitute_preview(
     };
     let Some(plan) = plan else {
         if had_prior {
-            restore_saved_view(editor, saved_cursor, Some(saved_scroll));
+            editor.restore_view(saved_cursor, Some(saved_scroll));
         }
         return;
     };
@@ -256,10 +256,8 @@ pub fn update_substitute_preview(
         plan.first_line
             .min(editor.buffer.line_count().saturating_sub(1)),
     );
-    editor.cursor.offset = target.min(editor.buffer.len_chars());
-    editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
-    editor.update_cursor_block();
-    scroll_cursor_into_view(editor, viewport_height, viewport_width);
+    editor.place_cursor(target);
+    editor.scroll_cursor_comfortably_into_view(viewport_height, viewport_width);
 
     editor.substitute_preview = Some(SubstitutePreview {
         highlights: plan.highlights,
@@ -284,7 +282,7 @@ pub fn clear_substitute_preview(editor: &mut EditorState, restore_view: bool) ->
     let saved_cursor = preview.saved_cursor;
     let saved_scroll = preview.saved_scroll;
     if apply_revert(editor, preview) {
-        restore_saved_view(editor, saved_cursor, restore_view.then_some(saved_scroll));
+        editor.restore_view(saved_cursor, restore_view.then_some(saved_scroll));
     }
     true
 }
@@ -320,40 +318,6 @@ fn apply_raw(editor: &mut EditorState, delta: &EditDelta) {
         editor.buffer.insert(delta.offset, &delta.inserted);
     }
     editor.refresh_parsed();
-}
-
-/// Put the cursor (and optionally the scroll) back where the preview
-/// session found them.
-fn restore_saved_view(editor: &mut EditorState, saved_cursor: usize, saved_scroll: Option<usize>) {
-    editor.cursor.offset = saved_cursor.min(editor.buffer.len_chars());
-    editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
-    editor.update_cursor_block();
-    if let Some(scroll) = saved_scroll {
-        editor.scroll = scroll;
-    }
-}
-
-/// Scroll the cursor's visual row into view with a few rows of context —
-/// the same TOP_MARGIN treatment as
-/// [`EditorState::scroll_focused_match_into_view`], which can't be reused
-/// here because it is gated on an active search session.
-fn scroll_cursor_into_view(
-    editor: &mut EditorState,
-    viewport_height: usize,
-    viewport_width: usize,
-) {
-    if viewport_height == 0 || viewport_width == 0 {
-        return;
-    }
-    const TOP_MARGIN: usize = 3;
-    let row = editor.cursor_visual_row(viewport_width);
-    let total = editor.total_visual_rows_for_mode(viewport_width);
-    let max_scroll = total.saturating_sub(1);
-    let comfortably_visible =
-        row >= editor.scroll + TOP_MARGIN && row < editor.scroll + viewport_height;
-    if !comfortably_visible {
-        editor.scroll = row.saturating_sub(TOP_MARGIN).min(max_scroll);
-    }
 }
 
 #[cfg(test)]
