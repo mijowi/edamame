@@ -33,6 +33,14 @@ impl<'t> Renderer<'t> {
 
         let mut counter = first_num;
         for item in items {
+            // Loose-list spacing: emit the blank source lines that precede
+            // this item's marker so the rendered list keeps its legibility
+            // gaps.  These blanks stay 1:1 with the source lines the reveal
+            // in `RenderedView` maps against (`block_text.split('\n')`), so
+            // the count comes straight from `annotate_list_blanks`.
+            for _ in 0..item.blank_lines_before {
+                out.push(Line::raw(""));
+            }
             // Marker is the bullet / number prefix.  Tasks are decorated
             // bullets — they render the same `• ` (or ordered marker)
             // followed by the `[ ] ` checkbox span emitted just below.

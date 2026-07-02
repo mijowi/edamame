@@ -8,6 +8,8 @@
 
 - Add/update performance benchmark tests
 
+- Add a "Fix list numbering" action
+
 ## Lists
 - When a list item is deleted with Ctrl-Backspace (and with Ctrl-Delete?), when the a new line is unintentionally added in its place, making a gap in the list
 - Automatic list management is finicky: line spacing, nested lists, sub-lists of different types

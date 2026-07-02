@@ -5,14 +5,15 @@
 //! `Block::ImageBlock`, mermaid code blocks become synthetic image blocks,
 //! pure-comment HTML blocks become `Block::HtmlComment`, trailing
 //! `<!-- tui-columns -->` comments fold into preceding tables, and
-//! blank-separated list items split into their own `Block::List` so each
-//! gap is rendered as its own visible blank line.
+//! blank-separated ("loose") list items are annotated with the number of
+//! blank source lines preceding them so the renderer can reproduce the
+//! legibility spacing while keeping the list a single `Block::List`.
 
 use std::collections::HashMap;
 use std::ops::Range;
 
 use crate::diagram::DiagramSource;
-use crate::markdown::ast::{Block, Inline, ListItem};
+use crate::markdown::ast::{Block, Inline};
 
 /// Post-pass: collapse a `Block::Paragraph` whose only substantive inline
 /// is an `Inline::Image` into a `Block::ImageBlock`.  Whitespace-only
@@ -175,147 +176,53 @@ pub fn attach_trailing_tui_columns_comments(blocks: &mut Vec<Block>) {
     }
 }
 
-/// Post-pass: split each top-level `Block::List` in which a top-level
-/// item is directly preceded by a blank line outside any fenced code
-/// block.  pulldown-cmark per CommonMark merges blank-separated items
-/// into a single loose list, but for editor purposes we want every
-/// inter-item blank to be visible as its own line in the rendered output
-/// — so each blank-separated run of items becomes its own
-/// `Block::List`, and `parsed_doc` then emits the inter-block gap as a
-/// rendered blank line via the same path it uses for any other top-level
-/// gap.  For ordered lists, the post-split groups keep their source
-/// numbers as `start`, so a list whose source items number `1. a, 2. b`
-/// then (after a blank) `3. c` keeps its continuous numbering on screen,
-/// while a list whose source restarts at `1. c` after the blank
-/// correctly restarts at 1 in the lower group.  Blank lines that fall
-/// inside a `` ``` ``/`~~~` fence inside an item are skipped: a code
-/// block embedded in a list item must not fragment its enclosing list,
-/// however many blank lines its content contains.
+/// Post-pass: annotate each `ListItem` with the number of blank source
+/// lines directly preceding its marker line (`ListItem::blank_lines_before`).
 ///
-/// Mutates both `blocks` and `ranges` so the 1:1 invariant relied on by
-/// `parsed_doc` is preserved.  For each split, the group's `start` is
-/// re-derived from the source line's marker number (ordered) or left as
-/// `None` (bullets).
-pub fn split_lists_on_blank_lines(
-    blocks: &mut Vec<Block>,
-    ranges: &mut Vec<Range<usize>>,
-    source: &str,
-) {
-    let mut i = 0;
-    while i < blocks.len() {
-        if !matches!(&blocks[i], Block::List { .. }) {
-            i += 1;
+/// pulldown-cmark per CommonMark merges blank-separated items into a single
+/// "loose" list.  edamame wants those inter-item blanks visible as their own
+/// rendered lines (a TUI's only way to space a dense list — see the
+/// discussion in `docs`), but *without* fragmenting the list: the block stays
+/// one `Block::List`, and the renderer emits `blank_lines_before` blank lines
+/// ahead of each item.  Keeping the list whole is what lets ordered numbering
+/// come straight from pulldown-cmark (no per-group `start` re-derivation) and
+/// keeps the block↔range vectors trivially 1:1 — no surgery here.
+///
+/// The reveal in `RenderedView` maps rendered lines to source lines by
+/// splitting the block's raw text on `\n`, so the count recorded here must
+/// equal the number of blank source lines actually present: only a contiguous
+/// run of blank lines *directly* above item k counts.  Blank lines interior
+/// to the previous item (before a nested code block, between its paragraphs)
+/// reset the run and don't count, and blanks inside a `` ``` ``/`~~~` fence
+/// embedded in an item are skipped entirely.
+///
+/// `ranges` is read-only here and stays 1:1 with `blocks`.
+pub fn annotate_list_blanks(blocks: &mut [Block], ranges: &[Range<usize>], source: &str) {
+    for (block, range) in blocks.iter_mut().zip(ranges.iter()) {
+        let Block::List { items, .. } = block else {
+            continue;
+        };
+        let list_src = &source[range.clone()];
+        let item_offsets = top_level_item_offsets(list_src);
+        // Defensive: if the source scan disagrees with the AST item count
+        // (unusual list formats we don't recognise), leave the list untouched
+        // — every item keeps `blank_lines_before == 0`.
+        if item_offsets.len() != items.len() {
             continue;
         }
-        let list_range = ranges[i].clone();
-        let list_src = &source[list_range.clone()];
-        let item_offsets = top_level_item_offsets(list_src);
-
-        // Identify split points: indices `k > 0` where item k is directly
-        // preceded by a run of blank lines that isn't sitting inside a
-        // fenced code block.  Blank lines *interior* to the previous item
-        // (e.g. before a nested code block, or between its paragraphs) are
-        // not separators — only a blank run that touches item k's marker
-        // line splits the list.  Each split records where that blank run
-        // starts so the previous group's range can extend over the full
-        // multi-line content of its last item.
-        let mut split_points: Vec<(usize, usize)> = Vec::new();
         for k in 1..item_offsets.len() {
             let prev_line_end = line_end_in_str(list_src, item_offsets[k - 1]);
             let between_start = (prev_line_end + 1).min(item_offsets[k]);
             if let Some(gap_start) =
                 separator_blank_run_start(list_src, between_start, item_offsets[k])
             {
-                split_points.push((k, gap_start));
+                // The run [gap_start, item_offsets[k]) is all blank lines by
+                // construction; each contributes one trailing `\n`.
+                items[k].blank_lines_before = list_src.as_bytes()[gap_start..item_offsets[k]]
+                    .iter()
+                    .filter(|&&b| b == b'\n')
+                    .count();
             }
-        }
-        if split_points.is_empty() {
-            i += 1;
-            continue;
-        }
-
-        // Pop the list and replace with N split lists.
-        let (ordered, all_items) = match blocks.remove(i) {
-            Block::List { ordered, items, .. } => (ordered, items),
-            _ => unreachable!(),
-        };
-        ranges.remove(i);
-
-        // Defensive: if the AST item count disagrees with what we found in
-        // source (e.g. unusual list formats we don't recognise), restore the
-        // block intact and skip.
-        if all_items.len() != item_offsets.len() {
-            blocks.insert(
-                i,
-                Block::List {
-                    ordered,
-                    start: None,
-                    items: all_items,
-                },
-            );
-            ranges.insert(i, list_range);
-            i += 1;
-            continue;
-        }
-
-        // Build group boundaries: [0, split points..., items.len()].
-        let mut group_first: Vec<usize> = vec![0];
-        group_first.extend(split_points.iter().map(|&(k, _)| k));
-        let mut group_last_exclusive: Vec<usize> = group_first[1..].to_vec();
-        group_last_exclusive.push(all_items.len());
-
-        // Move items into per-group buckets.
-        let mut all_iter = all_items.into_iter();
-        let mut groups: Vec<Vec<ListItem>> = Vec::with_capacity(group_first.len());
-        for (g_first, g_last_exc) in group_first.iter().zip(group_last_exclusive.iter()) {
-            let count = g_last_exc - g_first;
-            let mut grp: Vec<ListItem> = Vec::with_capacity(count);
-            for _ in 0..count {
-                grp.push(all_iter.next().expect("partition matches item count"));
-            }
-            groups.push(grp);
-        }
-
-        let group_count = groups.len();
-        for (g_idx, group_items) in groups.into_iter().enumerate() {
-            let first_item_idx = group_first[g_idx];
-            let group_start_in_src = item_offsets[first_item_idx];
-
-            // The group's source ends where the separator blank run before
-            // the next group starts, so multi-line item content (nested
-            // paragraphs, code blocks) stays covered by the group's range.
-            // Only the separator blank-line bytes between groups are left
-            // uncovered — `parsed_doc` then treats them as virtual
-            // blank-line blocks, the same way it does for any other gap
-            // between top-level blocks.  The final group always extends to
-            // the original list range's end so trailing newlines stay
-            // accounted for.
-            let group_end_in_src = if g_idx + 1 < group_count {
-                split_points[g_idx].1
-            } else {
-                list_src.len()
-            };
-            let abs_start = list_range.start + group_start_in_src;
-            let abs_end = list_range.start + group_end_in_src;
-
-            let start_num = if ordered {
-                let line_end = line_end_in_str(list_src, group_start_in_src);
-                let line = &list_src[group_start_in_src..line_end];
-                parse_marker_line(line).and_then(|(_, _, num)| num)
-            } else {
-                None
-            };
-
-            blocks.insert(
-                i,
-                Block::List {
-                    ordered,
-                    start: start_num,
-                    items: group_items,
-                },
-            );
-            ranges.insert(i, abs_start..abs_end);
-            i += 1;
         }
     }
 }
@@ -359,10 +266,10 @@ fn line_end_in_str(s: &str, start: usize) -> usize {
 
 /// Byte offset within `s` where the run of blank lines *directly
 /// preceding* `end` starts, scanning `[start, end)` line by line.
-/// [`split_lists_on_blank_lines`] uses this to decide whether the next
-/// item is separated from the previous one by user-visible whitespace —
-/// the post-pass then splits the parent list there so the gap shows up
-/// as a rendered blank line.  Returns `None` when the line directly
+/// [`annotate_list_blanks`] uses this to decide whether the next item is
+/// separated from the previous one by user-visible whitespace — the count
+/// of blank lines from here to the item is then recorded on the item so the
+/// renderer reproduces the gap.  Returns `None` when the line directly
 /// above `end` isn't blank: blank lines interior to the previous item's
 /// content (before a nested code block, between its paragraphs) are not
 /// separators.  Blank lines that fall between an opening and closing

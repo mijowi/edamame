@@ -1,8 +1,8 @@
 pub mod post_pass;
 
 pub use post_pass::{
-    attach_trailing_tui_columns_comments, promote_diagram_code_blocks, promote_html_comments,
-    promote_image_paragraphs, split_lists_on_blank_lines,
+    annotate_list_blanks, attach_trailing_tui_columns_comments, promote_diagram_code_blocks,
+    promote_html_comments, promote_image_paragraphs,
 };
 
 use std::ops::Range;
@@ -14,14 +14,13 @@ use super::parse_offsets;
 
 /// Parse a Markdown string into a list of `Block` AST nodes.
 pub fn parse(text: &str) -> Vec<Block> {
-    // Split top-level lists across blank-line gaps so two consecutive
-    // ordered/bullet lists separated by a blank line render as separate
-    // lists rather than one continuous one.  Operating on a transient
+    // Annotate loose-list items with their preceding blank-line count so the
+    // renderer reproduces the legibility spacing.  Operating on a transient
     // ranges vector — `parse` doesn't expose ranges to callers — keeps
     // callers like the help overlay rendering with the same semantics
     // as the editor pipeline.
-    let (mut blocks, mut ranges) = parse_raw_with_ranges(text);
-    split_lists_on_blank_lines(&mut blocks, &mut ranges, text);
+    let (mut blocks, ranges) = parse_raw_with_ranges(text);
+    annotate_list_blanks(&mut blocks, &ranges, text);
     // Promote pure-comment `Block::Html` entries to `Block::HtmlComment` BEFORE
     // the tui-columns merge runs so the merge can find the comment by its new
     // variant.  Keeping these two passes separate — generic comment hiding
@@ -362,7 +361,11 @@ where
                     blocks = parse_blocks(events);
                 }
                 consume_end(events); // End(Item)
-                items.push(ListItem { blocks, task });
+                items.push(ListItem {
+                    blocks,
+                    task,
+                    blank_lines_before: 0,
+                });
             }
             _ => {
                 events.next(); // skip unexpected events
@@ -943,198 +946,139 @@ mod tests {
         ));
     }
 
-    // ── Blank-line list splitting (Issue 3) ───────────────────────────────
+    // ── Loose-list blank annotation ───────────────────────────────────────
+
+    /// Return the single `Block::List` in `blocks`, panicking if there is
+    /// not exactly one.  Loose lists stay a single block now, so every test
+    /// below asserts against one list plus its per-item blank counts.
+    fn only_list(blocks: &[Block]) -> (&[ListItem], bool, Option<u64>) {
+        let lists: Vec<&Block> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::List { .. }))
+            .collect();
+        assert_eq!(lists.len(), 1, "expected exactly one list, got {blocks:?}");
+        match lists[0] {
+            Block::List {
+                items,
+                ordered,
+                start,
+            } => (items, *ordered, *start),
+            _ => unreachable!(),
+        }
+    }
+
+    fn blanks_before(items: &[ListItem]) -> Vec<usize> {
+        items.iter().map(|it| it.blank_lines_before).collect()
+    }
 
     #[test]
-    fn ordered_lists_separated_by_blank_line_are_split_keeping_source_numbers() {
-        // Each blank-separated group becomes its own ordered list.  The
-        // groups keep the source's marker number as their `start`, so
-        // the renderer's auto-counter shows continuous numbering across
-        // a "loose" list (1, 2, 3, 4) and a restart for a list that
-        // starts over at 1 (1, 2, 1, 2).
+    fn ordered_list_blank_between_items_stays_one_list_and_is_annotated() {
+        // A blank line between items makes the list "loose" but keeps it a
+        // single ordered list; numbering comes straight from pulldown-cmark
+        // (1, 2, 3, 4) and the item after the blank carries a count of 1.
         let blocks = parse("1. a\n2. b\n\n3. c\n4. d\n");
-        let lists: Vec<&Block> = blocks
-            .iter()
-            .filter(|b| matches!(b, Block::List { .. }))
-            .collect();
-        assert_eq!(lists.len(), 2, "expected 2 lists, got {blocks:?}");
-        match lists[0] {
-            Block::List {
-                ordered: true,
-                start: Some(1),
-                items,
-                ..
-            } => assert_eq!(items.len(), 2),
-            other => panic!("first list wrong: {other:?}"),
-        }
-        match lists[1] {
-            Block::List {
-                ordered: true,
-                start: Some(3),
-                items,
-                ..
-            } => assert_eq!(items.len(), 2),
-            other => panic!("second list wrong: {other:?}"),
-        }
+        let (items, ordered, start) = only_list(&blocks);
+        assert!(ordered);
+        assert_eq!(start, Some(1));
+        assert_eq!(items.len(), 4);
+        assert_eq!(blanks_before(items), vec![0, 0, 1, 0]);
     }
 
     #[test]
-    fn ordered_lists_with_restart_numbering_split_at_blank_line() {
+    fn ordered_list_restart_numbering_no_longer_splits() {
+        // Source numbers restart at 1 after the blank, but CommonMark treats
+        // this as one loose list; edamame follows suit now (renders 1,2,3,4)
+        // instead of the old split-into-two behavior.
         let blocks = parse("1. a\n2. b\n\n1. c\n2. d\n");
-        let lists: Vec<&Block> = blocks
-            .iter()
-            .filter(|b| matches!(b, Block::List { .. }))
-            .collect();
-        assert_eq!(lists.len(), 2, "expected 2 lists, got {blocks:?}");
-        match lists[0] {
-            Block::List {
-                start: Some(1),
-                items,
-                ..
-            } => assert_eq!(items.len(), 2),
-            other => panic!("first list wrong: {other:?}"),
-        }
-        match lists[1] {
-            Block::List {
-                start: Some(1),
-                items,
-                ..
-            } => assert_eq!(items.len(), 2),
-            other => panic!("second list wrong: {other:?}"),
-        }
+        let (items, ordered, start) = only_list(&blocks);
+        assert!(ordered);
+        assert_eq!(start, Some(1));
+        assert_eq!(items.len(), 4);
+        assert_eq!(blanks_before(items), vec![0, 0, 1, 0]);
     }
 
     #[test]
-    fn bullet_lists_separated_by_blank_line_are_split() {
+    fn bullet_list_blank_between_items_stays_one_list_and_is_annotated() {
         let blocks = parse("- a\n- b\n\n- c\n- d\n");
-        let lists: Vec<&Block> = blocks
-            .iter()
-            .filter(|b| matches!(b, Block::List { .. }))
-            .collect();
-        assert_eq!(lists.len(), 2, "got {blocks:?}");
+        let (items, ordered, _) = only_list(&blocks);
+        assert!(!ordered);
+        assert_eq!(items.len(), 4);
+        assert_eq!(blanks_before(items), vec![0, 0, 1, 0]);
     }
 
     #[test]
-    fn list_item_with_fenced_code_block_containing_blank_line_does_not_split() {
+    fn list_item_with_fenced_code_block_containing_blank_line_is_not_annotated() {
         // A blank line inside a fenced code block embedded in a list item
-        // must not be treated as a list-splitting blank line — the code
-        // block is part of the item, and the next bullet belongs to the
-        // same list.
+        // must not be counted as an inter-item separator — the next bullet
+        // belongs to the same list with no preceding blank.
         let src = "- intro\n  ```toml\n  [a]\n\n  [b]\n  ```\n  trailing\n- next item\n";
         let blocks = parse(src);
-        let lists: Vec<&Block> = blocks
-            .iter()
-            .filter(|b| matches!(b, Block::List { .. }))
-            .collect();
-        assert_eq!(lists.len(), 1, "got {blocks:?}");
-        match lists[0] {
-            Block::List { items, .. } => assert_eq!(items.len(), 2),
-            other => panic!("expected single list with 2 items, got {other:?}"),
-        }
+        let (items, _, _) = only_list(&blocks);
+        assert_eq!(items.len(), 2);
+        assert_eq!(blanks_before(items), vec![0, 0]);
     }
 
     #[test]
-    fn ordered_list_no_blank_line_stays_single_list() {
+    fn ordered_list_no_blank_line_annotates_all_zero() {
         let blocks = parse("1. a\n2. b\n3. c\n");
-        let lists: Vec<&Block> = blocks
-            .iter()
-            .filter(|b| matches!(b, Block::List { .. }))
-            .collect();
-        assert_eq!(lists.len(), 1);
-        match lists[0] {
-            Block::List {
-                ordered: true,
-                items,
-                ..
-            } => assert_eq!(items.len(), 3),
-            other => panic!("expected single list, got {other:?}"),
-        }
+        let (items, ordered, _) = only_list(&blocks);
+        assert!(ordered);
+        assert_eq!(items.len(), 3);
+        assert_eq!(blanks_before(items), vec![0, 0, 0]);
     }
 
     #[test]
-    fn nested_list_with_blank_line_inside_top_level_item_does_not_split() {
-        // A blank line *inside* a nested item's content shouldn't split the
-        // top-level list — the blank-line gap is only relevant between items
-        // at the same indent level.
+    fn nested_list_with_blank_line_inside_top_level_item_stays_one_list() {
+        // A blank line *inside* a nested item's content shouldn't count as a
+        // top-level separator — the gap is only relevant between items at the
+        // same indent level.
         let blocks = parse("- outer\n  - nested\n- next\n");
-        let lists: Vec<&Block> = blocks
-            .iter()
-            .filter(|b| matches!(b, Block::List { .. }))
-            .collect();
-        assert_eq!(lists.len(), 1);
+        let (items, _, _) = only_list(&blocks);
+        assert_eq!(items.len(), 2);
+        assert_eq!(blanks_before(items), vec![0, 0]);
     }
 
     #[test]
-    fn three_blank_separated_ordered_groups_split_into_three() {
+    fn every_gap_blank_separated_ordered_list_is_annotated_per_item() {
         let blocks = parse("1. a\n\n1. b\n\n1. c\n");
-        let lists: Vec<&Block> = blocks
-            .iter()
-            .filter(|b| matches!(b, Block::List { .. }))
-            .collect();
-        assert_eq!(lists.len(), 3, "got {blocks:?}");
-        for list in lists {
-            match list {
-                Block::List {
-                    items,
-                    start: Some(1),
-                    ..
-                } => assert_eq!(items.len(), 1),
-                other => panic!("group not split correctly: {other:?}"),
-            }
-        }
+        let (items, ordered, start) = only_list(&blocks);
+        assert!(ordered);
+        assert_eq!(start, Some(1));
+        assert_eq!(items.len(), 3);
+        assert_eq!(blanks_before(items), vec![0, 1, 1]);
     }
 
     #[test]
-    fn interior_blank_without_separator_blank_does_not_split() {
-        // A blank line interior to an item's content (here between the
-        // item's first paragraph and its continuation) is not an
-        // inter-item separator — the next marker line sits directly
-        // after the continuation, so the list must stay whole.  The old
-        // any-blank-in-between scan split here and truncated the first
-        // group's range to its first line, leaving the continuation
-        // bytes uncovered.
+    fn interior_blank_without_separator_blank_is_not_annotated() {
+        // A blank line interior to an item's content (between the item's
+        // first paragraph and its continuation) is not an inter-item
+        // separator — the next marker sits directly after the continuation,
+        // so item `b` carries a zero count.
         let blocks = parse("- a\n\n  cont\n- b\n");
-        let lists: Vec<&Block> = blocks
-            .iter()
-            .filter(|b| matches!(b, Block::List { .. }))
-            .collect();
-        assert_eq!(lists.len(), 1, "got {blocks:?}");
-        match lists[0] {
-            Block::List { items, .. } => assert_eq!(items.len(), 2),
-            other => panic!("expected single list with 2 items, got {other:?}"),
-        }
+        let (items, _, _) = only_list(&blocks);
+        assert_eq!(items.len(), 2);
+        assert_eq!(blanks_before(items), vec![0, 0]);
     }
 
     #[test]
-    fn split_group_range_covers_multi_line_item_content() {
-        // Regression for the InlineColMap cache-poisoning panic: an item
-        // whose content spans several lines (interior blank + nested
-        // fenced code block) followed by a blank-separated second item
-        // used to split with the first group's byte range truncated to
-        // the item's *first line*.  All of the item's continuation bytes
-        // were left uncovered, so `parsed_doc` synthesized dozens of
-        // virtual blank-line blocks under a List block that still
-        // rendered the full content — and mouse hit-testing then paired
-        // wrong (buffer line, raw text) values.  The first group's range
-        // must end at the separator blank before the second item, not at
-        // its own first newline.
+    fn double_blank_between_items_counts_two() {
+        let blocks = parse("- a\n\n\n- b\n");
+        let (items, _, _) = only_list(&blocks);
+        assert_eq!(items.len(), 2);
+        assert_eq!(blanks_before(items), vec![0, 2]);
+    }
+
+    #[test]
+    fn multi_line_item_content_before_separator_blank_counts_one() {
+        // An item whose content spans several lines (continuation + nested
+        // fenced code block) followed by a blank-separated second item stays
+        // a single list; only the blank directly above item 2 is counted.
         let src = "1. **first** item\n   continuation\n\n   ```rust\n   let x = 1;\n   ```\n\n2. second\n";
-        let (mut blocks, mut ranges) = parse_raw_with_ranges(src);
-        split_lists_on_blank_lines(&mut blocks, &mut ranges, src);
-        let lists: Vec<(usize, &Block)> = blocks
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| matches!(b, Block::List { .. }))
-            .collect();
-        assert_eq!(lists.len(), 2, "got {blocks:?}");
-        let first_range = &ranges[lists[0].0];
-        let separator_start = src.find("\n\n2. second").unwrap() + 1;
-        assert_eq!(
-            first_range.end, separator_start,
-            "first group must cover the full item content up to the separator blank"
-        );
-        let second_range = &ranges[lists[1].0];
-        assert_eq!(second_range.start, src.find("2. second").unwrap());
+        let (mut blocks, ranges) = parse_raw_with_ranges(src);
+        annotate_list_blanks(&mut blocks, &ranges, src);
+        let (items, _, _) = only_list(&blocks);
+        assert_eq!(items.len(), 2);
+        assert_eq!(blanks_before(items), vec![0, 1]);
     }
 
     // ── Footnotes ─────────────────────────────────────────────────────────
