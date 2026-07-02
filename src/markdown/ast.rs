@@ -81,6 +81,15 @@ pub struct ListItem {
     pub blocks: Vec<Block>,
     /// `Some(true)` = checked, `Some(false)` = unchecked, `None` = not a task item.
     pub task: Option<bool>,
+    /// Number of blank source lines directly preceding this item's marker
+    /// line, outside any fenced code block.  Set by
+    /// [`crate::markdown::parser::post_pass::annotate_list_blanks`] from the
+    /// list's source range; always `0` for the first item.  The renderer
+    /// emits this many blank lines before the item so a loose list keeps its
+    /// legibility spacing while staying a single `Block::List` — see the
+    /// module docs on `post_pass` for why this replaced the old
+    /// split-into-separate-lists approach.
+    pub blank_lines_before: usize,
 }
 
 // ─── Inline nodes ─────────────────────────────────────────────────────────────

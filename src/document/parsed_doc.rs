@@ -9,8 +9,8 @@ use crate::diagram::DiagramSource;
 use crate::document::visual_cache::VisualRowCache;
 use crate::document::SourceMap;
 use crate::markdown::{
-    inlines_to_plain, parse_raw_with_ranges, promote_diagram_code_blocks, promote_html_comments,
-    promote_image_paragraphs, split_lists_on_blank_lines, Block, ImageRowOverride, InlineColMap,
+    annotate_list_blanks, inlines_to_plain, parse_raw_with_ranges, promote_diagram_code_blocks,
+    promote_html_comments, promote_image_paragraphs, Block, ImageRowOverride, InlineColMap,
     RenderCache, Renderer,
 };
 
@@ -229,11 +229,10 @@ impl ParsedDoc {
         //    view between drag events.
         let (mut blocks, mut real_ranges) = parse_raw_with_ranges(source);
         let total_bytes = source.len();
-        // Split top-level lists across blank-line gaps so `1. a\n\n1. b\n`
-        // renders as two ordered lists rather than one merged list (and so
-        // `Enter`-twice on a list item produces a clean visual split).
-        // Mutates both vectors so they stay 1:1.
-        split_lists_on_blank_lines(&mut blocks, &mut real_ranges, source);
+        // Annotate loose-list items with their preceding blank-line count so
+        // the renderer emits the inter-item spacing while the list stays one
+        // `Block::List`.  Read-only over `real_ranges`; block count unchanged.
+        annotate_list_blanks(&mut blocks, &real_ranges, source);
         // Promote pure-comment `Block::Html` entries to `Block::HtmlComment`
         // FIRST — the tui-columns merge below looks for `Block::HtmlComment`
         // adjacent to a `Block::Table` and must run against the promoted

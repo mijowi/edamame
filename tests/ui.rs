@@ -322,6 +322,64 @@ fn cursor_on_phantom_final_line_does_not_swallow_last_block() {
     );
 }
 
+/// Regression: with the cursor inside a loose (blank-separated) list, the raw
+/// reveal of the cursor's line must land on that line's *rendered* row — not
+/// be shifted up by the separator blanks, which now render as their own rows.
+/// This guards the raw→rendered line mapping in the reveal against a
+/// re-introduction of the old "count only non-blank lines" compression, which
+/// swallowed the blank row and painted the raw line one row too high.
+#[test]
+fn cursor_in_loose_list_reveals_correct_row_and_keeps_blank() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // Source restarts numbering after the blank; the loose list renders it
+    // sequentially (1, 2, 3, 4) but the raw reveal shows the literal `1.`.
+    let src = "1. alpha\n2. beta\n\n1. gamma\n2. delta\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    state.cursor.offset = src.find("gamma").unwrap();
+
+    let backend = TestBackend::new(20, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                cursor_style: theme.status_mode_rendered,
+                visual_line_mode: false,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |y: u16| -> String {
+        (0..20u16)
+            .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    };
+    assert_eq!(row_text(0), "1. alpha");
+    assert_eq!(row_text(1), "2. beta");
+    assert_eq!(row_text(2), "", "separator blank row must be preserved");
+    // Cursor's line is revealed raw: the literal `1. gamma`, at its own row.
+    assert_eq!(
+        row_text(3),
+        "1. gamma",
+        "cursor line must reveal raw source at its true rendered row"
+    );
+    // Sibling item keeps its sequential rendered number.
+    assert_eq!(row_text(4), "4. delta");
+}
+
 /// Selection highlight on a line with inline bold markup should cover the
 /// *rendered* glyph positions (cells 0-3 for "bold"), not the raw positions
 /// (cells 2-7 for "**bold**").  This catches "map is correct but never

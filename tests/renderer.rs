@@ -287,13 +287,44 @@ fn single_blank_between_list_items_is_rendered_as_a_blank_line() {
 }
 
 #[test]
-fn ordered_list_renumber_reset_at_blank_renders_as_two_lists() {
-    // After 3 Enters in the middle of an ordered list, the surviving
-    // head keeps its source numbering and the tail restarts at 1.  A
-    // single blank line carries the parser-level split, so the rendered
-    // output shows two ordered lists separated by one blank row — and
-    // critically, the tail's first item is rendered as `1.` (not the
-    // auto-incremented next number from the head).
+fn loose_list_blank_rows_keep_reveal_1to1_with_source_lines() {
+    // The raw reveal in `RenderedView` maps a block's rendered lines onto its
+    // source lines by splitting the block text on `\n`.  A loose list now
+    // keeps its inter-item blanks as its own rendered lines (instead of
+    // fragmenting into virtual blank blocks), so the blank-emission must add
+    // exactly one rendered line per blank source line — otherwise the reveal
+    // desyncs.  Single-line items isolate that guarantee from the pre-existing
+    // soft-break behavior (a wrapped continuation line renders joined, which
+    // affects tight and loose lists alike and is out of scope here).
+    use edamame::document::ParsedDoc;
+    let theme = Box::leak(Box::new(Theme::default())) as &'static Theme;
+    let src = "1. a\n2. b\n\n3. c\n\n4. d\n";
+    let pd = ParsedDoc::build(src, theme, true, 40);
+    let range = pd
+        .source_map
+        .original_range_for_byte(0)
+        .expect("list block range");
+    let block_src = &src[range.clone()];
+    // Trailing newline(s) end the block's last line; the reveal backs past
+    // them (`content_end_of_block`) and never indexes a trailing empty, so
+    // compare against the block's *content* lines.
+    let source_lines = block_src.trim_end_matches('\n').split('\n').count();
+    let rendered = pd.source_map.rendered_lines_for_byte(0);
+    assert_eq!(
+        rendered.end - rendered.start,
+        source_lines,
+        "loose list must own one rendered line per source line (src {block_src:?})"
+    );
+}
+
+#[test]
+fn ordered_list_with_blank_gap_stays_one_loose_list_and_keeps_the_blank() {
+    // A blank line in an ordered list makes it "loose" but keeps it a
+    // single list: numbering comes from pulldown-cmark (auto-incremented),
+    // so a source that restarts at `1.` after the blank still renders
+    // sequentially (`3. c`) — matching CommonMark rather than the old
+    // split-into-two-lists behavior.  The blank row is still preserved
+    // between the items for legibility.
     use edamame::document::ParsedDoc;
     let theme = Box::leak(Box::new(Theme::default())) as &'static Theme;
     let pd = ParsedDoc::build("1. a\n2. b\n\n1. c\n", theme, true, 24);
@@ -307,12 +338,19 @@ fn ordered_list_renumber_reset_at_blank_renders_as_two_lists() {
         })
         .collect();
     assert!(
-        texts.iter().any(|t| t.starts_with("1. c")),
-        "expected the tail list to restart at 1, got: {texts:?}"
+        texts.iter().any(|t| t.starts_with("3. c")),
+        "expected the loose list to number sequentially (3. c), got: {texts:?}"
     );
     assert!(
-        texts.iter().any(|t| t.is_empty()),
-        "expected a blank line between the two split lists, got: {texts:?}"
+        !texts.iter().any(|t| t.starts_with("1. c")),
+        "tail should not restart at 1 in a single loose list, got: {texts:?}"
+    );
+    // The blank between item 2 and item 3 must still render as its own row.
+    let b_idx = texts.iter().position(|t| t.starts_with("2. b")).unwrap();
+    let c_idx = texts.iter().position(|t| t.starts_with("3. c")).unwrap();
+    assert!(
+        texts[b_idx + 1..c_idx].iter().any(|t| t.is_empty()),
+        "expected a blank row between the two items, got: {texts:?}"
     );
 }
 

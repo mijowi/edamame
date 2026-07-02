@@ -22,7 +22,7 @@ use self::paint::{
     make_code_styled_body_line, make_raw_line_with_selection, overlay_raw_cell,
     paint_byte_range_overlay,
 };
-use crate::markdown::list_layout::list_raw_col_to_rendered_col;
+use crate::markdown::list_layout::{list_raw_col_to_rendered_col, raw_list_marker_char_width};
 
 pub(crate) use self::paint::{
     paint_search_overlays, paint_substitute_preview_overlays, paint_yank_flash,
@@ -323,19 +323,44 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             // fences at all; their raw lines also map 1:1.
             cursor_raw_line.min(cursor_block_own.saturating_sub(1))
         } else {
-            // Raw-to-rendered line mapping is 1:1 for simple blocks, but a
-            // list that contains a blank-line separator (e.g. the form
-            // required for an empty nested item to parse correctly) has
-            // fewer rendered lines than raw lines.  Compress by counting
-            // non-blank raw lines preceding the cursor's raw line so the
-            // replaced rendered row corresponds to the actual item the
-            // cursor sits on.
-            let preceding_non_blank = raw_lines
-                .iter()
-                .take(cursor_raw_line)
-                .filter(|l| !l.trim().is_empty())
-                .count();
-            preceding_non_blank.min(cursor_block_own.saturating_sub(1))
+            // Map the cursor's raw line to its rendered row within the block.
+            // The renderer emits one rendered line per raw line EXCEPT two
+            // collapses: an interior blank line (between an item's paragraphs)
+            // and a soft-break continuation line produce no rendered line of
+            // their own.  A *separator* blank — one directly before a
+            // top-level item marker — DOES render (loose-list legibility
+            // spacing, emitted from `ListItem::blank_lines_before`).  So count
+            // the preceding raw lines that produce a rendered row: every
+            // non-blank line, plus separator blanks; interior blanks are
+            // skipped.
+            let base_indent = raw_lines
+                .first()
+                .map(|l| l.len() - l.trim_start().len())
+                .unwrap_or(0);
+            let is_top_level_marker = |line: &str| {
+                let indent = line.len() - line.trim_start().len();
+                indent == base_indent && raw_list_marker_char_width(line).is_some()
+            };
+            let mut rendered_before = 0usize;
+            let upto = cursor_raw_line.min(raw_lines.len());
+            for i in 0..upto {
+                if raw_lines[i].trim().is_empty() {
+                    // Blank: rendered only if the contiguous blank run it
+                    // belongs to ends at a top-level item marker (a separator
+                    // blank).  Interior blanks — whose run resolves to
+                    // continuation content or a nested marker — don't render.
+                    let mut j = i + 1;
+                    while j < raw_lines.len() && raw_lines[j].trim().is_empty() {
+                        j += 1;
+                    }
+                    if j < raw_lines.len() && is_top_level_marker(raw_lines[j]) {
+                        rendered_before += 1;
+                    }
+                } else {
+                    rendered_before += 1;
+                }
+            }
+            rendered_before.min(cursor_block_own.saturating_sub(1))
         };
         // Wrapped-cell case: when the cursor sits in a data-row cell that
         // wraps onto multiple rendered sub-lines (or is in a row whose
