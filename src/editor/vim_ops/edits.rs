@@ -461,21 +461,12 @@ pub fn open_list_continue(editor: &mut EditorState, below: bool) -> bool {
 /// a list — so it is safe to call after *any* linewise operator (a yank or a
 /// `cc` leaves the numbers untouched and records no delta).
 ///
-/// Uses the nesting-aware [`list_edit::renumber_list_block`]: a `dd` lands the
-/// cursor on the line below, which for a list whose items have nested children
-/// is the *child* — so a flat per-indent renumber would fix only the
-/// (already-correct) inner list and leave the outer sequence stale.  The block
-/// walk renumbers every ordered run in the surrounding list, each restarting
-/// under its own parent.
+/// Delegates to [`edit_ops::list_renumber_at_cursor`], the shared post-edit
+/// recovery hook: a `dd` lands the cursor on the line below, and the
+/// parser-driven renumber walks every ordered run in the surrounding list
+/// block (loose-list gaps included), each restarting under its own parent.
 pub fn renumber_list_at_cursor(editor: &mut EditorState) {
-    if editor.mode == Mode::Raw {
-        return;
-    }
-    let source = editor.buffer.contents();
-    let byte = cursor_byte(editor);
-    if let Some(delta) = list_edit::renumber_list_block(&source, byte) {
-        apply_byte_delta(editor, delta, byte);
-    }
+    crate::editor::edit_ops::list_renumber_at_cursor(editor);
 }
 
 /// `>>` / `<<` inside a Markdown list: indent (`right`) or outdent the cursor's

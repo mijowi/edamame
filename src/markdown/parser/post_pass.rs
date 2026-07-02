@@ -320,7 +320,7 @@ fn separator_blank_run_start(s: &str, start: usize, end: usize) -> Option<usize>
 /// isn't a fence opener.  Indentation up to any depth is permitted —
 /// inside a list item the fence is indented to the item's content
 /// column, and we only need to track the fence/no-fence state.
-fn parse_opening_fence(line: &str) -> Option<(char, usize)> {
+pub fn parse_opening_fence(line: &str) -> Option<(char, usize)> {
     let trimmed = line.trim_start();
     let first = trimmed.chars().next()?;
     if first != '`' && first != '~' {
@@ -340,7 +340,7 @@ fn parse_opening_fence(line: &str) -> Option<(char, usize)> {
 /// Recognise a closing fence for an open fence of `fence_char` × `min_count`.
 /// Per CommonMark, the closing run must use the same character, be at
 /// least as long, and have only whitespace after it.
-fn is_closing_fence(line: &str, fence_char: char, min_count: usize) -> bool {
+pub fn is_closing_fence(line: &str, fence_char: char, min_count: usize) -> bool {
     let trimmed = line.trim_start();
     let count = trimmed.chars().take_while(|&c| c == fence_char).count();
     if count < min_count {

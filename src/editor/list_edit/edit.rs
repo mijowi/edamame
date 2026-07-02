@@ -12,6 +12,7 @@ use crate::editor::list_edit::parse::{
     cursor_item_idx, line_end_byte, line_start_byte, parse_line_start, ContinueResult, ListInfo,
     ListItemInfo, MarkerKind,
 };
+use crate::markdown::{is_closing_fence, parse_opening_fence};
 
 /// Build an `EditDelta` that continues the list at `cursor_byte` by inserting
 /// a new empty item.  For ordered lists, all items from `item_idx + 1` onward
@@ -490,23 +491,24 @@ pub fn outdent_item(
     })
 }
 
-/// Renumber every ordered list run inside the contiguous list block
-/// surrounding `cursor_byte`, nesting-aware.
+/// Renumber every ordered list run in the contiguous list block surrounding
+/// `cursor_byte`, nesting-aware.  Pure: scans the buffer source, no parse
+/// needed — so it is cheap enough to run from the post-edit recovery hook on
+/// every keystroke.
 ///
-/// Walks the whole block of adjacent list-item lines (any indent / kind) and
-/// renumbers each ordered run independently with an indent stack, so:
+/// The block is the maximal run of list lines around the cursor, crossing
+/// marker lines, indented continuation lines, and *loose-list blank gaps* (a
+/// blank run whose next non-blank line is itself a list line).  A blank run
+/// followed by non-list content — or by end-of-buffer — bounds the block,
+/// matching pulldown-cmark: it keeps blank-separated items of one list together
+/// (rendering their numbers as one continuous sequence) but ends the list at
+/// intervening non-list content.  Crossing a gap into a differently-delimited
+/// or bullet run is harmless: [`renumber_ordered_runs_in_range`] restarts each
+/// run's counter on a delimiter change, so the numbers still match the render.
 ///
-///   - an outer list keeps counting across a nested child sitting between two of
-///     its items (a flat per-indent renumber can't reach this, because the
-///     deeper line fragments the run and a post-delete cursor lands on that
-///     child), and
-///   - each nested sub-list restarts its own sequence under its own parent.
-///
-/// Bullet lines and deeper continuation/child lines are preserved verbatim;
-/// only ordered markers are rewritten.  Returns `None` when the cursor is not on
-/// a list-item line or nothing needs changing (so it records no edit / no spare
-/// undo step).  The block is bounded by blank or non-list lines, matching the
-/// flat path's blank-line behavior.
+/// Returns `None` when the cursor is not on a list line (an interior blank line
+/// included), or when nothing needs changing — so callers record no spare undo
+/// step.
 pub fn renumber_list_block(source: &str, cursor_byte: usize) -> Option<EditDelta> {
     if source.is_empty() {
         return None;
@@ -514,33 +516,15 @@ pub fn renumber_list_block(source: &str, cursor_byte: usize) -> Option<EditDelta
     let bytes = source.as_bytes();
     let clamped = cursor_byte.min(source.len());
     let cur_start = line_start_byte(bytes, clamped);
-    // The cursor must rest on a list-item line — or on an indented
-    // continuation line of one — for the block to exist.
     let cur_content_end = line_end_byte(bytes, cur_start);
+    // The cursor must rest on a list-item line — or on an indented
+    // continuation line of one — for the block to exist.  A cursor on an
+    // interior blank line (e.g. a loose-list gap) does not trigger a renumber.
     let cur_line = &source[cur_start..cur_content_end];
     if parse_line_start(cur_line).is_none() && !is_block_continuation_line(cur_line) {
         return None;
     }
 
-    // Expand upward over contiguous list-block lines: marker lines and
-    // indented non-blank continuation lines alike (a multi-line item must
-    // not fragment the walk).  Blank lines still bound the block.
-    let mut block_start = cur_start;
-    while block_start > 0 {
-        let prev_nl = block_start - 1; // the '\n' ending the previous line
-        if bytes.get(prev_nl).copied() != Some(b'\n') {
-            break;
-        }
-        let prev_start = line_start_byte(bytes, prev_nl);
-        let prev = &source[prev_start..prev_nl];
-        if parse_line_start(prev).is_some() || is_block_continuation_line(prev) {
-            block_start = prev_start;
-        } else {
-            break;
-        }
-    }
-
-    // Expand downward over contiguous list-item lines.
     let line_end_incl = |content_end: usize| {
         if content_end < source.len() && bytes[content_end] == b'\n' {
             content_end + 1
@@ -548,31 +532,119 @@ pub fn renumber_list_block(source: &str, cursor_byte: usize) -> Option<EditDelta
             content_end
         }
     };
-    let mut block_end = line_end_incl(cur_content_end);
-    while block_end < source.len() {
-        let next_end = line_end_byte(bytes, block_end);
-        let next = &source[block_end..next_end];
-        if parse_line_start(next).is_some() || is_block_continuation_line(next) {
-            block_end = line_end_incl(next_end);
-        } else {
+
+    // Expand upward.  A list line commits the block start; a blank line is only
+    // tentatively skipped, so it is absorbed only when a list line further up
+    // commits past it (a loose-list gap) and dropped otherwise (leading blank).
+    let mut block_start = cur_start;
+    let mut probe = cur_start;
+    while probe > 0 {
+        let prev_nl = probe - 1; // the '\n' ending the previous line
+        if bytes[prev_nl] != b'\n' {
             break;
         }
+        let ps = line_start_byte(bytes, prev_nl);
+        let prev = &source[ps..prev_nl];
+        if parse_line_start(prev).is_some() || is_block_continuation_line(prev) {
+            block_start = ps;
+        } else if !prev.trim().is_empty() {
+            break;
+        }
+        probe = ps;
     }
 
+    // Expand downward, symmetrically.
+    let mut block_end = line_end_incl(cur_content_end);
+    let mut probe = block_end;
+    while probe < source.len() {
+        let next_end = line_end_byte(bytes, probe);
+        let next = &source[probe..next_end];
+        let after = line_end_incl(next_end);
+        if parse_line_start(next).is_some() || is_block_continuation_line(next) {
+            block_end = after;
+        } else if !next.trim().is_empty() {
+            break;
+        }
+        probe = after;
+    }
+
+    renumber_ordered_runs_in_range(source, block_start, block_end)
+}
+
+/// A non-blank line that starts with whitespace — treated as part of the
+/// surrounding list block by [`renumber_list_block`] (a continuation or
+/// nested-content line), with no list-identity check: the renumber walk only
+/// rewrites lines that parse as ordered markers, so over-inclusion is harmless.
+fn is_block_continuation_line(line: &str) -> bool {
+    (line.starts_with(' ') || line.starts_with('\t')) && !line.trim().is_empty()
+}
+
+/// Renumber every ordered list run inside the byte range `start..end`,
+/// nesting-aware.
+///
+/// The range is expected to be the source span of a single list block — as
+/// computed by [`renumber_list_block`]'s block scan, which spans the whole
+/// list including the interior blank lines of a *loose* list (a blank run
+/// whose next non-blank line is still a list line), the way pulldown-cmark
+/// groups it.  The renderer numbers such a list as one continuous sequence,
+/// so the range must too: a blank-*bounded* scan would stop at the first gap
+/// and diverge from the render.  This function renumbers whatever range it is
+/// given; keeping that range in step with pulldown's grouping is the caller's
+/// job.
+///
+/// Walks the block's lines with an indent stack so:
+///
+///   - an outer list keeps counting across a nested child sitting between two
+///     of its items, and
+///   - each nested sub-list restarts its own sequence under its own parent.
+///
+/// Blank lines, bullet lines, and deeper continuation/child lines are
+/// preserved verbatim; only ordered markers are rewritten, and each ordered
+/// run keeps its first item's number as the start (matching the renderer's
+/// `start.unwrap_or(1)` counter).  Returns `None` when nothing needs changing,
+/// so callers record no edit / no spare undo step.
+pub fn renumber_ordered_runs_in_range(source: &str, start: usize, end: usize) -> Option<EditDelta> {
+    if start >= end || end > source.len() {
+        return None;
+    }
     // Single pass over the block's lines, renumbering ordered runs with an
     // indent stack of `(indent_len, delimiter, next_number)`.
-    let block = &source[block_start..block_end];
+    let block = &source[start..end];
     let mut out = String::with_capacity(block.len());
     let mut stack: Vec<(usize, char, u64)> = Vec::new();
     let mut changed = false;
+    // Track fenced code blocks so marker-shaped lines *inside* a fence (e.g. a
+    // numbered example in a ```code``` block nested in a list item) are left
+    // literal — the renderer never renumbers them, so rewriting them would
+    // corrupt the code and diverge from the render.
+    let mut fence: Option<(char, usize)> = None;
     let mut rest = block;
     while !rest.is_empty() {
         let (line, tail, had_nl) = match rest.find('\n') {
             Some(i) => (&rest[..i], &rest[i + 1..], true),
             None => (rest, "", false),
         };
-        match parse_line_start(line) {
-            Some((indent, MarkerKind::Ordered(delim), Some(num))) => {
+
+        // Update fence state; opening, closing, and interior fence lines are
+        // all emitted verbatim without touching the ordered-run stack.
+        let in_fence = match fence {
+            Some((c, count)) => {
+                if is_closing_fence(line, c, count) {
+                    fence = None;
+                }
+                true
+            }
+            None => match parse_opening_fence(line) {
+                Some((c, count)) => {
+                    fence = Some((c, count));
+                    true
+                }
+                None => false,
+            },
+        };
+
+        match (in_fence, parse_line_start(line)) {
+            (false, Some((indent, MarkerKind::Ordered(delim), Some(num)))) => {
                 let k = indent.len();
                 // Drop any deeper nested levels that just ended.
                 while stack.last().is_some_and(|&(ki, _, _)| ki > k) {
@@ -595,8 +667,15 @@ pub fn renumber_list_block(source: &str, cursor_byte: usize) -> Option<EditDelta
                     }
                 };
                 // `rest`-of-line after the `{indent}{digits}{delim} ` marker.
-                // All marker chars are single-byte, so the byte slice is safe.
-                let marker_len = indent.len() + num.to_string().len() + 2;
+                // Measure the digit run from the source rather than assuming
+                // `num`'s width — a leading-zero marker (`01.`) has more digit
+                // chars than `num.to_string()`.  All marker chars are
+                // single-byte, so the byte slice is safe.
+                let digits = line[indent.len()..]
+                    .bytes()
+                    .take_while(u8::is_ascii_digit)
+                    .count();
+                let marker_len = indent.len() + digits + 2;
                 out.push_str(&indent);
                 out.push_str(&new_num.to_string());
                 out.push(delim);
@@ -604,7 +683,7 @@ pub fn renumber_list_block(source: &str, cursor_byte: usize) -> Option<EditDelta
                 out.push_str(&line[marker_len..]);
                 changed |= new_num != num;
             }
-            other => {
+            (false, other) => {
                 // A bullet (or differently-delimited) sibling ends any ordered
                 // run at its indent or deeper; a deeper continuation / child
                 // line (parse returns `None`) leaves the stack untouched.
@@ -614,6 +693,10 @@ pub fn renumber_list_block(source: &str, cursor_byte: usize) -> Option<EditDelta
                         stack.pop();
                     }
                 }
+                out.push_str(line);
+            }
+            (true, _) => {
+                // Inside a fenced code block: emit verbatim, stack untouched.
                 out.push_str(line);
             }
         }
@@ -627,19 +710,10 @@ pub fn renumber_list_block(source: &str, cursor_byte: usize) -> Option<EditDelta
         return None;
     }
     Some(EditDelta {
-        offset: block_start,
+        offset: start,
         removed: block.to_owned(),
         inserted: out,
     })
-}
-
-/// A non-blank line that starts with whitespace — treated as part of the
-/// surrounding list block by the renumber walk (a continuation or
-/// nested-content line), with no list-identity check: the walk itself only
-/// rewrites lines that parse as ordered markers, so over-inclusion is
-/// harmless.
-fn is_block_continuation_line(line: &str) -> bool {
-    (line.starts_with(' ') || line.starts_with('\t')) && !line.trim().is_empty()
 }
 
 fn render_marker(indent: &str, kind: MarkerKind, number: u64) -> String {

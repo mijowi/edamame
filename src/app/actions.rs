@@ -470,6 +470,24 @@ impl App {
                 self.needs_draw = true;
                 true
             }
+            Action::FixListNumbering => {
+                use crate::editor::edit_ops::FixListNumbering;
+                match crate::editor::edit_ops::fix_list_numbering(
+                    &mut self.editor,
+                    doc_height,
+                    doc_width,
+                ) {
+                    FixListNumbering::Fixed => {}
+                    FixListNumbering::AlreadyCorrect => {
+                        self.flash("List numbering already correct", MessageKind::Info);
+                    }
+                    FixListNumbering::NotOrdered => {
+                        self.flash("Cursor is not in an ordered list", MessageKind::Info);
+                    }
+                }
+                self.needs_draw = true;
+                true
+            }
             Action::SaveAs => {
                 self.open_save_as_modal(None);
                 self.needs_draw = true;

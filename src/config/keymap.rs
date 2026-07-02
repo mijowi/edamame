@@ -215,6 +215,12 @@ pub enum Action {
     /// Re-sequence every numeric footnote into order of first reference
     /// (GFM); named labels are left untouched.
     RenumberFootnotes,
+    /// Renumber the ordered list under the cursor so its source numbering
+    /// matches what is rendered (sequential from the first item's number,
+    /// nesting-aware, spanning loose-list blank gaps), as one undoable edit.
+    /// Flashes when the cursor is not in an ordered list or it is already
+    /// sequential.
+    FixListNumbering,
     /// Show the About edamame popover: bean art, rotating acronym
     /// tagline, version info (installed + latest GitHub release),
     /// author credit, and a button that opens the project homepage.
@@ -369,6 +375,7 @@ action_variants! {
     ToggleBigH1, ToggleLineNumbers, ToggleBlinkCursor, ToggleAutosave,
     ToggleVisualLineNav, ToggleVimMode, ToggleLimitWidth, ToggleDiffOnChange,
     InsertFootnote, DeleteFootnote, RenumberFootnotes,
+    FixListNumbering,
     GoToSection,
     OpenSearch, SearchNext, SearchPrev,
     SearchReplace, SearchReplaceAll, SearchExit,

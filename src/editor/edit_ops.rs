@@ -1664,13 +1664,16 @@ fn list_toggle_checkbox(state: &mut EditorState) {
 /// sequence stays monotonic.  No-op for bullet lists, in Raw mode, or when the
 /// cursor is outside a list.
 ///
-/// Uses the nesting-aware [`list_edit::renumber_list_block`]: a delete lands the
-/// cursor on the line below, which for a list whose items have nested children
-/// is the *child* — so a flat per-indent renumber would fix only the
-/// (already-correct) inner list and leave the outer sequence stale.  The block
-/// walk renumbers every ordered run in the surrounding list, each restarting
-/// under its own parent.
-fn list_renumber_at_cursor(state: &mut EditorState) {
+/// Uses the pure, nesting-aware, loose-list-aware
+/// [`list_edit::renumber_list_block`]: it scans the buffer source (no reparse,
+/// so it is cheap enough to run on every keystroke) and renumbers every ordered
+/// run in the surrounding list block, spanning loose-list blank gaps so a
+/// blank-separated list — which pulldown-cmark renders as one continuous
+/// sequence — is renumbered as a whole.  A delete lands the cursor on the line
+/// below, which for a list whose items have nested children is the *child*, so
+/// the block walk (rather than a flat per-indent renumber) is what keeps the
+/// outer sequence correct.
+pub(crate) fn list_renumber_at_cursor(state: &mut EditorState) {
     // Raw mode: defer to plain text, never rewrite markers (mirrors
     // `current_list`'s bail-out, which the other list-edit paths use).
     if state.mode == Mode::Raw {
@@ -1680,6 +1683,54 @@ fn list_renumber_at_cursor(state: &mut EditorState) {
     let byte_before = cursor_byte(state);
     if let Some(delta) = list_edit::renumber_list_block(&source, byte_before) {
         apply_byte_delta(state, delta, byte_before);
+    }
+}
+
+/// Outcome of [`fix_list_numbering`], so the App layer can pick the right
+/// flash message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixListNumbering {
+    /// The cursor is not inside an ordered list (empty, plain text, or a
+    /// bullet list).
+    NotOrdered,
+    /// The cursor's ordered list is already sequential — nothing to do.
+    AlreadyCorrect,
+    /// The list was renumbered as a single undoable edit.
+    Fixed,
+}
+
+/// Renumber the ordered list under the cursor so its source numbering matches
+/// what is rendered, as one undoable edit.  This is the user-invokable "Fix
+/// list numbering" command; unlike [`list_renumber_at_cursor`] (the silent
+/// post-edit recovery hook) it reports *why* nothing changed so the caller can
+/// flash feedback.
+pub fn fix_list_numbering(
+    state: &mut EditorState,
+    viewport_height: usize,
+    viewport_width: usize,
+) -> FixListNumbering {
+    // Works in every view mode, including Raw.  Unlike the *automatic*
+    // list-edit paths (`current_list`, `list_renumber_at_cursor`) — which
+    // defer to plain text in Raw so the engine never rewrites markers the user
+    // is editing by hand — this is an *explicit* user command (like
+    // `renumber_footnotes`): running it is a deliberate request to rewrite the
+    // source, and Raw is exactly where the user sees that source.
+    let source = state.buffer.contents();
+    let byte = cursor_byte(state);
+    // Classify the cursor's *immediate* list: a cursor on a nested ordered
+    // list inside a bullet list is still "in an ordered list".
+    match list_edit::find_list_at(&source, byte).map(|info| info.kind) {
+        Some(list_edit::MarkerKind::Ordered(_)) => {}
+        _ => return FixListNumbering::NotOrdered,
+    }
+    // Renumber the whole surrounding list block (loose-list gaps included).
+    match list_edit::renumber_list_block(&source, byte) {
+        Some(delta) => {
+            apply_byte_delta(state, delta, byte);
+            state.ensure_cursor_visible(viewport_height, viewport_width);
+            FixListNumbering::Fixed
+        }
+        None => FixListNumbering::AlreadyCorrect,
     }
 }
 

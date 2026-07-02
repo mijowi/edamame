@@ -202,7 +202,8 @@ fn section_of(action: &Action) -> &'static str {
         | Action::InsertLink
         | Action::InsertFootnote
         | Action::DeleteFootnote
-        | Action::RenumberFootnotes => "Edit",
+        | Action::RenumberFootnotes
+        | Action::FixListNumbering => "Edit",
         Action::ExitToPreview
         | Action::ToggleRawMode
         | Action::EnterEditMode
