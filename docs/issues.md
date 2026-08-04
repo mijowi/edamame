@@ -3,14 +3,18 @@
 - Add next cell/prev cell to keybindings modal?
 
 - Refactor/clean up source and tests
+- Add/update performance benchmark tests
 
 - Handle paragraphs containing line breaks
 
-- Add/update performance benchmark tests
+- Add "Insert image" to command palette
 
-## Lists
 - When a list item is deleted with Ctrl-Backspace, a new line is unintentionally added in its place, making a gap in the list
-- Automatic list management is finicky: line spacing, nested lists, sub-lists of different types
+
+- Rendering
+
+- Compatibility with macOS and other terminals (Terminal, iTerm2, Mac Ghostty)
+- Mac Cmd instead of Ctrl
 
 ## Vim mode
 - Ctrl-Backspace and Ctrl-Delete modify the buffer in normal mode. They should not.
