@@ -51,6 +51,7 @@ use crate::editor::vim_ops::{
     OpRange, OpResult, Operator, TextObject,
 };
 use crate::editor::{edit_ops, EditorState, Mode};
+use crate::input::mode_handler::default::{is_ctrl_backspace, is_ctrl_delete};
 
 use super::cmdline::{self, CmdLineStep};
 use super::state::{
@@ -425,6 +426,21 @@ fn feed_normal(
     if let Some(inner) = vim.pending_text_object {
         return feed_text_object(vim, editor, inner, key, vh, vw, /*visual=*/ false);
     }
+    // `Ctrl-Backspace` / `Ctrl-Delete` are the default keymap's word-delete
+    // chords (`DeleteWordBack` / `DeleteWordForward`).  Normal must never
+    // mutate the buffer, so intercept them ahead of the passthrough
+    // fallthrough (which would route them to those actions) and treat them
+    // as the plain `Backspace` / `Delete` cursor motions — Ctrl-H is
+    // move-left in real vim too.
+    if is_ctrl_backspace(&key) || is_ctrl_delete(&key) {
+        vim.sub_mode = VimSubMode::Normal;
+        let dir = if is_ctrl_delete(&key) { 'l' } else { 'h' };
+        for _ in 0..count_of(vim) {
+            feed_hjkl(editor, dir, vh, vw);
+        }
+        vim.reset_pending();
+        return VimOutcome::Consumed;
+    }
     if is_passthrough_chord(&key) {
         // The chord fires its app action via the default handler; a
         // half-typed operator / count must not linger behind it (`d`
@@ -544,6 +560,17 @@ fn feed_visual(
     // char; in Visual it sets the selection to the object's range.
     if let Some(inner) = vim.pending_text_object {
         return feed_text_object(vim, editor, inner, key, vh, vw, /*visual=*/ true);
+    }
+    // Ctrl-Backspace / Ctrl-Delete would otherwise pass through to the
+    // default keymap's word-delete actions and edit through the selection.
+    // Visual must not mutate, so treat them as the left / right movers that
+    // extend the selection, exactly like plain Backspace / Delete below.
+    if is_ctrl_backspace(&key) || is_ctrl_delete(&key) {
+        let dir = if is_ctrl_delete(&key) { 'l' } else { 'h' };
+        feed_hjkl(editor, dir, vh, vw);
+        extend_selection(editor);
+        vim.reset_pending();
+        return VimOutcome::Consumed;
     }
     if is_passthrough_chord(&key) {
         return VimOutcome::Passthrough;
