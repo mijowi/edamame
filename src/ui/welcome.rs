@@ -398,7 +398,7 @@ everything else stays formatted; RAW has no formatting. \n\
 • Vim mode — optional Vim-style editing (see docs for what's supported)";
 /// Hint shown below the capability summary when any capability is
 /// degraded.  Wrapped at body inner width at render time.
-const DEGRADED_HINT: &str = "  ✗ — Consider upgrading to a modern terminal, \
+const DEGRADED_HINT: &str = "✗ — Consider upgrading to a modern terminal, \
 such as kitty, wezterm, or ghostty, for a better experience.";
 
 /// Number of wrapped rows a string would occupy at `width` columns
