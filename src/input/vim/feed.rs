@@ -462,9 +462,13 @@ fn feed_normal(
             // (a capturing replace flow defers to `DefaultHandler`, so vim
             // never sees its `Esc`).  `exit_search` leaves the user on the
             // match they navigated to (search is a motion — no scroll-back).
+            // Finally it drops any lingering selection (e.g. one left by a
+            // mouse drag) — both the buffer and its paint, mirroring `Esc`
+            // in Visual — so Normal never sits on a stale highlight.
             vim.sub_mode = VimSubMode::Normal;
             vim.reset_pending();
             editor.exit_search();
+            editor.selection = None;
             VimOutcome::Consumed
         }
         KeyCode::Char(c) => feed_command_char(vim, editor, c, vh, vw, /*visual=*/ false),

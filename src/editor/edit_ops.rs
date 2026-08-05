@@ -578,7 +578,7 @@ pub fn apply(
         }
         Action::Paste => {
             enter_edit_if_preview(state, viewport_height);
-            let text = paste_from_clipboard(state);
+            let text = clipboard_text(state);
             if !text.is_empty() {
                 if let Some(sel) = state.selection.take() {
                     let (start, end) = sel.range();
@@ -1149,7 +1149,10 @@ fn base64_encode(data: &[u8]) -> String {
 }
 
 /// Read from the OS clipboard if available; fall back to kill-ring.
-fn paste_from_clipboard(state: &EditorState) -> String {
+/// Public so a caller that needs to reshape the payload before it lands
+/// — the App's vim VisualLine paste, which makes it linewise — can read
+/// the same source the plain `Action::Paste` arm does.
+pub fn clipboard_text(state: &EditorState) -> String {
     #[cfg(feature = "clipboard")]
     {
         if let Ok(mut cb) = arboard::Clipboard::new() {

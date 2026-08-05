@@ -7,17 +7,13 @@
 
 - Handle paragraphs containing line breaks
 
-- Add "Insert image" to command palette
-
-- When a list item is deleted with Ctrl-Backspace, a new line is unintentionally added in its place, making a gap in the list
-
-- Rendering
+- Image rendering
 
 - Compatibility with macOS and other terminals (Terminal, iTerm2, Mac Ghostty)
 - Mac Cmd instead of Ctrl
+- Mac config folder defaults to `~/Library/Application Support/edamame` instead of `~/.config/edamame`. Should we leave it where it is or move it to `~/.config` to have parity with Linux?
 
 ## Vim mode
-- Ctrl-Backspace and Ctrl-Delete modify the buffer in normal mode. They should not.
 - DIFF is not displayed in the status line when using vim mode. Maybe we should display it in the hint line?
 - How should we treat vim motions in tables? I'm thinking we no-op some and adjust others for better UX, such as the ones below. What others should we tailor for tables? Don't change the behavior for raw mode; no elements get special treatment there. All vim motions should work as they would on raw text.
     - `o`/`O`: Add new row below/above, cursor lands on first cell in row

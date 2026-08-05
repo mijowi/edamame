@@ -843,7 +843,7 @@ mod vim_wiring_tests {
         assert_eq!(app.editor.mode, Mode::Raw);
     }
 
-    // ── CP6: VisualLine clipboard widening (Ctrl-C / Ctrl-X) ───────────
+    // ── CP6: VisualLine clipboard widening (Ctrl-C / Ctrl-X / Ctrl-V) ──
 
     use crate::config::Action;
     use crate::document::{Buffer, Selection};
@@ -881,6 +881,31 @@ mod vim_wiring_tests {
         app.dispatch_action(Action::Cut, 40, 80);
         assert_eq!(app.editor.buffer.contents(), "gamma");
         assert_eq!(app.editor.kill_ring, "alpha\nbeta\n");
+        assert_eq!(app.vim.as_ref().unwrap().sub_mode, VimSubMode::Normal);
+        assert!(app.editor.selection.is_none());
+    }
+
+    #[test]
+    fn visual_line_paste_replaces_whole_lines_and_exits_visual() {
+        // Copy first so the paste source is deterministic whichever way
+        // `clipboard_text` resolves — `Copy` writes the OS clipboard *and*
+        // the kill-ring with the same linewise payload.
+        let mut app = app_in_visual_line("alpha\nbeta\ngamma", 2, 2);
+        app.dispatch_action(Action::Copy, 40, 80);
+        assert_eq!(app.editor.kill_ring, "alpha\n", "test premise");
+        // Re-anchor the V-LINE selection on line 1 (again mid-line, so the
+        // charwise span is not the line) and paste over it.
+        app.editor.selection = Some(Selection {
+            anchor: 8,
+            active: 8,
+        });
+        app.vim.as_mut().unwrap().visual_anchor = Some(8);
+        app.dispatch_action(Action::Paste, 40, 80);
+        assert_eq!(
+            app.editor.buffer.contents(),
+            "alpha\nalpha\ngamma",
+            "the whole highlighted line is replaced, not the empty charwise span"
+        );
         assert_eq!(app.vim.as_ref().unwrap().sub_mode, VimSubMode::Normal);
         assert!(app.editor.selection.is_none());
     }
