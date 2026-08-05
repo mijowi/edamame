@@ -11,7 +11,6 @@
 
 - Compatibility with macOS and other terminals (Terminal, iTerm2, Mac Ghostty)
 - Mac Cmd instead of Ctrl
-- Mac config folder defaults to `~/Library/Application Support/edamame` instead of `~/.config/edamame`. Should we leave it where it is or move it to `~/.config` to have parity with Linux?
 
 ## Vim mode
 - DIFF is not displayed in the status line when using vim mode. Maybe we should display it in the hint line?

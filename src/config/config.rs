@@ -1,9 +1,10 @@
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::init::ensure_default_files_in;
+use super::init::{ensure_default_files_in, REFERENCE_CONFIG_TOML};
 use super::keymap::KeyBindingOverrides;
 use super::readers::{read_keybindings, read_main_config, read_theme_named};
 pub use super::sections::{
@@ -163,10 +164,19 @@ impl Config {
         })
     }
 
-    /// Return the directory containing all config files (e.g.
-    /// `~/.config/edamame`).  `None` when no XDG / HOME can be resolved.
+    /// Return the directory containing all config files:
+    /// `$XDG_CONFIG_HOME/edamame`, falling back to `~/.config/edamame`.
+    /// `None` when neither `XDG_CONFIG_HOME` nor `HOME` can be resolved.
+    ///
+    /// This is deliberately XDG on **every** platform, including macOS —
+    /// `dirs::config_dir()` would resolve to `~/Library/Application
+    /// Support` there.  edamame's config is hand-editable TOML that users
+    /// symlink from a dotfiles repo, so it follows the terminal-tool
+    /// convention (neovim, helix, alacritty, starship, …) rather than the
+    /// macOS GUI-app one, and a single `~/.config/edamame` works across
+    /// Linux and macOS unchanged.
     pub fn config_dir() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("edamame"))
+        resolve_config_dir(std::env::var_os("XDG_CONFIG_HOME"), dirs::home_dir())
     }
 
     /// Returns the path to the main config file (may not exist yet).
@@ -195,10 +205,12 @@ impl Config {
     /// faithfully (we never silently drop a key the user explicitly
     /// chose to set).  See [`save_merge`] for the algorithm.
     ///
-    /// First-write case (no existing file): we write the freshly
-    /// serialized TOML.  In practice this branch is rarely hit because
-    /// [`Self::ensure_default_files`] seeds the annotated reference
-    /// config on first launch.
+    /// First-write case (no existing file): we merge into the
+    /// compiled-in annotated reference config instead, so the result is
+    /// still fully commented.  In practice this branch is rarely hit
+    /// because [`Self::ensure_default_files`] seeds that same file on
+    /// first launch — it exists for the case where `config.toml` is
+    /// deleted out from under a running session.
     ///
     /// Callers typically log the error and continue rather than making it
     /// fatal.
@@ -263,6 +275,21 @@ impl Config {
     }
 }
 
+// ── config directory resolution ───────────────────────────────────────────────
+
+/// Pure core of [`Config::config_dir`] — takes the raw `XDG_CONFIG_HOME`
+/// value and the home directory so it can be unit-tested without mutating
+/// process environment (which would race across parallel tests).
+fn resolve_config_dir(xdg: Option<OsString>, home: Option<PathBuf>) -> Option<PathBuf> {
+    let base = match xdg {
+        // An empty or relative value is invalid per the XDG spec; fall back
+        // to `~/.config` rather than resolving against the cwd.
+        Some(v) if Path::new(&v).is_absolute() => PathBuf::from(v),
+        _ => home?.join(".config"),
+    };
+    Some(base.join("edamame"))
+}
+
 // ── save: comment-preserving merge ────────────────────────────────────────────
 
 /// Produce the TOML string to write for [`Config::save`].
@@ -275,9 +302,12 @@ impl Config {
 /// parent tables when needed).  See `merge_changed` for the leaf
 /// algorithm.
 ///
-/// If `path` doesn't exist, we serialise `config` afresh.  This
-/// matches the previous (non-preserving) behaviour for the
-/// first-write case.
+/// If `path` doesn't exist we merge into the compiled-in annotated
+/// reference config ([`REFERENCE_CONFIG_TOML`]) instead, so a save that
+/// races a missing `config.toml` still produces a fully commented file.
+/// Emitting a bare `toml::to_string_pretty` here would be a one-way
+/// door: every later save merges faithfully into whatever is on disk,
+/// so a single de-annotated write strips the documentation forever.
 fn save_merge(config: &Config, path: &Path) -> Result<String> {
     use toml_edit::DocumentMut;
 
@@ -285,17 +315,14 @@ fn save_merge(config: &Config, path: &Path) -> Result<String> {
         toml::to_string_pretty(config).context("Failed to serialize config to TOML")?;
 
     let existing_raw = match std::fs::read_to_string(path) {
-        Ok(s) => Some(s),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Ok(s) => s,
+        // First-write path: fall back to the shipped annotated template
+        // so the merge below still has comments to preserve.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => REFERENCE_CONFIG_TOML.to_string(),
         Err(e) => {
             return Err(e)
                 .with_context(|| format!("Failed to read existing config: {}", path.display()));
         }
-    };
-
-    let Some(existing_raw) = existing_raw else {
-        // First-write path: no annotated file to preserve.
-        return Ok(new_serialized);
     };
 
     let mut existing_doc: DocumentMut = existing_raw.parse().with_context(|| {
@@ -433,6 +460,28 @@ mod tests {
         assert!(!config.dev.logging);
         assert_eq!(config.modal.handler, "default");
         assert_eq!(config.theme, "Edamame");
+    }
+
+    #[test]
+    fn config_dir_prefers_absolute_xdg_config_home() {
+        let dir = resolve_config_dir(Some("/xdg".into()), Some(PathBuf::from("/home/u")));
+        assert_eq!(dir, Some(PathBuf::from("/xdg/edamame")));
+    }
+
+    #[test]
+    fn config_dir_falls_back_to_dot_config_on_every_platform() {
+        // Unset, empty, and relative XDG values all fall back to `~/.config`
+        // — including on macOS, where `dirs::config_dir()` would have
+        // returned `~/Library/Application Support`.
+        for xdg in [None, Some(OsString::from("")), Some(OsString::from("rel"))] {
+            let dir = resolve_config_dir(xdg, Some(PathBuf::from("/home/u")));
+            assert_eq!(dir, Some(PathBuf::from("/home/u/.config/edamame")));
+        }
+    }
+
+    #[test]
+    fn config_dir_is_none_without_home_or_xdg() {
+        assert_eq!(resolve_config_dir(None, None), None);
     }
 
     #[test]
@@ -1014,17 +1063,45 @@ appearance = \"dark\"
         assert!(!out.contains("max_width_cols = 80"));
     }
 
-    /// First-write path: no existing file → emit a freshly
-    /// serialized config (no merge needed).  Asserts we don't
-    /// crash on the NotFound branch and produce parseable output.
+    /// First-write path: no existing file → merge into the shipped
+    /// annotated reference config, so the emitted file keeps its
+    /// documentation instead of being a bare serialization.
     #[test]
-    fn save_merge_first_write_emits_fresh_toml() {
+    fn save_merge_first_write_emits_annotated_reference() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let config = Config::default();
         let out = save_merge(&config, &path).expect("merge ok");
         let _round: Config = toml::from_str(&out).expect("parses");
         assert!(out.contains("theme ="));
+        assert!(out.contains("# edamame configuration"));
+        // Defaults the user never set stay commented-out reference rows,
+        // exactly as in a scaffolded file.
+        assert!(!out.contains("\ntransient_ms ="));
+    }
+
+    /// A save whose values deviate from the defaults still lands in an
+    /// annotated file when `config.toml` was deleted out from under a
+    /// running session — the regression that once stripped every
+    /// comment permanently (each later save merges into whatever is on
+    /// disk, so one bare write is a one-way door).
+    #[test]
+    fn save_merge_first_write_keeps_comments_with_non_default_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let config = Config {
+            theme: "Dracula".into(),
+            modal: ModalConfig {
+                handler: "vim".into(),
+            },
+            ..Default::default()
+        };
+        let out = save_merge(&config, &path).expect("merge ok");
+        let round: Config = toml::from_str(&out).expect("parses");
+        assert_eq!(round.theme, "Dracula");
+        assert_eq!(round.modal.handler, "vim");
+        assert!(out.contains("# edamame configuration"));
+        assert!(out.contains("# Name of the active theme."));
     }
 
     /// If the user has an explicit non-default value in their file
