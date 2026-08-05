@@ -120,7 +120,11 @@ fn ctrl_backspace_and_delete_do_not_edit_in_normal() {
     st.cursor.offset = 4; // start of "bar"
 
     assert_eq!(feed(&mut vim, &mut st, ctrl_bs), VimOutcome::Consumed);
-    assert_eq!(st.buffer.contents(), "foo bar", "Ctrl-Backspace must not edit");
+    assert_eq!(
+        st.buffer.contents(),
+        "foo bar",
+        "Ctrl-Backspace must not edit"
+    );
     assert_eq!(st.cursor.offset, 3, "Ctrl-Backspace moves left");
 
     assert_eq!(feed(&mut vim, &mut st, ctrl_del), VimOutcome::Consumed);
@@ -141,7 +145,11 @@ fn ctrl_backspace_and_delete_do_not_edit_in_visual() {
     feed(&mut vim, &mut st, ch('v')); // enter Visual, anchor at 4
 
     assert_eq!(feed(&mut vim, &mut st, ctrl_bs), VimOutcome::Consumed);
-    assert_eq!(st.buffer.contents(), "foo bar", "Ctrl-Backspace must not edit");
+    assert_eq!(
+        st.buffer.contents(),
+        "foo bar",
+        "Ctrl-Backspace must not edit"
+    );
     assert!(st.selection.is_some(), "selection is extended, not dropped");
 
     assert_eq!(feed(&mut vim, &mut st, ctrl_del), VimOutcome::Consumed);
@@ -160,6 +168,21 @@ fn motion_clears_a_lingering_selection() {
     });
     feed(&mut vim, &mut st, ch('l'));
     assert!(st.selection.is_none(), "motion must clear the selection");
+}
+
+#[test]
+fn esc_clears_a_lingering_selection_in_normal() {
+    // A mouse drag can leave a selection active while in Normal; `Esc`
+    // must drop both the buffer and its paint (mirroring `Esc` in Visual).
+    let mut st = state("hello\nworld");
+    let mut vim = VimState::default();
+    st.selection = Some(Selection {
+        anchor: 0,
+        active: 3,
+    });
+    assert_eq!(feed(&mut vim, &mut st, esc()), VimOutcome::Consumed);
+    assert!(st.selection.is_none(), "Esc must clear the selection");
+    assert_eq!(vim.sub_mode, VimSubMode::Normal);
 }
 
 #[test]

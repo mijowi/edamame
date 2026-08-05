@@ -10,7 +10,7 @@ use edamame::config::{KeyBindingOverrides, KeyMap, Theme};
 use edamame::document::{Buffer, Selection};
 use edamame::editor::{EditorState, Mode};
 use edamame::search::SearchState;
-use edamame::ui::bottom_region::hint_line_for;
+use edamame::ui::bottom_region::{hint_line_for, HintCtx};
 use edamame::ui::{EditorView, EditorViewState};
 use ratatui::{backend::TestBackend, Terminal};
 
@@ -95,7 +95,7 @@ fn replace_buffer_drops_an_active_flow() {
 #[test]
 fn navigate_only_flow_hints_omit_replace_chords() {
     let st = state_with_search("foo bar foo\n", "foo", None);
-    let set = hint_line_for(&st, &keymap(), false);
+    let set = hint_line_for(&st, &keymap(), HintCtx::default());
     let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
     assert_eq!(labels, vec!["Next", "Prev", "Exit"]);
     assert_eq!(set.chords[0].chord, "Tab");
@@ -106,7 +106,7 @@ fn navigate_only_flow_hints_omit_replace_chords() {
 #[test]
 fn replace_flow_hints_add_replace_and_replace_all() {
     let st = state_with_search("foo bar foo\n", "foo", Some("baz"));
-    let set = hint_line_for(&st, &keymap(), false);
+    let set = hint_line_for(&st, &keymap(), HintCtx::default());
     let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
     assert_eq!(
         labels,
@@ -129,8 +129,11 @@ fn render_editor(state: &mut EditorState, width: u16, height: u16) -> ratatui::b
     let caps = edamame::terminal::Capabilities::default();
     // Build the hint from the live state, exactly as the app does, so
     // the search match counter that now leads the hint line is present.
-    let hint =
-        edamame::ui::bottom_region::HintContent::Chords(hint_line_for(state, &keymap(), false));
+    let hint = edamame::ui::bottom_region::HintContent::Chords(hint_line_for(
+        state,
+        &keymap(),
+        HintCtx::default(),
+    ));
     terminal
         .draw(|frame| {
             let view = EditorView {
@@ -512,7 +515,7 @@ fn full_line_selection_still_covers_list_row_on_inline_map_mismatch() {
 #[test]
 fn replace_flow_hints_include_undo_before_exit() {
     let st = state_with_search("foo bar foo\n", "foo", Some("baz"));
-    let set = hint_line_for(&st, &keymap(), false);
+    let set = hint_line_for(&st, &keymap(), HintCtx::default());
     let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
     assert_eq!(
         labels,
@@ -524,7 +527,7 @@ fn replace_flow_hints_include_undo_before_exit() {
 #[test]
 fn navigate_only_flow_hints_omit_undo() {
     let st = state_with_search("foo bar foo\n", "foo", None);
-    let set = hint_line_for(&st, &keymap(), false);
+    let set = hint_line_for(&st, &keymap(), HintCtx::default());
     assert!(!set.chords.iter().any(|c| c.label == "Undo"));
 }
 
@@ -533,7 +536,7 @@ fn preview_and_edit_hint_rows_offer_find_after_go_to() {
     let mut st = EditorState::new(Buffer::from_str("hello\n"), theme());
     for mode in [Mode::Preview, Mode::Rendered, Mode::Raw] {
         st.mode = mode;
-        let labels: Vec<String> = hint_line_for(&st, &keymap(), false)
+        let labels: Vec<String> = hint_line_for(&st, &keymap(), HintCtx::default())
             .chords
             .iter()
             .map(|c| c.label.clone())

@@ -88,6 +88,23 @@ pub enum HintContent {
     },
 }
 
+/// The UI-layer facts [`hint_line_for`] needs that aren't readable off
+/// `EditorState`.  Passed as one named struct rather than a run of
+/// positional `bool`s so a call site can't silently transpose them; build
+/// it with `..Default::default()` and set only the fields that apply.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HintCtx {
+    /// True when the file / in-document history stack holds at least one
+    /// back- or forward-entry.  Lives on the `App` (`nav_back` /
+    /// `nav_forward`), not in document state.
+    pub nav_available: bool,
+    /// True while the vim handler is in the VisualLine sub-mode.  A V-LINE
+    /// selection covering a single line is charwise-empty (`anchor ==
+    /// active`) even though the whole line paints as highlighted, so the
+    /// selection row can't be inferred from `state.selection_size()` alone.
+    pub visual_line: bool,
+}
+
 /// Pick the default hint set for `state`, adapting to the cursor's
 /// Markdown context.  Pure function so it can be unit-tested without
 /// spinning up a terminal.
@@ -104,11 +121,10 @@ pub enum HintContent {
 /// don't work against the raw source — the user is editing the plain
 /// Markdown and `Tab` / `⌥↑↓` insert characters or do nothing.
 ///
-/// `nav_available` is true when the file/in-document history stack holds
-/// at least one back- or forward-entry; it surfaces the `⌥←→ Back/fwd`
-/// contextual hint.  It's threaded in from the `App` rather than read off
-/// `state` because the nav stacks are a UI-layer fact (`App::nav_back` /
-/// `App::nav_forward`), not document state.
+/// `ctx` carries the UI-layer facts that aren't readable off `state` — see
+/// [`HintCtx`].  They're threaded in from the `App` rather than read off
+/// `state` because the nav stacks and the vim sub-mode are UI-layer facts,
+/// not document state.
 ///
 /// The vim handler reuses this same row unchanged: vim's modal keys
 /// (`i` / `v` / `:` / `/`, the Visual operators, …) are vim-internal and
@@ -116,8 +132,9 @@ pub enum HintContent {
 /// shows edamame's own contextual + baseline chords in every vim sub-mode
 /// rather than re-advertising vim's keys.  A Visual selection lands on the
 /// shared selection row (Cut / Copy / Paste / …) because vim Visual sets
-/// the editor `selection` just like a mouse drag does.
-pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, nav_available: bool) -> HintSet {
+/// the editor `selection` just like a mouse drag does; VisualLine gets its
+/// own shorter row (see [`visual_line_chords`]).
+pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, ctx: HintCtx) -> HintSet {
     // An active search flow replaces the row wholesale, whatever the
     // view mode — only the flow keys work while it's active.  The
     // Replace / Replace-all chords appear only in the replace flow
@@ -169,7 +186,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, nav_available: bool) 
             // redirect in `app::actions` only fires outside a table), and
             // the cursor offset persists into Preview, so a table cell is
             // reachable here too.
-            if nav_available && !cursor_in_table(state) {
+            if ctx.nav_available && !cursor_in_table(state) {
                 chords.insert(0, nav_chord());
             }
             HintSet {
@@ -178,6 +195,18 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, nav_available: bool) 
                 search_match: None,
             }
         }
+        // A vim VisualLine selection covering a single line is charwise-empty
+        // (anchor == active) yet paints the whole line as highlighted, so it
+        // can't be inferred from `selection_size` — the `ctx.visual_line` flag
+        // carries it.  The `selection.is_some()` conjunct keeps the row
+        // self-consistent rather than trusting the App-layer invariant that
+        // V-LINE always has one: an advertised Cut with nothing selected
+        // would be a dead chord.
+        Mode::Rendered | Mode::Raw if ctx.visual_line && state.selection.is_some() => HintSet {
+            prelude: None,
+            chords: visual_line_chords(keymap),
+            search_match: None,
+        },
         Mode::Rendered | Mode::Raw if state.selection_size().is_some() => HintSet {
             prelude: None,
             chords: chords_from(
@@ -275,7 +304,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, nav_available: bool) 
             // fires outside a table).  The Rendered table arm above
             // returns before this point, but Raw mode has no such arm, so
             // the explicit check is what covers the Raw-in-table case.
-            if nav_available && !cursor_in_table(state) {
+            if ctx.nav_available && !cursor_in_table(state) {
                 chords.insert(0, nav_chord());
             }
             if cursor_on_task_item(state) {
@@ -384,6 +413,27 @@ fn search_flow_chords(is_replace: bool) -> Vec<HintChord> {
     }
     chords.push(mk(&Action::SearchExit, "Exit"));
     chords
+}
+
+/// Build the vim VisualLine hint row: the three clipboard chords that the
+/// App widens to whole lines before dispatching
+/// (`App::dispatch_visual_line_clipboard`), so each one acts on exactly the
+/// highlighted rows.
+///
+/// Deliberately shorter than the charwise selection row — `Bold` / `Italic`
+/// are omitted because `edit_ops::toggle_wrap` bails on both shapes a V-LINE
+/// selection can take: an empty charwise span (a single-line V-LINE, where
+/// `anchor == active`) and a span containing a newline (any multi-line one).
+/// Advertising them here would be advertising two no-ops.
+fn visual_line_chords(keymap: &KeyMap) -> Vec<HintChord> {
+    chords_from(
+        keymap,
+        &[
+            (Action::Cut, "Cut"),
+            (Action::Copy, "Copy"),
+            (Action::Paste, "Paste"),
+        ],
+    )
 }
 
 /// Build the table-context hint row.  When the four arrow-driven
@@ -753,7 +803,7 @@ mod tests {
     #[test]
     fn preview_hint_has_prelude_and_menu_first() {
         let st = state("hello");
-        let set = hint_line_for(&st, &keymap(), false);
+        let set = hint_line_for(&st, &keymap(), HintCtx::default());
         assert_eq!(set.prelude.as_deref(), Some("Press any key to edit"));
         assert_eq!(set.chords[0].chord, "^P");
         assert_eq!(set.chords[0].label, "Menu");
@@ -802,7 +852,7 @@ mod tests {
     fn rendered_hint_has_save_and_paste_and_raw() {
         let mut st = state("hello");
         st.mode = Mode::Rendered;
-        let set = hint_line_for(&st, &keymap(), false);
+        let set = hint_line_for(&st, &keymap(), HintCtx::default());
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(set.chords[0].chord, "^P", "Menu is always first");
         assert!(labels.contains(&"Paste"));
@@ -843,7 +893,7 @@ mod tests {
         st.mode = Mode::Rendered;
 
         // Fresh history → no redo entry yet.
-        let labels: Vec<_> = hint_line_for(&st, &keymap(), false)
+        let labels: Vec<_> = hint_line_for(&st, &keymap(), HintCtx::default())
             .chords
             .iter()
             .map(|c| c.label.clone())
@@ -863,7 +913,7 @@ mod tests {
         st.history.undo(&mut st.buffer).unwrap();
         assert!(st.history.can_redo(), "test premise");
 
-        let labels: Vec<_> = hint_line_for(&st, &keymap(), false)
+        let labels: Vec<_> = hint_line_for(&st, &keymap(), HintCtx::default())
             .chords
             .iter()
             .map(|c| c.label.clone())
@@ -881,7 +931,7 @@ mod tests {
             inserted: "X".into(),
         });
         assert!(!st.history.can_redo(), "test premise");
-        let labels: Vec<_> = hint_line_for(&st, &keymap(), false)
+        let labels: Vec<_> = hint_line_for(&st, &keymap(), HintCtx::default())
             .chords
             .iter()
             .map(|c| c.label.clone())
@@ -896,7 +946,7 @@ mod tests {
     fn raw_mode_flips_view_toggle_label_to_render() {
         let mut st = state("hello");
         st.mode = Mode::Raw;
-        let set = hint_line_for(&st, &keymap(), false);
+        let set = hint_line_for(&st, &keymap(), HintCtx::default());
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(
             labels.contains(&"Render"),
@@ -911,14 +961,14 @@ mod tests {
         st.mode = Mode::Rendered;
         // Cursor in the "site" link text → on a link.
         st.cursor.offset = 5;
-        let on_link = hint_line_for(&st, &keymap(), false);
+        let on_link = hint_line_for(&st, &keymap(), HintCtx::default());
         assert_eq!(
             on_link.chords[0].label, "Open link",
             "contextual link hint must lead the row"
         );
         // Cursor in the trailing plain-text tail → not on a link.
         st.cursor.offset = 32;
-        let off_link = hint_line_for(&st, &keymap(), false);
+        let off_link = hint_line_for(&st, &keymap(), HintCtx::default());
         assert!(
             !off_link.chords.iter().any(|c| c.label == "Open link"),
             "Open link hint leaked outside the link span"
@@ -933,7 +983,7 @@ mod tests {
         let mut st = state("- [ ] see [docs](https://example.com)\n");
         st.mode = Mode::Rendered;
         st.cursor.offset = 14; // inside "docs"
-        let set = hint_line_for(&st, &keymap(), false);
+        let set = hint_line_for(&st, &keymap(), HintCtx::default());
         assert_eq!(set.chords[0].label, "Open link");
         assert_eq!(set.chords[1].label, "Toggle");
         assert_eq!(
@@ -951,12 +1001,107 @@ mod tests {
             anchor: 0,
             active: 5,
         });
-        let set = hint_line_for(&st, &keymap(), false);
+        let set = hint_line_for(&st, &keymap(), HintCtx::default());
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(
             labels,
             vec!["Cut", "Copy", "Paste", "Bold", "Italic"],
             "active selection must replace the baseline row with the selection chords only"
+        );
+    }
+
+    #[test]
+    fn visual_line_shows_selection_hints_despite_empty_charwise_span() {
+        use crate::document::Selection;
+        // V-LINE on a single line paints the whole line but leaves the
+        // charwise selection empty (anchor == active), so `selection_size`
+        // is None.  The `visual_line` flag must still surface the
+        // selection row.
+        let mut st = state("hello world");
+        st.mode = Mode::Rendered;
+        st.selection = Some(Selection {
+            anchor: 3,
+            active: 3,
+        });
+        assert!(
+            st.selection_size().is_none(),
+            "an anchor == active selection is charwise-empty"
+        );
+        let baseline = hint_line_for(&st, &keymap(), HintCtx::default());
+        assert_ne!(
+            baseline.chords.first().map(|c| c.label.as_str()),
+            Some("Cut"),
+            "without the V-LINE flag an empty selection shows the baseline row"
+        );
+        let set = hint_line_for(
+            &st,
+            &keymap(),
+            HintCtx {
+                visual_line: true,
+                ..Default::default()
+            },
+        );
+        let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec!["Cut", "Copy", "Paste"],
+            "V-LINE must show its clipboard row even with an empty charwise span"
+        );
+    }
+
+    #[test]
+    fn visual_line_row_omits_bold_and_italic() {
+        use crate::document::Selection;
+        // `toggle_wrap` bails on an empty span *and* on one containing a
+        // newline, so Bold / Italic are no-ops under either V-LINE shape.
+        // The charwise row still carries them.
+        let mut st = state("alpha\nbeta\n");
+        st.mode = Mode::Rendered;
+        st.selection = Some(Selection {
+            anchor: 2,
+            active: 8,
+        });
+        let charwise = hint_line_for(&st, &keymap(), HintCtx::default());
+        let charwise_labels: Vec<_> = charwise.chords.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(
+            charwise_labels,
+            vec!["Cut", "Copy", "Paste", "Bold", "Italic"]
+        );
+        let v_line = hint_line_for(
+            &st,
+            &keymap(),
+            HintCtx {
+                visual_line: true,
+                ..Default::default()
+            },
+        );
+        let v_line_labels: Vec<_> = v_line.chords.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(
+            v_line_labels,
+            vec!["Cut", "Copy", "Paste"],
+            "V-LINE must not advertise the wrap chords it can't run"
+        );
+    }
+
+    #[test]
+    fn visual_line_flag_without_a_selection_falls_through() {
+        // The V-LINE row is gated on an actual selection as well as the
+        // flag, so a desynced sub-mode can't advertise a Cut with nothing
+        // to cut.
+        let mut st = state("hello world");
+        st.mode = Mode::Rendered;
+        assert!(st.selection.is_none(), "test premise");
+        let set = hint_line_for(
+            &st,
+            &keymap(),
+            HintCtx {
+                visual_line: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            set.chords[0].label, "Menu",
+            "no selection → the baseline row, whatever the sub-mode"
         );
     }
 
@@ -970,7 +1115,7 @@ mod tests {
             active: 5,
         });
         assert_eq!(
-            hint_line_for(&st, &keymap(), false)
+            hint_line_for(&st, &keymap(), HintCtx::default())
                 .chords
                 .iter()
                 .map(|c| c.label.clone())
@@ -980,7 +1125,7 @@ mod tests {
         // Clearing the selection must drop the row back to the
         // baseline edit-mode chords with Menu leading.
         st.selection = None;
-        let set = hint_line_for(&st, &keymap(), false);
+        let set = hint_line_for(&st, &keymap(), HintCtx::default());
         assert_eq!(set.chords[0].label, "Menu");
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(!labels.contains(&"Cut"));
@@ -993,7 +1138,7 @@ mod tests {
         let mut st = state("- a\n- b\n");
         st.mode = Mode::Rendered;
         st.cursor.offset = 2;
-        let set = hint_line_for(&st, &keymap(), false);
+        let set = hint_line_for(&st, &keymap(), HintCtx::default());
         assert!(
             !set.chords.iter().any(|c| c.label == "Toggle"),
             "regular list items have no checkbox to toggle"
@@ -1006,7 +1151,7 @@ mod tests {
         let mut st = state("- [ ] todo\n");
         st.mode = Mode::Rendered;
         st.cursor.offset = 8;
-        let set = hint_line_for(&st, &keymap(), false);
+        let set = hint_line_for(&st, &keymap(), HintCtx::default());
         assert_eq!(set.chords[0].chord, "^Space");
         assert_eq!(set.chords[0].label, "Toggle");
     }
@@ -1017,7 +1162,7 @@ mod tests {
         let mut st = state(source);
         st.mode = Mode::Raw;
         st.cursor.offset = 22;
-        let set = hint_line_for(&st, &keymap(), false);
+        let set = hint_line_for(&st, &keymap(), HintCtx::default());
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(
             !labels.iter().any(|l| l.contains("cell")),
@@ -1038,7 +1183,7 @@ mod tests {
             .unwrap();
         let mut st = state("hello");
         st.mode = Mode::Rendered;
-        let set = hint_line_for(&st, &km, false);
+        let set = hint_line_for(&st, &km, HintCtx::default());
         let menu = set
             .chords
             .iter()
@@ -1070,7 +1215,7 @@ mod tests {
         );
         let mut st = state("hello");
         st.mode = Mode::Rendered;
-        let set = hint_line_for(&st, &km, false);
+        let set = hint_line_for(&st, &km, HintCtx::default());
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(
             !labels.contains(&"Save"),
@@ -1093,7 +1238,7 @@ mod tests {
         let mut st = state(source);
         st.mode = Mode::Rendered;
         st.cursor.offset = 22;
-        let set = hint_line_for(&st, &km, false);
+        let set = hint_line_for(&st, &km, HintCtx::default());
         let move_chord = set
             .chords
             .iter()
@@ -1114,14 +1259,21 @@ mod tests {
         let mut st = state("hello");
         st.mode = Mode::Rendered;
         // No history → no Back/fwd chord.
-        let off = hint_line_for(&st, &keymap(), false);
+        let off = hint_line_for(&st, &keymap(), HintCtx::default());
         assert!(
             !off.chords.iter().any(|c| c.label == "Back/fwd"),
             "Back/fwd must stay hidden with an empty history stack"
         );
         // History present → the ⌥←→ chord rides the contextual block,
         // sitting just before the baseline `Menu` chord.
-        let on = hint_line_for(&st, &keymap(), true);
+        let on = hint_line_for(
+            &st,
+            &keymap(),
+            HintCtx {
+                nav_available: true,
+                ..Default::default()
+            },
+        );
         let nav = on
             .chords
             .iter()
@@ -1144,7 +1296,14 @@ mod tests {
         let mut st = state(source);
         st.mode = Mode::Rendered;
         st.cursor.offset = 22;
-        let set = hint_line_for(&st, &keymap(), true);
+        let set = hint_line_for(
+            &st,
+            &keymap(),
+            HintCtx {
+                nav_available: true,
+                ..Default::default()
+            },
+        );
         assert!(
             !set.chords.iter().any(|c| c.label == "Back/fwd"),
             "Back/fwd must stay hidden while the cursor is in a table"
@@ -1162,7 +1321,14 @@ mod tests {
         let mut st = state(source);
         st.mode = Mode::Raw;
         st.cursor.offset = 22;
-        let set = hint_line_for(&st, &keymap(), true);
+        let set = hint_line_for(
+            &st,
+            &keymap(),
+            HintCtx {
+                nav_available: true,
+                ..Default::default()
+            },
+        );
         assert!(
             !set.chords.iter().any(|c| c.label == "Back/fwd"),
             "Back/fwd must stay hidden in a table even in Raw mode"
@@ -1173,7 +1339,14 @@ mod tests {
     fn nav_hint_leads_preview_row() {
         // Preview is browse mode — history navigation leads the row.
         let st = state("hello");
-        let set = hint_line_for(&st, &keymap(), true);
+        let set = hint_line_for(
+            &st,
+            &keymap(),
+            HintCtx {
+                nav_available: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(set.chords[0].label, "Back/fwd");
         assert_eq!(set.chords[0].chord, "⌥←→");
         assert_eq!(
@@ -1190,7 +1363,14 @@ mod tests {
         let mut st = state("- [ ] see [docs](https://example.com)\n");
         st.mode = Mode::Rendered;
         st.cursor.offset = 14; // inside "docs"
-        let set = hint_line_for(&st, &keymap(), true);
+        let set = hint_line_for(
+            &st,
+            &keymap(),
+            HintCtx {
+                nav_available: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(set.chords[0].label, "Open link");
         assert_eq!(set.chords[1].label, "Toggle");
         assert_eq!(set.chords[2].label, "Back/fwd");
@@ -1203,7 +1383,7 @@ mod tests {
         let mut st = state(source);
         st.mode = Mode::Rendered;
         st.cursor.offset = 22;
-        let set = hint_line_for(&st, &keymap(), false);
+        let set = hint_line_for(&st, &keymap(), HintCtx::default());
         let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.iter().any(|l| l.contains("cell")));
         assert!(labels.iter().any(|l| l.contains("row")));
@@ -1222,7 +1402,7 @@ mod tests {
         // match counter — under vim too, since `hint_line_for` no longer
         // branches on the sub-mode (the App passes the same editor state
         // either way).
-        let set = hint_line_for(&st, &keymap(), false);
+        let set = hint_line_for(&st, &keymap(), HintCtx::default());
         assert!(set.search_match.is_some(), "match counter must lead");
         assert!(set.chords.iter().any(|c| c.label == "Next"));
         assert!(

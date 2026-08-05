@@ -38,7 +38,7 @@ pub mod text_input;
 pub mod theme_picker;
 pub mod welcome;
 
-pub use bottom_region::{hint_line_for, BottomRegion, HintChord, HintContent, HintSet};
+pub use bottom_region::{hint_line_for, BottomRegion, HintChord, HintContent, HintCtx, HintSet};
 pub use cap_summary::{build_cap_lines, CapSummary};
 pub use diff_intro_modal::{DiffIntroResponse, DiffIntroState, DiffIntroView};
 #[allow(unused_imports)]

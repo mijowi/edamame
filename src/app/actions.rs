@@ -157,6 +157,42 @@ pub(super) fn cursor_in_table(state: &EditorState) -> bool {
     crate::editor::table_edit::find_table_at(&source, cursor_byte).is_some()
 }
 
+/// Reshape `clipboard` into the payload that replaces a vim VisualLine
+/// selection whose widened char range is `range`: the text, made *linewise*
+/// — guaranteed to end with a newline whenever the span it replaces does.
+///
+/// `visual_line_char_range` includes the trailing newline of the last
+/// highlighted line, so pasting charwise text (`"foo"`) over it would
+/// otherwise weld the following line onto the paste (`alpha\nbeta\ngamma` →
+/// `foogamma`).  Appending the newline puts the payload on its own line(s),
+/// matching vim's `Vp` with a charwise register.  Text that already ends in a
+/// newline — the common V-LINE copy → V-LINE paste round trip — is returned
+/// unchanged, so no blank line creeps in.  A selection on a final line with
+/// no trailing newline replaces a span that doesn't end in one either, so
+/// nothing is appended there.
+///
+/// Returns `None` when there is nothing to paste (empty clipboard *and* empty
+/// kill-ring); the caller treats that as "do nothing" rather than replacing
+/// the lines with a bare newline.
+///
+/// Pure in `clipboard` — the OS clipboard read stays at the call site so this
+/// decision can be unit-tested without a live clipboard.
+fn linewise_paste_payload(
+    buffer: &crate::document::Buffer,
+    range: &std::ops::Range<usize>,
+    clipboard: String,
+) -> Option<String> {
+    if clipboard.is_empty() {
+        return None;
+    }
+    let replaced_ends_with_newline =
+        range.end > range.start && buffer.slice_to_string(range.end - 1, range.end) == "\n";
+    if replaced_ends_with_newline && !clipboard.ends_with('\n') {
+        return Some(clipboard + "\n");
+    }
+    Some(clipboard)
+}
+
 /// Translate a wheel event into a `ModalState::scroll_by` delta.
 /// Honours the user's configured `mouse_scroll_lines` so a coarser
 /// wheel feel applies inside modals as well as the editor.  Returns
@@ -736,14 +772,15 @@ impl App {
             self.dispatch_search_action(action, doc_height, doc_width);
             return;
         }
-        // VisualLine `Ctrl-C` / `Ctrl-X`: copy/cut the line-expanded range so
-        // the clipboard matches the highlighted rows (§2.6).  The widening
-        // goes through the one shared `visual_line_char_range` helper that the
-        // render and operator paths use, so the three can never disagree.
-        // `selection` itself is never snapped — Copy restores the charwise
-        // span so a continued Visual session keeps its true anchor; Cut
-        // removes the lines and leaves Visual.
-        if matches!(action, Action::Copy | Action::Cut)
+        // VisualLine `Ctrl-C` / `Ctrl-X` / `Ctrl-V`: copy, cut, or replace the
+        // line-expanded range so the clipboard matches the highlighted rows
+        // (§2.6).  The widening goes through the one shared
+        // `visual_line_char_range` helper that the render and operator paths
+        // use, so the three can never disagree.  `selection` itself is never
+        // snapped — Copy restores the charwise span so a continued Visual
+        // session keeps its true anchor; Cut and Paste consume the lines and
+        // leave Visual.
+        if matches!(action, Action::Copy | Action::Cut | Action::Paste)
             && self.vim.as_ref().is_some_and(|v| v.is_visual_line())
         {
             self.dispatch_visual_line_clipboard(action, doc_height, doc_width);
@@ -787,13 +824,13 @@ impl App {
         }
     }
 
-    /// Copy or cut a vim VisualLine selection: widen it to whole lines for
-    /// the clipboard write (matching the on-screen highlight), without ever
-    /// snapping the persistent charwise `selection`.  `Copy` restores the
-    /// original span afterwards (the user may keep extending in Visual);
-    /// `Cut` deletes the lines and exits Visual, since the selected content
-    /// is gone.  `EditorState` / `edit_ops` stay vim-agnostic — the widening
-    /// lives entirely here.
+    /// Copy, cut, or paste over a vim VisualLine selection: widen it to whole
+    /// lines first (matching the on-screen highlight), without ever snapping
+    /// the persistent charwise `selection`.  `Copy` restores the original span
+    /// afterwards (the user may keep extending in Visual); `Cut` and `Paste`
+    /// consume the lines and exit Visual, since the selected content is gone.
+    /// `EditorState` / `edit_ops` stay vim-agnostic — the widening lives
+    /// entirely here.
     fn dispatch_visual_line_clipboard(
         &mut self,
         action: Action,
@@ -804,15 +841,42 @@ impl App {
             return;
         };
         let range = crate::editor::vim_ops::visual_line_char_range(&sel, &self.editor.buffer);
+        // A paste with nothing to paste must not consume the lines — bail
+        // before the widening so the V-LINE session survives untouched.
+        let payload = match action {
+            Action::Paste => {
+                let clipboard = edit_ops::clipboard_text(&self.editor);
+                let Some(text) = linewise_paste_payload(&self.editor.buffer, &range, clipboard)
+                else {
+                    return;
+                };
+                Some(text)
+            }
+            _ => None,
+        };
         let widened = crate::document::Selection {
             anchor: range.start,
             active: range.end,
         };
         self.editor.selection = Some(widened);
-        let is_cut = matches!(action, Action::Cut);
-        edit_ops::apply(&mut self.editor, action, doc_height, doc_width);
-        if is_cut {
-            // The lines are gone; drop back to Normal.
+        let dirty_before = self.editor.dirty;
+        match &payload {
+            // `paste_text` replaces the (now widened) selection with the
+            // linewise payload, so the highlighted rows are what gets
+            // overwritten — not the charwise anchor..active span.
+            Some(text) => edit_ops::paste_text(&mut self.editor, text, doc_height, doc_width),
+            None => {
+                edit_ops::apply(&mut self.editor, action.clone(), doc_height, doc_width);
+            }
+        }
+        // Mirror the charwise clipboard path's feedback — the shared
+        // dispatch's `flash_for_action` is skipped by our early return, so
+        // run it here (flashing "Copied" for Copy / Cut; Paste is silent
+        // there, exactly as it is on the charwise path).
+        self.flash_for_action(&action, dirty_before);
+        if matches!(action, Action::Cut | Action::Paste) {
+            // The lines are gone (deleted, or overwritten by the paste);
+            // drop back to Normal.
             if let Some(vim) = self.vim.as_mut() {
                 vim.sub_mode = crate::input::VimSubMode::Normal;
                 vim.visual_anchor = None;
@@ -1511,7 +1575,7 @@ mod tests {
         KeyModifiers as CtKeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
 
-    use super::modal_wheel_delta;
+    use super::{edit_ops, linewise_paste_payload, modal_wheel_delta};
     use crate::app::test_utils::make_app;
     use crate::document::Buffer;
 
@@ -1545,6 +1609,105 @@ mod tests {
             app.modal_stack.count::<DiffIntroModal>(),
             1,
             "re-entry must not stack a second intro modal",
+        );
+    }
+
+    #[test]
+    fn visual_line_copy_flashes_copied() {
+        use crate::config::Action;
+        use crate::document::Selection;
+        use crate::input::vim::state::{VimState, VimSubMode};
+        let mut app = make_app();
+        app.editor.buffer.insert(0, "alpha\nbeta\n");
+        app.editor.mode = crate::editor::Mode::Rendered;
+        app.editor.refresh_parsed();
+        // V-LINE on the first line: the charwise span is empty (anchor ==
+        // active) but the whole line is the effective selection.
+        app.editor.selection = Some(Selection {
+            anchor: 0,
+            active: 0,
+        });
+        app.vim = Some(VimState {
+            sub_mode: VimSubMode::VisualLine,
+            visual_anchor: Some(0),
+            ..Default::default()
+        });
+        app.dispatch_action(Action::Copy, 24, 80);
+        let text = app.transient.as_ref().map(|t| t.text.clone());
+        assert_eq!(
+            text.as_deref(),
+            Some("Copied"),
+            "V-LINE copy must flash Copied like the charwise path"
+        );
+    }
+
+    /// The linewise-paste payload rules, exercised directly so no live
+    /// clipboard is involved (the OS clipboard is global and would race
+    /// parallel tests).
+    #[test]
+    fn linewise_paste_payload_keeps_the_line_structure() {
+        let buf = Buffer::from_str("alpha\nbeta\ngamma\n");
+        // Lines 0..=1 → "alpha\nbeta\n", a span ending in a newline.
+        let range = 0..11;
+        assert_eq!(
+            linewise_paste_payload(&buf, &range, "foo".to_owned()),
+            Some("foo\n".to_owned()),
+            "charwise text gets a newline so it can't weld onto the next line"
+        );
+        assert_eq!(
+            linewise_paste_payload(&buf, &range, "x\ny\n".to_owned()),
+            Some("x\ny\n".to_owned()),
+            "already-linewise text is used as-is — no blank line inserted"
+        );
+        assert_eq!(
+            linewise_paste_payload(&buf, &range, String::new()),
+            None,
+            "nothing to paste must not replace the lines with a bare newline"
+        );
+    }
+
+    #[test]
+    fn linewise_paste_payload_leaves_a_final_line_without_a_newline() {
+        // No trailing newline on the last line, so the replaced span
+        // doesn't end in one either and nothing should be appended.
+        let buf = Buffer::from_str("alpha\nbeta");
+        let range = 6..10;
+        assert_eq!(
+            linewise_paste_payload(&buf, &range, "foo".to_owned()),
+            Some("foo".to_owned()),
+        );
+    }
+
+    /// The widening + payload composition that `dispatch_visual_line_clipboard`
+    /// performs, run against a *charwise* payload — the case the end-to-end
+    /// wiring test in `app.rs` can't reach (it must Copy first, which yields a
+    /// linewise payload, to be independent of the live OS clipboard).
+    #[test]
+    fn visual_line_paste_of_charwise_text_keeps_the_line_intact() {
+        use crate::document::Selection;
+        let mut app = make_app();
+        app.editor.buffer.insert(0, "alpha\nbeta\ngamma\n");
+        app.editor.mode = crate::editor::Mode::Rendered;
+        app.editor.refresh_parsed();
+        // V-LINE parked mid-line-1: the charwise span is empty, the widened
+        // one is the whole line including its newline.
+        let sel = Selection {
+            anchor: 8,
+            active: 8,
+        };
+        let range = crate::editor::vim_ops::visual_line_char_range(&sel, &app.editor.buffer);
+        assert_eq!(range, 6..11, "V-LINE on line 1 widens to \"beta\\n\"");
+        let payload = linewise_paste_payload(&app.editor.buffer, &range, "REPLACED".to_owned())
+            .expect("non-empty clipboard");
+        app.editor.selection = Some(Selection {
+            anchor: range.start,
+            active: range.end,
+        });
+        edit_ops::paste_text(&mut app.editor, &payload, 24, 80);
+        assert_eq!(
+            app.editor.buffer.contents(),
+            "alpha\nREPLACED\ngamma\n",
+            "the line is replaced whole and `gamma` keeps its own row"
         );
     }
 

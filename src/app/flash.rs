@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::KeyBindingOverrides;
 use crate::config::KeyMap;
-use crate::ui::{hint_line_for, HintContent, HintSet, ModalKind};
+use crate::ui::{hint_line_for, HintContent, HintCtx, HintSet, ModalKind};
 
 use super::modal::{Modal, NoticeModal};
 use super::App;
@@ -159,8 +159,14 @@ impl App {
         // The history-navigation hint surfaces whenever there's somewhere
         // to go in either direction — the single ⌥←→ chord covers both
         // NavigateBack and NavigateForward.
-        let nav_available = !self.nav_back.is_empty() || !self.nav_forward.is_empty();
-        HintContent::Chords(hint_line_for(&self.editor, keymap, nav_available))
+        // A vim VisualLine selection on a single line is charwise-empty, so the
+        // hint line can't infer it from `selection_size` alone — pass the flag
+        // through so the selection row shows under a V-LINE highlight.
+        let ctx = HintCtx {
+            nav_available: !self.nav_back.is_empty() || !self.nav_forward.is_empty(),
+            visual_line: self.vim.as_ref().is_some_and(|v| v.is_visual_line()),
+        };
+        HintContent::Chords(hint_line_for(&self.editor, keymap, ctx))
     }
 
     /// Inspect `action` after dispatch and emit the matching flash
@@ -345,6 +351,52 @@ mod tests {
         let app = make_app();
         match app.hint_content() {
             HintContent::Chords(_) => {}
+            other => panic!("expected Chords, got {other:?}"),
+        }
+    }
+
+    /// The V-LINE row is only correct if `hint_content` actually derives
+    /// `HintCtx::visual_line` from the live vim state — hard-coding it
+    /// `false` would restore the original bug while every `hint_line_for`
+    /// unit test still passed, so assert the wiring end-to-end.
+    #[test]
+    fn hint_content_derives_visual_line_from_vim_state() {
+        use crate::document::Selection;
+        use crate::input::vim::state::{VimState, VimSubMode};
+        let mut app = make_app();
+        app.editor.buffer.insert(0, "alpha\nbeta\n");
+        app.editor.mode = crate::editor::Mode::Rendered;
+        app.editor.refresh_parsed();
+        // V-LINE on the first line: charwise-empty, so only the vim state
+        // can tell the hint line a whole line is highlighted.
+        app.editor.selection = Some(Selection {
+            anchor: 0,
+            active: 0,
+        });
+        app.vim = Some(VimState {
+            sub_mode: VimSubMode::VisualLine,
+            visual_anchor: Some(0),
+            ..Default::default()
+        });
+        match app.hint_content() {
+            HintContent::Chords(set) => {
+                let labels: Vec<_> = set.chords.iter().map(|c| c.label.as_str()).collect();
+                assert_eq!(
+                    labels,
+                    vec!["Cut", "Copy", "Paste"],
+                    "hint_content must pass the live V-LINE sub-mode through to hint_line_for"
+                );
+            }
+            other => panic!("expected Chords, got {other:?}"),
+        }
+        // Leaving V-LINE drops the row back to the baseline, proving the
+        // flag is read per frame rather than latched.
+        app.vim = Some(VimState::default());
+        app.editor.selection = None;
+        match app.hint_content() {
+            HintContent::Chords(set) => {
+                assert_eq!(set.chords[0].label, "Menu");
+            }
             other => panic!("expected Chords, got {other:?}"),
         }
     }
