@@ -4,6 +4,16 @@
 
 use std::path::Path;
 
+/// The annotated reference `config.toml` compiled into the binary.
+///
+/// Seeded on first run by [`ensure_default_files_in`], and used again as
+/// the merge base by [`super::config::save_merge`] whenever the user's
+/// file is missing at save time — otherwise a save that raced a deleted
+/// `config.toml` would emit a bare serialization and strip every comment
+/// permanently (each later save then faithfully merges into the
+/// de-annotated file).
+pub(super) const REFERENCE_CONFIG_TOML: &str = include_str!("../../config/config.toml");
+
 /// Testable core of [`super::config::Config::ensure_default_files`]:
 /// given the config directory (which may be a tempdir in tests), create
 /// it plus the `themes/` subdirectory and write the shipped default
@@ -40,10 +50,7 @@ pub(super) fn ensure_default_files_in(dir: &Path) {
         return;
     }
 
-    write_if_absent(
-        &dir.join("config.toml"),
-        include_str!("../../config/config.toml"),
-    );
+    write_if_absent(&dir.join("config.toml"), REFERENCE_CONFIG_TOML);
     write_if_absent(
         &dir.join("keybindings.toml"),
         include_str!("../../config/keybindings.toml"),
