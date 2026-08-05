@@ -108,6 +108,47 @@ fn ctrl_chord_passes_through_in_normal() {
 }
 
 #[test]
+fn ctrl_backspace_and_delete_do_not_edit_in_normal() {
+    // The default keymap binds Ctrl-Backspace / Ctrl-Delete to word-delete.
+    // In Normal they must never mutate the buffer — they move the cursor
+    // (left / right) like the plain Backspace / Delete keys instead.
+    let ctrl_bs = KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL);
+    let ctrl_del = KeyEvent::new(KeyCode::Delete, KeyModifiers::CONTROL);
+
+    let mut st = state("foo bar");
+    let mut vim = VimState::default();
+    st.cursor.offset = 4; // start of "bar"
+
+    assert_eq!(feed(&mut vim, &mut st, ctrl_bs), VimOutcome::Consumed);
+    assert_eq!(st.buffer.contents(), "foo bar", "Ctrl-Backspace must not edit");
+    assert_eq!(st.cursor.offset, 3, "Ctrl-Backspace moves left");
+
+    assert_eq!(feed(&mut vim, &mut st, ctrl_del), VimOutcome::Consumed);
+    assert_eq!(st.buffer.contents(), "foo bar", "Ctrl-Delete must not edit");
+    assert_eq!(st.cursor.offset, 4, "Ctrl-Delete moves right");
+}
+
+#[test]
+fn ctrl_backspace_and_delete_do_not_edit_in_visual() {
+    // Same guard in Visual: the chords extend the selection rather than
+    // editing through it.
+    let ctrl_bs = KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL);
+    let ctrl_del = KeyEvent::new(KeyCode::Delete, KeyModifiers::CONTROL);
+
+    let mut st = state("foo bar");
+    let mut vim = VimState::default();
+    st.cursor.offset = 4;
+    feed(&mut vim, &mut st, ch('v')); // enter Visual, anchor at 4
+
+    assert_eq!(feed(&mut vim, &mut st, ctrl_bs), VimOutcome::Consumed);
+    assert_eq!(st.buffer.contents(), "foo bar", "Ctrl-Backspace must not edit");
+    assert!(st.selection.is_some(), "selection is extended, not dropped");
+
+    assert_eq!(feed(&mut vim, &mut st, ctrl_del), VimOutcome::Consumed);
+    assert_eq!(st.buffer.contents(), "foo bar", "Ctrl-Delete must not edit");
+}
+
+#[test]
 fn motion_clears_a_lingering_selection() {
     // A mouse drag can leave a selection active; a Normal-mode motion
     // must drop it (otherwise it keeps painting under the cursor).

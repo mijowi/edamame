@@ -206,7 +206,7 @@ fn diff_review_handle(event: &KeyEvent) -> Option<Action> {
 ///   with or without the CONTROL modifier (crossterm may or may not set it)
 /// - urxvt, modern Alacritty without kitty protocol: `\x7f` + CONTROL
 /// - Some terminals translate Ctrl+Backspace to Ctrl+H directly: `h`/`H` + CONTROL
-fn is_ctrl_backspace(event: &KeyEvent) -> bool {
+pub(crate) fn is_ctrl_backspace(event: &KeyEvent) -> bool {
     let has_ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
     match event.code {
         KeyCode::Backspace if has_ctrl => true,
@@ -215,6 +215,13 @@ fn is_ctrl_backspace(event: &KeyEvent) -> bool {
         KeyCode::Char('h') | KeyCode::Char('H') if has_ctrl => true,
         _ => false,
     }
+}
+
+/// Does this event represent Ctrl+Delete?  Unlike Ctrl+Backspace there is no
+/// ASCII control-code encoding, so every terminal reports it as the `Delete`
+/// key with the CONTROL modifier set.
+pub(crate) fn is_ctrl_delete(event: &KeyEvent) -> bool {
+    matches!(event.code, KeyCode::Delete) && event.modifiers.contains(KeyModifiers::CONTROL)
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
