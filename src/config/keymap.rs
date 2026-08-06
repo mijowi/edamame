@@ -139,6 +139,12 @@ pub enum Action {
     /// Open the settings overlay — edits `[editor] / [modal] / [table]
     /// / [images] / [export]` keys in `config.toml` in place.
     OpenSettings,
+    /// Reopen the welcome modal: the capability-aware settings surface
+    /// (theme / images / diagrams / vim), rebuilt from the *live*
+    /// terminal capabilities.  Unlike the first-run path this ignores
+    /// `editor.show_welcome`, so it is the way back in after the
+    /// terminal's capabilities change.
+    OpenWelcome,
     /// Open the keybinds overlay — edits `keybindings.toml` with
     /// conflict detection.
     OpenKeybinds,
@@ -369,7 +375,7 @@ action_variants! {
     FollowLinkUnderCursor,
     NavigateBack, NavigateForward,
     ShowCommandPalette, ShowMarkdownCheatSheet, ShowAbout,
-    OpenSettings, OpenKeybinds, OpenConfigFolder, SwitchTheme, CreateCustomTheme,
+    OpenSettings, OpenWelcome, OpenKeybinds, OpenConfigFolder, SwitchTheme, CreateCustomTheme,
     ExportHtml, OpenInExternalEditor,
     ToggleTableButtons, InsertTable, InsertImage, InsertLink,
     ToggleBigH1, ToggleLineNumbers, ToggleBlinkCursor, ToggleAutosave,

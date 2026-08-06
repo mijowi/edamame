@@ -232,6 +232,7 @@ fn section_of(action: &Action) -> &'static str {
         | Action::TableDeleteRow
         | Action::TableDeleteColumn => "Table",
         Action::OpenSettings
+        | Action::OpenWelcome
         | Action::OpenKeybinds
         | Action::SwitchTheme
         | Action::CreateCustomTheme

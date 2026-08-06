@@ -28,6 +28,22 @@ pub struct Config {
     /// falls back to the compiled-in `Theme::default()` so the editor
     /// always has a working color table.
     pub theme: String,
+    /// Session-only stash of the user's on-disk theme name, set when
+    /// the startup indexed-color downgrade replaced [`Self::theme`]
+    /// (see `App::new` and [`theme::indexed_fallback_theme`]).
+    ///
+    /// `theme` itself carries the *effective* name so every consumer —
+    /// status bar, theme picker's "(current)" marker, welcome modal,
+    /// `apply_active_theme` — agrees with what is actually on screen.
+    /// [`Config::save`] then writes this stashed name back in `theme`'s
+    /// place, so a session that was downgraded for a weaker terminal
+    /// never rewrites the theme the user chose for a better one.  Any
+    /// *explicit* theme choice clears it via [`Config::set_theme`].
+    ///
+    /// `#[serde(skip)]` on both halves of the trip: it is never read
+    /// from or written to disk.
+    #[serde(skip)]
+    pub theme_downgraded_from: Option<String>,
     /// User-selected appearance mode.  Filters the theme picker and
     /// governs which counterpart theme is previewed when the mode is
     /// toggled.  Does not by itself change the active theme — see
@@ -46,6 +62,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             theme: "Edamame".into(),
+            theme_downgraded_from: None,
             appearance: AppearanceMode::default(),
             editor: EditorConfig::default(),
             modal: ModalConfig::default(),
@@ -214,6 +231,42 @@ impl Config {
     ///
     /// Callers typically log the error and continue rather than making it
     /// fatal.
+    /// Commit an *explicit* theme choice — the theme picker's
+    /// selection and the export-theme modal's newly written theme.
+    /// Clears [`Self::theme_downgraded_from`], so a user who deliberately
+    /// picks a theme while the indexed-color downgrade is in effect gets
+    /// that choice written to disk (their pick outranks our substitution)
+    /// and is not silently reverted on the next save.
+    ///
+    /// Deliberately NOT used by the picker's live-preview writes: those
+    /// are transient, and `Esc` restores the pre-open name, so clearing
+    /// the stash there would drop the downgrade on a cancelled preview.
+    pub fn set_theme(&mut self, name: String) {
+        self.theme = name;
+        self.theme_downgraded_from = None;
+    }
+
+    /// The config as it should appear on disk: identical to `self`
+    /// except that a session-only indexed-color downgrade is undone, so
+    /// `theme` carries the user's own choice.
+    ///
+    /// `save_merge` overwrites every key it finds in the existing
+    /// document, so without this a downgraded session would rewrite
+    /// `theme = "256 Dark"` over the theme the user picked on their
+    /// truecolor terminal — one `config.toml` is typically shared
+    /// between both machines.  Cloning is fine: saves are
+    /// user-initiated and rare.
+    fn as_written(&self) -> Config {
+        match &self.theme_downgraded_from {
+            Some(original) => Config {
+                theme: original.clone(),
+                theme_downgraded_from: None,
+                ..self.clone()
+            },
+            None => self.clone(),
+        }
+    }
+
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path()
             .context("Could not determine config directory (missing XDG_CONFIG_HOME/HOME)")?;
@@ -222,7 +275,7 @@ impl Config {
                 format!("Failed to create config directory: {}", parent.display())
             })?;
         }
-        let output = save_merge(self, &path)?;
+        let output = save_merge(&self.as_written(), &path)?;
         std::fs::write(&path, output)
             .with_context(|| format!("Failed to write config file: {}", path.display()))?;
         Ok(())
@@ -1016,6 +1069,54 @@ extension = "pdf"
     /// A user file with comments + the shipped "deviation" keys must
     /// round-trip through `save_merge` unchanged when nothing has
     /// changed.  No clutter is appended, comments survive verbatim.
+    /// A session-only indexed-color downgrade must never reach disk:
+    /// the same `config.toml` is typically shared (dotfiles) with a
+    /// truecolor terminal where the user's own theme is correct.
+    #[test]
+    fn downgraded_theme_is_not_written_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = \"Dracula\"\n").unwrap();
+        let config = Config {
+            theme: "256 Dark".into(),
+            theme_downgraded_from: Some("Dracula".into()),
+            ..Config::default()
+        };
+        let out = save_merge(&config.as_written(), &path).expect("merge ok");
+        assert!(out.contains("Dracula"), "user's theme must survive: {out}");
+        assert!(!out.contains("256 Dark"), "downgrade must not leak: {out}");
+    }
+
+    /// Without a stash the theme is written normally — the restore is
+    /// scoped to the downgrade, not a blanket "never write theme".
+    #[test]
+    fn undowngraded_theme_is_written_normally() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = \"Dracula\"\n").unwrap();
+        let config = Config {
+            theme: "Nord".into(),
+            ..Config::default()
+        };
+        let out = save_merge(&config.as_written(), &path).expect("merge ok");
+        assert!(out.contains("Nord"), "{out}");
+    }
+
+    /// An explicit pick outranks the substitution and clears the stash,
+    /// so it reaches disk like any other theme change.
+    #[test]
+    fn set_theme_clears_the_downgrade_stash() {
+        let mut config = Config {
+            theme: "256 Dark".into(),
+            theme_downgraded_from: Some("Dracula".into()),
+            ..Config::default()
+        };
+        config.set_theme("256 Light".into());
+        assert_eq!(config.theme, "256 Light");
+        assert!(config.theme_downgraded_from.is_none());
+        assert_eq!(config.as_written().theme, "256 Light");
+    }
+
     #[test]
     fn save_merge_unchanged_config_preserves_file_verbatim() {
         let dir = tempfile::tempdir().unwrap();

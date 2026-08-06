@@ -523,6 +523,50 @@ pub const DEFAULT_DARK_THEME: &str = "Edamame";
 /// previously-active theme has no counterpart.
 pub const DEFAULT_LIGHT_THEME: &str = "256 Light";
 
+/// The two built-in themes authored against the xterm-256 cube rather
+/// than in RGB.  Every other RGB built-in picks 24-bit colors that an
+/// indexed terminal quantizes — often to the point of illegibility
+/// (identical fg/bg after rounding) — so these are the substitution
+/// *targets* below truecolor.  See [`indexed_fallback_theme`].
+pub const INDEXED_DARK_THEME: &str = "256 Dark";
+pub const INDEXED_LIGHT_THEME: &str = "256 Light";
+
+/// The built-in that resolves every palette slot to [`Color::Reset`],
+/// deferring entirely to the terminal's own colors.
+pub const MONOCHROME_THEME: &str = "Monochrome Dark";
+
+/// Built-ins that already render correctly without 24-bit color, so a
+/// terminal below truecolor must neither substitute them nor warn about
+/// them: the two `256 *` themes are authored against the xterm-256 cube,
+/// and [`MONOCHROME_THEME`] emits `Color::Reset` everywhere, which is
+/// safe at *every* depth including `NoColor`.
+///
+/// Membership is asserted against [`BUILTIN_THEMES`] by
+/// `indexed_safe_themes_are_registered` so a rename can't silently turn
+/// one of these back into a substitution candidate.
+pub const INDEXED_SAFE_THEMES: &[&str] =
+    &[INDEXED_DARK_THEME, INDEXED_LIGHT_THEME, MONOCHROME_THEME];
+
+/// Pick the indexed-color theme to substitute on a terminal without
+/// 24-bit color, or `None` when `current` is already one of
+/// [`INDEXED_SAFE_THEMES`] (nothing to do) — which is also what makes
+/// the substitution idempotent across reloads.
+///
+/// The dark/light choice follows the *current theme's* appearance so
+/// a user on a light theme doesn't get flipped to a dark one by a
+/// capability downgrade; `configured` (the `appearance` config key) is
+/// the fallback for a theme that can't be classified, e.g. a user
+/// theme file that has since been deleted.
+pub fn indexed_fallback_theme(current: &str, configured: AppearanceMode) -> Option<&'static str> {
+    if INDEXED_SAFE_THEMES.contains(&current) {
+        return None;
+    }
+    Some(match theme_appearance(current).unwrap_or(configured) {
+        AppearanceMode::Dark => INDEXED_DARK_THEME,
+        AppearanceMode::Light => INDEXED_LIGHT_THEME,
+    })
+}
+
 /// Return the cross-mode sibling of `name`, if registered in
 /// [`THEME_COUNTERPARTS`].  Bidirectional: passing either half of a
 /// pair returns the other.
@@ -1248,6 +1292,61 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn indexed_fallback_follows_the_current_theme_appearance() {
+        // A user on a light theme must not be flipped to a dark one by
+        // a capability downgrade, and vice versa.  The `configured`
+        // argument is deliberately the *opposite* of each theme's own
+        // appearance here to prove it isn't what's consulted.
+        assert_eq!(
+            indexed_fallback_theme("Dracula", AppearanceMode::Light),
+            Some("256 Dark"),
+        );
+        assert_eq!(
+            indexed_fallback_theme("GitHub Light", AppearanceMode::Dark),
+            Some("256 Light"),
+        );
+    }
+
+    #[test]
+    fn indexed_fallback_uses_configured_appearance_for_unknown_themes() {
+        // An unresolvable name (deleted user theme file) can't be
+        // classified, so the `appearance` config key decides.
+        assert_eq!(
+            indexed_fallback_theme("no-such-theme", AppearanceMode::Light),
+            Some("256 Light"),
+        );
+        assert_eq!(
+            indexed_fallback_theme("no-such-theme", AppearanceMode::Dark),
+            Some("256 Dark"),
+        );
+    }
+
+    #[test]
+    fn indexed_fallback_is_a_noop_for_the_indexed_safe_themes() {
+        // Idempotence for the two `256 *` targets: the substituted theme
+        // must not itself trigger a substitution, or a reload would fire
+        // the notice forever.  And `Monochrome Dark` is already correct
+        // at any depth, so swapping it — for a *less* safe palette, and
+        // with a modal to explain the swap — would be pure noise.
+        for name in INDEXED_SAFE_THEMES {
+            assert_eq!(indexed_fallback_theme(name, AppearanceMode::Dark), None);
+            assert_eq!(indexed_fallback_theme(name, AppearanceMode::Light), None);
+        }
+    }
+
+    #[test]
+    fn indexed_safe_themes_are_registered() {
+        // A rename in BUILTIN_THEMES that misses this list would leave a
+        // safe theme silently substitutable.
+        for name in INDEXED_SAFE_THEMES {
+            assert!(
+                BUILTIN_THEMES.iter().any(|(n, _)| n == name),
+                "{name} is not a registered built-in",
+            );
         }
     }
 

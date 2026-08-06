@@ -88,6 +88,10 @@ pub enum WelcomeResponse {
     /// User pressed Save.  Caller should persist the choices the state
     /// exposes and dismiss the modal.
     Save,
+    /// User pressed `Esc` / clicked the `esc` affordance on a
+    /// [`WelcomeState::dismissable`] instance.  Caller should close
+    /// **without persisting anything** — see the field's docs.
+    Cancel,
 }
 
 /// Live state of the welcome modal — the in-flight tri-state choices
@@ -107,6 +111,24 @@ pub struct WelcomeState {
     /// writes `show_welcome = false` (the modal won't reappear on next
     /// launch) unless the user opts back in by unchecking this box.
     pub dont_show_again: bool,
+    /// Whether `Esc` (and the `esc` title-bar affordance) closes without
+    /// saving.  Default `false`: on an actual first run the spec
+    /// replaces Cancel with the explicit "Show on next launch" toggle,
+    /// so Save is the only resolution.
+    ///
+    /// Set via [`Self::with_dismissable`] on every *on-demand* opening
+    /// (`Action::OpenWelcome`, the capabilities notice's "Adjust
+    /// settings" button), where a no-op exit must exist: below truecolor
+    /// this modal force-sets images and diagrams to `Never` and Save
+    /// *persists* those forced values, so an inescapable instance would
+    /// overwrite whatever the user chose on their capable terminal —
+    /// one `config.toml` is typically shared between both.
+    ///
+    /// Read by exactly two sites, both off this one field: the `Esc`
+    /// arm of [`Self::handle_key`] and `show_close_hint` in `render`
+    /// (which is also what populates [`Self::esc_button_rect`], so the
+    /// click path can't dismiss an instance that renders no affordance).
+    pub dismissable: bool,
     /// True when the terminal reports an image protocol **and** 24-bit
     /// color — image/remote/diagram rows are interactive only when this
     /// is true.  Halfblocks (and even a native protocol) technically
@@ -184,6 +206,7 @@ impl WelcomeState {
             diagrams,
             use_vim,
             dont_show_again: true,
+            dismissable: false,
             image_capable: caps.image_protocol.is_some() && full_color,
             full_color,
             pre_cascade_remote: None,
@@ -206,6 +229,15 @@ impl WelcomeState {
             state.step_focus(1);
         }
         state
+    }
+
+    /// Allow `Esc` to close this instance without saving.  Builder
+    /// rather than a sixth `new` parameter so the two adjacent `bool`s
+    /// can't be transposed silently at a call site.  See
+    /// [`Self::dismissable`] for when it applies.
+    pub fn with_dismissable(mut self, dismissable: bool) -> Self {
+        self.dismissable = dismissable;
+        self
     }
 
     /// True iff the cascade rule has forced remote to Never because
@@ -338,10 +370,14 @@ impl WelcomeState {
             KeyCode::Enter | KeyCode::Char(' ') if self.focused == WelcomeFocus::Save => {
                 WelcomeResponse::Save
             }
-            // No Esc dismissal — the spec replaces Cancel with the
-            // explicit "Show on next launch" toggle.  Esc is consumed
-            // but does nothing so the modal can't be closed without
-            // pressing Save (which respects the show-again toggle).
+            // On a first run there is no Esc dismissal — the spec
+            // replaces Cancel with the explicit "Show on next launch"
+            // toggle, so Esc is consumed but does nothing and the modal
+            // can't be closed without pressing Save (which respects that
+            // toggle).  An on-demand opening is `dismissable` and exits
+            // without persisting; see the field's docs for why that
+            // escape hatch has to exist below truecolor.
+            KeyCode::Esc if self.dismissable => WelcomeResponse::Cancel,
             KeyCode::Esc => WelcomeResponse::Continue,
             // Left / Right (any control row) and Activate (Enter / Space on a
             // control row) route through the single key → ControlInput map →
@@ -365,6 +401,12 @@ impl WelcomeState {
     /// Hit-test `(col, row)` against the cached rects from the last
     /// render.  Returns the matching response.
     pub fn handle_click(&mut self, col: u16, row: u16) -> WelcomeResponse {
+        // `esc_button_rect` is only populated when `dismissable` drives
+        // `show_close_hint`, so there is no affordance to click on a
+        // first-run instance and no second gate is needed here.
+        if rect_contains(self.esc_button_rect, col, row) {
+            return WelcomeResponse::Cancel;
+        }
         if rect_contains(self.theme_button_rect, col, row) {
             self.focused = WelcomeFocus::Theme;
             return WelcomeResponse::OpenThemePicker;
@@ -539,7 +581,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             FrameOpts {
                 title: "Welcome to edamame",
                 kind: ModalKind::Normal,
-                show_close_hint: false,
+                show_close_hint: state.dismissable,
                 content,
                 theme: self.theme,
             },
@@ -1202,6 +1244,50 @@ mod tests {
         )
     }
 
+    fn esc(s: &mut WelcomeState) -> WelcomeResponse {
+        s.handle_key(&KeyEvent::new(
+            KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ))
+    }
+
+    #[test]
+    fn esc_is_inert_on_a_first_run_instance() {
+        // Save is the only resolution; the "Show on next launch" toggle
+        // stands in for Cancel.
+        let caps = caps_full();
+        let mut s = make_state(&caps);
+        assert!(!s.dismissable);
+        assert_eq!(esc(&mut s), WelcomeResponse::Continue);
+    }
+
+    #[test]
+    fn esc_cancels_an_on_demand_instance() {
+        // Without this, reopening the modal on a 256-color terminal
+        // would be a one-way door: images / diagrams are forced to
+        // `Never` and Save persists them over the user's real choice.
+        let caps = caps_256_color();
+        let mut s = make_state(&caps).with_dismissable(true);
+        assert_eq!(s.images, ImagesEnabled::Never, "forced below truecolor");
+        assert_eq!(esc(&mut s), WelcomeResponse::Cancel);
+    }
+
+    #[test]
+    fn a_first_run_instance_renders_no_esc_affordance_to_click() {
+        // `handle_click` gates the cancel path on `esc_button_rect`
+        // alone, so that rect must stay `None` when not dismissable —
+        // otherwise a click could close a modal `Esc` cannot.
+        let caps = caps_full();
+        let mut s = make_state(&caps);
+        render_rows(&mut s);
+        assert!(s.esc_button_rect.is_none());
+
+        let mut s = make_state(&caps).with_dismissable(true);
+        render_rows(&mut s);
+        let rect = s.esc_button_rect.expect("esc affordance is rendered");
+        assert_eq!(s.handle_click(rect.x, rect.y), WelcomeResponse::Cancel);
+    }
+
     #[test]
     fn tab_cycles_focus_skipping_disabled_rows_when_no_images() {
         let caps = caps_no_images();
@@ -1561,17 +1647,6 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert_eq!(r, WelcomeResponse::OpenThemePicker);
-    }
-
-    #[test]
-    fn esc_does_not_dismiss() {
-        let caps = caps_full();
-        let mut s = make_state(&caps);
-        let r = s.handle_key(&KeyEvent::new(
-            KeyCode::Esc,
-            crossterm::event::KeyModifiers::NONE,
-        ));
-        assert_eq!(r, WelcomeResponse::Continue);
     }
 
     #[test]

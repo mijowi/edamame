@@ -73,6 +73,7 @@ pub(super) fn diff_safe_action(action: &Action) -> Option<Action> {
             | ShowMarkdownCheatSheet
             | ShowAbout
             | OpenSettings
+            | OpenWelcome
             | OpenKeybinds
             | SwitchTheme
             | CreateCustomTheme
@@ -136,6 +137,7 @@ pub(super) fn search_safe_action(action: &Action) -> Option<Action> {
             | ShowMarkdownCheatSheet
             | ShowAbout
             | OpenSettings
+            | OpenWelcome
             | OpenKeybinds
             | SwitchTheme
             | CreateCustomTheme
@@ -291,6 +293,10 @@ impl App {
             }
             Action::OpenSettings => {
                 self.open_settings_overlay();
+                true
+            }
+            Action::OpenWelcome => {
+                self.open_welcome_modal();
                 true
             }
             Action::OpenKeybinds => {
@@ -1066,6 +1072,9 @@ impl App {
             Action::OpenSettings => {
                 self.open_settings_overlay();
             }
+            Action::OpenWelcome => {
+                self.open_welcome_modal();
+            }
             Action::OpenKeybinds => {
                 self.open_keybinds_overlay();
             }
@@ -1387,6 +1396,23 @@ impl App {
     pub fn open_settings_overlay(&mut self) {
         self.modal_stack
             .push(Box::new(modal::SettingsOverlayModal::new()));
+    }
+
+    /// Open the welcome modal on demand — the capability-aware settings
+    /// surface.  Unlike the startup path this ignores
+    /// `config.editor.show_welcome`, and it rebuilds the state from the
+    /// live `capabilities`, so it doubles as the "my terminal changed"
+    /// entry point: images / diagrams / theme are re-gated against what
+    /// *this* terminal can actually do.  Guarded against stacking two
+    /// copies, like the About modal.
+    pub fn open_welcome_modal(&mut self) {
+        if self.modal_stack.contains::<modal::WelcomeModal>() {
+            return;
+        }
+        self.modal_stack.push(Box::new(modal::WelcomeModal::new(
+            &self.capabilities,
+            &self.config,
+        )));
     }
 
     /// Open the fuzzy-searchable theme picker.  Replaces the Theme

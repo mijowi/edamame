@@ -26,6 +26,7 @@ use crate::terminal::ColorDepth;
 use crate::ui::ModalKind;
 
 use super::flash::MessageKind;
+use super::theme_fallback;
 use super::{App, AppEvent};
 
 /// Result of [`App::run_external_editor`].  Tells the caller whether
@@ -103,6 +104,12 @@ impl App {
         // — that would fight their stated intent.  At startup the
         // tradeoff goes the other way; see `Config::load` for the
         // rationale.
+        // Captured before the reload replaces `self.config`: it tells
+        // us whether a substitution that fires below is *new* (the user
+        // just hand-edited `theme` to something this terminal can't
+        // render) or the same one they already acknowledged at startup.
+        // Only the former is worth a modal.
+        let previous_downgrade = self.config.theme_downgraded_from.clone();
         match Config::load(truecolor, false) {
             Ok(loaded) => {
                 self.config = loaded.config;
@@ -119,9 +126,28 @@ impl App {
                 // the external editor takes effect without a
                 // restart.  Uses the already-loaded `ThemeFile` so
                 // we don't read the theme TOML twice.
+                //
+                // Re-apply the indexed-color substitution first: the
+                // reload just replaced `config.theme` with whatever is
+                // on disk, which on a terminal without 24-bit color is
+                // exactly the palette we swapped away from at startup.
+                // Without this, exiting `$EDITOR` would repaint the
+                // session unreadable.
+                let mut theme_file = loaded.theme;
+                if let Some(d) = theme_fallback::apply(&mut self.config, &self.capabilities) {
+                    theme_file = d.theme_file;
+                    if previous_downgrade.as_deref() != Some(d.configured.as_str()) {
+                        self.modal_stack
+                            .push(Box::new(modal::ThemeDowngradeModal::new(
+                                d.configured,
+                                d.substituted,
+                            )));
+                        self.needs_draw = true;
+                    }
+                }
                 let monochrome = self.capabilities.color_depth == ColorDepth::NoColor;
                 let new_theme: &'static Theme =
-                    Box::leak(Box::new(Theme::from_file(&loaded.theme, monochrome)));
+                    Box::leak(Box::new(Theme::from_file(&theme_file, monochrome)));
                 self.theme = new_theme;
                 self.editor.set_theme(new_theme);
                 if let Some(modal) = modal::ConfigWarningModal::from_warnings(&loaded.warnings) {

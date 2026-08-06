@@ -1,4 +1,5 @@
 pub mod modal;
+mod theme_fallback;
 
 mod actions;
 mod autosave;
@@ -374,6 +375,20 @@ impl App {
         // `Theme::from_file` handles the monochrome fallback
         // internally so `NoColor` terminals never emit color
         // escapes regardless of the theme file's contents.
+        // Substitute an indexed-color theme when this terminal can't do
+        // 24-bit.  Every other built-in (and essentially every user
+        // theme) is authored in RGB; an indexed terminal quantizes those
+        // values, which routinely collapses fg and bg into the same cube
+        // entry — including inside the very modals that would explain
+        // the problem.  So the swap happens here, before the first
+        // frame, rather than being offered as advice.  Nothing is
+        // persisted: see `theme_fallback` and `Config::save`.
+        let mut theme_file = theme_file;
+        let theme_downgrade = theme_fallback::apply(&mut config, &capabilities).map(|d| {
+            theme_file = d.theme_file;
+            (d.configured, d.substituted)
+        });
+
         let monochrome = capabilities.color_depth == ColorDepth::NoColor;
         let theme: &'static Theme = Box::leak(Box::new(Theme::from_file(&theme_file, monochrome)));
 
@@ -438,11 +453,18 @@ impl App {
         // no reserved rows beneath.  The `Ask` / `Always` paths leave
         // the layout reserved so the prompt / live decode populates the
         // area; the declined-session flip happens in the prompt handler.
-        let images_off = matches!(config.images.enabled, crate::config::ImagesEnabled::Never);
-        let diagrams_off = matches!(
-            config.diagrams.enabled,
-            crate::config::DiagramsEnabled::Never
-        );
+        // A terminal without 24-bit color collapses them too, for the
+        // same reason `media_renderable` refuses to decode there — the
+        // quantized output reads as broken, not degraded.  Session-only:
+        // `config.images.enabled` is left untouched, so the user's
+        // choice returns with them to a capable terminal.
+        let images_off = !capabilities.full_color()
+            || matches!(config.images.enabled, crate::config::ImagesEnabled::Never);
+        let diagrams_off = !capabilities.full_color()
+            || matches!(
+                config.diagrams.enabled,
+                crate::config::DiagramsEnabled::Never
+            );
         if images_off {
             editor.images_enabled = false;
         }
@@ -490,17 +512,39 @@ impl App {
                 &config.editor.seen_terminal_fingerprints,
             )
         };
-        let images_enabled_prompt = if suppress_legacy_prompts {
+        // A first visit to a terminal that also can't render the user's
+        // theme is one story, not two.  When both notices would fire the
+        // capabilities summary — the more complete of the two — absorbs
+        // the substitution's explanation and the standalone modal is
+        // dropped; otherwise (terminal already seen, or the notice is
+        // suppressed behind the welcome) the standalone modal carries it.
+        let (capabilities_notice, theme_downgrade_modal) =
+            match (capabilities_notice, theme_downgrade) {
+                (Some(notice), Some((configured, substituted))) => (
+                    Some(notice.with_theme_downgrade(configured, substituted)),
+                    None,
+                ),
+                (notice, Some((configured, substituted))) => (
+                    notice,
+                    Some(modal::ThemeDowngradeModal::new(configured, substituted)),
+                ),
+                (notice, None) => (notice, None),
+            };
+        // Also suppressed below 24-bit color: `media_renderable` refuses
+        // to decode there, so asking the user to opt in to something we
+        // will then decline to draw is worse than staying quiet.
+        let media_capable = capabilities.full_color();
+        let images_enabled_prompt = if suppress_legacy_prompts || !media_capable {
             None
         } else {
             modal::ImagesEnabledPromptModal::from_state(&editor, &config)
         };
-        let diagrams_enabled_prompt = if suppress_legacy_prompts {
+        let diagrams_enabled_prompt = if suppress_legacy_prompts || !media_capable {
             None
         } else {
             modal::DiagramsEnabledPromptModal::from_state(&editor, &config)
         };
-        let remote_image_prompt = if suppress_legacy_prompts {
+        let remote_image_prompt = if suppress_legacy_prompts || !media_capable {
             None
         } else {
             modal::RemoteImagePromptModal::from_state(&editor, &config)
@@ -510,8 +554,10 @@ impl App {
         // Push the queued startup-time modals onto the stack in
         // reverse-priority order so the highest-priority one is on
         // top.  Order shown to the user when present: config-warning →
-        // welcome → startup-notice → images-enabled → diagrams-enabled
-        // → remote-image.  The legacy prompts (everything below
+        // theme-downgrade → welcome → startup-notice → images-enabled →
+        // diagrams-enabled → remote-image.  The theme-downgrade and
+        // startup-notice are mutually exclusive (see above): when both
+        // apply, the notice carries the downgrade text.  The legacy prompts (everything below
         // welcome) are suppressed via `suppress_legacy_prompts` whenever
         // the welcome itself is queued, so on a launch that shows the
         // welcome the user only sees config-warning + welcome.
@@ -529,6 +575,12 @@ impl App {
             modal_stack.push(Box::new(m));
         }
         if let Some(m) = welcome_modal {
+            modal_stack.push(Box::new(m));
+        }
+        // Above the welcome: the theme substitution explains the colors
+        // every other modal is being drawn in, so it should be read
+        // first.  Below the config warning, which reports a broken file.
+        if let Some(m) = theme_downgrade_modal {
             modal_stack.push(Box::new(m));
         }
         if let Some(m) = config_warning_modal {
@@ -549,10 +601,15 @@ impl App {
         // the dominant source of initial-load lag.
         // Skipped when images are configured as `Never` — no diagram
         // will ever decode, so the warmup would be wasted IO.
-        if !matches!(
-            config.diagrams.enabled,
-            crate::config::DiagramsEnabled::Never
-        ) {
+        // Skipped when images are configured as `Never`, and when the
+        // terminal can't render them at all — no diagram will ever
+        // decode, so the warmup would be wasted IO.
+        if media_capable
+            && !matches!(
+                config.diagrams.enabled,
+                crate::config::DiagramsEnabled::Never
+            )
+        {
             std::thread::spawn(crate::diagram::warm_fontdb);
         }
 

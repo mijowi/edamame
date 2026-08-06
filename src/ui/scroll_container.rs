@@ -71,7 +71,7 @@ pub const MIN_PAD_H: u16 = 1;
 /// [`crate::ui::ModalView::with_max_content_width`]; modals whose width
 /// is set by tabular content (capability rows, keybinding tables) should
 /// not, since clamping would wrap columns that are meant to align.
-pub const PROSE_CONTENT_WIDTH: u16 = 80;
+pub const PROSE_CONTENT_WIDTH: u16 = 64;
 /// Vertical chrome rows reserved by `draw_frame`: 1 top pad + 1 title +
 /// 1 spacer + 1 bottom pad.  Pinned content (button row, footer) sits
 /// above the bottom pad inside the body rect returned in

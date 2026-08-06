@@ -225,6 +225,7 @@ impl App {
             | Action::ShowMarkdownCheatSheet
             | Action::ShowAbout
             | Action::OpenSettings
+            | Action::OpenWelcome
             | Action::OpenKeybinds
             | Action::SwitchTheme
             | Action::CreateCustomTheme

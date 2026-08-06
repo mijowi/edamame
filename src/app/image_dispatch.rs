@@ -62,6 +62,21 @@ pub(super) fn infos_in_viewport_window(
 }
 
 impl App {
+    /// Whether this terminal can render decoded pixels at all.
+    ///
+    /// Below 24-bit color every decoded pixel collapses into the
+    /// 256-color cube, which reads as broken rather than degraded — the
+    /// same reasoning that forces the indexed-color theme substitution
+    /// (`app::theme_fallback`) and that the welcome modal applies to its
+    /// images / diagrams rows.  Gating here rather than by rewriting
+    /// `config.images.enabled` keeps it a *session* fact: a persisted
+    /// `Always`, chosen on the user's truecolor terminal, survives
+    /// untouched in `config.toml` and takes effect again the moment they
+    /// go back to it.
+    pub(super) fn media_renderable(&self) -> bool {
+        self.capabilities.full_color()
+    }
+
     /// Whether inline image rendering should happen right now.  The
     /// persisted `config.images.enabled` decides when it's `Always` or
     /// `Never`; `Ask` defers to `session_images_enabled`, which is
@@ -69,6 +84,9 @@ impl App {
     /// prompt.  While the prompt is still pending this returns false
     /// so no decodes are dispatched behind the user's back.
     pub(super) fn effective_images_enabled(&self) -> bool {
+        if !self.media_renderable() {
+            return false;
+        }
         match self.config.images.enabled {
             crate::config::ImagesEnabled::Always => true,
             crate::config::ImagesEnabled::Never => false,
@@ -80,6 +98,9 @@ impl App {
     /// blocks (mermaid, etc.).  Decoupled from the image flag so a user
     /// can answer the two prompts independently.
     pub(super) fn effective_diagrams_enabled(&self) -> bool {
+        if !self.media_renderable() {
+            return false;
+        }
         match self.config.diagrams.enabled {
             crate::config::DiagramsEnabled::Always => true,
             crate::config::DiagramsEnabled::Never => false,
@@ -94,6 +115,9 @@ impl App {
     /// state still reports `true` so the layout doesn't reflow while
     /// the modal is on screen.
     pub(super) fn images_layout_enabled(&self) -> bool {
+        if !self.media_renderable() {
+            return false;
+        }
         match self.config.images.enabled {
             crate::config::ImagesEnabled::Never => false,
             crate::config::ImagesEnabled::Always => true,
@@ -103,6 +127,9 @@ impl App {
 
     /// Counterpart to [`Self::images_layout_enabled`] for diagram blocks.
     pub(super) fn diagrams_layout_enabled(&self) -> bool {
+        if !self.media_renderable() {
+            return false;
+        }
         match self.config.diagrams.enabled {
             crate::config::DiagramsEnabled::Never => false,
             crate::config::DiagramsEnabled::Always => true,

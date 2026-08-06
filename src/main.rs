@@ -1,28 +1,13 @@
-mod app;
-mod config;
-mod constants;
-mod diagram;
-mod diff;
-mod document;
-mod editor;
-// The binary drives the HTML pipeline but not the custom-export (PDF/DOCX)
-// one, which is library-only surface exercised by the lib tests.  The
-// bin-only dead-code / unused-import allows are scoped to those exact items
-// in `export.rs` / `export/custom.rs` / `html.rs` / `runner.rs` rather than
-// blanket-silencing the whole `export` module here.
-mod export;
-mod image;
-mod input;
-mod markdown;
-mod search;
-mod terminal;
-mod ui;
-mod watcher;
-
+// The binary is a thin shell over the library crate — it deliberately
+// declares no modules of its own.  Re-declaring them here would compile
+// a second, private copy of the entire tree, which is how `app`'s unit
+// tests previously ended up reachable only via `cargo test --bin
+// edamame`.  See `src/lib.rs`.
 use anyhow::Result;
-use app::App;
-use config::{Config, LoadedConfig};
-use terminal::{Capabilities, ColorDepth, TerminalSetup};
+
+use edamame::app::App;
+use edamame::config::{Config, LoadedConfig};
+use edamame::terminal::{self, Capabilities, ColorDepth, TerminalSetup};
 
 fn main() -> Result<()> {
     // ── Parse CLI arguments ────────────────────────────────────────

@@ -129,6 +129,37 @@ impl CapSummary {
     }
 }
 
+/// The prose explaining that edamame substituted an indexed-color
+/// theme for this session, as one wrapped paragraph.
+///
+/// Shared verbatim by the two modals that can deliver it — the
+/// new-terminal capabilities notice (when the substitution and a
+/// first-visit both happen on the same launch, the notice absorbs this
+/// text and the standalone modal is suppressed, so the user reads one
+/// explanation rather than two) and
+/// [`crate::app::modal::ThemeDowngradeModal`] (every other case).
+///
+/// Emitted as *paragraph* `Line`s, not pre-broken display lines:
+/// `ModalView` wraps its body with `Wrap { trim: false }` and sizes it
+/// with `wrapped_rows`, so hand-splitting would double-wrap at narrow
+/// widths and leave ragged short rows at wide ones.
+pub fn theme_downgrade_lines(
+    configured: &str,
+    substituted: &str,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let opener = "This terminal does not support 24-bit color.";
+    vec![Line::from(vec![
+        Span::styled(opener, Style::default().fg(theme.palette.warning)),
+        Span::raw(format!(
+            " Your selected theme, {configured}, cannot be displayed correctly by this \
+             terminal. edamame switched to the {substituted} theme for this session. \
+             Your saved theme is unchanged — {configured} will be displayed in a terminal \
+             with 24-bit color support."
+        )),
+    ])]
+}
+
 /// Build one body `Line` per capability row, themed for inclusion in a
 /// `ModalView` body slice.  Used by the standalone capabilities-notice
 /// modal, which doesn't drive the welcome modal's bespoke scroll

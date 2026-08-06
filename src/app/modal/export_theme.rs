@@ -159,6 +159,13 @@ pub(crate) fn write_exported_theme(
 /// Serialise the chosen source theme to TOML, write it to
 /// `<config_dir>/themes/<new_name>.toml`, persist
 /// `config.theme = <new_name>`, reapply, and open the success modal.
+///
+/// The persist goes through [`Config::set_theme`], never a bare field
+/// assignment: while an indexed-color downgrade is in effect
+/// `Config::save` writes `theme_downgraded_from` in `theme`'s place, so
+/// a direct write would be discarded and the theme the user just
+/// created would silently fail to reach disk.  Creating a theme is an
+/// explicit choice and outranks our substitution.
 fn perform_export(app: &mut App, source: String, new_name: String) {
     let truecolor = app.capabilities.color_depth == crate::terminal::ColorDepth::TrueColor;
     let theme_file = resolve_source_theme(&source, truecolor);
@@ -179,7 +186,7 @@ fn perform_export(app: &mut App, source: String, new_name: String) {
         }
     };
 
-    app.config.theme = new_name.clone();
+    app.config.set_theme(new_name.clone());
     if let Err(e) = app.config.save() {
         app.notify(
             format!("Theme exported but config save failed: {e}"),

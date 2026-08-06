@@ -5,17 +5,15 @@
 - Refactor/clean up source and tests
 - Add/update performance benchmark tests
 
-- Two separate modal content-width systems exist. The 20 `ModalChrome`-backed modals now share an opt-in cap — `ModalView::with_max_content_width` / `ModalChrome::with_max_content_width`, defaulting to size-to-content, with `PROSE_CONTENT_WIDTH` (80 columns of text) as the house value for prose bodies. The 9 overlays that bypass `ModalView` and build `ContentSize` directly (`welcome`, `settings_overlay`, `keybinds_overlay`, `search_modal`, `save_copy_modal`, `insert_table_modal`, `export_html_modal`, `diff_intro_modal`, `searchable_list`) each hand-roll their own sizing instead — e.g. `welcome` pins `const CONTENT_WIDTH = 64`, `keybinds_overlay` raises `KEYBINDS_MAX_PAD_H` to 8. So 64 and 80 are currently two different answers to the same question. Unify by lifting the cap onto `ContentSize` (where `max_pad_h` already lives) so `centered_rect_for_content` clamps for every caller and `ModalView` merely forwards to it; then the 9 bespoke overlays can drop their private constants. Touches 9 call sites, so it wants its own change.
+- Two separate modal content-width systems exist. The 20 `ModalChrome`-backed modals now share an opt-in cap — `ModalView::with_max_content_width` / `ModalChrome::with_max_content_width`, defaulting to size-to-content, with `PROSE_CONTENT_WIDTH` (64 columns of text) as the house value for prose bodies. The 9 overlays that bypass `ModalView` and build `ContentSize` directly (`welcome`, `settings_overlay`, `keybinds_overlay`, `search_modal`, `save_copy_modal`, `insert_table_modal`, `export_html_modal`, `diff_intro_modal`, `searchable_list`) each hand-roll their own sizing instead — e.g. `welcome` pins `const CONTENT_WIDTH = 64`, `keybinds_overlay` raises `KEYBINDS_MAX_PAD_H` to 8. Unify by lifting the cap onto `ContentSize` (where `max_pad_h` already lives) so `centered_rect_for_content` clamps for every caller and `ModalView` merely forwards to it; then the 9 bespoke overlays can drop their private constants. Touches 9 call sites, so it wants its own change.
+
+- Clicking in a paragraph with inline code does not account for the render/raw character offset, resulting in unexpected cursor placement.
 
 - Handle paragraphs containing line breaks
 
 - Add a newline to all the selected item hints in the settings modal, except for "Diff when file changes", which already is two lines long, so that the modal does not resize when the diff item is selected.
 
 - Images take up full space when disabled with "never"
-
-- In the "It looks like you're using a new terminal application" modal, we should add a quick path for the user to change their settings to accommodate the new terminal if e.g. terminal capabilities have degraded or improved. How should we do this? Add a button that links to the settings modal? Or to the welcome modal?
-- This modal also incorrectly shows true color support for Apple Terminal, diverging from the welcome modal's color support detection. Do they not use the same path?
-- Any time a terminal without true color support is opened, and the theme is not 256 dark or 256 light, edamame should set the theme to 256 dark (with or without changing the config file?) and show a warning modal.
 
 ## Compatibility
 - macOS Apple Terminal, iTerm2
