@@ -54,7 +54,7 @@ pub use keybinds_overlay::{KeybindsState, KeybindsView};
 pub use link_view::LinkLayoutSnapshot;
 pub use markdown_cheat_sheet::body_lines as markdown_cheat_sheet_body;
 pub use modal::{ModalButton, ModalResponse, ModalState, ModalView};
-pub use scroll_container::ModalKind;
+pub use scroll_container::{ModalKind, PROSE_CONTENT_WIDTH};
 // Used by integration tests in tests/ui.rs.
 #[allow(unused_imports)]
 pub use rendered_view::{RenderedView, RenderedViewState};
