@@ -39,7 +39,7 @@ pub mod theme_picker;
 pub mod welcome;
 
 pub use bottom_region::{hint_line_for, BottomRegion, HintChord, HintContent, HintCtx, HintSet};
-pub use cap_summary::{build_cap_lines, CapSummary};
+pub use cap_summary::{build_cap_lines, theme_downgrade_lines, CapSummary};
 pub use diff_intro_modal::{DiffIntroResponse, DiffIntroState, DiffIntroView};
 #[allow(unused_imports)]
 pub use diff_view::{DiffView, DiffViewState};
@@ -69,4 +69,4 @@ pub use settings_overlay::SettingsResponse;
 pub use settings_overlay::{SettingsState, SettingsView};
 pub use table_view::DropIndicator;
 pub use text_input::sanitize_paste;
-pub use welcome::{WelcomeResponse, WelcomeState, WelcomeView};
+pub use welcome::{WelcomeFocus, WelcomeResponse, WelcomeState, WelcomeView};

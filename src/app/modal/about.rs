@@ -45,7 +45,11 @@ impl AboutModal {
     /// `release` is the App's session cache — [`ReleaseStatus::Pending`]
     /// on the first open (the caller spawns the fetch), the cached
     /// result on every reopen.
-    pub fn new(release: ReleaseStatus) -> Self {
+    ///
+    /// `pub(crate)` to match `ReleaseStatus`, which is crate-private —
+    /// as is `set_release` below.  Nothing outside the crate constructs
+    /// a modal.
+    pub(crate) fn new(release: ReleaseStatus) -> Self {
         // Vary the opening tagline without a rand dependency: the
         // sub-second nanos of the wall clock are effectively uniform
         // across user-initiated opens.

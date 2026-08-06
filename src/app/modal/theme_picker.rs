@@ -125,14 +125,21 @@ impl ThemePickerModal {
         ModalOutcome::CloseAnd(Box::new(move |app| {
             let theme_changed = app.config.theme != name;
             let mode_changed = app.config.appearance != selected_mode;
-            if theme_changed {
-                app.config.theme = name.clone();
-            }
+            // Commit through `set_theme` unconditionally — even when the
+            // name is unchanged.  On an indexed-color session the user
+            // may be confirming the substituted theme itself, and that
+            // confirmation is exactly what clears the downgrade stash so
+            // the choice reaches disk.
+            let downgrade_cleared = app.config.theme_downgraded_from.is_some();
+            app.config.set_theme(name.clone());
             app.config.appearance = selected_mode;
             if theme_changed || mode_changed {
                 app.apply_active_theme();
             }
-            if name != original_theme || selected_mode != original_mode {
+            // Save when anything the user can see changed, or when the
+            // stash was just cleared — otherwise the cleared downgrade
+            // would only reach disk on some later, unrelated save.
+            if name != original_theme || selected_mode != original_mode || downgrade_cleared {
                 app.save_config_with_flash("failed to persist theme change");
             }
         }))
