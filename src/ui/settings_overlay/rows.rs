@@ -264,7 +264,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         display_only_row(""),
         RowDef {
             label: "Open config folder",
-            description: Some("Press Enter to open in file manager"),
+            description: Some("\nPress Enter to open in file manager"),
             describe: None,
             kind: RowKind {
                 focusable: true,
@@ -281,7 +281,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: "Open config.toml",
-            description: Some("Press Enter to open in default editor"),
+            description: Some("\nPress Enter to open in default editor"),
             describe: None,
             kind: RowKind {
                 focusable: true,
@@ -304,7 +304,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         //    rows so the image group stays contiguous ──
         RowDef {
             label: LABEL_AUTOSAVE,
-            description: Some("Automatically save changes when idle"),
+            description: Some("\nAutomatically save changes when idle"),
             describe: None,
             kind: RowKind {
                 focusable: true,
@@ -323,7 +323,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: LABEL_BIG_H1,
-            description: Some("Render H1 titles as large block-character text"),
+            description: Some("\nRender H1 titles as large block-character text"),
             describe: None,
             kind: RowKind {
                 focusable: true,
@@ -343,8 +343,8 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         RowDef {
             label: LABEL_BLINK_CURSOR,
             // Static fallback; `describe` embeds the file-only cadence.
-            description: Some("Blink the editor cursor"),
-            describe: Some(|c| format!("Blink cursor every {} ms", c.editor.cursor_blink_ms)),
+            description: Some("\nBlink the editor cursor"),
+            describe: Some(|c| format!("\nBlink cursor every {} ms", c.editor.cursor_blink_ms)),
             kind: RowKind {
                 focusable: true,
                 action: RowAction::Cycle,
@@ -362,7 +362,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: LABEL_LIMIT_WIDTH,
-            description: Some("Limit the editor content width"),
+            description: Some("\nLimit the editor content width"),
             describe: None,
             kind: RowKind {
                 focusable: true,
@@ -381,7 +381,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: "  Char limit",
-            description: Some("Maximum content width when limit is on"),
+            description: Some("\nMaximum content width when limit is on"),
             describe: None,
             kind: RowKind {
                 focusable: true,
@@ -403,7 +403,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: LABEL_SCROLL_SPEED,
-            description: Some("Lines per mouse-wheel tick"),
+            description: Some("\nLines per mouse-wheel tick"),
             describe: None,
             kind: RowKind {
                 focusable: true,
@@ -449,7 +449,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: LABEL_SHOW_DIAGRAMS,
-            description: Some("Render Mermaid code blocks as inline diagrams"),
+            description: Some("\nRender Mermaid code blocks as inline diagrams"),
             describe: None,
             kind: RowKind {
                 focusable: true,
@@ -476,7 +476,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: LABEL_SHOW_IMAGES,
-            description: Some("Show images in preview and render mode"),
+            description: Some("\nShow images in preview and render mode"),
             describe: None,
             kind: RowKind {
                 focusable: true,
@@ -503,7 +503,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: LABEL_SHOW_REMOTE_IMAGES,
-            description: Some("Fetch images from http(s):// URLs"),
+            description: Some("\nFetch images from http(s):// URLs"),
             describe: None,
             kind: RowKind {
                 focusable: true,
@@ -532,7 +532,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: LABEL_LINE_NUMBERS,
-            description: Some("Show line numbers in the left gutter"),
+            description: Some("\nShow line numbers in the left gutter"),
             describe: None,
             kind: RowKind {
                 focusable: true,
@@ -551,7 +551,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: LABEL_TABLE_BUTTONS,
-            description: Some("Show table row/column move/resize glyphs"),
+            description: Some("\nShow table row/column move/resize glyphs"),
             describe: None,
             kind: RowKind {
                 focusable: true,
@@ -570,7 +570,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: LABEL_VISUAL_LINE_NAV,
-            description: Some("Up/Down move by visual lines (vs. logical)"),
+            description: Some("\nUp/Down move by visual lines (vs. logical)"),
             describe: None,
             kind: RowKind {
                 focusable: true,
@@ -589,7 +589,7 @@ pub(super) fn build_rows() -> Vec<RowDef> {
         },
         RowDef {
             label: LABEL_VIM_MODE,
-            description: Some("Use Vim-style modal editing"),
+            description: Some("\nUse Vim-style modal editing"),
             describe: None,
             kind: RowKind {
                 focusable: true,
