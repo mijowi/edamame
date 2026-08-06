@@ -103,11 +103,22 @@ impl Modal for WelcomeModal {
 
 impl WelcomeModal {
     /// Build a `CloseAnd` outcome that writes the user's choices into
-    /// the config and persists.  Image-related fields are written ONLY
-    /// when the terminal actually has an image protocol — otherwise the
-    /// existing config values (defaults to `Ask`) are preserved so the
-    /// preference travels with the user to a future image-capable
-    /// terminal.
+    /// the config and persists.  Image-related fields follow the three
+    /// cases `WelcomeState` distinguishes:
+    ///
+    /// - **Image-capable** (an image protocol *and* 24-bit color, see
+    ///   `WelcomeState::image_capable`) — all three fields are the user's
+    ///   choice and all three are written.
+    /// - **Below truecolor** — `WelcomeState::new` forced images and
+    ///   diagrams to `Never` because halfblocks quantize into the
+    ///   256-color cube; those two are written so the forced value
+    ///   actually takes effect (otherwise a default of `Ask` would still
+    ///   prompt and then render the broken output).  `remote_policy` is
+    ///   left alone — it is a network-fetch preference, not a rendering
+    ///   one, and only matters once images are on again.
+    /// - **Truecolor but no image protocol** — nothing is written, so
+    ///   the existing values (default `Ask`) travel with the user to a
+    ///   future image-capable terminal.
     fn save_outcome(&self) -> ModalOutcome {
         let images = self.state.images;
         let remote = self.state.remote;
@@ -115,11 +126,16 @@ impl WelcomeModal {
         let use_vim = self.state.use_vim;
         let dont_show_again = self.state.dont_show_again;
         let image_capable = self.state.image_capable;
+        let full_color = self.state.full_color;
         let fingerprint = self.fingerprint.clone();
         ModalOutcome::CloseAnd(Box::new(move |app| {
             if image_capable {
                 app.config.images.enabled = images;
                 app.config.images.remote_policy = remote;
+                app.config.diagrams.enabled = diagrams;
+            } else if !full_color {
+                // Both are `Never`, forced in `WelcomeState::new`.
+                app.config.images.enabled = images;
                 app.config.diagrams.enabled = diagrams;
             }
             // Vim is terminal-independent, so apply it unconditionally —

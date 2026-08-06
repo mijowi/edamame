@@ -128,14 +128,23 @@ pub fn render_buttons(
 /// "Switch theme" button.  Shares the bracket formatting, width math, and
 /// `controls::button_style` focus styling with the rest of this module so
 /// callers never hand-roll a button.
+///
+/// A `disabled` button renders in the shared disabled style
+/// (`controls::control_label_style`, so it reads the same as a disabled
+/// control row); the caller is responsible for ignoring its rect.
 pub fn render_button_at(
     area: Rect,
     buf: &mut Buffer,
     button: Button,
     focused: bool,
+    disabled: bool,
     theme: &Theme,
 ) -> Rect {
-    let style = crate::ui::controls::button_style(focused, theme);
+    let style = if disabled {
+        crate::ui::controls::control_label_style(false, true, theme)
+    } else {
+        crate::ui::controls::button_style(focused, theme)
+    };
     Paragraph::new(Line::from(Span::styled(button.rendered(), style)))
         .alignment(Alignment::Left)
         .style(theme.modal_bg)

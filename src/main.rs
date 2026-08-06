@@ -40,21 +40,23 @@ fn main() -> Result<()> {
     // subsequent run.  The `load` fallback also covers the missing-file
     // case — if scaffolding fails (e.g. unwritable XDG dir) the compiled
     // `Theme::default()` is used.
-    Config::ensure_default_files();
-    // We need to know the terminal's color depth *before* loading the
-    // config, because `Config::load` picks a capability-appropriate
-    // built-in theme when the active theme file is missing on disk
-    // (truecolor → `Edamame`, indexed-color → `256 Dark`).  The full
-    // capability probe (`Capabilities::detect`) writes escape sequences
-    // to the terminal and must therefore run *after* `terminal::setup`
-    // — too late for this decision.  `detect_color_depth_from_env`
-    // inspects `$COLORTERM`, `$TERM`, and a handful of terminal-specific
-    // env vars only (no I/O), so it's safe to call at this point and
-    // gives us the same answer the full probe will compute later.  The
-    // full probe remains the source of truth for everything else
-    // (mouse, keyboard enhancements, image support, etc.); this is a
-    // one-bit early read, not a parallel implementation.
+    //
+    // We need to know the terminal's color depth *before* both of those
+    // steps: the scaffolder seeds `theme = "256 Dark"` instead of the
+    // truecolor default on an indexed-color terminal, and `Config::load`
+    // picks the same capability-appropriate built-in when the active theme
+    // file is missing on disk.  The full capability probe
+    // (`Capabilities::detect`) writes escape sequences to the terminal and
+    // must therefore run *after* `terminal::setup` — too late for this
+    // decision.  `detect_color_depth_from_env` inspects `$COLORTERM`,
+    // `$TERM`, and a handful of terminal-specific env vars only (no I/O),
+    // so it's safe to call at this point and gives us the same answer the
+    // full probe will compute later.  The full probe remains the source of
+    // truth for everything else (mouse, keyboard enhancements, image
+    // support, etc.); this is a one-bit early read, not a parallel
+    // implementation.
     let truecolor_at_load = Capabilities::detect_color_depth_from_env() == ColorDepth::TrueColor;
+    Config::ensure_default_files(truecolor_at_load);
     let loaded = Config::load(truecolor_at_load, true).unwrap_or_else(|e| {
         // Config errors are non-fatal; use defaults and note the problem.
         // Can't use tracing here since subscriber isn't set up yet.

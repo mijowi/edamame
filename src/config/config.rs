@@ -234,12 +234,15 @@ impl Config {
     ///
     /// Errors during any one file are logged and skipped; they never fail
     /// startup.  Same posture as [`Config::save`].
-    pub fn ensure_default_files() {
+    ///
+    /// `truecolor` picks the `theme` value seeded into a freshly written
+    /// `config.toml` — see [`ensure_default_files_in`].
+    pub fn ensure_default_files(truecolor: bool) {
         let Some(dir) = Self::config_dir() else {
             tracing::warn!("no XDG config dir available; skipping default-file scaffolding");
             return;
         };
-        ensure_default_files_in(&dir);
+        ensure_default_files_in(&dir, truecolor);
     }
 
     /// Returns the path to the log directory.
@@ -901,7 +904,7 @@ mod tests {
         // directory itself is still created so it exists for custom
         // theme files.
         let dir = tempfile::tempdir().unwrap();
-        ensure_default_files_in(dir.path());
+        ensure_default_files_in(dir.path(), true);
         assert!(dir.path().join("config.toml").exists());
         assert!(dir.path().join("keybindings.toml").exists());
         assert!(dir.path().join("themes").is_dir());
@@ -926,9 +929,30 @@ mod tests {
     }
 
     #[test]
+    fn ensure_default_files_seeds_256_dark_without_truecolor() {
+        // A first run on an indexed-color terminal (Apple Terminal and
+        // friends) must not land on the truecolor default — its RGB palette
+        // quantizes badly there.  The seeded file is still the annotated
+        // reference; only the theme assignment differs.
+        let dir = tempfile::tempdir().unwrap();
+        ensure_default_files_in(dir.path(), false);
+        let seeded = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(seeded.contains("theme = \"256 Dark\""));
+        assert!(!seeded.contains("theme = \"Edamame\""));
+        assert!(
+            seeded.contains("# Name of the active theme."),
+            "annotations survive the swap"
+        );
+        let mut warnings = Vec::new();
+        let config = read_main_config(&dir.path().join("config.toml"), &mut warnings);
+        assert_eq!(config.theme, "256 Dark");
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
     fn ensure_default_files_is_idempotent_and_preserves_user_edits() {
         let dir = tempfile::tempdir().unwrap();
-        ensure_default_files_in(dir.path());
+        ensure_default_files_in(dir.path(), true);
 
         // Simulate a user edit to config.toml.
         let config_path = dir.path().join("config.toml");
@@ -936,7 +960,7 @@ mod tests {
         std::fs::write(&config_path, custom).unwrap();
 
         // Second call must not touch the user's edit.
-        ensure_default_files_in(dir.path());
+        ensure_default_files_in(dir.path(), true);
         let after = std::fs::read_to_string(&config_path).unwrap();
         assert_eq!(after, custom, "user-edited config was overwritten");
     }

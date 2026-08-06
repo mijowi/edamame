@@ -3,6 +3,14 @@
 //! capabilities notice modal.  Captures one `CapRow` per capability the
 //! editor cares about, each tagged with an `ok` flag the renderer uses to
 //! pick a success/warning style and a ✓/✗ glyph.
+//!
+//! Rows are **descriptive**: each states what was detected, never what
+//! edamame does about it.  The consequence belongs to the consuming modal,
+//! because it differs between them — the capabilities notice is purely
+//! informational (it only records the terminal fingerprint), while the
+//! welcome modal actually writes `images` / `diagrams` on save.  Each owns
+//! its own sentence for that (`"Items marked ✗ will be disabled…"` and
+//! `welcome::NO_TRUECOLOR_HINT` respectively).
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -37,18 +45,30 @@ impl CapSummary {
     pub fn from_caps(caps: &Capabilities) -> Self {
         let (color, color_ok) = match caps.color_depth {
             ColorDepth::TrueColor => ("truecolor (24-bit)".to_owned(), true),
-            ColorDepth::Ansi256 => ("256 colors".to_owned(), true),
-            ColorDepth::Ansi16 => ("16 colors — themes will look muted".to_owned(), false),
+            // Anything short of 24-bit is a warning, not an "ok": the
+            // built-in themes and every decoded image are authored in RGB,
+            // and an indexed terminal quantizes both.
+            ColorDepth::Ansi256 => ("256 colors (no 24-bit color)".to_owned(), false),
+            ColorDepth::Ansi16 => ("16 colors (no 24-bit color)".to_owned(), false),
             ColorDepth::NoColor => ("none — plain text only".to_owned(), false),
         };
-        let (images, images_ok) = match caps.image_protocol {
-            Some(ImageProtocol::KittyGraphics) => ("Kitty graphics".to_owned(), true),
-            Some(ImageProtocol::Sixel) => ("Sixel".to_owned(), true),
-            Some(ImageProtocol::ITerm2) => ("iTerm2 inline images".to_owned(), true),
-            Some(ImageProtocol::Halfblocks) => {
+        // Below 24-bit color a native protocol is present but unusable —
+        // every decoded pixel would quantize into the 256-color cube — so
+        // the row reports the gate rather than the protocol.  Keying off
+        // `full_color` here is what keeps this row from contradicting the
+        // Color row above it (a green ✓ under a ✗ color warning).
+        let (images, images_ok) = match (caps.image_protocol, caps.full_color()) {
+            (Some(_), false) => (
+                "protocol detected, but needs 24-bit color".to_owned(),
+                false,
+            ),
+            (Some(ImageProtocol::KittyGraphics), true) => ("Kitty graphics".to_owned(), true),
+            (Some(ImageProtocol::Sixel), true) => ("Sixel".to_owned(), true),
+            (Some(ImageProtocol::ITerm2), true) => ("iTerm2 inline images".to_owned(), true),
+            (Some(ImageProtocol::Halfblocks), true) => {
                 ("Unicode half-blocks (low fidelity)".to_owned(), false)
             }
-            None => ("not supported — placeholders only".to_owned(), false),
+            (None, _) => ("not supported — placeholders only".to_owned(), false),
         };
         let (mouse, mouse_ok) = if caps.mouse {
             ("enabled".to_owned(), true)
@@ -161,4 +181,86 @@ pub fn render_cap_row(
         },
         buf,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn caps(color_depth: ColorDepth, image_protocol: Option<ImageProtocol>) -> Capabilities {
+        Capabilities {
+            color_depth,
+            image_protocol,
+            ..Capabilities::minimal()
+        }
+    }
+
+    fn row<'a>(summary: &'a CapSummary, label: &str) -> &'a CapRow {
+        summary
+            .rows
+            .iter()
+            .find(|r| r.label == label)
+            .expect("row present")
+    }
+
+    #[test]
+    fn images_row_reports_the_color_gate_below_truecolor() {
+        // The contradiction guard: a native protocol on an indexed
+        // terminal must not read as a green ✓ underneath a ✗ Color row.
+        for depth in [ColorDepth::Ansi256, ColorDepth::Ansi16, ColorDepth::NoColor] {
+            let summary = CapSummary::from_caps(&caps(depth, Some(ImageProtocol::KittyGraphics)));
+            let images = row(&summary, "Images");
+            assert!(!images.ok, "{depth:?}: protocol is unusable without 24-bit");
+            assert!(images.value.contains("24-bit color"), "{depth:?}");
+            assert!(!row(&summary, "Color").ok, "{depth:?}");
+        }
+    }
+
+    #[test]
+    fn images_row_names_the_protocol_on_truecolor() {
+        let summary = CapSummary::from_caps(&caps(
+            ColorDepth::TrueColor,
+            Some(ImageProtocol::KittyGraphics),
+        ));
+        let images = row(&summary, "Images");
+        assert!(images.ok);
+        assert_eq!(images.value, "Kitty graphics");
+    }
+
+    #[test]
+    fn halfblocks_stay_degraded_on_truecolor() {
+        // Halfblocks were already a ✗ before the color gate existed;
+        // folding `full_color` into the match must not upgrade them.
+        let summary = CapSummary::from_caps(&caps(
+            ColorDepth::TrueColor,
+            Some(ImageProtocol::Halfblocks),
+        ));
+        let images = row(&summary, "Images");
+        assert!(!images.ok);
+        assert!(images.value.contains("half-blocks"));
+    }
+
+    #[test]
+    fn no_row_states_a_consequence() {
+        // Rows are descriptive; "disabled"/"turned off" belongs to the
+        // consuming modal, which is the only layer that knows whether it
+        // acts on the capability.  The keyboard row is the one exception —
+        // it names the two chords the terminal genuinely cannot deliver.
+        for depth in [
+            ColorDepth::TrueColor,
+            ColorDepth::Ansi256,
+            ColorDepth::Ansi16,
+            ColorDepth::NoColor,
+        ] {
+            let summary = CapSummary::from_caps(&caps(depth, Some(ImageProtocol::KittyGraphics)));
+            for r in summary.rows.iter().filter(|r| r.label != "Keyboard") {
+                assert!(
+                    !r.value.contains("disabled") && !r.value.contains("turned off"),
+                    "{depth:?} {}: {:?} states a consequence",
+                    r.label,
+                    r.value
+                );
+            }
+        }
+    }
 }
