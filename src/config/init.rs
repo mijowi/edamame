@@ -4,6 +4,8 @@
 
 use std::path::Path;
 
+use super::readers::{INDEXED_FALLBACK_THEME, TRUECOLOR_FALLBACK_THEME};
+
 /// The annotated reference `config.toml` compiled into the binary.
 ///
 /// Seeded on first run by [`ensure_default_files_in`], and used again as
@@ -24,7 +26,14 @@ pub(super) const REFERENCE_CONFIG_TOML: &str = include_str!("../../config/config
 /// does NOT write `themes/<builtin>.toml` files.  The `themes/`
 /// directory is still created so an empty folder exists for users (or
 /// future export actions) to drop custom theme files into.
-pub(super) fn ensure_default_files_in(dir: &Path) {
+///
+/// `truecolor` selects the seeded `theme` value: the reference config
+/// ships [`TRUECOLOR_FALLBACK_THEME`], but on an indexed-color terminal
+/// that palette quantizes badly, so a first run there is seeded with
+/// [`INDEXED_FALLBACK_THEME`] instead — the same capability-appropriate
+/// pair [`super::readers::read_theme_named`] falls back to.  Only the
+/// first write is affected; an existing `config.toml` is never touched.
+pub(super) fn ensure_default_files_in(dir: &Path, truecolor: bool) {
     if let Err(e) = std::fs::create_dir_all(dir) {
         tracing::warn!(error = %e, dir = %dir.display(), "failed to create config dir");
         return;
@@ -50,7 +59,7 @@ pub(super) fn ensure_default_files_in(dir: &Path) {
         return;
     }
 
-    write_if_absent(&dir.join("config.toml"), REFERENCE_CONFIG_TOML);
+    write_if_absent(&dir.join("config.toml"), &seed_config_toml(truecolor));
     write_if_absent(
         &dir.join("keybindings.toml"),
         include_str!("../../config/keybindings.toml"),
@@ -61,11 +70,48 @@ pub(super) fn ensure_default_files_in(dir: &Path) {
     );
 }
 
+/// The `config.toml` body to seed on first run.  Truecolor terminals get
+/// the reference file verbatim; everything else gets it with the single
+/// `theme = "<truecolor default>"` assignment rewritten to the
+/// indexed-color built-in.  All comments and the rest of the file are
+/// untouched, so the seeded file still reads as the annotated reference.
+fn seed_config_toml(truecolor: bool) -> String {
+    if truecolor {
+        return REFERENCE_CONFIG_TOML.to_owned();
+    }
+    REFERENCE_CONFIG_TOML.replacen(
+        &format!("theme = \"{TRUECOLOR_FALLBACK_THEME}\""),
+        &format!("theme = \"{INDEXED_FALLBACK_THEME}\""),
+        1,
+    )
+}
+
 fn write_if_absent(path: &Path, contents: &str) {
     if path.exists() {
         return;
     }
     if let Err(e) = std::fs::write(path, contents) {
         tracing::warn!(error = %e, path = %path.display(), "failed to write default file");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seed_keeps_reference_verbatim_on_truecolor() {
+        assert_eq!(seed_config_toml(true), REFERENCE_CONFIG_TOML);
+    }
+
+    #[test]
+    fn seed_swaps_theme_for_indexed_terminals() {
+        // Guards both the rewrite and the assumption it rests on: the
+        // reference config must keep spelling the truecolor default as a
+        // plain `theme = "…"` assignment, or the swap would silently no-op.
+        assert!(REFERENCE_CONFIG_TOML.contains(&format!("theme = \"{TRUECOLOR_FALLBACK_THEME}\"")));
+        let seeded = seed_config_toml(false);
+        assert!(seeded.contains(&format!("theme = \"{INDEXED_FALLBACK_THEME}\"")));
+        assert!(!seeded.contains(&format!("theme = \"{TRUECOLOR_FALLBACK_THEME}\"")));
     }
 }

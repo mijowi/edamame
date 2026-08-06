@@ -107,12 +107,21 @@ pub struct WelcomeState {
     /// writes `show_welcome = false` (the modal won't reappear on next
     /// launch) unless the user opts back in by unchecking this box.
     pub dont_show_again: bool,
-    /// True when `caps.image_protocol.is_some()` — image/remote/diagram
-    /// rows are interactive only when this is true.  Captured at
-    /// construction so the modal's behaviour doesn't drift when the
-    /// underlying `Capabilities` are queried from a callback that
-    /// doesn't have access to them.
+    /// True when the terminal reports an image protocol **and** 24-bit
+    /// color — image/remote/diagram rows are interactive only when this
+    /// is true.  Halfblocks (and even a native protocol) technically
+    /// render on an indexed-color terminal, but every pixel is quantized
+    /// to the 256-color cube, which looks broken rather than degraded, so
+    /// we don't offer the choice at all there.  Captured at construction
+    /// so the modal's behaviour doesn't drift when the underlying
+    /// `Capabilities` are queried from a callback that doesn't have
+    /// access to them.
     pub image_capable: bool,
+    /// True when the terminal advertises 24-bit color.  Every built-in
+    /// theme is authored in RGB, so below truecolor the theme button is
+    /// disabled alongside the image rows and the explanatory note is
+    /// shown.
+    pub full_color: bool,
     /// Cached "remote was X before cascade" so flipping Images out of
     /// Never restores the user's prior remote choice.
     pre_cascade_remote: Option<RemoteImagePolicy>,
@@ -154,14 +163,29 @@ impl WelcomeState {
         diagrams: DiagramsEnabled,
         use_vim: bool,
     ) -> Self {
-        Self {
+        let full_color = caps.full_color();
+        // Below 24-bit color every decoded pixel collapses into the
+        // 256-color cube, which reads as broken rather than degraded, so
+        // images and diagrams are forced off rather than merely greyed
+        // out — `WelcomeModal::save_outcome` persists these two.  Remote
+        // is deliberately NOT cascaded to Never with them: it is a
+        // network-fetch preference, not a rendering one, so it keeps the
+        // user's existing value (`Ask` by default) and travels intact to
+        // a future truecolor terminal.
+        let (images, diagrams) = if full_color {
+            (images, diagrams)
+        } else {
+            (ImagesEnabled::Never, DiagramsEnabled::Never)
+        };
+        let mut state = Self {
             focused: WelcomeFocus::Theme,
             images,
             remote,
             diagrams,
             use_vim,
             dont_show_again: true,
-            image_capable: caps.image_protocol.is_some(),
+            image_capable: caps.image_protocol.is_some() && full_color,
+            full_color,
             pre_cascade_remote: None,
             scroll_state: ScrollContainerState::default(),
             theme_button_rect: None,
@@ -174,7 +198,14 @@ impl WelcomeState {
             save_button_rect: None,
             focus_offsets: [0; FOCUS_ORDER.len()],
             cap_summary: CapSummary::from_caps(caps),
+        };
+        // Theme is the first row, but it's disabled below truecolor — step
+        // forward so the modal never opens with focus parked on a row the
+        // user can't act on.
+        if state.row_disabled(state.focused) {
+            state.step_focus(1);
         }
+        state
     }
 
     /// True iff the cascade rule has forced remote to Never because
@@ -187,6 +218,7 @@ impl WelcomeState {
     /// or cascade-locked.  `RemoteImages` carries both gates.
     fn row_disabled(&self, row: WelcomeFocus) -> bool {
         match row {
+            WelcomeFocus::Theme => !self.full_color,
             WelcomeFocus::Images | WelcomeFocus::Diagrams => !self.image_capable,
             WelcomeFocus::RemoteImages => !self.image_capable || self.remote_locked_by_images(),
             _ => false,
@@ -293,8 +325,15 @@ impl WelcomeState {
             // Activate (Enter / Space) on the Theme / Save rows fires its own
             // response; on a control row it falls through to the shared
             // `control_input_for` mapping below (where it becomes Activate).
+            // The Theme row is disabled below truecolor; focus can't land
+            // there via Tab, but a stale `focused` can't open the picker
+            // either — the gate lives on the response, not on navigation.
             KeyCode::Enter | KeyCode::Char(' ') if self.focused == WelcomeFocus::Theme => {
-                WelcomeResponse::OpenThemePicker
+                if self.row_disabled(WelcomeFocus::Theme) {
+                    WelcomeResponse::Continue
+                } else {
+                    WelcomeResponse::OpenThemePicker
+                }
             }
             KeyCode::Enter | KeyCode::Char(' ') if self.focused == WelcomeFocus::Save => {
                 WelcomeResponse::Save
@@ -400,6 +439,17 @@ everything else stays formatted; RAW has no formatting. \n\
 /// degraded.  Wrapped at body inner width at render time.
 const DEGRADED_HINT: &str = "✗ — Consider upgrading to a modern terminal, \
 such as kitty, wezterm, or ghostty, for a better experience.";
+/// Hint shown below the capability summary when the terminal is below
+/// 24-bit color.  `WelcomeState::new` forces images and diagrams to
+/// `Never` and `WelcomeModal::save_outcome` persists them, so without
+/// this line the modal would write two settings the user never chose and
+/// never mention it.  Deliberately says "24-bit color" rather than naming
+/// a depth: `Ansi256`, `Ansi16`, and `NoColor` all take the same forcing
+/// branch.  Theme switching is described as unavailable, not reassigned —
+/// the theme button is disabled here, but the active theme is only ever
+/// chosen at first-run seeding (`config::init::seed_config_toml`).
+const NO_TRUECOLOR_HINT: &str = "✗ — Images and diagrams have been turned off \
+and theme switching is unavailable due to no 24-bit color support.";
 
 /// Number of wrapped rows a string would occupy at `width` columns
 /// under `Paragraph::wrap(Wrap { trim: false })`.  Uses ratatui's own
@@ -432,6 +482,13 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
 
         let para_inner_w = body_width.saturating_sub(2);
         let para_rows = wrapped_para_rows(QUICK_START_TEXT, para_inner_w);
+        // Declared in render order (forced-off note, then upgrade hint) so
+        // this block, the height trace below, and the painters agree.
+        let no_truecolor_rows = if state.full_color {
+            0
+        } else {
+            wrapped_para_rows(NO_TRUECOLOR_HINT, para_inner_w)
+        };
         let hint_rows = if degraded {
             wrapped_para_rows(DEGRADED_HINT, para_inner_w)
         } else {
@@ -443,6 +500,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         //  para_rows + 1     paragraph + spacer
         //  1                 "Terminal capabilities" label
         //  cap_rows          one row per capability in the summary
+        //  no_truecolor_rows forced-off note (0 on a truecolor terminal)
         //  hint_rows         degraded hint (0 when all OK)
         //  1                 spacer
         //  2                 theme label+button row + spacer below
@@ -452,8 +510,20 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         //  1                 spacer
         //  1                 Save button row
         let cap_rows = state.cap_summary.rows.len() as u16;
-        let natural_height =
-            1 + para_rows + 1 + 1 + cap_rows + hint_rows + 1 + 2 + 9 + 3 + 1 + 1 + 1;
+        let natural_height = 1
+            + para_rows
+            + 1
+            + 1
+            + cap_rows
+            + no_truecolor_rows
+            + hint_rows
+            + 1
+            + 2
+            + 9
+            + 3
+            + 1
+            + 1
+            + 1;
 
         let content = ContentSize {
             width: CONTENT_WIDTH,
@@ -574,6 +644,38 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             y += 1;
         }
 
+        // The forced-off note comes first: it states what edamame already
+        // did to this session, which is the news.  The upgrade hint below
+        // is the remedy, so it reads as the follow-up rather than burying
+        // the consequence under general advice.  Same warning voice as the
+        // ✗ rows both summarize.
+        if no_truecolor_rows > 0 {
+            for row in 0..no_truecolor_rows {
+                Paragraph::new("").style(self.theme.modal_bg).render(
+                    Rect {
+                        x: body_x,
+                        y: y + row,
+                        width: body_w,
+                        height: 1,
+                    },
+                    &mut scratch,
+                );
+            }
+            Paragraph::new(NO_TRUECOLOR_HINT)
+                .wrap(Wrap { trim: false })
+                .style(warn_style)
+                .render(
+                    Rect {
+                        x: body_x,
+                        y,
+                        width: para_inner_w,
+                        height: no_truecolor_rows,
+                    },
+                    &mut scratch,
+                );
+            y += no_truecolor_rows;
+        }
+
         if degraded {
             for row in 0..hint_rows {
                 Paragraph::new("").style(self.theme.modal_bg).render(
@@ -588,7 +690,10 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             }
             Paragraph::new(DEGRADED_HINT)
                 .wrap(Wrap { trim: false })
-                .style(muted_style)
+                // Warning-colored, matching the ✗ rows it summarizes —
+                // it's the consequence of a degraded capability, not an
+                // aside, so it reads in the same voice as the summary.
+                .style(warn_style)
                 .render(
                     Rect {
                         x: body_x,
@@ -600,6 +705,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
                 );
             y += hint_rows;
         }
+
         // Spacer between capability summary (or its wrapped hint) and
         // the theme section.
         Paragraph::new("").style(self.theme.modal_bg).render(
@@ -617,7 +723,8 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         // The current theme name lives *inside* the button: the bracketed
         // affordance distinguishes it without needing an accent color, and
         // the ▸ arrow signals that activating it opens the theme picker.
-        let theme_focused = state.focused == WelcomeFocus::Theme;
+        let theme_disabled = state.row_disabled(WelcomeFocus::Theme);
+        let theme_focused = state.focused == WelcomeFocus::Theme && !theme_disabled;
         // Uniform row fill so the label column inherits modal_bg.
         Paragraph::new("").style(self.theme.modal_bg).render(
             Rect {
@@ -632,7 +739,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         let label_col_w = CONTROL_COL.min(body_w) as usize;
         Paragraph::new(Line::from(Span::styled(
             format!("{:<label_col_w$}", "Choose theme"),
-            controls::control_label_style(theme_focused, false, self.theme),
+            controls::control_label_style(theme_focused, theme_disabled, self.theme),
         )))
         .style(self.theme.modal_bg)
         .render(
@@ -645,8 +752,10 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             &mut scratch,
         );
         // Button carries the current theme name + the "opens a modal" arrow.
+        // A disabled button still renders (so the active theme stays
+        // visible) but reports no hit rect — clicks read as misses.
         let theme_button_label = format!("{} ▸", self.theme_name);
-        state.theme_button_rect = Some(crate::ui::button_row::render_button_at(
+        let theme_button_rect = crate::ui::button_row::render_button_at(
             Rect {
                 x: body_x + CONTROL_COL,
                 y,
@@ -656,8 +765,10 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             &mut scratch,
             crate::ui::button_row::Button::bracketed(&theme_button_label),
             theme_focused,
+            theme_disabled,
             self.theme,
-        ));
+        );
+        state.theme_button_rect = (!theme_disabled).then_some(theme_button_rect);
         state.focus_offsets[WelcomeFocus::Theme.order_index()] = y;
         y += 2; // label+button row + spacer below
 
@@ -1072,6 +1183,15 @@ mod tests {
         }
     }
 
+    /// Apple Terminal and friends: a native image protocol is advertised,
+    /// but the terminal only has the 256-color cube to draw it with.
+    fn caps_256_color() -> Capabilities {
+        Capabilities {
+            color_depth: ColorDepth::Ansi256,
+            ..caps_full()
+        }
+    }
+
     fn make_state(caps: &Capabilities) -> WelcomeState {
         WelcomeState::new(
             caps,
@@ -1200,6 +1320,194 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert!(!s.use_vim, "Left means off");
+    }
+
+    #[test]
+    fn below_truecolor_disables_theme_and_image_rows() {
+        // A 256-color terminal quantizes both the RGB themes and every
+        // decoded image, so the theme button and all three image/diagram
+        // rows are inert even though an image protocol was detected.
+        let caps = caps_256_color();
+        let s = make_state(&caps);
+        assert!(!s.full_color);
+        assert!(
+            !s.image_capable,
+            "an image protocol without truecolor is not usable"
+        );
+        for row in [
+            WelcomeFocus::Theme,
+            WelcomeFocus::Images,
+            WelcomeFocus::RemoteImages,
+            WelcomeFocus::Diagrams,
+        ] {
+            assert!(s.row_disabled(row), "{row:?} must be disabled");
+        }
+        // Focus opens past the disabled Theme row, and the vim / show-again
+        // / save rows stay live.
+        assert_eq!(s.focused, WelcomeFocus::VimMotions);
+        for row in [
+            WelcomeFocus::VimMotions,
+            WelcomeFocus::ShowAgain,
+            WelcomeFocus::Save,
+        ] {
+            assert!(!s.row_disabled(row), "{row:?} must stay interactive");
+        }
+    }
+
+    #[test]
+    fn below_truecolor_forces_images_and_diagrams_off_but_not_remote() {
+        // Disabling the rows isn't enough: left at `Ask`, the app would
+        // still prompt at startup and then render quantized halfblocks.
+        // Remote is a fetch preference, not a rendering one, so it keeps
+        // the incoming value even though its row is inert.
+        let s = make_state(&caps_256_color());
+        assert_eq!(s.images, ImagesEnabled::Never);
+        assert_eq!(s.diagrams, DiagramsEnabled::Never);
+        assert_eq!(s.remote, RemoteImagePolicy::Ask);
+    }
+
+    #[test]
+    fn truecolor_leaves_the_incoming_tristate_values_alone() {
+        let s = make_state(&caps_full());
+        assert_eq!(s.images, ImagesEnabled::Ask);
+        assert_eq!(s.diagrams, DiagramsEnabled::Ask);
+        assert_eq!(s.remote, RemoteImagePolicy::Ask);
+    }
+
+    #[test]
+    fn below_truecolor_theme_row_cannot_open_the_picker() {
+        let caps = caps_256_color();
+        let mut s = make_state(&caps);
+        s.focused = WelcomeFocus::Theme;
+        let r = s.handle_key(&KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(r, WelcomeResponse::Continue);
+    }
+
+    #[test]
+    fn truecolor_opens_focused_on_the_theme_row() {
+        let caps = caps_full();
+        let s = make_state(&caps);
+        assert!(s.full_color);
+        assert!(s.image_capable);
+        assert_eq!(s.focused, WelcomeFocus::Theme);
+    }
+
+    /// Area used by [`render_rows`] — tall enough that nothing scrolls,
+    /// so every row and hit rect is published.
+    const RENDER_AREA: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 90,
+        height: 60,
+    };
+
+    /// Render the modal into a buffer tall enough that nothing scrolls,
+    /// and return the rows as plain strings.
+    fn render_rows(state: &mut WelcomeState) -> Vec<String> {
+        let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
+        let area = RENDER_AREA;
+        let mut buf = Buffer::empty(area);
+        WelcomeView {
+            theme,
+            theme_name: "Edamame",
+        }
+        .render(area, &mut buf, state);
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn below_truecolor_renders_no_interactive_theme_or_image_rects() {
+        // Sanity check that a click *can* open the picker, so the
+        // sweep below isn't vacuously passing.  Its coordinates aren't
+        // reused for the 256-color render: the degraded hint only wraps
+        // into one of the two, so the theme row sits at a different y in
+        // each and a fixed coordinate would test nothing.  The sweep
+        // covers every cell instead, which is what "the disabled button
+        // is unclickable" actually means.
+        let mut live = make_state(&caps_full());
+        render_rows(&mut live);
+        let button = live
+            .theme_button_rect
+            .expect("truecolor render publishes a theme-button rect");
+        assert_eq!(
+            live.handle_click(button.x, button.y),
+            WelcomeResponse::OpenThemePicker,
+            "sanity: a click on the live button opens the picker"
+        );
+
+        let mut s = make_state(&caps_256_color());
+        render_rows(&mut s);
+        assert!(
+            s.theme_button_rect.is_none(),
+            "a disabled theme button reports no hit rect"
+        );
+        assert!(s.images_rect.is_none());
+        assert!(s.remote_rect.is_none());
+        assert!(s.diagrams_rect.is_none());
+        // The always-on rows still hit-test.
+        assert!(s.vim_rect.is_some());
+        assert!(s.save_button_rect.is_some());
+        // No cell anywhere in the modal opens the theme picker — not the
+        // cells the button is painted on, not anything else.
+        for row in 0..RENDER_AREA.height {
+            for col in 0..RENDER_AREA.width {
+                assert_ne!(
+                    s.handle_click(col, row),
+                    WelcomeResponse::OpenThemePicker,
+                    "click at ({col}, {row}) opened the picker on a disabled theme row"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn below_truecolor_explains_itself_exactly_once() {
+        // Two distinct sentences, each rendered once: the upgrade hint
+        // (what to do about a degraded terminal) and the forced-off note
+        // (what edamame already did about it).  Counting rather than
+        // `contains` is what makes this catch a *duplicate* explanation,
+        // which is the regression worth guarding — the modal has three
+        // places a capability note could plausibly be added.
+        let mut s = make_state(&caps_256_color());
+        let rows = render_rows(&mut s);
+        // Join on newline, not space: a phrase split across a wrap
+        // boundary should fail this rather than be stitched back together.
+        let text = rows.join("\n");
+        assert_eq!(
+            text.matches("Consider upgrading").count(),
+            1,
+            "upgrade hint renders exactly once:\n{}",
+            rows.join("\n")
+        );
+        assert_eq!(
+            text.matches("have been turned off").count(),
+            1,
+            "forced-off note renders exactly once:\n{}",
+            rows.join("\n")
+        );
+    }
+
+    #[test]
+    fn truecolor_renders_a_live_theme_button_and_no_degraded_hint() {
+        let mut s = make_state(&caps_full());
+        let rows = render_rows(&mut s);
+        assert!(!rows.join(" ").contains("Consider upgrading"));
+        assert!(
+            !rows.join(" ").contains("have been turned off"),
+            "nothing was forced off, so the note must not render"
+        );
+        assert!(s.theme_button_rect.is_some());
+        assert!(s.images_rect.is_some());
+        assert!(s.diagrams_rect.is_some());
     }
 
     #[test]

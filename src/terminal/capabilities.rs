@@ -136,6 +136,15 @@ impl Capabilities {
         detect_color_depth(&term)
     }
 
+    /// True iff the terminal advertises 24-bit color.  Anything below
+    /// truecolor (256-indexed, 16-color, none) quantizes the RGB values
+    /// every built-in theme and every rendered image is authored in, so
+    /// this one predicate gates the theme picker, the image / diagram
+    /// options in the welcome modal, and the first-run default theme.
+    pub fn full_color(&self) -> bool {
+        self.color_depth == ColorDepth::TrueColor
+    }
+
     /// Conservative default used by tests and when probing is impossible.
     ///
     /// Assumes the minimum-common-denominator terminal: 16 colors, no mouse,
@@ -219,9 +228,12 @@ fn detect_color_depth(term: &str) -> ColorDepth {
     }
     if let Ok(tp) = env::var("TERM_PROGRAM") {
         match tp.as_str() {
-            "iTerm.app" | "Apple_Terminal" | "WezTerm" | "ghostty" | "Ghostty" => {
-                return ColorDepth::TrueColor
-            }
+            // Deliberately NOT `Apple_Terminal`: macOS Terminal.app tops out
+            // at the 256-color palette — it silently quantizes 24-bit SGR
+            // sequences, so claiming truecolor here would hand it themes and
+            // images it renders wrong.  It falls through to the
+            // `256color` check below.
+            "iTerm.app" | "WezTerm" | "ghostty" | "Ghostty" => return ColorDepth::TrueColor,
             _ => {}
         }
     }
@@ -379,6 +391,36 @@ mod tests {
         let _g3 = EnvGuard::unset("WEZTERM_PANE");
         let _g4 = EnvGuard::unset("TERM_PROGRAM");
         assert_eq!(detect_color_depth("xterm"), ColorDepth::TrueColor);
+    }
+
+    #[test]
+    fn color_depth_256_for_apple_terminal() {
+        // Terminal.app reports `TERM_PROGRAM=Apple_Terminal` with
+        // `TERM=xterm-256color` and no `COLORTERM`.  It must resolve to
+        // Ansi256 — it quantizes 24-bit SGR sequences, so treating it as
+        // truecolor mis-renders every theme and image.
+        let _lock = env_lock();
+        let _g1 = EnvGuard::unset("COLORTERM");
+        let _g2 = EnvGuard::unset("KITTY_WINDOW_ID");
+        let _g3 = EnvGuard::unset("WEZTERM_PANE");
+        let _g4 = EnvGuard::set("TERM_PROGRAM", "Apple_Terminal");
+        assert_eq!(detect_color_depth("xterm-256color"), ColorDepth::Ansi256);
+    }
+
+    #[test]
+    fn full_color_only_for_truecolor() {
+        let caps = Capabilities {
+            color_depth: ColorDepth::TrueColor,
+            ..Capabilities::minimal()
+        };
+        assert!(caps.full_color());
+        for depth in [ColorDepth::Ansi256, ColorDepth::Ansi16, ColorDepth::NoColor] {
+            let caps = Capabilities {
+                color_depth: depth,
+                ..Capabilities::minimal()
+            };
+            assert!(!caps.full_color(), "{depth:?} is not full color");
+        }
     }
 
     #[test]
