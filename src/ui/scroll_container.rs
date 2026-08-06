@@ -60,6 +60,18 @@ impl ModalKind {
 pub const MAX_PAD_H: u16 = 4;
 /// Minimum horizontal padding inside a modal, in cells.
 pub const MIN_PAD_H: u16 = 1;
+/// Comfortable maximum *content* width for a prose modal, in columns —
+/// the text column only, so the outer modal is this plus `2 *
+/// max_pad_h`.
+///
+/// A modal whose body is one wrapped paragraph has a natural
+/// [`ContentSize::width`] equal to the paragraph's entire unwrapped
+/// length, so without a cap it stretches to the full terminal width and
+/// renders as a handful of very long lines.  Opt in with
+/// [`crate::ui::ModalView::with_max_content_width`]; modals whose width
+/// is set by tabular content (capability rows, keybinding tables) should
+/// not, since clamping would wrap columns that are meant to align.
+pub const PROSE_CONTENT_WIDTH: u16 = 80;
 /// Vertical chrome rows reserved by `draw_frame`: 1 top pad + 1 title +
 /// 1 spacer + 1 bottom pad.  Pinned content (button row, footer) sits
 /// above the bottom pad inside the body rect returned in

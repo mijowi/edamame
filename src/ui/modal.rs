@@ -224,6 +224,16 @@ pub struct ModalView<'a> {
     /// [`ModalView::with_max_pad_h`] for modals whose content reads
     /// cramped at the default.
     pub max_pad_h: u16,
+    /// Optional cap on the body's *content* width in columns, before
+    /// padding.  `None` (the default) sizes the modal to its longest
+    /// body line, which is right for tabular content but wrong for
+    /// prose: a one-paragraph body's natural width is the paragraph's
+    /// whole unwrapped length, so the modal stretches to fill the
+    /// terminal.  Set it with [`ModalView::with_max_content_width`].
+    ///
+    /// Never narrows the modal below its button row — see the clamp in
+    /// `render`.
+    pub max_content_w: Option<u16>,
 }
 
 impl<'a> ModalView<'a> {
@@ -248,6 +258,7 @@ impl<'a> ModalView<'a> {
             kind,
             dismissable,
             max_pad_h: MAX_PAD_H,
+            max_content_w: None,
         }
     }
 
@@ -256,6 +267,14 @@ impl<'a> ModalView<'a> {
     #[allow(dead_code)]
     pub fn with_max_pad_h(mut self, max_pad_h: u16) -> Self {
         self.max_pad_h = max_pad_h;
+        self
+    }
+
+    /// Cap the body's content width, so a prose modal wraps at a
+    /// readable measure instead of stretching to the terminal width.
+    /// Chainable: `ModalView::new(...).with_max_content_width(PROSE_CONTENT_WIDTH)`.
+    pub fn with_max_content_width(mut self, width: u16) -> Self {
+        self.max_content_w = Some(width);
         self
     }
 }
@@ -271,7 +290,16 @@ impl<'a> StatefulWidget for ModalView<'a> {
             .map(|b| Button::bracketed(b.label.as_str()))
             .collect();
         let button_width = buttons_row_width(&button_specs);
-        let content_width = body_width.max(button_width);
+        // A capped modal still has to fit its button row, so raise the
+        // cap to `button_width` before clamping — otherwise a narrow cap
+        // would clip the buttons rather than wrap the prose.  Everything
+        // downstream (the prospective wrap width, `ContentSize`, and the
+        // final `compute_pad_h`) reads this one value, so the pre-render
+        // sizing pass and the real render stay in agreement.
+        let content_width = match self.max_content_w {
+            Some(cap) => body_width.min(cap.max(button_width)).max(button_width),
+            None => body_width.max(button_width),
+        };
         // Prospective modal width: content + 2*MAX_PAD_H of horizontal
         // padding, clamped to the available area.  Derive the body's
         // inner wrap width from that — using the same padding rule
@@ -382,6 +410,8 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{backend::TestBackend, Terminal};
+
+    use crate::ui::scroll_container::PROSE_CONTENT_WIDTH;
 
     fn theme() -> &'static Theme {
         Box::leak(Box::new(Theme::default()))
@@ -627,6 +657,88 @@ mod tests {
         assert!(state.scroll_state.last_total > state.scroll_state.last_visible);
     }
 
+    /// Width of the painted modal — the run of rows whose cells carry
+    /// the modal background, measured on the title row.
+    fn painted_modal_width(terminal: &Terminal<TestBackend>) -> u16 {
+        let buf = terminal.backend().buffer();
+        let area = *buf.area();
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .filter(|&x| buf[(x, y)].bg == theme().modal_bg.bg.unwrap())
+                    .count() as u16
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn uncapped_prose_stretches_to_the_terminal_width() {
+        // Baseline for `max_content_width_caps_a_prose_modal` — proves
+        // the cap below isn't passing vacuously on a modal that was
+        // already narrow.
+        let backend = TestBackend::new(160, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = ModalState::new();
+        let body = vec![Line::raw("word ".repeat(40))];
+        let buttons: Vec<ModalButton> = vec![];
+        terminal
+            .draw(|frame| {
+                let m = ModalView::new("Prose", &body, &buttons, theme(), ModalKind::Normal, true);
+                frame.render_stateful_widget(m, frame.area(), &mut state);
+            })
+            .unwrap();
+        assert_eq!(painted_modal_width(&terminal), 160);
+    }
+
+    #[test]
+    fn max_content_width_caps_a_prose_modal() {
+        // A single unwrapped paragraph has a natural content width of
+        // its whole length, so without the cap the modal fills the
+        // terminal.  Capped, the outer width is cap + 2 * MAX_PAD_H.
+        let backend = TestBackend::new(160, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = ModalState::new();
+        let body = vec![Line::raw("word ".repeat(40))];
+        let buttons: Vec<ModalButton> = vec![];
+        terminal
+            .draw(|frame| {
+                let m = ModalView::new("Prose", &body, &buttons, theme(), ModalKind::Normal, true)
+                    .with_max_content_width(80);
+                frame.render_stateful_widget(m, frame.area(), &mut state);
+            })
+            .unwrap();
+        assert_eq!(painted_modal_width(&terminal), 80 + 2 * MAX_PAD_H);
+    }
+
+    #[test]
+    fn max_content_width_never_clips_the_button_row() {
+        // A cap narrower than the buttons must lose to them — otherwise
+        // the footer would be cut off rather than the prose rewrapped.
+        let backend = TestBackend::new(160, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = ModalState::new();
+        let body = vec![Line::raw("word ".repeat(40))];
+        let buttons = vec![
+            ModalButton::new("A rather long button label"),
+            ModalButton::new("And another one"),
+        ];
+        let button_w = buttons_row_width(
+            &buttons
+                .iter()
+                .map(|b| Button::bracketed(b.label.as_str()))
+                .collect::<Vec<_>>(),
+        );
+        terminal
+            .draw(|frame| {
+                let m = ModalView::new("Prose", &body, &buttons, theme(), ModalKind::Normal, true)
+                    .with_max_content_width(10);
+                frame.render_stateful_widget(m, frame.area(), &mut state);
+            })
+            .unwrap();
+        assert_eq!(painted_modal_width(&terminal), button_w + 2 * MAX_PAD_H);
+    }
+
     #[test]
     fn modal_height_grows_to_fit_wrapped_body_lines() {
         // 40-col terminal forces a body-line longer than the inner wrap
@@ -725,5 +837,19 @@ mod tests {
         let m = ModalView::new("T", &body, &buttons, theme(), ModalKind::Normal, true)
             .with_max_pad_h(8);
         assert_eq!(m.max_pad_h, 8);
+    }
+
+    #[test]
+    fn width_cap_is_opt_in_and_defaults_off() {
+        // The knob is shared machinery, so the default must stay
+        // size-to-content: every modal that doesn't ask for a cap has to
+        // lay out exactly as it did before the field existed.
+        let body: [Line<'_>; 0] = [];
+        let buttons: [ModalButton; 0] = [];
+        let m = ModalView::new("T", &body, &buttons, theme(), ModalKind::Normal, true);
+        assert_eq!(m.max_content_w, None);
+        let m = ModalView::new("T", &body, &buttons, theme(), ModalKind::Normal, true)
+            .with_max_content_width(PROSE_CONTENT_WIDTH);
+        assert_eq!(m.max_content_w, Some(PROSE_CONTENT_WIDTH));
     }
 }

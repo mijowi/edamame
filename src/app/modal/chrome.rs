@@ -44,6 +44,10 @@ pub struct ModalChrome {
     pub state: ModalState,
     kind: ModalKind,
     dismissable: bool,
+    /// Optional prose width cap forwarded to [`ModalView`] each frame.
+    /// Stored here rather than passed to `render` so it is set once in
+    /// the modal's `new()`, like `kind` and `dismissable`.
+    max_content_w: Option<u16>,
 }
 
 impl ModalChrome {
@@ -56,7 +60,17 @@ impl ModalChrome {
             state: ModalState::new(),
             kind,
             dismissable,
+            max_content_w: None,
         }
+    }
+
+    /// Cap the body's content width so a prose modal wraps at a
+    /// readable measure instead of stretching to the terminal width.
+    /// Chain onto `new()`; see
+    /// [`crate::ui::ModalView::with_max_content_width`].
+    pub fn with_max_content_width(mut self, width: u16) -> Self {
+        self.max_content_w = Some(width);
+        self
     }
 
     // ── Accessors ──────────────────────────────────────────────────────────
@@ -84,7 +98,10 @@ impl ModalChrome {
         body: &[Line<'_>],
         buttons: &[ModalButton],
     ) {
-        let view = ModalView::new(title, body, buttons, ctx.theme, self.kind, self.dismissable);
+        let mut view = ModalView::new(title, body, buttons, ctx.theme, self.kind, self.dismissable);
+        if let Some(w) = self.max_content_w {
+            view = view.with_max_content_width(w);
+        }
         frame.render_stateful_widget(view, area, &mut self.state);
     }
 
@@ -106,5 +123,34 @@ impl ModalChrome {
     /// Scroll the body by a mouse-wheel `delta`.
     pub fn on_wheel(&mut self, delta: i32) {
         self.state.scroll_by(delta);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::PROSE_CONTENT_WIDTH;
+
+    #[test]
+    fn the_width_cap_is_opt_in() {
+        // `ModalChrome` is the only production `ModalView::new` call
+        // site, so this default is what every chrome-backed modal gets.
+        // It must stay `None` — size-to-content — so the modals that
+        // never ask for a cap lay out exactly as they did before the
+        // knob existed.
+        assert_eq!(
+            ModalChrome::new(ModalKind::Normal, true).max_content_w,
+            None
+        );
+    }
+
+    #[test]
+    fn the_width_cap_builder_is_chainable_onto_new() {
+        let chrome =
+            ModalChrome::new(ModalKind::Warning, false).with_max_content_width(PROSE_CONTENT_WIDTH);
+        assert_eq!(chrome.max_content_w, Some(PROSE_CONTENT_WIDTH));
+        // The other two `new()` values survive the chain.
+        assert_eq!(chrome.kind(), ModalKind::Warning);
+        assert!(!chrome.dismissable());
     }
 }
