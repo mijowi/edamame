@@ -115,8 +115,15 @@ mod tests {
     /// Build a halfblocks scratch buffer the same way `ImageCache` does
     /// on cold path — render a uniform image through a halfblocks
     /// picker into a Buffer sized to `rect`.
+    ///
+    /// The protocol is forced rather than taken from `from_fontsize`,
+    /// which infers it from `$TERM_PROGRAM` and hands back an iTerm2
+    /// picker in iTerm2, WezTerm, VS Code, Warp and friends.  Without
+    /// the override these tests still pass on those terminals, but
+    /// vacuously: they'd be clipping a buffer of `skip` cells.
     fn halfblocks_scratch(rect: Rect) -> Buffer {
-        let picker = Picker::from_fontsize((1, 2).into());
+        let mut picker = Picker::from_fontsize((1, 2).into());
+        picker.set_protocol_type(ratatui_image::picker::ProtocolType::Halfblocks);
         let img = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
             u32::from(rect.width) * 2,
             u32::from(rect.height) * 4,

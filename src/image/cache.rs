@@ -22,6 +22,21 @@ use ratatui_image::{Resize, StatefulImage};
 /// Encode `image` as halfblocks at `rect` using `picker` and return a
 /// `Buffer` containing the rendered cells.
 ///
+/// **Only `picker`'s font size is used; its protocol is forced to
+/// `Halfblocks` regardless of what it carries.** Passing a Kitty or
+/// iTerm2 picker does not produce a Kitty or iTerm2 encoding — it
+/// produces halfblocks at that picker's cell aspect ratio, which is the
+/// entire point: the scratch has to be *position-independent* cells for
+/// `paint_halfblocks_partial` to clip it by row, while still matching
+/// the native protocol's aspect ratio so an image doesn't change shape
+/// when it crosses the native↔halfblocks boundary mid-scroll.  A native
+/// encoding would instead put the whole image in one cell as a single
+/// escape sequence surrounded by `skip` cells, which cannot be clipped
+/// at all — the image would flash on the frames that copy row 0 and
+/// vanish otherwise.  `Capabilities` already pins its
+/// `halfblocks_picker` to `Halfblocks`; re-forcing it here keeps the
+/// invariant local to the one function that depends on it.
+///
 /// Cheap enough (low single-digit ms on pre-resized images) that it is
 /// usable on either the UI thread or a worker.  The decode worker calls
 /// this immediately after pre-resizing so that by the time
@@ -30,6 +45,8 @@ use ratatui_image::{Resize, StatefulImage};
 /// retains the fallback sync path for the terminal-resize case where
 /// the pre-rendered scratch's `(width, height)` no longer matches.
 pub fn render_halfblocks_scratch(picker: &Picker, image: DynamicImage, rect: Rect) -> Buffer {
+    let mut picker = picker.clone();
+    picker.set_protocol_type(ProtocolType::Halfblocks);
     let mut protocol = picker.new_resize_protocol(image);
     let mut buf = Buffer::empty(rect);
     StatefulImage::default()
@@ -531,6 +548,31 @@ impl ImageCache {
 mod tests {
     use super::*;
 
+    /// A picker guaranteed to encode **halfblocks**, at a font size the
+    /// assertions below can reason about.
+    ///
+    /// `Picker::from_fontsize` on its own is environment-dependent: it
+    /// infers its protocol from `$TERM_PROGRAM` / `$LC_TERMINAL`, so it
+    /// yields Halfblocks in Ghostty or kitty but **iTerm2** in iTerm2,
+    /// WezTerm, VS Code, Warp, Hyper, Tabby, rio, mintty and Bobcat.
+    /// Tests built on the bare constructor therefore pass or fail
+    /// depending on which terminal `cargo test` was launched from.
+    fn halfblocks_picker() -> Picker {
+        let mut picker = Picker::from_fontsize((1, 2).into());
+        picker.set_protocol_type(ProtocolType::Halfblocks);
+        picker
+    }
+
+    /// A picker whose protocol is deliberately *not* halfblocks, so the
+    /// native-plus-scratch branch of `get_protocol_pair` can be exercised
+    /// on any machine.  iTerm2 is the cheapest to encode of the three
+    /// native protocols and needs no terminal support to construct.
+    fn native_picker() -> Picker {
+        let mut picker = Picker::from_fontsize((1, 2).into());
+        picker.set_protocol_type(ProtocolType::Iterm2);
+        picker
+    }
+
     // ── aspect_rows_of ────────────────────────────────────────────────
 
     #[test]
@@ -634,7 +676,7 @@ mod tests {
         let mut cache = cache_with_sender();
         cache.request("a.png");
         cache.set_decoded("a.png", DynamicImage::new_rgba8(1, 1));
-        let picker = Picker::from_fontsize((1, 2).into());
+        let picker = halfblocks_picker();
         assert!(cache
             .get_protocol_pair("a.png", 10, 10, Some(&picker), Some(&picker))
             .is_some());
@@ -662,7 +704,7 @@ mod tests {
         assert_eq!(cache.prebuilt_scratch_count(), 1);
 
         // Consume it via get_protocol_pair with matching dims.
-        let picker = Picker::from_fontsize((1, 2).into());
+        let picker = halfblocks_picker();
         let pair = cache
             .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker))
             .expect("pair for ready image");
@@ -690,7 +732,7 @@ mod tests {
 
         // Request at a different width; scratch still produced, but via
         // sync render (not from the prebuilt map).
-        let picker = Picker::from_fontsize((1, 2).into());
+        let picker = halfblocks_picker();
         let pair = cache
             .get_protocol_pair("a.png", 16, 4, Some(&picker), Some(&picker))
             .expect("pair for ready image");
@@ -720,7 +762,7 @@ mod tests {
         let mut cache = cache_with_sender();
         cache.request("a.png");
         cache.set_decoded("a.png", DynamicImage::new_rgba8(1, 1));
-        let picker = Picker::from_fontsize((1, 2).into());
+        let picker = halfblocks_picker();
         cache
             .get_protocol_pair("a.png", 1, 1, Some(&picker), Some(&picker))
             .expect("pair for ready image");
@@ -741,8 +783,7 @@ mod tests {
         let mut cache = cache_with_sender();
         cache.request("a.png");
         cache.set_decoded("a.png", DynamicImage::new_rgba8(4, 4));
-        // `Picker::from_fontsize` defaults to Halfblocks.
-        let picker = Picker::from_fontsize((1, 2).into());
+        let picker = halfblocks_picker();
         let pair = cache
             .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker))
             .expect("pair for ready image");
@@ -752,18 +793,58 @@ mod tests {
 
     #[test]
     fn protocol_pair_with_non_halfblocks_native_builds_both() {
-        // `Picker::from_fontsize` only yields Halfblocks so we can't
-        // construct a Kitty/Sixel/iTerm2 picker in a unit test; this
-        // test only verifies the control-flow shape completes without
-        // panicking.  The actual "native is Kitty" path is exercised at
-        // runtime on a real graphics terminal.
+        // A graphics terminal gets a `ThreadProtocol` for the slow native
+        // encode *and* a halfblocks scratch for the partial-render
+        // fallback.  `Picker::set_protocol_type` lets us construct the
+        // native side without a real graphics terminal.
         let mut cache = cache_with_sender();
         cache.request("b.png");
         cache.set_decoded("b.png", DynamicImage::new_rgba8(4, 4));
-        let picker = Picker::from_fontsize((1, 2).into());
-        assert!(cache
-            .get_protocol_pair("b.png", 8, 4, Some(&picker), Some(&picker))
-            .is_some());
+        let pair = cache
+            .get_protocol_pair(
+                "b.png",
+                8,
+                4,
+                Some(&native_picker()),
+                Some(&halfblocks_picker()),
+            )
+            .expect("pair for ready image");
+        assert!(pair.native.is_some(), "native encode shipped off-thread");
+        assert!(pair.halfblocks_scratch.is_some(), "fallback scratch built");
+    }
+
+    /// `render_halfblocks_scratch` must produce halfblock *cells* even
+    /// when handed a picker carrying a native protocol.  A native picker
+    /// would encode the whole image into a single cell as one escape
+    /// sequence, which `paint_halfblocks_partial` cannot clip by row —
+    /// the image would flash on the frames that copy row 0 and vanish
+    /// otherwise.  This is the guard for the iTerm2 scroll bug.
+    #[test]
+    fn scratch_holds_halfblock_cells_even_from_a_native_picker() {
+        let rect = Rect::new(0, 0, 8, 4);
+        let img = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            16,
+            16,
+            image::Rgba([40, 80, 120, 255]),
+        ));
+        let buf = render_halfblocks_scratch(&native_picker(), img, rect);
+        // Halfblocks paints the image color into *every* cell of the
+        // rect (as fg/bg of a `▀`, or of a space where a cell's two
+        // pixel rows share a color, as they do for a uniform image).  A
+        // native encode would instead put one escape sequence in cell
+        // (0, 0) and leave every other cell default-and-skipped.
+        let expected = ratatui::style::Color::Rgb(40, 80, 120);
+        for y in 0..rect.height {
+            for x in 0..rect.width {
+                let cell = buf.cell((x, y)).expect("cell in rect");
+                assert!(
+                    !cell.symbol().contains('\u{1b}'),
+                    "cell ({x},{y}) carries an escape sequence, not a halfblock"
+                );
+                assert_eq!(cell.fg, expected, "cell ({x},{y}) fg");
+                assert_eq!(cell.bg, expected, "cell ({x},{y}) bg");
+            }
+        }
     }
 
     #[test]
@@ -783,7 +864,7 @@ mod tests {
         let mut cache = ImageCache::new();
         cache.request("a.png");
         cache.set_decoded("a.png", DynamicImage::new_rgba8(1, 1));
-        let picker = Picker::from_fontsize((1, 2).into());
+        let picker = halfblocks_picker();
         assert!(cache
             .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker))
             .is_none());
@@ -793,7 +874,7 @@ mod tests {
     fn get_protocol_pair_returns_none_for_pending() {
         let mut cache = cache_with_sender();
         cache.request("a.png");
-        let picker = Picker::from_fontsize((1, 2).into());
+        let picker = halfblocks_picker();
         assert!(cache
             .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker))
             .is_none());
@@ -809,7 +890,7 @@ mod tests {
         let mut cache = cache_with_sender();
         cache.request("a.png");
         cache.set_decoded("a.png", DynamicImage::new_rgba8(4, 4));
-        let picker = Picker::from_fontsize((1, 2).into());
+        let picker = halfblocks_picker();
         cache
             .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker))
             .expect("pair built");

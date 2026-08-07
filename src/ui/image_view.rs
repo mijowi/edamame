@@ -386,16 +386,26 @@ fn paint_native(images: &mut ImageCache, snap: &ImageLayoutSnapshot, buf: &mut T
         };
 
         // Ship an encode request if needed.  ThreadProtocol::resize_encode
-        // takes the inner StatefulProtocol and sends it to the worker;
-        // render() is a no-op while the response is in flight.  We fall
-        // back to the scratch until `native_ready` flips.
-        // ratatui-image 11 takes a `Size` (size-without-position) here
-        // rather than a `Rect`; `Rect: Into<Size>` drops the origin.
-        let needs = native.needs_resize(&resize, snap.rect.into()).is_some();
-        if let Some(new_size) = native.needs_resize(&resize, snap.rect.into()) {
+        // *takes* the inner StatefulProtocol and sends it to the worker;
+        // render() is a silent no-op for as long as the response is in
+        // flight.  ratatui-image 11 takes a `Size` (size-without-position)
+        // here rather than a `Rect`; `Rect: Into<Size>` drops the origin.
+        let new_size = native.needs_resize(&resize, snap.rect.into());
+        let needs = new_size.is_some();
+        if let Some(new_size) = new_size {
             native.resize_encode(&resize, new_size);
         }
-        if pair.native_ready {
+        // `native_ready` alone is not enough to license a native render:
+        // it latches on the first successful encode and is never cleared,
+        // so on any frame that dispatches a *re*-encode (terminal resize,
+        // a changed reserved height) the inner protocol has just been
+        // moved to the worker and `render` would draw nothing at all —
+        // over a rect `clear_visible_reserved_rect` just blanked, leaving
+        // an empty hole until the response lands.  `protocol_type()`
+        // returns `None` exactly when the inner protocol is away, so it
+        // is the precise test for "can render right now".
+        let inner_present = native.protocol_type().is_some();
+        if pair.native_ready && inner_present {
             native.render(snap.rect, buf);
         } else if let Some(scratch) = pair.halfblocks_scratch.as_ref() {
             paint_halfblocks_partial(scratch, full_rect, 0, snap.rect, buf, bg);
