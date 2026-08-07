@@ -15,8 +15,13 @@
 
 - Add support for ordered lists nested within unordered lists
 
+- Deleting a bullet should put cursor at beginning of current line instead of end of prior line
+
+- Set Rainbow as default theme
+
 ## Compatibility
 - macOS Apple Terminal, iTerm2
+- iTerm2 fat cursor on empty line
 
 ## Vim mode
 - DIFF is not displayed in the status line when using vim mode. Maybe we should display it in the hint line?

@@ -383,6 +383,11 @@ impl App {
         let show_line_numbers = self.config.editor.show_line_numbers;
         let capabilities_ref = &self.capabilities;
         let config_ref: &Config = &self.config;
+        // One tick per real draw (not per paint pass — Raw and Diff
+        // modes draw without painting images).  `image_view::paint_native`
+        // reuses a native transmission only when it was made on the
+        // immediately preceding frame.
+        self.editor.images.begin_frame();
         let editor_ref = &mut self.editor;
         let view_state_ref = &mut self.view_state;
         let modal_stack_top = self.modal_stack.top_mut();
@@ -642,6 +647,9 @@ impl App {
         self.view_state.preview.image_snapshots_key = None;
         self.view_state.preview.link_snapshots_key = None;
         self.last_scroll_at = None;
+        // A resize repaints the whole screen, so no native image
+        // transmission survives it — even one whose rect is unchanged.
+        self.editor.images.invalidate_native_paints();
     }
 
     /// Route an event to the topmost modal.  Key presses dispatch
