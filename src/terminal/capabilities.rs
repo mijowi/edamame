@@ -19,7 +19,7 @@
 
 use std::env;
 
-use ratatui_image::picker::Picker;
+use ratatui_image::picker::{Picker, ProtocolType};
 
 /// Color bit-depth supported by the terminal.
 ///
@@ -101,17 +101,9 @@ impl Capabilities {
         let mouse = detect_mouse(&term);
         let unicode_full = detect_unicode_full();
         let (image_protocol, image_picker) = detect_image_protocol();
-        // Reuse the native picker's font_size so the halfblocks
-        // encoding renders at the same pixel-to-cell aspect ratio as
-        // the native one — crucial for images that cross the
-        // native↔halfblocks boundary during scroll.  `from_fontsize`
-        // is deprecated in ratatui-image 9 but `Picker::halfblocks()`
-        // hardcodes font_size to (10, 20), which is wrong for any
-        // non-default terminal; we need the probed value here.
-        #[allow(deprecated)]
         let halfblocks_picker = image_picker
             .as_ref()
-            .map(|p| Picker::from_fontsize(p.font_size()));
+            .map(|p| halfblocks_from(p.font_size()));
 
         Self {
             color_depth,
@@ -268,6 +260,103 @@ fn detect_unicode_full() -> bool {
     false
 }
 
+/// Build a picker that is **guaranteed** to encode halfblocks, at the
+/// terminal's real `font_size`.
+///
+/// Neither of ratatui-image's two constructors does this on its own:
+///
+/// * `Picker::halfblocks()` forces the protocol but hardcodes
+///   `font_size` to (10, 20), which is wrong for any terminal whose
+///   cells aren't 10×20 px — the halfblocks encoding would then use a
+///   different pixel-to-cell aspect ratio than the native protocol, and
+///   an image would change shape every time it crossed the
+///   native↔halfblocks boundary during scroll.
+/// * `Picker::from_fontsize()` keeps the font size but *infers a
+///   protocol from the environment*: `iterm2_from_env()` returns
+///   `Iterm2` whenever `$TERM_PROGRAM` names iTerm2, WezTerm, VS Code,
+///   Warp, Hyper, Tabby, rio, mintty or Bobcat (or `$LC_TERMINAL` names
+///   iTerm2, or we're in tmux under one of those).  On every one of
+///   those terminals the "halfblocks" picker silently produced an
+///   **iTerm2** picker instead, so the pre-rendered scratch buffer that
+///   `image::render_halfblocks_scratch` builds held a single cell
+///   carrying a base64 PNG escape sequence plus a field of `skip` cells,
+///   rather than position-independent halfblock cells.  That broke the
+///   entire partial-render fallback: `paint_halfblocks_partial` copies
+///   cells by row, so the image appeared only when the escape cell at
+///   row 0 happened to be copied (a full-fidelity flash) and vanished as
+///   soon as the top row scrolled off, and each flash re-transmitted the
+///   whole PNG to the terminal — the scroll stutter.
+///
+/// So: take the font size from one and stamp the protocol from the
+/// other.
+fn halfblocks_from(font_size: ratatui_image::FontSize) -> Picker {
+    // `from_fontsize` is deprecated in ratatui-image 9+, but it is the
+    // only constructor that accepts a probed font size.
+    #[allow(deprecated)]
+    let mut picker = Picker::from_fontsize(font_size);
+    picker.set_protocol_type(ProtocolType::Halfblocks);
+    picker
+}
+
+/// True when we are (directly or over ssh) talking to iTerm2.app.
+///
+/// `$LC_TERMINAL` is iTerm2's own forwarded marker, so it stays correct
+/// across ssh — and in that case the terminal on the far end of the pipe
+/// really is iTerm2, which is what matters for protocol selection.
+fn is_iterm2_app() -> bool {
+    env::var("TERM_PROGRAM").is_ok_and(|v| v.contains("iTerm"))
+        || env::var("LC_TERMINAL").is_ok_and(|v| v.contains("iTerm"))
+}
+
+/// Whether the iTerm2 env hint is trustworthy enough to override an
+/// affirmative Kitty capability probe (see [`resolve_protocol`]).
+///
+/// Under tmux it is not.  tmux's default `update-environment` covers
+/// neither `TERM_PROGRAM` nor `LC_TERMINAL`, so a pane keeps whatever
+/// the client that *created the server* exported: start tmux in iTerm2,
+/// detach, reattach from Ghostty or kitty, and `$LC_TERMINAL` still
+/// reads `iTerm2` while the terminal actually on the other end of the
+/// pipe speaks Kitty and not iTerm2 at all.  Pinning `Iterm2` there
+/// would break images on a terminal that had them working.
+///
+/// The stdio capability probe has no such staleness problem — it asks
+/// the live terminal, through tmux passthrough — which is exactly why
+/// ratatui-image treats it as authoritative over env hints.  So inside
+/// tmux we defer to it and leave the probe's answer alone.  The common
+/// case this gives up is tmux running *inside* iTerm2, where the probe
+/// says Kitty and we now believe it; that costs blank image rows, which
+/// is the same outcome the user already had before this override
+/// existed, and is recoverable by the halfblocks fallback in a way that
+/// a wrong-protocol pin on Ghostty is not.
+fn iterm2_hint_is_trustworthy() -> bool {
+    is_iterm2_app() && env::var_os("TMUX").is_none()
+}
+
+/// Resolve the protocol edamame will actually encode with from the one
+/// `Picker::from_query_stdio` probed.
+///
+/// iTerm2 3.5+ answers the Kitty graphics capability query
+/// (`ESC _Gi=31,…,a=q`) affirmatively, and ratatui-image treats that I/O
+/// probe as authoritative over its `$TERM_PROGRAM` hint — so in iTerm2
+/// the picker comes back as `Kitty`.  But ratatui-image's Kitty backend
+/// renders exclusively through the protocol's **unicode-placeholder**
+/// extension (transmit once with `U=1`, then paint U+10EEEE cells
+/// carrying the image id in diacritics), and that extension is one of
+/// the parts iTerm2 does *not* implement.  The image is transmitted and
+/// then never placed: the reserved rows stay blank.  ratatui-image's own
+/// compatibility matrix lists iTerm2's supported protocol as `iTerm2`,
+/// so pin it there.
+///
+/// Only `Kitty` is overridden — a probe that lands on Sixel or
+/// Halfblocks is left alone.  `iterm2` should come from
+/// [`iterm2_hint_is_trustworthy`], not `is_iterm2_app` directly.
+fn resolve_protocol(probed: ProtocolType, iterm2: bool) -> ProtocolType {
+    match probed {
+        ProtocolType::Kitty if iterm2 => ProtocolType::Iterm2,
+        other => other,
+    }
+}
+
 /// Ask `ratatui_image` to probe for an image protocol.  Returns the detected
 /// protocol and the `Picker` instance; the Picker is retained and
 /// passed through to the image-rendering layer so cold image loads reuse
@@ -276,15 +365,19 @@ fn detect_unicode_full() -> bool {
 /// Halfblocks are reported as `Some(ImageProtocol::Halfblocks)` — they are
 /// still a usable protocol, just lower-fidelity than sixel/kitty/iterm2.
 fn detect_image_protocol() -> (Option<ImageProtocol>, Option<Picker>) {
-    use ratatui_image::picker::ProtocolType;
-
     // Picker::from_query_stdio may write escape sequences; a panic here would
     // be disastrous (corrupted terminal state), so we catch-and-swallow.
     let result = std::panic::catch_unwind(Picker::from_query_stdio);
-    let picker = match result {
+    let mut picker = match result {
         Ok(Ok(p)) => p,
         _ => return (None, None),
     };
+
+    picker.set_protocol_type(resolve_protocol(
+        picker.protocol_type(),
+        iterm2_hint_is_trustworthy(),
+    ));
+
     let protocol = match picker.protocol_type() {
         ProtocolType::Sixel => ImageProtocol::Sixel,
         ProtocolType::Kitty => ImageProtocol::KittyGraphics,
@@ -345,6 +438,139 @@ mod tests {
         M.get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+    }
+
+    // ── Image protocol ────────────────────────────────────────────────
+
+    /// The bug this pins: `Picker::from_fontsize` infers its protocol
+    /// from `$TERM_PROGRAM`, so on iTerm2 (and WezTerm / VS Code / Warp
+    /// / Hyper / Tabby / rio / mintty / Bobcat) the "halfblocks" picker
+    /// came back as an **iTerm2** picker.  Every scratch buffer built
+    /// from it held a base64 PNG escape instead of halfblock cells,
+    /// which the row-clipping partial painter cannot slice.
+    #[test]
+    fn halfblocks_picker_is_halfblocks_even_under_iterm2() {
+        let _lock = env_lock();
+        let _g1 = EnvGuard::set("TERM_PROGRAM", "iTerm.app");
+        let _g2 = EnvGuard::unset("TMUX");
+        let picker = halfblocks_from(ratatui_image::FontSize::new(7, 15));
+        assert_eq!(picker.protocol_type(), ProtocolType::Halfblocks);
+    }
+
+    /// The probed font size must survive — `Picker::halfblocks()` would
+    /// hardcode (10, 20) and change the image's aspect ratio each time
+    /// it crossed the native↔halfblocks boundary.
+    #[test]
+    fn halfblocks_picker_keeps_the_probed_font_size() {
+        let _lock = env_lock();
+        let _g = EnvGuard::unset("TERM_PROGRAM");
+        let picker = halfblocks_from(ratatui_image::FontSize::new(7, 15));
+        assert_eq!(picker.font_size().width, 7);
+        assert_eq!(picker.font_size().height, 15);
+    }
+
+    #[test]
+    fn iterm2_app_detected_from_term_program_and_lc_terminal() {
+        let _lock = env_lock();
+        {
+            let _g1 = EnvGuard::set("TERM_PROGRAM", "iTerm.app");
+            let _g2 = EnvGuard::unset("LC_TERMINAL");
+            assert!(is_iterm2_app());
+        }
+        {
+            // ssh'd out of iTerm2: only the forwarded marker survives.
+            let _g1 = EnvGuard::unset("TERM_PROGRAM");
+            let _g2 = EnvGuard::set("LC_TERMINAL", "iTerm2");
+            assert!(is_iterm2_app());
+        }
+        {
+            let _g1 = EnvGuard::set("TERM_PROGRAM", "ghostty");
+            let _g2 = EnvGuard::unset("LC_TERMINAL");
+            assert!(!is_iterm2_app());
+        }
+    }
+
+    /// The headline override: iTerm2 answers the Kitty capability query
+    /// but can't place images via unicode placeholders, so a `Kitty`
+    /// probe under iTerm2 must be pinned to `Iterm2` or the reserved
+    /// rows stay blank.
+    #[test]
+    fn kitty_probe_under_iterm2_is_pinned_to_iterm2() {
+        assert_eq!(
+            resolve_protocol(ProtocolType::Kitty, true),
+            ProtocolType::Iterm2
+        );
+    }
+
+    /// Only `Kitty` is overridden.  A terminal that probed Sixel or
+    /// Halfblocks is answering about a protocol iTerm2's Kitty quirk
+    /// says nothing about, and a real Kitty-family terminal (no iTerm2
+    /// hint) must keep its native protocol.
+    #[test]
+    fn resolve_protocol_leaves_every_other_probe_alone() {
+        for probed in [
+            ProtocolType::Kitty,
+            ProtocolType::Sixel,
+            ProtocolType::Iterm2,
+            ProtocolType::Halfblocks,
+        ] {
+            assert_eq!(
+                resolve_protocol(probed, false),
+                probed,
+                "{probed:?} must survive without an iTerm2 hint"
+            );
+        }
+        for probed in [
+            ProtocolType::Sixel,
+            ProtocolType::Iterm2,
+            ProtocolType::Halfblocks,
+        ] {
+            assert_eq!(
+                resolve_protocol(probed, true),
+                probed,
+                "{probed:?} must survive even under iTerm2"
+            );
+        }
+    }
+
+    /// Inside tmux the iTerm2 env hint is untrustworthy: `TERM_PROGRAM`
+    /// and `LC_TERMINAL` are not in tmux's default `update-environment`,
+    /// so a session created from iTerm2 and reattached from Ghostty
+    /// still advertises iTerm2 while the live terminal speaks Kitty.
+    /// The stdio capability probe has no such staleness, so we defer to
+    /// it rather than pin a protocol Ghostty cannot render.
+    #[test]
+    fn iterm2_hint_is_distrusted_inside_tmux() {
+        let _lock = env_lock();
+        let _g1 = EnvGuard::set("LC_TERMINAL", "iTerm2");
+        let _g2 = EnvGuard::unset("TERM_PROGRAM");
+        {
+            let _g3 = EnvGuard::unset("TMUX");
+            assert!(iterm2_hint_is_trustworthy(), "bare iTerm2 is trusted");
+        }
+        {
+            let _g3 = EnvGuard::set("TMUX", "/tmp/tmux-501/default,1234,0");
+            assert!(
+                !iterm2_hint_is_trustworthy(),
+                "a stale forwarded marker inside tmux must not pin Iterm2"
+            );
+            assert_eq!(
+                resolve_protocol(ProtocolType::Kitty, iterm2_hint_is_trustworthy()),
+                ProtocolType::Kitty,
+                "the live capability probe wins inside tmux"
+            );
+        }
+    }
+
+    /// A non-iTerm2 terminal outside tmux is trivially untrusted for the
+    /// pin — the guard must gate on the hint, not merely on tmux.
+    #[test]
+    fn iterm2_hint_is_absent_without_an_iterm2_marker() {
+        let _lock = env_lock();
+        let _g1 = EnvGuard::set("TERM_PROGRAM", "ghostty");
+        let _g2 = EnvGuard::unset("LC_TERMINAL");
+        let _g3 = EnvGuard::unset("TMUX");
+        assert!(!iterm2_hint_is_trustworthy());
     }
 
     #[test]
