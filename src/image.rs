@@ -14,7 +14,7 @@ pub mod svg;
 // `DecodeStatus` is used by integration tests in tests/editing.rs.
 #[allow(unused_imports)]
 pub use cache::DecodeStatus;
-pub use cache::{aspect_rows_of, render_halfblocks_scratch, ImageCache};
+pub use cache::{aspect_rows_of, render_halfblocks_scratch, ImageCache, NativePaint};
 pub use loader::{resolve, LoadedImage};
 pub use render::paint_halfblocks_partial;
 pub use svg::{rasterize_svg, SvgError, SvgScaleMode, SvgSizing};

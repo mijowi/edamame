@@ -23,7 +23,7 @@ use ratatui::style::Color;
 use ratatui_image::{Resize, ResizeEncodeRender};
 
 use crate::editor::EditorState;
-use crate::image::{paint_halfblocks_partial, ImageCache};
+use crate::image::{paint_halfblocks_partial, ImageCache, NativePaint};
 use crate::terminal::ImageProtocol;
 
 /// Per-frame geometry for one visible image block.  Screen coordinates
@@ -367,18 +367,35 @@ fn clear_visible_reserved_rect(
 /// on the cache's pending FIFO.  If the native protocol isn't yet
 /// encoded (`native_ready == false`), falls back to the halfblocks
 /// scratch so the user never sees a placeholder flash.
+///
+/// When the previous frame already transmitted this exact image at this
+/// exact rect, the rect is marked `skip` instead of re-rendered so the
+/// payload isn't sent again — see [`NativePaint`] for why that matters.
 fn paint_native(images: &mut ImageCache, snap: &ImageLayoutSnapshot, buf: &mut TuiBuf, bg: Color) {
     let resize = Resize::Fit(None);
+    let frame = images.frame_seq();
     let needs_encode = {
         let pair = match images.protocol_pair_mut(&snap.url, snap.rect.width, snap.rect.height) {
             Some(p) => p,
             None => return,
         };
         let full_rect = Rect::new(0, 0, snap.rect.width, snap.rect.height);
+        let generation = pair.native_generation;
+        // Reusable only if the previous frame left this exact encoding
+        // at this exact rect on screen.  A one-frame gap means something
+        // else painted here (scratch, a suppressed block, nothing at
+        // all), so the terminal no longer holds the image.
+        let already_on_screen = pair.last_native_paint
+            == Some(NativePaint {
+                rect: snap.rect,
+                generation,
+                frame: frame.wrapping_sub(1),
+            });
 
         // No native (terminal's preferred protocol IS halfblocks) —
         // scratch IS the rendering.
         let Some(native) = pair.native.as_mut() else {
+            pair.last_native_paint = None;
             if let Some(scratch) = pair.halfblocks_scratch.as_ref() {
                 paint_halfblocks_partial(scratch, full_rect, 0, snap.rect, buf, bg);
             }
@@ -406,14 +423,55 @@ fn paint_native(images: &mut ImageCache, snap: &ImageLayoutSnapshot, buf: &mut T
         // is the precise test for "can render right now".
         let inner_present = native.protocol_type().is_some();
         if pair.native_ready && inner_present {
-            native.render(snap.rect, buf);
-        } else if let Some(scratch) = pair.halfblocks_scratch.as_ref() {
-            paint_halfblocks_partial(scratch, full_rect, 0, snap.rect, buf, bg);
+            if already_on_screen {
+                mark_rect_skipped(snap.rect, buf);
+            } else {
+                native.render(snap.rect, buf);
+            }
+            pair.last_native_paint = Some(NativePaint {
+                rect: snap.rect,
+                generation,
+                frame,
+            });
+        } else {
+            pair.last_native_paint = None;
+            if let Some(scratch) = pair.halfblocks_scratch.as_ref() {
+                paint_halfblocks_partial(scratch, full_rect, 0, snap.rect, buf, bg);
+            }
         }
         needs
     };
     if needs_encode {
         images.track_pending_resize(&snap.url, snap.rect.width, snap.rect.height);
+    }
+}
+
+/// Mark every cell of `rect` as skipped so `ratatui` emits nothing for
+/// the region on this frame, leaving whatever the terminal already has
+/// there — the previous frame's native image — undisturbed.
+///
+/// `clear_visible_reserved_rect` has already blanked these cells, which
+/// is what a `skip` cell should carry: if a later frame stops skipping,
+/// the diff sees a blank-vs-payload change and re-transmits.
+///
+/// **This makes the frame buffer deliberately lie** — it records blanks
+/// over a region the terminal is actually showing an image in.  What
+/// keeps that from stranding a ghost image is a property of ratatui's
+/// hand-written `impl PartialEq for Cell`: it compares the `skip` flag
+/// alongside symbol and style.  So the moment a frame stops skipping
+/// these cells, they compare unequal to the skipped ones and are emitted
+/// — even when both are blank.  That is what erases the image when its
+/// rows scroll away into empty space, where a symbol-and-style-only
+/// comparison would diff clean and leave the picture on screen.  The
+/// dependency is load-bearing and lives upstream, so
+/// `skipped_rect_still_diffs_against_the_same_cells_unskipped` pins it.
+fn mark_rect_skipped(rect: Rect, buf: &mut TuiBuf) {
+    for y in rect.y..rect.y.saturating_add(rect.height) {
+        for x in rect.x..rect.x.saturating_add(rect.width) {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_skip(true);
+            }
+        }
     }
 }
 
@@ -432,6 +490,9 @@ fn paint_scratch_partial(
         Some(p) => p,
         None => return,
     };
+    // Halfblock cells land on top of whatever native transmission was
+    // there; the terminal no longer holds the image.
+    pair.last_native_paint = None;
     let Some(scratch) = pair.halfblocks_scratch.as_ref() else {
         return;
     };
@@ -470,6 +531,298 @@ mod tests {
 
     fn theme() -> &'static Theme {
         Box::leak(Box::new(Theme::default()))
+    }
+
+    // ── Native re-transmission suppression ───────────────────────────
+    //
+    // The iTerm2 and Sixel protocols put the whole base64 PNG in one
+    // cell's `symbol`, and `Buffer::diff` treats that symbol's display
+    // width as an invalidation run — so one image forces every later
+    // cell, including a second image's payload, back into the diff on
+    // every frame.  These tests pin the suppression that stops it; see
+    // `image::cache::NativePaint`.
+
+    mod native_reuse {
+        use std::sync::mpsc;
+
+        use image::{DynamicImage, RgbaImage};
+        use ratatui::style::Color;
+        use ratatui_image::picker::{Picker, ProtocolType};
+
+        use super::super::*;
+        use crate::terminal::ImageProtocol;
+
+        const AREA: Rect = Rect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 20,
+        };
+
+        /// An iTerm2 picker — the protocol whose `render` delivers the
+        /// full PNG every time.  Constructed by stamping the protocol
+        /// rather than probing, so the test is terminal-independent.
+        #[allow(deprecated)]
+        fn iterm2_picker() -> Picker {
+            let mut picker = Picker::from_fontsize((1, 2).into());
+            picker.set_protocol_type(ProtocolType::Iterm2);
+            picker
+        }
+
+        #[allow(deprecated)]
+        fn halfblocks_picker() -> Picker {
+            let mut picker = Picker::from_fontsize((1, 2).into());
+            picker.set_protocol_type(ProtocolType::Halfblocks);
+            picker
+        }
+
+        fn snap(url: &str, top: u16, height: u16) -> ImageLayoutSnapshot {
+            ImageLayoutSnapshot {
+                block_idx: 0,
+                alt: url.into(),
+                url: url.into(),
+                rect: Rect::new(0, top, AREA.width, height),
+                natural_top: top as isize,
+            }
+        }
+
+        struct Harness {
+            images: ImageCache,
+            rx: mpsc::Receiver<ratatui_image::thread::ResizeRequest>,
+            native: Picker,
+            halfblocks: Picker,
+        }
+
+        impl Harness {
+            fn new(urls: &[&str]) -> Self {
+                let (tx, rx) = mpsc::channel();
+                let mut images = ImageCache::new();
+                images.attach_resize_sender(tx);
+                for url in urls {
+                    images.request(url);
+                    images.set_decoded(
+                        url,
+                        DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+                            64,
+                            64,
+                            image::Rgba([10, 200, 90, 255]),
+                        )),
+                    );
+                }
+                Self {
+                    images,
+                    rx,
+                    native: iterm2_picker(),
+                    halfblocks: halfblocks_picker(),
+                }
+            }
+
+            /// Stand in for the encoder worker: perform every queued
+            /// resize-encode synchronously and route the responses back.
+            fn drain_encoder(&mut self) {
+                while let Ok(req) = self.rx.try_recv() {
+                    let resp = req.resize_encode().expect("encode succeeds");
+                    self.images.apply_resize_response(resp);
+                }
+            }
+
+            /// Draw one frame and return the resulting buffer.
+            fn frame(&mut self, snaps: &[ImageLayoutSnapshot], scrolling: bool) -> TuiBuf {
+                self.frame_suppressing(snaps, scrolling, None)
+            }
+
+            /// As [`Self::frame`], but with `suppress_block_idx` set —
+            /// the raw-reveal path, which skips the block entirely
+            /// rather than painting anything over its rect.
+            fn frame_suppressing(
+                &mut self,
+                snaps: &[ImageLayoutSnapshot],
+                scrolling: bool,
+                suppress_block_idx: Option<usize>,
+            ) -> TuiBuf {
+                self.images.begin_frame();
+                let mut buf = TuiBuf::empty(AREA);
+                let ctx = PaintContext {
+                    area: AREA,
+                    buf: &mut buf,
+                    images: &mut self.images,
+                    native_picker: Some(&self.native),
+                    halfblocks_picker: Some(&self.halfblocks),
+                    native_protocol: Some(ImageProtocol::ITerm2),
+                    is_scrolling: scrolling,
+                    modal_open: false,
+                    suppress_block_idx,
+                    bg: Color::Reset,
+                };
+                paint_images(snaps, ctx);
+                buf
+            }
+        }
+
+        /// True when the cell at `rect`'s origin carries an iTerm2
+        /// inline-image escape — i.e. the whole PNG was just handed to
+        /// the terminal on this frame.
+        fn transmitted(buf: &TuiBuf, rect: Rect) -> bool {
+            buf.cell((rect.x, rect.y))
+                .is_some_and(|c| c.symbol().contains("]1337;File="))
+        }
+
+        #[test]
+        fn two_native_images_transmit_once_then_go_quiet() {
+            let snaps = vec![snap("a.png", 0, 6), snap("b.png", 8, 6)];
+            let mut h = Harness::new(&["a.png", "b.png"]);
+
+            // Frame 1 builds the pairs and ships the encodes; the
+            // protocols are away at the worker, so this frame paints
+            // halfblocks.
+            h.frame(&snaps, false);
+            h.drain_encoder();
+
+            // Frame 2 is the transmission: both payloads land in the
+            // buffer.
+            let transmit = h.frame(&snaps, false);
+            assert!(
+                transmitted(&transmit, snaps[0].rect),
+                "first image should carry its base64 payload"
+            );
+            assert!(
+                transmitted(&transmit, snaps[1].rect),
+                "second image should carry its base64 payload"
+            );
+
+            // Frames 3 and 4 are idle redraws — a cursor blink, say.
+            // Nothing may be re-sent, or iTerm2 blanks and repaints each
+            // image (the ~2 Hz flicker this guards).
+            let idle_a = h.frame(&snaps, false);
+            let idle_b = h.frame(&snaps, false);
+            for s in &snaps {
+                assert!(
+                    !transmitted(&idle_a, s.rect),
+                    "idle frame re-sent the payload for {}",
+                    s.url
+                );
+            }
+            assert!(
+                idle_a.diff(&idle_b).is_empty(),
+                "two consecutive idle frames must produce no terminal output"
+            );
+        }
+
+        #[test]
+        fn a_scratch_frame_forces_the_next_native_frame_to_retransmit() {
+            let snaps = vec![snap("a.png", 0, 6)];
+            let mut h = Harness::new(&["a.png"]);
+            h.frame(&snaps, false);
+            h.drain_encoder();
+            let transmit = h.frame(&snaps, false);
+            assert!(transmitted(&transmit, snaps[0].rect));
+
+            // A scroll frame paints halfblock cells over the region, so
+            // the terminal no longer holds the image…
+            let scratch = h.frame(&snaps, true);
+            assert!(!transmitted(&scratch, snaps[0].rect));
+
+            // …and the next settled frame must send it again rather than
+            // skip onto a rect that now shows halfblocks.
+            let resent = h.frame(&snaps, false);
+            assert!(
+                transmitted(&resent, snaps[0].rect),
+                "native paint after a scratch frame must retransmit"
+            );
+        }
+
+        /// The suppression relies on the frame-adjacency rule alone for
+        /// any path that leaves the rect *unpainted* — `paint_images`
+        /// `continue`s past a suppressed block without touching the
+        /// record, and an off-screen image never reaches `paint_native`
+        /// at all.  The renderer's `[Image: alt]` placeholder lands over
+        /// the region on such a frame, so the terminal no longer holds
+        /// the image and the next native frame must send it again.
+        ///
+        /// Distinct from the scratch case above, which
+        /// `paint_scratch_partial` clears explicitly — this one would
+        /// still pass if the `frame` field were dropped from the
+        /// comparison, so it is pinned separately.
+        #[test]
+        fn a_suppressed_frame_forces_the_next_native_frame_to_retransmit() {
+            let snaps = vec![snap("a.png", 0, 6)];
+            let mut h = Harness::new(&["a.png"]);
+            h.frame(&snaps, false);
+            h.drain_encoder();
+            assert!(transmitted(&h.frame(&snaps, false), snaps[0].rect));
+            // Settled: the next frame skips rather than re-sending.
+            assert!(!transmitted(&h.frame(&snaps, false), snaps[0].rect));
+
+            // Raw-reveal on the image's own block: nothing is painted
+            // over the rect, and the record is left untouched.
+            let suppressed = h.frame_suppressing(&snaps, false, Some(snaps[0].block_idx));
+            assert!(!transmitted(&suppressed, snaps[0].rect));
+
+            assert!(
+                transmitted(&h.frame(&snaps, false), snaps[0].rect),
+                "native paint after a suppressed frame must retransmit"
+            );
+        }
+
+        /// The skip marking makes the frame buffer claim the image's
+        /// rows are blank while the terminal is still showing the image.
+        /// Nothing would ever erase that image if a later blank frame
+        /// diffed clean against the skipped one — which is exactly what
+        /// happens when the image scrolls away into empty space below
+        /// the end of the document.
+        ///
+        /// What saves it is that ratatui's `impl PartialEq for Cell`
+        /// compares `skip` as a field, so blank-skipped and
+        /// blank-unskipped cells are unequal and the blanks are emitted.
+        /// That is an upstream implementation detail this module depends
+        /// on, so assert it directly.
+        #[test]
+        fn skipped_rect_still_diffs_against_the_same_cells_unskipped() {
+            let snaps = vec![snap("a.png", 0, 6)];
+            let mut h = Harness::new(&["a.png"]);
+            h.frame(&snaps, false);
+            h.drain_encoder();
+            h.frame(&snaps, false);
+            let skipped = h.frame(&snaps, false);
+            assert!(!transmitted(&skipped, snaps[0].rect));
+
+            // The image is gone and its rows are now empty document
+            // space: no snapshots, so nothing paints over the rect.
+            let mut blank = TuiBuf::empty(AREA);
+            for y in 0..AREA.height {
+                for x in 0..AREA.width {
+                    if let Some(cell) = blank.cell_mut((x, y)) {
+                        cell.set_bg(Color::Reset);
+                    }
+                }
+            }
+            let cleared: Vec<_> = skipped
+                .diff(&blank)
+                .into_iter()
+                .filter(|(x, y, _)| snaps[0].rect.contains((*x, *y).into()))
+                .collect();
+            assert_eq!(
+                cleared.len(),
+                (snaps[0].rect.width * snaps[0].rect.height) as usize,
+                "every skipped cell must re-emit once it stops being skipped, \
+                 otherwise the image is stranded on screen"
+            );
+        }
+
+        #[test]
+        fn invalidate_native_paints_forces_a_retransmit() {
+            let snaps = vec![snap("a.png", 0, 6)];
+            let mut h = Harness::new(&["a.png"]);
+            h.frame(&snaps, false);
+            h.drain_encoder();
+            h.frame(&snaps, false);
+            assert!(!transmitted(&h.frame(&snaps, false), snaps[0].rect));
+
+            // A resize / `terminal.clear()` wipes the screen behind our
+            // back; the record must not survive it.
+            h.images.invalidate_native_paints();
+            assert!(transmitted(&h.frame(&snaps, false), snaps[0].rect));
+        }
     }
 
     fn state_from(src: &str, image_max_height: usize) -> EditorState {

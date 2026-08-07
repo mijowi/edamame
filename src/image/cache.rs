@@ -122,6 +122,46 @@ struct PendingResize {
     height: u16,
 }
 
+/// Record of a native-protocol transmission that is *still on screen*.
+///
+/// The Sixel and iTerm2 protocols "deliver the full raw png image on
+/// every render" (ratatui-image's own words): `Iterm2::render` writes the
+/// entire base64 payload into one cell's `symbol`.  Two consequences make
+/// re-emitting that cell expensive and *visibly* wrong:
+///
+/// 1. The escape begins with an ECH sweep of its own rows, so the
+///    terminal blanks the area and redraws the PNG — a flash.
+/// 2. `ratatui::buffer::Buffer::diff` sets
+///    `invalidated = max(symbol.width(), invalidated) - 1` per cell, and
+///    that symbol's display width is the length of the base64 payload
+///    (100 000+ columns).  `invalidated` then stays positive for the
+///    whole rest of the buffer, so **every** later cell is re-emitted
+///    whether or not it changed — including a second image's payload
+///    cell.  One full-resolution image therefore forces every image
+///    below it to retransmit on every single frame; at the cursor-blink
+///    cadence that reads as a ~2 Hz flicker.
+///
+/// So we track what we last handed the terminal and, when it is still
+/// accurate, mark the whole rect `skip` instead of re-rendering: ratatui
+/// emits nothing for the region and the image stays put.  The record is
+/// only honored on the *immediately* following frame, so any frame that
+/// paints the halfblocks scratch there (scroll, modal, partial
+/// visibility), suppresses the block, or scrolls it off screen
+/// invalidates it automatically.
+///
+/// Kitty needs none of this — it transmits once and paints cheap unicode
+/// placeholder rows thereafter — but the bookkeeping is protocol-blind
+/// and costs it nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativePaint {
+    /// Screen rect the escape was rendered at.
+    pub rect: Rect,
+    /// `ProtocolPair::native_generation` at render time.
+    pub generation: u64,
+    /// `ImageCache::frame_seq` at render time.
+    pub frame: u64,
+}
+
 /// Both encoded representations of the same image at the same target
 /// size.
 ///
@@ -145,9 +185,27 @@ struct PendingResize {
 /// successfully encodes `native` at the pair's dimensions.  It gates
 /// the native render path, preventing a placeholder flash between the
 /// cold-path build and the worker's completion.
+///
+/// `last_native_paint` records what was last handed to the terminal via
+/// the native protocol, so an unchanged image at an unchanged rect isn't
+/// retransmitted on every frame — see [`NativePaint`].
 pub struct ProtocolPair {
     pub native: Option<ThreadProtocol>,
     pub native_ready: bool,
+    /// Bumped every time the worker hands back a freshly encoded native
+    /// protocol.  Together with the screen rect it identifies "the bytes
+    /// currently on screen" for [`Self::last_native_paint`].
+    ///
+    /// Defense in depth rather than a live mechanism: the same branch of
+    /// `apply_resize_response` that bumps this also clears
+    /// `last_native_paint`, so in practice the comparison in
+    /// `paint_native` never sees a generation mismatch.  It is kept so a
+    /// future path that swaps the encoded bytes *without* clearing the
+    /// record can't silently license a stale skip.
+    pub native_generation: u64,
+    /// The last frame on which the native escape was written into the
+    /// frame buffer, and what it carried.  See [`NativePaint`].
+    pub last_native_paint: Option<NativePaint>,
     /// Pre-rendered halfblocks cells for this `(url, width, height)`.
     /// Populated synchronously in the cold path of `get_protocol_pair`.
     /// Used as the fallback rendering while `native` encodes, during
@@ -186,6 +244,11 @@ pub struct ImageCache {
     /// `get_protocol_pair` then returns `None` and callers show the
     /// `[Image: alt]` placeholder.
     resize_tx: Option<mpsc::Sender<ResizeRequest>>,
+    /// Monotonic frame counter, bumped once per `terminal.draw` by
+    /// `App::draw_frame`.  `ProtocolPair::last_native_paint` records the
+    /// frame it was written on, and a record is only reusable on the
+    /// frame immediately after — see [`NativePaint`].
+    frame_seq: u64,
 }
 
 impl ImageCache {
@@ -207,6 +270,32 @@ impl ImageCache {
         self.protocols.clear();
         self.pending.clear();
         self.prebuilt_scratches.clear();
+    }
+
+    // ── Native-transmission bookkeeping ───────────────────────────────
+
+    /// Advance the frame counter.  Called once per `terminal.draw` from
+    /// `App::draw_frame`, *not* from the paint pass — Raw and Diff modes
+    /// draw frames without calling `paint_images` at all, and counting
+    /// only painted frames would make a pre-Raw transmission look
+    /// adjacent to the first frame back in Rendered.
+    pub fn begin_frame(&mut self) {
+        self.frame_seq = self.frame_seq.wrapping_add(1);
+    }
+
+    pub fn frame_seq(&self) -> u64 {
+        self.frame_seq
+    }
+
+    /// Forget every recorded native transmission, forcing each image to
+    /// re-transmit on its next paint.  Called whenever something outside
+    /// the paint pass invalidates the terminal's screen contents: a
+    /// resize, or the `terminal.clear()` after the external editor
+    /// returns.
+    pub fn invalidate_native_paints(&mut self) {
+        for pair in self.protocols.values_mut() {
+            pair.last_native_paint = None;
+        }
     }
 
     /// Mark `url` as `Pending` iff it has no prior entry.  Returns true
@@ -338,6 +427,8 @@ impl ImageCache {
                 ProtocolPair {
                     native,
                     native_ready: false,
+                    native_generation: 0,
+                    last_native_paint: None,
                     halfblocks_scratch,
                 },
             );
@@ -397,6 +488,10 @@ impl ImageCache {
             if let Some(native) = pair.native.as_mut() {
                 if native.update_resized_protocol(resp) {
                     pair.native_ready = true;
+                    // New bytes: whatever is on screen for this pair is
+                    // now stale, so the next paint must transmit.
+                    pair.native_generation = pair.native_generation.wrapping_add(1);
+                    pair.last_native_paint = None;
                 }
             }
         }

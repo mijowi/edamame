@@ -392,6 +392,9 @@ impl App {
         // Ratatui caches the previous frame; clearing forces it to
         // redraw every cell on the next `terminal.draw` call.
         let _ = terminal.clear();
+        // The clear wiped the screen, so nothing we previously
+        // transmitted to a graphics protocol is still displayed.
+        self.editor.images.invalidate_native_paints();
         self.needs_draw = true;
 
         ExternalEditorOutcome::Exited(status)
