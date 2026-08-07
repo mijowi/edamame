@@ -38,11 +38,9 @@ This sentence also references the first footnote.[^1]
 
 [^2]: Definition for second footnote
 
-![Me underwater in USVI](/home/mjw/Pictures/me.jpg)
+![Octocat](./octocat.png)
 
 ![Github's Mona](https://brand.github.com/_next/static/media/mascots-01.fc6009a2.png)
-
-
 
 Another Heading 1
 ==============
