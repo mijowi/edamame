@@ -464,24 +464,36 @@ fn backspace_at_content_start_of_first_item_removes_marker() {
 }
 
 #[test]
-fn backspace_at_content_start_merges_with_previous_list_item() {
+fn backspace_at_content_start_unbullets_without_merging() {
     // `- a\n- foo` with cursor at content_start of "- foo" (byte 6).
-    // Backspace should delete `\n- ` and join: `- afoo`, cursor at 3.
+    // Backspace strips only `- `, leaving "foo" on its own line with the
+    // cursor at the start of that line (byte 4).
     let src = "- a\n- foo\n";
     let mut st = editor_at(src, "foo");
+    apply(&mut st, Action::DeleteCharBack);
+    assert_eq!(st.contents(), "- a\nfoo\n");
+    assert_eq!(cursor_byte(&st), 4);
+}
+
+#[test]
+fn second_backspace_after_unbulleting_merges_with_previous_line() {
+    // The merge is still reachable — it's just the *second* backspace.
+    let src = "- a\n- foo\n";
+    let mut st = editor_at(src, "foo");
+    apply(&mut st, Action::DeleteCharBack);
     apply(&mut st, Action::DeleteCharBack);
     assert_eq!(st.contents(), "- afoo\n");
     assert_eq!(cursor_byte(&st), 3);
 }
 
 #[test]
-fn backspace_at_content_start_merges_with_non_list_previous_line() {
-    // `text\n- foo` → backspace at content_start of the list → `textfoo`.
+fn backspace_at_content_start_after_non_list_previous_line() {
+    // `text\n- foo` → backspace strips the marker only → `text\nfoo`.
     let src = "text\n- foo\n";
     let mut st = editor_at(src, "foo");
     apply(&mut st, Action::DeleteCharBack);
-    assert_eq!(st.contents(), "textfoo\n");
-    assert_eq!(cursor_byte(&st), 4);
+    assert_eq!(st.contents(), "text\nfoo\n");
+    assert_eq!(cursor_byte(&st), 5);
 }
 
 #[test]
@@ -500,14 +512,14 @@ fn backspace_at_content_start_of_task_item_peels_checkbox_then_bullet() {
 }
 
 #[test]
-fn backspace_at_content_start_in_ordered_list_removes_marker_and_renumbers() {
+fn backspace_at_content_start_in_ordered_list_removes_marker() {
     // `1. a\n2. foo\n3. bar\n` — cursor at content_start of `2. foo` (byte 8).
-    // Backspace should remove `\n2. `, merging "foo" into "1. a" to produce
-    // "1. afoo\n3. bar\n", then renumber to "1. afoo\n2. bar\n".
+    // Backspace removes `2. ` only, leaving "foo" on its own line.
     let src = "1. a\n2. foo\n3. bar\n";
     let mut st = editor_at(src, "foo");
     apply(&mut st, Action::DeleteCharBack);
-    assert_eq!(st.contents(), "1. afoo\n2. bar\n");
+    assert_eq!(st.contents(), "1. a\nfoo\n3. bar\n");
+    assert_eq!(cursor_byte(&st), 5);
 }
 
 // ─── Auto-renumber after edits ───────────────────────────────────────────────

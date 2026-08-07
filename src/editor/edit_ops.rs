@@ -1753,11 +1753,13 @@ fn current_list(state: &EditorState) -> Option<(String, ListInfo)> {
 }
 
 /// If the cursor sits exactly at `content_start` of a list item, delete the
-/// entire marker prefix (including the preceding `\n`, when one exists) so
-/// the user never has to remove the marker character-by-character.  The edit
-/// merges the current item's content with the end of the preceding line
-/// (or, for the first item, just removes the marker).  Returns `true` when
-/// the edit was applied.
+/// entire marker prefix (the indent + `- ` / `N. `) so the user never has to
+/// remove the marker character-by-character.  The item's content stays on its
+/// own line and the cursor lands at the start of that line — the item is
+/// "un-bulleted", not merged into the item above.  A second backspace then
+/// falls through to the plain-text path and joins the lines, so the merge is
+/// still reachable, just never as the surprising first step.  Returns `true`
+/// when the edit was applied.
 ///
 /// Task items get a two-step erase: the first backspace peels off only the
 /// `[ ] ` checkbox prefix (turning the task back into a plain bullet item),
@@ -1793,14 +1795,10 @@ fn list_backspace_consumes_marker(state: &mut EditorState) -> bool {
         return true;
     }
 
-    // Delete from the end of the preceding line (its `\n`) through
-    // content_start.  For the very first line of the buffer (no preceding
-    // line), delete from byte 0 through content_start.
-    let delete_start = if item.start > 0 && source.as_bytes().get(item.start - 1) == Some(&b'\n') {
-        item.start - 1
-    } else {
-        item.start
-    };
+    // Delete the marker prefix only — from the start of the item's line
+    // through `content_start`.  The preceding `\n` is deliberately left
+    // alone so the content keeps its own line.
+    let delete_start = item.start;
     let removed = source[delete_start..item.content_start].to_owned();
     if removed.is_empty() {
         return false;
