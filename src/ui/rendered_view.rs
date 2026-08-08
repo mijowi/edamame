@@ -22,12 +22,13 @@ use self::paint::{
     make_code_styled_body_line, make_raw_line_with_selection, overlay_raw_cell,
     paint_byte_range_overlay,
 };
-use crate::markdown::list_layout::{list_raw_col_to_rendered_col, raw_list_marker_char_width};
+use crate::markdown::list_layout::list_raw_col_to_rendered_col;
 
 pub(crate) use self::paint::{
     paint_search_overlays, paint_substitute_preview_overlays, paint_yank_flash,
 };
-use self::raw_text::{cursor_position_in_block, raw_line_byte_start, raw_source_lines};
+use self::raw_text::raw_line_byte_start;
+pub(crate) use self::raw_text::{raw_block_cursor, raw_source_lines};
 
 /// State for the `RenderedView` widget.
 ///
@@ -157,14 +158,18 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             .rendered_lines_for_block(cursor_block_idx);
         let cursor_block_own = editor.parsed.block_own_line_count(cursor_block_idx);
 
-        // Raw source text for the cursor's block.  When the parse is
-        // stale, extract it via the cached buffer-line range so we see
-        // the typed characters that haven't been re-parsed yet.
-        let raw_block_source: String = if use_cache {
-            match editor.cursor_block_line_range.clone() {
-                Some(range) => {
+        // Raw source text for the cursor's block, and where the cursor sits
+        // inside it.  The two must be derived together: the line index is an
+        // index *into* this source.  When the parse is stale, rebuild both
+        // from the cached buffer-line range so we see the typed characters
+        // that haven't been re-parsed yet; otherwise use the shared
+        // `raw_block_cursor`, which `cursor_rendered_line_idx` also calls so
+        // the view and the cursor-row report can't disagree.
+        let (raw_block_source, cursor_raw_line, cursor_col) =
+            match (use_cache, editor.cursor_block_line_range.clone()) {
+                (true, Some(range)) => {
                     let mut out = String::new();
-                    for line in range {
+                    for line in range.clone() {
                         if let Some(text) = editor.buffer.line(line) {
                             out.push_str(&text);
                         }
@@ -172,36 +177,18 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     while out.ends_with('\n') {
                         out.pop();
                     }
-                    out
+                    let (buffer_line, col) = editor.cursor.line_col(&editor.buffer);
+                    (out, buffer_line.saturating_sub(range.start), col)
                 }
-                None => String::new(),
-            }
-        } else {
-            editor
-                .parsed
-                .source_map
-                .original_range_for_byte(cursor_byte)
-                .map(|r| {
-                    let source = editor.buffer.contents();
-                    let end = r.end.min(source.len());
-                    source[r.start..end].to_owned()
-                })
-                .unwrap_or_default()
-        };
+                (true, None) => (String::new(), 0, 0),
+                _ => {
+                    let raw = raw_block_cursor(editor, cursor_byte);
+                    (raw.source, raw.raw_line, raw.col)
+                }
+            };
 
         // Split raw source into lines.
         let raw_lines: Vec<&str> = raw_source_lines(&raw_block_source);
-
-        // Find where the cursor is within the raw block.
-        let (cursor_raw_line, cursor_col) =
-            match (use_cache, editor.cursor_block_line_range.as_ref()) {
-                (true, Some(range)) => {
-                    let (buffer_line, col) = editor.cursor.line_col(&editor.buffer);
-                    let raw_line = buffer_line.saturating_sub(range.start);
-                    (raw_line, col)
-                }
-                _ => cursor_position_in_block(editor, cursor_byte, &raw_block_source),
-            };
 
         // Map the cursor's raw source line to a rendered line within the
         // block.  For tables the rendered layout is: top border, header
@@ -265,103 +252,19 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             is_fenced_code && raw_line_count > 0 && cursor_raw_line == raw_line_count - 1;
         let code_block_allows_reveal =
             !is_code_block || (is_fenced_code && cursor_raw_line == 0) || is_closing_fence_line;
-        let cursor_in_block = if is_table && cursor_block_own >= 3 {
-            let last_replaceable = cursor_block_own.saturating_sub(2);
-            let block_lines = editor
-                .parsed
-                .lines
-                .get(cursor_block_lines.clone())
-                .unwrap_or(&[]);
-            let kinds = crate::ui::table_view::classify_table_sub_lines(block_lines);
-            let sub = match cursor_raw_line {
-                0 => kinds
-                    .iter()
-                    .position(|k| {
-                        matches!(
-                            k,
-                            crate::ui::table_view::TableSubLineKind::Header { sub: 0 }
-                        )
-                    })
-                    .unwrap_or(1),
-                1 => kinds
-                    .iter()
-                    .position(|k| {
-                        matches!(k, crate::ui::table_view::TableSubLineKind::ThickSeparator)
-                    })
-                    .unwrap_or(2),
-                r => {
-                    let target = r - 2;
-                    kinds
-                        .iter()
-                        .position(|k| {
-                            matches!(
-                                k,
-                                crate::ui::table_view::TableSubLineKind::DataRow { row, sub: 0 }
-                                    if *row == target
-                            )
-                        })
-                        .unwrap_or(2 * r - 1)
-                }
-            };
-            sub.min(last_replaceable)
-        } else if is_mermaid_block {
-            // Mermaid blocks reserve `image_max_height` rendered rows;
-            // map raw → rendered 1:1, clamped to the reserved row count.
-            cursor_raw_line.min(cursor_block_own.saturating_sub(1))
-        } else if is_code_block {
-            // Code blocks render every body line — including blank ones,
-            // which are emitted as NBSP-padded rows.  Counting non-blank
-            // raw lines (the list-friendly compression below) would
-            // therefore drift the cursor up by one row per blank, making
-            // edits land below the visible cursor.
-            //
-            // Fenced blocks always reserve an opening row (either the
-            // ` lang ` label or, when no language tag is present, an
-            // NBSP-padded placeholder matching the closing fence) and a
-            // trailing padded row for the closing fence, so raw lines
-            // map 1:1 to rendered lines.  Indented code blocks have no
-            // fences at all; their raw lines also map 1:1.
-            cursor_raw_line.min(cursor_block_own.saturating_sub(1))
-        } else {
-            // Map the cursor's raw line to its rendered row within the block.
-            // The renderer emits one rendered line per raw line EXCEPT two
-            // collapses: an interior blank line (between an item's paragraphs)
-            // and a soft-break continuation line produce no rendered line of
-            // their own.  A *separator* blank — one directly before a
-            // top-level item marker — DOES render (loose-list legibility
-            // spacing, emitted from `ListItem::blank_lines_before`).  So count
-            // the preceding raw lines that produce a rendered row: every
-            // non-blank line, plus separator blanks; interior blanks are
-            // skipped.
-            let base_indent = raw_lines
-                .first()
-                .map(|l| l.len() - l.trim_start().len())
-                .unwrap_or(0);
-            let is_top_level_marker = |line: &str| {
-                let indent = line.len() - line.trim_start().len();
-                indent == base_indent && raw_list_marker_char_width(line).is_some()
-            };
-            let mut rendered_before = 0usize;
-            let upto = cursor_raw_line.min(raw_lines.len());
-            for i in 0..upto {
-                if raw_lines[i].trim().is_empty() {
-                    // Blank: rendered only if the contiguous blank run it
-                    // belongs to ends at a top-level item marker (a separator
-                    // blank).  Interior blanks — whose run resolves to
-                    // continuation content or a nested marker — don't render.
-                    let mut j = i + 1;
-                    while j < raw_lines.len() && raw_lines[j].trim().is_empty() {
-                        j += 1;
-                    }
-                    if j < raw_lines.len() && is_top_level_marker(raw_lines[j]) {
-                        rendered_before += 1;
-                    }
-                } else {
-                    rendered_before += 1;
-                }
-            }
-            rendered_before.min(cursor_block_own.saturating_sub(1))
-        };
+        // Which rendered sub-line of the block gets the raw-text
+        // replacement.  Shared with `cursor_rendered_line_idx` (and, through
+        // it, the mouse hit-test's revealed-line shortcut) so the three can
+        // never disagree about which row is showing raw source.
+        let cursor_in_block = crate::editor::state::cursor_sub_line_in_block(
+            editor,
+            cursor_byte,
+            cursor_block_idx,
+            cursor_block_own,
+            &raw_block_source,
+            &raw_lines,
+            cursor_raw_line,
+        );
         // Wrapped-cell case: when the cursor sits in a data-row cell that
         // wraps onto multiple rendered sub-lines (or is in a row whose
         // *other* cells wrap), build a per-chunk overlay so each
