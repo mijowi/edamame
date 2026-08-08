@@ -57,7 +57,24 @@ impl CapSummary {
         // the row reports the gate rather than the protocol.  Keying off
         // `full_color` here is what keeps this row from contradicting the
         // Color row above it (a green ✓ under a ✗ color warning).
+        //
+        // `Halfblocks` must be matched *before* that gate, because it is
+        // not a detection at all: it is `Picker::from_query_stdio`'s
+        // universal fallback for "the terminal answered no graphics
+        // capability query" (and what its `DEFAULT_PICKER` carries on
+        // every probe-error path).  Reporting it through the `Some(_)`
+        // gate arm told a terminal with no image support whatsoever —
+        // Terminal.app is the common case — that a protocol had been
+        // found and only the color depth stood in the way, implying
+        // inline images would appear on a truecolor build of the same
+        // emulator.  They would not; half-blocks are all there is.  And
+        // without 24-bit color even those can't be displayed, so below
+        // truecolor a halfblocks-only terminal reads exactly like one
+        // with no image support, which is what it is.
         let (images, images_ok) = match (caps.image_protocol, caps.full_color()) {
+            (None, _) | (Some(ImageProtocol::Halfblocks), false) => {
+                ("not supported — placeholders only".to_owned(), false)
+            }
             (Some(_), false) => (
                 "protocol detected, but needs 24-bit color".to_owned(),
                 false,
@@ -68,7 +85,6 @@ impl CapSummary {
             (Some(ImageProtocol::Halfblocks), true) => {
                 ("Unicode half-blocks (low fidelity)".to_owned(), false)
             }
-            (None, _) => ("not supported — placeholders only".to_owned(), false),
         };
         let (mouse, mouse_ok) = if caps.mouse {
             ("enabled".to_owned(), true)
@@ -280,6 +296,35 @@ mod tests {
             assert!(!images.ok, "{depth:?}: protocol is unusable without 24-bit");
             assert!(images.value.contains("24-bit color"), "{depth:?}");
             assert!(!row(&summary, "Color").ok, "{depth:?}");
+        }
+    }
+
+    /// Terminal.app: no graphics protocol at all, and `Halfblocks` is
+    /// what `Picker::from_query_stdio` falls back to when nothing was
+    /// detected — so the row must not claim a protocol was found, and
+    /// must not claim half-blocks are available on a terminal that has
+    /// no 24-bit color to display them in.
+    #[test]
+    fn halfblocks_below_truecolor_reads_as_no_image_support() {
+        for depth in [ColorDepth::Ansi256, ColorDepth::Ansi16, ColorDepth::NoColor] {
+            let summary = CapSummary::from_caps(&caps(depth, Some(ImageProtocol::Halfblocks)));
+            let images = row(&summary, "Images");
+            assert!(!images.ok, "{depth:?}");
+            assert!(
+                !images.value.contains("protocol detected"),
+                "{depth:?}: half-blocks are a fallback, not a detected protocol: {:?}",
+                images.value
+            );
+            assert!(
+                !images.value.contains("half-block"),
+                "{depth:?}: half-blocks need 24-bit color to display: {:?}",
+                images.value
+            );
+            assert_eq!(
+                images.value,
+                row(&CapSummary::from_caps(&caps(depth, None)), "Images").value,
+                "{depth:?}: must read identically to a terminal with no image support"
+            );
         }
     }
 
