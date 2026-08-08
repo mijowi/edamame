@@ -11,18 +11,6 @@
 
 - Handle paragraphs containing line breaks
 
-- Images take up full space when disabled with "never"
-
-- Add support for ordered lists nested within unordered lists
-
-- Deleting a bullet should put cursor at beginning of current line instead of end of prior line
-
-- Set Rainbow as default theme
-
-## Compatibility
-- macOS Apple Terminal, iTerm2
-- iTerm2 fat cursor on empty line
-
 ## Vim mode
 - DIFF is not displayed in the status line when using vim mode. Maybe we should display it in the hint line?
 - How should we treat vim motions in tables? I'm thinking we no-op some and adjust others for better UX, such as the ones below. What others should we tailor for tables? Don't change the behavior for raw mode; no elements get special treatment there. All vim motions should work as they would on raw text.
@@ -38,3 +26,4 @@
 - Rendered diff mode; use edamame as git difftool?
 - Move diff mode status chip `n/N` to hint line?
 - When entering diff mode, the first change (`1/N`) should be shown to the user, not the change closest to the document position.
+
