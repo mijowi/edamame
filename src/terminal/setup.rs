@@ -13,11 +13,16 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 /// Result of terminal setup: the ratatui `Terminal` plus a flag indicating
-/// whether the kitty keyboard enhancement protocol was successfully enabled.
+/// whether the kitty keyboard enhancement protocol is actually available.
 ///
-/// Capability detection needs the latter because the `PushKeyboardEnhancementFlags`
-/// command silently succeeds on terminals that ignore it, so we can only
-/// tell it actually worked by whether `execute!` returned `Ok`.
+/// The flag comes from `supports_keyboard_enhancement()`, **not** from the
+/// result of pushing the flags.  `PushKeyboardEnhancementFlags` is a one-way
+/// escape sequence: a terminal that doesn't implement the protocol simply
+/// ignores it and sends nothing back, so `execute!` returns `Ok` there too
+/// (it reports whether the *write* succeeded, nothing about the terminal).
+/// Deriving the flag from the push therefore reported `true` everywhere,
+/// which is why the capability summary used to claim the kitty protocol on
+/// Apple Terminal.
 pub struct TerminalSetup {
     pub terminal: Terminal<CrosstermBackend<Stdout>>,
     pub keyboard_enhancement: bool,
@@ -44,13 +49,27 @@ pub fn setup() -> Result<TerminalSetup> {
     // emits `Event::FocusGained` / `Event::FocusLost` as the user switches
     // windows, which the editor uses to hide its cursor while unfocused.
     let _ = execute!(stdout, EnableFocusChange);
-    // Best-effort: terminals without the kitty protocol return an error here
-    // and we remember that so the caller can report the degraded state.
-    let keyboard_enhancement = execute!(
-        stdout,
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-    )
-    .is_ok();
+    // Ask the terminal whether it speaks the kitty keyboard protocol before
+    // pushing any flags at it.  This is kitty's own recommended detection
+    // procedure (crossterm sends `CSI ? u` followed by a primary-device-
+    // attributes query and sees which reply arrives first), and it is the
+    // only way to learn the answer: the push itself is write-only and can
+    // never report a terminal that ignored it.
+    //
+    // Must run after `enable_raw_mode` and before the App spawns its event
+    // reader thread — the query reads the reply off the tty, so a competing
+    // reader would eat it.  Terminals that answer neither query cost the
+    // 2 s timeout inside crossterm, but any terminal that answers DA1 —
+    // which includes Apple Terminal — returns immediately.
+    let keyboard_enhancement = crossterm::terminal::supports_keyboard_enhancement()
+        .inspect_err(|e| tracing::warn!(error = %e, "keyboard enhancement probe failed"))
+        .unwrap_or(false);
+    if keyboard_enhancement {
+        let _ = execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        );
+    }
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
     Ok(TerminalSetup {
