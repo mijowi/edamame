@@ -317,12 +317,7 @@ pub fn rendered_sub_line_to_offset(
         && state.cursor_block_revealed()
         && rendered_line_idx == crate::editor::state::cursor_rendered_line_idx(state);
     if state.parsed.is_mermaid_block(block.idx) || revealed_cursor_line {
-        let raw_chars: Vec<(char, ratatui::style::Style)> = line_text
-            .chars()
-            .map(|c| (c, ratatui::style::Style::default()))
-            .collect();
-        let viewport = viewport_width.max(1);
-        let rows = line_render::visual_rows_of_chars(&raw_chars, viewport, 0);
+        let (rows, indent) = revealed_raw_rows(line_text, viewport_width);
         let sub = sub_row_within_line.min(rows.len().saturating_sub(1));
         let (start, end, next_start) = rows.get(sub).copied().unwrap_or((0, 0, 0));
         let is_last_row = sub + 1 == rows.len();
@@ -331,12 +326,12 @@ pub fn rendered_sub_line_to_offset(
         } else {
             next_start.saturating_sub(1).max(start)
         };
-        let row_chars = raw_chars
-            .iter()
-            .skip(start)
-            .take(end - start)
-            .map(|(c, _)| *c);
-        let in_row = line_render::char_idx_at_cell_col(row_chars, col, 0);
+        // Continuation rows are painted `indent` cells to the right; the
+        // first row is flush.  Mirror `render_line`'s x-offset so a click
+        // maps to the char actually under the pointer.
+        let row_indent = if sub == 0 { 0 } else { indent };
+        let row_chars = line_text.chars().skip(start).take(end - start);
+        let in_row = line_render::char_idx_at_cell_col(row_chars, col, row_indent);
         let raw_col = (start + in_row).min(max_in_row);
         return raw_col_to_buffer_char(state, &block, line_byte_start, line_text, raw_col);
     }
@@ -514,11 +509,7 @@ fn revealed_raw_row_count(
     if state.parsed.is_mermaid_block(cursor_block_idx) {
         let sub = rendered_line_idx - block_lines.start;
         let raw_line = block_text.split('\n').nth(sub).unwrap_or("");
-        return Some(
-            line_render::visual_rows_of_str(raw_line, viewport_width.max(1))
-                .len()
-                .max(1),
-        );
+        return Some(revealed_raw_rows(raw_line, viewport_width).0.len().max(1));
     }
 
     // Non-mermaid: only the cursor's own rendered line gets replaced with
@@ -536,10 +527,39 @@ fn revealed_raw_row_count(
     // cursor's rendered line, matching the render loop's logic.
     let sub = rendered_line_idx - block_lines.start;
     let raw_line = block_text.split('\n').nth(sub).unwrap_or("");
-    Some(
-        line_render::visual_rows_of_str(raw_line, viewport_width.max(1))
-            .len()
-            .max(1),
+    Some(revealed_raw_rows(raw_line, viewport_width).0.len().max(1))
+}
+
+/// Wrap layout of a raw source line exactly as the reveal painter lays it
+/// out, plus the hanging indent it used.
+///
+/// `RenderedView` builds a plain `Line` from the raw text and hands it to
+/// `render_line`, which derives a hanging indent from the line's own leading
+/// marker — so a revealed `- item` wraps its continuation rows under the
+/// item text, two cells in, not at column 0.  `visual_rows_of_str` assumes
+/// indent 0, so using it here would disagree with the paint on both the row
+/// count and every continuation row's start column: a click on a wrapped
+/// revealed list item would land a couple of chars off, growing with each
+/// wrap.  Callers must also shift `col` by the returned indent on any
+/// sub-row past the first.
+///
+/// The returned indent is the *effective* one: when the marker is as wide as
+/// the viewport (`indent + 1 >= width`) both `render_line` and
+/// `visual_rows_of_chars` fall back to a flat indent-0 layout, so we must
+/// report 0 too.  Returning the raw marker width there would shift every
+/// continuation row's mapping into `char_idx_at_cell_col`'s forbidden-indent
+/// zone, collapsing the whole row onto its first character.
+fn revealed_raw_rows(raw_line: &str, viewport_width: usize) -> (Vec<(usize, usize, usize)>, usize) {
+    let width = viewport_width.max(1);
+    let indent = line_render::compute_hanging_indent_str(raw_line);
+    let indent = if indent + 1 >= width { 0 } else { indent };
+    let chars: Vec<(char, ratatui::style::Style)> = raw_line
+        .chars()
+        .map(|c| (c, ratatui::style::Style::default()))
+        .collect();
+    (
+        line_render::visual_rows_of_chars(&chars, width, indent),
+        indent,
     )
 }
 

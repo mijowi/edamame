@@ -1197,6 +1197,42 @@ fn click_on_revealed_link_line_lands_on_raw_char() {
     );
 }
 
+/// Regression: in a *loose* list (blank lines between items), the
+/// separator blanks each render a row of their own, so a later item's
+/// rendered row index is higher than its non-blank line count.
+/// `cursor_rendered_line_idx` used to count only non-blank raw lines
+/// while `RenderedView` counted separator blanks too, so the mouse
+/// hit-test believed the reveal was on a different row than the one it
+/// was painted on.  The click then mapped against the *rendered* spans
+/// (`code`, backticks dropped) instead of the raw text on screen.
+#[test]
+fn click_on_revealed_loose_list_item_with_inline_code_lands_on_raw_char() {
+    let src = "- Alpha item\n\n- Beta item\n\n- Gamma `code` tail\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    // Park the cursor on the third item so its rendered row is revealed
+    // as raw source.
+    st.cursor.offset = src.find("Gamma").unwrap();
+    st.update_cursor_block();
+    st.cursor_block_entered_at = None; // reveal returns true immediately
+
+    // Rendered rows: 0 `• Alpha item`, 1 blank, 2 `• Beta item`,
+    // 3 blank, 4 the revealed raw `- Gamma \`code\` tail`.
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    let mut mouse = MouseDispatcher::new();
+    // Raw col 15 is the `t` of `tail`.
+    if let Some(a) = mouse.dispatch(click_event(15, 4), area()) {
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+    }
+    let line_start = src.find("- Gamma").unwrap();
+    assert_eq!(
+        st.cursor.offset,
+        line_start + 15,
+        "expected cursor on the 't' of 'tail', landed on {:?}",
+        st.contents().chars().nth(st.cursor.offset),
+    );
+}
+
 /// Regression: clicking past the rendered end of a line containing a
 /// link used to land mid-URL because the click→offset map clamped the
 /// click to the rendered column count and then re-used that as a raw
@@ -2266,5 +2302,177 @@ fn click_on_bold_text_inside_ordered_item_uses_inline_map() {
     assert_eq!(
         st.cursor.offset, 18,
         "click on 't' of 'tail' must skip the raw `**` markers"
+    );
+}
+
+/// Regression: a *wrapped* raw-revealed list item.  `RenderedView` paints
+/// the raw source through `render_line`, which derives a hanging indent
+/// from the leading `- ` marker — so continuation rows sit two cells in and
+/// wrap against a narrower budget.  The mouse hit-test used to lay the same
+/// raw line out with indent 0, so every row past the first mapped clicks a
+/// couple of chars off, and the drift compounded with each wrap.
+///
+/// Asserted the only way that can't drift: render the view for real, then
+/// check that the glyph on screen at `(col, row)` is the glyph at the offset
+/// the click maps to.
+#[test]
+fn clicks_on_a_wrapped_revealed_list_item_land_under_the_pointer() {
+    use edamame::ui::{RenderedView, RenderedViewState};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    const W: u16 = 40;
+    const H: u16 = 12;
+    let src = "- Alpha item\n\n- Beta item\n\n- Gamma `code` tail that keeps \
+               going on and on until it wraps onto another visual row with \
+               more `code` here\n";
+
+    let build = || {
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        st.viewport_width = W as usize;
+        st.cursor.offset = src.find("Gamma").unwrap();
+        st.update_cursor_block();
+        st.cursor_block_entered_at = None; // reveal returns true immediately
+        st
+    };
+
+    // Paint the view so we know exactly what the user is looking at.
+    let st = build();
+    let theme = theme();
+    let mut terminal = Terminal::new(TestBackend::new(W, H)).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                cursor_style: theme.status_mode_rendered,
+                visual_line_mode: false,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &st,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+
+    // Rows 4.. are the revealed raw item; row 4 is flush, later rows are
+    // hanging-indented.  Only non-blank cells are checked — trailing padding
+    // legitimately clamps to the line end.
+    let mut checked = 0;
+    for row in 4..H {
+        for col in 0..W {
+            let painted = buf
+                .cell((col, row))
+                .and_then(|c| c.symbol().chars().next())
+                .unwrap_or(' ');
+            if painted == ' ' {
+                continue;
+            }
+            let mut st = build();
+            let mut anchor: Option<mouse_ops::DragTarget> = None;
+            let mut mouse = MouseDispatcher::new();
+            if let Some(a) = mouse.dispatch(click_event(col, row), area()) {
+                mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, W as usize);
+            }
+            let landed = st.contents().chars().nth(st.cursor.offset);
+            assert_eq!(
+                landed,
+                Some(painted),
+                "click at (col {col}, row {row}) shows {painted:?} but landed on \
+                 {landed:?} (offset {})",
+                st.cursor.offset,
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 60,
+        "expected a wrapped item to check, got {checked}"
+    );
+}
+
+/// Regression: the same wrapped-reveal mapping in a viewport so narrow that
+/// the marker is as wide as the terminal.  `render_line` and
+/// `visual_rows_of_chars` both drop the hanging indent when
+/// `indent + 1 >= width` and lay the line out flat; the hit-test used to
+/// report the *unclamped* marker width anyway, which pushed every column of
+/// every continuation row into `char_idx_at_cell_col`'s forbidden-indent zone
+/// and collapsed the whole row onto its first character.
+///
+/// `- [ ] ` is a 6-cell indent, so a 7-cell viewport trips the fallback.
+#[test]
+fn clicks_on_a_revealed_item_wider_than_the_viewport_land_under_the_pointer() {
+    use edamame::ui::{RenderedView, RenderedViewState};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    const W: u16 = 7;
+    const H: u16 = 12;
+    let src = "- [ ] abcdefghijklmnopqrstuvwxyz\n";
+
+    let build = || {
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        st.viewport_width = W as usize;
+        st.cursor.offset = src.find("abc").unwrap();
+        st.update_cursor_block();
+        st.cursor_block_entered_at = None; // reveal returns true immediately
+        st
+    };
+
+    let st = build();
+    let theme = theme();
+    let mut terminal = Terminal::new(TestBackend::new(W, H)).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                cursor_style: theme.status_mode_rendered,
+                visual_line_mode: false,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &st,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+    let buf = terminal.backend().buffer().clone();
+
+    // Row 0 is skipped: it holds the `- [ ] ` marker, and a click on the
+    // checkbox glyph deliberately toggles instead of moving the cursor
+    // (`mouse_ops::checkbox` short-circuits ahead of cursor placement).
+    let mut checked = 0;
+    for row in 1..H {
+        for col in 0..W {
+            let painted = buf
+                .cell((col, row))
+                .and_then(|c| c.symbol().chars().next())
+                .unwrap_or(' ');
+            if painted == ' ' {
+                continue;
+            }
+            let mut st = build();
+            let mut anchor: Option<mouse_ops::DragTarget> = None;
+            let mut mouse = MouseDispatcher::new();
+            if let Some(a) = mouse.dispatch(click_event(col, row), area()) {
+                mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, W as usize);
+            }
+            let landed = st.contents().chars().nth(st.cursor.offset);
+            assert_eq!(
+                landed,
+                Some(painted),
+                "click at (col {col}, row {row}) shows {painted:?} but landed on \
+                 {landed:?} (offset {})",
+                st.cursor.offset,
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 20,
+        "expected several wrapped rows to check, got {checked}"
     );
 }

@@ -1119,80 +1119,132 @@ pub(crate) fn cursor_rendered_line_idx(state: &EditorState) -> usize {
         return state.scroll;
     }
     let cursor_block_own = state.parsed.block_own_line_count(cursor_block_idx);
-    let block_range = state.parsed.source_map.original_range_for_byte(cursor_byte);
 
-    let raw_block_source: String = block_range
-        .as_ref()
-        .map(|r| {
-            let source = state.buffer.contents();
-            let end = r.end.min(source.len());
-            source.get(r.start..end).unwrap_or("").to_owned()
-        })
-        .unwrap_or_default();
+    // Shared with `RenderedView` — see `raw_block_cursor`.  The view has one
+    // extra branch for a stale parse; this path always sees a fresh one.
+    let raw = crate::ui::rendered_view::raw_block_cursor(state, cursor_byte);
+    let raw_lines: Vec<&str> = crate::ui::rendered_view::raw_source_lines(&raw.source);
 
-    let block_start_byte = block_range.as_ref().map(|r| r.start).unwrap_or(0);
-    let cursor_offset_in_block = cursor_byte.saturating_sub(block_start_byte);
+    let cursor_in_block = cursor_sub_line_in_block(
+        state,
+        cursor_byte,
+        cursor_block_idx,
+        cursor_block_own,
+        &raw.source,
+        &raw_lines,
+        raw.raw_line,
+    );
 
-    let raw_lines: Vec<&str> = raw_block_source.split('\n').collect();
-    let mut byte_pos = 0usize;
-    let mut cursor_raw_line = 0usize;
-    for (i, line) in raw_lines.iter().enumerate() {
-        let line_end = byte_pos + line.len();
-        if cursor_offset_in_block <= line_end {
-            cursor_raw_line = i;
-            break;
-        }
-        byte_pos = line_end + 1;
-    }
+    cursor_block_lines.start + cursor_in_block
+}
 
-    let is_table = crate::editor::table_edit::is_table_block(&raw_block_source);
-    let cursor_in_block = if is_table && cursor_block_own >= 3 {
-        let block_lines = state
+/// Map a cursor's raw source line within its block to the rendered sub-line
+/// index (relative to the block's first rendered line) that `RenderedView`
+/// replaces with raw text during the hybrid-edit reveal.
+///
+/// This is the single implementation: `RenderedView` uses it to decide which
+/// rendered row to paint raw source onto, `cursor_rendered_line_idx` uses it
+/// to report where the cursor appears, and `mouse_ops::coord` uses the
+/// latter to decide whether a click lands on a revealed row.  When those
+/// disagree, clicks on a revealed line are mapped against the *rendered*
+/// spans instead of the raw text the user is looking at — which is exactly
+/// wrong for a line containing dropped markers (`` `code` ``, `**bold**`).
+///
+/// `raw_lines` must come from `rendered_view::raw_text::raw_source_lines`
+/// (or an equivalent split that drops a single trailing empty entry).
+pub(crate) fn cursor_sub_line_in_block(
+    state: &EditorState,
+    cursor_byte: usize,
+    cursor_block_idx: usize,
+    cursor_block_own: usize,
+    raw_block_source: &str,
+    raw_lines: &[&str],
+    cursor_raw_line: usize,
+) -> usize {
+    use crate::markdown::list_layout::raw_list_marker_char_width;
+    use crate::ui::table_view::TableSubLineKind;
+
+    let is_table = crate::editor::table_edit::is_table_block(raw_block_source);
+    if is_table && cursor_block_own >= 3 {
+        let cursor_block_lines = state
             .parsed
-            .lines
-            .get(cursor_block_lines.clone())
-            .unwrap_or(&[]);
+            .source_map
+            .rendered_lines_for_block(cursor_block_idx);
+        let block_lines = state.parsed.lines.get(cursor_block_lines).unwrap_or(&[]);
         let kinds = crate::ui::table_view::classify_table_sub_lines(block_lines);
         let last_replaceable = cursor_block_own.saturating_sub(2);
         let sub = match cursor_raw_line {
             0 => kinds
                 .iter()
-                .position(|k| {
-                    matches!(
-                        k,
-                        crate::ui::table_view::TableSubLineKind::Header { sub: 0 }
-                    )
-                })
+                .position(|k| matches!(k, TableSubLineKind::Header { sub: 0 }))
                 .unwrap_or(1),
             1 => kinds
                 .iter()
-                .position(|k| matches!(k, crate::ui::table_view::TableSubLineKind::ThickSeparator))
+                .position(|k| matches!(k, TableSubLineKind::ThickSeparator))
                 .unwrap_or(2),
             r => {
                 let target = r - 2;
                 kinds
                     .iter()
                     .position(|k| {
-                        matches!(
-                            k,
-                            crate::ui::table_view::TableSubLineKind::DataRow { row, sub: 0 }
-                                if *row == target
-                        )
+                        matches!(k, TableSubLineKind::DataRow { row, sub: 0 } if *row == target)
                     })
                     .unwrap_or(2 * r - 1)
             }
         };
-        sub.min(last_replaceable)
-    } else {
-        let preceding_non_blank = raw_lines
-            .iter()
-            .take(cursor_raw_line)
-            .filter(|l| !l.trim().is_empty())
-            .count();
-        preceding_non_blank.min(cursor_block_own.saturating_sub(1))
-    };
+        return sub.min(last_replaceable);
+    }
 
-    cursor_block_lines.start + cursor_in_block
+    // Mermaid blocks reserve `image_max_height` rendered rows and the reveal
+    // overlay paints raw source onto them 1:1.  Code blocks render every body
+    // line — including blank ones, emitted as NBSP-padded rows — so they too
+    // map 1:1; counting only rendered-producing lines (below) would drift the
+    // cursor up by one row per blank.
+    let is_mermaid = state.parsed.is_mermaid_block(cursor_block_idx);
+    let is_code_block = matches!(
+        state.parsed.real_block_for_byte(cursor_byte),
+        Some(crate::markdown::Block::CodeBlock { .. })
+    );
+    if is_mermaid || is_code_block {
+        return cursor_raw_line.min(cursor_block_own.saturating_sub(1));
+    }
+
+    // The renderer emits one rendered line per raw line EXCEPT two collapses:
+    // an interior blank line (between an item's paragraphs) and a soft-break
+    // continuation line produce no rendered line of their own.  A *separator*
+    // blank — one directly before a top-level item marker — DOES render
+    // (loose-list legibility spacing, emitted from
+    // `ListItem::blank_lines_before`).  So count the preceding raw lines that
+    // produce a rendered row: every non-blank line, plus separator blanks;
+    // interior blanks are skipped.
+    let base_indent = raw_lines
+        .first()
+        .map(|l| l.len() - l.trim_start().len())
+        .unwrap_or(0);
+    let is_top_level_marker = |line: &str| {
+        let indent = line.len() - line.trim_start().len();
+        indent == base_indent && raw_list_marker_char_width(line).is_some()
+    };
+    let mut rendered_before = 0usize;
+    let upto = cursor_raw_line.min(raw_lines.len());
+    for i in 0..upto {
+        if raw_lines[i].trim().is_empty() {
+            // Blank: rendered only if the contiguous blank run it belongs to
+            // ends at a top-level item marker (a separator blank).  Interior
+            // blanks — whose run resolves to continuation content or a nested
+            // marker — don't render.
+            let mut j = i + 1;
+            while j < raw_lines.len() && raw_lines[j].trim().is_empty() {
+                j += 1;
+            }
+            if j < raw_lines.len() && is_top_level_marker(raw_lines[j]) {
+                rendered_before += 1;
+            }
+        } else {
+            rendered_before += 1;
+        }
+    }
+    rendered_before.min(cursor_block_own.saturating_sub(1))
 }
 
 #[cfg(test)]
