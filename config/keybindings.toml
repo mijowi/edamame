@@ -25,8 +25,11 @@
 # Paste                  = "ctrl+v"
 
 # ── History ───────────────────────────────────────────────────────────────────
+# Redo has two compiled-in chords: Ctrl-Shift-Z and Ctrl-R (vim's redo). Note
+# that overrides in this file are merged on top of the defaults — setting a key
+# here adds it, it does not unbind the compiled-in ones.
 # Undo                   = "ctrl+z"
-# Redo                   = "ctrl+y"
+# Redo                   = "ctrl+shift+z"
 
 # ── Formatting ────────────────────────────────────────────────────────────────
 # Wrap the selected text in bold / italic markers (toggles back off if the
@@ -58,6 +61,15 @@
 # InsertImage            = ""
 
 # ── View ──────────────────────────────────────────────────────────────────────
+# Ctrl-` needs the kitty keyboard protocol: the legacy control-byte encoding
+# every terminal falls back to has no representation for Ctrl with a
+# non-alphabetic key, so on Apple Terminal (and any other terminal without the
+# protocol) the chord never reaches edamame and the terminal beeps instead.
+# The same limit applies to InsertTable's Ctrl-Shift-T above and to the
+# Alt-Shift-Arrow table chords below. All of them remain available from the
+# command palette (Ctrl-P); alternatively, bind a plain Ctrl+letter here —
+# `ToggleRawMode = "ctrl+y"` works in every terminal. The startup capabilities
+# notice reports which tier your terminal landed in.
 # ToggleRawMode          = "ctrl+`"
 
 # ── List ──────────────────────────────────────────────────────────────────────

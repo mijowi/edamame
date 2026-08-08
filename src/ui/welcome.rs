@@ -31,7 +31,7 @@ use ratatui::{
 
 use crate::config::{DiagramsEnabled, ImagesEnabled, RemoteImagePolicy, Theme};
 use crate::terminal::Capabilities;
-use crate::ui::cap_summary::{render_cap_row as shared_render_cap_row, CapSummary};
+use crate::ui::cap_summary::{cap_row_height, render_cap_row as shared_render_cap_row, CapSummary};
 use crate::ui::controls::{self, Control, ControlEvent, ControlInput, ControlValue};
 use crate::ui::overlay_nav::next_focusable_wrapping;
 use crate::ui::scroll_container::{
@@ -541,7 +541,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         //  1                 "Getting started" label
         //  para_rows + 1     paragraph + spacer
         //  1                 "Terminal capabilities" label
-        //  cap_rows          one row per capability in the summary
+        //  cap_rows          each capability, wrapped (≥1 row apiece)
         //  no_truecolor_rows forced-off note (0 on a truecolor terminal)
         //  hint_rows         degraded hint (0 when all OK)
         //  1                 spacer
@@ -551,7 +551,17 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         //  1                 "Don't show this again" toggle row
         //  1                 spacer
         //  1                 Save button row
-        let cap_rows = state.cap_summary.rows.len() as u16;
+        // Measured once, here, and reused by the painter below: a row
+        // whose value wraps occupies more than one line, and the trace
+        // and the loop must agree or every section under the summary
+        // slides out of place.
+        let cap_row_heights: Vec<u16> = state
+            .cap_summary
+            .rows
+            .iter()
+            .map(|r| cap_row_height(r, body_width))
+            .collect();
+        let cap_rows: u16 = cap_row_heights.iter().sum();
         let natural_height = 1
             + para_rows
             + 1
@@ -672,7 +682,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             self.theme,
         );
         y += 1;
-        for row in &state.cap_summary.rows {
+        for (row, height) in state.cap_summary.rows.iter().zip(&cap_row_heights) {
             shared_render_cap_row(
                 &mut scratch,
                 body_x,
@@ -683,7 +693,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
                 ok_style,
                 warn_style,
             );
-            y += 1;
+            y += height;
         }
 
         // The forced-off note comes first: it states what edamame already

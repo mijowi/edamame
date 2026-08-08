@@ -16,7 +16,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 
 use crate::config::Theme;
 use crate::terminal::{Capabilities, ColorDepth, ImageProtocol};
@@ -78,8 +78,17 @@ impl CapSummary {
         let (kbd, kbd_ok) = if caps.keyboard_enhancement {
             ("Kitty keyboard protocol".to_owned(), true)
         } else {
+            // Deliberately not a list of chords.  The legacy control-byte
+            // encoding can carry neither a shifted modifier combination nor
+            // `Ctrl` with a non-alphabetic key, which takes out Ctrl-`,
+            // Ctrl-Enter, Ctrl-Backspace / Delete, Ctrl-Shift-Z / -T,
+            // Shift-Enter and the Alt-Shift-Arrow table ops — too many to
+            // enumerate without going stale, and the shape of the limit is
+            // the useful part.  Affected chords never reach the app at all
+            // (the terminal itself beeps); all of them stay reachable from
+            // the command palette.
             (
-                "unavailable — Ctrl-Shift-Z redo / Alt-Shift-Arrow table ops disabled".to_owned(),
+                "legacy encoding — some Ctrl / Alt / Shift chords can't be sent".to_owned(),
                 false,
             )
         };
@@ -181,8 +190,37 @@ pub fn build_cap_lines(rows: &[CapRow], theme: &Theme) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// Build the welcome-modal form of a capability row.  The single
+/// derivation of the row's text, shared by [`render_cap_row`] and
+/// [`cap_row_height`] so the height a caller reserves and the height the
+/// painter fills can never disagree.
+fn cap_row_line(row: &CapRow, label_style: Style, value_style: Style) -> Line<'static> {
+    let mark = if row.ok { "✓" } else { "✗" };
+    Line::from(vec![
+        Span::raw("  • "),
+        Span::styled(format!("{}: ", row.label), label_style),
+        Span::styled(row.value.clone(), value_style),
+        Span::raw(" "),
+        Span::styled(mark.to_owned(), value_style),
+    ])
+}
+
+/// How many terminal rows [`render_cap_row`] needs for `row` at `width`.
+///
+/// A row value is prose of unbounded length (the Keyboard row's degraded
+/// text is the long one), so it wraps rather than truncating — which means
+/// the welcome modal's body-height trace has to ask rather than assume one
+/// row per capability.  Styling cannot change the wrap, so this measures
+/// with plain styles.
+pub fn cap_row_height(row: &CapRow, width: u16) -> u16 {
+    let line = cap_row_line(row, Style::default(), Style::default());
+    crate::ui::scroll_container::wrapped_rows(std::slice::from_ref(&line), width).max(1)
+}
+
 /// Render a single capability row at `(x, y)` using the supplied
-/// `ok_style` / `warn_style` for the value+mark span.
+/// `ok_style` / `warn_style` for the value+mark span.  Wraps within
+/// `width`; returns the number of rows consumed, which is always
+/// [`cap_row_height`] for the same `row` and `width`.
 #[allow(clippy::too_many_arguments)]
 pub fn render_cap_row(
     buf: &mut Buffer,
@@ -193,25 +231,23 @@ pub fn render_cap_row(
     theme: &Theme,
     ok_style: Style,
     warn_style: Style,
-) {
+) -> u16 {
     let value_style = if row.ok { ok_style } else { warn_style };
-    let mark = if row.ok { "✓" } else { "✗" };
-    let line = Line::from(vec![
-        Span::raw("  • "),
-        Span::styled(format!("{}: ", row.label), theme.modal_bg),
-        Span::styled(row.value.clone(), value_style),
-        Span::raw(" "),
-        Span::styled(mark.to_owned(), value_style),
-    ]);
-    Paragraph::new(line).style(theme.modal_bg).render(
-        Rect {
-            x,
-            y,
-            width,
-            height: 1,
-        },
-        buf,
-    );
+    let line = cap_row_line(row, theme.modal_bg, value_style);
+    let height = cap_row_height(row, width);
+    Paragraph::new(line)
+        .style(theme.modal_bg)
+        .wrap(Wrap { trim: false })
+        .render(
+            Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            buf,
+        );
+    height
 }
 
 #[cfg(test)]
@@ -272,11 +308,58 @@ mod tests {
     }
 
     #[test]
+    fn a_long_row_value_wraps_instead_of_truncating() {
+        // The welcome modal renders cap rows at a fixed CONTENT_WIDTH, so
+        // a value longer than the remaining budget used to be silently
+        // clipped mid-word (the degraded Keyboard row lost its tail).
+        // `render_cap_row` wraps and reports its height; the painter and
+        // the modal's height trace both key off `cap_row_height`.
+        let row = CapRow {
+            label: "Keyboard",
+            value: "x".repeat(120),
+            ok: false,
+        };
+        assert!(
+            cap_row_height(&row, 64) > 1,
+            "a value past the width budget must wrap, not truncate"
+        );
+
+        let theme = Box::leak(Box::new(Theme::default()));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 64, 8));
+        let used = render_cap_row(
+            &mut buf,
+            0,
+            0,
+            64,
+            &row,
+            theme,
+            Style::default(),
+            Style::default(),
+        );
+        assert_eq!(
+            used,
+            cap_row_height(&row, 64),
+            "painter height must match the height callers reserve"
+        );
+        // Every `x` survived somewhere in the painted band.
+        let painted: String = (0..used)
+            .flat_map(|r| (0..64).map(move |c| (c, r)))
+            .map(|(c, r)| buf[(c, r)].symbol().to_owned())
+            .collect();
+        assert_eq!(
+            painted.matches('x').count(),
+            120,
+            "wrapped row dropped characters: {painted:?}"
+        );
+    }
+
+    #[test]
     fn no_row_states_a_consequence() {
         // Rows are descriptive; "disabled"/"turned off" belongs to the
         // consuming modal, which is the only layer that knows whether it
-        // acts on the capability.  The keyboard row is the one exception —
-        // it names the two chords the terminal genuinely cannot deliver.
+        // acts on the capability.  The Keyboard row used to be exempt
+        // because it said "disabled"; it now describes the encoding limit
+        // ("can't be sent"), so the invariant covers every row.
         for depth in [
             ColorDepth::TrueColor,
             ColorDepth::Ansi256,
@@ -284,7 +367,7 @@ mod tests {
             ColorDepth::NoColor,
         ] {
             let summary = CapSummary::from_caps(&caps(depth, Some(ImageProtocol::KittyGraphics)));
-            for r in summary.rows.iter().filter(|r| r.label != "Keyboard") {
+            for r in &summary.rows {
                 assert!(
                     !r.value.contains("disabled") && !r.value.contains("turned off"),
                     "{depth:?} {}: {:?} states a consequence",

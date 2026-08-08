@@ -78,10 +78,12 @@ pub struct Capabilities {
     /// Whether `$LC_ALL` / `$LC_CTYPE` / `$LANG` advertise a UTF-8 locale.
     /// Used as a proxy for "full Unicode support".
     pub unicode_full: bool,
-    /// Whether `PushKeyboardEnhancementFlags` succeeded.  When `true`,
-    /// `Ctrl-Shift-Z` is usable as a secondary redo binding; when `false`
-    /// the terminal cannot disambiguate shifted modifier combinations and
-    /// features that rely on them must gracefully degrade.
+    /// Whether the terminal answered `supports_keyboard_enhancement()`
+    /// affirmatively.  When `true`, `Ctrl-Shift-Z` is usable as a secondary
+    /// redo binding; when `false` the terminal is limited to the legacy
+    /// control-byte encoding — it cannot represent shifted modifier
+    /// combinations, nor `Ctrl` with a non-alphabetic key — and features
+    /// that rely on them must gracefully degrade.
     pub keyboard_enhancement: bool,
 }
 
@@ -91,10 +93,10 @@ impl Capabilities {
     /// Must be called **after** the terminal has entered the alternate screen
     /// and raw mode, because `ratatui_image`'s Picker probes stdout/stdin
     /// with escape sequences.  The `kbd_enhancement` flag should be the
-    /// result of the `PushKeyboardEnhancementFlags` call in `setup()` — we
-    /// pass it in rather than re-querying here so the source of truth is the
-    /// actual push operation, not a separate capability probe (which can
-    /// disagree with reality on some terminals).
+    /// result of the `supports_keyboard_enhancement()` query in `setup()` —
+    /// we pass it in rather than re-querying here because both that query
+    /// and the Picker probe read replies off the tty, and running them
+    /// twice risks one consuming the other's response.
     pub fn detect(kbd_enhancement: bool) -> Self {
         let term = env::var("TERM").unwrap_or_default();
         let color_depth = detect_color_depth(&term);
