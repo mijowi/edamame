@@ -85,5 +85,66 @@ pub fn theme() -> Theme {
         .add_modifier(Modifier::DIM);
     t.code_block_border = Style::default().fg(palette().text).bg(code_bg);
     t.code_block_text = Style::default().fg(palette().text).bg(code_bg);
+
+    // Muted selection (non-focused search matches).  The derived
+    // version blends `surface` toward `accent`, which is a no-op for
+    // indexed colors — it would leave the highlight as the bare
+    // `surface` grey (236), barely separable from `bg` (233).  Pick a
+    // dark navy instead: clearly a highlight against the near-black
+    // page, and clearly recessive against the focused match's brighter
+    // `accent` blue (25).
+    let selection_muted_bg = Color::Indexed(18);
+    t.selection_muted = Style::default().bg(selection_muted_bg).fg(palette().text);
+
+    // Diff washes.  Same `blend` no-op as `selection_muted`, but worse:
+    // every `diff_*_line` / `diff_*_inline` style collapses to the bare
+    // `surface` grey, and `diff_view` paints add / delete rows with *no
+    // gutter* — "distinguished by background color alone" — so on an
+    // indexed terminal an addition and a deletion render identically.
+    //
+    // Two things constrain the shades.  (1) A line wash sits behind
+    // whatever the markdown painted, so heading orange / code purple
+    // have to stay legible on top of it; only the cube's darkest tints
+    // leave them room.  (2) The cube's greens carry far more luminance
+    // than its reds: against `text` (253), 22 measures 5.7:1 but 28 only
+    // 3.4:1 and 34 just 2.1:1, while 52 / 88 / 124 all stay above 5:1.
+    //
+    // So the washes take the faintest hued shade of each hue — 22 / 52,
+    // which are also the darkest the 6×6×6 cube can express (nothing
+    // sits between them and black in-hue).  That leaves no second wash
+    // level for green, so focused and non-focused rows share a wash and
+    // focus is carried instead by the inline highlights below and by the
+    // decision divider (elevated bg, `>` caret, bold).  Prioritising the
+    // wash hierarchy over legibility would mean 28 behind body text.
+    let add_wash = Color::Indexed(22); // #005f00
+    let delete_wash = Color::Indexed(52); // #5f0000
+    t.diff_add_line = Style::default().bg(add_wash);
+    t.diff_add_line_unfocused = Style::default().bg(add_wash);
+    t.diff_delete_line = Style::default().bg(delete_wash);
+    t.diff_delete_line_unfocused = Style::default().bg(delete_wash);
+
+    // Inline (within-line) change highlights sit *on* the wash, so they
+    // step one shade deeper; the non-focused pair drops the bold, as in
+    // the derived styles.  The focused pair is a saturated fill, and
+    // pins the foreground `best_contrast` would have picked if it could
+    // measure indexed colors — near-black on the bright green (6.4:1),
+    // `text` on the dark red (5.3:1).
+    t.diff_add_inline_unfocused = Style::default().bg(Color::Indexed(28));
+    t.diff_delete_inline_unfocused = Style::default().bg(Color::Indexed(88));
+    t.diff_add_inline = Style::default()
+        .bg(Color::Indexed(34))
+        .fg(palette().bg)
+        .add_modifier(Modifier::BOLD);
+    t.diff_delete_inline = Style::default()
+        .bg(Color::Indexed(124))
+        .fg(palette().text)
+        .add_modifier(Modifier::BOLD);
+
+    // Bottom region in diff mode — green tint on the status line, red on
+    // the hint line, mirroring the adds-below / deletes-above stacking.
+    // Reuses the faint wash shades so the bars read as the same language
+    // as the document rows.
+    t.status_bar_diff = Style::default().bg(add_wash).fg(palette().text);
+    t.hint_bar_diff = Style::default().bg(delete_wash).fg(palette().text);
     t
 }
