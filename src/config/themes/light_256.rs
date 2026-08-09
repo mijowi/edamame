@@ -90,5 +90,56 @@ pub fn theme() -> Theme {
         .add_modifier(Modifier::DIM);
     t.code_block_border = Style::default().fg(palette().text).bg(code_bg);
     t.code_block_text = Style::default().fg(palette().text).bg(code_bg);
+
+    // Muted selection (non-focused search matches).  See the
+    // `dark_256` counterpart: the derived blend is a no-op for indexed
+    // colors and would leave the highlight as the bare `surface` grey
+    // (251) against a 254 page.  Pick a pale blue instead — a washed
+    // version of `accent` (75) that still reads as a highlight on the
+    // near-white page while the focused match's saturated 75 stays
+    // clearly stronger.
+    let selection_muted_bg = Color::Indexed(153);
+    t.selection_muted = Style::default().bg(selection_muted_bg).fg(palette().text);
+
+    // Diff washes.  Same `blend` no-op as `selection_muted` — see the
+    // `dark_256` counterpart for why it matters most here: `diff_view`
+    // paints add / delete rows with no gutter, so collapsing both to the
+    // bare `surface` grey makes an addition and a deletion identical.
+    //
+    // Unlike the dark theme, this palette has room for the full
+    // hierarchy the derived styles intend: against near-black `text`
+    // (234) every pale tint below clears 7:1, so the four levels can be
+    // spent on focus and inline depth rather than on legibility.  Each
+    // hue therefore ramps pale wash → stronger wash (focused) → muted
+    // patch (non-focused inline) → saturated patch (focused inline).
+    // The non-focused inline shades (151 / 181) are the greyer members
+    // of each ramp, so a changed word inside a non-focused hunk reads as
+    // deeper than its wash without competing with the focused hunk's
+    // brighter fills.
+    t.diff_add_line_unfocused = Style::default().bg(Color::Indexed(194)); // #d7ffd7
+    t.diff_add_line = Style::default().bg(Color::Indexed(157)); // #afffaf
+    t.diff_delete_line_unfocused = Style::default().bg(Color::Indexed(224)); // #ffd7d7
+    t.diff_delete_line = Style::default().bg(Color::Indexed(217)); // #ffafaf
+
+    // Inline (within-line) change highlights.  Bold on the focused pair
+    // only, as in the derived styles.  No foreground is pinned here —
+    // `text` clears 7:1 on all four shades, so unlike the dark theme's
+    // bright green there is nothing to rescue, and leaving fg unset lets
+    // the markdown's own colors show through the highlight.
+    t.diff_add_inline_unfocused = Style::default().bg(Color::Indexed(151)); // #afd7af
+    t.diff_delete_inline_unfocused = Style::default().bg(Color::Indexed(181)); // #d7afaf
+    t.diff_add_inline = Style::default()
+        .bg(Color::Indexed(114)) // #87d787
+        .add_modifier(Modifier::BOLD);
+    t.diff_delete_inline = Style::default()
+        .bg(Color::Indexed(210)) // #ff8787
+        .add_modifier(Modifier::BOLD);
+
+    // Bottom region in diff mode — green tint on the status line, red on
+    // the hint line, mirroring the adds-below / deletes-above stacking.
+    // Reuses the faint wash shades so the bars read as the same language
+    // as the document rows.
+    t.status_bar_diff = Style::default().bg(Color::Indexed(194)).fg(palette().text);
+    t.hint_bar_diff = Style::default().bg(Color::Indexed(224)).fg(palette().text);
     t
 }
