@@ -28,10 +28,11 @@
 //! reconcile, or a future Edit mode) calls
 //! [`DiffState::invalidate_layout`] to force a rebuild.
 
+use ratatui::text::Line;
 use ropey::Rope;
 
 use crate::document::visual_cache::VisualRowCache;
-use crate::ui::line_render::visual_rows_of_str;
+use crate::ui::line_render::visual_rows_for_line;
 
 use super::hunk::Decision;
 use super::state::DiffState;
@@ -187,8 +188,21 @@ impl DiffState {
                     if lines[i].source == DiffLineSource::Decision {
                         1
                     } else {
-                        let text = line_text(self, &lines[i]);
-                        visual_rows_of_str(&text, width).len()
+                        // Measure the marker *with* the text, and through
+                        // `visual_rows_for_line` rather than
+                        // `visual_rows_of_str`: `render_line` derives a
+                        // hanging indent from a line's leading marker, and
+                        // `- ` / `+ ` / a two-space context prefix all match
+                        // its recognized shapes (raw bullet, indented
+                        // continuation).  Measuring flat here while the
+                        // painter wrapped at indent 2 would desync every
+                        // scroll computation on any line that wraps.
+                        let text = format!(
+                            "{}{}",
+                            line_marker(lines[i].source),
+                            line_text(self, &lines[i])
+                        );
+                        visual_rows_for_line(&Line::from(text), width)
                     }
                 })
             };
@@ -253,6 +267,30 @@ pub fn line_text(diff: &DiffState, dvl: &DiffVisualLine) -> String {
     }
     let raw = rope.line(dvl.rope_line).to_string();
     raw.trim_end_matches('\n').to_owned()
+}
+
+/// Leading side marker for a diff visual line — the unified-diff `+ ` /
+/// `- ` convention, with a matching two-space prefix on context lines so
+/// every body column lines up.
+///
+/// Unlike the add/delete background washes, the marker is correct for
+/// degenerate hunks (a `HunkKind::Delete` hunk visibly has only `- `
+/// rows) and survives monochrome themes, where every `diff_*` palette
+/// slot is `Color::Reset` and color carries nothing.
+///
+/// The marker is *not* part of [`line_text`]: the inline highlight
+/// ranges on a hunk index into the raw line's chars, so the renderer
+/// paints this as a separate leading span rather than concatenating it.
+/// Anything that measures a diff line must include it — see
+/// [`DiffState::with_layout`].
+pub fn line_marker(source: DiffLineSource) -> &'static str {
+    match source {
+        DiffLineSource::OldDelete => "- ",
+        DiffLineSource::NewAdd => "+ ",
+        DiffLineSource::Context => "  ",
+        // The divider is chrome, not a body line; it spans the full row.
+        DiffLineSource::Decision => "",
+    }
 }
 
 /// Text shown on a hunk's decision divider for a given `Decision`.

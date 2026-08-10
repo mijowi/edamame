@@ -310,8 +310,21 @@ pub struct Theme {
     // ── Diff mode ─────────────────────────────────────────────────
     /// Full-row bg fill on add-side diff lines.  Subtle (30 %-toward
     /// `diff_add`) so the foreground text stays legible.
+    ///
+    /// **Set a `bg` (and modifiers), not an `fg`.**  The wash is reused
+    /// at render time as the Accept chip's background on the decision
+    /// divider, and `ui::diff_view::prompt_chip_style` pins that chip's
+    /// foreground from `normal` — so a foreground set here reaches the
+    /// full-row fill but is dropped on the chip.  The rule is a
+    /// convention, not an invariant: the field is user-authorable
+    /// (`blend` is a no-op on non-RGB colors, so on an indexed palette a
+    /// hand-picked `bg` is the only way to get a focused fill at all),
+    /// and the built-ins that hand-pick it — `dark_256`, `light_256`,
+    /// `monochrome_dark` — honor it.
     pub diff_add_line: Style,
-    /// Full-row bg fill on delete-side diff lines.
+    /// Full-row bg fill on delete-side diff lines.  Background-only by
+    /// the same convention as `diff_add_line`, and reused as the Reject
+    /// chip's background.
     pub diff_delete_line: Style,
     /// Add-side bg for hunks that are *not* the focused one — a weaker
     /// tint than `diff_add_line` so the focused hunk's color stands out.
@@ -332,9 +345,13 @@ pub struct Theme {
     /// `diff_add_inline_unfocused`.
     pub diff_delete_inline_unfocused: Style,
     /// Decision divider for the focused hunk while still `Pending` —
-    /// the `> [ ] Accept [y] · Reject [n]` prompt.  A `secondary`
-    /// foreground (plus the caret and bold added at render time) makes
-    /// the call to action pop.
+    /// the `> [ ] Reject [n] Accept [y]` prompt (reject first, mirroring
+    /// the old-above-new stacking).  A `secondary` foreground (plus the
+    /// caret and bold added at render time) makes the call to action
+    /// pop.  This is the only state the prompt renders in, which is why
+    /// the render-time Accept / Reject chips — washed in `diff_add_line`
+    /// / `diff_delete_line` — never land on a resolved divider's
+    /// green/red foreground.
     pub diff_decision_pending: Style,
     /// Decision divider once the hunk is `Accepted` (`[Y] Accepted`).
     pub diff_decision_accepted: Style,

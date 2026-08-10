@@ -12,15 +12,10 @@
 - Add a documentation page for the terminal upgrade notice and a link to the page from within edamame
 
 ## Vim mode
-- Table scoping is in (`vim_ops::table`): cell-scoped motions, `o`/`O` as structural rows, `dd` as a row, `cc` as a cell, and a `range_breaks_a_table` guard on both operator funnels. Raw mode is exempt throughout. Open questions left over from it:
-    - Which *other* motions should be tailored for tables? `{`/`}`/`gg`/`G`/`%` deliberately stay unscoped (they exist to leave the current context); everything else that means "move within this text" is clamped to the cell.
-    - A charwise Visual selection can still be *made* across cells (`l` steps cell to cell) — it is the mutation that refuses, not the selection. Should `v`+`l` stop at the cell edge instead, so the highlight can never promise an edit that will be refused?
-    - `p` inside a table now inserts whole rows at a legal boundary and refuses a register that isn't rows. It does not yet reflow a pasted row whose column count differs from the table's.
+- A charwise Visual selection can still be *made* across cells (`l` steps cell to cell) — it is the mutation that refuses, not the selection. Should `v`+`l` stop at the cell edge instead, so the highlight can never promise an edit that will be refused? - yes
 - When typing in a table cell that is wider than the column header, and a space character is entered,
 
 ## Diff mode
-- ==DIFF is not displayed in the status line when using vim mode. The vim mode (e.g. NORMAL) supersedes it. We should supress the display of the vim mode during diffs.==
 - Implement editing while in diff mode - This will be complicated - do I actually want to do it? If yes, use Ctrl with diff mode keybinds so they don't conflict with editor keybinds.
 - Rendered diff mode; use edamame as git difftool?
-- Add up/down arrow glyphs to indicate old version/new version changes
 

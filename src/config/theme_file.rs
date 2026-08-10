@@ -50,8 +50,12 @@ use serde::{Deserialize, Serialize};
 
 use super::theme::Theme;
 
-/// Full set of theme entries as they appear in TOML.  One field per `Style`
-/// field on `Theme`, plus the `task_strikethrough` boolean flag.
+/// Full set of theme entries as they appear in TOML.  One field per
+/// `Style` field on `Theme`, plus the `task_strikethrough` boolean
+/// flag.  The mirroring is total and deliberately so: this struct is
+/// also the *export* format (`ThemeFile::from(&Theme)` behind the
+/// "Create custom theme" flow), so a field missing here is a field a
+/// built-in silently loses the moment a user writes it to disk.
 ///
 /// `#[serde(default)]` (not `deny_unknown_fields`) — users may edit themes
 /// written by older binaries that didn't include a field, or newer binaries
@@ -182,7 +186,18 @@ pub struct ThemeFile {
     pub scrollbar_thumb: StyleSpec,
     pub scrollbar_thumb_active: StyleSpec,
 
-    // Diff mode
+    // Diff mode.
+    //
+    // `diff_add_line` / `diff_delete_line` are authorable like every
+    // other field, and must stay that way: `blend` is a no-op on non-RGB
+    // colors, so on an indexed palette the derived washes collapse onto
+    // `surface` and this section is the only way to give the focused
+    // hunk a fill.  The built-ins that hand-pick them (`dark_256`,
+    // `light_256`, `monochrome_dark`) round-trip through here.  They are
+    // reused at render time as the Accept / Reject chip backgrounds
+    // (`ui::diff_view::prompt_chip_style`), which therefore pins the
+    // chip's foreground unconditionally rather than trusting the washes
+    // to be background-only.
     pub diff_add_line: StyleSpec,
     pub diff_delete_line: StyleSpec,
     pub diff_add_line_unfocused: StyleSpec,
@@ -518,6 +533,52 @@ fg = "blue"
         let file: ThemeFile = toml::from_str(toml).unwrap();
         let theme: Theme = (&file).into();
         assert_eq!(theme.h1, Theme::default().h1);
+    }
+
+    #[test]
+    fn focused_diff_washes_are_user_authorable() {
+        // `themes::util::blend` is a no-op on non-RGB colors, so on an
+        // indexed palette the derived focused washes collapse onto
+        // `surface` and a hand-picked `bg` here is the only way to get a
+        // focused-hunk fill at all.  The section must therefore reach
+        // `Theme` — and the fill must not be forced bg-only at the
+        // format level: `ui::diff_view::prompt_chip_style` defends the
+        // chip by pinning its own fg, not by trusting the wash.
+        let toml = r##"[diff_add_line]
+bg = "#00ff00"
+
+[diff_delete_line]
+bg = "#ff0000"
+"##;
+        let file: ThemeFile = toml::from_str(toml).unwrap();
+        let theme: Theme = (&file).into();
+        assert_eq!(theme.diff_add_line.bg, Some(Color::Rgb(0, 255, 0)));
+        assert_eq!(theme.diff_delete_line.bg, Some(Color::Rgb(255, 0, 0)));
+    }
+
+    #[test]
+    fn exporting_an_indexed_builtin_preserves_its_hand_picked_washes() {
+        // The export path ("Create custom theme") serialises through
+        // `ThemeFile`, so a field missing there is a field the exported
+        // copy silently loses.  `dark_256` / `light_256` /
+        // `monochrome_dark` hand-pick the focused washes precisely
+        // because the palette blend can't derive them on a non-RGB
+        // palette — dropping the section collapsed add and delete onto
+        // each other *and* onto `surface`, taking the focused-hunk fill
+        // and both decision-divider chips with them.
+        for name in ["256 Dark", "256 Light", "Monochrome Dark", "Edamame"] {
+            let original = Theme::builtin(name).expect("built-in name");
+            let serialised = toml::to_string(&ThemeFile::from(&original)).unwrap();
+            let reloaded: Theme = (&toml::from_str::<ThemeFile>(&serialised).unwrap()).into();
+            assert_eq!(
+                reloaded.diff_add_line, original.diff_add_line,
+                "{name}: add wash lost on export"
+            );
+            assert_eq!(
+                reloaded.diff_delete_line, original.diff_delete_line,
+                "{name}: delete wash lost on export"
+            );
+        }
     }
 
     #[test]
