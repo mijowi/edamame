@@ -155,11 +155,13 @@ impl<'a> Widget for StatusBar<'a> {
         let cursor_width = UnicodeWidthStr::width(cursor_text.as_str());
         let cursor_span = Span::styled(cursor_text, with_bar_bg(theme.status_info));
 
-        let pct = if s.line_count == 0 {
-            100
-        } else {
-            let visible_end = s.scroll + area.height as usize;
-            (visible_end.min(s.line_count) * 100) / s.line_count
+        // An empty document has nothing left to scroll to — read it as 100%.
+        let pct = match s.line_count {
+            0 => 100,
+            line_count => {
+                let visible_end = s.scroll + area.height as usize;
+                (visible_end.min(line_count) * 100) / line_count
+            }
         };
         let info_text = format!(" {} lines  {}% ", s.line_count, pct);
         let info_width = UnicodeWidthStr::width(info_text.as_str());

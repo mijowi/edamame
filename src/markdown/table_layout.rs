@@ -57,6 +57,8 @@
 //! intentionally unreferenced by production code, hence the module-level
 //! `allow(dead_code)`.
 
+use std::num::NonZeroUsize;
+
 use ratatui::text::Line;
 use unicode_width::UnicodeWidthStr;
 
@@ -166,13 +168,7 @@ pub fn compute_widths(
         // already render fully at their floor.
         let slack = available - unpinned_min_total;
         let total_weight: usize = unpinned.iter().map(|i| col_max[*i] - col_min[*i]).sum();
-        if total_weight == 0 {
-            // No flexibility anywhere (every cell is one long word).  Use
-            // mins as-is and accept that this fits exactly.
-            for &i in &unpinned {
-                widths[i] = col_min[i];
-            }
-        } else {
+        if let Some(total_weight) = NonZeroUsize::new(total_weight) {
             // Integer-weighted division with remainder distribution: assign
             // floor(slack * weight / total_weight) to each column and hand
             // out the leftover cells one at a time to the columns with the
@@ -201,6 +197,18 @@ pub fn compute_widths(
                     widths[i] += 1;
                     leftover -= 1;
                 }
+            }
+        } else {
+            // No flexibility anywhere (every cell is one long word).  Use
+            // mins as-is and accept that this fits exactly.
+            //
+            // Defensive only — unreachable in practice: a zero total weight
+            // means `col_max[i] == col_min[i]` for every unpinned column, so
+            // `unpinned_max_total == unpinned_min_total` and the natural-fit
+            // branch above would have claimed this case.  Kept so a future
+            // change to either total can't turn a divide-by-zero into a panic.
+            for &i in &unpinned {
+                widths[i] = col_min[i];
             }
         }
     } else {
