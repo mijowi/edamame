@@ -7,6 +7,7 @@ use ratatui::{
 
 use crate::config::sections::MAX_WIDTH_COLS_MIN;
 use crate::config::Theme;
+use crate::editor::vim_ops::VisualKind;
 use crate::editor::{EditorState, Mode};
 use crate::terminal::Capabilities;
 
@@ -59,11 +60,12 @@ pub struct EditorView<'a> {
     /// when the vim handler is active; `None` for the default handler,
     /// where the status bar shows the rendering-mode badge instead.
     pub vim_mode_label: Option<&'a str>,
-    /// True in vim VisualLine sub-mode.  Threaded into `RenderedView` /
-    /// `RawView` so the charwise `selection` is widened to whole lines for
-    /// the highlight overlay only (§2.6).  Always `false` for the default
-    /// handler and in non-Visual vim sub-modes.
-    pub visual_line_mode: bool,
+    /// The active vim Visual flavor, if any.  Threaded into `RenderedView` /
+    /// `RawView` so the half-open `selection` is widened for the highlight
+    /// overlay only — inclusive of the char under the cursor charwise, whole
+    /// lines in VisualLine (§2.6).  Always `None` for the default handler and
+    /// in non-Visual vim sub-modes.
+    pub visual_kind: Option<VisualKind>,
     /// Resolved block-cursor style for this frame (see
     /// `app::cursor_style::editor_cursor_style`).  Already accounts for the
     /// view mode and the vim sub-mode, so the sub-views paint it directly
@@ -275,7 +277,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                         theme: self.theme,
                         show_table_buttons: self.show_table_buttons,
                         drop_indicator: self.table_drop_indicator,
-                        visual_line_mode: self.visual_line_mode,
+                        visual_kind: self.visual_kind,
                         cursor_style: self.editor_cursor_style,
                     },
                     doc_area,
@@ -288,7 +290,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                     RawView {
                         state: &*self.state,
                         theme: self.theme,
-                        visual_line_mode: self.visual_line_mode,
+                        visual_kind: self.visual_kind,
                         cursor_style: self.editor_cursor_style,
                     },
                     doc_area,

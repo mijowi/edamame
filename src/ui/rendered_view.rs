@@ -7,6 +7,7 @@ use ratatui::{buffer::Buffer as TuiBuf, layout::Rect, style::Style, widgets::Sta
 use crate::config::Theme;
 use crate::document::detect_setext;
 use crate::editor::table_edit;
+use crate::editor::vim_ops::VisualKind;
 use crate::editor::EditorState;
 use crate::markdown::table_layout::{compute_cell_overlay, table_raw_col_to_rendered_col};
 
@@ -102,11 +103,13 @@ pub struct RenderedView<'a> {
     /// after the handles are painted.  `None` when no relevant drag is
     /// active.
     pub drop_indicator: Option<crate::ui::table_view::DropIndicator>,
-    /// True in vim VisualLine sub-mode: the charwise `selection` is widened
-    /// to whole lines (via `vim_ops::visual_line_char_range`) purely for the
-    /// overlay paint, so the highlight covers full rows.  `selection` itself
-    /// is never snapped — see `docs/vim-implementation-plan.md` §2.6.
-    pub visual_line_mode: bool,
+    /// The active vim Visual flavor, if any: the stored half-open `selection`
+    /// is widened for the overlay paint via `vim_ops::visual_span` — inclusive
+    /// of the char under the cursor in charwise Visual, whole rows in
+    /// VisualLine.  `selection` itself is never snapped, and `None` (default
+    /// handler, or vim outside Visual) paints the raw span — see
+    /// `docs/vim-implementation-plan.md` §2.6.
+    pub visual_kind: Option<VisualKind>,
     /// Resolved block-cursor style for this frame, already accounting for
     /// the view mode and vim sub-mode (`app::cursor_style`).  Used for the
     /// inline cursor indicator and the table-cell cursor overlay.
@@ -318,14 +321,9 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // Selection: compute the selected raw byte range once; per-line overlay
         // logic will intersect it with each line's byte range.
         let selection_bytes = editor.selection.map(|s| {
-            let (sa, sb) = if self.visual_line_mode {
-                let r = crate::editor::vim_ops::visual_line_char_range(&s, &editor.buffer);
-                (r.start, r.end)
-            } else {
-                s.range()
-            };
+            let r = crate::editor::vim_ops::visual_span(&s, &editor.buffer, self.visual_kind);
             let rope = editor.buffer.rope();
-            (rope.char_to_byte(sa), rope.char_to_byte(sb))
+            (rope.char_to_byte(r.start), rope.char_to_byte(r.end))
         });
         let block_range_for_cursor = editor
             .parsed

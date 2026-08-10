@@ -147,7 +147,7 @@ fn render_editor(state: &mut EditorState, width: u16, height: u16) -> ratatui::b
                 is_scrolling: false,
                 hint,
                 vim_mode_label: None,
-                visual_line_mode: false,
+                visual_kind: None,
                 editor_cursor_style: theme().status_mode_rendered,
                 max_width_enabled: false,
                 max_width_cols: 0,

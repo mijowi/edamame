@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::config::Theme;
+use crate::editor::vim_ops::VisualKind;
 use crate::editor::EditorState;
 use crate::ui::line_render::render_line_with_cursor_from_visual;
 
@@ -17,10 +18,11 @@ use crate::ui::line_render::render_line_with_cursor_from_visual;
 pub struct RawView<'a> {
     pub state: &'a EditorState,
     pub theme: &'a Theme,
-    /// True in vim VisualLine sub-mode: the charwise `selection` is widened
-    /// to whole lines for the highlight only (see §2.6); `selection` itself
-    /// is never snapped.
-    pub visual_line_mode: bool,
+    /// The active vim Visual flavor, if any: the stored half-open `selection`
+    /// is widened for the highlight only via `vim_ops::visual_span` —
+    /// inclusive of the char under the cursor charwise, whole lines in
+    /// VisualLine (see §2.6).  `selection` itself is never snapped.
+    pub visual_kind: Option<VisualKind>,
     /// Resolved block-cursor style for this frame (`app::cursor_style`).
     /// For the default handler this is `status_mode_raw`; under vim it follows
     /// the sub-mode (INSERT keeps the raw warning color; NORMAL / VISUAL carry
@@ -51,12 +53,8 @@ impl<'a> StatefulWidget for RawView<'a> {
         let cursor_visible = self.state.cursor_visible();
         let sel_style = self.theme.selection;
         let selection_range = self.state.selection.map(|s| {
-            if self.visual_line_mode {
-                let r = crate::editor::vim_ops::visual_line_char_range(&s, &self.state.buffer);
-                (r.start, r.end)
-            } else {
-                s.range()
-            }
+            let r = crate::editor::vim_ops::visual_span(&s, &self.state.buffer, self.visual_kind);
+            (r.start, r.end)
         });
 
         // A live `:s` preview may have rewritten the buffer, so an active
@@ -269,7 +267,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let view = RawView {
-                    visual_line_mode: false,
+                    visual_kind: None,
                     state: &state,
                     theme,
                     cursor_style: theme.status_mode_raw,
@@ -307,7 +305,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let view = RawView {
-                    visual_line_mode: false,
+                    visual_kind: None,
                     state: &state,
                     theme,
                     cursor_style: theme.status_mode_raw,
@@ -348,7 +346,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let view = RawView {
-                    visual_line_mode: false,
+                    visual_kind: None,
                     state: &state,
                     theme,
                     cursor_style: theme.status_mode_raw,
@@ -395,7 +393,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let view = RawView {
-                    visual_line_mode: true,
+                    visual_kind: Some(VisualKind::Line),
                     state: &state,
                     theme,
                     cursor_style: theme.status_mode_raw,
@@ -436,7 +434,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let view = RawView {
-                    visual_line_mode: false,
+                    visual_kind: None,
                     state: &state,
                     theme,
                     cursor_style: theme.status_mode_raw,

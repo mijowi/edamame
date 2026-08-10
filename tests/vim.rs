@@ -17,6 +17,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use edamame::config::{Action, KeyBindingOverrides, KeyMap, Theme};
 use edamame::document::{Buffer, Selection};
+use edamame::editor::vim_ops::visual_charwise_range;
 use edamame::editor::{EditorState, Mode};
 use edamame::input::{vim_feed, VimOutcome, VimState, VimSubMode};
 use edamame::search::SearchState;
@@ -1635,16 +1636,16 @@ fn find_extends_a_visual_selection() {
 
 #[test]
 fn visual_charwise_delete_removes_the_highlighted_span() {
-    // `v l l d` deletes the half-open `[anchor, cursor)` span (the painted
-    // range), yanks it charwise, and returns to Normal.
+    // `v l l d` deletes the *inclusive* span — anchor through the char under
+    // the cursor, as in stock vim — yanks it charwise, and returns to Normal.
     let mut st = state("hello world");
     let mut vim = VimState::default();
     feed(&mut vim, &mut st, ch('v')); // anchor 0
     feed(&mut vim, &mut st, ch('l')); // active 1
     feed(&mut vim, &mut st, ch('l')); // active 2
     feed(&mut vim, &mut st, ch('d'));
-    assert_eq!(st.buffer.contents(), "llo world");
-    assert_eq!(vim.register.text, "he");
+    assert_eq!(st.buffer.contents(), "lo world");
+    assert_eq!(vim.register.text, "hel");
     assert!(!vim.register.linewise);
     assert_eq!(vim.sub_mode, VimSubMode::Normal);
     assert!(st.selection.is_none());
@@ -1658,7 +1659,11 @@ fn visual_x_is_an_alias_for_delete() {
     feed(&mut vim, &mut st, ch('v'));
     feed(&mut vim, &mut st, ch('l'));
     feed(&mut vim, &mut st, ch('x'));
-    assert_eq!(st.buffer.contents(), "ello");
+    assert_eq!(
+        st.buffer.contents(),
+        "llo",
+        "`v l` covers two chars, inclusively"
+    );
     assert_eq!(vim.sub_mode, VimSubMode::Normal);
 }
 
@@ -1672,10 +1677,59 @@ fn visual_charwise_yank_leaves_the_buffer_and_parks_at_start() {
     feed(&mut vim, &mut st, ch('l'));
     feed(&mut vim, &mut st, ch('y'));
     assert_eq!(st.buffer.contents(), "hello world", "yank never mutates");
-    assert_eq!(vim.register.text, "wo");
+    assert_eq!(vim.register.text, "wor");
     assert!(!vim.register.linewise);
     assert_eq!(st.cursor.offset, 6, "cursor parks at the span start");
     assert_eq!(vim.sub_mode, VimSubMode::Normal);
+}
+
+#[test]
+fn v_alone_covers_the_char_under_the_cursor() {
+    // The headline inclusivity case: `v y` in vim yanks one character, not
+    // zero — the span is never empty, so `v d` / `v y` can't be no-ops.
+    let mut st = state("hello");
+    let mut vim = VimState::default();
+    st.cursor.offset = 1;
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('y'));
+    assert_eq!(vim.register.text, "e");
+    assert!(!vim.register.linewise);
+}
+
+#[test]
+fn visual_to_end_of_line_stops_before_the_newline() {
+    // `$` parks edamame's cursor on the newline slot (vim's cursor can't go
+    // there), so the inclusive extension is suppressed: `v $ y` covers the
+    // line's content exactly, and matches walking `l` to the last char.
+    let mut st = state("abc\ndef");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('$'));
+    feed(&mut vim, &mut st, ch('y'));
+    assert_eq!(vim.register.text, "abc", "the newline is never swallowed");
+
+    let mut st = state("abc\ndef");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('l'));
+    feed(&mut vim, &mut st, ch('y'));
+    assert_eq!(vim.register.text, "abc", "`v l l` agrees with `v $`");
+}
+
+#[test]
+fn a_backward_visual_selection_includes_the_anchor_char() {
+    // With the cursor carried behind the anchor, the anchor's own character
+    // is the high end — so it's the one the inclusive rule covers.
+    let mut st = state("abcd");
+    let mut vim = VimState::default();
+    st.cursor.offset = 2; // on 'c'
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('h'));
+    feed(&mut vim, &mut st, ch('h'));
+    feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(st.buffer.contents(), "d");
+    assert_eq!(vim.register.text, "abc");
 }
 
 #[test]
@@ -1685,7 +1739,7 @@ fn visual_change_deletes_and_enters_insert() {
     feed(&mut vim, &mut st, ch('v'));
     feed(&mut vim, &mut st, ch('l'));
     feed(&mut vim, &mut st, ch('c'));
-    assert_eq!(st.buffer.contents(), "ello");
+    assert_eq!(st.buffer.contents(), "llo");
     assert_eq!(vim.sub_mode, VimSubMode::Insert);
     assert!(st.selection.is_none());
 }
@@ -1697,7 +1751,7 @@ fn visual_s_is_an_alias_for_change() {
     feed(&mut vim, &mut st, ch('v'));
     feed(&mut vim, &mut st, ch('l'));
     feed(&mut vim, &mut st, ch('s'));
-    assert_eq!(st.buffer.contents(), "ello");
+    assert_eq!(st.buffer.contents(), "llo");
     assert_eq!(vim.sub_mode, VimSubMode::Insert);
 }
 
@@ -1788,9 +1842,9 @@ fn visual_tilde_toggles_case_of_the_span() {
     let mut vim = VimState::default();
     feed(&mut vim, &mut st, ch('v'));
     feed(&mut vim, &mut st, ch('l'));
-    feed(&mut vim, &mut st, ch('l')); // span [0,2) → "he"
+    feed(&mut vim, &mut st, ch('l')); // inclusive span [0,3) → "hel"
     feed(&mut vim, &mut st, ch('~'));
-    assert_eq!(st.buffer.contents(), "HEllo");
+    assert_eq!(st.buffer.contents(), "HELlo");
     assert_eq!(vim.sub_mode, VimSubMode::Normal);
 }
 
@@ -1924,9 +1978,9 @@ fn visual_charwise_paste_replaces_the_span_with_the_register() {
     feed(&mut vim, &mut st, ch('l'));
     feed(&mut vim, &mut st, ch('l'));
     feed(&mut vim, &mut st, ch('l'));
-    feed(&mut vim, &mut st, ch('l')); // span [0,4) → "hell"
+    feed(&mut vim, &mut st, ch('l')); // inclusive span [0,5) → "hello"
     feed(&mut vim, &mut st, ch('p'));
-    assert_eq!(st.buffer.contents(), "worldo world");
+    assert_eq!(st.buffer.contents(), "world world");
     // The register is left untouched so it can be pasted over again.
     assert_eq!(vim.register.text, "world");
     assert_eq!(vim.sub_mode, VimSubMode::Normal);
@@ -1976,15 +2030,15 @@ fn visual_paste_with_empty_register_is_a_noop_that_leaves_visual() {
 
 #[test]
 fn visual_charwise_replace_fills_the_span_with_one_char() {
-    // `v l l r x` replaces the [0,2) span ("he") with "xx".
+    // `v l l r x` replaces the inclusive [0,3) span ("hel") with "xxx".
     let mut st = state("hello");
     let mut vim = VimState::default();
     feed(&mut vim, &mut st, ch('v'));
     feed(&mut vim, &mut st, ch('l'));
-    feed(&mut vim, &mut st, ch('l')); // span [0,2)
+    feed(&mut vim, &mut st, ch('l')); // inclusive span [0,3)
     assert_eq!(feed(&mut vim, &mut st, ch('r')), VimOutcome::Pending);
     feed(&mut vim, &mut st, ch('x'));
-    assert_eq!(st.buffer.contents(), "xxllo");
+    assert_eq!(st.buffer.contents(), "xxxlo");
     assert_eq!(vim.sub_mode, VimSubMode::Normal);
     assert!(st.selection.is_none());
 }
@@ -2024,7 +2078,7 @@ fn visual_u_forces_lowercase_and_capital_u_forces_uppercase() {
     feed(&mut vim, &mut st, ch('l'));
     feed(&mut vim, &mut st, ch('l'));
     feed(&mut vim, &mut st, ch('l'));
-    feed(&mut vim, &mut st, ch('l')); // span [0,4) → "Hell"
+    feed(&mut vim, &mut st, ch('l')); // inclusive span [0,5) → "Hello"
     feed(&mut vim, &mut st, ch('u'));
     assert_eq!(st.buffer.contents(), "hello");
     assert_eq!(vim.sub_mode, VimSubMode::Normal);
@@ -2036,7 +2090,7 @@ fn visual_u_forces_lowercase_and_capital_u_forces_uppercase() {
     feed(&mut vim, &mut st, ch('l'));
     feed(&mut vim, &mut st, ch('l'));
     feed(&mut vim, &mut st, ch('U'));
-    assert_eq!(st.buffer.contents(), "HELLo");
+    assert_eq!(st.buffer.contents(), "HELLO");
 }
 
 #[test]
@@ -2229,7 +2283,15 @@ fn visual_inner_word_selects_the_word() {
     feed(&mut vim, &mut st, ch('i'));
     feed(&mut vim, &mut st, ch('w'));
     let sel = st.selection.expect("selection set");
-    assert_eq!(sel.range(), (4, 7), "the whole word is selected");
+    assert_eq!(
+        visual_charwise_range(&sel, &st.buffer),
+        4..7,
+        "the whole word is selected"
+    );
+    assert_eq!(
+        st.cursor.offset, 6,
+        "the cursor parks on the word's last char, as in vim"
+    );
     // A following `d` deletes exactly the selection.
     feed(&mut vim, &mut st, ch('d'));
     assert_eq!(st.buffer.contents(), "foo ");
@@ -2246,7 +2308,7 @@ fn visual_inner_quote_selects_inside() {
     feed(&mut vim, &mut st, ch('i'));
     feed(&mut vim, &mut st, ch('"'));
     let sel = st.selection.expect("selection set");
-    assert_eq!(sel.range(), (3, 5));
+    assert_eq!(visual_charwise_range(&sel, &st.buffer), 3..5);
 }
 
 #[test]
