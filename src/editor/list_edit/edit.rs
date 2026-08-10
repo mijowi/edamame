@@ -78,8 +78,7 @@ pub fn continue_item(info: &ListInfo, source: &str, cursor_byte: usize) -> Optio
     // already returns the content up through the line's trailing `\n` (if
     // present), so we do not add an extra newline per item.
     if let MarkerKind::Ordered(delim) = info.kind {
-        let mut tail_num = new_number + 1;
-        for item_next in &info.items[item_idx + 1..] {
+        for (tail_num, item_next) in (new_number + 1..).zip(&info.items[item_idx + 1..]) {
             let renumbered_line = format!(
                 "{}{}{delim} {}",
                 info.indent,
@@ -87,7 +86,6 @@ pub fn continue_item(info: &ListInfo, source: &str, cursor_byte: usize) -> Optio
                 trim_marker_prefix(source, item_next),
             );
             rebuilt_rest.push_str(&renumbered_line);
-            tail_num += 1;
         }
     } else {
         // Bullets — just append subsequent items unchanged.

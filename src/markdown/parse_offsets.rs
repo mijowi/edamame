@@ -120,11 +120,9 @@ impl<F: FnMut(BlockKind) -> bool> RangeTracker<F> {
                     self.ranges.push(byte_range.start..end);
                 }
             }
-            Event::Html(_) => {
-                if self.depth == 0 && (self.keep)(BlockKind::HtmlLeaf) {
-                    let end = advance_past_newline(source, byte_range.end);
-                    self.ranges.push(byte_range.start..end);
-                }
+            Event::Html(_) if self.depth == 0 && (self.keep)(BlockKind::HtmlLeaf) => {
+                let end = advance_past_newline(source, byte_range.end);
+                self.ranges.push(byte_range.start..end);
             }
             _ => {}
         }
@@ -223,14 +221,12 @@ pub fn footnote_definition_ranges(source: &str) -> Vec<(String, Range<usize>)> {
                     depth += 1;
                 }
             }
-            Event::End(tag_end) => {
-                if tag_end_kind(tag_end).is_some() && depth > 0 {
-                    depth -= 1;
-                    if depth == 0 {
-                        if let Some((label, start)) = open.take() {
-                            let end = advance_past_newline(source, byte_range.end);
-                            ranges.push((label, start..end));
-                        }
+            Event::End(tag_end) if tag_end_kind(tag_end).is_some() && depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some((label, start)) = open.take() {
+                        let end = advance_past_newline(source, byte_range.end);
+                        ranges.push((label, start..end));
                     }
                 }
             }

@@ -13,6 +13,6 @@
 - Handle paragraphs containing line breaks
 
 ## Diff mode
-- Implement editing while in diff mode - This will be complicated - do I actually want to do it? If yes, use Ctrl with diff mode keybinds so they don't conflict with editor keybinds.
-- Rendered diff mode; use edamame as git difftool?
+- Do we want to implement editing while in diff mode? If yes, use Ctrl with diff mode keybinds so they don't conflict with editor keybinds.
+- Implement rendered diff mode? Use edamame as git difftool for Markdown files?
 
