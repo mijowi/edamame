@@ -3678,3 +3678,734 @@ fn incsearch_suppresses_the_cursor_block_raw_reveal() {
     st.cursor_block_entered_at = None;
     assert!(st.cursor_block_revealed());
 }
+
+// ── Table-aware motions and commands ──────────────────────────────────────────
+//
+// A rendered table's `|` delimiters and alignment row are auto-managed
+// chrome, so the motions that mean "move within this text" stay inside the
+// cursor's cell and the line-oriented commands act on the row.  Every case
+// below has a Raw-mode counterpart asserting stock vim behavior there —
+// Raw is hand-editable source and gets no special treatment.
+
+/// `| alpha | bravo |` / alignment / `| one | two |`.
+const TBL: &str = "| alpha | bravo |\n|---|---|\n| one | two |\n";
+
+/// Char offset of the first occurrence of `needle` in [`TBL`].
+fn tbl_at(needle: &str) -> usize {
+    TBL.find(needle).expect("needle present in the fixture")
+}
+
+/// A Rendered-mode editor on [`TBL`] with the cursor at `offset`.
+fn table_state(offset: usize) -> EditorState {
+    let mut st = state(TBL);
+    st.cursor.offset = offset;
+    st.update_cursor_block();
+    st
+}
+
+#[test]
+fn word_motion_stops_at_the_cell_edge() {
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('w'));
+    assert_eq!(
+        st.cursor.offset,
+        tbl_at("alpha") + "alpha".len(),
+        "`w` must stop at the cell's content end, not cross into `bravo`"
+    );
+}
+
+#[test]
+fn dollar_lands_on_the_cell_end_not_the_row_end() {
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('$'));
+    assert_eq!(st.cursor.offset, tbl_at("alpha") + "alpha".len());
+}
+
+#[test]
+fn caret_lands_on_the_cell_start_not_the_row_start() {
+    let mut st = table_state(tbl_at("alpha") + 3);
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('^'));
+    assert_eq!(st.cursor.offset, tbl_at("alpha"));
+}
+
+#[test]
+fn find_for_a_char_in_another_cell_does_not_move() {
+    // `b` only occurs in the next cell, so this is a failed find — vim
+    // leaves the cursor where it was rather than moving it partway.
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('f'));
+    feed(&mut vim, &mut st, ch('b'));
+    assert_eq!(st.cursor.offset, tbl_at("alpha"));
+}
+
+#[test]
+fn find_within_the_cell_still_works() {
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('f'));
+    feed(&mut vim, &mut st, ch('h'));
+    assert_eq!(st.cursor.offset, tbl_at("alpha") + 3);
+}
+
+#[test]
+fn dw_never_eats_the_cell_delimiter() {
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('w'));
+    assert!(
+        st.buffer.contents().starts_with("|  | bravo |\n"),
+        "got {:?}",
+        st.buffer.contents().lines().next()
+    );
+}
+
+#[test]
+fn capital_d_stops_at_the_cell_end() {
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('D'));
+    assert!(
+        st.buffer.contents().starts_with("|  | bravo |\n"),
+        "`D` must not wipe the rest of the row's delimiters"
+    );
+}
+
+#[test]
+fn x_at_the_cell_end_does_not_delete_the_delimiter() {
+    let mut st = table_state(tbl_at("alpha") + "alpha".len());
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('x'));
+    assert_eq!(st.buffer.contents(), TBL);
+}
+
+#[test]
+fn insert_entries_land_inside_the_cell() {
+    let mut st = table_state(tbl_at("alpha") + 2);
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('I'));
+    assert_eq!(st.cursor.offset, tbl_at("alpha"));
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+
+    let mut st = table_state(tbl_at("alpha") + 2);
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('A'));
+    assert_eq!(st.cursor.offset, tbl_at("alpha") + "alpha".len());
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+}
+
+#[test]
+fn o_opens_a_structural_table_row() {
+    let mut st = table_state(tbl_at("one"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('o'));
+    let contents = st.buffer.contents();
+    assert_eq!(contents.lines().count(), 4, "got {contents:?}");
+    assert!(
+        contents.lines().nth(3).is_some_and(|l| l.contains('|')),
+        "the opened row must carry the table's delimiters, not be a blank line"
+    );
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+}
+
+#[test]
+fn dd_deletes_the_table_row_and_fills_the_register() {
+    let mut st = table_state(tbl_at("one"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    let out = feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(out, VimOutcome::Consumed);
+    assert!(!st.buffer.contents().contains("one"));
+    assert!(st.buffer.contents().contains("| alpha | bravo |"));
+    assert_eq!(vim.register.text, "| one | two |\n");
+    assert!(vim.register.linewise);
+}
+
+#[test]
+fn dd_refuses_on_the_header_and_alignment_rows() {
+    for offset in [tbl_at("alpha"), tbl_at("|---|") + 2] {
+        let mut st = table_state(offset);
+        let mut vim = VimState::default();
+        feed(&mut vim, &mut st, ch('d'));
+        let out = feed(&mut vim, &mut st, ch('d'));
+        assert!(
+            matches!(out, VimOutcome::Flash(_)),
+            "expected a refusal flash, got {out:?}"
+        );
+        assert_eq!(st.buffer.contents(), TBL, "the table must be untouched");
+    }
+}
+
+#[test]
+fn cc_clears_the_cell_and_enters_insert() {
+    let mut st = table_state(tbl_at("alpha") + 2);
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('c'));
+    feed(&mut vim, &mut st, ch('c'));
+    assert!(
+        st.buffer.contents().starts_with("|  | bravo |\n"),
+        "got {:?}",
+        st.buffer.contents().lines().next()
+    );
+    assert!(st.buffer.contents().contains("| one | two |"));
+    assert_eq!(vim.sub_mode, VimSubMode::Insert);
+}
+
+#[test]
+fn join_and_indent_refuse_inside_a_table() {
+    for keys in [vec!['J'], vec!['>', '>'], vec!['<', '<']] {
+        let mut st = table_state(tbl_at("one"));
+        let mut vim = VimState::default();
+        let mut out = VimOutcome::Consumed;
+        for k in keys.iter() {
+            out = feed(&mut vim, &mut st, ch(*k));
+        }
+        assert!(
+            matches!(out, VimOutcome::Flash(_)),
+            "expected {keys:?} to refuse inside a table, got {out:?}"
+        );
+        assert_eq!(st.buffer.contents(), TBL);
+    }
+}
+
+#[test]
+fn visual_line_delete_refuses_on_a_protected_row() {
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    let out = feed(&mut vim, &mut st, ch('d'));
+    assert!(
+        matches!(out, VimOutcome::Flash(_)),
+        "expected a refusal flash, got {out:?}"
+    );
+    assert_eq!(st.buffer.contents(), TBL);
+}
+
+#[test]
+fn visual_line_delete_removes_a_data_row() {
+    let mut st = table_state(tbl_at("one"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('d'));
+    assert!(!st.buffer.contents().contains("one"));
+    assert!(st.buffer.contents().contains("| alpha | bravo |"));
+}
+
+#[test]
+fn document_motions_still_cross_the_table() {
+    // `gg` / `G` / `}` exist to leave the current context — they are never
+    // confined to a cell.
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('G'));
+    assert_eq!(
+        st.buffer.char_to_line(st.cursor.offset),
+        2,
+        "`G` must reach the last row rather than clamping inside the header cell"
+    );
+}
+
+// ── Raw mode keeps stock vim behavior ─────────────────────────────────────────
+
+/// A Raw-mode editor on [`TBL`] with the cursor at `offset`.
+fn raw_table_state(offset: usize) -> EditorState {
+    let mut st = table_state(offset);
+    st.mode = Mode::Raw;
+    st.update_cursor_block();
+    st
+}
+
+#[test]
+fn raw_mode_dd_deletes_the_raw_line() {
+    // No structural protection in Raw — `dd` on the header deletes that
+    // source line, exactly as it would on any other text.
+    let mut st = raw_table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    let out = feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(out, VimOutcome::Consumed);
+    assert!(!st.buffer.contents().contains("alpha"));
+}
+
+#[test]
+fn raw_mode_word_motion_crosses_the_delimiter() {
+    let mut st = raw_table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('w'));
+    assert!(
+        st.cursor.offset > tbl_at("alpha") + "alpha".len(),
+        "Raw mode gets no cell scoping — `w` walks onto the `|`"
+    );
+}
+
+#[test]
+fn raw_mode_dollar_reaches_the_row_end() {
+    let mut st = raw_table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('$'));
+    // The whole row is ordinary text in Raw, so `$` reaches its end rather
+    // than stopping at the first cell's content (offset 7 in Rendered).
+    assert_eq!(st.cursor.offset, "| alpha | bravo |".len());
+}
+
+#[test]
+fn raw_mode_o_opens_a_plain_line() {
+    let mut st = raw_table_state(tbl_at("one"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('o'));
+    assert_eq!(
+        st.buffer.contents(),
+        "| alpha | bravo |\n|---|---|\n| one | two |\n\n",
+        "Raw `o` inserts a bare newline, not a table row"
+    );
+}
+
+#[test]
+fn raw_mode_join_and_indent_are_not_refused() {
+    let mut st = raw_table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    let out = feed(&mut vim, &mut st, ch('J'));
+    assert_eq!(out, VimOutcome::Consumed);
+    assert!(st
+        .buffer
+        .contents()
+        .starts_with("| alpha | bravo | |---|---|"));
+}
+
+// ── Structural refusals: the routes that reach a protected row ────────────────
+//
+// The cell clamp shapes the ordinary keystroke; these are the ways a range
+// gets to a header or alignment row *without* a cell to clamp against.  Each
+// one corrupted the table silently before `range_breaks_a_table` guarded the
+// two operator funnels.
+
+/// Feed each char of `keys` and return the last outcome.
+fn feed_keys(vim: &mut VimState, st: &mut EditorState, keys: &str) -> VimOutcome {
+    let mut out = VimOutcome::Consumed;
+    for k in keys.chars() {
+        out = feed(vim, st, ch(k));
+    }
+    out
+}
+
+#[test]
+fn a_counted_dd_cannot_delete_the_header() {
+    // `2dd` on the header used to bypass the refusal entirely and leave
+    // `| one | two |` standing alone as paragraph text.
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    let out = feed_keys(&mut vim, &mut st, "2dd");
+    assert!(
+        matches!(out, VimOutcome::Flash(_)),
+        "expected a refusal flash, got {out:?}"
+    );
+    assert_eq!(st.buffer.contents(), TBL);
+}
+
+#[test]
+fn dj_cannot_slice_the_header_off_the_table() {
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    let out = feed_keys(&mut vim, &mut st, "dj");
+    assert!(matches!(out, VimOutcome::Flash(_)), "got {out:?}");
+    assert_eq!(st.buffer.contents(), TBL);
+}
+
+#[test]
+fn cc_cannot_blank_the_alignment_row() {
+    // `cc` there fell through to a plain linewise change, which split the
+    // table into two paragraphs.
+    let mut st = table_state(tbl_at("|---|") + 2);
+    let mut vim = VimState::default();
+    let out = feed_keys(&mut vim, &mut st, "cc");
+    assert!(matches!(out, VimOutcome::Flash(_)), "got {out:?}");
+    assert_eq!(st.buffer.contents(), TBL);
+    assert_eq!(vim.sub_mode, VimSubMode::Normal, "no Insert on a refusal");
+}
+
+#[test]
+fn a_visual_line_selection_leaving_the_table_still_protects_the_header() {
+    // Anchor on the header, then move the cursor *out* of the table: the
+    // guard keys on the selection, not on where the cursor ended up.
+    let src = "para\n| alpha | bravo |\n|---|---|\n| one | two |\n";
+    let mut st = state(src);
+    st.cursor.offset = src.find("alpha").expect("fixture");
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    let out = feed_keys(&mut vim, &mut st, "Vkd");
+    assert!(matches!(out, VimOutcome::Flash(_)), "got {out:?}");
+    assert_eq!(st.buffer.contents(), src);
+}
+
+#[test]
+fn a_visual_line_selection_covering_the_whole_table_may_delete_it() {
+    // Deleting a table outright is a legitimate edit — there is no
+    // half-table left to be broken, so this must *not* be refused.
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed_keys(&mut vim, &mut st, "Vjjd");
+    assert_eq!(st.buffer.contents().trim(), "");
+}
+
+#[test]
+fn a_charwise_visual_delete_cannot_cross_a_cell_boundary() {
+    // `v` + `l`-across-the-delimiter + `d` used to eat the `|`s and take
+    // most of the table with them.
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    for _ in 0..9 {
+        feed(&mut vim, &mut st, ch('l'));
+    }
+    let out = feed(&mut vim, &mut st, ch('d'));
+    assert!(matches!(out, VimOutcome::Flash(_)), "got {out:?}");
+    assert_eq!(st.buffer.contents(), TBL);
+}
+
+#[test]
+fn a_charwise_visual_delete_inside_one_cell_still_works() {
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed_keys(&mut vim, &mut st, "vlld");
+    assert!(
+        st.buffer.contents().starts_with("| ha | bravo |\n"),
+        "got {:?}",
+        st.buffer.contents().lines().next()
+    );
+}
+
+#[test]
+fn a_visual_replace_cannot_overwrite_a_delimiter() {
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    for _ in 0..9 {
+        feed(&mut vim, &mut st, ch('l'));
+    }
+    feed(&mut vim, &mut st, ch('r'));
+    let out = feed(&mut vim, &mut st, ch('z'));
+    assert!(matches!(out, VimOutcome::Flash(_)), "got {out:?}");
+    assert_eq!(st.buffer.contents(), TBL);
+}
+
+#[test]
+fn yy_on_a_protected_row_is_never_refused() {
+    // Yank mutates nothing, so the guard must not fire on it.
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    let out = feed_keys(&mut vim, &mut st, "yy");
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(vim.register.text, "| alpha | bravo |\n");
+    assert_eq!(st.buffer.contents(), TBL);
+}
+
+#[test]
+fn join_refuses_on_the_line_above_a_table() {
+    // `J` there merges the paragraph onto the header row.
+    let src = "para\n| alpha | bravo |\n|---|---|\n| one | two |\n";
+    let mut st = state(src);
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    let out = feed(&mut vim, &mut st, ch('J'));
+    assert!(matches!(out, VimOutcome::Flash(_)), "got {out:?}");
+    assert_eq!(st.buffer.contents(), src);
+}
+
+// ── Paste ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn a_yanked_row_pasted_on_the_header_lands_below_the_alignment_row() {
+    // `dd` fills the register with a data row; the ordinary linewise paste
+    // would drop it between the header and the alignment row.
+    let mut st = table_state(tbl_at("one"));
+    let mut vim = VimState::default();
+    feed_keys(&mut vim, &mut st, "dd");
+    st.cursor.offset = tbl_at("alpha");
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('p'));
+    assert_eq!(
+        st.buffer.contents(),
+        "| alpha | bravo |\n|---|---|\n| one | two |\n",
+        "the row must come back below the alignment row"
+    );
+}
+
+#[test]
+fn pasting_prose_into_a_table_is_refused() {
+    // Yank a paragraph line, then try to drop it between two table rows.
+    let src = "para\n| alpha | bravo |\n|---|---|\n| one | two |\n";
+    let mut st = state(src);
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed_keys(&mut vim, &mut st, "yy");
+    st.cursor.offset = src.find("one").expect("fixture");
+    st.update_cursor_block();
+    let out = feed(&mut vim, &mut st, ch('p'));
+    assert!(matches!(out, VimOutcome::Flash(_)), "got {out:?}");
+    assert_eq!(st.buffer.contents(), src);
+}
+
+#[test]
+fn raw_mode_paste_keeps_the_plain_linewise_landing_spot() {
+    // No table awareness in Raw: yank the data row, then `p` on the header
+    // drops it right below, above the alignment row, as stock vim would.
+    let mut st = raw_table_state(tbl_at("one"));
+    let mut vim = VimState::default();
+    feed_keys(&mut vim, &mut st, "yy");
+    st.cursor.offset = tbl_at("alpha");
+    st.update_cursor_block();
+    feed(&mut vim, &mut st, ch('p'));
+    assert_eq!(
+        st.buffer.contents(),
+        "| alpha | bravo |\n| one | two |\n|---|---|\n| one | two |\n"
+    );
+}
+
+#[test]
+fn raw_mode_counted_dd_deletes_the_raw_lines() {
+    let mut st = raw_table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    let out = feed_keys(&mut vim, &mut st, "2dd");
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(st.buffer.contents(), "| one | two |\n");
+}
+
+#[test]
+fn a_multibyte_cell_clamps_on_char_boundaries() {
+    // `cell_scope` converts `table_edit`'s byte offsets to char offsets;
+    // a cell of multibyte text is where an off-by-a-byte would panic or
+    // land the cursor mid-character.
+    let src = "| héllo wörld | b |\n|---|---|\n| one | two |\n";
+    let mut st = state(src);
+    st.cursor.offset = 2; // on the `h`
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('$'));
+    assert_eq!(st.cursor.offset, 13, "`$` stops past the cell's last char");
+
+    // `D` from the cell's first char clears the cell and nothing else.
+    let mut st = state(src);
+    st.cursor.offset = 2;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('D'));
+    assert_eq!(
+        st.buffer.contents(),
+        "|  | b |\n|---|---|\n| one | two |\n",
+        "`D` clears the cell without touching the delimiters"
+    );
+}
+
+// ── The guard must not over-refuse ────────────────────────────────────────────
+
+#[test]
+fn a_counted_dd_over_data_rows_only_is_allowed() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+    let mut st = state(src);
+    st.cursor.offset = src.find('1').expect("fixture");
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    let out = feed_keys(&mut vim, &mut st, "2dd");
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(
+        st.buffer.contents(),
+        "| a | b |\n|---|---|",
+        "both data rows go; the last line takes the trailing newline with it"
+    );
+}
+
+#[test]
+fn ordinary_cell_edits_are_never_refused() {
+    // `diw`, `ciw`, `x` and `dw` all stay inside the cell, so none of them
+    // may trip the structural guard.
+    for (keys, expected) in [
+        ("diw", "|  | bravo |"),
+        ("ciw", "|  | bravo |"),
+        ("dw", "|  | bravo |"),
+        ("x", "| lpha | bravo |"),
+    ] {
+        let mut st = table_state(tbl_at("alpha"));
+        let mut vim = VimState::default();
+        let out = feed_keys(&mut vim, &mut st, keys);
+        assert_eq!(out, VimOutcome::Consumed, "{keys} must not be refused");
+        assert_eq!(
+            st.buffer.contents().lines().next(),
+            Some(expected),
+            "{keys} left the wrong row"
+        );
+    }
+}
+
+#[test]
+fn the_alignment_row_stays_hand_editable() {
+    // No cell scope there, and `x` must keep working so a user can retype
+    // the dashes — only whole-row loss is refused.
+    let mut st = table_state(tbl_at("|---|") + 2);
+    let mut vim = VimState::default();
+    let out = feed(&mut vim, &mut st, ch('x'));
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(
+        st.buffer.contents(),
+        "| alpha | bravo |\n|--|---|\n| one | two |\n"
+    );
+}
+
+#[test]
+fn edits_outside_a_table_are_untouched_by_the_guard() {
+    let src = "para one\npara two\n\n| a | b |\n|---|---|\n";
+    let mut st = state(src);
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    let out = feed_keys(&mut vim, &mut st, "dd");
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(st.buffer.contents(), "para two\n\n| a | b |\n|---|---|\n");
+}
+
+// ── Register shape vs. selection shape (Visual `p`) ───────────────────────────
+//
+// A Visual paste reconciles the register's shape with the selection's before
+// it writes, so the guard has to be asked about the payload as it will land.
+// Asking about the register's own flags let each mismatch through.
+
+#[test]
+fn a_row_register_cannot_be_pasted_into_a_cell() {
+    // `dd` fills the register linewise with a whole row; dropping that over a
+    // charwise selection spliced the `|` and the newline into mid-cell.
+    let mut st = table_state(tbl_at("one"));
+    let mut vim = VimState::default();
+    feed_keys(&mut vim, &mut st, "dd");
+    assert!(vim.register.linewise);
+    let remaining = st.buffer.contents();
+
+    st.cursor.offset = tbl_at("alpha");
+    st.update_cursor_block();
+    let out = feed_keys(&mut vim, &mut st, "vlp");
+    assert!(matches!(out, VimOutcome::Flash(_)), "got {out:?}");
+    assert_eq!(st.buffer.contents(), remaining);
+}
+
+#[test]
+fn a_prose_register_cannot_replace_a_whole_row() {
+    // The mirror case: a charwise register grows a trailing newline when it
+    // lands over a VisualLine selection, so the row it replaces stops being a
+    // table row at all.
+    let src = "para\n| alpha | bravo |\n|---|---|\n| one | two |\n";
+    let mut st = state(src);
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    // Yank `para` charwise, then select the data row linewise and paste.
+    feed_keys(&mut vim, &mut st, "v$y");
+    assert!(!vim.register.linewise);
+    st.cursor.offset = src.find("one").expect("fixture");
+    st.update_cursor_block();
+    let out = feed_keys(&mut vim, &mut st, "Vp");
+    assert!(matches!(out, VimOutcome::Flash(_)), "got {out:?}");
+    assert_eq!(st.buffer.contents(), src);
+}
+
+#[test]
+fn a_row_register_still_replaces_a_selected_row() {
+    // The shapes agree here, so the paste must go through.
+    let mut st = table_state(tbl_at("one"));
+    let mut vim = VimState::default();
+    feed_keys(&mut vim, &mut st, "yy");
+    let out = feed_keys(&mut vim, &mut st, "Vp");
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(st.buffer.contents(), TBL);
+}
+
+#[test]
+fn ordinary_text_still_pastes_inside_a_cell() {
+    // A charwise register over a charwise selection only widens the cell.
+    let mut st = table_state(tbl_at("one"));
+    let mut vim = VimState::default();
+    feed_keys(&mut vim, &mut st, "vly"); // yank "on"
+    assert!(!vim.register.linewise);
+    st.cursor.offset = tbl_at("alpha");
+    st.update_cursor_block();
+    let out = feed_keys(&mut vim, &mut st, "vp");
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(
+        st.buffer.contents(),
+        "| onlpha | bravo |\n|---|---|\n| one | two |\n"
+    );
+}
+
+// ── Normal-mode `r{c}` ────────────────────────────────────────────────────────
+
+#[test]
+fn a_counted_replace_cannot_overwrite_a_delimiter() {
+    // `7rx` on `alpha` reached past the cell and turned `alpha |` into
+    // `xxxxxxx`, leaving a one-cell header over a two-cell alignment row.
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    let out = feed_keys(&mut vim, &mut st, "7rx");
+    assert!(matches!(out, VimOutcome::Flash(_)), "got {out:?}");
+    assert_eq!(st.buffer.contents(), TBL);
+}
+
+#[test]
+fn a_replace_inside_the_cell_still_works() {
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    let out = feed_keys(&mut vim, &mut st, "3rx");
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(
+        st.buffer.contents(),
+        "| xxxha | bravo |\n|---|---|\n| one | two |\n"
+    );
+}
+
+#[test]
+fn raw_mode_counted_replace_is_unscoped() {
+    // Raw is hand-editable source: no table awareness, so the delimiter is
+    // just another character.
+    let mut st = raw_table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    let out = feed_keys(&mut vim, &mut st, "7rx");
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(
+        st.buffer.contents(),
+        "| xxxxxxx bravo |\n|---|---|\n| one | two |\n"
+    );
+}
+
+// ── The `J` guard's span ──────────────────────────────────────────────────────
+
+#[test]
+fn a_counted_join_that_never_reaches_the_table_is_allowed() {
+    // `2J` makes one join, exactly as bare `J` does, so it stops a line short
+    // of the header — the guard used to over-reach by one line and refuse it.
+    let src = "para one\npara two\n| alpha | bravo |\n|---|---|\n| one | two |\n";
+    let mut st = state(src);
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    let out = feed_keys(&mut vim, &mut st, "2J");
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(
+        st.buffer.contents(),
+        "para one para two\n| alpha | bravo |\n|---|---|\n| one | two |\n"
+    );
+}
+
+#[test]
+fn a_counted_join_that_does_reach_the_table_is_refused() {
+    // `3J` makes two joins, so it pulls the header row up onto the prose.
+    let src = "para one\npara two\n| alpha | bravo |\n|---|---|\n| one | two |\n";
+    let mut st = state(src);
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    let out = feed_keys(&mut vim, &mut st, "3J");
+    assert!(matches!(out, VimOutcome::Flash(_)), "got {out:?}");
+    assert_eq!(st.buffer.contents(), src);
+}

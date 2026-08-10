@@ -624,7 +624,7 @@ fn column_for_offset(raw: &str, rel_byte: usize) -> usize {
 
 /// True when a line looks like a table row (starts and ends with `|` after
 /// trimming whitespace, and contains at least one additional `|`).
-fn is_table_line(line: &str) -> bool {
+pub fn is_table_line(line: &str) -> bool {
     let t = line.trim();
     if !t.starts_with('|') || !t.ends_with('|') {
         return false;

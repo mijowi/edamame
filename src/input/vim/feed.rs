@@ -41,14 +41,17 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::config::Action;
 use crate::document::{prev_grapheme_offset, EditDelta, Selection};
 use crate::editor::vim_ops::{
-    clear_substitute_preview, doubled_line_range, end_incsearch, execute_operator,
-    execute_substitute, first_non_blank, indent_lines, indent_list_item, join_lines,
-    line_end_offset, open_list_continue, parse_ex, paste, renumber_list_at_cursor, replace_char,
-    replace_char_range, replace_range_with, resolve_find_repeat, resolve_motion,
-    resolve_motion_range, resolve_text_object_range, set_case_range, toggle_case,
+    cell_scope, clear_substitute_preview, clear_table_cell, delete_table_row, doubled_line_range,
+    end_incsearch, execute_operator, execute_substitute, first_non_blank, indent_lines,
+    indent_list_item, insert_table_rows, join_lines, line_end_offset, lines_touch_a_table,
+    op_range_breaks_a_table, open_list_continue, open_table_row, parse_ex, paste,
+    range_breaks_a_table, renumber_list_at_cursor, replace_char, replace_char_range,
+    replace_range_with, resolve_find_repeat, resolve_scoped_motion, resolve_scoped_op_range,
+    resolve_text_object_range, scope_offset, set_case_range, table_paste_plan, toggle_case,
     toggle_case_range, update_incsearch, update_substitute_preview, vertical_line_range,
     visual_charwise_range, visual_line_bounds, visual_line_char_range, word_under_cursor_at,
-    ExCommand, FindKind, Motion, OpRange, OpResult, Operator, TextObject,
+    ExCommand, FindKind, Motion, OpRange, OpResult, Operator, TableBreak, TableOpOutcome,
+    TablePaste, TextObject,
 };
 use crate::editor::{edit_ops, EditorState, Mode};
 use crate::input::mode_handler::default::{is_ctrl_backspace, is_ctrl_delete};
@@ -643,10 +646,20 @@ fn feed_visual_command(
     vh: usize,
     vw: usize,
 ) -> Option<VimOutcome> {
+    // The line-oriented Visual commands reach the same rows Normal's `J` /
+    // `>>` / `<<` do, so they refuse on the same grounds — guarding only the
+    // Normal forms would leave the corruption one keystroke away.  The
+    // question is asked of the *selection*, not the cursor: a selection
+    // anchored in a table whose cursor has since moved out still reshapes
+    // the rows it covers.
+    if matches!(c, 'J' | '>' | '<') && visual_selection_touches_a_table(editor) {
+        leave_visual_to_normal(vim, editor, vh, vw);
+        return Some(VimOutcome::Flash(TABLE_STRUCTURAL_REFUSAL.to_owned()));
+    }
     match c {
-        'd' | 'x' => run_visual_operator(vim, editor, Operator::Delete, vh, vw),
-        'y' => run_visual_operator(vim, editor, Operator::Yank, vh, vw),
-        'c' | 's' => run_visual_operator(vim, editor, Operator::Change, vh, vw),
+        'd' | 'x' => return Some(run_visual_operator(vim, editor, Operator::Delete, vh, vw)),
+        'y' => return Some(run_visual_operator(vim, editor, Operator::Yank, vh, vw)),
+        'c' | 's' => return Some(run_visual_operator(vim, editor, Operator::Change, vh, vw)),
         '>' => run_visual_indent(vim, editor, /*right=*/ true, vh, vw),
         '<' => run_visual_indent(vim, editor, /*right=*/ false, vh, vw),
         '~' => run_visual_toggle_case(vim, editor, vh, vw),
@@ -656,7 +669,7 @@ fn feed_visual_command(
         'U' => run_visual_set_case(vim, editor, /*upper=*/ true, vh, vw),
         'J' => run_visual_join(vim, editor, vh, vw),
         // `p` / `P`: replace the selection with the unnamed register.
-        'p' | 'P' => run_visual_paste(vim, editor, vh, vw),
+        'p' | 'P' => return Some(run_visual_paste(vim, editor, vh, vw)),
         // `r{c}`: arm the replace and wait for the target char (resolved by
         // `feed_visual_replace_char`).  Stays in Visual until then.
         'r' => {
@@ -726,19 +739,49 @@ fn run_visual_operator(
     op: Operator,
     vh: usize,
     vw: usize,
-) {
+) -> VimOutcome {
+    let mut outcome = VimOutcome::Consumed;
     with_selection(vim, editor, |vim, editor, sel| {
-        let range = if vim.sub_mode == VimSubMode::VisualLine {
-            let (first, last) = visual_line_bounds(&sel, &editor.buffer);
-            OpRange::Lines { first, last }
-        } else {
-            OpRange::Chars(visual_charwise_range(&sel, &editor.buffer))
-        };
+        let range = visual_op_range(vim, editor, &sel);
+        // The Visual twin of `run_operator`'s guard: a VisualLine span over
+        // a header row, or a charwise drag across two cells, reaches the
+        // same corruption the Normal-mode commands are held back from.
+        if let Some(reason) = mutating_table_break(editor, op, &range) {
+            leave_visual_to_normal(vim, editor, vh, vw);
+            outcome = VimOutcome::Flash(reason.message().to_owned());
+            return;
+        }
         let res = execute_operator(editor, op, range);
         vim.visual_anchor = None;
         editor.selection = None;
         fold_op_result(vim, editor, res, vh, vw);
     });
+    outcome
+}
+
+/// The range a Visual operator would run over: whole lines in VisualLine,
+/// the inclusive charwise span otherwise.
+fn visual_op_range(vim: &VimState, editor: &EditorState, sel: &Selection) -> OpRange {
+    if vim.sub_mode == VimSubMode::VisualLine {
+        let (first, last) = visual_line_bounds(sel, &editor.buffer);
+        OpRange::Lines { first, last }
+    } else {
+        OpRange::Chars(visual_charwise_range(sel, &editor.buffer))
+    }
+}
+
+/// Does the active Visual selection overlap a table?  Asked by the
+/// commands that reshape lines in place (`J`, `>`, `<`), which have no
+/// range to hand [`mutating_table_break`].  Falls back to the cursor when
+/// there is somehow no selection.
+fn visual_selection_touches_a_table(editor: &EditorState) -> bool {
+    match editor.selection {
+        Some(sel) => {
+            let (first, last) = visual_line_bounds(&sel, &editor.buffer);
+            lines_touch_a_table(editor, first, last)
+        }
+        None => editor.cursor_in_table(),
+    }
 }
 
 /// `>` / `<` in Visual: indent / outdent every line the selection touches
@@ -809,7 +852,13 @@ fn run_visual_set_case(
 /// span; VisualLine replaces the whole lines.  A charwise register dropped
 /// over whole lines gets a trailing newline so it keeps its own line.  An
 /// empty register is a no-op that still leaves Visual.
-fn run_visual_paste(vim: &mut VimState, editor: &mut EditorState, vh: usize, vw: usize) {
+fn run_visual_paste(
+    vim: &mut VimState,
+    editor: &mut EditorState,
+    vh: usize,
+    vw: usize,
+) -> VimOutcome {
+    let mut outcome = VimOutcome::Consumed;
     with_selection(vim, editor, |vim, editor, sel| {
         if vim.register.text.is_empty() {
             leave_visual_to_normal(vim, editor, vh, vw);
@@ -824,10 +873,53 @@ fn run_visual_paste(vim: &mut VimState, editor: &mut EditorState, vh: usize, vw:
         } else {
             vim.register.text.clone()
         };
+        // Replacing a selection is a delete plus an insert, so it has to
+        // clear both halves of the guard: the range must be safe to remove,
+        // and the payload must be safe to drop in its place.  The question is
+        // asked of `text` and the *selection's* shape, not of the register's
+        // own — the two disagree in both directions here, and each mismatch
+        // broke the table: a linewise row register dropped into a charwise
+        // in-cell selection carries a `|` and a newline into the middle of a
+        // cell, and a charwise register over a VisualLine row replaces that
+        // row with a line that isn't a table row at all.
+        if let Some(message) = paste_over_range_refusal(editor, &range, &text, line_mode) {
+            leave_visual_to_normal(vim, editor, vh, vw);
+            outcome = VimOutcome::Flash(message);
+            return;
+        }
         ensure_editing(editor);
         replace_range_with(editor, range.start, range.end, &text);
         leave_visual_to_normal(vim, editor, vh, vw);
     });
+    outcome
+}
+
+/// The refusal for dropping `text` over `range`, or `None` when both the
+/// removal and the insertion are safe.
+///
+/// `linewise` describes the *payload as it will land* — the selection's own
+/// shape, not the register's — because `run_visual_paste` has already
+/// reconciled the two by the time it asks.  Passing the register's flag
+/// instead lets each mismatch through: a linewise register keeps its `|` and
+/// its newline when it is spliced into a charwise selection, and a charwise
+/// register grows a newline when it replaces a whole line.
+fn paste_over_range_refusal(
+    editor: &EditorState,
+    range: &Range<usize>,
+    text: &str,
+    linewise: bool,
+) -> Option<String> {
+    let rope = editor.buffer.rope();
+    let len = rope.len_chars();
+    let start = rope.char_to_byte(range.start.min(len));
+    let end = rope.char_to_byte(range.end.min(len));
+    if let Some(reason) = range_breaks_a_table(editor, start, end) {
+        return Some(reason.message().to_owned());
+    }
+    match table_paste_plan(editor, text, linewise, /*after=*/ true) {
+        TablePaste::Refused => Some(TABLE_PASTE_REFUSAL.to_owned()),
+        _ => None,
+    }
 }
 
 /// Resolve a pending Visual `r{c}`: replace every char in the selection (the
@@ -845,6 +937,15 @@ fn feed_visual_replace_char(
         KeyCode::Char(c) if !is_passthrough_chord(&key) => {
             if let Some(sel) = editor.selection {
                 let range = visual_edit_range(vim, editor, &sel);
+                // Same-length or not, this overwrites every char in the
+                // span — including the `|` delimiters of any row it
+                // crosses.
+                if let Some(reason) =
+                    op_range_breaks_a_table(editor, &OpRange::Chars(range.start..range.end))
+                {
+                    leave_visual_to_normal(vim, editor, vh, vw);
+                    return VimOutcome::Flash(reason.message().to_owned());
+                }
                 ensure_editing(editor);
                 replace_char_range(editor, range.start, range.end, c);
             }
@@ -937,10 +1038,8 @@ fn feed_command_char(
         vim.pending_g = false;
         if c == 'g' {
             if let Some(operator) = vim.pending_op.and_then(operator_kind) {
-                let range =
-                    resolve_motion_range(Motion::DocStart, 1, editor.cursor.offset, &editor.buffer);
-                run_operator(vim, editor, operator, range, vh, vw);
-                return VimOutcome::Consumed;
+                let range = resolve_scoped_op_range(editor, Motion::DocStart, 1);
+                return run_operator(vim, editor, operator, range, vh, vw);
             }
             apply_motion(editor, Motion::DocStart, count_of(vim), vh, vw, visual);
         }
@@ -997,6 +1096,10 @@ fn feed_command_char(
             let kind = if c == ',' { reverse_find(kind) } else { kind };
             let dest =
                 resolve_find_repeat(&editor.buffer, editor.cursor.offset, target, kind, count);
+            // `resolve_find_repeat` is its own resolver, so the cell clamp
+            // has to be applied here rather than inheriting it from
+            // `resolve_scoped_motion` — same policy, same classifier.
+            let dest = scope_offset(editor, Motion::FindChar(target, kind), dest);
             move_to_offset(editor, dest, vh, vw, visual);
         }
         vim.reset_pending();
@@ -1033,48 +1136,34 @@ fn feed_command_char(
             // `x`/`X`/`D`/`C`/`Y` are spelled in terms of the operator
             // machinery so they share the single-delta / register path.
             'x' => {
-                let range = resolve_motion_range(
-                    Motion::Right,
-                    count,
-                    editor.cursor.offset,
-                    &editor.buffer,
-                );
-                run_operator(vim, editor, Operator::Delete, range, vh, vw);
+                let range = resolve_scoped_op_range(editor, Motion::Right, count);
+                return run_operator(vim, editor, Operator::Delete, range, vh, vw);
             }
             'X' => {
-                let range =
-                    resolve_motion_range(Motion::Left, count, editor.cursor.offset, &editor.buffer);
-                run_operator(vim, editor, Operator::Delete, range, vh, vw);
+                let range = resolve_scoped_op_range(editor, Motion::Left, count);
+                return run_operator(vim, editor, Operator::Delete, range, vh, vw);
             }
             'D' => {
-                let range = resolve_motion_range(
-                    Motion::LineEnd,
-                    count,
-                    editor.cursor.offset,
-                    &editor.buffer,
-                );
-                run_operator(vim, editor, Operator::Delete, range, vh, vw);
+                let range = resolve_scoped_op_range(editor, Motion::LineEnd, count);
+                return run_operator(vim, editor, Operator::Delete, range, vh, vw);
             }
             'C' => {
-                let range = resolve_motion_range(
-                    Motion::LineEnd,
-                    count,
-                    editor.cursor.offset,
-                    &editor.buffer,
-                );
-                run_operator(vim, editor, Operator::Change, range, vh, vw);
+                let range = resolve_scoped_op_range(editor, Motion::LineEnd, count);
+                return run_operator(vim, editor, Operator::Change, range, vh, vw);
             }
             'Y' => {
                 let range = doubled_line_range(&editor.buffer, editor.cursor.offset, count);
-                run_operator(vim, editor, Operator::Yank, range, vh, vw);
+                return run_operator(vim, editor, Operator::Yank, range, vh, vw);
             }
             'p' => {
-                paste_register(vim, editor, count, /*after=*/ true, vh, vw);
+                let outcome = paste_register(vim, editor, count, /*after=*/ true, vh, vw);
                 vim.reset_pending();
+                return outcome;
             }
             'P' => {
-                paste_register(vim, editor, count, /*after=*/ false, vh, vw);
+                let outcome = paste_register(vim, editor, count, /*after=*/ false, vh, vw);
                 vim.reset_pending();
+                return outcome;
             }
             // `r{c}`: arm the replace and wait for the next key; keep the
             // accumulated count (`3rx` replaces three chars).
@@ -1088,6 +1177,18 @@ fn feed_command_char(
                 vim.reset_pending();
             }
             'J' => {
+                // Joining two table rows produces one malformed line — and
+                // so does joining the line above a table onto its header,
+                // which is why the span reaches past the cursor's own line.
+                // It reaches exactly as far as `join_lines` does and no
+                // further: `J` and `2J` both make one join, `3J` two, so the
+                // last line consumed is `max(count, 2) - 1` below the cursor.
+                let line = editor.buffer.char_to_line(editor.cursor.offset);
+                let last = line + count.max(2) as usize - 1;
+                if lines_touch_a_table(editor, line, last) {
+                    vim.reset_pending();
+                    return VimOutcome::Flash(TABLE_STRUCTURAL_REFUSAL.to_owned());
+                }
                 join_lines(editor, count);
                 after_edit(editor, vh, vw);
                 vim.reset_pending();
@@ -1116,13 +1217,23 @@ fn feed_command_char(
                 after_move(editor, vh, vw);
                 vim.reset_pending();
             }
+            // `I` / `A` insert at the start / end of the *cell* inside a
+            // table — the row's `|` delimiters aren't content, so the line
+            // start and line end are never useful insertion points there.
             'I' => {
-                move_first_non_blank(editor);
+                match cell_scope(editor) {
+                    Some(scope) => editor.place_cursor(scope.start),
+                    None => move_first_non_blank(editor),
+                }
                 enter_insert(vim, editor);
+                after_move(editor, vh, vw);
                 vim.reset_pending();
             }
             'A' => {
-                editor.cursor.move_line_end(&editor.buffer);
+                match cell_scope(editor) {
+                    Some(scope) => editor.place_cursor(scope.end),
+                    None => editor.cursor.move_line_end(&editor.buffer),
+                }
                 enter_insert(vim, editor);
                 after_move(editor, vh, vw);
                 vim.reset_pending();
@@ -1238,16 +1349,25 @@ fn feed_operator_pending(
 
     // Doubled operator (`dd`/`yy`/`cc`) → linewise over `count` lines.
     if operator_for(c) == Some(op) {
+        // In a table the linewise unit is the row (`dd`) or the cell
+        // (`cc`), not the raw source line — see `table_doubled_operator`.
+        // `yy` and a counted `Ndd` keep the plain linewise behavior, which
+        // is safe because `run_operator` refuses a span that would break the
+        // table: the structural interpretation is a convenience, not the
+        // protection.
+        if count == 1 {
+            if let Some(out) = table_doubled_operator(vim, editor, operator, vh, vw) {
+                return out;
+            }
+        }
         let range = doubled_line_range(&editor.buffer, editor.cursor.offset, count);
-        run_operator(vim, editor, operator, range, vh, vw);
-        return VimOutcome::Consumed;
+        return run_operator(vim, editor, operator, range, vh, vw);
     }
 
     // Vertical linewise targets (`dj` / `dk`).
     if c == 'j' || c == 'k' {
         let range = vertical_line_range(&editor.buffer, editor.cursor.offset, count, c == 'j');
-        run_operator(vim, editor, operator, range, vh, vw);
-        return VimOutcome::Consumed;
+        return run_operator(vim, editor, operator, range, vh, vw);
     }
 
     // `df(` / `dt(` / …: arm a pending find; the next key (the target
@@ -1260,9 +1380,8 @@ fn feed_operator_pending(
     // Charwise / `gg`-`G` motion targets.
     if let Some(motion) = operator_motion_for(c) {
         let motion = change_word_to_word_end(operator, motion, editor);
-        let range = resolve_motion_range(motion, count, editor.cursor.offset, &editor.buffer);
-        run_operator(vim, editor, operator, range, vh, vw);
-        return VimOutcome::Consumed;
+        let range = resolve_scoped_op_range(editor, motion, count);
+        return run_operator(vim, editor, operator, range, vh, vw);
     }
 
     // Text objects (`diw`, `ci(`, …): `i`/`a` arm the object and wait for the
@@ -1279,8 +1398,60 @@ fn feed_operator_pending(
     VimOutcome::Consumed
 }
 
+/// Flashed when a line-oriented command would corrupt a table's structure.
+/// `J` would merge two rows into one broken line and `>>` / `<<` would
+/// indent a row out of the table; both are silent corruption today, so they
+/// refuse and say why rather than doing nothing.
+const TABLE_STRUCTURAL_REFUSAL: &str = "Not available in a table";
+
+/// Flashed when a paste would land text in a table that breaks its shape —
+/// a register of prose lines dropped between two rows, or a charwise
+/// register carrying its own `|`.
+const TABLE_PASTE_REFUSAL: &str = "Can't paste that into a table";
+
+/// A doubled operator (`dd` / `cc` / `yy`) with the cursor inside a table.
+/// `Some` when the table interpretation applies; `None` falls through to
+/// the ordinary linewise path (outside a table, in Raw mode, and for `yy`).
+///
+/// `dd` removes the whole row structurally and `cc` clears the cell —
+/// both reusing `fold_op_result`, so the register, the single-delta undo
+/// grouping, and the Insert transition come from the one existing
+/// implementation rather than a table-specific copy.
+fn table_doubled_operator(
+    vim: &mut VimState,
+    editor: &mut EditorState,
+    operator: Operator,
+    vh: usize,
+    vw: usize,
+) -> Option<VimOutcome> {
+    let outcome = match operator {
+        Operator::Delete => delete_table_row(editor, vh, vw),
+        Operator::Change => clear_table_cell(editor),
+        // `yy` yanks the raw row text, unchanged — it mutates nothing, so
+        // there is no structure to protect.
+        Operator::Yank => return None,
+    };
+    match outcome {
+        TableOpOutcome::Applied(res) => {
+            fold_op_result(vim, editor, res, vh, vw);
+            Some(VimOutcome::Consumed)
+        }
+        TableOpOutcome::Refused(reason) => {
+            vim.sub_mode = VimSubMode::Normal;
+            vim.reset_pending();
+            Some(VimOutcome::Flash(reason.message().to_owned()))
+        }
+        TableOpOutcome::NotATable => None,
+    }
+}
+
 /// Apply `op` over `range`, fold the yanked text into the register, then
 /// move to Insert (for `c`) or back to Normal, and re-clamp the viewport.
+///
+/// Returns the outcome so the table refusal can reach the flash line: this
+/// and [`run_visual_operator`] are the two funnels every vim range mutation
+/// passes through, which is why the structural guard lives here rather than
+/// at the dozen call sites that build a range.
 fn run_operator(
     vim: &mut VimState,
     editor: &mut EditorState,
@@ -1288,9 +1459,25 @@ fn run_operator(
     range: OpRange,
     vh: usize,
     vw: usize,
-) {
+) -> VimOutcome {
+    if let Some(reason) = mutating_table_break(editor, op, &range) {
+        vim.sub_mode = VimSubMode::Normal;
+        vim.reset_pending();
+        return VimOutcome::Flash(reason.message().to_owned());
+    }
     let res = execute_operator(editor, op, range);
     fold_op_result(vim, editor, res, vh, vw);
+    VimOutcome::Consumed
+}
+
+/// The structural refusal for `op` over `range`, or `None` to proceed.
+/// `Yank` never mutates, so it is never refused — `yy` on a header row is
+/// just a copy.
+fn mutating_table_break(editor: &EditorState, op: Operator, range: &OpRange) -> Option<TableBreak> {
+    if op == Operator::Yank {
+        return None;
+    }
+    op_range_breaks_a_table(editor, range)
 }
 
 /// Fold an [`execute_operator`] result back into `VimState`: store the
@@ -1336,9 +1523,25 @@ fn paste_register(
     after: bool,
     vh: usize,
     vw: usize,
-) {
+) -> VimOutcome {
     if vim.register.text.is_empty() {
-        return;
+        return VimOutcome::Consumed;
+    }
+    // Inside a table the ordinary linewise landing spot — "the line after
+    // the cursor's" — sits above the alignment row when the cursor is on
+    // the header, so `dd` on a data row then `p` up top would wedge a data
+    // row into the table's declaration.  `table_paste_plan` picks a legal
+    // row boundary instead, and refuses a register that isn't rows at all.
+    match table_paste_plan(editor, &vim.register.text, vim.register.linewise, after) {
+        TablePaste::Refused => return VimOutcome::Flash(TABLE_PASTE_REFUSAL.to_owned()),
+        TablePaste::RowsAt(at) => {
+            ensure_editing(editor);
+            let text = vim.register.text.repeat(count.max(1) as usize);
+            insert_table_rows(editor, at, &text);
+            after_edit(editor, vh, vw);
+            return VimOutcome::Consumed;
+        }
+        TablePaste::NotATable => {}
     }
     ensure_editing(editor);
     paste(
@@ -1349,6 +1552,7 @@ fn paste_register(
         after,
     );
     after_edit(editor, vh, vw);
+    VimOutcome::Consumed
 }
 
 /// Operator-pending dispatch for the indent operators (`>`/`<`).  CP4 wires
@@ -1372,6 +1576,14 @@ fn feed_indent_pending(
             .unwrap_or(1)
             .saturating_mul(vim.motion_count.unwrap_or(1))
             .clamp(1, COUNT_CAP);
+        // Indenting a table row pushes it out of the table block — asked of
+        // every line the count covers, not just the cursor's.
+        let line = editor.buffer.char_to_line(editor.cursor.offset);
+        if lines_touch_a_table(editor, line, line + count as usize - 1) {
+            vim.sub_mode = VimSubMode::Normal;
+            vim.reset_pending();
+            return VimOutcome::Flash(TABLE_STRUCTURAL_REFUSAL.to_owned());
+        }
         ensure_editing(editor);
         // A bare `>>` / `<<` (count 1) on a list item indents it
         // structurally (nests / un-nests, renumbering ordered runs); a
@@ -1425,6 +1637,17 @@ fn feed_replace_char(
     match key.code {
         KeyCode::Char(c) if !is_passthrough_chord(&key) => {
             let count = count_of(vim);
+            // The Normal twin of `feed_visual_replace_char`'s guard: `3rx`
+            // overwrites three chars in place, and a count that runs past the
+            // cell's content writes over the row's `|`.  The span is asked
+            // for unclamped — `replace_char` refuses to run at all when it
+            // overflows the line, and outside a table an overlong span was
+            // already a silent no-op, so only the in-table case changes.
+            let span = editor.cursor.offset..editor.cursor.offset + count as usize;
+            if let Some(reason) = op_range_breaks_a_table(editor, &OpRange::Chars(span)) {
+                vim.reset_pending();
+                return VimOutcome::Flash(reason.message().to_owned());
+            }
             ensure_editing(editor);
             replace_char(editor, c, count);
             after_edit(editor, vh, vw);
@@ -1467,9 +1690,8 @@ fn feed_find_char(
             .unwrap_or(1)
             .saturating_mul(vim.motion_count.unwrap_or(1))
             .clamp(1, COUNT_CAP);
-        let range = resolve_motion_range(motion, count, editor.cursor.offset, &editor.buffer);
-        run_operator(vim, editor, operator, range, vh, vw);
-        return VimOutcome::Consumed;
+        let range = resolve_scoped_op_range(editor, motion, count);
+        return run_operator(vim, editor, operator, range, vh, vw);
     }
 
     // Plain motion: a Normal cursor move or a Visual selection extend.  Per
@@ -1528,7 +1750,7 @@ fn feed_text_object(
     // Change still enters Insert at the spot.  A missing object cancels.
     if let Some(operator) = vim.pending_op.and_then(operator_kind) {
         if let Some(r) = range {
-            run_operator(vim, editor, operator, OpRange::Chars(r), vh, vw);
+            return run_operator(vim, editor, operator, OpRange::Chars(r), vh, vw);
         } else {
             vim.sub_mode = VimSubMode::Normal;
             vim.reset_pending();
@@ -1736,7 +1958,7 @@ fn apply_motion(
     vw: usize,
     visual: bool,
 ) {
-    let target = resolve_motion(motion, count, editor.cursor.offset, &editor.buffer);
+    let target = resolve_scoped_motion(editor, motion, count);
     move_to_offset(editor, target, vh, vw, visual);
 }
 
@@ -1866,6 +2088,14 @@ fn extend_selection(editor: &mut EditorState) {
 /// `open_list_continue`; otherwise a plain newline is inserted.
 fn open_line(vim: &mut VimState, editor: &mut EditorState, below: bool, vh: usize, vw: usize) {
     ensure_editing(editor);
+    // Inside a table the "line" to open is a structural row — a bare
+    // newline would split the current row in half and break the table.
+    // The cursor lands on the new row's first cell.
+    if open_table_row(editor, below, vh, vw) {
+        after_edit(editor, vh, vw);
+        vim.sub_mode = VimSubMode::Insert;
+        return;
+    }
     if open_list_continue(editor, below) {
         after_edit(editor, vh, vw);
         vim.sub_mode = VimSubMode::Insert;
