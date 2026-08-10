@@ -12,7 +12,6 @@
 - Add a documentation page for the terminal upgrade notice and a link to the page from within edamame
 
 ## Vim mode
-- A charwise Visual selection can still be *made* across cells (`l` steps cell to cell) — it is the mutation that refuses, not the selection. Should `v`+`l` stop at the cell edge instead, so the highlight can never promise an edit that will be refused? - yes
 - When typing in a table cell that is wider than the column header, and a space character is entered,
 
 ## Diff mode

@@ -53,8 +53,9 @@ pub use search::word_under_cursor_at;
 pub use table::{
     cell_scope, clear_table_cell, cursor_row_kind, delete_table_row, insert_table_rows,
     lines_touch_a_table, op_range_breaks_a_table, open_table_row, range_breaks_a_table,
-    resolve_scoped_motion, resolve_scoped_op_range, scope_offset, table_paste_plan, CellScope,
-    TableBreak, TableOpOutcome, TablePaste,
+    resolve_scoped_motion, resolve_scoped_op_range, scope_offset, table_paste_plan,
+    visual_cell_step, visual_endpoint_in_cell, CellLimit, CellScope, TableBreak, TableOpOutcome,
+    TablePaste,
 };
 pub use text_object::{resolve_text_object_range, TextObject};
 pub use visual::{

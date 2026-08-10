@@ -49,9 +49,9 @@ use crate::editor::vim_ops::{
     replace_range_with, resolve_find_repeat, resolve_scoped_motion, resolve_scoped_op_range,
     resolve_text_object_range, scope_offset, set_case_range, table_paste_plan, toggle_case,
     toggle_case_range, update_incsearch, update_substitute_preview, vertical_line_range,
-    visual_charwise_range, visual_line_bounds, visual_line_char_range, word_under_cursor_at,
-    ExCommand, FindKind, Motion, OpRange, OpResult, Operator, TableBreak, TableOpOutcome,
-    TablePaste, TextObject,
+    visual_cell_step, visual_charwise_range, visual_endpoint_in_cell, visual_line_bounds,
+    visual_line_char_range, word_under_cursor_at, CellLimit, ExCommand, FindKind, Motion, OpRange,
+    OpResult, Operator, TableBreak, TableOpOutcome, TablePaste, TextObject,
 };
 use crate::editor::{edit_ops, EditorState, Mode};
 use crate::input::mode_handler::default::{is_ctrl_backspace, is_ctrl_delete};
@@ -439,7 +439,7 @@ fn feed_normal(
         vim.sub_mode = VimSubMode::Normal;
         let dir = if is_ctrl_delete(&key) { 'l' } else { 'h' };
         for _ in 0..count_of(vim) {
-            feed_hjkl(editor, dir, vh, vw);
+            feed_hjkl(editor, dir, vh, vw, /*charwise_visual=*/ false);
         }
         vim.reset_pending();
         return VimOutcome::Consumed;
@@ -511,17 +511,17 @@ fn feed_normal(
             match key.code {
                 KeyCode::Backspace => {
                     for _ in 0..n {
-                        feed_hjkl(editor, 'h', vh, vw);
+                        feed_hjkl(editor, 'h', vh, vw, /*charwise_visual=*/ false);
                     }
                 }
                 KeyCode::Delete => {
                     for _ in 0..n {
-                        feed_hjkl(editor, 'l', vh, vw);
+                        feed_hjkl(editor, 'l', vh, vw, /*charwise_visual=*/ false);
                     }
                 }
                 KeyCode::Enter => {
                     for _ in 0..n {
-                        feed_hjkl(editor, 'j', vh, vw);
+                        feed_hjkl(editor, 'j', vh, vw, /*charwise_visual=*/ false);
                     }
                     move_first_non_blank(editor);
                     after_move(editor, vh, vw);
@@ -574,7 +574,7 @@ fn feed_visual(
     // extend the selection, exactly like plain Backspace / Delete below.
     if is_ctrl_backspace(&key) || is_ctrl_delete(&key) {
         let dir = if is_ctrl_delete(&key) { 'l' } else { 'h' };
-        feed_hjkl(editor, dir, vh, vw);
+        feed_hjkl(editor, dir, vh, vw, is_charwise_visual(vim));
         extend_selection(editor);
         vim.reset_pending();
         return VimOutcome::Consumed;
@@ -612,7 +612,7 @@ fn feed_visual(
                 KeyCode::Up => 'k',
                 _ => 'j', // Down, Enter
             };
-            feed_hjkl(editor, dir, vh, vw);
+            feed_hjkl(editor, dir, vh, vw, is_charwise_visual(vim));
             extend_selection(editor);
             vim.reset_pending();
             VimOutcome::Consumed
@@ -992,6 +992,13 @@ fn swap_visual_ends(vim: &mut VimState, editor: &mut EditorState, vh: usize, vw:
 /// or exit to Normal when the pressed key matches the current mode.  The
 /// anchor and selection survive a switch (the line expansion is recomputed
 /// on demand, so nothing is lost).
+///
+/// `V`→`v` is the second door into charwise Visual, so it owes the same
+/// append-slot pull-back `enter_visual` performs — and owes it on *both*
+/// ends, since a linewise span's anchor and cursor are independent (`V`,
+/// `$`, `v` parks the cursor on the slot; add an `o` and it is the anchor
+/// instead).  A linewise span covers whole lines however its ends sit, so
+/// the `v`→`V` direction needs nothing.
 fn toggle_visual_mode(vim: &mut VimState, editor: &mut EditorState, line: bool) {
     let target = if line {
         VimSubMode::VisualLine
@@ -1002,6 +1009,13 @@ fn toggle_visual_mode(vim: &mut VimState, editor: &mut EditorState, line: bool) 
         exit_visual(vim, editor);
     } else {
         vim.sub_mode = target;
+        if !line {
+            pull_cursor_into_cell(editor);
+            pull_anchor_into_cell(vim, editor);
+            // The span the operators read is `EditorState::selection`, and
+            // its active end still holds the pre-pull cursor.
+            extend_selection(editor);
+        }
         vim.reset_pending();
     }
 }
@@ -1041,7 +1055,15 @@ fn feed_command_char(
                 let range = resolve_scoped_op_range(editor, Motion::DocStart, 1);
                 return run_operator(vim, editor, operator, range, vh, vw);
             }
-            apply_motion(editor, Motion::DocStart, count_of(vim), vh, vw, visual);
+            apply_motion(
+                editor,
+                Motion::DocStart,
+                count_of(vim),
+                vh,
+                vw,
+                visual,
+                cell_limit(vim),
+            );
         }
         // Unknown `g`-command (or `gg` resolved above): clear the parse and
         // drop OperatorPending back to Normal.  Visual keeps its sub-mode.
@@ -1099,7 +1121,12 @@ fn feed_command_char(
             // `resolve_find_repeat` is its own resolver, so the cell clamp
             // has to be applied here rather than inheriting it from
             // `resolve_scoped_motion` — same policy, same classifier.
-            let dest = scope_offset(editor, Motion::FindChar(target, kind), dest);
+            let dest = scope_offset(
+                editor,
+                Motion::FindChar(target, kind),
+                dest,
+                cell_limit(vim),
+            );
             move_to_offset(editor, dest, vh, vw, visual);
         }
         vim.reset_pending();
@@ -1108,7 +1135,7 @@ fn feed_command_char(
 
     // Pure motions resolved by `vim_ops::motion`.
     if let Some(motion) = motion_for(c) {
-        apply_motion(editor, motion, count, vh, vw, visual);
+        apply_motion(editor, motion, count, vh, vw, visual, cell_limit(vim));
         vim.reset_pending();
         return VimOutcome::Consumed;
     }
@@ -1120,8 +1147,9 @@ fn feed_command_char(
         if !visual {
             clear_selection(editor);
         }
+        let charwise_visual = is_charwise_visual(vim);
         for _ in 0..count {
-            feed_hjkl(editor, c, vh, vw);
+            feed_hjkl(editor, c, vh, vw, charwise_visual);
         }
         if visual {
             extend_selection(editor);
@@ -1702,7 +1730,15 @@ fn feed_find_char(
     if vim.sub_mode == VimSubMode::OperatorPending {
         vim.sub_mode = VimSubMode::Normal;
     }
-    apply_motion(editor, motion, count_of(vim), vh, vw, visual);
+    apply_motion(
+        editor,
+        motion,
+        count_of(vim),
+        vh,
+        vw,
+        visual,
+        cell_limit(vim),
+    );
     vim.reset_pending();
     VimOutcome::Consumed
 }
@@ -1948,6 +1984,28 @@ fn count_of(vim: &VimState) -> u32 {
     vim.count.unwrap_or(1).max(1)
 }
 
+/// Is the charwise Visual span — the one that covers the character under
+/// the cursor — currently live?  The single predicate behind both halves of
+/// the table-cell tightening ([`cell_limit`] and `feed_hjkl`'s in-cell
+/// step), so the two can't drift apart.
+fn is_charwise_visual(vim: &VimState) -> bool {
+    vim.sub_mode == VimSubMode::Visual
+}
+
+/// How far into a table cell's trailing edge a cursor move may go: one
+/// grapheme short of the append slot in charwise Visual, whose span would
+/// otherwise highlight the padding space before the `|` and then eat it on
+/// the edit (see `CellLimit::LastChar` — the guard permits that one, which
+/// is exactly why the clamp has to prevent it).  VisualLine needs no
+/// tightening — its span is whole lines however the cursor sits.
+fn cell_limit(vim: &VimState) -> CellLimit {
+    if is_charwise_visual(vim) {
+        CellLimit::LastChar
+    } else {
+        CellLimit::Append
+    }
+}
+
 /// Resolve `motion` to a target offset, move the cursor there with the
 /// given `count`, and — in Visual — extend the selection.
 fn apply_motion(
@@ -1957,8 +2015,9 @@ fn apply_motion(
     vh: usize,
     vw: usize,
     visual: bool,
+    limit: CellLimit,
 ) {
-    let target = resolve_scoped_motion(editor, motion, count);
+    let target = resolve_scoped_motion(editor, motion, count, limit);
     move_to_offset(editor, target, vh, vw, visual);
 }
 
@@ -1980,20 +2039,28 @@ fn move_to_offset(editor: &mut EditorState, target: usize, vh: usize, vw: usize,
 }
 
 /// The `h j k l` cursor moves, including the rendered-table chrome skip.
-fn feed_hjkl(editor: &mut EditorState, c: char, vh: usize, vw: usize) {
+///
+/// `charwise_visual` tightens the horizontal pair: a charwise Visual span
+/// covers the char under the cursor, so hopping to the next cell would
+/// highlight the `|` between them and promise an edit the structural guard
+/// refuses.  There the step stays inside the cell (`visual_cell_step`).
+fn feed_hjkl(editor: &mut EditorState, c: char, vh: usize, vw: usize, charwise_visual: bool) {
     ensure_editing(editor);
     let mut moved = true;
     match c {
         'h' => {
             // In a rendered table, step cell-to-cell over the auto-managed
-            // border chrome; elsewhere — and always in Raw — a plain
-            // grapheme step.
-            if !editor.try_table_move_horizontal(/*forward=*/ false) {
+            // border chrome — unless the charwise Visual span is live, which
+            // holds the step inside the cell; elsewhere — and always in Raw
+            // — a plain grapheme step.
+            let held = charwise_visual && visual_cell_step(editor, /*forward=*/ false);
+            if !held && !editor.try_table_move_horizontal(/*forward=*/ false) {
                 editor.cursor.move_left(&editor.buffer);
             }
         }
         'l' => {
-            if !editor.try_table_move_horizontal(/*forward=*/ true) {
+            let held = charwise_visual && visual_cell_step(editor, /*forward=*/ true);
+            if !held && !editor.try_table_move_horizontal(/*forward=*/ true) {
                 editor.cursor.move_right(&editor.buffer);
             }
         }
@@ -2058,12 +2125,50 @@ fn enter_visual(vim: &mut VimState, editor: &mut EditorState, line: bool) {
     } else {
         VimSubMode::Visual
     };
+    // `$` parks the cursor on a cell's append slot; a charwise span opened
+    // there would highlight the padding space before the `|` and the edit
+    // would eat it, so `v` anchors on the last character instead.  The same
+    // one-grapheme tightening the motions get from `CellLimit::LastChar`,
+    // applied at the entry point they bypass.  Both ends come from the
+    // cursor here, so pulling it back covers the anchor too.
+    if !line {
+        pull_cursor_into_cell(editor);
+    }
     let offset = editor.cursor.offset;
     vim.visual_anchor = Some(offset);
     editor.selection = Some(Selection {
         anchor: offset,
         active: offset,
     });
+}
+
+/// Pull the cursor off its table cell's append slot onto the cell's last
+/// character, for a charwise Visual span about to cover it.  A no-op
+/// wherever `visual_endpoint_in_cell` declines — outside a table, in Raw,
+/// on the alignment row, or already on content.
+fn pull_cursor_into_cell(editor: &mut EditorState) {
+    if let Some(offset) = visual_endpoint_in_cell(editor, editor.cursor.offset) {
+        editor.cursor.offset = offset;
+        editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
+    }
+}
+
+/// The anchor half of [`pull_cursor_into_cell`], against the anchor's *own*
+/// cell.  Both stores of the anchor move together — `VimState` (which the
+/// `o`-swap and the operator range read) and `EditorState::selection`
+/// (which the overlay painter reads) — so the highlight and the edit stay
+/// the same span.
+fn pull_anchor_into_cell(vim: &mut VimState, editor: &mut EditorState) {
+    let Some(anchor) = vim.visual_anchor else {
+        return;
+    };
+    let Some(pulled) = visual_endpoint_in_cell(editor, anchor) else {
+        return;
+    };
+    vim.visual_anchor = Some(pulled);
+    if let Some(sel) = editor.selection.as_mut() {
+        sel.anchor = pulled;
+    }
 }
 
 /// Update the active end of the Visual selection to the cursor.  Falls

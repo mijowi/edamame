@@ -35,15 +35,36 @@
 //! **Clamping is not the safety net — [`range_breaks_a_table`] is.**  The
 //! cell clamp shapes the *common* commands, but a range can still reach a
 //! protected row by a route with no cell to clamp against: `2dd`, `dj`, a
-//! VisualLine selection whose cursor has left the table, a charwise Visual
-//! drag across two cells.  So every vim path that mutates a range checks
-//! that one predicate immediately before it runs, and the clamp is left to
-//! do only what it is good at — making the ordinary keystroke land in the
-//! right place.
+//! VisualLine selection whose cursor has left the table.  So every vim path
+//! that mutates a range checks that one predicate immediately before it
+//! runs, and the clamp is left to do only what it is good at — making the
+//! ordinary keystroke land in the right place.
+//!
+//! **A charwise Visual highlight must cover only the cell's content.**  The
+//! horizontal motions are therefore clamped *harder* in charwise Visual than
+//! in Normal, via [`CellLimit`]: the span is inclusive of the char under the
+//! cursor, so the cursor stops on the cell's last character rather than on
+//! the append slot past it, and `h`/`l` step within the cell
+//! ([`visual_cell_step`]) instead of hopping to the neighbouring one.  The
+//! guarantee is horizontal only — `j`/`k` and the deliberately unscoped
+//! document motions (`gg`, `G`, `}`) still leave the cell, and the range
+//! guard is what catches those.
+//!
+//! Note what the two clamps protect against, because they are *different*
+//! failures.  A highlight that crosses a `|` promises an edit
+//! [`range_breaks_a_table`] refuses — the clamp is what keeps the highlight
+//! honest.  A highlight that merely reaches the append slot is **not**
+//! refused: [`table_break`] tests confinement against `Cell::content_end`,
+//! the *untrimmed* span between the pipes, while [`CellScope::end`] is
+//! trimmed past the last non-blank — so the padding space in between is
+//! fair game to the guard, and the edit silently eats it, leaving the cell
+//! abutting its delimiter.  Cosmetic rather than structural, and the
+//! one-grapheme pull-back is also just what vim does (`$` in Visual rests
+//! on the last character), but don't reach for the guard to explain it.
 
 use std::ops::Range;
 
-use crate::document::EditDelta;
+use crate::document::{next_grapheme_offset, prev_grapheme_offset, EditDelta};
 use crate::editor::edit_ops::cursor_byte;
 use crate::editor::table_edit::{self, RowKind, TableInfo, TableRow};
 use crate::editor::table_edit_ops;
@@ -76,6 +97,39 @@ impl CellScope {
     }
 }
 
+/// How far right inside a cell the *cursor* may come to rest.
+///
+/// The two answers differ by exactly one grapheme, and which one is right
+/// depends on whether the cursor's own position is part of a highlight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellLimit {
+    /// Up to [`CellScope::end`], the append position past the cell's last
+    /// character.  This is where `$` parks in Normal and where an
+    /// exclusive-end operator target belongs — nothing is highlighted, and
+    /// "type here" is a legitimate place to be.
+    Append,
+    /// Up to the cell's last character.  A charwise Visual span is
+    /// *inclusive* of the char under the cursor
+    /// (`visual::visual_charwise_range`), so a cursor on the append slot
+    /// highlights the padding space before the `|` and hands the operator a
+    /// range that eats it — `d` leaves the cell's content abutting the
+    /// delimiter, `r` overwrites the space outright.  Not a refusal:
+    /// [`table_break`] measures confinement against the *untrimmed* cell
+    /// span, so that padding is inside the cell as far as the guard is
+    /// concerned.  Stopping one grapheme short keeps the highlight over
+    /// content only — and is what vim's own `$` does in Visual.
+    LastChar,
+}
+
+/// The furthest offset a cursor may occupy in `scope` under `limit`.
+/// Never below `scope.start`, so an empty cell collapses to its one slot.
+fn cell_max_cursor(state: &EditorState, scope: CellScope, limit: CellLimit) -> usize {
+    match limit {
+        CellLimit::Append => scope.end,
+        CellLimit::LastChar => prev_grapheme_offset(&state.buffer, scope.end).max(scope.start),
+    }
+}
+
 // ── Queries ─────────────────────────────────────────────────────────────────
 
 /// The cursor's cell bounds, in char offsets.
@@ -86,8 +140,14 @@ impl CellScope {
 /// line semantics; this mirrors [`table_edit_ops::table_move_horizontal`],
 /// which likewise declines to cell-step there.
 pub fn cell_scope(state: &EditorState) -> Option<CellScope> {
-    let info = table_edit_ops::current_table(state)?;
-    let byte = cursor_byte(state);
+    cell_scope_at(state, state.cursor.offset)
+}
+
+/// [`cell_scope`] for a position other than the cursor's — the Visual
+/// *anchor*, which sits in its own cell and so needs its own bounds.
+fn cell_scope_at(state: &EditorState, offset: usize) -> Option<CellScope> {
+    let byte = state.buffer.rope().char_to_byte(offset);
+    let info = table_edit_ops::table_at(state, byte)?;
     let (row, col) = table_edit::cursor_cell(&info, byte)?;
     if info.rows.get(row)?.kind == RowKind::Alignment {
         return None;
@@ -321,7 +381,9 @@ fn motion_is_cell_scoped(motion: Motion) -> bool {
     }
 }
 
-/// Confine an already-resolved motion `target` to the cursor's cell.
+/// Confine an already-resolved motion `target` to the cursor's cell, up to
+/// `limit` (see [`CellLimit`] — `Append` for a Normal-mode move, `LastChar`
+/// in charwise Visual).
 ///
 /// A no-op outside a table, on the alignment row, or for an unscoped
 /// motion.  Two different failure shapes, because the motions mean
@@ -337,28 +399,85 @@ fn motion_is_cell_scoped(motion: Motion) -> bool {
 ///
 /// Exposed for the `;` / `,` replay path, which resolves its own target
 /// through `resolve_find_repeat` rather than `resolve_motion`.
-pub fn scope_offset(state: &EditorState, motion: Motion, target: usize) -> usize {
+pub fn scope_offset(state: &EditorState, motion: Motion, target: usize, limit: CellLimit) -> usize {
     if !motion_is_cell_scoped(motion) {
         return target;
     }
     let Some(scope) = cell_scope(state) else {
         return target;
     };
-    if scope.contains(target) {
+    let max = cell_max_cursor(state, scope, limit);
+    if target >= scope.start && target <= max {
         return target;
     }
     if matches!(motion, Motion::FindChar(..)) {
         return state.cursor.offset;
     }
-    target.clamp(scope.start, scope.end)
+    target.clamp(scope.start, max)
 }
 
 /// Resolve `motion` from the cursor, confined to the cursor's table cell.
 /// The drop-in replacement for `motion::resolve_motion` at the input layer;
 /// identical to it outside a table.
-pub fn resolve_scoped_motion(state: &EditorState, motion: Motion, count: u32) -> usize {
+pub fn resolve_scoped_motion(
+    state: &EditorState,
+    motion: Motion,
+    count: u32,
+    limit: CellLimit,
+) -> usize {
     let target = resolve_motion(motion, count, state.cursor.offset, &state.buffer);
-    scope_offset(state, motion, target)
+    scope_offset(state, motion, target, limit)
+}
+
+/// `h` / `l` in charwise Visual: one grapheme step held inside the cursor's
+/// cell.  Returns `false` when there is no cell to hold it in (outside a
+/// table, in Raw mode, on the alignment row) so the caller falls back to the
+/// ordinary cell-to-cell step.
+///
+/// Stepping cell to cell is right in Normal — it is how you cross a table —
+/// but in charwise Visual it grows the highlight over the `|` between the
+/// two cells, and [`range_breaks_a_table`] then refuses the edit that
+/// highlight just promised.  So `l` stops on the cell's last character
+/// ([`CellLimit::LastChar`]) and `h` on its first.  The last-character stop
+/// (rather than the append slot) is the separate, milder concern documented
+/// on [`CellLimit::LastChar`].
+pub fn visual_cell_step(state: &mut EditorState, forward: bool) -> bool {
+    let Some(scope) = cell_scope(state) else {
+        return false;
+    };
+    let cursor = state.cursor.offset;
+    if !scope.contains(cursor) {
+        return false;
+    }
+    let target = if forward {
+        next_grapheme_offset(&state.buffer, cursor)
+    } else {
+        prev_grapheme_offset(&state.buffer, cursor)
+    };
+    // `.max(cursor)` for a cursor that entered Visual already parked on the
+    // append slot: a forward step must not drag it *backwards*.
+    let max = cell_max_cursor(state, scope, CellLimit::LastChar).max(cursor);
+    state.cursor.offset = target.clamp(scope.start, max);
+    state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
+    true
+}
+
+/// Pull `offset` — an endpoint a charwise Visual span is about to be built
+/// from — back off its cell's append slot onto the cell's last character,
+/// so the very first highlight already covers content instead of the
+/// padding space before the `|`.  `None` when `offset` is not in a cell,
+/// meaning "leave it exactly where it is".
+///
+/// Both ends need this, and each against its own cell: `v` opens a span
+/// whose two ends are the cursor, but `V`→`v` inherits a linewise anchor
+/// and cursor that may sit in different cells — and either of them may have
+/// been parked on an append slot by `$`.
+pub fn visual_endpoint_in_cell(state: &EditorState, offset: usize) -> Option<usize> {
+    let scope = cell_scope_at(state, offset)?;
+    if !scope.contains(offset) {
+        return None;
+    }
+    Some(offset.min(cell_max_cursor(state, scope, CellLimit::LastChar)))
 }
 
 /// Resolve `motion` as an operator target, confined to the cursor's table
@@ -641,7 +760,7 @@ mod tests {
         assert!(cell_scope(&st).is_none());
         assert!(cursor_row_kind(&st).is_none());
         // …so a scoped motion resolves identically to the bare resolver.
-        let scoped = resolve_scoped_motion(&st, Motion::LineEnd, 1);
+        let scoped = resolve_scoped_motion(&st, Motion::LineEnd, 1, CellLimit::Append);
         let bare = resolve_motion(Motion::LineEnd, 1, st.cursor.offset, &st.buffer);
         assert_eq!(scoped, bare);
     }
@@ -683,7 +802,7 @@ mod tests {
     #[test]
     fn line_end_clamps_to_the_cell_not_the_row() {
         let st = state_at(at("alpha"));
-        let target = resolve_scoped_motion(&st, Motion::LineEnd, 1);
+        let target = resolve_scoped_motion(&st, Motion::LineEnd, 1, CellLimit::Append);
         assert_eq!(target, at("alpha") + "alpha".len());
     }
 
@@ -693,7 +812,7 @@ mod tests {
         // Bare `w` would cross the `|` into `bravo`.
         let bare = resolve_motion(Motion::WordForward, 1, st.cursor.offset, &st.buffer);
         assert!(bare > at("alpha") + "alpha".len());
-        let scoped = resolve_scoped_motion(&st, Motion::WordForward, 1);
+        let scoped = resolve_scoped_motion(&st, Motion::WordForward, 1, CellLimit::Append);
         assert_eq!(scoped, at("alpha") + "alpha".len());
     }
 
@@ -703,7 +822,10 @@ mod tests {
     fn find_outside_the_cell_does_not_move_the_cursor() {
         let st = state_at(at("alpha"));
         let motion = Motion::FindChar('b', FindKind::Forward);
-        assert_eq!(resolve_scoped_motion(&st, motion, 1), st.cursor.offset);
+        assert_eq!(
+            resolve_scoped_motion(&st, motion, 1, CellLimit::Append),
+            st.cursor.offset
+        );
         // And as an operator target it covers nothing at all.
         assert_eq!(
             resolve_scoped_op_range(&st, motion, 1),
@@ -716,7 +838,10 @@ mod tests {
     fn find_inside_the_cell_still_resolves() {
         let st = state_at(at("alpha"));
         let motion = Motion::FindChar('h', FindKind::Forward);
-        assert_eq!(resolve_scoped_motion(&st, motion, 1), at("alpha") + 3);
+        assert_eq!(
+            resolve_scoped_motion(&st, motion, 1, CellLimit::Append),
+            at("alpha") + 3
+        );
     }
 
     /// `D` (and `C`) must stop at the cell's content end so the row's `|`
@@ -749,12 +874,132 @@ mod tests {
         );
     }
 
+    // ── The charwise-Visual tightening ──────────────────────────────────
+
+    /// Under `LastChar` the cursor stops one grapheme short of the append
+    /// slot, so the inclusive charwise span ends on the cell's content.
+    #[test]
+    fn the_visual_limit_stops_one_grapheme_short_of_the_append_slot() {
+        let st = state_at(at("alpha"));
+        let last = at("alpha") + "alpha".len();
+        assert_eq!(
+            resolve_scoped_motion(&st, Motion::LineEnd, 1, CellLimit::Append),
+            last
+        );
+        assert_eq!(
+            resolve_scoped_motion(&st, Motion::LineEnd, 1, CellLimit::LastChar),
+            last - 1
+        );
+    }
+
+    /// The limit is a whole grapheme back, not a char back — a combining
+    /// sequence at the cell end is one selectable unit.
+    #[test]
+    fn the_visual_limit_steps_back_a_whole_grapheme() {
+        let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
+        let src = "| ae\u{301} | b |\n|---|---|\n| one | two |\n";
+        let mut st = EditorState::new(Buffer::from_str(src), theme);
+        st.mode = Mode::Rendered;
+        st.cursor.offset = 2;
+        st.update_cursor_block();
+        let scope = cell_scope(&st).expect("cursor is in a cell");
+        assert_eq!(scope.end, 5, "content is `ae\u{301}`");
+        assert_eq!(
+            resolve_scoped_motion(&st, Motion::LineEnd, 1, CellLimit::LastChar),
+            3,
+            "`e\u{301}` is one grapheme, so the limit is the `e`, not the accent"
+        );
+    }
+
+    #[test]
+    fn visual_cell_step_holds_the_cursor_inside_the_cell() {
+        let mut st = state_at(at("alpha"));
+        // Right, over and over: never past the last content char.
+        for _ in 0..9 {
+            assert!(visual_cell_step(&mut st, /*forward=*/ true));
+        }
+        assert_eq!(st.cursor.offset, at("alpha") + "alpha".len() - 1);
+        // …and back, never before the first.
+        for _ in 0..9 {
+            assert!(visual_cell_step(&mut st, /*forward=*/ false));
+        }
+        assert_eq!(st.cursor.offset, at("alpha"));
+    }
+
+    /// A cursor that entered Visual on the append slot must not be dragged
+    /// backwards by a forward step.
+    #[test]
+    fn visual_cell_step_forward_never_moves_backwards() {
+        let mut st = state_at(at("alpha") + "alpha".len());
+        assert!(visual_cell_step(&mut st, /*forward=*/ true));
+        assert_eq!(st.cursor.offset, at("alpha") + "alpha".len());
+    }
+
+    /// No cell to hold the step in → the caller falls back to the ordinary
+    /// cell-to-cell move.
+    #[test]
+    fn visual_cell_step_declines_outside_a_cell() {
+        let mut st = state_at(at("|---|") + 2); // the alignment row
+        assert!(!visual_cell_step(&mut st, true));
+
+        let mut st = state_at(at("alpha"));
+        st.mode = Mode::Raw;
+        assert!(!visual_cell_step(&mut st, true));
+    }
+
+    #[test]
+    fn visual_endpoint_pulls_back_from_the_append_slot_only() {
+        let st = state_at(at("alpha") + "alpha".len());
+        assert_eq!(
+            visual_endpoint_in_cell(&st, st.cursor.offset),
+            Some(at("alpha") + "alpha".len() - 1)
+        );
+        // Anywhere inside the content it leaves the offset alone.
+        let st = state_at(at("alpha") + 2);
+        assert_eq!(
+            visual_endpoint_in_cell(&st, st.cursor.offset),
+            Some(at("alpha") + 2)
+        );
+        // And it declines where there is no cell.
+        let st = state_at(at("|---|") + 2);
+        assert_eq!(visual_endpoint_in_cell(&st, st.cursor.offset), None);
+    }
+
+    /// The endpoint is resolved against *its own* cell, not the cursor's —
+    /// what `V`→`v` needs for an anchor left in a different cell.
+    #[test]
+    fn visual_endpoint_answers_for_a_cell_the_cursor_is_not_in() {
+        let st = state_at(at("alpha"));
+        let bravo_append = at("bravo") + "bravo".len();
+        assert_eq!(
+            visual_endpoint_in_cell(&st, bravo_append),
+            Some(bravo_append - 1)
+        );
+        // Including a cell on another row.
+        let two_append = at("two") + "two".len();
+        assert_eq!(
+            visual_endpoint_in_cell(&st, two_append),
+            Some(two_append - 1)
+        );
+    }
+
+    /// The operator range is exclusive-ended, so it keeps the `Append`
+    /// bound — `D` in a cell must still clear the whole content.
+    #[test]
+    fn the_operator_range_keeps_the_append_bound() {
+        let st = state_at(at("alpha"));
+        assert_eq!(
+            resolve_scoped_op_range(&st, Motion::LineEnd, 1),
+            OpRange::Chars(at("alpha")..at("alpha") + "alpha".len())
+        );
+    }
+
     /// Unscoped motions keep crossing the table freely.
     #[test]
     fn document_motions_are_not_clamped() {
         let st = state_at(at("one"));
         assert_eq!(
-            resolve_scoped_motion(&st, Motion::DocStart, 1),
+            resolve_scoped_motion(&st, Motion::DocStart, 1, CellLimit::Append),
             resolve_motion(Motion::DocStart, 1, st.cursor.offset, &st.buffer)
         );
     }

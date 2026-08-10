@@ -4052,15 +4052,139 @@ fn a_visual_line_selection_covering_the_whole_table_may_delete_it() {
 }
 
 #[test]
-fn a_charwise_visual_delete_cannot_cross_a_cell_boundary() {
-    // `v` + `l`-across-the-delimiter + `d` used to eat the `|`s and take
-    // most of the table with them.
+fn a_charwise_visual_selection_stops_at_the_cell_edge() {
+    // `l` steps cell-to-cell in Normal, but a charwise Visual highlight
+    // that crossed the `|` would promise an edit the structural guard then
+    // refuses — so here it stops on the cell's last character, however many
+    // times `l` is pressed, and the delete it promised goes through.
     let mut st = table_state(tbl_at("alpha"));
     let mut vim = VimState::default();
     feed(&mut vim, &mut st, ch('v'));
     for _ in 0..9 {
         feed(&mut vim, &mut st, ch('l'));
     }
+    assert_eq!(
+        st.cursor.offset,
+        tbl_at("alpha") + "alpha".len() - 1,
+        "the cursor must rest on the cell's last char, not the append slot"
+    );
+    let out = feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(out, VimOutcome::Consumed, "the highlight was all in-cell");
+    assert_eq!(
+        st.buffer.contents(),
+        "|  | bravo |\n|---|---|\n| one | two |\n"
+    );
+}
+
+/// The mirror of the above: `h` can't reverse out of the cell either.
+#[test]
+fn a_charwise_visual_selection_stops_at_the_cell_start() {
+    let mut st = table_state(tbl_at("bravo") + 2);
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    for _ in 0..9 {
+        feed(&mut vim, &mut st, ch('h'));
+    }
+    assert_eq!(st.cursor.offset, tbl_at("bravo"));
+    let out = feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(
+        st.buffer.contents(),
+        "| alpha | vo |\n|---|---|\n| one | two |\n"
+    );
+}
+
+/// `$` parks on the cell's append slot — the padding space before the `|`.
+/// A charwise selection opened there covers that space, and the edit takes
+/// it: the guard permits the range (it measures the cell untrimmed), so `d`
+/// would leave `alpha` abutting its delimiter.  `v` anchors one grapheme
+/// back instead.
+#[test]
+fn opening_visual_on_the_cell_append_slot_anchors_on_the_last_char() {
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('$'));
+    assert_eq!(st.cursor.offset, tbl_at("alpha") + "alpha".len());
+    feed(&mut vim, &mut st, ch('v'));
+    assert_eq!(st.cursor.offset, tbl_at("alpha") + "alpha".len() - 1);
+    let out = feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(
+        st.buffer.contents(),
+        "| alph | bravo |\n|---|---|\n| one | two |\n"
+    );
+}
+
+/// `V`→`v` is the other door into charwise Visual, and it inherits a cursor
+/// `$` may have parked on the append slot.  The span here runs from the
+/// cell's first char (where `V` anchored) to its last, so `d` clears the
+/// content and leaves both padding spaces — without the pull-back it would
+/// take the trailing one too and leave `| | bravo |`.
+#[test]
+fn toggling_visual_line_to_charwise_pulls_the_cursor_off_the_append_slot() {
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('$'));
+    assert_eq!(st.cursor.offset, tbl_at("alpha") + "alpha".len());
+    feed(&mut vim, &mut st, ch('v'));
+    assert_eq!(st.cursor.offset, tbl_at("alpha") + "alpha".len() - 1);
+    let out = feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(
+        st.buffer.contents(),
+        "|  | bravo |\n|---|---|\n| one | two |\n"
+    );
+}
+
+/// The same toggle, with `r` — which overwrites rather than deletes, so an
+/// unpulled cursor would replace the padding space itself and leave the
+/// cell's text touching the `|`.
+#[test]
+fn toggling_visual_line_to_charwise_protects_the_padding_from_replace() {
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('$'));
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('r'));
+    let out = feed(&mut vim, &mut st, ch('z'));
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(
+        st.buffer.contents(),
+        "| zzzzz | bravo |\n|---|---|\n| one | two |\n",
+        "the space before the delimiter survives"
+    );
+}
+
+/// `o` puts the append slot on the *anchor* end instead, so the pull-back
+/// has to reach both ends of the span — each against its own cell.
+#[test]
+fn toggling_visual_line_to_charwise_pulls_the_anchor_too() {
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('$'));
+    feed(&mut vim, &mut st, ch('o')); // anchor ← append slot, cursor ← cell start
+    feed(&mut vim, &mut st, ch('v'));
+    let out = feed(&mut vim, &mut st, ch('d'));
+    assert_eq!(out, VimOutcome::Consumed);
+    assert_eq!(
+        st.buffer.contents(),
+        "|  | bravo |\n|---|---|\n| one | two |\n"
+    );
+}
+
+/// The clamp is horizontal only, so the range guard is still the thing that
+/// catches a selection which left the cell by another route — here `j`,
+/// which steps to the cell below and drags the row's `|`s and newlines into
+/// the span.
+#[test]
+fn a_charwise_visual_delete_reaching_another_row_is_refused() {
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('j'));
     let out = feed(&mut vim, &mut st, ch('d'));
     assert!(matches!(out, VimOutcome::Flash(_)), "got {out:?}");
     assert_eq!(st.buffer.contents(), TBL);
@@ -4080,12 +4204,13 @@ fn a_charwise_visual_delete_inside_one_cell_still_works() {
 
 #[test]
 fn a_visual_replace_cannot_overwrite_a_delimiter() {
+    // `l` can no longer carry the selection out of the cell, so the span
+    // that reaches a delimiter comes from `j` — the vertical step the cell
+    // clamp deliberately leaves alone.
     let mut st = table_state(tbl_at("alpha"));
     let mut vim = VimState::default();
     feed(&mut vim, &mut st, ch('v'));
-    for _ in 0..9 {
-        feed(&mut vim, &mut st, ch('l'));
-    }
+    feed(&mut vim, &mut st, ch('j'));
     feed(&mut vim, &mut st, ch('r'));
     let out = feed(&mut vim, &mut st, ch('z'));
     assert!(matches!(out, VimOutcome::Flash(_)), "got {out:?}");
