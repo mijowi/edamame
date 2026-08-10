@@ -17,22 +17,84 @@ use crate::editor::table_edit::{
 };
 use crate::editor::{EditorState, Mode};
 
-/// Look up the table surrounding the cursor.  Returns the source snapshot
-/// alongside the parsed [`TableInfo`] so the caller doesn't have to re-fetch
-/// `buffer.contents()`.
+/// Look up the table surrounding the cursor.
 ///
 /// Suppressed in [`Mode::Raw`]: in raw mode the user must be able to type
 /// `|` literally, walk through cell boundaries one char at a time, and have
 /// Tab/Enter insert a literal tab/newline rather than jumping cells.
 /// Returning `None` here short-circuits every table-aware code path without
 /// any callsite changes.
-pub(super) fn current_table(state: &EditorState) -> Option<(String, TableInfo)> {
+pub(super) fn current_table(state: &EditorState) -> Option<TableInfo> {
+    table_at(state, cursor_byte(state))
+}
+
+/// Look up the table containing byte offset `byte`, for the callers that ask
+/// about a position other than the cursor's (the vim range guards sweep a
+/// selection).  Same `Mode::Raw` suppression as [`current_table`].
+///
+/// **Only the table's own lines are copied out of the rope.**  This sits on
+/// the per-keystroke motion path via `vim_ops::table::cell_scope`, and
+/// `Buffer::contents()` would allocate a copy of the *whole document* on
+/// every `w` / `$` / `f`.  `find_table_at` only ever looks at the contiguous
+/// run of table-looking lines around its cursor, so handing it exactly that
+/// run — and shifting the byte offsets it reports back into document space —
+/// is the same answer for a cost proportional to the table.
+pub(super) fn table_at(state: &EditorState, byte: usize) -> Option<TableInfo> {
     if state.mode == Mode::Raw {
         return None;
     }
-    let source = state.buffer.contents();
-    let byte = cursor_byte(state);
-    find_table_at(&source, byte).map(|info| (source, info))
+    let (base, run) = table_line_run(state, byte)?;
+    let mut info = find_table_at(&run, byte - base)?;
+    info.start += base;
+    info.end += base;
+    for row in &mut info.rows {
+        row.start += base;
+        row.end += base;
+    }
+    Some(info)
+}
+
+/// The contiguous run of table-looking lines around `byte`, as
+/// `(base_byte, text)`.  `None` when `byte`'s own line isn't one — the same
+/// first test [`find_table_at`] makes, so declining here never hides a table
+/// it would have found.
+fn table_line_run(state: &EditorState, byte: usize) -> Option<(usize, String)> {
+    let rope = state.buffer.rope();
+    let len_bytes = rope.len_bytes();
+    let byte = byte.min(len_bytes);
+    let line = rope.byte_to_line(byte);
+    if !line_is_table_line(state, line) {
+        return None;
+    }
+    let mut first = line;
+    while first > 0 && line_is_table_line(state, first - 1) {
+        first -= 1;
+    }
+    let last_line = rope.len_lines().saturating_sub(1);
+    let mut last = line;
+    while last < last_line && line_is_table_line(state, last + 1) {
+        last += 1;
+    }
+    let start = rope.line_to_byte(first);
+    let end = if last >= last_line {
+        len_bytes
+    } else {
+        rope.line_to_byte(last + 1)
+    };
+    Some((start, rope.byte_slice(start..end).to_string()))
+}
+
+/// Does buffer line `idx` look like a table row?
+fn line_is_table_line(state: &EditorState, idx: usize) -> bool {
+    let rope = state.buffer.rope();
+    if idx >= rope.len_lines() {
+        return false;
+    }
+    let line = rope.line(idx);
+    match line.as_str() {
+        Some(s) => table_edit::is_table_line(s),
+        None => table_edit::is_table_line(&line.to_string()),
+    }
 }
 
 /// Is the cursor currently inside a GFM table?
@@ -45,7 +107,7 @@ pub(super) fn cursor_in_table(state: &EditorState) -> bool {
 /// alignment row is a structural artefact and should never be a navigation
 /// target.
 pub(super) fn cursor_on_alignment_row(state: &EditorState) -> bool {
-    let Some((_, info)) = current_table(state) else {
+    let Some(info) = current_table(state) else {
         return false;
     };
     let byte = cursor_byte(state);
@@ -61,7 +123,7 @@ pub(super) fn cursor_on_alignment_row(state: &EditorState) -> bool {
 /// byte offset and is consumed by some helpers (e.g. `table_move_row` for
 /// `apply_byte_delta`); when not needed, destructure with `_byte`.
 fn cursor_table_cell(state: &EditorState) -> Option<(TableInfo, usize, usize, usize)> {
-    let (_, info) = current_table(state)?;
+    let info = current_table(state)?;
     let byte = cursor_byte(state);
     let (row, col) = cursor_cell(&info, byte)?;
     Some((info, byte, row, col))

@@ -26,6 +26,7 @@ pub mod motion;
 pub mod operator;
 pub mod preview;
 pub mod search;
+pub mod table;
 pub mod text_object;
 pub mod vim_regex;
 pub mod visual;
@@ -44,6 +45,17 @@ pub use motion::{
 pub use operator::{execute_operator, OpResult, Operator};
 pub use preview::{clear_substitute_preview, update_substitute_preview, SubstitutePreview};
 pub use search::word_under_cursor_at;
+// Table scoping deliberately re-exports the *scoped* resolvers rather than
+// leaving `feed.rs` to clamp `resolve_motion`'s output itself: after CP11 the
+// input layer calls these instead of the bare `motion::resolve_*` pair, so a
+// new operator target cannot forget the cell clamp.  `rg 'resolve_motion'
+// src/input/vim/feed.rs` should stay empty.
+pub use table::{
+    cell_scope, clear_table_cell, cursor_row_kind, delete_table_row, insert_table_rows,
+    lines_touch_a_table, op_range_breaks_a_table, open_table_row, range_breaks_a_table,
+    resolve_scoped_motion, resolve_scoped_op_range, scope_offset, table_paste_plan, CellScope,
+    TableBreak, TableOpOutcome, TablePaste,
+};
 pub use text_object::{resolve_text_object_range, TextObject};
 pub use visual::{
     visual_charwise_range, visual_line_bounds, visual_line_char_range, visual_span, VisualKind,
