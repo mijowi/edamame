@@ -39,6 +39,8 @@ pub struct StatusBarState<'a> {
     /// When the vim handler is active, the sub-mode badge text
     /// (`NORMAL` / `INSERT` / `VISUAL` / `V-LINE`).  Takes precedence
     /// over the rendering-mode badge; `None` for the default handler.
+    /// The one exception is [`Mode::Diff`], whose badge outranks this
+    /// one — see the precedence note in `render`.
     pub vim_mode_label: Option<&'a str>,
 }
 
@@ -101,7 +103,18 @@ impl<'a> Widget for StatusBar<'a> {
         // handler is active its sub-mode badge wins, using the
         // `status_mode_vim_*` colors (NORMAL = primary, INSERT = success,
         // VISUAL/V-LINE = secondary) that the editor cursor also mirrors.
-        let (mode_text, mode_style) = match s.vim_mode_label {
+        //
+        // `Mode::Diff` outranks the vim badge, though: the diff-review
+        // keymap owns every key for the duration of the review — the
+        // `vim_deferred` guard in `App::dispatch_single_key` bypasses the
+        // vim handler outright — so a `NORMAL` badge there would advertise
+        // a handler that isn't live (`i` / `v` / `:` all no-op).  The
+        // badge names whichever keymap is actually reading the user's
+        // keystrokes, which in diff is the same `DIFF` the default
+        // handler shows.  Resolved here rather than at the call site so
+        // it can't be bypassed by a `StatusBarState` built elsewhere.
+        let vim_label = s.vim_mode_label.filter(|_| !matches!(s.mode, Mode::Diff));
+        let (mode_text, mode_style) = match vim_label {
             Some(label) => (format!(" {} ", label), vim_badge_style(theme, label)),
             None => (format!(" {} ", s.mode), theme.status_mode_style(s.mode)),
         };
@@ -299,39 +312,36 @@ mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
 
-    fn make_bar(mode: Mode, filename: &str, line_count: usize, modified: bool) -> String {
-        make_bar_with_path(mode, filename, line_count, modified, Vec::new(), 60)
+    /// A plain state with every optional field empty: no cursor
+    /// position, no breadcrumb, no diff progress, no vim badge.  Tests
+    /// that need one of those spell out just that field and fill the
+    /// rest with `..base_state(..)`, so a new `StatusBarState` field
+    /// costs one line here instead of one per test.
+    fn base_state(mode: Mode, filename: &str) -> StatusBarState<'_> {
+        StatusBarState {
+            mode,
+            filename,
+            line_count: 10,
+            modified: false,
+            scroll: 0,
+            cursor_line: None,
+            cursor_col: None,
+            section_path: Vec::new(),
+            diff_progress: None,
+            vim_mode_label: None,
+        }
     }
 
-    fn make_bar_with_path(
-        mode: Mode,
-        filename: &str,
-        line_count: usize,
-        modified: bool,
-        section_path: Vec<String>,
-        width: u16,
-    ) -> String {
+    /// Render `state` into a one-row bar `width` cells wide and scrape
+    /// the row back as a string (first char of each cell).  The single
+    /// place these tests touch `TestBackend`.
+    fn render_bar(state: StatusBarState<'_>, width: u16) -> String {
         let theme = Box::leak(Box::new(Theme::default()));
         let backend = TestBackend::new(width, 1);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                let bar = StatusBar {
-                    state: StatusBarState {
-                        mode,
-                        filename,
-                        line_count,
-                        modified,
-                        scroll: 0,
-                        cursor_line: None,
-                        cursor_col: None,
-                        section_path,
-                        diff_progress: None,
-                        vim_mode_label: None,
-                    },
-                    theme,
-                };
-                frame.render_widget(bar, frame.area());
+                frame.render_widget(StatusBar { state, theme }, frame.area());
             })
             .unwrap();
 
@@ -344,10 +354,82 @@ mod tests {
             .collect()
     }
 
+    fn make_bar(mode: Mode, filename: &str, line_count: usize, modified: bool) -> String {
+        make_bar_with_path(mode, filename, line_count, modified, Vec::new(), 60)
+    }
+
+    fn make_bar_with_path(
+        mode: Mode,
+        filename: &str,
+        line_count: usize,
+        modified: bool,
+        section_path: Vec<String>,
+        width: u16,
+    ) -> String {
+        render_bar(
+            StatusBarState {
+                line_count,
+                modified,
+                section_path,
+                ..base_state(mode, filename)
+            },
+            width,
+        )
+    }
+
     #[test]
     fn shows_mode() {
         let output = make_bar(Mode::Preview, "test.md", 42, false);
         assert!(output.contains("PREVIEW"), "output was: {:?}", output);
+    }
+
+    #[test]
+    fn diff_badge_outranks_the_vim_sub_mode_badge() {
+        // The diff-review keymap owns every key while `Mode::Diff` is
+        // active (`vim_deferred` in `App::dispatch_single_key`), so a
+        // `NORMAL` badge would advertise a handler that isn't live.
+        let output = render_bar(
+            StatusBarState {
+                diff_progress: Some((3, 7)),
+                vim_mode_label: Some("NORMAL"),
+                ..base_state(Mode::Diff, "f.md")
+            },
+            60,
+        );
+        assert!(
+            output.contains("DIFF"),
+            "DIFF badge must win over the vim label, output was: {output:?}"
+        );
+        assert!(
+            !output.contains("NORMAL"),
+            "vim sub-mode badge leaked into diff mode: {output:?}"
+        );
+        // The progress counter stays adjacent to the badge it belongs to.
+        assert!(
+            output.contains("3/7"),
+            "diff progress must ride beside the badge: {output:?}"
+        );
+    }
+
+    #[test]
+    fn vim_badge_still_wins_outside_diff_mode() {
+        // The suppression is scoped to diff — every other mode keeps the
+        // sub-mode badge in the rendering mode's place.
+        let output = render_bar(
+            StatusBarState {
+                vim_mode_label: Some("NORMAL"),
+                ..base_state(Mode::Rendered, "f.md")
+            },
+            60,
+        );
+        assert!(
+            output.contains("NORMAL"),
+            "vim badge must still supersede the mode badge: {output:?}"
+        );
+        assert!(
+            !output.contains("EDIT"),
+            "rendering-mode badge leaked alongside the vim badge: {output:?}"
+        );
     }
 
     #[test]
@@ -407,39 +489,14 @@ mod tests {
 
     #[test]
     fn shows_cursor_position() {
-        let theme = Box::leak(Box::new(Theme::default()));
-        let backend = TestBackend::new(60, 1);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                let bar = StatusBar {
-                    state: StatusBarState {
-                        mode: Mode::Rendered,
-                        filename: "f.md",
-                        line_count: 10,
-                        modified: false,
-                        scroll: 0,
-                        cursor_line: Some(3),
-                        cursor_col: Some(7),
-                        section_path: Vec::new(),
-                        diff_progress: None,
-                        vim_mode_label: None,
-                    },
-                    theme,
-                };
-                frame.render_widget(bar, frame.area());
-            })
-            .unwrap();
-
-        let output: String = (0..60u16)
-            .map(|x| {
-                terminal
-                    .backend()
-                    .buffer()
-                    .cell((x, 0))
-                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
-            })
-            .collect();
+        let output = render_bar(
+            StatusBarState {
+                cursor_line: Some(3),
+                cursor_col: Some(7),
+                ..base_state(Mode::Rendered, "f.md")
+            },
+            60,
+        );
         assert!(output.contains("3:7"), "output was: {:?}", output);
     }
 
