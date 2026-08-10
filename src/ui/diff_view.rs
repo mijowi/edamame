@@ -12,14 +12,16 @@
 use ratatui::{
     buffer::Buffer as TuiBuf,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::StatefulWidget,
 };
 
 use crate::config::{Action, Theme};
 use crate::diff::hunk::InlineSide;
-use crate::diff::layout::{decision_line_text, line_text, DiffLineSource, DiffVisualLine};
+use crate::diff::layout::{
+    decision_line_text, line_marker, line_text, DiffLineSource, DiffVisualLine,
+};
 use crate::diff::{Decision, DiffState};
 use crate::input::diff_hint;
 use crate::ui::line_render::render_line_from_visual;
@@ -136,23 +138,26 @@ fn build_line(diff: &DiffState, theme: &Theme, dvl: &DiffVisualLine) -> Line<'st
         // index reads as quiet metadata, not part of the call to action.
         // `DIM` rather than a muted color keeps the counter recessive in
         // monochrome themes too, where color can't carry the hierarchy.
-        let divider = decision_divider_text(dec, focused);
         let position = dvl.hunk_idx.map_or(0, |hi| hi + 1);
         let total = diff.hunks.len();
         let counter_style = Style::default()
             .add_modifier(Modifier::DIM)
             .remove_modifier(Modifier::BOLD);
-        let spans = vec![
-            Span::raw(divider),
-            Span::styled(format!(" ({position}/{total})"), counter_style),
-        ];
+        let mut spans = decision_divider_spans(theme, dec, focused);
+        spans.push(Span::styled(
+            format!(" ({position}/{total})"),
+            counter_style,
+        ));
         return Line::from(spans).style(style);
     }
 
     // Delete / add / context lines pull their text from the rope; the
     // decision branch above never needs it, so we only pay the
-    // allocation here.  No gutter: all start at column 0
-    // and are distinguished by background color alone.  Focus selects
+    // allocation here.  Each carries a two-cell `line_marker` gutter
+    // (`- ` / `+ ` / two spaces) ahead of its body, so the side reads
+    // without color — including on delete-only and insert-only hunks,
+    // where the divider's spatial "above is old, below is new" claim has
+    // nothing to point at.  Focus selects
     // both the full-line wash and the within-line highlight: a
     // non-focused hunk uses the muted `_unfocused` variants of both so
     // its changed words recede with its background instead of popping at
@@ -231,10 +236,60 @@ fn build_line(diff: &DiffState, theme: &Theme, dvl: &DiffVisualLine) -> Line<'st
         body_spans.push(Span::raw(text.to_owned()));
     }
 
-    Line::from(body_spans).style(line_style)
+    // The marker is prepended as its own span rather than folded into
+    // `text`, because the inline highlight ranges above index into the
+    // raw line's chars.  It inherits `line_style`, so the add/delete
+    // wash covers the gutter and the row reads as one band.
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(body_spans.len() + 1);
+    spans.push(Span::raw(line_marker(dvl.source)));
+    spans.extend(body_spans);
+
+    Line::from(spans).style(line_style)
 }
 
-/// Text shown on a hunk's decision divider, given its decision and
+/// Background chip style for one side of the focused pending prompt.
+///
+/// The chip reuses the *same* `diff_add_line` / `diff_delete_line` wash
+/// the add and delete rows carry, so "Accept" is painted in the literal
+/// color of the block below the divider and "Reject" in the color of the
+/// block above it — the label, its key, and the text it acts on are one
+/// color. Deriving the chip from a fresh palette hue instead would let
+/// it drift from the wash it is supposed to name, and would need a new
+/// theme field in every built-in and user theme.
+///
+/// The washes are meant to be background-only, so the chip takes only
+/// their `bg` and `add_modifier` and pins the foreground from
+/// `theme.normal` — inheriting the divider's `secondary` fg would put a
+/// cyan-ish label on a green fill, and honoring a wash's own fg would do
+/// the same for any theme that set one.  Both washes *are* user-authorable
+/// (they have to be: `blend` is a no-op on non-RGB colors, so on an
+/// indexed palette a hand-picked `bg` is the only way to get a focused
+/// fill at all), so this drops any fg the theme set rather than assuming
+/// none exists.  `Color::Reset` is the pin when `normal` carries no fg,
+/// which keeps the terminal default rather than letting the divider's
+/// through.
+///
+/// In a monochrome theme both washes are a bare `REVERSED` over that
+/// reset fg, so the chips come out identical: there the mapping is
+/// carried by the reject-then-accept order and the `- ` / `+ ` markers,
+/// which is why those, not this, are the load-bearing half of the change.
+fn prompt_chip_style(theme: &Theme, accept: bool) -> Style {
+    let wash = if accept {
+        theme.diff_add_line
+    } else {
+        theme.diff_delete_line
+    };
+    let mut chip = Style::default()
+        .add_modifier(wash.add_modifier)
+        .add_modifier(Modifier::BOLD)
+        .fg(theme.normal.fg.unwrap_or(Color::Reset));
+    if let Some(bg) = wash.bg {
+        chip = chip.bg(bg);
+    }
+    chip
+}
+
+/// Spans shown on a hunk's decision divider, given its decision and
 /// whether it is the focused hunk.
 ///
 /// Unfocused dividers show the bare checkbox / resolved label from
@@ -244,17 +299,36 @@ fn build_line(diff: &DiffState, theme: &Theme, dvl: &DiffVisualLine) -> Line<'st
 /// additionally spells the accept/reject keys inline.  Those glyphs come
 /// from the shared `diff_keys` table via [`diff_hint`], so the prompt
 /// can never name a key the input handler doesn't actually honor.
-fn decision_divider_text(decision: Decision, focused: bool) -> String {
+///
+/// **Reject leads, Accept follows** — reading order mirrors the stacking
+/// (`layout::build_visual_lines` puts the old side above the divider and
+/// the new side below), so the prompt encodes the mapping by position.
+/// Order, unlike a directional glyph, asserts nothing that goes false on
+/// an insert-only or delete-only hunk. The prompt only ever renders on a
+/// *pending* divider, whose base style is the neutral
+/// `diff_decision_pending`, so the chips never land on the green/red
+/// wash of a resolved row.
+///
+/// Only the divider is color-coded; the diff hint row in
+/// `ui::bottom_region` deliberately stays uniform for now.
+fn decision_divider_spans(theme: &Theme, decision: Decision, focused: bool) -> Vec<Span<'static>> {
     let base = decision_line_text(decision);
     if !focused {
-        return base.to_owned();
+        return vec![Span::raw(base.to_owned())];
     }
     match decision {
-        Decision::Pending => format!(
-            "> {base} Accept [{}] · Reject [{}]",
-            diff_hint(&Action::DiffAcceptHunk),
-            diff_hint(&Action::DiffRejectHunk),
-        ),
-        Decision::Accepted | Decision::Rejected => format!("> {base}"),
+        Decision::Pending => vec![
+            Span::raw(format!("> {base} ")),
+            Span::styled(
+                format!(" Reject [{}] ", diff_hint(&Action::DiffRejectHunk)),
+                prompt_chip_style(theme, false),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                format!(" Accept [{}] ", diff_hint(&Action::DiffAcceptHunk)),
+                prompt_chip_style(theme, true),
+            ),
+        ],
+        Decision::Accepted | Decision::Rejected => vec![Span::raw(format!("> {base}"))],
     }
 }

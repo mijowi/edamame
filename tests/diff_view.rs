@@ -4,6 +4,9 @@
 //! glyphs all reach the output buffer.
 
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer as TuiBuf;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
 use ratatui::Terminal;
 
 use edamame::config::Theme;
@@ -14,7 +17,18 @@ fn theme() -> &'static Theme {
     Box::leak(Box::new(Theme::default()))
 }
 
-fn render_to_strings(state: &DiffState, width: u16, height: u16) -> Vec<String> {
+/// An RGB built-in, for the assertions that care about actual colors.
+/// `Theme::default()` derives from the *indexed* `256 Dark` palette, and
+/// `themes::util::blend` is a no-op on non-RGB colors, so several of its
+/// blended fields collapse onto their base — fine as a layout fixture,
+/// useless as a color one.
+fn rgb_theme() -> &'static Theme {
+    Box::leak(Box::new(
+        Theme::builtin("Edamame").expect("Edamame is a built-in"),
+    ))
+}
+
+fn render_to_buffer_with(state: &DiffState, th: &Theme, width: u16, height: u16) -> TuiBuf {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap();
     let mut view_state = DiffViewState::default();
@@ -24,7 +38,7 @@ fn render_to_strings(state: &DiffState, width: u16, height: u16) -> Vec<String> 
             ratatui::widgets::StatefulWidget::render(
                 DiffView {
                     diff: state,
-                    theme: theme(),
+                    theme: th,
                     scroll: 0,
                 },
                 area,
@@ -33,17 +47,46 @@ fn render_to_strings(state: &DiffState, width: u16, height: u16) -> Vec<String> 
             );
         })
         .unwrap();
-    let buf = terminal.backend().buffer().clone();
-    (0..height as usize)
+    terminal.backend().buffer().clone()
+}
+
+fn render_to_buffer(state: &DiffState, width: u16, height: u16) -> TuiBuf {
+    render_to_buffer_with(state, theme(), width, height)
+}
+
+/// One `String` per terminal row, for the tests that only care about text.
+fn buffer_to_strings(buf: &TuiBuf) -> Vec<String> {
+    let Rect { width, height, .. } = buf.area;
+    (0..height)
         .map(|y| {
-            (0..width as usize)
+            (0..width)
                 .map(|x| {
-                    buf.cell((x as u16, y as u16))
+                    buf.cell((x, y))
                         .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
                 })
                 .collect::<String>()
         })
         .collect()
+}
+
+fn render_to_strings(state: &DiffState, width: u16, height: u16) -> Vec<String> {
+    buffer_to_strings(&render_to_buffer(state, width, height))
+}
+
+/// The style of the cell at the start of `needle` on the first row that
+/// contains it — enough to assert which wash a rendered label carries.
+fn style_at_substring(buf: &TuiBuf, needle: &str) -> Style {
+    let rows = buffer_to_strings(buf);
+    let (y, col) = rows
+        .iter()
+        .enumerate()
+        .find_map(|(y, row)| row.find(needle).map(|byte_idx| (y, byte_idx)))
+        .unwrap_or_else(|| panic!("{needle:?} not rendered: {rows:?}"));
+    // The rows are built one char per cell, and every glyph the divider
+    // draws is ASCII, so the byte index is the column.
+    buf.cell((col as u16, y as u16))
+        .expect("cell in bounds")
+        .style()
 }
 
 #[test]
@@ -174,6 +217,187 @@ fn focused_pending_divider_shows_caret_and_inline_prompt() {
     assert!(
         prompt.contains("Accept [y]") && prompt.contains("Reject [n]"),
         "prompt must name the y/n keys: {prompt:?}"
+    );
+}
+
+#[test]
+fn prompt_orders_reject_above_accept() {
+    // Reading order mirrors the stacking: the old side sits above the
+    // divider and the new side below, so `Reject` must precede `Accept`
+    // in the prompt.  Position is what encodes the mapping — keep the
+    // two in this order.
+    let state = DiffState::new("a\nb\nc\n", "a\nB\nc\n").unwrap();
+    let lines = render_to_strings(&state, 60, 6);
+    let prompt = lines
+        .iter()
+        .find(|l| l.contains("Accept"))
+        .expect("focused-pending divider must show the inline prompt");
+    let reject = prompt.find("Reject").expect("Reject label");
+    let accept = prompt.find("Accept").expect("Accept label");
+    assert!(
+        reject < accept,
+        "Reject must lead (old is above the divider): {prompt:?}"
+    );
+}
+
+#[test]
+fn prompt_chips_wear_the_wash_of_the_side_they_name() {
+    // The point of the chips: "Accept" is painted in the literal
+    // background of the add rows and "Reject" in that of the delete rows,
+    // so the label, its key, and the block it acts on read as one color.
+    // Pin it against the theme fields themselves — deriving the chip from
+    // a fresh palette hue would leave every text assertion passing while
+    // the chip silently drifted from the wash it is supposed to name.
+    let th = rgb_theme();
+    let state = DiffState::new("a\nb\nc\n", "a\nB\nc\n").unwrap();
+    let buf = render_to_buffer_with(&state, th, 60, 6);
+
+    let accept = style_at_substring(&buf, "Accept");
+    let reject = style_at_substring(&buf, "Reject");
+    assert_eq!(
+        accept.bg, th.diff_add_line.bg,
+        "Accept chip must carry the add wash"
+    );
+    assert_eq!(
+        reject.bg, th.diff_delete_line.bg,
+        "Reject chip must carry the delete wash"
+    );
+    assert_ne!(
+        accept.bg, reject.bg,
+        "the two chips must be distinguishable in a color theme"
+    );
+
+    // The washes are background-only by convention, and the built-ins
+    // honor it — but the chip does not depend on that: it pins its own
+    // foreground from `normal` rather than inheriting either the wash's
+    // or the divider's `secondary`, which would be a cyan-ish label on a
+    // green fill.  See `prompt_chip_style_ignores_a_wash_foreground`.
+    assert_eq!(th.diff_add_line.fg, None, "add wash stays bg-only");
+    assert_eq!(th.diff_delete_line.fg, None, "delete wash stays bg-only");
+    assert_eq!(
+        accept.fg, th.normal.fg,
+        "chip fg is pinned from `normal`, not inherited from the divider"
+    );
+    assert_ne!(
+        accept.fg, th.diff_decision_pending.fg,
+        "chip must not inherit the divider's fg"
+    );
+}
+
+#[test]
+fn prompt_chip_style_ignores_a_wash_foreground() {
+    // Both washes are user-authorable — they have to be, since the
+    // palette blend can't derive them on an indexed palette — so a theme
+    // *can* set an `fg` on them against the convention.  The chip takes
+    // the wash's background and modifiers only and pins its foreground
+    // from `normal`, so an authored fg can't put an unreadable label on
+    // the fill.
+    let mut mutated = Theme::builtin("Edamame").expect("Edamame is a built-in");
+    mutated.diff_add_line = mutated.diff_add_line.fg(Color::Magenta);
+    mutated.diff_delete_line = mutated.diff_delete_line.fg(Color::Magenta);
+    let normal_fg = mutated.normal.fg;
+    let add_bg = mutated.diff_add_line.bg;
+    let th: &'static Theme = Box::leak(Box::new(mutated));
+
+    let state = DiffState::new("a\nb\nc\n", "a\nB\nc\n").unwrap();
+    let buf = render_to_buffer_with(&state, th, 60, 6);
+    let accept = style_at_substring(&buf, "Accept");
+    assert_eq!(accept.fg, normal_fg, "chip fg must ignore the wash's fg");
+    assert_eq!(accept.bg, add_bg, "chip still wears the wash's bg");
+}
+
+#[test]
+fn resolved_divider_renders_no_chips() {
+    // The chips are only ever correct against the neutral
+    // `diff_decision_pending` base.  A resolved divider's base carries the
+    // green/red resolution hue, so the prompt — and with it the washes —
+    // must be gone once the hunk is decided.
+    let mut state = DiffState::new("a\nb\nc\n", "a\nB\nc\n").unwrap();
+    state.decisions[0] = Decision::Accepted;
+    let lines = render_to_strings(&state, 60, 6);
+    let divider = lines
+        .iter()
+        .find(|l| l.contains("Accepted"))
+        .expect("resolved divider");
+    assert!(
+        !divider.contains("Accept [") && !divider.contains("Reject ["),
+        "a resolved divider must drop the prompt: {divider:?}"
+    );
+}
+
+#[test]
+fn side_markers_prefix_every_body_line() {
+    // Unified-diff convention: `- ` on the delete side, `+ ` on the add
+    // side, and a matching two-space prefix on context so every body
+    // column lines up.
+    let state = DiffState::new("ctx\nbee\n", "ctx\nBEE\n").unwrap();
+    let lines = render_to_strings(&state, 30, 8);
+    assert!(
+        lines.iter().any(|l| l.starts_with("  ctx")),
+        "context line needs a two-space prefix: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.starts_with("- bee")),
+        "delete line needs a `- ` marker: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.starts_with("+ BEE")),
+        "add line needs a `+ ` marker: {lines:?}"
+    );
+}
+
+#[test]
+fn delete_only_hunk_still_marks_its_side() {
+    // The marker is the encoding that survives a degenerate hunk: with
+    // no add side below the divider, `- ` is the only thing naming the
+    // side the change acts on.
+    let state = DiffState::new("a\nb\nc\n", "a\nc\n").unwrap();
+    let lines = render_to_strings(&state, 30, 8);
+    assert!(
+        lines.iter().any(|l| l.starts_with("- b")),
+        "delete-only hunk must still mark its side: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.starts_with("+ ")),
+        "delete-only hunk has no add side: {lines:?}"
+    );
+}
+
+#[test]
+fn wrapped_marker_line_agrees_with_the_row_cache() {
+    // `render_line` derives a hanging indent from a leading marker, and
+    // `- ` / `+ ` match its raw-bullet shape.  The layout row cache must
+    // measure the marker *and* that indent, or the painted height and
+    // the cached height diverge on any line that wraps — desyncing every
+    // scroll computation.  No trailing newline, so the last visual line
+    // carries text and the painted extent is measurable.
+    let state = DiffState::new(
+        "one two three four five six\nTAIL",
+        "ONE two three four five six\nTAIL",
+    )
+    .unwrap();
+    let width = 12u16;
+    let lines = render_to_strings(&state, width, 40);
+    let painted = lines
+        .iter()
+        .rposition(|l| !l.trim().is_empty())
+        .expect("some content painted")
+        + 1;
+    assert_eq!(
+        painted,
+        state.total_visual_rows(width as usize),
+        "painted rows must match the cached row count: {lines:?}"
+    );
+    // And the continuation of a wrapped delete line hangs under its
+    // text, not under the marker.
+    let cont = lines
+        .iter()
+        .position(|l| l.starts_with("- one"))
+        .map(|i| lines[i + 1].clone())
+        .expect("wrapped delete line");
+    assert!(
+        cont.starts_with("  ") && !cont.trim().is_empty(),
+        "continuation must hang at the marker width: {cont:?}"
     );
 }
 
