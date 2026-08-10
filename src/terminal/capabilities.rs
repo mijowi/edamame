@@ -120,7 +120,7 @@ impl Capabilities {
 
     /// Probe the terminal's color depth from environment variables
     /// only — no escape-sequence I/O.  Safe to call before
-    /// [`terminal::setup`] (and therefore before the full
+    /// [`terminal::setup()`](fn@crate::terminal::setup) (and therefore before the full
     /// [`Self::detect`]), so the config loader can pick a
     /// capability-appropriate fallback theme when the active theme
     /// file is missing.  The full probe is the source of truth for

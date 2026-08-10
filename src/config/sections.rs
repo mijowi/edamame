@@ -376,7 +376,7 @@ impl Default for HtmlExportConfig {
 }
 
 /// A single user-configured custom-export entry.  Shows up in the
-/// command palette as "Export <name>".  `command` is run verbatim with
+/// command palette as `Export <name>`.  `command` is run verbatim with
 /// two placeholders substituted:
 ///
 /// * `{html}` — path to the just-generated HTML file (temp file owned
@@ -385,7 +385,7 @@ impl Default for HtmlExportConfig {
 ///   configured `extension` appended).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomExportEntry {
-    /// Human-readable label — appears as "Export <name>" in the palette.
+    /// Human-readable label — appears as `Export <name>` in the palette.
     pub name: String,
     /// argv-style command.  Element 0 is the executable; remaining
     /// elements are arguments with `{html}` / `{out}` substitution.

@@ -5,7 +5,7 @@
 //! per-tab map.  `NotifyWatcher` is the production implementation
 //! backed by [`notify`]; the events it produces are coalesced through
 //! a 200 ms debouncer before the worker reads the file and pushes a
-//! single [`crate::AppEvent::Watcher`] onto the main mpsc.
+//! single [`crate::app::AppEvent::Watcher`] onto the main mpsc.
 //!
 //! The watcher worker thread is the single owner of disk reads for
 //! the watched file: organic events, the debounce timer, and the

@@ -461,7 +461,7 @@ pub fn open_list_continue(editor: &mut EditorState, below: bool) -> bool {
 /// a list — so it is safe to call after *any* linewise operator (a yank or a
 /// `cc` leaves the numbers untouched and records no delta).
 ///
-/// Delegates to [`edit_ops::list_renumber_at_cursor`], the shared post-edit
+/// Delegates to [`edit_ops::list_renumber_at_cursor`](crate::editor::edit_ops::list_renumber_at_cursor), the shared post-edit
 /// recovery hook: a `dd` lands the cursor on the line below, and the
 /// parser-driven renumber walks every ordered run in the surrounding list
 /// block (loose-list gaps included), each restarting under its own parent.

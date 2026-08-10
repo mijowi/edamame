@@ -60,7 +60,7 @@ pub struct HintSet {
 /// chords, and a modal prompt replaces both.
 ///
 /// All variants own their strings so the hint can be built up-front
-/// and then passed by value into [`EditorView`] without entangling its
+/// and then passed by value into [`EditorView`](crate::ui::editor_view::EditorView) without entangling its
 /// borrow of `&mut self.editor`.
 #[derive(Debug, Clone)]
 pub enum HintContent {

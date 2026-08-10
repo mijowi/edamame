@@ -1464,7 +1464,7 @@ impl App {
 
     /// Open the rows/columns prompt.  Caller is expected to have
     /// already verified the cursor sits on a blank line via
-    /// [`editor::table_edit::cursor_line_is_blank`]; this method just
+    /// [`crate::editor::table_edit::cursor_line_is_blank`]; this method just
     /// seeds the modal state.
     pub fn open_insert_table_modal(&mut self) {
         self.modal_stack

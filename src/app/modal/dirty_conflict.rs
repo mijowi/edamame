@@ -7,7 +7,7 @@
 //! |---|---|
 //! | `[Merge]` | Enter diff mode to review the on-disk change hunk by hunk. |
 //! | `[Save a copy]` | Push the [`DirtyConflictSaveCopyModal`] sibling for path entry; on confirm save the current buffer to the chosen path, then reload the on-disk contents into the editor's buffer.  Carries `<stem>.local.<ext>` as the suggested filename. |
-//! | `[Discard & reload]` | Push the [`super::DirtyConflictDiscardConfirmModal`] for a destructive-confirm step; on confirm drop the in-memory buffer and load the on-disk contents. |
+//! | `[Discard & reload]` | Push the [`super::dirty_conflict_discard_confirm::DirtyConflictDiscardConfirmModal`] for a destructive-confirm step; on confirm drop the in-memory buffer and load the on-disk contents. |
 //! | `[Keep buffer]` | Close the modal; do nothing.  Buffer remains dirty.  Equivalent to the legacy "Cancel" — explicit so the user understands the consequence. |
 //!
 //! Carries the on-disk `contents: String` that the watcher worker

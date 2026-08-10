@@ -53,7 +53,7 @@ fn tag_end_kind(tag_end: &TagEnd) -> Option<BlockKind> {
 }
 
 /// The pulldown-cmark option set shared by every parse in the crate.
-/// The AST parse ([`crate::markdown::parse_raw`]) and the offset scans
+/// The AST parse ([`crate::markdown::parser::parse_raw`]) and the offset scans
 /// here MUST use the same options — block boundaries shift between
 /// option sets, and `ParsedDoc` relies on a 1:1 blocks↔ranges pairing.
 pub(crate) const PARSE_OPTIONS: Options = Options::ENABLE_TABLES

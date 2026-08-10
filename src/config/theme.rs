@@ -1143,7 +1143,7 @@ impl Theme {
         }
     }
 
-    /// Build a `Theme` from a user-authored [`ThemeFile`].
+    /// Build a `Theme` from a user-authored [`crate::config::theme_file::ThemeFile`].
     ///
     /// When `monochrome` is true the file is ignored and the compiled-in
     /// monochrome fallback ([`super::themes::monochrome_dark::theme`]) is

@@ -30,7 +30,7 @@ pub struct Config {
     pub theme: String,
     /// Session-only stash of the user's on-disk theme name, set when
     /// the startup indexed-color downgrade replaced [`Self::theme`]
-    /// (see `App::new` and [`theme::indexed_fallback_theme`]).
+    /// (see `App::new` and [`crate::config::theme::indexed_fallback_theme`]).
     ///
     /// `theme` itself carries the *effective* name so every consumer —
     /// status bar, theme picker's "(current)" marker, welcome modal,

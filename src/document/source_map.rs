@@ -11,9 +11,11 @@ use std::ops::Range;
 /// line `i`, the source byte range `entries[i]`.
 ///
 /// Gaps between blocks (blank lines in the source) are absorbed into the
-/// adjacent block's extended range via
-/// [`crate::markdown::parse_offsets::covering_ranges`], so every source byte
-/// is covered by exactly one rendered line.
+/// adjacent block's *extended* range by `ParsedDoc`'s `build_extended_ranges`
+/// pass, so every source byte is covered by exactly one rendered line.
+/// (This used to live in a `parse_offsets::covering_ranges` helper; that
+/// function is gone and must not come back for the cursor mapping — see
+/// the "Hybrid editing model" notes in AGENTS.md.)
 ///
 /// # Key operations
 ///

@@ -48,7 +48,7 @@ use crate::ui::scroll_container::{
 const LABEL_PAD: usize = 22;
 
 /// Maximum horizontal padding per side for the keybinds overlay.
-/// Twice the default [`MAX_PAD_H`](scroll_container::MAX_PAD_H): the
+/// Twice the default [`MAX_PAD_H`](crate::ui::scroll_container::MAX_PAD_H): the
 /// overlay's content is narrow, and the extra slack absorbs most
 /// "Already bound to …" error strings without re-flowing the modal
 /// wider while the user is still in capture mode.
@@ -96,9 +96,14 @@ pub enum FocusArea {
 
 /// Mutable state for an open keybinds overlay.
 pub struct KeybindsState {
-    /// Index into [`Self::rows`].  May land on a `Header` after a
-    /// rebuild; [`Self::clamp_focus`] re-snaps to the nearest
-    /// `Binding` row.  Only meaningful when [`Self::focus_area`] is
+    /// Index into [`Self::rows`].  Never rests on a `Header`: it is
+    /// seeded to the first `Binding` row by [`Self::open`], stepped by
+    /// [`Self::move_focus`] (which skips headers), and every other
+    /// assignment site — [`Self::focus_action`] and the click router in
+    /// [`Self::handle_click`] — guards on the row being a `Binding`
+    /// first.  A new assignment site owes the same guard; `rows` is
+    /// built once in `open` and never rebuilt, so nothing re-snaps a
+    /// stale index.  Only meaningful when [`Self::focus_area`] is
     /// `List`, but kept across area transitions so Tab-back lands on
     /// the user's last row.
     pub focused: usize,

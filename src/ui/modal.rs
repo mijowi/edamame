@@ -15,11 +15,11 @@
 //! Up/Down scroll one line, PgUp/PgDn scroll a page, Home/End jump to the
 //! extremes; mouse wheel events route through [`ModalState::scroll_by`] from
 //! the App layer so the same modal absorbs both keyboard and mouse scroll.
-//! The title bar surfaces a discoverability hint (`↑`, `↓`, `↑↓`) whenever
-//! the body actually overflows.  Scrolling is a no-op when the body fits.
+//! A narrow [`crate::ui::scrollbar`] is painted beside the body whenever it
+//! actually overflows.  Scrolling is a no-op when the body fits.
 //!
-//! Scroll arithmetic, frame rendering, content-aware sizing, and the
-//! arrow indicator all live in [`crate::ui::scroll_container`] so the
+//! Scroll arithmetic, frame rendering, and content-aware sizing all
+//! live in [`crate::ui::scroll_container`] so the
 //! overlays (palette, settings, keybinds) share the same
 //! mechanics — see that module for the underlying primitives.
 
@@ -86,7 +86,7 @@ pub struct ModalState {
     pub scroll_state: ScrollContainerState,
     /// Absolute terminal rect of the rendered `esc` close hint.  Set
     /// each render when the modal is dismissable; passed to
-    /// [`crate::app::modal::close_if_esc_clicked`] for click hit-testing.
+    /// [`crate::app::modal::types::close_if_esc_clicked`] for click hit-testing.
     pub esc_button_rect: Option<Rect>,
     /// Absolute terminal rect of each footer button, in button order.
     /// Set every render so modals that want clickable buttons can

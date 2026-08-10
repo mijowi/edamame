@@ -183,7 +183,7 @@ impl ParsedDoc {
         )
     }
 
-    /// Like [`build`], but applies a live `user_widths` override to the
+    /// Like [`Self::build`], but applies a live `user_widths` override to the
     /// table whose first row begins at `live_table_widths.0`.  Used by
     /// the column-resize drag to preview widths without writing the
     /// `tui-columns` comment to the buffer on every mouse-move event.

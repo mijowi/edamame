@@ -226,7 +226,7 @@ pub struct EditorState {
     /// into `Renderer::with_viewport_width` on every `refresh_parsed`
     /// so the min-max proportional column-width algorithm adapts to
     /// the user's actual viewport.  Set to a sensible 80 default until
-    /// the App posts the real width via [`set_viewport_width`].  Stored
+    /// the App posts the real width via [`Self::set_viewport_width`].  Stored
     /// in the editor (rather than threaded as a parameter through
     /// `refresh_parsed`) so call-sites that don't know the width — e.g.
     /// undo/redo, paste, file load — pick up the cached value.
@@ -236,7 +236,7 @@ pub struct EditorState {
     /// (writing the `tui-columns` comment to the buffer) or open the
     /// width-injection warning modal.  Carries the `table_byte_start` of
     /// the table whose widths are pending.  Cleared by
-    /// [`commit_pending_column_widths`] / [`cancel_pending_column_widths`].
+    /// [`Self::commit_pending_column_widths`] / [`Self::cancel_pending_column_widths`].
     pub pending_column_widths_commit: Option<usize>,
     /// Mouse-ops and edit-ops set this when a click / keypress
     /// requests a link be followed.  The App consumes it on the next
@@ -805,7 +805,7 @@ impl EditorState {
     /// the App after a column-border drag release once the
     /// width-injection warning modal has been resolved (or skipped).
     /// No-op when no pending commit is recorded — a Cancel from the
-    /// modal goes through [`cancel_pending_column_widths`] instead.
+    /// modal goes through [`Self::cancel_pending_column_widths`] instead.
     pub fn commit_pending_column_widths(&mut self) {
         let Some(table_byte_start) = self.pending_column_widths_commit.take() else {
             return;

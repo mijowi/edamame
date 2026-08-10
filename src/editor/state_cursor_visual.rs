@@ -62,7 +62,7 @@ impl EditorState {
     /// Attempt table-cell **horizontal** navigation, skipping the
     /// auto-managed border chrome (`|`, padding, the alignment row) so a
     /// motion lands cell-to-cell rather than on characters the editor owns.
-    /// Reuses the default handler's [`table_move_horizontal`] logic, so vim
+    /// Reuses the default handler's [`table_edit_ops::table_move_horizontal`](crate::editor::table_edit_ops::table_move_horizontal) logic, so vim
     /// `h`/`l` and the arrow keys behave identically inside a table.
     ///
     /// Returns `true` when the cursor was moved or deliberately clamped at a
@@ -85,7 +85,7 @@ impl EditorState {
     /// Attempt table-cell **vertical** navigation (the `j`/`k` companion to
     /// [`Self::try_table_move_horizontal`]): move to the cell directly
     /// above/below, preserving the column and skipping the alignment row.
-    /// Reuses the default handler's [`try_move_cell_vertical`], which also
+    /// Reuses the default handler's [`try_move_cell_vertical`](crate::editor::table_edit_ops::try_move_cell_vertical), which also
     /// refreshes the cursor block and viewport on success.  Same `Raw`-mode
     /// and fall-back contract as the horizontal variant.
     pub fn try_table_move_vertical(
