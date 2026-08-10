@@ -8,7 +8,7 @@
 //! toggle chrome, and the modal framing.
 //!
 //! UI-only: the adapter in `src/app/modal/theme_picker.rs` wires the
-//! component's [`ListEvent`] outcomes into live preview / selection.
+//! component's [`ListEvent`](crate::ui::searchable_list::ListEvent) outcomes into live preview / selection.
 
 use ratatui::{
     buffer::Buffer,

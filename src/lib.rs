@@ -6,6 +6,17 @@
 // `cargo test --bin edamame` and be invisible to `cargo test --lib`.
 // Every module the binary needs must therefore be declared here.
 
+// The doc comments in this crate are written for contributors, not for
+// downstream API consumers: they routinely link private helpers next to
+// the public entry points that call them, because the *why* usually lives
+// in the private half.  Build the docs with `--document-private-items`
+// (see AGENTS.md) and those links resolve to real pages.
+//
+// `broken_intra_doc_links` and `invalid_html_tags` are deliberately left
+// at their default `warn` — a link that names a since-renamed item is doc
+// rot worth hearing about.
+#![allow(rustdoc::private_intra_doc_links)]
+
 pub mod constants;
 
 pub mod app;

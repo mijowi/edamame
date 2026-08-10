@@ -3,8 +3,8 @@
 //! `ModalView`, the `searchable_list` component, `SettingsView`, and
 //! `KeybindsView` all need the same primitives:
 //!
-//! - a centred bordered frame whose title carries scroll-indicator arrows
-//!   (`↓`, `↑`, `↑↓`) when the body overflows;
+//! - a centred bordered frame, alongside which each overlay paints a narrow
+//!   [`crate::ui::scrollbar`] whenever the body overflows;
 //! - vertical scroll state with keyboard *and* mouse-wheel control;
 //! - content-aware sizing — the frame grows to fit its body, clamped only
 //!   to the terminal area so we never paint a 70%-of-screen modal that's
@@ -36,7 +36,7 @@ pub enum ModalKind {
     #[default]
     Normal,
     Warning,
-    /// Error variant — used by [`NoticeModal`] for sticky error
+    /// Error variant — used by [`NoticeModal`](crate::app::modal::NoticeModal) for sticky error
     /// notifications that replaced the old `MessageKind::Error`
     /// hint-line flashes (save / reload / link-open failures, etc.).
     Error,
@@ -131,8 +131,9 @@ impl Default for ContentSize {
 ///
 /// The contract: each render must call [`Self::observe`] with the
 /// post-layout `total` and `visible` heights.  After that, `scroll`
-/// is guaranteed to lie in `[0, max_scroll()]` and [`Self::arrow`]
-/// returns the right indicator for the title bar.
+/// is guaranteed to lie in `[0, max_scroll()]`, and [`Self::max_scroll`]
+/// reports whether the body overflows at all — which is what each overlay
+/// gates its [`crate::ui::scrollbar`] on.
 #[derive(Debug, Clone, Default)]
 pub struct ScrollContainerState {
     pub scroll: u16,

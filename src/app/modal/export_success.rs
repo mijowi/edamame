@@ -3,7 +3,7 @@
 //! Open the surrounding config folder in the OS file manager.
 //!
 //! The theme has already been written and applied by
-//! [`super::ExportThemeModal`] before this modal opens, so all three
+//! [`super::export_theme::ExportThemeModal`] before this modal opens, so all three
 //! buttons are post-effect: dismissing is harmless.
 
 use std::any::Any;

@@ -9,7 +9,8 @@ use super::readers::{INDEXED_FALLBACK_THEME, TRUECOLOR_FALLBACK_THEME};
 /// The annotated reference `config.toml` compiled into the binary.
 ///
 /// Seeded on first run by [`ensure_default_files_in`], and used again as
-/// the merge base by [`super::config::save_merge`] whenever the user's
+/// the merge base by [`Config::save`](super::config::Config::save)'s
+/// private `save_merge` helper whenever the user's
 /// file is missing at save time — otherwise a save that raced a deleted
 /// `config.toml` would emit a bare serialization and strip every comment
 /// permanently (each later save then faithfully merges into the

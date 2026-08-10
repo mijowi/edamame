@@ -119,9 +119,14 @@ pub enum SettingsResponse {
 
 /// Mutable state for an open settings overlay.
 pub struct SettingsState {
-    /// Index into [`Self::rows`].  May land on a divider after
-    /// rebuild; [`Self::clamp_focus`] re-snaps to the next selectable
-    /// row.
+    /// Index into [`Self::rows`].  Never rests on a divider or another
+    /// non-focusable row: it is seeded to the first Cycle/Edit row by
+    /// [`Self::new`], stepped by [`Self::move_focus`] (which skips
+    /// ineligible rows), and the one other assignment site —
+    /// [`Self::focus_clicked_row`], via [`Self::handle_click`] — checks
+    /// `focus_eligible` against the live config before calling it.  A new
+    /// assignment site owes the same guard; `rows` is built once in `new`
+    /// and never rebuilt, so nothing re-snaps a stale index.
     pub focused: usize,
     /// Editable draft for the focused text-input (numeric) row.  Seeded
     /// by [`Self::open_draft_for_focused`] whenever focus lands on such a

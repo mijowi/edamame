@@ -1,4 +1,4 @@
-//! Event-loop arm for [`crate::AppEvent::Watcher`].
+//! Event-loop arm for [`crate::app::AppEvent::Watcher`].
 //!
 //! The watcher worker has already done the disk read; this module
 //! decides what (if anything) to do with the resulting bytes, in this

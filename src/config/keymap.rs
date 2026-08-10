@@ -296,7 +296,7 @@ pub enum Action {
 /// Only the three highest-frequency hot-path edits are coalescable:
 /// they share an `EditDelta` shape (one offset, one removed-range,
 /// one inserted-range) so a run of them collapses cleanly.  Any
-/// action that returns `None` from [`coalesce_kind`] ends the run.
+/// action that returns `None` from [`Action::coalesce_kind`] ends the run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoalesceKind {
     Insert,

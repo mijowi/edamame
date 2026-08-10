@@ -29,7 +29,7 @@ impl App {
     /// collect every `Block::Heading`, precomputes the
     /// `target_scroll` for each one in the active mode, picks the
     /// preselected entry (nearest heading at or before the cursor's
-    /// buffer line), and pushes a [`SectionPickerModal`] onto the
+    /// buffer line), and pushes a [`crate::app::modal::SectionPickerModal`] onto the
     /// modal stack.
     ///
     /// `doc_width` is the viewport width used to derive `target_scroll`

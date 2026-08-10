@@ -56,8 +56,8 @@ impl EditorState {
         self.section_chain_for_buffer_line(line)
     }
 
-    /// Shared implementation behind [`cursor_section_chain`] and
-    /// [`scroll_section_chain`]: collect the heading chain enclosing
+    /// Shared implementation behind [`Self::cursor_section_chain`] and
+    /// [`Self::scroll_section_chain`]: collect the heading chain enclosing
     /// `anchor_line` (a buffer line index).
     fn section_chain_for_buffer_line(&self, anchor_line: usize) -> Vec<String> {
         let mut at_or_before: Vec<(HeadingLevel, String)> = Vec::new();

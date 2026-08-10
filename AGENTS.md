@@ -28,6 +28,17 @@ cargo clippy --all-targets -- -D warnings   # treat warnings as errors (CI enfor
 
 No custom `rustfmt.toml` or `.clippy.toml` exists; standard Rust defaults apply.
 
+## Doc Commands
+
+```bash
+cargo doc --no-deps --document-private-items   # build the docs (canonical form)
+cargo doc --no-deps --document-private-items --open
+```
+
+**Always pass `--document-private-items`.** This crate's doc comments are written for contributors, not for downstream API consumers: they routinely link a private helper next to the public entry point that calls it, because the *why* usually lives in the private half. Without the flag those links point at pages rustdoc never generated. `lib.rs` carries `#![allow(rustdoc::private_intra_doc_links)]` for the same reason — that lint assumes a public-API audience this crate doesn't have.
+
+`broken_intra_doc_links` and `invalid_html_tags` are deliberately left at their default `warn`, and the tree is currently clean under both. A link naming a since-renamed item is doc rot worth hearing about — given how much architectural intent lives in these doc comments, treat a new warning as a real finding. Note that a literal `<name>` in prose parses as an HTML tag; backtick it.
+
 ## Test Commands
 
 ```bash

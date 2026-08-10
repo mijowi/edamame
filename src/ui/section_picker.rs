@@ -6,8 +6,8 @@
 //! indent by depth) so the list visually resembles the document's outline.
 //!
 //! Selection is live-previewed: the modal adapter maps the component's
-//! [`ListEvent::FocusChanged`] to a debounced viewport reposition and
-//! [`ListEvent::Submitted`] to an immediate jump.  All the bookkeeping
+//! [`ListEvent::FocusChanged`](crate::ui::searchable_list::ListEvent::FocusChanged) to a debounced viewport reposition and
+//! [`ListEvent::Submitted`](crate::ui::searchable_list::ListEvent::Submitted) to an immediate jump.  All the bookkeeping
 //! (`target_scroll` precomputed per entry, current-section preselection)
 //! happens in `App::open_section_picker`.
 
