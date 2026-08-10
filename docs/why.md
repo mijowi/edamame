@@ -21,10 +21,7 @@ Table editing makes this even clearer. In this editor, a table is always shown a
 
 VSCode is ruled out by the stated performance goals. A VSCode custom editor extension runs in a webview, which is Electron inside Electron — exactly the "slow and janky" category the project aims to escape.
 
-A standalone TUI app has the smallest possible dependency footprint (just a terminal), the highest performance ceiling (direct ratatui rendering, no IPC), full control over the editing model, and works anywhere: SSH sessions, minimal Linux environments, macOS, WSL — no editor installation required.
-
 ## Why choose TUI
 Terminal apps are more portable, faster, and easier to develop compared to GUI apps. Multi-platform GUI libraries aren't as performant as native libraries, and going native introduces complexity. Also, Markdown is inherently text-based, so I think it makes sense to use a TUI. 
 
-### Deferred features
-- Code syntax highlighting
+A standalone TUI app has the smallest possible dependency footprint (just a terminal), the highest performance ceiling (direct ratatui rendering, no IPC), full control over the editing model, and works anywhere: SSH sessions, minimal Linux environments, macOS, WSL — no editor installation required.
