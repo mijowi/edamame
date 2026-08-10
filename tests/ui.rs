@@ -2,6 +2,7 @@
 use ratatui::{backend::TestBackend, Terminal};
 
 use edamame::config::Theme;
+use edamame::editor::vim_ops::VisualKind;
 use edamame::editor::Mode;
 use edamame::ui::status_bar::{StatusBar, StatusBarState};
 
@@ -194,7 +195,7 @@ fn yank_flash_paints_the_yanked_span() {
                 is_scrolling: false,
                 hint: HintContent::Chords(HintSet::default()),
                 vim_mode_label: None,
-                visual_line_mode: false,
+                visual_kind: None,
                 editor_cursor_style: theme.status_mode_rendered,
                 max_width_enabled: false,
                 max_width_cols: 0,
@@ -245,7 +246,7 @@ fn rendered_view_paints_selection_across_multiple_rendered_blocks() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -299,7 +300,7 @@ fn cursor_on_phantom_final_line_does_not_swallow_last_block() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -349,7 +350,7 @@ fn cursor_in_loose_list_reveals_correct_row_and_keeps_blank() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -413,7 +414,7 @@ fn selection_on_bold_text_highlights_rendered_positions() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -477,7 +478,7 @@ fn visual_line_selection_paints_the_list_marker() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: true,
+                visual_kind: Some(VisualKind::Line),
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -527,7 +528,7 @@ fn setext_heading_reveals_both_title_and_underline_on_cursor() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -588,7 +589,7 @@ fn rendered_view_selection_in_table_cell_does_not_spill_into_borders() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -661,7 +662,7 @@ fn rendered_view_selection_inside_cursors_own_cell_survives_cell_overlay() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -712,7 +713,7 @@ fn rendered_view_cell_scoped_reveal_keeps_neighbouring_pipes_rendered() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -798,7 +799,7 @@ fn table_view_paints_row_and_column_handles_when_enabled() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -905,7 +906,7 @@ fn table_view_paints_one_row_handle_per_logical_row() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -978,7 +979,7 @@ fn rendered_view_wrapped_cell_keeps_table_layout_when_cursor_inside() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1066,7 +1067,7 @@ fn rendered_view_wrapped_cell_shows_raw_markdown_chunk() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1143,7 +1144,7 @@ fn rendered_view_wrapped_cell_wipes_stale_tail_when_raw_shrinks() {
             .draw(|frame| {
                 let view = RenderedView {
                     cursor_style: theme.status_mode_rendered,
-                    visual_line_mode: false,
+                    visual_kind: None,
                     drop_indicator: None,
                     state,
                     theme,
@@ -1218,7 +1219,7 @@ fn table_view_handles_only_paint_when_cursor_in_table() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1266,7 +1267,7 @@ fn table_view_handles_only_paint_when_cursor_in_table() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1307,7 +1308,7 @@ fn table_view_snapshots_empty_when_no_table() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1468,7 +1469,7 @@ fn table_row_striping_alternates_bg_per_data_row() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1526,7 +1527,7 @@ fn table_row_striping_replaces_thin_rule_with_blank_separator() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1597,7 +1598,7 @@ fn table_row_striping_off_leaves_default_bg() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 state: &state,
                 theme,
@@ -1648,7 +1649,7 @@ fn table_view_paints_drop_indicator_on_row_drag() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: Some(indicator),
                 state: &state,
                 theme,
@@ -1715,7 +1716,7 @@ fn rendered_view_code_block_only_opening_fence_de_renders() {
             .draw(|frame| {
                 let view = RenderedView {
                     cursor_style: theme.status_mode_rendered,
-                    visual_line_mode: false,
+                    visual_kind: None,
                     drop_indicator: None,
                     show_table_buttons: false,
                     state,
@@ -1819,7 +1820,7 @@ fn rendered_view_code_block_blank_body_line_aligns_cursor_indicator() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -1877,7 +1878,7 @@ fn rendered_view_bare_code_fence_de_renders_opening_fence() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -1942,7 +1943,7 @@ fn mermaid_block_reveals_full_raw_source_on_cursor_entry() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &state,
@@ -2039,7 +2040,7 @@ fn rendered_view_drag_selection_paints_wrapped_cell_continuation() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 state: &state,
                 theme,

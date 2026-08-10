@@ -778,19 +778,20 @@ impl App {
             self.dispatch_search_action(action, doc_height, doc_width);
             return;
         }
-        // VisualLine `Ctrl-C` / `Ctrl-X` / `Ctrl-V`: copy, cut, or replace the
-        // line-expanded range so the clipboard matches the highlighted rows
-        // (§2.6).  The widening goes through the one shared
-        // `visual_line_char_range` helper that the render and operator paths
+        // Visual `Ctrl-C` / `Ctrl-X` / `Ctrl-V`: copy, cut, or replace the
+        // *widened* range so the clipboard matches the highlight (§2.6) —
+        // inclusive of the char under the cursor charwise, whole rows in
+        // VisualLine.  The widening goes through the one shared
+        // `vim_ops::visual_span` helper that the render and operator paths
         // use, so the three can never disagree.  `selection` itself is never
-        // snapped — Copy restores the charwise span so a continued Visual
-        // session keeps its true anchor; Cut and Paste consume the lines and
+        // snapped — Copy restores the stored span so a continued Visual
+        // session keeps its true anchor; Cut and Paste consume the span and
         // leave Visual.
-        if matches!(action, Action::Copy | Action::Cut | Action::Paste)
-            && self.vim.as_ref().is_some_and(|v| v.is_visual_line())
-        {
-            self.dispatch_visual_line_clipboard(action, doc_height, doc_width);
-            return;
+        if matches!(action, Action::Copy | Action::Cut | Action::Paste) {
+            if let Some(kind) = self.vim.as_ref().and_then(|v| v.visual_kind()) {
+                self.dispatch_visual_clipboard(action, kind, doc_height, doc_width);
+                return;
+            }
         }
         let handled = self.handle_app_action(&action, doc_height, doc_width);
         if !handled {
@@ -830,33 +831,47 @@ impl App {
         }
     }
 
-    /// Copy, cut, or paste over a vim VisualLine selection: widen it to whole
-    /// lines first (matching the on-screen highlight), without ever snapping
-    /// the persistent charwise `selection`.  `Copy` restores the original span
-    /// afterwards (the user may keep extending in Visual); `Cut` and `Paste`
-    /// consume the lines and exit Visual, since the selected content is gone.
-    /// `EditorState` / `edit_ops` stay vim-agnostic — the widening lives
-    /// entirely here.
-    fn dispatch_visual_line_clipboard(
+    /// Copy, cut, or paste over a vim Visual selection: widen it first to the
+    /// span actually on screen (`vim_ops::visual_span` — inclusive of the char
+    /// under the cursor charwise, whole lines in VisualLine), without ever
+    /// snapping the persistent half-open `selection`.  `Copy` restores the
+    /// stored span afterwards (the user may keep extending in Visual); `Cut`
+    /// and `Paste` consume the span and exit Visual, since the selected
+    /// content is gone.  `EditorState` / `edit_ops` stay vim-agnostic — the
+    /// widening lives entirely here.
+    fn dispatch_visual_clipboard(
         &mut self,
         action: Action,
+        kind: crate::editor::vim_ops::VisualKind,
         doc_height: usize,
         doc_width: usize,
     ) {
         let Some(sel) = self.editor.selection else {
             return;
         };
-        let range = crate::editor::vim_ops::visual_line_char_range(&sel, &self.editor.buffer);
-        // A paste with nothing to paste must not consume the lines — bail
-        // before the widening so the V-LINE session survives untouched.
+        let range = crate::editor::vim_ops::visual_span(&sel, &self.editor.buffer, Some(kind));
+        // A VisualLine paste needs its payload newline-terminated so it can't
+        // weld onto the following line; nothing to paste must not consume the
+        // lines, so bail before the widening and leave the session untouched.
+        // Charwise paste is an ordinary span replacement — `edit_ops` handles
+        // it (and no-ops on an empty clipboard) against the widened selection.
         let payload = match action {
-            Action::Paste => {
+            Action::Paste if kind == crate::editor::vim_ops::VisualKind::Line => {
                 let clipboard = edit_ops::clipboard_text(&self.editor);
                 let Some(text) = linewise_paste_payload(&self.editor.buffer, &range, clipboard)
                 else {
                     return;
                 };
                 Some(text)
+            }
+            Action::Paste => {
+                // Same promise as the linewise arm: nothing to paste must not
+                // consume the span, so bail while the session is intact rather
+                // than letting `edit_ops` no-op and exiting Visual anyway.
+                if edit_ops::clipboard_text(&self.editor).is_empty() {
+                    return;
+                }
+                None
             }
             _ => None,
         };
@@ -875,13 +890,13 @@ impl App {
                 edit_ops::apply(&mut self.editor, action.clone(), doc_height, doc_width);
             }
         }
-        // Mirror the charwise clipboard path's feedback — the shared
-        // dispatch's `flash_for_action` is skipped by our early return, so
-        // run it here (flashing "Copied" for Copy / Cut; Paste is silent
-        // there, exactly as it is on the charwise path).
+        // Mirror the non-vim clipboard path's feedback — the shared dispatch's
+        // `flash_for_action` is skipped by our early return, so run it here
+        // (flashing "Copied" for Copy / Cut; Paste is silent there, exactly as
+        // it is off this path).
         self.flash_for_action(&action, dirty_before);
         if matches!(action, Action::Cut | Action::Paste) {
-            // The lines are gone (deleted, or overwritten by the paste);
+            // The span is gone (deleted, or overwritten by the paste);
             // drop back to Normal.
             if let Some(vim) = self.vim.as_mut() {
                 vim.sub_mode = crate::input::VimSubMode::Normal;
@@ -889,7 +904,7 @@ impl App {
             }
             self.editor.selection = None;
         } else {
-            // Copy left the buffer untouched — restore the charwise span so
+            // Copy left the buffer untouched — restore the stored span so
             // the highlight and a continued Visual session stay correct.
             self.editor.selection = Some(sel);
         }

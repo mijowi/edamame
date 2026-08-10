@@ -363,7 +363,7 @@ impl App {
         let max_width_cols = self.config.editor.max_width_cols;
         let hint = self.hint_content();
         let vim_mode_label = self.vim.as_ref().map(|v| v.mode_label());
-        let visual_line_mode = self.vim.as_ref().is_some_and(|v| v.is_visual_line());
+        let visual_kind = self.vim.as_ref().and_then(|v| v.visual_kind());
         let editor_cursor_style = super::cursor_style::editor_cursor_style(
             self.theme,
             self.editor.mode,
@@ -403,7 +403,7 @@ impl App {
                 is_scrolling,
                 hint,
                 vim_mode_label,
-                visual_line_mode,
+                visual_kind,
                 editor_cursor_style,
                 max_width_enabled,
                 max_width_cols,

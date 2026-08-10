@@ -1969,7 +1969,7 @@ fn click_on_reserved_image_row_does_not_poison_inline_map_cache() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &st,
@@ -2346,7 +2346,7 @@ fn clicks_on_a_wrapped_revealed_list_item_land_under_the_pointer() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &st,
@@ -2430,7 +2430,7 @@ fn clicks_on_a_revealed_item_wider_than_the_viewport_land_under_the_pointer() {
         .draw(|frame| {
             let view = RenderedView {
                 cursor_style: theme.status_mode_rendered,
-                visual_line_mode: false,
+                visual_kind: None,
                 drop_indicator: None,
                 show_table_buttons: false,
                 state: &st,

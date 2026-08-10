@@ -39,7 +39,7 @@ use std::path::PathBuf;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::config::Action;
-use crate::document::{EditDelta, Selection};
+use crate::document::{prev_grapheme_offset, EditDelta, Selection};
 use crate::editor::vim_ops::{
     clear_substitute_preview, doubled_line_range, end_incsearch, execute_operator,
     execute_substitute, first_non_blank, indent_lines, indent_list_item, join_lines,
@@ -47,8 +47,8 @@ use crate::editor::vim_ops::{
     replace_char_range, replace_range_with, resolve_find_repeat, resolve_motion,
     resolve_motion_range, resolve_text_object_range, set_case_range, toggle_case,
     toggle_case_range, update_incsearch, update_substitute_preview, vertical_line_range,
-    visual_line_bounds, visual_line_char_range, word_under_cursor_at, ExCommand, FindKind, Motion,
-    OpRange, OpResult, Operator, TextObject,
+    visual_charwise_range, visual_line_bounds, visual_line_char_range, word_under_cursor_at,
+    ExCommand, FindKind, Motion, OpRange, OpResult, Operator, TextObject,
 };
 use crate::editor::{edit_ops, EditorState, Mode};
 use crate::input::mode_handler::default::{is_ctrl_backspace, is_ctrl_delete};
@@ -716,10 +716,10 @@ fn with_selection(
 }
 
 /// Run a `d`/`y`/`c` operator over the current Visual selection, then leave
-/// Visual.  Charwise Visual uses the raw `selection.range()` span (so the
-/// edit matches the highlight exactly — see §2.6); VisualLine widens to
-/// whole lines via the shared `visual_line_bounds` helper and yanks
-/// linewise.  `c`/`s` enter Insert; everything else returns to Normal.
+/// Visual.  Both spans come from the shared `vim_ops::visual` helpers — the
+/// inclusive charwise span or the whole-line expansion — so the edit matches
+/// the highlight exactly (see §2.6).  VisualLine yanks linewise.  `c`/`s`
+/// enter Insert; everything else returns to Normal.
 fn run_visual_operator(
     vim: &mut VimState,
     editor: &mut EditorState,
@@ -732,8 +732,7 @@ fn run_visual_operator(
             let (first, last) = visual_line_bounds(&sel, &editor.buffer);
             OpRange::Lines { first, last }
         } else {
-            let (lo, hi) = sel.range();
-            OpRange::Chars(lo..hi)
+            OpRange::Chars(visual_charwise_range(&sel, &editor.buffer))
         };
         let res = execute_operator(editor, op, range);
         vim.visual_anchor = None;
@@ -761,15 +760,15 @@ fn run_visual_indent(
 }
 
 /// The char range a Visual *range edit* (`~`/`u`/`U`/`r`/`p`) operates on:
-/// the raw charwise `selection` span, or the line-expanded whole-line range
-/// in VisualLine (the shared `visual_line_char_range`, so the edit always
-/// matches the highlight).
-fn visual_char_range(vim: &VimState, editor: &EditorState, sel: &Selection) -> Range<usize> {
+/// the inclusive charwise span (`visual_charwise_range`), or the
+/// line-expanded whole-line range in VisualLine (`visual_line_char_range`) —
+/// the same shared helpers the render overlay and the operators use, so the
+/// edit always matches the highlight.
+fn visual_edit_range(vim: &VimState, editor: &EditorState, sel: &Selection) -> Range<usize> {
     if vim.sub_mode == VimSubMode::VisualLine {
         visual_line_char_range(sel, &editor.buffer)
     } else {
-        let (lo, hi) = sel.range();
-        lo..hi
+        visual_charwise_range(sel, &editor.buffer)
     }
 }
 
@@ -777,7 +776,7 @@ fn visual_char_range(vim: &VimState, editor: &EditorState, sel: &Selection) -> R
 /// the line-expanded range in VisualLine — as one delta, then leave Visual.
 fn run_visual_toggle_case(vim: &mut VimState, editor: &mut EditorState, vh: usize, vw: usize) {
     with_selection(vim, editor, |vim, editor, sel| {
-        let range = visual_char_range(vim, editor, &sel);
+        let range = visual_edit_range(vim, editor, &sel);
         ensure_editing(editor);
         toggle_case_range(editor, range.start, range.end);
         leave_visual_to_normal(vim, editor, vh, vw);
@@ -795,7 +794,7 @@ fn run_visual_set_case(
     vw: usize,
 ) {
     with_selection(vim, editor, |vim, editor, sel| {
-        let range = visual_char_range(vim, editor, &sel);
+        let range = visual_edit_range(vim, editor, &sel);
         ensure_editing(editor);
         set_case_range(editor, range.start, range.end, upper);
         leave_visual_to_normal(vim, editor, vh, vw);
@@ -817,7 +816,7 @@ fn run_visual_paste(vim: &mut VimState, editor: &mut EditorState, vh: usize, vw:
             return;
         }
         let line_mode = vim.sub_mode == VimSubMode::VisualLine;
-        let range = visual_char_range(vim, editor, &sel);
+        let range = visual_edit_range(vim, editor, &sel);
         // VisualLine replaces whole lines (range ends in '\n'); a charwise
         // register has no trailing newline, so add one to keep it on its own line.
         let text = if line_mode && !vim.register.linewise {
@@ -845,7 +844,7 @@ fn feed_visual_replace_char(
     match key.code {
         KeyCode::Char(c) if !is_passthrough_chord(&key) => {
             if let Some(sel) = editor.selection {
-                let range = visual_char_range(vim, editor, &sel);
+                let range = visual_edit_range(vim, editor, &sel);
                 ensure_editing(editor);
                 replace_char_range(editor, range.start, range.end, c);
             }
@@ -1547,9 +1546,11 @@ fn feed_text_object(
 }
 
 /// Install a Visual selection covering the half-open `range` of a text
-/// object, parking the cursor on its (exclusive) end.  Mirrors the charwise
-/// Visual model where `selection.range()` is the highlighted/operated span
-/// and the cursor sits at `active`.
+/// object, parking the cursor on the object's **last** character (vim's
+/// landing spot for `viw`).  Charwise Visual is inclusive of the char under
+/// the cursor (`visual_charwise_range`), so `active` is the exclusive `end`
+/// stepped back one grapheme — the derived span then reproduces `range`
+/// exactly.  An empty object leaves the cursor at `start`.
 fn select_text_object(
     vim: &mut VimState,
     editor: &mut EditorState,
@@ -1561,12 +1562,17 @@ fn select_text_object(
     let len = editor.buffer.len_chars();
     let start = range.start.min(len);
     let end = range.end.min(len);
+    let active = if end > start {
+        prev_grapheme_offset(&editor.buffer, end)
+    } else {
+        start
+    };
     vim.visual_anchor = Some(start);
     editor.selection = Some(Selection {
         anchor: start,
-        active: end,
+        active,
     });
-    editor.cursor.offset = end;
+    editor.cursor.offset = active;
     editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
     after_move(editor, vh, vw);
 }

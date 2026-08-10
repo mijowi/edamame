@@ -12,7 +12,7 @@
 //! subset, so later checkpoints add behavior without re-shaping the
 //! struct.  See `docs/vim-implementation-plan.md` §2.2.
 
-use crate::editor::vim_ops::FindKind;
+use crate::editor::vim_ops::{FindKind, VisualKind};
 
 /// Upper bound on an accumulated count so a held digit key can't grow an
 /// unbounded `u32` (and so `3j` style repeats stay sane).
@@ -207,11 +207,22 @@ impl VimState {
         }
     }
 
-    /// Whether the active sub-mode is VisualLine — drives the render-path
-    /// `visual_line_mode` line-expansion and the App-layer clipboard
-    /// widening.
+    /// Whether the active sub-mode is VisualLine — drives the App-layer
+    /// clipboard widening.
     pub fn is_visual_line(&self) -> bool {
         self.sub_mode == VimSubMode::VisualLine
+    }
+
+    /// Which flavor of Visual selection is active, if any — the one input the
+    /// render path and the clipboard need to pick the matching
+    /// `vim_ops::visual` widening (inclusive charwise vs. whole lines).
+    /// `None` outside Visual, where `selection` is a plain half-open span.
+    pub fn visual_kind(&self) -> Option<VisualKind> {
+        match self.sub_mode {
+            VimSubMode::Visual => Some(VisualKind::Char),
+            VimSubMode::VisualLine => Some(VisualKind::Line),
+            _ => None,
+        }
     }
 
     /// Short uppercase badge for the status bar.

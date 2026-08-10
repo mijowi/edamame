@@ -146,7 +146,7 @@ Enter with `v` (charwise) or `V` (line). Motions extend the selection. Arrow key
 Notes on differences:
 
 - **In Visual, `u`/`U` force case** (lowercase/uppercase) — they are **not** undo. Undo is Normal-mode only.
-- **Charwise Visual selection is half-open** (it does not include the character under the cursor the way stock Vim's inclusive selection does). So `v l d` deletes one character, not two. This keeps what's highlighted, what's copied, and what an operator acts on perfectly consistent.
+- **Charwise Visual selection is inclusive of the character under the cursor**, as in stock Vim: `v y` yanks one character and `v l d` deletes two. What's highlighted, what's copied, and what an operator acts on all come from one shared derivation (`vim_ops::visual_charwise_range`), so they can't disagree. One boundary difference from Vim: `$` parks edamame's cursor just past the last character (Vim's cursor stops on it), so the cursor block sits one cell further right at end of line — the selected span is identical either way, and a newline is never swallowed.
 - **`p`/`P` over a selection do not overwrite the register** with the replaced text (stock Vim does). This lets you paste the same yank over several selections in turn.
 - **Visual Line highlights and operates on whole lines** even though the underlying selection is tracked charwise — so toggling `v`↔`V` never loses your anchor.
 
@@ -255,7 +255,7 @@ edamame keeps the vim unnamed register and the OS clipboard **separate**, on pur
 - No block-wise Visual (`Ctrl-V`).
 - `/` and `?` search is literal substring (regex only in `:s`/`:%s`); smartcase always on.
 - `Esc` clears search highlights; no `:noh`.
-- Charwise Visual is half-open (`v l d` deletes one char); `u`/`U` in Visual force case, not undo.
+- In Visual, `u`/`U` force case, not undo.
 - Visual `p` does not overwrite the register.
 - Vim register and system clipboard are separate buffers.
 - `%` doesn't take a count; `n`/`N` don't honor search direction.

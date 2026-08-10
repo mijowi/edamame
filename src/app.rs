@@ -968,18 +968,26 @@ mod vim_wiring_tests {
     }
 
     #[test]
-    fn charwise_visual_copy_grabs_only_the_raw_span() {
-        // In charwise Visual there is no widening — `Ctrl-C` copies exactly
-        // the highlighted span.
+    fn charwise_visual_copy_grabs_the_inclusive_span() {
+        // In charwise Visual the widening is vim's inclusive one: `Ctrl-C`
+        // copies the highlighted span *plus* the char under the cursor, and
+        // leaves the stored half-open selection alone so a continued Visual
+        // session keeps its anchor.
         let mut app = app_with_handler("vim");
         app.editor.replace_buffer(Buffer::from_str("alpha\nbeta"));
-        app.editor.selection = Some(Selection {
+        let sel = Selection {
             anchor: 0,
             active: 2,
-        });
+        };
+        app.editor.selection = Some(sel);
         app.vim.as_mut().unwrap().sub_mode = VimSubMode::Visual;
         app.dispatch_action(Action::Copy, 40, 80);
-        assert_eq!(app.editor.kill_ring, "al");
+        assert_eq!(app.editor.kill_ring, "alp");
+        assert_eq!(
+            app.editor.selection,
+            Some(sel),
+            "Copy never snaps `selection`"
+        );
     }
 
     // ── CP9: Ex commands driven end-to-end through `dispatch_single_key` ───
