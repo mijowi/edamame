@@ -1,7 +1,8 @@
 # Issue/Feature Tracker
 
-- ==Add user-facing documentation==
-- Add a documentation page for the terminal upgrade notice and a link to the page from within edamame
+- An empty file does not display a cursor in rendered mode. The cursor is displayed in the proper place (first line, first column) when raw mode is toggled.
+
+- Test edamame on Windows
 
 - Add next cell/prev cell to keybindings modal?
 
