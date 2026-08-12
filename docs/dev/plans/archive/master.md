@@ -1391,23 +1391,6 @@ Deferred from the original Phase 10 scope.  Until this phase lands, opening a fi
 
 ---
 
-## Deferred Work
-
-These features should be **architecturally anticipated** from Phase 0 but not implemented until after the numbered phases are complete.
-
-### Code Syntax Highlighting
-- In the AST renderer, when rendering a fenced code block, identify the language tag
-- Use `syntect` (via `syntect_tui` or a custom bridge) to apply token-based highlighting
-- Fall back to plain monospace rendering if the language is unrecognized
-- Cache highlighted blocks keyed by (language, content hash)
-
-### Heading visual hierarchy — `tui-big-text` variant
-Terminals use a fixed character-cell grid; the app cannot change font size at the cell level.  The zero-dep **framing/rules** approach has been folded into Phase 14 ("Visual Polish").  The larger step below stays deferred to the theming phase:
-
-- **`tui-big-text`** (one small dep): renders text with Unicode half-block characters (▀▄█) at 2×–3× visual height, works with ratatui's `TestBackend` and requires no terminal capability detection. H1 at ~3× and H2 at ~2× gives a genuine size hierarchy. Add as an opt-in `theme.headings.h1_big = true` flag. Implement alongside the rest of the theming work.
-
----
-
 ## Open Questions
 4. **WSL clipboard**: On WSL, `arboard` may not have access to the Windows clipboard without additional configuration (`clip.exe` workaround or `win32yank`). Detect WSL via `$WSL_DISTRO_NAME` and fall back to `clip.exe` / `powershell.exe Get-Clipboard` as appropriate.
 
@@ -1434,5 +1417,3 @@ Terminals use a fixed character-cell grid; the app cannot change font size at th
    user-edited theme or keybindings file.  Migration was a hard cut —
    stale `[keybindings]` / `[theme]` sections in a pre-split `config.toml`
    are silently ignored.
-
-

@@ -17,8 +17,9 @@ Vim mode is off by default. Turn it on in any of these ways:
   [modal]
   handler = "vim"   # "default" (the standard chord keymap) or "vim"
   ```
+- **From the command palette** — "Toggle Vim mode"
 
-Restart isn't required when toggling from the welcome modal; a config-file edit takes effect the next time the config is loaded.
+Restart isn't required when toggling from the welcome modal or command palette; a config-file edit takes effect the next time the config is loaded.
 
 When vim mode is active, the status bar shows the current sub-mode as a badge: `NORMAL`, `INSERT`, `VISUAL`, or `V-LINE`.
 
@@ -31,7 +32,8 @@ edamame is a Markdown viewer/editor that renders your document live. Vim mode la
 - **Motions operate on the raw Markdown source.** `w`, `e`, `b`, `f{c}`, `x`, etc. move and act over the actual bytes of your file — including Markdown syntax like `**`, `[`, and `](url)`. So that the cursor never lands on characters you can't see, the line under the cursor reveals its raw source as you move (the same reveal behavior edamame already uses while editing).
 - **Preview mode is replaced by Normal mode.** In standard edamame, Preview is the read-only "browse" mode. With vim active, Normal mode fills that role — there is no separate Preview. The `Esc`-to-Preview behavior reroutes to vim Normal.
 - **Raw mode is fully supported.** You can toggle the whole document to raw Markdown (the existing toggle, `Ctrl-` `` ` ``) and every vim sub-mode works there too. In Raw mode, Markdown markers and table borders are real, editable text, so motions don't skip anything.
-- **edamame's own shortcuts still work.** All the `Ctrl-*` chords keep their edamame meaning in every vim sub-mode (see [Ctrl chords](#ctrl-chords-edamame-shortcuts-not-vim-motions) below).
+- **edamame's own shortcuts still work.** The `Ctrl-*` chords keep their edamame meaning in every vim sub-mode, with two exceptions (`Ctrl-Backspace` / `Ctrl-Delete`) — see [Ctrl chords](#ctrl-chords-edamame-shortcuts-not-vim-motions) below.
+- **Inside a table, vim works on cells and rows.** Motions stay within the cell, `dd` deletes a table row, and edits that would break the grid are refused. See [Inside a table](#inside-a-table).
 
 ---
 
@@ -66,7 +68,6 @@ All counts are supported (e.g. `3w`, `5j`). Counts combine with operators in bot
 | WORD forward / end / back (whitespace-delimited) | `W` `E` `B` |
 | Line start / first non-blank / line end | `0` `^` `$` |
 | Document start / end | `gg` `G` |
-| Go to line *N* | `{count}G` |
 | Find char forward / backward | `f{c}` `F{c}` |
 | Till char forward / backward | `t{c}` `T{c}` |
 | Repeat / reverse last find | `;` `,` |
@@ -81,7 +82,7 @@ Notes on differences from standard Vim:
 - **Paragraph motions (`{`/`}`) treat only completely empty lines as boundaries** — whitespace-only lines are not boundaries (this matches Vim).
 - **`%` finds the first bracket from the cursor to the line end**, then jumps to its match (nesting-aware, across lines). It works on `()`, `[]`, and `{}`. The Vim "`{count}%` = jump to percentage of file" form is **not** supported — `%` ignores any count.
 - **`n`/`N` are plain next/previous** regardless of whether the search started with `/` or `?`. (Standard Vim reverses `n` after a `?` search; edamame does not.)
-- **In a rendered view, `h`/`j`/`k`/`l` skip table border chrome** (the `|` separators and `|---|` alignment row), stepping cell-to-cell — the editor owns those characters, so landing on them would be meaningless. In Raw mode the borders are real source and nothing is skipped. List markers are always navigable (they're your text, not chrome).
+- **In a rendered view, `h`/`j`/`k`/`l` skip table border chrome** (the `|` separators and `|---|` alignment row), stepping cell-to-cell — the editor owns those characters, so landing on them would be meaningless. In Raw mode the borders are real source and nothing is skipped.
 
 ---
 
@@ -152,6 +153,32 @@ Notes on differences:
 
 ---
 
+## Inside a table
+
+A rendered table's `|` borders and `|---|` alignment row are drawn chrome, not prose you wrote. So in Rendered and Preview, vim treats the **cell** as the unit a motion moves within, and the **row** as the unit a line command acts on.
+
+**Raw mode is exempt** — there the borders are real text and everything below behaves normally, which is how you repair a broken table.
+
+| Command | Inside a table |
+|---|---|
+| `h` `l` `w` `e` `b` `$` `^` `f{c}` | Stay within the current cell |
+| `I` / `A` | Insert at start / end of the **cell**, not the line |
+| `dd` | Delete the table **row** |
+| `cc` | Clear the **cell** and enter Insert |
+| `o` / `O` | Open a new table **row** below / above |
+| `p` / `P` | Paste rows at a legal row boundary |
+| `J`, `>`, `<` | Refused — they'd break the grid |
+
+`j` and `k` still move between rows, and document motions like `gg` and `G`
+still leave the table.
+
+**Edits that would break the table are refused**, with the reason on the hint line — a delete spanning the header and its alignment row, a change crossing a `|`, pasting something that isn't a table row over one. What *is* allowed: deleting whole data rows, deleting the entire table, editing within one cell, and editing the alignment row itself (which stays hand-editable by design).
+
+Counted forms like `2dd` fall through to ordinary linewise behavior — still
+safe, because the same guard catches them.
+
+---
+
 ## Search
 
 | Key | Action |
@@ -163,12 +190,13 @@ Notes on differences:
 
 Notes on differences:
 
+- **Search is incremental.** As you type after `/` or `?`, edamame jumps to and highlights the first match live, scrolling it into view. `Esc` restores your original cursor position, scroll, and any previous highlights; `Enter` commits.
 - **Search is literal-substring, not regex.** `/` and `?` match the text you type verbatim. (Regex is available only in `:s`/`:%s` — see below.)
-- **Smartcase is always on.** A lowercase pattern matches case-insensitively; a pattern with any uppercase letter matches case-sensitively. This applies to vim search *and* edamame's regular `Ctrl-F` search (it's a base feature, not vim-only).
+- **Smartcase applies to navigation.** A lowercase pattern matches case-insensitively; a pattern with any uppercase letter matches case-sensitively. This covers `/`, `?`, `n`/`N` and edamame's `Ctrl-F` *find* — but **not** search-and-replace, which is always case-sensitive so a lowercase term can't rewrite a casing variant you didn't type.
 - **`*`/`#` match the literal keyword** under the cursor — there are no `\<…\>` whole-word boundaries (because search is literal, not regex).
 - **`/` searches forward from the cursor, `?` searches backward**, wrapping around the document — matching Vim. `n`/`N` are plain next/previous afterward.
 - **`Esc` in Normal clears the active search highlights** (the cursor stays on the match it reached). Standard Vim leaves `hlsearch` on after `Esc`; edamame clears it. There is no `:noh`.
-- **`Tab`/`Shift-Tab` also walk matches** like `n`/`N` during any active search.
+- **`Tab`/`Shift-Tab` also walk matches** like `n`/`N` during an active search — in Normal mode only. In Visual they do nothing, and inside a table `Tab` moves to the next cell instead.
 
 ---
 
@@ -179,16 +207,23 @@ Type `:` to open the command line.
 | Command | Action |
 |---|---|
 | `:w` | Write (save) |
+| `:w {path}` | Write a **copy** to `{path}`; the buffer keeps its own file |
+| `:saveas {path}` | Write to `{path}` and **adopt** it — later `:w`s go there |
+| `:saveas` | Open the Save-As prompt |
 | `:q` | Quit (prompts if there are unsaved changes) |
 | `:wq` / `:x` | Write and quit |
+| `:wq {path}` | Write a copy to `{path}`, then quit |
 | `:s/pat/rep/[flags]` | Substitute on the current line |
 | `:%s/pat/rep/[flags]` | Substitute across the whole document |
 | `:'<,'>s/pat/rep/[flags]` | Substitute across the lines of the last visual selection |
+
+`:write` is accepted for `:w`, and `:xit` for `:x`. Any of the write commands takes a trailing `!` (`:w!`, `:saveas!`, `:wq!`) which skips the overwrite-confirmation prompt.
 
 Supported substitution flags: `g` (all matches on a line, not just the first) and `i` (case-insensitive).
 
 Notes on differences:
 
+- **`:s`/`:%s` preview live as you type them.** Once the command is complete enough to act on, the substitution is shown applied in the document, updating on every keystroke. Nothing is committed until you press Enter, and `Esc` leaves the buffer exactly as it was — the preview records no undo step and doesn't mark the file modified.
 - **`:s`/`:%s` use real regex** with Vim's pattern dialect. You type patterns the way you would in Vim:
   - Magic-level escaping (`\( \) \+ \|`) and the `\v \m \M \V` switches.
   - Word boundaries `\<` `\>`.
@@ -246,6 +281,7 @@ edamame keeps the vim unnamed register and the OS clipboard **separate**, on pur
 - `Ctrl-S` save · `Ctrl-P` command palette · `Ctrl-F` search · `Ctrl-Z` undo · `Ctrl-R` redo · `Ctrl-C`/`Ctrl-X`/`Ctrl-V` system clipboard · `Ctrl-` `` ` `` toggle Raw view — all work as usual.
 - The Vim chords that collide with edamame shortcuts are **not** implemented: `Ctrl-F`/`Ctrl-B` (page down/up), `Ctrl-D`/`Ctrl-U` (half-page), `Ctrl-E`/`Ctrl-Y` (scroll line), `Ctrl-A`/`Ctrl-X` (increment/decrement number). These keep their edamame functions.
 - **`Ctrl-R` is the one Vim chord whose meaning carries over.** edamame's native redo is `Ctrl-Shift-Z`; `Ctrl-R` has no separate edamame function of its own, so it's bound to **Redo** for everyone — which happens to be exactly its Vim meaning. So it's the sole `Ctrl-*` collision where the Vim and edamame meanings agree, and it fires through the same plain passthrough as every other `Ctrl-*` chord, not a vim-specific path.
+- **Two exceptions: `Ctrl-Backspace` and `Ctrl-Delete`.** Outside vim mode these delete a word backward / forward. In vim Normal and Visual they are intercepted and become plain cursor motions (left / right, honoring a count) — matching real Vim, where `Ctrl-H` is move-left. Use `db` / `dw` to delete a word.
 
 ---
 
@@ -253,11 +289,12 @@ edamame keeps the vim unnamed register and the OS clipboard **separate**, on pur
 
 - No dot-repeat (`.`), marks, named registers, or macros.
 - No block-wise Visual (`Ctrl-V`).
-- `/` and `?` search is literal substring (regex only in `:s`/`:%s`); smartcase always on.
+- `/` and `?` search is literal substring (regex only in `:s`/`:%s`); smartcase on for navigation, off for replace.
 - `Esc` clears search highlights; no `:noh`.
 - In Visual, `u`/`U` force case, not undo.
 - Visual `p` does not overwrite the register.
 - Vim register and system clipboard are separate buffers.
 - `%` doesn't take a count; `n`/`N` don't honor search direction.
 - `:x` writes only if the buffer is modified (`:wq` always writes); no `:e`, `:q!`, bare `:s`, or arbitrary line ranges.
-- Vim's scroll/edit `Ctrl-*` chords are unimplemented (edamame's shortcuts win).
+- Vim's scroll/edit `Ctrl-*` chords are unimplemented (edamame's shortcuts win), and `Ctrl-Backspace` / `Ctrl-Delete` become plain motions.
+- **Inside a rendered table**, motions are confined to the cell and `dd` / `cc` / `o` / `p` act on rows and cells; grid-breaking edits are refused. Raw mode is exempt.

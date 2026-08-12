@@ -13,7 +13,7 @@
 //! visible.  Shape is uniform across the app, so context is signalled by
 //! *color* — the editor cursor mirrors the per-mode status chip
 //! (`app::cursor_style`), and modal inputs use `cursor` (see
-//! `docs/theming.md`).
+//! `docs/dev/theming.md`).
 //!
 //! # Two block-cursor mechanisms
 //!
