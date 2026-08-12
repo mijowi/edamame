@@ -69,7 +69,7 @@ pub struct EditorConfig {
     /// When true, the buffer is silently written to disk after
     /// `autosave_idle_ms` of typing inactivity.  Only fires for buffers
     /// with an associated file path; an unnamed buffer never autosaves.
-    /// Default: true.
+    /// Default: false.
     pub autosave_enabled: bool,
     /// Idle window (ms) the user must stop editing for before the
     /// pending dirty buffer is autosaved.  Every keystroke resets the
@@ -135,9 +135,10 @@ pub enum AppearanceMode {
 }
 
 impl AppearanceMode {
-    /// The mode on the other side of the toggle.  Used by the picker's
-    /// Tab / Left / Right / pill-click handlers and by the settings
-    /// overlay's Appearance cycle row.
+    /// The mode on the other side of the toggle.  Used by the theme
+    /// picker's Tab / Left / Right / slider-click handlers.  (The
+    /// settings overlay has no Appearance row — the picker is the only
+    /// surface that changes this.)
     pub fn opposite(self) -> Self {
         match self {
             AppearanceMode::Dark => AppearanceMode::Light,
@@ -202,10 +203,9 @@ impl Default for ModalConfig {
 /// to `false` when `capabilities.mouse` is absent so persisted config
 /// stays faithful to what the user actually sees.
 ///
-/// `row_striping`: when true, alternating data rows are filled
-/// with `Theme::table_row_even` / `Theme::table_row_odd` to aid visual
-/// scanning on wide tables.  Off by default so users who prefer plain
-/// borders see no change.
+/// `row_striping`: when true (the default), alternating data rows are
+/// filled with `Theme::table_row_even` / `Theme::table_row_odd` to aid
+/// visual scanning on wide tables.
 ///
 /// `warn_on_width_injection`: when true, the first column-border
 /// drag on a table without a `<!-- tui-columns: [...] -->` comment opens a
@@ -328,16 +328,23 @@ impl Default for DiagramsConfig {
 
 /// Export configuration.
 ///
-/// HTML is the single built-in export target; it doubles as the intermediate
-/// format for user-defined custom commands that produce PDF, DOCX, etc. by
-/// piping the generated HTML through an external tool.
+/// HTML is the only export target that has shipped.  It is *designed* to
+/// double as the intermediate format for user-defined custom commands that
+/// produce PDF, DOCX, etc., and the machinery for that exists
+/// ([`CustomExportEntry`], [`export::spawn_custom_export`]) — but nothing
+/// calls it yet, so `custom` is inert.
+///
+/// [`export::spawn_custom_export`]: crate::export::spawn_custom_export
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ExportConfig {
     pub html: HtmlExportConfig,
-    /// User-defined extra export entries that appear alongside
-    /// `Export HTML` in the command palette.  Each runs an external
-    /// command with `{html}` / `{out}` path substitution.
+    /// User-defined extra export entries.  **Parsed but not yet wired up:**
+    /// nothing reads this field, so entries a user writes here have no
+    /// effect and produce no warning.  `config/config.toml` documents no
+    /// `[[export.custom]]` block for that reason — restore it, and the
+    /// palette entries described on [`CustomExportEntry`], when the feature
+    /// actually ships.
     pub custom: Vec<CustomExportEntry>,
 }
 
@@ -375,17 +382,27 @@ impl Default for HtmlExportConfig {
     }
 }
 
-/// A single user-configured custom-export entry.  Shows up in the
-/// command palette as `Export <name>`.  `command` is run verbatim with
-/// two placeholders substituted:
+/// A single user-configured custom-export entry.
+///
+/// **Not reachable yet.** The intent is for each entry to show up in the
+/// command palette as `Export <name>`, but nothing constructs those palette
+/// items or calls [`export::spawn_custom_export`], so an entry in
+/// `config.toml` is parsed and then ignored.  Everything below describes the
+/// runner's contract, which is implemented and tested — only the UI hookup
+/// is missing.
+///
+/// `command` is run verbatim with two placeholders substituted:
 ///
 /// * `{html}` — path to the just-generated HTML file (temp file owned
 ///   by the exporter; deleted after the command exits).
 /// * `{out}` — path to the final output file (source-stem with the
 ///   configured `extension` appended).
+///
+/// [`export::spawn_custom_export`]: crate::export::spawn_custom_export
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomExportEntry {
-    /// Human-readable label — appears as `Export <name>` in the palette.
+    /// Human-readable label — intended to render as `Export <name>` in the
+    /// palette once the entries are surfaced there.
     pub name: String,
     /// argv-style command.  Element 0 is the executable; remaining
     /// elements are arguments with `{html}` / `{out}` substitution.
