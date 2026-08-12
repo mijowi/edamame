@@ -279,12 +279,6 @@ pub enum Action {
     /// ("undecide").  No-op when the hunk is already `Pending`.  Bound
     /// to `Backspace` in Review sub-mode.
     DiffResetHunk,
-    /// Enter Edit sub-mode on the focused hunk.  In-diff editing is
-    /// not implemented yet, so this is currently an explicit no-op.
-    DiffEnterEdit,
-    /// Exit Edit sub-mode and return to Review.  Currently a no-op
-    /// (in-diff editing is not implemented yet).
-    DiffExitEdit,
     /// Request to exit diff mode.  Gated on full resolution: a no-op
     /// while any hunk is still pending, and otherwise opens the
     /// apply-confirm modal before the merged result is written.
@@ -388,7 +382,7 @@ action_variants! {
     DiffNext, DiffPrev,
     DiffAcceptHunk, DiffRejectHunk,
     DiffAcceptAll, DiffRejectAll, DiffResetHunk,
-    DiffEnterEdit, DiffExitEdit, DiffExit,
+    DiffExit,
 }
 
 // ─── Key parsing ─────────────────────────────────────────────────────────────
@@ -859,7 +853,11 @@ impl KeyMap {
 
         // File operations
         bind!("ctrl+s", Action::Save);
-        bind!("ctrl+o", Action::Open);
+        // `Action::Open` is deliberately unbound: it is still a stub (see
+        // `NOT_YET_IMPLEMENTED` in `app::actions`), so a default chord would
+        // only surface a "not implemented" notice.  Restore the `ctrl+o`
+        // binding — and the palette entry in `ui::command_palette::actions` —
+        // when real in-app file opening lands.
 
         // Mode transitions
         bind!("escape", Action::ExitToPreview);
@@ -948,6 +946,48 @@ impl KeyMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The full default binding table, pinned.
+    ///
+    /// `docs/keybindings.md` is written by hand from this table, and a
+    /// user reading a chord that no longer fires is a worse bug than most
+    /// code defects — it is unfalsifiable from inside the app.  So any
+    /// change here has to be accepted as a snapshot, and **that review is
+    /// the reminder to update `docs/keybindings.md`** (plus the
+    /// `config/keybindings.toml` reference file if the action appears
+    /// there).
+    ///
+    /// Rendered as `chord = Action` sorted by chord so the diff is
+    /// readable and independent of `HashMap` iteration order.
+    #[test]
+    fn default_bindings_are_pinned_for_the_docs() {
+        let km = KeyMap::default_bindings();
+        let mut rows: Vec<String> = km
+            .bindings
+            .iter()
+            .map(|(ev, action)| {
+                let chord = format_key_parseable(ev)
+                    .unwrap_or_else(|| panic!("default binding {ev:?} has no parseable spelling"));
+                format!("{chord} = {action:?}")
+            })
+            .collect();
+        rows.sort();
+        insta::assert_snapshot!(rows.join("\n"));
+    }
+
+    /// `Action::Open` is still a stub (`app::actions::NOT_YET_IMPLEMENTED`).
+    /// It must stay unbound so no user discovers a default chord that can
+    /// only flash "not implemented" — `docs/keybindings.md` tells readers
+    /// there is no in-app file open, and this is what keeps that true.
+    #[test]
+    fn open_stays_unbound_while_it_is_a_stub() {
+        let km = KeyMap::default_bindings();
+        assert!(
+            !km.bindings.values().any(|a| *a == Action::Open),
+            "Action::Open is a stub but has a default binding; either implement it \
+             (and update docs/keybindings.md) or leave it unbound"
+        );
+    }
 
     #[test]
     fn default_keymap_has_quit() {

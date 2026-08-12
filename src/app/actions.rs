@@ -59,8 +59,6 @@ pub(super) fn diff_safe_action(action: &Action) -> Option<Action> {
             | DiffAcceptAll
             | DiffRejectAll
             | DiffResetHunk
-            | DiffEnterEdit
-            | DiffExitEdit
             | DiffExit
             | ScrollUp
             | ScrollDown
@@ -1026,12 +1024,6 @@ impl App {
                 if reset {
                     self.needs_draw = true;
                 }
-            }
-            Action::DiffEnterEdit | Action::DiffExitEdit => {
-                // In-diff Edit mode is not implemented yet; until then
-                // `i` / Enter and `Esc` (Edit→Review) are explicit
-                // no-ops.
-                self.flash("Diff edit mode coming soon", MessageKind::Info);
             }
             Action::DiffExit => {
                 // Esc is gated on full resolution — diff mode cannot be

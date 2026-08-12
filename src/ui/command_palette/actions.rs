@@ -43,10 +43,11 @@ pub(super) const ALL_ACTIONS: &[Action] = &[
     Action::DeleteFootnote,
     Action::RenumberFootnotes,
     Action::FixListNumbering,
-    // File ops.
+    // File ops.  `Action::Open` is omitted while it remains a stub
+    // (`NOT_YET_IMPLEMENTED`) — listing it here would offer the user a
+    // command that can only flash "not implemented".
     Action::Save,
     Action::SaveAs,
-    Action::Open,
     // History.
     Action::Undo,
     Action::Redo,

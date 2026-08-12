@@ -41,6 +41,11 @@ pub enum CustomExportError {
 /// `target` first; this function clobbers an existing file if one is
 /// present.  The temp HTML file is dropped (and deleted) when the
 /// function returns, whether the command succeeded or not.
+///
+/// **There is no such caller yet.** Custom export has not shipped: nothing
+/// builds the palette entries that would reach this, so it runs only under
+/// the tests below.  Wiring it up is a UI change, not a change here — see
+/// [`crate::config::CustomExportEntry`].
 pub fn spawn_custom_export(
     entry: CustomExportEntry,
     markdown: String,
