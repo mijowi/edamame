@@ -415,38 +415,25 @@ fn paste_into_numbered_list_renumbers_whole_list() {
     // Paste a pre-formed numbered fragment at the cursor (inside the empty
     // item on line 2).  The raw paste would produce duplicate `2.` / `3.`
     // entries; the renumber pass must fix them.
-    st.kill_ring = "2. pasted-a\n3. pasted-b".into();
-    apply(&mut st, Action::Paste);
+    // Deliberately `paste_text` rather than `Action::Paste`: the action
+    // resolves its text from `clipboard_text`, which reads the *OS* clipboard
+    // whenever the `clipboard` feature is on.  Integration tests link the
+    // library compiled without `cfg(test)`, so `edit_ops::OS_CLIPBOARD` does
+    // not insulate them and a plain `cargo test` would paste whatever the
+    // developer — or a sibling test binary — last copied.  `paste_text` is the
+    // real bracketed-paste entry point and reaches the same
+    // `list_renumber_at_cursor`, so the renumber behavior under test is
+    // identical while the source of the text is not ambient.
+    edit_ops::paste_text(&mut st, "2. pasted-a\n3. pasted-b", VP, VW);
 
-    let expected = "1. one\n2. 2. pasted-a\n3. pasted-b\n3. two\n4. three\n";
-    // Before renumber, the literal paste text is left in place on the first
-    // line ("2. 2. pasted-a"). The renumber pass only fixes item *markers* at
-    // line-start — it does not unwedge inline numbers. What it DOES fix is
-    // the subsequent lines, so `3. pasted-b`, `3. two`, `4. three` stay
-    // consistent:
-    let _ = expected;
-    // In practice, the key invariant we want to verify is that each
-    // line-leading number strictly increases by 1 as you read top to bottom.
-    let contents = st.contents();
-    let leading_numbers: Vec<u64> = contents
-        .lines()
-        .filter_map(|line| {
-            let digits: String = line.chars().take_while(|c| c.is_ascii_digit()).collect();
-            if digits.is_empty() {
-                None
-            } else {
-                let rest = &line[digits.len()..];
-                if rest.starts_with(". ") || rest.starts_with(") ") {
-                    digits.parse().ok()
-                } else {
-                    None
-                }
-            }
-        })
-        .collect();
-    assert!(
-        leading_numbers.windows(2).all(|w| w[1] == w[0] + 1),
-        "expected strictly increasing leading numbers after paste+renumber, got: {leading_numbers:?}\ncontents:\n{contents}"
+    // The paste lands *inside* the empty `2. ` item, so its first line wedges
+    // behind that marker as the literal text `2. 2. pasted-a` — the renumber
+    // pass fixes item markers at line-start, not numbers sitting mid-line.
+    // Every following line-leading marker is rewritten, though: `pasted-b`
+    // takes 3, and the pre-existing `two` / `three` shift up to 4 and 5.
+    assert_eq!(
+        st.contents(),
+        "1. one\n2. 2. pasted-a\n3. pasted-b\n4. two\n5. three\n"
     );
 }
 
