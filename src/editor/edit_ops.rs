@@ -1070,19 +1070,40 @@ fn outside_wrapped(buf: &Buffer, start: usize, end: usize, marker: &str) -> bool
     true
 }
 
+/// Whether the OS-level clipboard paths are live.
+///
+/// **False in unit tests, always.** The OS clipboard is process-global
+/// mutable state shared by every test thread, so leaving it live makes
+/// clipboard tests race each other: one test's `Copy` lands between
+/// another's `Copy` and its `Paste`, and the second test reads the first
+/// one's payload. It also lets the *developer's* own clipboard leak into
+/// assertions. AGENTS.md's rule — "tests assert against the kill-ring, not
+/// the OS clipboard, to avoid cross-test races" — is what this constant
+/// enforces; without it the rule is only a convention that the `Paste`
+/// path quietly breaks, because `Paste` reads the OS clipboard first.
+///
+/// Suppressing it here also keeps OSC 52 escape sequences out of test
+/// output, where they would otherwise be written straight to stdout.
+///
+/// Integration tests in `tests/` link the library compiled *without*
+/// `cfg(test)`, so this does not cover them — CI runs those with
+/// `--no-default-features`, which drops the `arboard` path entirely.
+const OS_CLIPBOARD: bool = !cfg!(test);
+
 /// Write `text` to the OS clipboard (best-effort via arboard AND OSC 52)
 /// and always mirror into the in-process kill-ring so internal paste still
 /// works when neither external path is available.
 fn copy_to_clipboard(state: &mut EditorState, text: String) {
-    #[cfg(feature = "clipboard")]
-    {
+    if OS_CLIPBOARD {
+        #[cfg(feature = "clipboard")]
         copy_to_system_clipboard(text.clone());
+        // OSC 52 also reaches the terminal emulator's clipboard — the only
+        // path that works over SSH, on Wayland without
+        // `wayland-data-control`, and in WSL.  Any terminal that doesn't
+        // understand the escape silently ignores it, so emitting
+        // unconditionally is safe.
+        osc52_copy(&text);
     }
-    // OSC 52 also reaches the terminal emulator's clipboard — the only path
-    // that works over SSH, on Wayland without `wayland-data-control`, and in
-    // WSL.  Any terminal that doesn't understand the escape silently ignores
-    // it, so emitting unconditionally is safe.
-    osc52_copy(&text);
     state.kill_ring = text;
 }
 
@@ -1154,7 +1175,7 @@ fn base64_encode(data: &[u8]) -> String {
 /// the same source the plain `Action::Paste` arm does.
 pub fn clipboard_text(state: &EditorState) -> String {
     #[cfg(feature = "clipboard")]
-    {
+    if OS_CLIPBOARD {
         if let Ok(mut cb) = arboard::Clipboard::new() {
             if let Ok(text) = cb.get_text() {
                 return text;
