@@ -6,7 +6,7 @@ Guidance for human and agentic contributors working in this repository. `CLAUDE.
 
 `edamame` is a Rust TUI application for viewing and editing Markdown files in the terminal. It uses `ratatui` for rendering, `pulldown-cmark` for parsing, and `ropey` for rope-based text editing. The crate ships as both a binary (`edamame`) and a library (so integration tests can import it).
 
-> **Security:** edamame opens untrusted documents, so any change to a content-handling path (image/SVG decode, remote fetch, Mermaid, link opening, HTML export, subprocess spawning) must preserve the hardening in [`docs/security.md`](docs/security.md). Read it — and its "Invariants for contributors" — before touching those areas.
+> **Security:** edamame opens untrusted documents, so any change to a content-handling path (image/SVG decode, remote fetch, Mermaid, link opening, HTML export, subprocess spawning) must preserve the hardening in [`docs/security.md`](docs/security.md). Read it — and the checklist in [`docs/dev/security-invariants.md`](docs/dev/security-invariants.md) — before touching those areas.
 
 ## Build Commands
 
@@ -275,7 +275,7 @@ src/
     settings_overlay/rows.rs # row definitions + theme cycle list
     status_bar.rs       # StatusBar + StatusBarState
     table_view.rs       # table rendering / column-divider hit map
-    theme_picker.rs     # Ctrl+Shift+T live preview picker
+    theme_picker.rs     # live review picker
     welcome.rs          # first-run welcome modal
 
 tests/
@@ -292,13 +292,29 @@ tests/
   table.rs          # table navigation + structure edits
   ui.rs             # TestBackend widget rendering
   snapshots/        # committed insta .snap files
+  fixtures/         # sample Markdown documents used for manual smoke
+                    #   testing (sample.md, sample_diagrams.md, octocat.png)
 
 config/
   config.toml       # annotated reference config, written to
                     #   ~/.config/edamame/config.toml on first run
   keybindings.toml  # commented-out keybinding overrides reference
   export/default.css # default stylesheet bundled with self-contained HTML export
+
+docs/               # USER-facing documentation — shipped, kept accurate.
+  getting-started.md, keybindings.md, configuration.md, editing.md,
+  themes.md, vim-mode.md, security.md
+  dev/              # CONTRIBUTOR-facing — design specs and rationale
+    theming.md      #   visual-language conventions (cursor, focus, controls)
+    why.md          #   project rationale
+    plans/          #   historical implementation plans (excluded from crate)
 ```
+
+**Docs are split by audience.** `docs/*.md` is written for users and is
+published; `docs/dev/` is written for contributors. When you change
+user-visible behavior, the user page is part of the change — and it must be
+derived from the code, not from this file. `AGENTS.md` records *intent and
+invariants*, which drift from the shipped surface faster than the code does.
 
 ### Built-in themes
 
@@ -349,7 +365,7 @@ These decisions are easy to break if you don't know they exist.
 - **`per_block_own` vs. extended ranges.** `ParsedDoc` tracks both per-block *own* rendered line counts (for the raw-replacement region in `RenderedView`) and *extended* covering ranges (for cursor lookup). Mixing them up causes gap blank lines to collapse when the cursor enters the previous block.
 - **Loose lists stay one block; blanks are annotated, not split.** A blank line between list items makes the list "loose" (CommonMark). edamame keeps it a single `Block::List` and records how many blank source lines precede each item in `ListItem::blank_lines_before` (`parser::post_pass::annotate_list_blanks`, reusing the fence-aware blank-run scanner). The renderer emits that many blank `Line`s before the item, so a loose list keeps its legibility spacing while numbering comes straight from pulldown-cmark (a source that restarts at `1.` after a blank renders sequentially — matching CommonMark, unlike the old split-into-separate-lists behavior). Don't reintroduce a `split_lists_on_blank_lines` pass: fragmenting the list forced per-group `start` re-derivation and block/range surgery for no rendering benefit. **The reveal depends on this staying 1:1:** `RenderedView` maps a block's rendered rows to its source lines via `block_text.split('\n')`, so every separator blank must emit exactly one rendered row. The raw→rendered line mapping — `editor::state::cursor_sub_line_in_block`, the single implementation — therefore counts *separator* blanks (a blank run ending at a top-level marker) as rendered rows while skipping interior-item blanks and soft-break continuations, and don't revert it to "count only non-blank lines" (that swallows the blank row and reveals the cursor line one row too high). **Three callers must agree on it and so must never re-derive it:** `RenderedView` (which rendered row gets the raw-text replacement), `cursor_rendered_line_idx` (where the cursor appears, for scroll arithmetic), and — through the latter — `mouse_ops::coord`'s `revealed_cursor_line` shortcut. When they drift, a click on a revealed line is mapped against the *rendered* spans instead of the raw text on screen, so a line whose markers were dropped (`` `code` ``, `**bold**`) places the cursor short by the marker width. **Its *inputs* are shared too, for the same reason:** `rendered_view::raw_text::raw_block_cursor` is the single derivation of the `(block source, raw line index, column)` triple both callers feed it — the line index is an index *into* that source, so deriving one without the other is how they drift at the edges (the two hand-written byte walks disagreed on where a cursor at the block end lands: last line vs. block top). `RenderedView` keeps exactly one branch of its own, for a stale parse, where it rebuilds the triple from `cursor_block_line_range` so just-typed characters are visible before the reparse.
 - **Jitter-suppression reveal.** `EditorState::cursor_block_revealed()` returns false during a 120 ms `RAW_REVEAL_DELAY` after the cursor enters a new *buffer line* (not block). `RenderedView` keeps the block fully rendered and draws an inverted-cell cursor indicator at `(cursor_col, cursor_row)` until the delay elapses. The app loop uses `rx.recv_timeout(60 ms)` so the redraw fires without a keypress.
-- **Single-pass parse.** `ParsedDoc::build` gets blocks AND top-level byte ranges from one `parse_raw_with_ranges` call — a `parse_offsets::RangeTracker` observes the same offset-iterator events the AST builder consumes, so blocks↔ranges stay 1:1 by construction. Don't reintroduce a second `top_level_block_ranges` pass alongside `parse_raw`; the two-pass pairing cost a full extra pulldown-cmark parse per reparse (see docs/perf-benchmark-plan.md).
+- **Single-pass parse.** `ParsedDoc::build` gets blocks AND top-level byte ranges from one `parse_raw_with_ranges` call — a `parse_offsets::RangeTracker` observes the same offset-iterator events the AST builder consumes, so blocks↔ranges stay 1:1 by construction. Don't reintroduce a second `top_level_block_ranges` pass alongside `parse_raw`; the two-pass pairing cost a full extra pulldown-cmark parse per reparse (see docs/dev/plans/perf-benchmark-plan.md).
 - **Block-level render memoization.** `EditorState` owns a `markdown::RenderCache` threaded into every `refresh_parsed`; blocks whose AST value is unchanged reuse their rendered lines (a clone) instead of re-rendering. The cache key is the `Block` value itself plus a render-settings fingerprint (theme address, viewport width, striping, big-H1, …) — keying by AST, not source bytes, is what keeps live table-width drags and post-pass mutations correct (a mutated block simply misses). `Block::ImageBlock` is never cached because its row count tracks the image decode cache, which changes without an AST change. Eviction is by document membership per build, like the image-cache GC. If you add a `Renderer` knob that changes rendered output, add it to `RenderSettings` or stale cache hits will paint with the old setting.
 - **Single shared `line_render` module.** `PreviewView` and `RenderedView` both call `ui::line_render`. The trailing-cell background fill and word-aware wrap live there. If you change one view's wrap or fill, change the shared function — don't fork it.
 - **The cursor is a uniform block; color (not shape) signals context.** Every cursor in edamame is a fake block: the cell at the insertion point is recolored with the cursor style while the underlying character stays visible. The cursor color is resolved in one place — `app::cursor_style::editor_cursor_style` — and the views receive the resolved `Style` rather than picking a cursor color themselves. The default handler colors by *view* mode (`status_mode_preview` / `status_mode_rendered` / `status_mode_raw`); under the vim handler the cursor **mirrors the sub-mode chip**, reading the same `status_mode_vim_normal` / `_insert` / `_visual` fields the status bar uses (minus the chip's `BOLD`) so chip and cursor can never drift. RAW (`status_mode_raw`) is surfaced only in INSERT; NORMAL/VISUAL keep their sub-mode color in every view, matching the chip (no `(RAW)` suffix). Modal inputs use `theme.cursor` (its own `accent` block). There is no bar/caret shape and no `CursorShape` enum — a vim command sub-mode reads the same shape as Insert, distinguished by color + the status chip. The editor cursor is still painted via `cursor_col_override` (not baked into the wrapped `Line`) so the word-aware wrap keys on the *glyph-free* source text and stays in lockstep with `move_up_visual`/`move_down_visual` and the scroll math: `line_render::paint_row` recolors the resolved cell, the raw-reveal builders in `rendered_view/paint.rs` (`make_raw_line_with_selection`, `make_code_styled_body_line`) and `raw_view::raw_display_line` build the line without the cursor, and `overlay_raw_cell` recolors the table cell in place. A block cursor sitting on a selected/highlighted cell wins over that wash — the cursor cell shows the cursor color, not the selection bg.
@@ -435,7 +451,7 @@ The interactive elements inside modals/overlays are one family, defined in `ui::
 - **Preview-mode Ctrl-key allowlist.** `input::mode_handler::default::preview_safe_action` decides which Ctrl-* chords fire in Preview mode. Read-only overlay openers (`ShowCommandPalette`, `OpenSettings`, `OpenWelcome`, `OpenKeybinds`, `OpenConfigFolder`, `ShowMarkdownCheatSheet`, `SwitchTheme`, `CreateCustomTheme`) belong on the allowlist — adding a new modal-opening action means adding it here too, otherwise the chord will silently no-op in Preview.
 - **Focus vs. persistent selection (modal styling convention).** When a modal carries a *persistent selection* that's independent of focus — e.g. the export-theme modal's highlighted theme name (`modal_item_selected_unfocused` at `export_theme_modal.rs`), or any form whose marked value survives focus moves — use this three-tier styling: (Note: ordinary labeled control rows — settings, welcome — are *not* this case; their focus styling is `controls::control_label_style`, see "Unified UI controls".) - Focused element → `theme.modal_button_focused`   (`primary` bg + REVERSED + bold). Filled, strongest. - Persistent selection *without* focus →   `theme.modal_item_selected_unfocused` (`secondary` **fg** on   `surface_elevated`, bold). Outlined, no fill — never reads the same as   the focused element. - Neither → `theme.modal_item` (plain text on `surface_elevated`).
 
-Don't reuse `modal_item_selected` for "selected but unfocused" — it also uses a filled `primary` bg, which collides with the focused affordance. For composite affordances (checkbox glyph + label), apply the unfocused-selection style to the *glyph only*, not the full row. See [`docs/theming.md`](docs/theming.md) §"Focus vs. persistent selection" for the rationale and the monochrome fallback.
+Don't reuse `modal_item_selected` for "selected but unfocused" — it also uses a filled `primary` bg, which collides with the focused affordance. For composite affordances (checkbox glyph + label), apply the unfocused-selection style to the *glyph only*, not the full row. See [`docs/dev/theming.md`](docs/dev/theming.md) §"Focus vs. persistent selection" for the rationale and the monochrome fallback.
 
 ### Images, diagrams, and export
 
