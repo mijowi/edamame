@@ -1,0 +1,25 @@
+# Blank issues stay ON.
+#
+# The usual argument for turning them off is that the bug form collects the
+# terminal details most edamame reports need. That is real, but it only
+# outweighs the cost once there is somewhere else to send everything the
+# forms don't cover — questions, "the docs are wrong", half-formed ideas.
+# With Discussions off, turning blank issues off leaves those people with no
+# route at all, and a lost report costs more than a triage comment.
+#
+# Flip this to `false` once Discussions is enabled and listed below as a
+# contact link.
+blank_issues_enabled: true
+
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/mijowi/edamame/security/advisories/new
+    about: >
+      Please report privately, not as a public issue. edamame opens untrusted
+      documents, so a parsing or decoding flaw may be exploitable.
+
+  - name: Documentation
+    url: https://github.com/mijowi/edamame/blob/main/docs/getting-started.md
+    about: >
+      Keybindings, configuration, themes and vim mode are all documented —
+      worth a look before filing, especially for terminal-related surprises.

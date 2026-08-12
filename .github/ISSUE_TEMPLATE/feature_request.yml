@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest something edamame should do.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        edamame aims to be a focused Markdown editor rather than a general
+        one, so the most useful thing you can tell us is what you were
+        *trying to do* — not only what feature would do it. A described
+        problem often has a simpler solution than the feature imagined for
+        it.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: >
+        The task or friction that prompted this. What do you do today
+        instead, and why is that unsatisfying?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like edamame to do?
+      description: >
+        If you have a specific design in mind — a key, a command, a setting —
+        describe it. It's fine to leave this vague if you only have the
+        problem.
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Other tools that do this well
+      description: >
+        Optional, and genuinely useful. If another editor solves this, saying
+        which one and how it behaves is often worth more than a spec.
+    validations:
+      required: false

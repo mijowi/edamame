@@ -1,0 +1,45 @@
+version: 2
+
+updates:
+  # Cargo dependencies.  Grouped aggressively: edamame has ~40 direct
+  # dependencies and many more transitively, and ungrouped Dependabot on a
+  # tree that size produces a PR per crate per week — enough noise that the
+  # security-relevant ones get lost in it.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # Everything non-breaking in one PR.  CI covers it; if it is green
+      # this is a single click.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+      # Majors stay separate — each one needs reading.
+      major:
+        update-types:
+          - major
+    ignore:
+      # Pinned exactly (`=0.2.2`) because it is pre-1.0 with known panic
+      # bugs, and because `resvg` / `usvg` must stay on the versions it
+      # depends on or cargo compiles two copies of each.  Upgrading is a
+      # deliberate, tested change — see AGENTS.md and docs/security.md — not
+      # something to merge from a bot PR.
+      - dependency-name: mermaid-rs-renderer
+      - dependency-name: resvg
+      - dependency-name: usvg
+
+  # Workflow actions.  Cheap to keep current, and stale action versions are
+  # a common source of sudden CI breakage when a runner image changes.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns:
+          - "*"
