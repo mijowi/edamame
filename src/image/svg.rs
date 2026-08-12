@@ -110,6 +110,54 @@ impl SvgSizing {
     }
 }
 
+/// Longest side, in pixels, any rasterized SVG may occupy.  Guards the
+/// degenerate aspect ratios that [`MAX_RASTER_PIXELS`] alone lets through
+/// (a 1 × 10⁹ SVG has few enough pixels per row to satisfy an area budget
+/// while still being unallocatable).
+const MAX_RASTER_DIM: u32 = 8_192;
+
+/// Hard ceiling on the rasterized pixmap's area, applied **whether or not
+/// a cell envelope is supplied**.
+///
+/// The envelope clamp below bounds every on-screen path, but not every
+/// caller has an envelope: `export::html::render_mermaid_png_data_uri`
+/// rasterizes at natural size because the exported PNG isn't sized in
+/// terminal cells.  The SVG it rasterizes is generated from a Mermaid
+/// block in a document the user may not have written, and while
+/// `diagram::mermaid` caps that *source* at 64 KiB, a dense diagram turns
+/// a small source into arbitrarily large layout dimensions — input bound,
+/// output unbound.  4 M pixels is 16 MB of RGBA, far more resolution than
+/// an embedded diagram needs, and it caps what a crafted document can make
+/// us allocate.
+///
+/// Over-budget SVGs are scaled *down* to fit rather than refused: a
+/// legitimately large diagram should still export, just not at its
+/// declared size.
+const MAX_RASTER_PIXELS: u64 = 4_000_000;
+
+/// The factor a `px_w × px_h` pixmap must be multiplied by to fit both
+/// [`MAX_RASTER_DIM`] and [`MAX_RASTER_PIXELS`], aspect ratio preserved.
+/// Returns `1.0` when it already fits — the overwhelmingly common case, so
+/// the enveloped paths are unaffected — and never more than `1.0`.
+///
+/// Takes the *rounded* pixel dimensions rather than the natural size ×
+/// scale, so that flooring the result is exactly within budget: the
+/// `ceil` that derives those dimensions would otherwise push a
+/// budget-fitting scale back over the line by a pixel per axis.
+fn budget_shrink(px_w: u32, px_h: u32) -> f64 {
+    let (w, h) = (f64::from(px_w), f64::from(px_h));
+    let mut shrink = 1.0f64;
+    let longest = w.max(h);
+    if longest > f64::from(MAX_RASTER_DIM) {
+        shrink = f64::from(MAX_RASTER_DIM) / longest;
+    }
+    let area = (w * shrink) * (h * shrink);
+    if area > MAX_RASTER_PIXELS as f64 {
+        shrink *= (MAX_RASTER_PIXELS as f64 / area).sqrt();
+    }
+    shrink
+}
+
 /// Errors from the SVG rasterization pipeline.  Carry owned `String`
 /// messages rather than source-chained errors so the type stays
 /// `Send + Sync` and can be shipped back through the App's mpsc channel.
@@ -157,7 +205,7 @@ pub fn rasterize_svg(
     let natural_w = (size.width().ceil() as u32).max(1);
     let natural_h = (size.height().ceil() as u32).max(1);
 
-    let scale = sizing.scale_for(natural_w, natural_h);
+    let mut scale = sizing.scale_for(natural_w, natural_h);
     let mut px_w = ((natural_w as f32 * scale).ceil() as u32).max(1);
     let mut px_h = ((natural_h as f32 * scale).ceil() as u32).max(1);
     // Clamp to the envelope so f32 ceiling rounding can never overshoot it
@@ -166,6 +214,16 @@ pub fn rasterize_svg(
     if let Some((max_w_px, max_h_px)) = sizing.envelope_px() {
         px_w = px_w.min(max_w_px).max(1);
         px_h = px_h.min(max_h_px).max(1);
+    }
+    // Bound the allocation even when no envelope applies — see
+    // `MAX_RASTER_PIXELS`.  The shrink is folded into `scale` as well as
+    // the dimensions because `scale` is the render transform: shrinking the
+    // pixmap alone would crop the drawing instead of fitting it into it.
+    let shrink = budget_shrink(px_w, px_h);
+    if shrink < 1.0 {
+        scale = (f64::from(scale) * shrink) as f32;
+        px_w = ((f64::from(px_w) * shrink).floor() as u32).max(1);
+        px_h = ((f64::from(px_h) * shrink).floor() as u32).max(1);
     }
 
     let mut pixmap = resvg::tiny_skia::Pixmap::new(px_w, px_h)
@@ -186,6 +244,12 @@ pub fn rasterize_svg(
     let png_bytes = pixmap
         .encode_png()
         .map_err(|e| SvgError::Raster(format!("png encode: {e}")))?;
+    // The "decode through `ImageReader` + `Limits`" invariant in
+    // `docs/dev/security-invariants.md` covers *external* bytes.  These are
+    // the PNG we encoded one line above, from a pixmap whose dimensions are
+    // already bounded by the envelope and `MAX_RASTER_PIXELS`, so there is
+    // nothing left for a decode limit to constrain.  Don't copy this call
+    // to a site whose bytes came from a file, a socket, or a document.
     image::load_from_memory(&png_bytes).map_err(|e| SvgError::Decode(format!("{e}")))
 }
 
@@ -284,6 +348,71 @@ mod tests {
         let image = rasterize_svg(svg, natural(None), None).expect("rasterize");
         assert_eq!(image.width(), 37);
         assert_eq!(image.height(), 23);
+    }
+
+    // ── Absolute pixmap budget ────────────────────────────────────────
+
+    /// Apply `budget_shrink` the way `rasterize_svg` does — floored, with
+    /// the same one-pixel floor — so the assertions below test the
+    /// dimensions actually allocated.
+    fn shrunk(px_w: u32, px_h: u32) -> (u64, u64) {
+        let shrink = budget_shrink(px_w, px_h);
+        if shrink >= 1.0 {
+            return (u64::from(px_w), u64::from(px_h));
+        }
+        (
+            ((f64::from(px_w) * shrink).floor() as u64).max(1),
+            ((f64::from(px_h) * shrink).floor() as u64).max(1),
+        )
+    }
+
+    #[test]
+    fn budget_shrink_leaves_ordinary_sizes_alone() {
+        // Every enveloped path lands here: a few hundred thousand pixels is
+        // orders of magnitude under the ceiling, so nothing is rescaled.
+        assert_eq!(budget_shrink(800, 600), 1.0);
+        assert_eq!(budget_shrink(512, 384), 1.0);
+    }
+
+    #[test]
+    fn budget_shrink_caps_area_with_the_aspect_ratio_intact() {
+        // 4000×3000 = 12 M px, three times the 4 M budget → shrink by
+        // sqrt(1/3) ≈ 0.577.
+        let (w, h) = shrunk(4000, 3000);
+        assert!(w * h <= MAX_RASTER_PIXELS, "area {} over budget", w * h);
+        let aspect = w as f64 / h as f64;
+        assert!((aspect - 4.0 / 3.0).abs() < 1e-2, "aspect {aspect} drifted");
+    }
+
+    #[test]
+    fn budget_shrink_caps_the_longest_side_of_a_sliver() {
+        // 100 000 × 4 = 400 K px, comfortably inside the area budget — the
+        // dimension cap is the only thing that catches it.
+        let (w, h) = shrunk(100_000, 4);
+        assert!(w <= u64::from(MAX_RASTER_DIM), "width {w} over the dim cap");
+        assert!(h >= 1, "the short axis must not floor away to zero");
+        assert!(w * h <= MAX_RASTER_PIXELS);
+    }
+
+    #[test]
+    fn oversized_svg_without_an_envelope_is_scaled_into_the_budget() {
+        // The `export::html` Mermaid path passes no envelope, so this is
+        // the only thing standing between a crafted document and an
+        // unbounded pixmap allocation.  4000×3000 natural must come back
+        // inside the budget, still rendered (not refused) and still 4:3.
+        let svg = r##"<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="4000" height="3000" viewBox="0 0 4000 3000">
+  <rect width="4000" height="3000" fill="#eef"/>
+</svg>"##;
+        let image = rasterize_svg(svg, natural(None), None).expect("rasterize");
+        let (w, h) = (u64::from(image.width()), u64::from(image.height()));
+        assert!(
+            w * h <= MAX_RASTER_PIXELS,
+            "{w}x{h} = {} px exceeds the {MAX_RASTER_PIXELS} px budget",
+            w * h
+        );
+        assert!(w <= u64::from(MAX_RASTER_DIM) && h <= u64::from(MAX_RASTER_DIM));
+        assert!(w > h, "the 4:3 aspect ratio must survive the clamp");
     }
 
     #[test]
