@@ -297,6 +297,220 @@ pub(super) fn read_theme_named(
 mod tests {
     use super::*;
 
+    /// The shipped `config/config.toml` is copied verbatim into every new
+    /// user's config directory, so a typo in it greets a first-time user
+    /// with a warning modal.  It must deserialize cleanly *and* leave no
+    /// unknown keys — the same two checks `read_and_warn` performs at
+    /// startup.
+    #[test]
+    fn shipped_reference_config_loads_without_warnings() {
+        let raw = super::super::init::REFERENCE_CONFIG_TOML;
+        let (_config, unknown): (Config, Vec<String>) = deserialize_with_unknown_keys(raw)
+            .expect("the shipped config/config.toml must parse as a Config");
+        assert!(
+            unknown.is_empty(),
+            "config/config.toml documents keys that no longer exist: {unknown:?}"
+        );
+    }
+
+    /// Most of `config/config.toml` is *commented* examples, and the test
+    /// above can't see any of them — it parses the file as shipped, where
+    /// a key renamed out from under its `# key = value` line is just a
+    /// comment.  The user who uncomments it is the one who finds out.
+    ///
+    /// So uncomment each example in turn and put it through the same
+    /// deserialize-and-report-unknown-keys check, scoped to whichever
+    /// table it sits under (tracking commented `# [section]` headers as
+    /// well as live ones).  This is the config-side counterpart to
+    /// `shipped_reference_keybindings_are_all_uncommentable`.
+    #[test]
+    fn shipped_reference_config_examples_are_all_uncommentable() {
+        let checked = check_commented_examples(super::super::init::REFERENCE_CONFIG_TOML)
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            checked > 20,
+            "expected the reference config to carry commented examples; only found \
+             {checked} — has the format changed?"
+        );
+    }
+
+    /// The scanner above is only worth having if it fails on a stale
+    /// example, so pin that directly: a key that no longer exists must be
+    /// reported, and the live/commented section tracking must attribute it
+    /// to the right table.
+    #[test]
+    fn commented_example_scanner_rejects_a_key_that_no_longer_exists() {
+        let good = "[editor]\n# line_wrap = true\n# [dev]\n# logging = false\n";
+        assert_eq!(check_commented_examples(good), Ok(2));
+
+        let stale = "[editor]\n# line_wrap_renamed = true\n";
+        let err = check_commented_examples(stale).unwrap_err();
+        assert!(
+            err.contains("line_wrap_renamed") && err.contains("[editor]"),
+            "unhelpful failure message: {err}"
+        );
+
+        // A real key, but filed under the wrong table — the same failure.
+        let misplaced = "# [dev]\n# line_wrap = true\n";
+        assert!(check_commented_examples(misplaced).is_err());
+
+        // Prose and trailing-comment continuations must not be mistaken
+        // for examples.
+        let prose = "[editor]\n# Wrap long lines. Default: true.\n#     # a .css file.\n";
+        assert_eq!(check_commented_examples(prose), Ok(0));
+
+        // Bracketed *prose* must not be adopted as a section header — doing
+        // so would check every example after it against a table that does
+        // not exist.  `# [ ] a task` looks like one to a naive scan.
+        let bracket_prose = "[editor]\n# [ ] a task\n# line_wrap = true\n";
+        assert_eq!(check_commented_examples(bracket_prose), Ok(1));
+
+        // A real commented-out header still is one, in both spellings.
+        assert_eq!(
+            table_header("[export.html]").as_deref(),
+            Some("[export.html]")
+        );
+        assert_eq!(
+            table_header("[[export.custom]]").as_deref(),
+            Some("[[export.custom]]")
+        );
+        assert_eq!(table_header("[see the note above]"), None);
+        assert_eq!(table_header("[]"), None);
+        assert_eq!(table_header("[editor"), None);
+    }
+
+    /// `[table]` / `[[array.of.tables]]` if `line` is exactly a TOML table
+    /// header, else `None`.
+    ///
+    /// The bracket content must be a dotted run of bare-key characters,
+    /// which is what separates a header from bracketed *prose* — a comment
+    /// line like `# [ ] a task` or `# [see the note above]` would otherwise
+    /// be adopted as the current section and every example after it checked
+    /// against a table that does not exist.
+    fn table_header(line: &str) -> Option<String> {
+        let inner = line
+            .strip_prefix("[[")
+            .and_then(|l| l.strip_suffix("]]"))
+            .or_else(|| line.strip_prefix('[').and_then(|l| l.strip_suffix(']')))?;
+        let bare = !inner.is_empty()
+            && inner.split('.').all(|seg| {
+                !seg.is_empty()
+                    && seg
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            });
+        bare.then(|| line.to_owned())
+    }
+
+    /// Uncomment every `# key = value` example in a reference config and
+    /// check it against the live `Config` schema, scoped to whichever
+    /// table it sits under.  Returns how many examples were checked, or
+    /// the first failure.  See the caller for why this exists.
+    ///
+    /// Section tracking is a line scan, not a TOML parse, so it rests on
+    /// the reference file's layout: a commented-out `# [section]` header
+    /// claims every commented example below it until the next header of
+    /// either kind.  A commented header dropped into the middle of a live
+    /// table would therefore misattribute the examples that follow — but
+    /// that misattribution *fails the test* rather than skipping a check,
+    /// so the failure mode is a false alarm the author sees immediately,
+    /// never a stale example slipping through.
+    fn check_commented_examples(raw: &str) -> Result<usize, String> {
+        let mut section = String::new();
+        let mut checked = 0;
+
+        for (lineno, line) in raw.lines().enumerate() {
+            let trimmed = line.trim();
+            // A live table header, or a commented-out one (`# [dev]`, which
+            // is how the reference file presents a whole optional section).
+            let candidate = trimmed.strip_prefix('#').map_or(trimmed, str::trim);
+            if let Some(header) = table_header(candidate) {
+                section = header;
+                continue;
+            }
+            // Only commented lines are of interest; live ones are already
+            // covered by the whole-file parse above.
+            let Some(body) = trimmed.strip_prefix('#').map(str::trim) else {
+                continue;
+            };
+            // Prose, not an example: `# ... some sentence ...`, or a
+            // continuation of a previous line's trailing comment.
+            let Some((key, _)) = body.split_once('=') else {
+                continue;
+            };
+            let key = key.trim();
+            if key.is_empty()
+                || !key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+            {
+                continue;
+            }
+
+            let doc = format!("{section}\n{body}\n");
+            let (_config, unknown): (Config, Vec<String>) = deserialize_with_unknown_keys(&doc)
+                .map_err(|e| {
+                    format!(
+                        "config.toml line {}: uncommenting `{body}` under `{section}` \
+                         does not parse: {e}",
+                        lineno + 1
+                    )
+                })?;
+            if !unknown.is_empty() {
+                return Err(format!(
+                    "config.toml line {}: `{key}` under `{section}` is no longer a real \
+                     setting (reported unknown: {unknown:?})",
+                    lineno + 1
+                ));
+            }
+            checked += 1;
+        }
+
+        Ok(checked)
+    }
+
+    /// Every keybinding the shipped `config/keybindings.toml` shows as a
+    /// commented example must be one the user can actually uncomment.
+    ///
+    /// This is the file's whole purpose, and it has been wrong before: it
+    /// used to present `Action = ""` as the way to leave something
+    /// unbound, which is a parse error that silently drops the entry.
+    /// Uncomment every `# Name = "chord"` line and put it through the same
+    /// action-name and `parse_key` validation the loader uses.
+    #[test]
+    fn shipped_reference_keybindings_are_all_uncommentable() {
+        let raw = include_str!("../../config/keybindings.toml");
+        let mut checked = 0;
+        for line in raw.lines() {
+            let Some(body) = line.trim_start().strip_prefix('#') else {
+                continue;
+            };
+            let body = body.trim();
+            // Only consider lines shaped like a binding: `Name = "chord"`.
+            let Some((name, value)) = body.split_once('=') else {
+                continue;
+            };
+            let (name, value) = (name.trim(), value.trim());
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric()) {
+                continue;
+            }
+            let Some(chord) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
+                continue;
+            };
+            Action::from_str(name)
+                .unwrap_or_else(|_| panic!("keybindings.toml names unknown action `{name}`"));
+            parse_key(chord).unwrap_or_else(|_| {
+                panic!("keybindings.toml shows `{name} = \"{chord}\"`, which does not parse")
+            });
+            checked += 1;
+        }
+        assert!(
+            checked > 10,
+            "expected the reference keybindings file to carry example bindings; \
+             only found {checked} — has the format changed?"
+        );
+    }
+
     #[test]
     fn list_export_stylesheets_finds_css_sorted_and_ignores_others() {
         let dir = tempfile::tempdir().unwrap();

@@ -11,15 +11,42 @@
 # in themes/ and set `theme` to its stem.
 theme = "Edamame"
 
-# Appearance mode — filters the theme picker (Ctrl+Shift+T) so only themes
-# matching this mode are shown, and decides which counterpart theme is
-# previewed when the mode is toggled.  Must be "dark" or "light".  Default:
-# "dark".  Toggle interactively via the picker's [ Dark | Light ] pill
-# (Tab / Left / Right or click) or the settings overlay's Appearance row.
+# Appearance mode — filters the theme picker so only themes matching this mode
+# are shown, and decides which counterpart theme is previewed when the mode is
+# toggled.  Must be "dark" or "light".  Default: "dark".  Toggle interactively
+# via the "Dark mode" slider in the theme picker (open it from the command
+# palette, Ctrl-P → "Switch theme"); there is no default chord for the picker
+# and no Appearance row in the settings overlay.
 appearance = "dark"
 
 # ── Editor ────────────────────────────────────────────────────────────────────
 [editor]
+# Wrap long lines at the terminal width. When false, long lines extend past the
+# visible area without wrapping. Default: true.
+# line_wrap = true
+
+# Wrap lines inside fenced/indented code blocks that exceed the terminal width.
+# Kept separate from `line_wrap` because wrapped code is often harder to read
+# than clipped code. Default: false.
+# code_block_wrap = false
+
+# Render multiple consecutive blank lines in the source as multiple blank lines
+# in the output. Standard Markdown collapses them to one; this preserves the
+# author's spacing. Default: true.
+# preserve_blank_lines = true
+
+# Move the cursor by *visual* lines with Up/Down, so it keeps its horizontal
+# screen column across a wrapped line. When false, Up/Down move by logical
+# (newline-terminated) buffer lines. Exposed as the settings-overlay row
+# "Use visual line navigation". Default: true.
+# visual_line_nav = true
+
+# Show the first-run welcome modal at startup. The modal's "Show on next
+# launch" toggle writes this value when you save. While the welcome is still
+# pending it also suppresses the images / remote-image / diagrams / capabilities
+# prompts so you are never double-prompted. Default: true.
+# show_welcome = true
+
 # Fingerprints of terminals that have already shown the capabilities notice.
 # Dismissing the notice (or completing the welcome modal) appends the current
 # terminal's fingerprint here so it won't fire again. Launching in a new,
@@ -48,8 +75,8 @@ appearance = "dark"
 # max_width_enabled = false
 
 # Maximum content width in columns when `max_width_enabled` is true.
-# Floored at 20 to keep layout sane. Default: 80.
-# max_width_cols = 80
+# Floored at 20 to keep layout sane. Default: 100.
+# max_width_cols = 100
 
 # Silently save the buffer to disk after `autosave_idle_ms` of typing
 # inactivity. Only buffers with an associated file path autosave; an
@@ -124,8 +151,8 @@ warn_on_width_injection = true
 # Master switch for inline image rendering: "ask" | "always" | "never".
 enabled = "ask"
 # Ceilings in terminal cells. Images are scaled to fit within
-# max_width × max_height while preserving aspect ratio. Defaults: 80 × 24.
-# max_width = 80
+# max_width × max_height while preserving aspect ratio. Defaults: 100 × 24.
+# max_width = 100
 # max_height = 24
 # Policy for `http(s)://` image URLs: "ask" | "always" | "never".
 remote_policy = "ask"
@@ -138,11 +165,9 @@ remote_policy = "ask"
 enabled = "ask"
 
 # ── Export ────────────────────────────────────────────────────────────────────
-# HTML is edamame's single built-in export target. It also serves as the
-# intermediate format for custom commands (see [[export.custom]] below), so
-# PDF / DOCX / etc. are one external-tool invocation away.
-# These are the defaults the Export HTML modal opens with; choosing different
-# options in that modal writes them back here.
+# HTML is edamame's only export target. Run it from the command palette
+# (Ctrl-P → "Export HTML"). These are the defaults the Export HTML modal opens
+# with; choosing different options in that modal writes them back here.
 # [export.html]
 # stylesheet     = "builtin"    # "builtin" (the bundled default), or a path to
 #                               # a .css file. Drop custom stylesheets in the
@@ -154,21 +179,6 @@ enabled = "ask"
 # inline_images  = false        # when true, local images are base64-embedded
 # diagrams       = true         # render ```mermaid blocks as inline SVG
 #                               # (false → leave as <pre><code class="language-mermaid">)
-
-# Add one or more [[export.custom]] blocks to pipe the generated HTML through
-# an external tool. Each entry becomes an "Export <name>" item in the command
-# palette (Phase 10). {html} is substituted with the temp HTML file path and
-# {out} with the final output path (source stem + configured extension).
-#
-# [[export.custom]]
-# name      = "PDF (weasyprint)"
-# command   = ["weasyprint", "{html}", "{out}"]
-# extension = "pdf"
-#
-# [[export.custom]]
-# name      = "DOCX (pandoc)"
-# command   = ["pandoc", "{html}", "-o", "{out}"]
-# extension = "docx"
 
 # ── Dev ───────────────────────────────────────────────────────────────────────
 # Developer tooling. When `logging` is true, structured `tracing` logs are

@@ -87,9 +87,9 @@ pub struct Theme {
     /// In-document heading link (`#section`) — `link` fg, no underline.
     pub link_heading: Style,
     pub image_placeholder: Style,
-    /// Footnote / reference marker (deferred renderer feature).  Field
-    /// is in place so themes can already style it ahead of the
-    /// implementation.
+    /// Footnote chrome — the superscript reference marker (`[^1]` →
+    /// `⁽¹⁾`) and a definition's leader / return glyph.  `secondary`
+    /// so the markers read as structure rather than prose.
     pub footnote: Style,
 
     // ── Block elements ────────────────────────────────────────────
@@ -241,7 +241,7 @@ pub struct Theme {
     /// element.  Rendered as `secondary` **foreground** (no fill) so
     /// the focused affordance (which uses `primary` *fill*) reads
     /// unambiguously, while the persistent selection still carries a
-    /// distinct outlined affordance.  See `docs/theming.md`
+    /// distinct outlined affordance.  See `docs/dev/theming.md`
     /// §"Focus vs. persistent selection" for the three-tier
     /// convention this field is part of, and the monochrome fallback.
     /// For composite affordances (e.g. `[x] Label`), apply only to
@@ -389,8 +389,9 @@ pub struct Theme {
 /// so those layers read as lifted from both the document area and the
 /// status bar.
 ///
-/// `diff_add` / `diff_delete` are reserved for a future diff view; no
-/// styles currently consume them.
+/// `diff_add` / `diff_delete` are the base hues for diff review; the
+/// focused / unfocused line and inline-span washes are all derived from
+/// them in [`Theme::from_palette`] and consumed by `ui::diff_view`.
 #[derive(Debug, Clone)]
 pub struct Palette {
     /// Default document foreground.
@@ -729,7 +730,9 @@ impl Theme {
 
 impl Theme {
     /// Build a fully-populated [`Theme`] from `palette`.  Every style
-    /// is derived from a palette entry per the rules in `theming.md`.
+    /// is derived from a palette entry; this function is the single
+    /// source of truth for those assignments (`docs/dev/theming.md`
+    /// carries the conventions behind them, not the mapping itself).
     /// Used both by [`Theme::default`] and by the on-disk theme loader
     /// after applying user palette overrides.
     pub fn from_palette(palette: &Palette) -> Self {
@@ -997,11 +1000,6 @@ impl Theme {
             // place so themes can opt in.
             active_line: Style::default(),
 
-            // Editor block cursor — bg mirrors the status-bar mode chip
-            // so the cursor reads as the same affordance in both
-            // places (per theming.md).  Each variant pairs the chip's
-            // bg with a contrasting fg so the underlying character
-            // stays legible.
             // Unified modal input cursor — a solid `accent` block shared by
             // every modal text field, so typing in a prompt looks the same
             // everywhere and reads as its own context, distinct from the
@@ -1168,6 +1166,29 @@ impl Default for Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The built-in theme registry, pinned with each theme's light/dark
+    /// classification.
+    ///
+    /// `docs/themes.md` lists these by name, split into Dark and Light
+    /// groups, and a user searching the picker for a theme the docs
+    /// promised is a bad first impression.  Accepting a change to this
+    /// snapshot is the reminder to update that list.
+    #[test]
+    fn builtin_themes_are_pinned_for_the_docs() {
+        let rows: Vec<String> = BUILTIN_THEMES
+            .iter()
+            .map(|(name, ctor)| {
+                let appearance = if ctor().palette.light {
+                    "light"
+                } else {
+                    "dark"
+                };
+                format!("{name} ({appearance})")
+            })
+            .collect();
+        insta::assert_snapshot!(rows.join("\n"));
+    }
 
     /// Every field on [`Palette`] in the order it appears in the struct
     /// definition.  When you add a field to `Palette`, add it here so
