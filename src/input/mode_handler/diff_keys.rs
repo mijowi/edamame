@@ -110,19 +110,6 @@ const DIFF_REVIEW_BINDINGS: &[DiffBinding] = &[
         action: Action::DiffResetHunk,
         glyph: "⌫",
     },
-    DiffBinding {
-        key: KeyCode::Char('i'),
-        mods: ModMatch::Exact(KeyModifiers::NONE),
-        action: Action::DiffEnterEdit,
-        glyph: "i",
-    },
-    // Alias: `Enter` also enters Edit sub-mode.
-    DiffBinding {
-        key: KeyCode::Enter,
-        mods: ModMatch::Exact(KeyModifiers::NONE),
-        action: Action::DiffEnterEdit,
-        glyph: "",
-    },
 ];
 
 impl ModMatch {
@@ -211,14 +198,18 @@ mod tests {
             diff_action_for(&ev(KeyCode::Backspace, none)),
             Some(Action::DiffResetHunk)
         );
-        assert_eq!(
-            diff_action_for(&ev(KeyCode::Char('i'), none)),
-            Some(Action::DiffEnterEdit)
-        );
-        assert_eq!(
-            diff_action_for(&ev(KeyCode::Enter, none)),
-            Some(Action::DiffEnterEdit)
-        );
+    }
+
+    /// `i` and `Enter` used to enter an unimplemented in-diff Edit
+    /// sub-mode that only flashed "coming soon".  They are unbound now,
+    /// so they fall through to the global keymap like any other key —
+    /// `docs/editing.md` documents the diff keys without them.  Binding
+    /// them again means implementing the feature first.
+    #[test]
+    fn edit_sub_mode_keys_are_unbound() {
+        let none = KeyModifiers::NONE;
+        assert_eq!(diff_action_for(&ev(KeyCode::Char('i'), none)), None);
+        assert_eq!(diff_action_for(&ev(KeyCode::Enter, none)), None);
     }
 
     /// Unbound keys fall through (so the global keymap gets a look-in).
@@ -247,9 +238,7 @@ mod tests {
         assert_eq!(diff_hint(&Action::DiffPrev), "⇧Tab");
         assert_eq!(diff_hint(&Action::DiffResetHunk), "⌫");
         assert_eq!(diff_hint(&Action::DiffExit), "Esc");
-        // Edit's glyph is `i`, not the empty Enter alias.
-        assert_eq!(diff_hint(&Action::DiffEnterEdit), "i");
         // An action with no review binding yields an empty glyph.
-        assert_eq!(diff_hint(&Action::DiffExitEdit), "");
+        assert_eq!(diff_hint(&Action::Quit), "");
     }
 }

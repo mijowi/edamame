@@ -1,8 +1,11 @@
 //! Document export.
 //!
-//! HTML is the single built-in export target and doubles as the intermediate
-//! format for user-configured custom exports (PDF, DOCX, …) that pipe the
-//! generated HTML through an external tool such as `weasyprint` or `pandoc`.
+//! HTML is the only export target that has shipped.  It is also designed to
+//! serve as the intermediate format for user-configured custom exports (PDF,
+//! DOCX, …) that pipe the generated HTML through an external tool such as
+//! `weasyprint` or `pandoc` — [`custom`] implements and tests that runner,
+//! but no UI reaches it yet, so `[[export.custom]]` config is inert.  See
+//! [`crate::config::CustomExportEntry`].
 //!
 //! The module is deliberately UI-agnostic: every public function is callable
 //! from the command palette without that code needing to
