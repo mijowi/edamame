@@ -18,9 +18,9 @@ use std::time::Duration;
 use super::AppEvent;
 
 /// Project homepage, opened by the About modal's footer button.
-pub(crate) const GITHUB_URL: &str = "https://github.com/gorgonian/edamame";
+pub(crate) const GITHUB_URL: &str = "https://github.com/mijowi/edamame";
 
-const RELEASES_API_URL: &str = "https://api.github.com/repos/gorgonian/edamame/releases/latest";
+const RELEASES_API_URL: &str = "https://api.github.com/repos/mijowi/edamame/releases/latest";
 
 /// Bound on connect / response / body phases so a slow or unreachable
 /// endpoint can't pin the worker thread for the whole session.

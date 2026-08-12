@@ -2,7 +2,40 @@
 name = "edamame"
 version = "0.1.0"
 edition = "2021"
-description = "A fast, jank-free TUI Markdown editor and viewer"
+# Minimum supported Rust version, found with `cargo-msrv` and pinned by the
+# `msrv` CI job so it can't rot silently.  Cargo enforces it: a user on an
+# older toolchain gets "requires rustc 1.90" instead of a confusing error
+# from somewhere deep in the dependency tree.
+#
+# Raising this is a deliberate change, not a side effect of using a new
+# language feature — re-run `cargo msrv find` and bump the CI job with it.
+rust-version = "1.90"
+description = "A fast TUI Markdown editor and viewer"
+authors = ["mijowi"]
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/mijowi/edamame"
+homepage = "https://github.com/mijowi/edamame"
+documentation = "https://github.com/mijowi/edamame/blob/main/docs/getting-started.md"
+keywords = ["markdown", "editor", "tui", "terminal", "viewer"]
+categories = ["command-line-utilities", "text-editors"]
+# Keep the published tarball to what a user or downstream builder needs:
+# source, the scaffolded reference config (which is `include_str!`d), the
+# user-facing docs, and the tests.  Only the historical planning documents and
+# the working issue tracker are dropped — they are large and of no use to
+# anyone installing the crate.
+#
+# Note `tests/` and `benches/` deliberately stay: both are auto-discovered (or,
+# for `[[bench]] pipeline`, explicitly declared) target sources, and excluding
+# them makes `cargo publish` warn once per ignored target.
+#
+# `CLAUDE.md` is a symlink to `AGENTS.md`, and cargo packages symlinks by
+# dereferencing them — leaving it in would publish the same file twice.
+exclude = [
+    "docs/dev/plans/",
+    ".github/",
+    "CLAUDE.md",
+]
 
 [[bin]]
 name = "edamame"
@@ -171,3 +204,8 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch supersedes the run in flight.  `main` is
+# excluded from cancellation so the history of what passed on the release
+# branch stays complete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Backtraces on a panicking test, so a CI-only failure is diagnosable from
+  # the log without a re-run.
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Lint both feature configurations.  `--all-features` is what compiles
+      # and lints the `arboard` clipboard paths, which the test job below
+      # deliberately does not build.
+      #
+      # `-D warnings` is passed per-invocation rather than as a global
+      # RUSTFLAGS in the workflow `env:`, which would also apply to
+      # dependencies and break the build whenever an upstream crate emits a
+      # warning we cannot fix.
+      - name: Clippy (all features)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Clippy (no default features)
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # `--no-default-features` drops the `arboard` dependency, so copy/cut/
+      # paste resolve against the in-process kill-ring instead of the OS
+      # clipboard.  That is deliberate, and it is what makes this job
+      # deterministic:
+      #
+      #   * The OS clipboard is process-global state shared by every test
+      #     thread, so with it live the clipboard tests race each other.
+      #   * Headless Linux runners have no clipboard at all, so the arboard
+      #     path would be exercised on macOS and skipped on Linux — the worst
+      #     of both worlds for reproducibility.
+      #
+      # Unit tests are additionally insulated by `edit_ops::OS_CLIPBOARD`
+      # (false under `cfg(test)`); this flag is what extends the same
+      # guarantee to the integration tests in `tests/`, which link the
+      # library compiled without `cfg(test)`.  The clipboard code is still
+      # compiled and linted by the clippy job above.
+      #
+      # Deliberately NOT `--all-targets`: that pulls in `benches/pipeline.rs`,
+      # and Criterion executes every benchmark even in test mode, which turns
+      # a 30-second job into a multi-minute one.  Plain `cargo test` covers
+      # lib + integration tests + doctests; the benches are compile-checked
+      # by `clippy --all-targets` above.
+      - name: Test
+        run: cargo test --no-default-features
+
+  # Windows is not a supported platform yet — edamame has never been tested
+  # there (issue #2).  Running it non-blocking turns "someone should
+  # try Windows one day" into a standing signal at no cost: the job reports
+  # its result but cannot fail the workflow.  Promote it into the matrix
+  # above once it is reliably green.
+  windows:
+    name: Test (windows, non-blocking)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --no-default-features
+
+  # Pins the `rust-version` declared in Cargo.toml.  Without this the MSRV
+  # rots the first time anyone uses a newer language feature — or, more
+  # likely here, the first time a dependency raises its own.
+  #
+  # 1.90 is currently forced by a *transitive* dependency, not by edamame's
+  # own code: ratatui-image → icy_sixel → quantette@0.5.1 declares
+  # rust-version 1.90. edamame itself still compiles on 1.88. Lowering the
+  # MSRV therefore means pinning an older quantette, not changing our source.
+  #
+  # `--locked` so the job reflects the committed Cargo.lock; a dependency
+  # bump that raises the floor should fail here (loudly, in its own
+  # Dependabot PR) rather than silently invalidate the published metadata.
+  msrv:
+    name: MSRV (1.90)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.90
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --all-targets --all-features
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # This crate's doc comments are written for contributors and routinely
+      # link private items, so the docs must be built with
+      # `--document-private-items` (see AGENTS.md).  `broken_intra_doc_links`
+      # is left at `warn` in the source; `-D warnings` here is what makes a
+      # link naming a since-renamed item fail the build.
+      - name: Build docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --document-private-items --all-features
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-audit
+      # Checks the dependency tree against the RustSec advisory database.
+      # This is the Rust-native stand-in for GitHub code scanning, which has
+      # no meaningful Rust support.  It matters here because edamame decodes
+      # untrusted images, rasterizes untrusted SVG, and pins a pre-1.0
+      # `mermaid-rs-renderer` *because* it has known panic bugs.
+      - run: cargo audit

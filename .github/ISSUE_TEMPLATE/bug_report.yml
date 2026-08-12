@@ -1,0 +1,159 @@
+name: Bug report
+description: Something isn't working the way you expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file this.
+
+        **Most edamame bugs turn out to be terminal-specific** — features like
+        images, themes and some key chords depend on what your terminal
+        supports. The questions below about your terminal are the ones that
+        usually decide whether a report can be reproduced, so please don't
+        skip them even if the bug seems unrelated.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What went wrong, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a file containing the Markdown below
+        2. Move the cursor onto line 3
+        3. Press Tab
+    validations:
+      required: true
+
+  - type: textarea
+    id: sample
+    attributes:
+      label: Minimal Markdown that triggers it
+      description: >
+        If this is a rendering, table, list or parsing bug, the smallest
+        document that shows the problem. Cut it down as far as you can — a
+        five-line example is far more likely to get fixed quickly.
+      render: markdown
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: edamame version
+      description: >
+        There is no `--version` flag yet. Press `Ctrl-P`, run
+        "About edamame", and the version is shown there.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How did you install edamame?
+      options:
+        - Homebrew
+        - cargo install
+        - Release binary from GitHub
+        - Built from source
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: macOS 15.3 (arm64) / Ubuntu 24.04 (x86_64) / Arch (x86_64)
+    validations:
+      required: true
+
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal emulator and version
+      description: >
+        Please include the version — terminal support for images and keyboard
+        protocols changes between releases.
+      placeholder: Ghostty 1.2.0 / kitty 0.42 / Apple Terminal 2.14 / WezTerm 20240203
+    validations:
+      required: true
+
+  - type: dropdown
+    id: multiplexer
+    attributes:
+      label: Running inside a multiplexer?
+      description: >
+        This matters more than it looks. A multiplexer sits between edamame
+        and your real terminal, and can report capabilities that no longer
+        match it — especially a session you detached from one terminal and
+        reattached from another.
+      options:
+        - "No"
+        - tmux
+        - screen
+        - Zellij
+        - Other
+    validations:
+      required: true
+
+  # Note: GitHub issue forms do not allow `render:` on a required field, so
+  # this one is a plain textarea rather than a code block.
+  - type: textarea
+    id: env
+    attributes:
+      label: Terminal environment
+      description: "Paste the output of: `echo \"$TERM | $COLORTERM | $TERM_PROGRAM\"`"
+      placeholder: xterm-ghostty | truecolor | ghostty
+    validations:
+      required: true
+
+  - type: textarea
+    id: capabilities
+    attributes:
+      label: Capability summary
+      description: >
+        edamame's own view of your terminal, which is usually the fastest way
+        to explain a rendering or key-chord problem. Press `Ctrl-P`, run
+        "Open welcome / terminal setup", and copy the Color / Images / Mouse /
+        Keyboard / Unicode lines.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: clean-config
+    attributes:
+      label: Checks
+      options:
+        - label: >
+            It still happens with a clean config —
+            `XDG_CONFIG_HOME=$(mktemp -d) edamame yourfile.md`
+          required: false
+        - label: I searched existing issues for this
+          required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: |
+        Optional. Useful additions:
+
+        - **A screenshot**, for anything visual. Rendering bugs are much
+          easier to understand seen than described.
+        - **Logs.** Set `logging = true` under `[dev]` in your `config.toml`,
+          reproduce, then attach the log from your data directory
+          (e.g. `~/.local/share/edamame/`).
+        - **A backtrace**, if it crashed: run with `RUST_BACKTRACE=1`.
+        - Your `config.toml`, if the bug only happens with your settings.
+    validations:
+      required: false
