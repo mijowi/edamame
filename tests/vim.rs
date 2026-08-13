@@ -547,6 +547,48 @@ fn count_g_clamps_past_the_end_of_the_document() {
     assert_eq!(st.cursor.offset, LINES.find("delta").unwrap());
 }
 
+/// A count is a *line number* here, not a repetition, so it is not subject
+/// to `COUNT_CAP` — a document longer than the cap must stay reachable from
+/// the keyboard, the way `:10001` already is.
+#[test]
+fn count_g_reaches_a_line_past_the_repeat_cap() {
+    let text: String = (1..=10_005).map(|i| format!("line {i}\n")).collect();
+    let mut st = state(&text);
+    let mut vim = VimState::default();
+
+    for c in "10001".chars() {
+        feed(&mut vim, &mut st, ch(c));
+    }
+    feed(&mut vim, &mut st, ch('G'));
+    assert_eq!(st.buffer.char_to_line(st.cursor.offset), 10_000, "0-based");
+
+    // Saturating past `u32` still lands on the last content line, like `:$`.
+    for c in "99999999999".chars() {
+        feed(&mut vim, &mut st, ch(c));
+    }
+    feed(&mut vim, &mut st, ch('G'));
+    assert_eq!(st.buffer.char_to_line(st.cursor.offset), 10_004);
+}
+
+/// The mirror of the above: lifting the cap off the accumulator must not
+/// lift it off the consumers that turn a count into work.  `p` is the
+/// sharpest — an uncapped `99999999p` would allocate ~100 MB.
+#[test]
+fn a_huge_count_is_still_capped_for_repetition() {
+    let mut st = state("ab");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('y'));
+    feed(&mut vim, &mut st, ch('l')); // yl → "a"
+    assert_eq!(vim.register.text, "a");
+
+    for c in "99999999".chars() {
+        feed(&mut vim, &mut st, ch(c));
+    }
+    feed(&mut vim, &mut st, ch('p'));
+    // COUNT_CAP (9999) copies inserted after the cursor, not 99 999 999.
+    assert_eq!(st.buffer.len_chars(), 2 + 9_999);
+}
+
 #[test]
 fn d_count_g_deletes_the_linewise_span() {
     // Downward: from line 1, `d2G` takes lines 1–2.

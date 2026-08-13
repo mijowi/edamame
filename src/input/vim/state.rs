@@ -14,8 +14,21 @@
 
 use crate::editor::vim_ops::{FindKind, VisualKind};
 
-/// Upper bound on an accumulated count so a held digit key can't grow an
-/// unbounded `u32` (and so `3j` style repeats stay sane).
+/// Upper bound on a count used as a *repetition* — how many times `j`
+/// steps, how many copies `p` allocates — so a held digit key can't hang
+/// the UI or exhaust memory.
+///
+/// **It is applied by the consumers, not by the accumulator.** `feed`'s
+/// `accumulate` deliberately saturates at `u32::MAX`, because a count is
+/// not always a repetition: `{count}G` reads it as a line number, and
+/// capping at the keystroke would put line 10 000 out of reach in a
+/// document that has one.  Every reader of `count` / `motion_count` that
+/// drives iteration therefore clamps to this bound itself — in practice
+/// they all funnel through `feed::count_of` or one of the three
+/// `[count1] op [count2]` products.  A new consumer that loops over a
+/// count owes the clamp; `feed::operand_count` is the one exemption, and
+/// only because it feeds a line number that gets clamped to the document
+/// instead.
 pub const COUNT_CAP: u32 = 9999;
 
 /// Vim sub-mode — orthogonal to `EditorState::mode` (the rendering axis).
@@ -128,7 +141,9 @@ impl CmdLineState {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VimState {
     pub sub_mode: VimSubMode,
-    /// Leading count (the `3` in `3dw`); capped at [`COUNT_CAP`].
+    /// Leading count (the `3` in `3dw`).  Accumulates uncapped (saturating
+    /// at `u32::MAX`) — see [`COUNT_CAP`] for why, and for who applies the
+    /// bound instead.
     pub count: Option<u32>,
     pub pending_op: Option<PendingOp>,
     /// Count between operator and motion (the `2` in `d2w`).
