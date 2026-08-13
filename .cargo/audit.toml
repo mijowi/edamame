@@ -1,0 +1,75 @@
+# cargo-audit configuration — read automatically by `cargo audit` when run
+# from the repository root, so a local run and the CI job (`.github/
+# workflows/ci.yml`, job `audit`) reach the same verdict.  Nothing else in
+# this directory is consumed by cargo itself; there is deliberately no
+# `.cargo/config.toml` here.
+#
+# The job matters more than usual for edamame: it opens untrusted documents,
+# decodes untrusted images, rasterizes untrusted SVG, and pins a pre-1.0
+# `mermaid-rs-renderer` *because* it has known panic bugs.  See
+# `docs/security.md`.
+
+[advisories]
+# Every entry here is a decision, not a backlog item, and each one is
+# either unreachable from our code or blocked behind a pin we hold for a
+# stronger reason.  An advisory with a fix we can actually take does NOT
+# belong in this list — take the fix instead.
+#
+# When adding an entry, record two things: why the risk is acceptable, and
+# what would let us drop the entry again.  An entry whose exit condition has
+# been met should be deleted, not left to rot.
+ignore = [
+    # ── Blocked by the `mermaid-rs-renderer = "=0.2.2"` pin ───────────────
+    #
+    # `usvg`/`resvg` 0.46 and `fontdb` are held at the versions that pin
+    # transitively pulls in, because Cargo.toml requires our copies to match
+    # exactly (otherwise cargo compiles two copies of the SVG stack).
+    # Unpinning to reach newer versions of these three means taking a newer
+    # `mermaid-rs-renderer`, which is the crate we pinned *because* of its
+    # panic bugs — a worse trade than three unmaintained-crate notices.
+    #
+    # All three are "unmaintained"/"unsound" notices, not exploitable
+    # vulnerabilities; the SVG stack additionally runs behind the decode
+    # worker's `catch_unwind` and the `image::Limits` caps in
+    # `src/image/loader.rs`.
+    #
+    # Exit: `mermaid-rs-renderer` reaches a version we trust unpinned, or we
+    # replace the Mermaid pipeline.  Then re-run and drop whichever of these
+    # no longer fires.
+    "RUSTSEC-2026-0206", # rustybuzz unmaintained      (usvg → text shaping)
+    "RUSTSEC-2026-0192", # ttf-parser unmaintained     (usvg/fontdb → fonts)
+    "RUSTSEC-2026-0186", # memmap2 unchecked ptr offset (fontdb → font mmap)
+
+    # ── Blocked upstream in ratatui ───────────────────────────────────────
+    #
+    # `lru` is held at 0.16.x by `ratatui-core`; the fix landed in a
+    # semver-incompatible release we cannot select independently.  The
+    # unsoundness needs a panic inside `LruCache::pop()`, which for ratatui's
+    # internal layout cache means a panic in code that does not run user
+    # callbacks — not reachable from edamame.
+    #
+    # Exit: ratatui-core bumps its `lru` requirement.
+    "RUSTSEC-2026-0253", # lru: use-after-free on panic in pop()
+]
+
+[output]
+# Fail the run on informational advisories (unmaintained / unsound / yanked)
+# as well as vulnerabilities.  Without this, those categories print and the
+# job still exits 0, so they accumulate unread until a real one hides among
+# them — which is exactly what happened before this file existed.  Paired
+# with the reasoned `ignore` list above, the steady state is a clean run,
+# and anything new is a genuine "look at me".
+deny = ["warnings"]
+
+# Print the dependency path for each advisory.  These crates are almost
+# always transitive, so "which of our direct deps drags this in" is the
+# first question, and this puts the answer in the CI log instead of
+# requiring a local `cargo tree -i`.
+show_tree = true
+
+# `quiet` and `format` carry cargo-audit's own defaults.  They are spelled
+# out because the `[output]` table is deserialized without serde defaults —
+# omitting either is a hard parse error ("missing field `quiet`"), not a
+# fallback.
+quiet = false
+format = "terminal"
