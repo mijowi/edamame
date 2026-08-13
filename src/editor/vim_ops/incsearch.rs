@@ -64,8 +64,11 @@ pub fn update_incsearch(
     };
     // An empty input (or one the session can't represent) highlights
     // nothing; likewise a matchless one.  Vim shows the original view
-    // while the pattern doesn't match.
-    let Some(mut state) = SearchState::new(input.to_owned(), None) else {
+    // while the pattern doesn't match.  A half-typed escape (`/a\`, or
+    // `/\d` before the user backspaces) lands here too and is treated
+    // the same way — deliberately no flash, since the user is still
+    // typing; the error is reported on submit.
+    let Ok(mut state) = SearchState::new(input.to_owned(), None) else {
         editor.search = None;
         editor.restore_view(saved_cursor, Some(saved_scroll));
         return;

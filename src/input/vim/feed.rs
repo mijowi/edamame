@@ -2364,13 +2364,22 @@ fn search_repeat(editor: &mut EditorState, forward: bool, count: u32, vh: usize,
 /// of jumping to the previous occurrence.  Returns `EnterSearch` so the
 /// App runs the flow; a `Consumed` no-op when the line has no keyword
 /// at/after the cursor.
+///
+/// The keyword comes from the buffer, not the keyboard, so it is
+/// `escape`d before it becomes a query — `EnterSearch` carries the
+/// *typed* form and the App decodes it.  A keyword run is word-class
+/// only, so this is a no-op today; it is here so the contract holds by
+/// construction rather than by coincidence of what `iskeyword` allows.
 fn search_word_outcome(editor: &mut EditorState, forward: bool) -> VimOutcome {
     match word_under_cursor_at(&editor.buffer, editor.cursor.offset) {
-        Some((start, query)) => {
+        Some((start, keyword)) => {
             editor.cursor.offset = start;
             editor.cursor.preferred_col = editor.cursor.cell_col(&editor.buffer);
             editor.update_cursor_block();
-            VimOutcome::EnterSearch { forward, query }
+            VimOutcome::EnterSearch {
+                forward,
+                query: crate::search::escape::escape(&keyword),
+            }
         }
         None => VimOutcome::Consumed,
     }

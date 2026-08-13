@@ -665,3 +665,66 @@ fn raw_view_paints_substitute_preview_highlights() {
     }
     assert_ne!(buf.cell((6, 0)).unwrap().style().bg, t.selection.bg);
 }
+
+// -- Multi-line matches and highlights ---------------------------------
+
+#[test]
+fn raw_view_clips_a_multiline_preview_highlight_per_line() {
+    // Before the per-line clamp this panicked: the highlight's second
+    // half starts on an earlier line than it ends on, and the painter
+    // subtracted the line start from a smaller range start.
+    let t = theme();
+    let mut st = EditorState::new(Buffer::from_str("foo\nbar\n"), theme());
+    st.mode = Mode::Raw;
+    edamame::editor::vim_ops::update_substitute_preview(&mut st, r"%s/o\nb/X\nY/", None, 8, 40);
+    assert_eq!(st.buffer.contents(), "foX\nYar\n");
+    let buf = render_editor(&mut st, 40, 8);
+    // The inserted span covers "X" at the end of row 0 and "Y" at the
+    // head of row 1 — both halves paint, neither bleeds past.
+    assert_eq!(buf.cell((2, 0)).unwrap().style().bg, t.selection.bg);
+    assert_eq!(buf.cell((0, 1)).unwrap().style().bg, t.selection.bg);
+    assert_ne!(buf.cell((1, 1)).unwrap().style().bg, t.selection.bg);
+}
+
+#[test]
+fn rendered_view_paints_a_multiline_preview_highlight() {
+    let t = theme();
+    let mut st = EditorState::new(Buffer::from_str("foo\nbar\n"), theme());
+    st.mode = Mode::Rendered;
+    edamame::editor::vim_ops::update_substitute_preview(&mut st, r"%s/o\nb/X\nY/", None, 8, 40);
+    assert_eq!(st.buffer.contents(), "foX\nYar\n");
+    let buf = render_editor(&mut st, 40, 8);
+    assert_eq!(buf.cell((2, 0)).unwrap().style().bg, t.selection.bg);
+    assert_eq!(buf.cell((0, 1)).unwrap().style().bg, t.selection.bg);
+}
+
+#[test]
+fn raw_view_clips_a_multiline_search_match_per_line() {
+    // `/  \n` matches across the break; each line paints its own part.
+    let t = theme();
+    let mut st = state_with_search("foo  \nbar\n", r"  \n", None);
+    st.mode = Mode::Raw;
+    let buf = render_editor(&mut st, 40, 8);
+    // The two spaces at cols 3..5 of row 0 are the visible half of the
+    // match; the newline itself has no cell, and row 1 is untouched.
+    for x in 3..5u16 {
+        assert_eq!(buf.cell((x, 0)).unwrap().style().bg, t.selection.bg);
+    }
+    assert_ne!(buf.cell((0, 1)).unwrap().style().bg, t.selection.bg);
+}
+
+#[test]
+fn rendered_view_paints_a_multiline_search_match() {
+    // The match spans the break, so it paints on both rows.  (A match
+    // over *trailing whitespace* — the `/  \n` case — has nothing to
+    // show on the first row here: the renderer doesn't draw trailing
+    // spaces, so only Raw view can wash them.)
+    let t = theme();
+    let mut st = state_with_search("foo\nbar\n", r"o\nb", None);
+    st.mode = Mode::Rendered;
+    let buf = render_editor(&mut st, 40, 8);
+    assert_eq!(st.search.as_ref().unwrap().matches, vec![2..5]);
+    assert_eq!(buf.cell((2, 0)).unwrap().style().bg, t.selection.bg);
+    assert_eq!(buf.cell((0, 1)).unwrap().style().bg, t.selection.bg);
+    assert_ne!(buf.cell((1, 1)).unwrap().style().bg, t.selection.bg);
+}

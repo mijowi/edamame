@@ -194,8 +194,9 @@ Notes on differences:
 
 - **Search is incremental.** As you type after `/` or `?`, edamame jumps to and highlights the first match live, scrolling it into view. `Esc` restores your original cursor position, scroll, and any previous highlights; `Enter` commits.
 - **Search is literal-substring, not regex.** `/` and `?` match the text you type verbatim. (Regex is available only in `:s`/`:%s` — see below.)
+- **Escapes let a search cross a line break.** `\n` is a line break, `\t` a tab, `\r` a carriage return, `\\` a single backslash — so `/  \n` finds every line ending in two spaces. Because a backslash starts an escape, **a literal backslash must be typed `\\`**, and any other escape (`\d`, `\<`) is an error rather than a silent literal — search is not regex, and saying so beats returning nothing. Pasting into the prompt escapes the payload for you.
 - **Smartcase applies to navigation.** A lowercase pattern matches case-insensitively; a pattern with any uppercase letter matches case-sensitively. This covers `/`, `?`, `n`/`N` and edamame's `Ctrl-F` *find* — but **not** search-and-replace, which is always case-sensitive so a lowercase term can't rewrite a casing variant you didn't type.
-- **`*`/`#` match the literal keyword** under the cursor — there are no `\<…\>` whole-word boundaries (because search is literal, not regex).
+- **`*`/`#` match the literal keyword** under the cursor — there are no `\<…\>` whole-word boundaries (because search is literal, not regex). You don't need to escape anything for them; the keyword is taken from the buffer as-is.
 - **`/` searches forward from the cursor, `?` searches backward**, wrapping around the document — matching Vim. `n`/`N` are plain next/previous afterward.
 - **`Esc` in Normal clears the active search highlights** (the cursor stays on the match it reached). Standard Vim leaves `hlsearch` on after `Esc`; edamame clears it. There is no `:noh`.
 - **`Tab`/`Shift-Tab` also walk matches** like `n`/`N` during an active search — in Normal mode only. In Visual they do nothing, and inside a table `Tab` moves to the next cell instead.
@@ -222,7 +223,7 @@ Type `:` to open the command line.
 
 `:write` is accepted for `:w`, and `:xit` for `:x`. Any of the write commands takes a trailing `!` (`:w!`, `:saveas!`, `:wq!`) which skips the overwrite-confirmation prompt.
 
-Supported substitution flags: `g` (all matches on a line, not just the first) and `i` (case-insensitive).
+Supported substitution flags: `g` (every match on a line, not just the first) and `i` (case-insensitive).
 
 Notes on differences:
 
@@ -234,6 +235,8 @@ Notes on differences:
   - Replacement specials: backreferences `\1`…, the whole match `&`, and case modifiers `\u \U \l \L \e \E`.
   - Backreferences within the pattern (e.g. `\(.\)\1`) and lookaround work.
   - A few rare atoms (`\zs`, `\ze`, postfix `\@=`, `\%[…]`, `\%^`, …) are **not** supported and produce a friendly error rather than a wrong result.
+- **A pattern can match across a line break.** `\n` in the pattern matches the break itself, so `:%s/  \n/ /g` collapses every "two trailing spaces + line break" into a single space, and `:%s/\n//g` joins the document into one line. `^` and `$` still anchor per line, and `.` still refuses to cross a break, both as in Vim. Without `g`, the first match *starting on* each line is replaced (a match that swallows the lines below it takes them out of the running). `\n` in the *replacement* inserts a line break, so a substitution can split lines as well as join them.
+- **A match never escapes the command's range.** `:'<,'>s` cannot join the last selected line with the one after it, and `:s` — a single-line range — therefore has no break to match at all. Vim allows both; edamame bounds them so a substitution can only ever change the lines you named. `:%s` is the whole buffer, so it *can* consume the file's final newline.
 - **`:` works from Visual / Visual-Line too.** Pressing `:` on a selection opens the command line pre-filled with the `'<,'>` range (as in Vim), so `:'<,'>s/pat/rep/g` substitutes only within the selected lines. The range is line-oriented: a charwise selection still covers the whole lines it touches. `'<,'>` only scopes `:s`; the write/quit family (`:w`, `:wq`, `:q`, `:x`) ignores the auto-inserted prefix and acts on the whole buffer.
 - **The command line supports history.** Press Up/Down while typing a `:` or `/` command to recall earlier entries from this session.
 - **`:q` respects unsaved changes** — it opens edamame's quit-confirm dialog, exactly like the normal quit shortcut. `:wq` saves first, so it quits cleanly.
@@ -292,7 +295,8 @@ edamame keeps the vim unnamed register and the OS clipboard **separate**, on pur
 
 - No dot-repeat (`.`), marks, named registers, or macros.
 - No block-wise Visual (`Ctrl-V`).
-- `/` and `?` search is literal substring (regex only in `:s`/`:%s`); smartcase on for navigation, off for replace.
+- `/` and `?` search is literal substring (regex only in `:s`/`:%s`), with `\n` `\t` `\r` `\\` escapes so it can cross a line break; smartcase on for navigation, off for replace.
+- `:s` patterns can match across a line break, but never past the end of the command's range — so `:s/\n//` doesn't join with the next line the way Vim's does.
 - `Esc` clears search highlights; no `:noh`.
 - In Visual, `u`/`U` force case, not undo.
 - Visual `p` does not overwrite the register.

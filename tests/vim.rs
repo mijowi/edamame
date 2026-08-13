@@ -2650,6 +2650,23 @@ fn star_searches_the_word_under_the_cursor_forward() {
 }
 
 #[test]
+fn star_emits_a_query_that_decodes_back_to_the_keyword() {
+    // `*` supplies buffer text where the rest of the flow expects typed
+    // escape syntax, so it escapes on the way out.  A keyword run is
+    // word-class only, so today that is a no-op — this pins the
+    // round-trip so it stays one if `iskeyword` ever widens.
+    let mut st = state("foo_bar1 baz");
+    st.cursor.offset = 0;
+    st.update_cursor_block();
+    let mut vim = VimState::default();
+    let out = feed(&mut vim, &mut st, ch('*'));
+    let VimOutcome::EnterSearch { query, .. } = out else {
+        panic!("expected EnterSearch, got {out:?}");
+    };
+    assert_eq!(edamame::search::escape::decode(&query).unwrap(), "foo_bar1");
+}
+
+#[test]
 fn hash_searches_the_word_under_the_cursor_backward() {
     let mut st = state("alpha beta");
     st.cursor.offset = 7; // inside "beta"
@@ -3066,6 +3083,102 @@ fn ex_substitute_supports_regex() {
     assert_eq!(st.buffer.contents(), "a-b-c-");
 }
 
+// ── CP9: multi-line `:s` patterns ─────────────────────────────────────────────
+
+#[test]
+fn ex_substitute_pattern_can_span_a_line_break() {
+    // The motivating case: collapse "two trailing spaces + break" into a
+    // single space.
+    let mut st = state("foo  \nbar  \nbaz");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, r"%s/  \n/ /g");
+    assert_eq!(out, VimOutcome::Flash("2 substitutions".to_owned()));
+    assert_eq!(st.buffer.contents(), "foo bar baz");
+}
+
+#[test]
+fn ex_substitute_newline_pattern_joins_every_line() {
+    let mut st = state("a\nb\nc");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, r"%s/\n//g");
+    assert_eq!(out, VimOutcome::Flash("2 substitutions".to_owned()));
+    assert_eq!(st.buffer.contents(), "abc");
+    assert_eq!(st.buffer.line_count(), 1);
+    assert_eq!(st.cursor.offset, 0, "cursor parks on the first line");
+}
+
+#[test]
+fn ex_substitute_multiline_is_a_single_undo_unit() {
+    let mut st = state("a\nb\nc");
+    let mut vim = VimState::default();
+    ex_cmd(&mut vim, &mut st, r"%s/\n/-/g");
+    assert_eq!(st.buffer.contents(), "a-b-c");
+    feed(&mut vim, &mut st, ch('u'));
+    assert_eq!(st.buffer.contents(), "a\nb\nc", "one `u` restores it all");
+}
+
+#[test]
+fn ex_substitute_all_lines_can_consume_the_files_final_newline() {
+    // `:%s` resolves to the phantom line past the trailing newline, so
+    // that newline IS in range — which is what makes the motivating case
+    // work on the document's last line.
+    let mut st = state("foo  \n");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, r"%s/  \n/ /");
+    assert_eq!(out, VimOutcome::Flash("1 substitution".to_owned()));
+    assert_eq!(st.buffer.contents(), "foo ");
+}
+
+#[test]
+fn ex_substitute_on_one_line_has_no_break_to_match() {
+    // The documented divergence from vim: `:s` resolves to a single-line
+    // range, whose own break is outside it — so `:s/\n//` cannot join with
+    // the next line.  Vim allows that; edamame bounds every substitution
+    // to the lines it names.
+    let mut st = state("a\nb");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, r"s/\n//");
+    assert_eq!(out, VimOutcome::Flash("Pattern not found: \\n".to_owned()));
+    assert_eq!(st.buffer.contents(), "a\nb");
+}
+
+#[test]
+fn ex_substitute_replacement_newline_splits_a_line() {
+    // The replacement side has always understood `\n`; check it still
+    // does now that the pattern walk is region-wide.
+    let mut st = state("a-b-c");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, r"%s/-/\n/g");
+    assert_eq!(out, VimOutcome::Flash("2 substitutions".to_owned()));
+    assert_eq!(st.buffer.contents(), "a\nb\nc");
+}
+
+#[test]
+fn ex_substitute_anchors_still_bind_per_line() {
+    // The pattern now sees the whole range at once, so `^`/`$` would
+    // anchor to the region's ends without `multi_line`.
+    let mut st = state("ab\nab");
+    let mut vim = VimState::default();
+    ex_cmd(&mut vim, &mut st, "%s/^a/X/g");
+    assert_eq!(st.buffer.contents(), "Xb\nXb");
+
+    let mut st = state("ab\nab");
+    let mut vim = VimState::default();
+    ex_cmd(&mut vim, &mut st, "%s/b$/Y/g");
+    assert_eq!(st.buffer.contents(), "aY\naY");
+}
+
+#[test]
+fn ex_substitute_dot_does_not_cross_a_line_break() {
+    // vim's `.` never matches a newline; `dot_matches_new_line` must stay
+    // off even though the haystack now contains breaks.
+    let mut st = state("a\nb");
+    let mut vim = VimState::default();
+    let out = ex_cmd(&mut vim, &mut st, "%s/a.b/X/");
+    assert_eq!(out, VimOutcome::Flash("Pattern not found: a.b".to_owned()));
+    assert_eq!(st.buffer.contents(), "a\nb");
+}
+
 /// Type the body of a `:`-command that is already open (its `'<,'>` prefix
 /// pre-filled by a Visual-mode `:`), then submit with Enter.
 fn submit_open_ex(vim: &mut VimState, st: &mut EditorState, body: &str) -> VimOutcome {
@@ -3131,6 +3244,22 @@ fn ex_substitute_over_charwise_visual_uses_whole_lines() {
         "bar bar\nbar bar\nfoo foo",
         "charwise selection substitutes over the whole touched lines"
     );
+}
+
+#[test]
+fn ex_substitute_multiline_match_cannot_escape_the_visual_range() {
+    // A `\n` pattern is bounded by the selection: the break after "b" is
+    // the last one inside lines 0..=1, and the break after it (which would
+    // pull line 2 up) is out of range.  This is the guarantee that a
+    // visual-range substitute never edits text you didn't select.
+    let mut st = state("a\nb\nc\nd");
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('V'));
+    feed(&mut vim, &mut st, ch('j'));
+    feed(&mut vim, &mut st, ch(':'));
+    let out = submit_open_ex(&mut vim, &mut st, r"s/\n/-/g");
+    assert_eq!(out, VimOutcome::Flash("1 substitution".to_owned()));
+    assert_eq!(st.buffer.contents(), "a-b\nc\nd");
 }
 
 #[test]
@@ -3705,6 +3834,38 @@ fn an_invalid_or_matchless_pattern_shows_no_preview() {
     assert_eq!(st.buffer.contents(), "abc");
 }
 
+#[test]
+fn preview_shows_a_multiline_substitution_live() {
+    let mut st = state("foo  \nbar  \nbaz");
+    let mut vim = VimState::default();
+    type_ex(&mut vim, &mut st, r"%s/  \n/ /g");
+    assert_eq!(
+        st.buffer.contents(),
+        "foo bar baz",
+        "the joined text shows while typing"
+    );
+    let preview = st.substitute_preview.as_ref().expect("preview active");
+    assert_eq!(preview.highlights, vec![3..4, 7..8], "the inserted spaces");
+    assert!(!st.dirty);
+    // Esc puts every byte back and records no undo step.
+    feed(&mut vim, &mut st, esc());
+    assert_eq!(st.buffer.contents(), "foo  \nbar  \nbaz");
+    assert!(st.substitute_preview.is_none());
+    assert!(!st.dirty);
+}
+
+#[test]
+fn preview_highlights_a_multiline_pattern_before_the_replacement() {
+    // Highlight-only (no second delimiter): the ranges span the break.
+    let mut st = state("foo  \nbar  \nbaz");
+    let mut vim = VimState::default();
+    type_ex(&mut vim, &mut st, r"%s/  \n");
+    let preview = st.substitute_preview.as_ref().expect("preview active");
+    assert_eq!(preview.highlights, vec![3..6, 9..12]);
+    assert_eq!(st.buffer.contents(), "foo  \nbar  \nbaz", "text untouched");
+    assert!(!st.dirty);
+}
+
 // ── Live `/` `?` incremental search (incsearch) ───────────────────────────────
 
 /// Open the search prompt (`/` or `?`) and type `query` without submitting.
@@ -3726,6 +3887,33 @@ fn typing_a_search_highlights_live_and_parks_on_the_next_match() {
     assert_eq!(s.focused_range(), Some(8..11));
     assert_eq!(st.cursor.offset, 8, "cursor parked on the focus");
     assert!(vim.cmdline.is_some(), "prompt still open");
+}
+
+#[test]
+fn incsearch_matches_across_a_line_break() {
+    let mut st = state("foo  \nbar  \nbaz");
+    let mut vim = VimState::default();
+    type_search(&mut vim, &mut st, '/', r"  \n");
+    let s = st.search.as_ref().expect("live session while typing");
+    assert_eq!(s.matches, vec![3..6, 9..12]);
+}
+
+#[test]
+fn incsearch_shows_nothing_for_a_half_typed_escape() {
+    // Mid-typing, `/a\` is a trailing backslash and `/\d` an unsupported
+    // escape — both highlight nothing and neither may flash an error.
+    let mut st = state("a1 b2");
+    let mut vim = VimState::default();
+    type_search(&mut vim, &mut st, '/', r"a\");
+    assert!(st.search.is_none(), "incomplete escape → no highlights");
+    feed(&mut vim, &mut st, esc());
+    type_search(&mut vim, &mut st, '/', r"\d");
+    assert!(st.search.is_none());
+    // Backspacing to something valid resumes.
+    feed(&mut vim, &mut st, key(KeyCode::Backspace));
+    feed(&mut vim, &mut st, key(KeyCode::Backspace));
+    feed(&mut vim, &mut st, ch('a'));
+    assert!(st.search.is_some(), "a valid query highlights again");
 }
 
 #[test]

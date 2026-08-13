@@ -96,6 +96,12 @@ pub(super) fn make_code_styled_body_line(
 /// requested byte range, and highlights only the rendered cols that
 /// correspond to covered bytes.  Falls back to "whole line" highlight for
 /// blocks where the per-line mapping can't be determined cleanly.
+///
+/// The per-line intersection is what lets a **multi-line** range paint
+/// correctly: a search match containing `\n`, a `:s` preview span, and a
+/// linewise selection all arrive here spanning several lines (and, via
+/// the caller's block window, several blocks).  Keep the clamp — do not
+/// "simplify" it into an assumption that the range fits one line.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_byte_range_overlay(
     editor: &EditorState,
