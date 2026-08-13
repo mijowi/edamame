@@ -128,6 +128,8 @@ To report a vulnerability, please use GitHub's private reporting on the [Securit
 
 Start with [CONTRIBUTING.md](https://github.com/mijowi/edamame/blob/main/CONTRIBUTING.md). For anything non-trivial, please open an issue first — edamame keeps a deliberately narrow scope, so a feature can be well-built and still not fit.
 
+Questions, ideas and anything you're not sure is a bug belong in [Discussions](https://github.com/mijowi/edamame/discussions).
+
 [AGENTS.md](https://github.com/mijowi/edamame/blob/main/AGENTS.md) is the architecture guide — the module layout, the invariants that are easy to break, and the code style. `docs/dev/` holds the design specs.
 
 ```bash

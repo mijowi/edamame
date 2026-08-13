@@ -1,12 +1,14 @@
 # Contributing to edamame
 
-Thanks for your interest. edamame is a small, opinionated project maintained by one person — the notes below are mostly about saving you wasted effort.
+Thanks for your interest! Please read below for how to contribute to edamame.
 
 ## Before you write code
 
 **For anything non-trivial, open an issue first.** edamame deliberately keeps a narrow scope (a Markdown editor, not a general one), so a feature can be well-built and still not be a fit.
 
-Small fixes, such as an obvious bug, a typo, a wrong default, or a doc correction need no preamble. Just send them.
+Small fixes, such as an obvious bug, a typo, a wrong default, or a doc correction need no preamble. Just open a PR.
+
+If you're not sure which of those you have — or you have a question rather than a change — [Discussions](https://github.com/mijowi/edamame/discussions) is the place to ask. Q&A for anything that has an answer, General for everything else. Nothing needs to be filed as an issue before it's understood.
 
 ## Getting set up
 
