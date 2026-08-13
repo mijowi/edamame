@@ -59,6 +59,10 @@ pub enum ExCommand {
     /// `:s/…` (current line), `:%s/…` (whole file), or `:'<,'>s/…` (the
     /// last visual selection's line span).
     Substitute(Substitution),
+    /// `:42` — jump to a 1-based line number.  `:$` (last line) parses to
+    /// `GoToLine(u32::MAX)`, which the motion layer clamps to the last
+    /// content line just as it clamps any other overshoot.
+    GoToLine(u32),
 }
 
 /// Which lines a substitution runs over.
@@ -151,6 +155,20 @@ pub fn parse_ex(input: &str) -> Result<ExCommand, ExError> {
     // "unknown command").  A bare `:w` / `:wq` resolves here too.
     if let Some(cmd) = parse_write_forms(s) {
         return Ok(cmd);
+    }
+
+    // `:42` / `:$` — a bare line address, vim's shortest "go to line".  Only
+    // without a `'<,'>` prefix: `:'<,'>42` is a range the command never asked
+    // for, so it falls through to `UnknownCommand` like every other non-`:s`
+    // ranged form.  An out-of-range number is clamped by the motion layer, not
+    // rejected here; a number too large for `u32` saturates to the same place.
+    if !visual_range {
+        if s == "$" {
+            return Ok(ExCommand::GoToLine(u32::MAX));
+        }
+        if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) {
+            return Ok(ExCommand::GoToLine(s.parse().unwrap_or(u32::MAX)));
+        }
     }
 
     match s {
@@ -575,6 +593,25 @@ mod tests {
                 path: "my file.md".to_owned(),
                 force: false,
             })
+        );
+    }
+
+    #[test]
+    fn parses_a_bare_line_address() {
+        assert_eq!(parse_ex("42"), Ok(ExCommand::GoToLine(42)));
+        assert_eq!(parse_ex(" 1 "), Ok(ExCommand::GoToLine(1)));
+        // `:$` is the last line; the motion layer does the clamping.
+        assert_eq!(parse_ex("$"), Ok(ExCommand::GoToLine(u32::MAX)));
+        // A number past `u32` saturates rather than erroring — it lands on
+        // the last line either way.
+        assert_eq!(
+            parse_ex("99999999999999"),
+            Ok(ExCommand::GoToLine(u32::MAX))
+        );
+        // A visual range prefix is not a line address.
+        assert_eq!(
+            parse_ex("'<,'>42"),
+            Err(ExError::UnknownCommand("'<,'>42".to_owned()))
         );
     }
 

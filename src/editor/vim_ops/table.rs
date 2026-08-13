@@ -352,10 +352,10 @@ fn table_break(info: &TableInfo, start: usize, end: usize) -> Option<TableBreak>
 /// The scoped set is everything that reads as "move within this piece of
 /// text": the char steps, the word motions, the line-anchor motions, and the
 /// character finds.  Deliberately excluded are the motions whose entire
-/// purpose is to *leave* the current context — `gg` / `G` (document),
-/// `{` / `}` (paragraph, i.e. jump clear of the table) and `%` (bracket
-/// matching, which is about pairing, not layout).  A new `Motion` variant
-/// defaults to unscoped and must be added here consciously;
+/// purpose is to *leave* the current context — `gg` / `G` / `{count}G`
+/// (document), `{` / `}` (paragraph, i.e. jump clear of the table) and `%`
+/// (bracket matching, which is about pairing, not layout).  A new `Motion`
+/// variant defaults to unscoped and must be added here consciously;
 /// `cell_scoped_motions_match_the_spec` pins the classification both ways.
 fn motion_is_cell_scoped(motion: Motion) -> bool {
     match motion {
@@ -375,6 +375,7 @@ fn motion_is_cell_scoped(motion: Motion) -> bool {
         | Motion::FindChar(..) => true,
         Motion::DocStart
         | Motion::DocEnd
+        | Motion::GoToLine(_)
         | Motion::ParagraphForward
         | Motion::ParagraphBackward
         | Motion::MatchingPair => false,
@@ -791,6 +792,7 @@ mod tests {
         for m in [
             Motion::DocStart,
             Motion::DocEnd,
+            Motion::GoToLine(3),
             Motion::ParagraphForward,
             Motion::ParagraphBackward,
             Motion::MatchingPair,

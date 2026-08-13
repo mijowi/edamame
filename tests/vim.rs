@@ -490,6 +490,95 @@ fn gg_and_capital_g_jump_document_ends() {
     assert!(!vim.pending_g);
 }
 
+/// The four-line fixture the line-jump tests share.  Line 3 carries leading
+/// blanks so the landing spot proves "first non-blank", not "line start".
+const LINES: &str = "alpha\nbravo\n  charlie\ndelta";
+
+#[test]
+fn count_g_jumps_to_that_line() {
+    let mut st = state(LINES);
+    let mut vim = VimState::default();
+
+    feed(&mut vim, &mut st, ch('3'));
+    feed(&mut vim, &mut st, ch('G'));
+    assert_eq!(
+        st.cursor.offset,
+        LINES.find("charlie").unwrap(),
+        "3G → first non-blank of line 3"
+    );
+    assert!(vim.count.is_none(), "the count is consumed");
+
+    // `1G` is the first line — the case a repeat-count reading gets wrong.
+    feed(&mut vim, &mut st, ch('1'));
+    feed(&mut vim, &mut st, ch('G'));
+    assert_eq!(st.cursor.offset, 0);
+}
+
+#[test]
+fn bare_g_still_jumps_to_the_last_line() {
+    // Guards the `count_of`-defaults-to-1 trap: an absent count must not
+    // read as `1G`.
+    let mut st = state(LINES);
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('G'));
+    assert_eq!(st.cursor.offset, LINES.find("delta").unwrap());
+}
+
+#[test]
+fn count_gg_jumps_to_that_line() {
+    let mut st = state(LINES);
+    let mut vim = VimState::default();
+    st.cursor.offset = LINES.len();
+
+    feed(&mut vim, &mut st, ch('3'));
+    feed(&mut vim, &mut st, ch('g'));
+    feed(&mut vim, &mut st, ch('g'));
+    assert_eq!(st.cursor.offset, LINES.find("charlie").unwrap());
+}
+
+#[test]
+fn count_g_clamps_past_the_end_of_the_document() {
+    let mut st = state(LINES);
+    let mut vim = VimState::default();
+    for c in "999".chars() {
+        feed(&mut vim, &mut st, ch(c));
+    }
+    feed(&mut vim, &mut st, ch('G'));
+    assert_eq!(st.cursor.offset, LINES.find("delta").unwrap());
+}
+
+#[test]
+fn d_count_g_deletes_the_linewise_span() {
+    // Downward: from line 1, `d2G` takes lines 1–2.
+    let mut st = state(LINES);
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('2'));
+    feed(&mut vim, &mut st, ch('G'));
+    assert_eq!(st.buffer.contents(), "  charlie\ndelta");
+
+    // Upward: from line 3, `d1G` takes lines 1–3.
+    let mut st = state(LINES);
+    let mut vim = VimState::default();
+    st.cursor.offset = LINES.find("charlie").unwrap();
+    feed(&mut vim, &mut st, ch('d'));
+    feed(&mut vim, &mut st, ch('1'));
+    feed(&mut vim, &mut st, ch('G'));
+    assert_eq!(st.buffer.contents(), "delta");
+}
+
+#[test]
+fn count_g_extends_a_visual_selection() {
+    let mut st = state(LINES);
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('v'));
+    feed(&mut vim, &mut st, ch('3'));
+    feed(&mut vim, &mut st, ch('G'));
+    let sel = st.selection.as_ref().expect("visual selection live");
+    assert_eq!(sel.anchor, 0);
+    assert_eq!(sel.active, LINES.find("charlie").unwrap());
+}
+
 #[test]
 fn lone_g_followed_by_other_key_is_a_noop() {
     let mut st = state("hello");
@@ -2726,6 +2815,25 @@ fn colon_opens_the_ex_command_line() {
 }
 
 #[test]
+fn ex_line_address_jumps_to_that_line() {
+    let mut st = state(LINES);
+    let mut vim = VimState::default();
+
+    assert_eq!(ex_cmd(&mut vim, &mut st, "3"), VimOutcome::Consumed);
+    assert_eq!(st.cursor.offset, LINES.find("charlie").unwrap());
+
+    // `:$` is the last line, clamped like `G`.
+    ex_cmd(&mut vim, &mut st, "$");
+    assert_eq!(st.cursor.offset, LINES.find("delta").unwrap());
+
+    // Still an unknown command when it isn't a line address.
+    assert!(matches!(
+        ex_cmd(&mut vim, &mut st, "3x"),
+        VimOutcome::Flash(_)
+    ));
+}
+
+#[test]
 fn ex_write_returns_save_outcome() {
     let mut st = state_with_path("hello");
     let mut vim = VimState::default();
@@ -3907,6 +4015,16 @@ fn document_motions_still_cross_the_table() {
         2,
         "`G` must reach the last row rather than clamping inside the header cell"
     );
+}
+
+#[test]
+fn a_counted_line_jump_still_crosses_the_table() {
+    // `{count}G` inherits `G`'s unscoped classification.
+    let mut st = table_state(tbl_at("alpha"));
+    let mut vim = VimState::default();
+    feed(&mut vim, &mut st, ch('3'));
+    feed(&mut vim, &mut st, ch('G'));
+    assert_eq!(st.buffer.char_to_line(st.cursor.offset), 2);
 }
 
 // ── Raw mode keeps stock vim behavior ─────────────────────────────────────────
