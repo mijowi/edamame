@@ -153,4 +153,11 @@ jobs:
       # no meaningful Rust support.  It matters here because edamame decodes
       # untrusted images, rasterizes untrusted SVG, and pins a pre-1.0
       # `mermaid-rs-renderer` *because* it has known panic bugs.
+      #
+      # Policy lives in `.cargo/audit.toml`, not in flags here, so a local
+      # `cargo audit` from the repo root reaches the same verdict as CI.  That
+      # config denies informational advisories (unmaintained / unsound /
+      # yanked) alongside vulnerabilities, and carries the reasoned ignore
+      # list for the few we have consciously accepted — so the steady state
+      # is a clean run and anything printed is new.
       - run: cargo audit
