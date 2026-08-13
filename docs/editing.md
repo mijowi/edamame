@@ -278,6 +278,10 @@ separately before fetching anything over the network. Both answers can be
 Where images can't be shown you get an `[Image: alt text]` placeholder, so the
 document still reads.
 
+**Formats:** PNG, JPEG, GIF, BMP, WebP, and SVG. Anything else is reported as
+an unsupported image rather than rendered — the list is kept deliberately
+short because edamame decodes images from documents you may not trust.
+
 **Requirements:** an image protocol — Kitty, iTerm2, or Sixel — *and* 24-bit
 color. Below truecolor, edamame declines to render images at all, because the
 result would be badly quantized. Half-block rendering is available as a
