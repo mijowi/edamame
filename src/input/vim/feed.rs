@@ -391,6 +391,14 @@ fn submit_ex(
                 }
             }
         }
+        // `:42` / `:$` — the same jump `42G` makes, resolved through the
+        // scoped wrapper like every other motion in this file (the clamp is
+        // a no-op for a line jump, which is deliberately unscoped).
+        Ok(ExCommand::GoToLine(n)) => {
+            let dest = resolve_scoped_motion(editor, Motion::GoToLine(n), 1, CellLimit::Append);
+            move_to_offset(editor, dest, vh, vw, /*visual=*/ false);
+            VimOutcome::Consumed
+        }
         Ok(ExCommand::Substitute(sub)) => match execute_substitute(editor, &sub, visual_range) {
             Ok(0) => VimOutcome::Flash(format!("Pattern not found: {}", sub.pattern)),
             Ok(n) => {
@@ -1051,13 +1059,16 @@ fn feed_command_char(
     if vim.pending_g {
         vim.pending_g = false;
         if c == 'g' {
+            // `5gg` is `5G`: the count reached `vim.count` before the first
+            // `g`, so it is a line number by the time we get here.
+            let motion = line_jump(Motion::DocStart, operand_count(vim));
             if let Some(operator) = vim.pending_op.and_then(operator_kind) {
-                let range = resolve_scoped_op_range(editor, Motion::DocStart, 1);
+                let range = resolve_scoped_op_range(editor, motion, 1);
                 return run_operator(vim, editor, operator, range, vh, vw);
             }
             apply_motion(
                 editor,
-                Motion::DocStart,
+                motion,
                 count_of(vim),
                 vh,
                 vw,
@@ -1133,8 +1144,10 @@ fn feed_command_char(
         return VimOutcome::Consumed;
     }
 
-    // Pure motions resolved by `vim_ops::motion`.
+    // Pure motions resolved by `vim_ops::motion`.  `G` alone among them
+    // reinterprets the count as a line number (`line_jump`).
     if let Some(motion) = motion_for(c) {
+        let motion = line_jump(motion, operand_count(vim));
         apply_motion(editor, motion, count, vh, vw, visual, cell_limit(vim));
         vim.reset_pending();
         return VimOutcome::Consumed;
@@ -1407,6 +1420,7 @@ fn feed_operator_pending(
 
     // Charwise / `gg`-`G` motion targets.
     if let Some(motion) = operator_motion_for(c) {
+        let motion = line_jump(motion, operand_count(vim));
         let motion = change_word_to_word_end(operator, motion, editor);
         let range = resolve_scoped_op_range(editor, motion, count);
         return run_operator(vim, editor, operator, range, vh, vw);
@@ -1982,6 +1996,39 @@ fn accumulate(acc: Option<u32>, c: char) -> u32 {
 /// The effective leading count for a plain motion (defaults to 1).
 fn count_of(vim: &VimState) -> u32 {
     vim.count.unwrap_or(1).max(1)
+}
+
+/// Fold a typed count into `gg` / `G`, which read it as a *line number*
+/// rather than a repeat count (`5G` → line 5).
+///
+/// This has to happen here, at the key layer, rather than inside
+/// `resolve_motion`: a bare `G` means the *last* line while `1G` means the
+/// first, and by the time the resolver sees a `count: u32` the two are
+/// indistinguishable — `count_of` has already defaulted the absent count
+/// to 1.  `Option<u32>` is the distinction, so the motion carries the
+/// answer.  Every other motion passes through untouched.
+fn line_jump(motion: Motion, count: Option<u32>) -> Motion {
+    match (motion, count) {
+        (Motion::DocStart | Motion::DocEnd, Some(n)) => Motion::GoToLine(n),
+        _ => motion,
+    }
+}
+
+/// The count a line jump should read as its line number, or `None` when the
+/// user typed no count at all.  Both accumulators count, and they multiply
+/// exactly as they do for every other counted operator target (`d3G` and
+/// `2d3G` alike name a line), so this mirrors `feed_operator_pending`'s
+/// product rather than inventing a second rule.
+fn operand_count(vim: &VimState) -> Option<u32> {
+    if vim.count.is_none() && vim.motion_count.is_none() {
+        return None;
+    }
+    Some(
+        vim.count
+            .unwrap_or(1)
+            .saturating_mul(vim.motion_count.unwrap_or(1))
+            .clamp(1, COUNT_CAP),
+    )
 }
 
 /// Is the charwise Visual span — the one that covers the character under

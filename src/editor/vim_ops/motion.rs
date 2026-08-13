@@ -29,10 +29,13 @@ pub enum FindKind {
     BackwardTill, // T — land one char after the previous occurrence
 }
 
-/// A resolved Normal-mode motion.  The variants present so far are the
-/// CP2 core set, the CP3 charwise `h`/`l` and `cw`/`cW` targets, and the
-/// CP5 find / paragraph / matching-pair motions; later checkpoints extend
-/// the enum (`n N`, `NG`).
+/// A resolved Normal-mode motion.  The variants are the CP2 core set, the
+/// CP3 charwise `h`/`l` and `cw`/`cW` targets, the CP5 find / paragraph /
+/// matching-pair motions, and the counted line jump.
+///
+/// `n` / `N` are deliberately *not* here: they walk the live
+/// `EditorState::search` match list rather than resolving an offset from
+/// the buffer alone, so they run through `feed`'s `search_repeat` instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Motion {
     Left,                     // h (operator target)
@@ -50,6 +53,7 @@ pub enum Motion {
     LineEnd,                  // $
     DocStart,                 // gg
     DocEnd,                   // G
+    GoToLine(u32),            // {count}G / {count}gg / :N (1-based line)
     FindChar(char, FindKind), // f F t T (and ; , replays)
     ParagraphForward,         // }
     ParagraphBackward,        // {
@@ -116,6 +120,7 @@ pub fn resolve_motion(motion: Motion, count: u32, cursor: usize, buf: &Buffer) -
         Motion::LineEnd => line_end(buf, cursor),
         Motion::DocStart => first_non_blank(buf, 0),
         Motion::DocEnd => first_non_blank(buf, last_content_line(buf)),
+        Motion::GoToLine(n) => first_non_blank(buf, goto_line_index(buf, n)),
         Motion::FindChar(c, kind) => {
             find_char(buf, cursor, c, kind, count, /*skip_adjacent=*/ false)
         }
@@ -143,6 +148,16 @@ pub fn resolve_motion_range(motion: Motion, count: u32, cursor: usize, buf: &Buf
             first: buf.char_to_line(cursor),
             last: last_content_line(buf),
         },
+        // A line jump is linewise in either direction: `d5G` from below
+        // line 5 deletes *up* to it, exactly as `dgg` does.
+        Motion::GoToLine(n) => {
+            let line = buf.char_to_line(cursor);
+            let target = goto_line_index(buf, n);
+            OpRange::Lines {
+                first: line.min(target),
+                last: line.max(target),
+            }
+        }
         _ => {
             let mut target = resolve_motion(motion, count, cursor, buf);
             if matches!(motion, Motion::WordForward | Motion::BigWordForward)
@@ -567,6 +582,15 @@ pub fn first_non_blank(buf: &Buffer, line: usize) -> usize {
     pos
 }
 
+/// Buffer-line index for the 1-based line number `n` carried by a
+/// [`Motion::GoToLine`].  Clamped to the last *content* line so `999G` and
+/// `:$` land where a bare `G` would rather than on the trailing empty line;
+/// `0` is unreachable from the key layer (a leading `0` is `LineStart`) but
+/// resolves to the first line, as `:0` does in vim.
+fn goto_line_index(buf: &Buffer, n: u32) -> usize {
+    (n.saturating_sub(1) as usize).min(last_content_line(buf))
+}
+
 /// The last line carrying content — the target for `G`.  When the buffer
 /// ends with a newline (producing a trailing empty line), back up to the
 /// line above it, matching vim's `G`.
@@ -652,6 +676,21 @@ mod tests {
     }
 
     #[test]
+    fn goto_line_lands_on_the_first_non_blank_of_that_line() {
+        let t = "alpha\nbravo\n  charlie\ndelta";
+        // 1-based: line 3 is "  charlie", first non-blank two in.
+        assert_eq!(m(Motion::GoToLine(3), 0, t), t.find("charlie").unwrap());
+        assert_eq!(m(Motion::GoToLine(1), 20, t), 0);
+    }
+
+    #[test]
+    fn goto_line_clamps_past_the_end() {
+        // Same landing spot as a bare `G`, trailing empty line included.
+        let t = "alpha\nbeta\n";
+        assert_eq!(m(Motion::GoToLine(999), 0, t), m(Motion::DocEnd, 0, t));
+    }
+
+    #[test]
     fn word_forward_crosses_a_newline() {
         // "foo\nbar": w from 'f' skips to 'b' on the next line.
         let t = "foo\nbar";
@@ -711,6 +750,22 @@ mod tests {
         assert_eq!(
             resolve_motion_range(Motion::DocEnd, 1, cursor, &b),
             OpRange::Lines { first: 2, last: 3 }
+        );
+    }
+
+    #[test]
+    fn range_goto_line_is_linewise_in_both_directions() {
+        let b = buf("a\nb\nc\nd");
+        let cursor = b.line_to_char(2); // on "c"
+                                        // `d4G` reaches down to the last line…
+        assert_eq!(
+            resolve_motion_range(Motion::GoToLine(4), 1, cursor, &b),
+            OpRange::Lines { first: 2, last: 3 }
+        );
+        // …and `d1G` reaches up to the first.
+        assert_eq!(
+            resolve_motion_range(Motion::GoToLine(1), 1, cursor, &b),
+            OpRange::Lines { first: 0, last: 2 }
         );
     }
 
