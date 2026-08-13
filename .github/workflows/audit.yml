@@ -1,0 +1,63 @@
+name: Audit
+
+# Checks the dependency tree against the RustSec advisory database.  This is
+# the Rust-native stand-in for GitHub code scanning, which has no meaningful
+# Rust support.  It matters here because edamame decodes untrusted images,
+# rasterizes untrusted SVG, and pins a pre-1.0 `mermaid-rs-renderer` *because*
+# it has known panic bugs.
+#
+# This lives outside `ci.yml` because its two inputs change on different
+# schedules than the source does.  The advisory database moves on its own —
+# a dependency that was clean yesterday can be flagged today with no commit
+# from us at all — so the weekly cron is the trigger that actually finds
+# things.  The dependency tree, meanwhile, only changes when `Cargo.lock` or
+# the audit policy does.  Running it on every push to every file was
+# therefore both too often (it re-audits an unchanged tree) and not often
+# enough (a quiet week goes unaudited).  Path filters are workflow-scoped in
+# Actions, not job-scoped, which is the mechanical reason for the separate
+# file.
+on:
+  schedule:
+    # Mondays, 06:17 UTC.  Deliberately off the hour: GitHub queues scheduled
+    # runs globally and delays the popular slots.
+    - cron: '17 6 * * 1'
+  # The two `paths` lists are duplicated on purpose: the Actions workflow
+  # parser does not support YAML anchors, so `&name` / `*name` here would be
+  # a parse error rather than a shared list.  Keep them in sync by hand.
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - '.cargo/audit.toml'
+      - '.github/workflows/audit.yml'
+  pull_request:
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - '.cargo/audit.toml'
+      - '.github/workflows/audit.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-audit
+      # Policy lives in `.cargo/audit.toml`, not in flags here, so a local
+      # `cargo audit` from the repo root reaches the same verdict as CI.  That
+      # config denies informational advisories (unmaintained / unsound /
+      # yanked) alongside vulnerabilities, and carries the reasoned ignore
+      # list for the few we have consciously accepted — so the steady state
+      # is a clean run and anything printed is new.
+      - run: cargo audit

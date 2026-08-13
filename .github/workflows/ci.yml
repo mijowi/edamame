@@ -141,23 +141,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps --document-private-items --all-features
 
-  audit:
-    name: Security audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@cargo-audit
-      # Checks the dependency tree against the RustSec advisory database.
-      # This is the Rust-native stand-in for GitHub code scanning, which has
-      # no meaningful Rust support.  It matters here because edamame decodes
-      # untrusted images, rasterizes untrusted SVG, and pins a pre-1.0
-      # `mermaid-rs-renderer` *because* it has known panic bugs.
-      #
-      # Policy lives in `.cargo/audit.toml`, not in flags here, so a local
-      # `cargo audit` from the repo root reaches the same verdict as CI.  That
-      # config denies informational advisories (unmaintained / unsound /
-      # yanked) alongside vulnerabilities, and carries the reasoned ignore
-      # list for the few we have consciously accepted — so the steady state
-      # is a clean run and anything printed is new.
-      - run: cargo audit
+  # The RustSec advisory audit is deliberately NOT here — it lives in
+  # `audit.yml`, on a weekly cron plus a `Cargo.lock` / `Cargo.toml` path
+  # filter.  Path filters are workflow-scoped in Actions rather than
+  # job-scoped, so it could not stay in this file and still be selective.

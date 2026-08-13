@@ -32,7 +32,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-CI runs these plus a docs build and a dependency audit. Two notes on running them locally:
+CI runs these plus a docs build. A RustSec dependency audit runs separately — weekly, and on any change to `Cargo.lock`, `Cargo.toml` or `.cargo/audit.toml` — so a PR that bumps a dependency will pick up an extra check. Two notes on running the commands above locally:
 
 - **Tests use `--no-default-features` in CI.** That drops the `arboard` dependency so copy/paste resolves against the in-process kill-ring, which is what makes the suite deterministic. Prefer the same flag locally. Unit tests are insulated either way by `edit_ops::OS_CLIPBOARD` (false under `cfg(test)`), but integration tests in `tests/` link the library compiled *without* `cfg(test)`, so a plain `cargo test` runs the live clipboard paths: `Paste` reads whatever is on your clipboard, `Copy` overwrites it, and OSC 52 escapes land in the test output. A new integration test touching copy or paste should assert against `kill_ring`, never the OS clipboard.
 - **Don't run `cargo test --all-targets`.** It pulls in the Criterion benchmarks and runs them, turning a 30-second suite into several minutes.
