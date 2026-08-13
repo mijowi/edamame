@@ -5,6 +5,7 @@
 pub mod config;
 pub mod init;
 pub mod keymap;
+pub mod persistence;
 pub mod readers;
 pub mod sections;
 pub mod theme;
@@ -21,6 +22,10 @@ pub use config::{
     LoadedConfig, RemoteImagePolicy, WarningKind,
 };
 pub use keymap::{Action, CoalesceKind, KeyBindingOverrides, KeyMap, KeyMapError};
+pub use persistence::{
+    config_reads_allowed, config_writes_allowed, disable_config_dir, unpersisted_suffix,
+    NOT_PERSISTED_NOTE,
+};
 pub use readers::list_export_stylesheets;
 pub use theme::Theme;
 pub use theme_file::ThemeFile;

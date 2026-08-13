@@ -72,6 +72,8 @@ Requires **Rust 1.90 or newer**.
 ```bash
 edamame notes.md     # open a file
 edamame              # start with an empty buffer
+edamame --help       # the full flag list
+edamame --doctor     # diagnostics to paste into a bug report
 ```
 
 Then:
@@ -99,7 +101,7 @@ edamame runs anywhere, but a few things depend on your terminal:
 
 Where support is missing, edamame adapts rather than breaking — it switches to a 256-color theme, keeps image placeholders, and tells you which chords won't arrive. Every command is reachable from the palette regardless.
 
-Full support in kitty, Ghostty, WezTerm, and foot. Apple Terminal works, with the reduced feature set above.
+Full support in kitty, Ghostty, WezTerm, and foot. Apple Terminal works, with the reduced feature set above. Run `edamame --doctor` to see what your terminal reports.
 
 ## Documentation
 

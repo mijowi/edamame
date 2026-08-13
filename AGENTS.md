@@ -74,13 +74,15 @@ cargo insta review
 - `tempfile` — temporary files for I/O tests
 - `ratatui::backend::TestBackend` — headless widget rendering
 
+**Environment-touching tests take `crate::test_env::env_lock()` — readers included — and mutate only through `test_env::EnvGuard`.** `std::env::set_var` is `unsafe` because it races any concurrent `env::var`, and cargo runs a binary's tests on parallel threads, so the exclusion has to be *crate-wide*: `config::config` writes `XDG_CONFIG_HOME` while `cli::doctor` reads it, and `terminal::capabilities` writes `TERM_PROGRAM` while `cli::doctor` reads that. A per-module lock (which is what `capabilities` used to have) cannot exclude either pair. `EnvGuard` restores on drop so a failing assertion can't leak a variable pointing at a deleted `tempdir` into every later test. **`config::persistence::SuppressGuard` is serialized by that same lock** and takes none of its own — hold `env_lock` for the whole test body, not just across the guard. These tests are shaped "assert nothing was written, drop the guard, assert the same call *does* write", and that second half runs with the gate back at `true`: a separate mutex released with the guard would let another test's suppression straddle it (and would add a lock *order* to get wrong).
+
 **Do not** write tests for: terminal capability detection that depends on live terminal probing (`Picker::from_query_stdio`), cross-platform clipboard (OS clipboard paths race between parallel tests), or the actual crossterm terminal-mouse wire protocol — these are covered by manual smoke testing. *Do* test mouse logic at the `MouseDispatcher` + `mouse_ops::apply` layer: both are pure functions of an input event and an editor state. 
 
 ## Project Structure
 
 ```
 src/
-  main.rs           # CLI args, config load, terminal init, App::run.
+  main.rs           # CLI dispatch, config load, terminal init, App::run.
                     #   Declares NO modules — it `use`s the library crate
                     #   (`use edamame::app::App`).  Re-declaring the tree
                     #   here would compile a second private copy, hiding
@@ -110,6 +112,14 @@ src/
       settings.rs, terminal_capabilities.rs, theme_picker.rs, welcome.rs,
       width_injection.rs    # one modal adapter per file
 
+  cli.rs            # facade
+  cli/
+    args.rs         # Invocation / RunOpts / CliError; hand-rolled flag
+                    #   parser over OsString (no clap — see the module doc)
+    doctor.rs       # `--doctor` report: system facts (read from files, never
+                    #   a subprocess) + CapSummary rows
+    help.rs         # `--help` / `--version` text; VERSION const
+
   config.rs         # facade — re-exports Config, KeyMap, Theme, ThemeFile, …
   config/
     config.rs       # Config + sub-configs (Editor, Modal, Table, Images, Dev,
@@ -117,6 +127,8 @@ src/
                     #   load() / save() / ensure_default_files()
     init.rs         # first-run scaffolding (writes annotated config.toml etc.)
     keymap.rs       # Action enum, KeyMap, KeyBindingOverrides, parse_key()
+    persistence.rs  # the single "is the config dir in play?" gate
+                    #   (--no-config, reads + writes); NOT_PERSISTED_NOTE
     readers.rs      # read_theme_named, read_keybindings — disk I/O helpers
     sections.rs     # surgical `toml_edit` updates that preserve comments
     theme.rs        # Theme: all Style values; BUILTIN_THEMES registry;
@@ -278,6 +290,9 @@ src/
     theme_picker.rs     # live review picker
     welcome.rs          # first-run welcome modal
 
+  test_env.rs       # #[cfg(test)] only — crate-wide env_lock() + EnvGuard
+                    #   shared by every test that reads or writes env vars
+
 tests/
   diagrams.rs       # Mermaid block detection + render pipeline
   search.rs         # search-flow lifecycle, hint row, highlight painting
@@ -330,7 +345,9 @@ The `BUILTIN_THEMES` registry in `src/config/theme.rs` lists every compiled-in t
 
 Higher layers depend only on lower ones:
 
-1. `main` — CLI args, config load, terminal lifecycle
+0. `cli` — argument parsing and the flags that print and exit
+   (`--help` / `--version` / `--doctor`); never starts the TUI
+1. `main` — CLI dispatch, config load, terminal lifecycle
 2. `app` — event loop, modal stack, autosave, external-editor flow
 3. `ui` — ratatui widgets; `EditorView` dispatches to `PreviewView`,
    `RenderedView`, `RawView`; modal overlays composite on top
@@ -358,6 +375,16 @@ Always follow this pattern when adding new top-level modules. Several mid-level 
 ## Architectural Notes
 
 These decisions are easy to break if you don't know they exist.
+
+### Command-line entry points
+
+- **`main` is a dispatcher over `cli::Invocation`, and the parser is hand-rolled on purpose.** `clap` is deliberately absent from the graph (it is why `mermaid-rs-renderer` is declared `default-features = false` — its `cli` feature would drag clap in), so a new flag is a match arm in `cli::args`, not a new dependency. Arguments are taken as `OsString`: `std::env::args()` *panics* on a non-UTF-8 argument, which is a legal Linux file name, so flags are matched only after a successful `to_str()` and anything else falls through to the positional arm intact.
+- **`--doctor` never re-derives capability text.** The five capability rows come from `ui::cap_summary::CapSummary::from_caps`, the same builder the welcome modal and the capabilities notice render — a second phrasing in the CLI would drift from the TUI's, and the whole point of the flag is that a user can report what edamame itself believes. `cli::doctor` adds only the *system* half (OS, terminal, `TERM`, `COLORTERM`, locale, tmux) and the third `Status::Unknown` state. Every one of those describes the *machine*, never the person: the report is written to be pasted into a public issue tracker, and nobody doing that should have to scan it for their own identity first. That is why the config directory is not in it — it is a username in the common case, and all it carries diagnostically is "this path is or isn't the default". A new row owes the same test.
+- **That third state exists because the probe needs a tty.** `Capabilities::detect` writes escape sequences and reads the replies off the terminal, so `edamame --doctor > report.txt` would both pollute the file and report "no image support" for a terminal that has it. `doctor::run` checks `IsTerminal` on stdout *and* stdin, falls back to `Capabilities::env_only` (color / mouse / locale, all env-derived), and marks exactly the two probe-derived rows — Images and Keyboard — unknown. Reporting them as ✗ would send users chasing a feature they already have.
+- **System facts are file reads, never subprocesses.** `/etc/os-release` on Linux, `SystemVersion.plist` on macOS (a string scan, same posture as `update_check::parse_tag_name`), `$TERM_PROGRAM_VERSION` for the terminal version. Windows has no equivalent file and reports the bare OS name. Spawning `sw_vers` / `lsb_release` from a diagnostic path would add a process spawn to an area `docs/security.md` hardens; every lookup degrades to a coarser answer instead of an error.
+- **`--no-config` is enforced at every read and write site, not at the startup branch — through one gate they all ask.** Skipping the load is the easy half; the trap is a mid-session *write* overwriting the user's real config with compiled defaults, destroying the configuration the flag exists to rule out as a cause. `config::persistence` owns one process-global `AtomicBool` that `main` clears once via `disable_config_dir()` before any config file is touched, exposed as `config_writes_allowed()` and `config_reads_allowed()` — two names for one fact, so a reader isn't guarded by a function with "writes" in its name. **Four sites write into `~/.config/edamame` and all four ask it:** `Config::save` (returns `Ok(())` without writing — nothing went wrong), the keybinds overlay's `try_persist` (whose `save_to` *truncates* `keybindings.toml` from in-memory overrides a `--no-config` session never read, so one rebind would wipe the user's real file), the export-theme modal (refused outright — a custom theme *is* its file, so a suppressed write would leave `set_theme` naming a theme that can't resolve), and `App::open_config_in_editor` (refused: it both seeds `config.toml` and reloads from it). `ensure_default_files` is the sole exception, and only because `main` never calls it under the flag.
+- **The read half needs the same treatment, for a reason the startup branch hides.** `main` skipping `Config::load` covers startup only; the config directory is read *again* mid-session by surfaces that enumerate what the user dropped into it, and those run long after that branch. Ungated, `--no-config` would still list — and on selection load — `themes/*.toml` in the theme picker, the settings overlay's theme cycle, and the export-theme source list, which is precisely the config a triage run exists to exclude. Three sites ask `config_reads_allowed()`: `theme::list_theme_names` (the one all three theme surfaces build from), `readers::list_export_stylesheets`, and `readers::read_theme_named` as defense in depth — it substitutes the capability-appropriate built-in and returns `None` for the fallback name, since there is no rename to persist and nothing is *missing* (a `MissingTheme` warning modal on every launch would be noise). A new reader or writer owes the matching check.
+- **The gate is a global precisely because a `Config` field was not enough.** It was one, briefly: a `#[serde(skip)]` `persist` field. `App::open_config_in_editor` reloads config from disk and assigns the result to `self.config` wholesale, so the flag silently reverted to its serde default mid-session and every later save went to disk. A per-process fact belongs in a per-process place — nothing can overwrite it, and there is deliberately no way to re-enable it. Messages that report a settings change append `config::unpersisted_suffix()` (`NOT_PERSISTED_NOTE`, one const so all three flashes phrase it identically) so "Configuration updated" never claims a write that didn't happen.
 
 ### Hybrid editing model
 
