@@ -105,12 +105,28 @@ arboard = { version = "3", optional = true, features = ["wayland-data-control"] 
 # Terminal image-protocol probing (Picker::from_query_stdio).
 # `chafa-dyn` is skipped to avoid a system-library dependency on libchafa —
 # we only use the Picker for detection, not for actual halfblock rendering.
-ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults"] }
+#
+# `image-defaults` is deliberately NOT enabled.  It forwards `image`'s full
+# default feature set, and Cargo unifies features across the graph — so it
+# silently widened the narrow format list declared just below back out to
+# every format `image` supports, us decoding untrusted files in formats we
+# never chose to accept (docs/security.md).  It also pulled the AVIF
+# *encoder* (`ravif` → `rav1e` → the unmaintained `paste`, RUSTSEC-2024-0436)
+# into a program that encodes nothing.  Adding it back re-widens the decode
+# surface no matter what the `image` line says.
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
 
 # Image format decoding — transitively pulled by ratatui-image, listed
 # explicitly so `DynamicImage` and `ImageError` are reachable from our own
 # code and the decode branches in `src/image/loader.rs` can compile
 # independently of whether ratatui-image re-exports them.
+#
+# This list is the whole set of raster formats edamame accepts, and it is
+# load-bearing rather than incidental: a format outside it is refused by
+# `loader::decode` as an ordinary `Unsupported` decode error (the
+# `with_guessed_format` reader reports it; nothing panics).  Widening it
+# means accepting another decoder's worth of untrusted-input attack surface,
+# so add a format only on request, never as a side effect of a feature flag.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
 
 # Blocking HTTP client for remote image fetches (Phase 7).  Uses rustls
