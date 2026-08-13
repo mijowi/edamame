@@ -1984,18 +1984,29 @@ fn is_count_digit(c: char, acc: Option<u32>) -> bool {
     c.is_ascii_digit() && !(c == '0' && acc.is_none())
 }
 
-/// Append digit `c` to a count accumulator, capped at [`COUNT_CAP`].
+/// Append digit `c` to a count accumulator, saturating at `u32::MAX`.
+///
+/// Deliberately *not* capped at [`COUNT_CAP`]: a count is not always a
+/// repetition.  `{count}G` reads it as a line number, and clamping here
+/// would put line 10 000 out of reach of the keyboard in a document that
+/// has one (`:10000` accepts the full `u32`, so the two forms would
+/// disagree).  The cap belongs to the consumers that turn a count into
+/// work — see [`COUNT_CAP`].
 fn accumulate(acc: Option<u32>, c: char) -> u32 {
     let digit = c.to_digit(10).unwrap_or(0);
-    acc.unwrap_or(0)
-        .saturating_mul(10)
-        .saturating_add(digit)
-        .min(COUNT_CAP)
+    acc.unwrap_or(0).saturating_mul(10).saturating_add(digit)
 }
 
-/// The effective leading count for a plain motion (defaults to 1).
+/// The effective leading count for a plain motion (defaults to 1), capped
+/// at [`COUNT_CAP`].
+///
+/// This is the funnel every repetition consumer reads through, so the cap
+/// applied here is what keeps `999999999j` from hanging the UI.  The other
+/// two readers of `vim.count` are the `[count1] op [count2]` products
+/// (which clamp themselves) and [`operand_count`] (which must not clamp —
+/// it feeds a line number, not a repeat).
 fn count_of(vim: &VimState) -> u32 {
-    vim.count.unwrap_or(1).max(1)
+    vim.count.unwrap_or(1).clamp(1, COUNT_CAP)
 }
 
 /// Fold a typed count into `gg` / `G`, which read it as a *line number*
@@ -2019,6 +2030,11 @@ fn line_jump(motion: Motion, count: Option<u32>) -> Motion {
 /// exactly as they do for every other counted operator target (`d3G` and
 /// `2d3G` alike name a line), so this mirrors `feed_operator_pending`'s
 /// product rather than inventing a second rule.
+///
+/// Uncapped, unlike every other count reader: the product is a *line
+/// number*, and `goto_line_index` already clamps it to the last content
+/// line, so a saturating `u32::MAX` lands exactly where `:$` does.  No
+/// iteration is driven by this value — see [`COUNT_CAP`].
 fn operand_count(vim: &VimState) -> Option<u32> {
     if vim.count.is_none() && vim.motion_count.is_none() {
         return None;
@@ -2027,7 +2043,7 @@ fn operand_count(vim: &VimState) -> Option<u32> {
         vim.count
             .unwrap_or(1)
             .saturating_mul(vim.motion_count.unwrap_or(1))
-            .clamp(1, COUNT_CAP),
+            .max(1),
     )
 }
 
