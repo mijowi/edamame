@@ -85,6 +85,15 @@ impl CmdLineKind {
             CmdLineKind::SearchBackward => '?',
         }
     }
+
+    /// True for the `/` and `?` prompts, whose text is a search query
+    /// written in escape syntax rather than an ex command.
+    pub fn is_search(self) -> bool {
+        matches!(
+            self,
+            CmdLineKind::SearchForward | CmdLineKind::SearchBackward
+        )
+    }
 }
 
 /// Upper bound on the per-session `:` / search history; older entries are

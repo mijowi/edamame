@@ -111,11 +111,12 @@ impl<'a> StatefulWidget for RawView<'a> {
             });
 
             // Search-match highlights on this line, as `(start_col,
-            // end_col, style)` char ranges.  The query can't contain a
-            // newline, so every match sits inside one buffer line.
-            // Byte offsets are clamped against the live rope so a
-            // stale list (one frame after a content swap) skips
-            // rather than panics.
+            // end_col, style)` char ranges.  **A match may span a line
+            // break** (`/  \n`), so each range is clipped to this line's
+            // byte span rather than skipped — the same shape as the yank
+            // flash below, and for the same reason.  Clipping against
+            // the live rope also means a stale list (one frame after a
+            // content swap) skips rather than panics.
             let mut line_highlights: Vec<(usize, usize, ratatui::style::Style)> = Vec::new();
             let line_start_byte = self
                 .state
@@ -126,64 +127,66 @@ impl<'a> StatefulWidget for RawView<'a> {
             if !search_matches.is_empty() {
                 let first = search_matches.partition_point(|m| m.end <= line_start_byte);
                 for (i, m) in search_matches.iter().enumerate().skip(first) {
+                    // Ranges are sorted and non-overlapping, so the first
+                    // one starting past this line ends the scan.
                     if m.start >= line_end_byte {
                         break;
                     }
-                    // Matches are sorted and all needle-length, so
-                    // `m.end` is monotone: the first range past the
-                    // line end (or past the live rope, for a stale
-                    // list) means every later one is too.
-                    if m.end > rope_len_bytes || m.end > line_end_byte {
-                        break;
+                    if m.end > rope_len_bytes {
+                        break; // stale list — every later range is too
                     }
-                    let start_col = raw[..m.start - line_start_byte].chars().count();
-                    let end_col = raw[..m.end - line_start_byte].chars().count();
                     let style = if Some(i) == focused_match {
                         self.theme.selection
                     } else {
                         self.theme.selection_muted
                     };
-                    line_highlights.push((start_col, end_col, style));
+                    push_clipped(
+                        &mut line_highlights,
+                        raw,
+                        line_start_byte,
+                        line_end_byte,
+                        m,
+                        style,
+                    );
                 }
             }
 
             // Live `:s` preview highlights on this line — same shape as
-            // the search matches above (sorted, none spans a newline),
-            // painted with the full `theme.selection` (the preview has no
-            // focus concept).  Byte offsets are clamped against the live
-            // rope the same way.
+            // the search matches above (sorted, non-overlapping, and
+            // likewise able to span a line break now that a `:s` pattern
+            // can match across one), painted with the full
+            // `theme.selection` (the preview has no focus concept).
             if !preview_highlights.is_empty() {
                 let first = preview_highlights.partition_point(|r| r.end <= line_start_byte);
                 for r in preview_highlights.iter().skip(first) {
                     if r.start >= line_end_byte {
                         break;
                     }
-                    if r.end > rope_len_bytes || r.end > line_end_byte {
+                    if r.end > rope_len_bytes {
                         break;
                     }
-                    let start_col = raw[..r.start - line_start_byte].chars().count();
-                    let end_col = raw[..r.end - line_start_byte].chars().count();
-                    line_highlights.push((start_col, end_col, self.theme.selection));
+                    push_clipped(
+                        &mut line_highlights,
+                        raw,
+                        line_start_byte,
+                        line_end_byte,
+                        r,
+                        self.theme.selection,
+                    );
                 }
             }
 
             // Yank flash: the portion of the flashed byte span that falls
-            // on this line, clipped to the line's byte range and mapped to
-            // char cols.  `raw.get(..)` guards a stale (post-shrink) span.
+            // on this line — a linewise yank spans several.
             if let Some(flash) = yank_flash {
-                let start_byte = flash.start.max(line_start_byte);
-                let end_byte = flash.end.min(line_end_byte);
-                if start_byte < end_byte {
-                    let s = raw
-                        .get(..start_byte - line_start_byte)
-                        .map(|p| p.chars().count());
-                    let e = raw
-                        .get(..end_byte - line_start_byte)
-                        .map(|p| p.chars().count());
-                    if let (Some(start_col), Some(end_col)) = (s, e) {
-                        line_highlights.push((start_col, end_col, self.theme.selection));
-                    }
-                }
+                push_clipped(
+                    &mut line_highlights,
+                    raw,
+                    line_start_byte,
+                    line_end_byte,
+                    &(flash.start..flash.end),
+                    self.theme.selection,
+                );
             }
 
             // The block cursor is painted onto the resolved cell by the render
@@ -210,6 +213,42 @@ impl<'a> StatefulWidget for RawView<'a> {
             buf_line += 1;
             first_sub_row = 0;
         }
+    }
+}
+
+/// Clip one absolute byte `range` to the buffer line spanning
+/// `line_start_byte..line_end_byte` (whose text is `raw`, newline
+/// excluded) and, if anything survives, push it onto `out` as a char-col
+/// range in `style`.
+///
+/// Every highlight source in Raw mode goes through this: a search match,
+/// a `:s` preview span, and the yank flash can all begin on one line and
+/// end on another, so none of them may assume their range fits the line
+/// being painted.  A range that covers only the line's newline clips to
+/// empty and paints nothing.  `raw.get(..)` rather than direct indexing
+/// keeps a stale (post-shrink) range from panicking on a non-char
+/// boundary for one frame.
+fn push_clipped(
+    out: &mut Vec<(usize, usize, ratatui::style::Style)>,
+    raw: &str,
+    line_start_byte: usize,
+    line_end_byte: usize,
+    range: &std::ops::Range<usize>,
+    style: ratatui::style::Style,
+) {
+    let start_byte = range.start.max(line_start_byte);
+    let end_byte = range.end.min(line_end_byte);
+    if start_byte >= end_byte {
+        return;
+    }
+    let s = raw
+        .get(..start_byte - line_start_byte)
+        .map(|p| p.chars().count());
+    let e = raw
+        .get(..end_byte - line_start_byte)
+        .map(|p| p.chars().count());
+    if let (Some(start_col), Some(end_col)) = (s, e) {
+        out.push((start_col, end_col, style));
     }
 }
 

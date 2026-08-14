@@ -2,6 +2,17 @@
 
 use std::ops::Range;
 
+use super::escape::{self, EscapeError};
+
+/// Why a search session couldn't be built from the user's input.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SearchError {
+    #[error("Search term cannot be empty")]
+    Empty,
+    #[error("{0}")]
+    Escape(#[from] EscapeError),
+}
+
 /// The active search (and optionally replace) session.  Owned by
 /// `EditorState::search`; `Some` for exactly the lifetime of the flow.
 ///
@@ -11,15 +22,28 @@ use std::ops::Range;
 /// undo, redo) before consulting `matches` again; the render layer
 /// additionally clamps every range against the live source so a missed
 /// refresh can never panic.
+///
+/// **A match may span a line break** (`/  \n`), so every consumer of
+/// [`Self::matches`] must clip each range against the line it is
+/// painting rather than assume one range sits on one line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchState {
-    /// The literal query.  Never empty, never contains a newline
-    /// (rejected by [`Self::new`]).  Matched smartcase for navigation,
-    /// case-sensitively for a replace flow — see [`Self::ensure_fresh`].
+    /// The query **as the user typed it**, escapes and all — the form
+    /// shown in the modal on re-open and in the "no matches" flash, so
+    /// it can never carry a raw newline into a single-row surface.
+    /// Never empty.  Match with [`Self::needle`], not with this.
     pub query: String,
-    /// Replacement text.  `None` means the user left the replace field
-    /// empty — a navigate-only flow with no Replace / Replace-all keys.
+    /// Replacement text as typed.  `None` means the user left the
+    /// replace field empty — a navigate-only flow with no Replace /
+    /// Replace-all keys.
     pub replace: Option<String>,
+    /// [`Self::query`] with its escapes decoded: the literal text
+    /// actually searched for.  Matched smartcase for navigation,
+    /// case-sensitively for a replace flow — see [`Self::ensure_fresh`].
+    pub needle: String,
+    /// [`Self::replace`] with its escapes decoded: the literal text
+    /// written into the buffer by the replace paths.
+    pub replacement: Option<String>,
     /// Non-overlapping match byte ranges in document order.
     pub matches: Vec<Range<usize>>,
     /// Index into [`Self::matches`] of the emphasized current match.
@@ -29,17 +53,26 @@ pub struct SearchState {
 }
 
 impl SearchState {
-    /// Build a new session.  Returns `None` for an empty query or one
-    /// containing a newline (matches can't span buffer lines).  The
-    /// match list starts stale; the caller's first
+    /// Build a new session from the raw text the user typed, decoding
+    /// its backslash escapes (`escape::decode`) into the literal needle.
+    /// Fails on an empty query or a malformed escape; the caller
+    /// surfaces the error.  A decoded newline is fine — a match may span
+    /// buffer lines.  The match list starts stale; the caller's first
     /// [`Self::ensure_fresh`] populates it.
-    pub fn new(query: String, replace: Option<String>) -> Option<Self> {
-        if query.is_empty() || query.contains('\n') {
-            return None;
+    pub fn new(query: String, replace: Option<String>) -> Result<Self, SearchError> {
+        if query.is_empty() {
+            return Err(SearchError::Empty);
         }
-        Some(Self {
+        let needle = escape::decode(&query)?;
+        if needle.is_empty() {
+            return Err(SearchError::Empty);
+        }
+        let replacement = replace.as_deref().map(escape::decode).transpose()?;
+        Ok(Self {
             query,
             replace,
+            needle,
+            replacement,
             matches: Vec::new(),
             focused_idx: 0,
             // Forces the first `ensure_fresh` to compute.
@@ -74,9 +107,9 @@ impl SearchState {
         // strictly case-sensitive, so neither its highlights nor the
         // replacement ever rewrite a casing variant the user didn't type.
         self.matches = if self.is_replace_flow() {
-            find_all_cs(source, &self.query)
+            find_all_cs(source, &self.needle)
         } else {
-            find_all(source, &self.query)
+            find_all(source, &self.needle)
         };
         self.buffer_version = version;
         if self.focused_idx >= self.matches.len() {
@@ -266,10 +299,38 @@ mod tests {
     }
 
     #[test]
-    fn new_rejects_empty_and_multiline_queries() {
-        assert!(SearchState::new(String::new(), None).is_none());
-        assert!(SearchState::new("a\nb".to_owned(), None).is_none());
-        assert!(SearchState::new("ok".to_owned(), None).is_some());
+    fn new_rejects_an_empty_query_and_a_bad_escape() {
+        assert_eq!(
+            SearchState::new(String::new(), None),
+            Err(SearchError::Empty)
+        );
+        assert_eq!(
+            SearchState::new(r"\d".to_owned(), None),
+            Err(SearchError::Escape(EscapeError::Unsupported('d')))
+        );
+        // A bad escape in the *replace* field is caught too.
+        assert_eq!(
+            SearchState::new("ok".to_owned(), Some(r"a\".to_owned())),
+            Err(SearchError::Escape(EscapeError::Trailing))
+        );
+        assert!(SearchState::new("ok".to_owned(), None).is_ok());
+    }
+
+    #[test]
+    fn new_decodes_escapes_into_the_needle_and_keeps_the_typed_query() {
+        let s = SearchState::new(r"  \n".to_owned(), Some(r"\t".to_owned())).unwrap();
+        // The typed form is preserved for display (modal prefill, flash);
+        // the decoded form is what actually matches.
+        assert_eq!(s.query, r"  \n");
+        assert_eq!(s.needle, "  \n");
+        assert_eq!(s.replacement.as_deref(), Some("\t"));
+    }
+
+    #[test]
+    fn a_multiline_needle_matches_across_a_line_break() {
+        let mut s = SearchState::new(r"  \n".to_owned(), None).unwrap();
+        s.ensure_fresh("foo  \nbar  \nbaz", 1);
+        assert_eq!(s.matches, vec![3..6, 9..12]);
     }
 
     fn fresh(source: &str, query: &str) -> SearchState {

@@ -24,7 +24,15 @@ use super::warnings::{ConfigWarning, WarningKind};
 /// excluded by the `.css` extension filter — it's a fork-able template, not
 /// a selectable stylesheet.  A missing or unreadable directory yields an
 /// empty vector — callers fall back to the compiled-in `Builtin` stylesheet.
+///
+/// A `--no-config` run always yields the empty vector: the export folder
+/// is part of the config directory this run has taken out of play, and
+/// the compiled-in stylesheet is exactly the built-in default that flag
+/// asks for.  See [`crate::config::persistence`].
 pub fn list_export_stylesheets(config_dir: &Path) -> Vec<PathBuf> {
+    if !super::persistence::config_reads_allowed() {
+        return Vec::new();
+    }
     let export_dir = config_dir.join("export");
     let Ok(entries) = std::fs::read_dir(&export_dir) else {
         return Vec::new();
@@ -223,6 +231,32 @@ pub(super) fn read_theme_named(
     // `themes/default.toml` is ignored if `default` is a built-in.
     // Custom user themes go through the disk path below.
     if let Some(theme) = Theme::builtin(name) {
+        return ((&theme).into(), None);
+    }
+
+    // Past this point every branch reads `themes/<name>.toml`, which a
+    // `--no-config` run must not do.  Defense in depth: `list_theme_names`
+    // offers built-ins only under the same gate, so a custom name should
+    // never reach here — but if one does (a stale `config.theme` from a
+    // caller that didn't come through the picker), fall back to the
+    // capability-appropriate built-in rather than reading the file.
+    //
+    // `None`, not `Some(fallback)`: the second element asks the caller to
+    // persist the rename, and this run neither wrote nor read that file.
+    // No `MissingTheme` warning either — nothing is missing, it is
+    // excluded, and a modal about it would be noise on every launch.
+    if !super::persistence::config_reads_allowed() {
+        let fallback = if truecolor {
+            TRUECOLOR_FALLBACK_THEME
+        } else {
+            INDEXED_FALLBACK_THEME
+        };
+        tracing::debug!(
+            theme = name,
+            fallback,
+            "--no-config: not reading a user theme file; using the built-in fallback"
+        );
+        let theme = Theme::builtin(fallback).expect("built-in fallback name is valid");
         return ((&theme).into(), None);
     }
 
@@ -508,6 +542,63 @@ mod tests {
             checked > 10,
             "expected the reference keybindings file to carry example bindings; \
              only found {checked} — has the format changed?"
+        );
+    }
+
+    /// The export folder lives inside the config directory, so a
+    /// `--no-config` run must not enumerate it — the HTML-export modal
+    /// falls back to the compiled-in stylesheet, which is what the flag
+    /// asks for.  The second half proves the empty result came from the
+    /// gate and not from an empty folder.
+    #[test]
+    fn export_stylesheets_are_not_listed_while_the_config_dir_is_disabled() {
+        let _lock = crate::test_env::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let export = dir.path().join("export");
+        std::fs::create_dir_all(&export).unwrap();
+        std::fs::write(export.join("mine.css"), "").unwrap();
+
+        {
+            let _disabled = crate::config::persistence::SuppressGuard::new();
+            assert!(list_export_stylesheets(dir.path()).is_empty());
+        }
+        assert_eq!(list_export_stylesheets(dir.path()).len(), 1);
+    }
+
+    /// Defense in depth behind `list_theme_names`: even handed a custom
+    /// theme name directly, a disabled run reads no file and substitutes
+    /// the capability-appropriate built-in — with no `MissingTheme`
+    /// warning, because nothing is missing.
+    #[test]
+    fn a_user_theme_is_not_read_while_the_config_dir_is_disabled() {
+        let _lock = crate::test_env::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let themes = dir.path().join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        std::fs::write(themes.join("mine.toml"), "[h1]\nfg = \"red\"\n").unwrap();
+
+        // `ThemeFile` has no `PartialEq`; its TOML rendering is a faithful
+        // stand-in and reports a readable diff on failure.
+        let render = |f: &ThemeFile| toml::to_string(f).expect("theme file serialises");
+        let builtin = render(&(&Theme::builtin(TRUECOLOR_FALLBACK_THEME).unwrap()).into());
+
+        let mut warnings = Vec::new();
+        {
+            let _disabled = crate::config::persistence::SuppressGuard::new();
+            let (file, fallback) = read_theme_named(dir.path(), "mine", true, &mut warnings);
+            assert_eq!(fallback, None, "nothing to persist — the file went unread");
+            assert!(warnings.is_empty(), "excluded is not missing: {warnings:?}");
+            assert_eq!(render(&file), builtin);
+        }
+
+        // Ungated, the same call reads the file — so the assertions above
+        // are about the gate, not about a misdirected path.
+        let (file, fallback) = read_theme_named(dir.path(), "mine", true, &mut warnings);
+        assert_eq!(fallback, None);
+        assert_ne!(
+            render(&file),
+            builtin,
+            "the user theme should have been read"
         );
     }
 

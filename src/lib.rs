@@ -20,6 +20,7 @@
 pub mod constants;
 
 pub mod app;
+pub mod cli;
 pub mod config;
 pub mod diagram;
 pub mod diff;
@@ -33,3 +34,9 @@ pub mod search;
 pub mod terminal;
 pub mod ui;
 pub mod watcher;
+
+/// Shared test-only helpers.  Crate-wide rather than per-module because
+/// environment mutation races across module boundaries — see the module
+/// docs.
+#[cfg(test)]
+pub mod test_env;

@@ -12,9 +12,15 @@
 //! the input handler intercepts the flow keys, and
 //! `app::actions::search_safe_action` default-denies every other
 //! action.
+//!
+//! Matching is literal substring, never regex — but the query is written
+//! with backslash escapes ([`escape`]) so it can express a line break
+//! (`/  \n`) that a single-row text field can't hold.
 
+pub mod escape;
 pub mod search_keys;
 pub mod state;
 
+pub use escape::EscapeError;
 pub use search_keys::{search_action_for, search_hint};
-pub use state::SearchState;
+pub use state::{SearchError, SearchState};

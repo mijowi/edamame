@@ -3,16 +3,50 @@
 // a second, private copy of the entire tree, which is how `app`'s unit
 // tests previously ended up reachable only via `cargo test --bin
 // edamame`.  See `src/lib.rs`.
+use std::path::PathBuf;
+
 use anyhow::Result;
 
 use edamame::app::App;
-use edamame::config::{Config, LoadedConfig};
+use edamame::cli::{self, Invocation, RunOpts};
+use edamame::config::{self, Config, LoadedConfig};
 use edamame::terminal::{self, Capabilities, ColorDepth, TerminalSetup};
+
+/// Exit status for a command line we couldn't parse.  2 is the
+/// long-standing convention for a usage error (as distinct from 1, a
+/// program that ran and failed).
+const EXIT_USAGE: i32 = 2;
 
 fn main() -> Result<()> {
     // ── Parse CLI arguments ────────────────────────────────────────
-    let file_path: Option<std::path::PathBuf> = std::env::args().nth(1).map(Into::into);
+    // `args_os`, not `args`: the latter panics on a non-UTF-8 argument,
+    // which is a legal file name on Linux.  See `cli::args`.
+    let invocation = Invocation::parse(std::env::args_os().skip(1)).unwrap_or_else(|e| {
+        eprintln!("edamame: {e}\n\n{}", cli::USAGE);
+        std::process::exit(EXIT_USAGE);
+    });
 
+    match invocation {
+        // The informational flags answer and exit without ever touching
+        // the config directory or the alternate screen — `--doctor`
+        // enters and leaves it to run the capability probe, but draws
+        // no frame and prints only after restoring.
+        Invocation::Help => {
+            print!("{}", cli::help_text());
+            Ok(())
+        }
+        Invocation::Version => {
+            println!("{}", cli::version_line());
+            Ok(())
+        }
+        Invocation::Doctor => cli::run_doctor(),
+        Invocation::Run { file, opts } => run(file, opts),
+    }
+}
+
+/// Start the editor: load config, set up the terminal, probe
+/// capabilities, run the app, restore.
+fn run(file_path: Option<PathBuf>, opts: RunOpts) -> Result<()> {
     // ── Load configuration ─────────────────────────────────────────
     // Three files: config.toml (editor/modal/table/image + active theme
     // name), keybindings.toml (overrides), themes/<active>.toml (style
@@ -40,23 +74,55 @@ fn main() -> Result<()> {
     // truth for everything else (mouse, keyboard enhancements, image
     // support, etc.); this is a one-bit early read, not a parallel
     // implementation.
+    //
+    // `--no-config` short-circuits all three files: no scaffolding and
+    // no reads here, and `suppress_config_writes` below closes the write
+    // half for every site in the process (see `config::persistence`).
+    // `LoadedConfig::default()` is the same in-memory fallback `load`
+    // failures already use, so this is an existing tested path rather
+    // than a second definition of "the built-in defaults".
     let truecolor_at_load = Capabilities::detect_color_depth_from_env() == ColorDepth::TrueColor;
-    Config::ensure_default_files(truecolor_at_load);
-    let loaded = Config::load(truecolor_at_load, true).unwrap_or_else(|e| {
-        // Config errors are non-fatal; use defaults and note the problem.
-        // Can't use tracing here since subscriber isn't set up yet.
-        eprintln!("Warning: failed to load config: {e}. Using defaults.");
+    let loaded = if opts.no_config {
         LoadedConfig::default()
-    });
+    } else {
+        Config::ensure_default_files(truecolor_at_load);
+        Config::load(truecolor_at_load, true).unwrap_or_else(|e| {
+            // Config errors are non-fatal; use defaults and note the problem.
+            // Can't use tracing here since subscriber isn't set up yet.
+            eprintln!("Warning: failed to load config: {e}. Using defaults.");
+            LoadedConfig::default()
+        })
+    };
     let LoadedConfig {
-        config,
+        mut config,
         keybindings,
         theme,
         warnings: config_warnings,
     } = loaded;
 
+    // ── Apply run flags on top of the loaded config ────────────────
+    if opts.no_config {
+        // Take the config directory out of play for the rest of the
+        // process — reads as well as writes — before `App` exists and so
+        // before anything can save or enumerate it.  Skipping the load
+        // above is only the startup half: the theme picker and the
+        // export-stylesheet list read the directory again mid-session.
+        config::disable_config_dir();
+
+        // The welcome modal exists to capture first-run choices *to
+        // disk*, and a first run opens it non-dismissable (there is no
+        // prior choice to protect, so it has no Cancel).  With saving
+        // suppressed it has nothing to capture — leaving it on would put
+        // an unskippable prompt at the head of every triage run for no
+        // outcome.  The capabilities notice is left alone: it is
+        // dismissable, and what it reports is exactly what someone
+        // running `--no-config` is usually trying to find out.
+        config.editor.show_welcome = false;
+    }
+    config.dev.logging |= opts.log;
+
     // ── Set up logging (disabled by default) ──────────────────────
-    let _log_guard = if config.dev.logging {
+    let log_guard = if config.dev.logging {
         setup_logging()
     } else {
         None
@@ -106,6 +172,34 @@ fn main() -> Result<()> {
 
     // ── Restore terminal ──────────────────────────────────────────
     terminal::restore()?;
+
+    // Point `--log` at what it produced.  After `restore`, so the line
+    // lands on the user's normal screen rather than being swallowed with
+    // the alternate one — and after dropping the appender guard, so the
+    // file is flushed and closed by the time we name it.
+    //
+    // The guard, not `log_dir()`, is what says a log exists: `log_dir`
+    // only resolves a path, while `setup_logging` also returns `None`
+    // when creating that directory failed — in which case no subscriber
+    // was ever installed and naming the file would send the user after
+    // something that isn't there.
+    if opts.log {
+        let logging_started = log_guard.is_some();
+        drop(log_guard);
+        match Config::log_dir().filter(|_| logging_started) {
+            // The appender rolls daily, so the file name carries a date
+            // we'd need a date library to render.  Naming the directory
+            // and the pattern is exact without that dependency — and
+            // "written under" doesn't read as a file path the way the
+            // bare directory did (`cat`ting it was the obvious next
+            // move, and it is a directory).
+            Some(dir) => eprintln!(
+                "edamame: debug log written under {} (debug.log.<date>)",
+                dir.display()
+            ),
+            None => eprintln!("edamame: --log could not open a log file; no log was written"),
+        }
+    }
 
     run_result
 }

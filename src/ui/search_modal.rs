@@ -204,13 +204,19 @@ impl SearchModalState {
 
     /// Insert a bracketed paste into the focused field (Search or
     /// Replace) at its in-field cursor.  No-op when focus is on a
-    /// button.  The paste is flattened to one line and length-capped by
-    /// [`crate::ui::sanitize_paste`].
+    /// button.
+    ///
+    /// The payload is **escaped first** (`search::escape::escape`) and
+    /// only then flattened and length-capped by
+    /// [`crate::ui::sanitize_paste`].  These fields are written in
+    /// escape syntax, so a pasted multi-line snippet becomes a working
+    /// `\n`-joined query instead of silently collapsing to one line, and
+    /// a pasted backslash searches for itself.
     pub fn paste(&mut self, text: &str) {
         if !self.focus.is_field() {
             return;
         }
-        let clean = crate::ui::sanitize_paste(text);
+        let clean = crate::ui::sanitize_paste(&crate::search::escape::escape(text));
         if clean.is_empty() {
             return;
         }
@@ -229,6 +235,20 @@ impl SearchModalState {
             return SearchModalResponse::Continue;
         }
         let replace = (!self.replace.is_empty()).then(|| self.replace.clone());
+        // Validate the escapes here so a malformed one lands in the
+        // modal's own error row, with focus on the offending field —
+        // the flow-entry path can only flash, which is a worse place to
+        // correct a typo from.
+        if let Err(e) = crate::search::escape::decode(&self.query) {
+            self.last_error = Some(e.to_string());
+            self.focus = SearchModalField::Query;
+            return SearchModalResponse::Continue;
+        }
+        if let Some(Err(e)) = replace.as_deref().map(crate::search::escape::decode) {
+            self.last_error = Some(e.to_string());
+            self.focus = SearchModalField::Replace;
+            return SearchModalResponse::Continue;
+        }
         SearchModalResponse::Search {
             query: self.query.clone(),
             replace,
@@ -274,6 +294,26 @@ fn remove_char_at(s: &mut String, cursor: usize) {
     }
 }
 
+/// Indent of the note row, aligning it under the input's value column
+/// ("Search " label + a two-cell gap).
+const NOTE_INDENT: usize = 9;
+
+/// The metadata line under the search field.  The matcher depends on the
+/// flow: a navigate-only search (empty replace field) is smartcase —
+/// case-insensitive unless the query has an uppercase letter — while a
+/// replace flow stays strictly case-sensitive so a lowercase find never
+/// rewrites a casing variant the user didn't type (see
+/// `SearchState::ensure_fresh`).  The escape hint rides on the same row
+/// so the modal keeps its height; `\n` is the escape people come looking
+/// for, and it implies the rest.
+fn matching_mode_note(state: &SearchModalState) -> &'static str {
+    if state.replace.is_empty() {
+        r"(Smart case · \n for a line break)"
+    } else {
+        r"(Case sensitive · \n for a line break)"
+    }
+}
+
 /// View-only widget that renders the modal over the editor.
 pub struct SearchModalView<'a> {
     pub theme: &'a Theme,
@@ -295,7 +335,11 @@ impl<'a> StatefulWidget for SearchModalView<'a> {
             .max(state.replace.chars().count()) as u16;
         let value_w = (longest_value + 4).max(32);
         let buttons_w = button_row_width(BUTTON_LABELS);
-        let content_width = (label_w + 2 + value_w).max(buttons_w);
+        // The note row is indented under the value column, so its own
+        // width has to be part of the sizing or it renders clipped.
+        let note = matching_mode_note(state);
+        let note_w = NOTE_INDENT as u16 + note.chars().count() as u16;
+        let content_width = (label_w + 2 + value_w).max(buttons_w).max(note_w);
         let content = ContentSize {
             width: content_width,
             height: 0,
@@ -334,14 +378,8 @@ impl<'a> StatefulWidget for SearchModalView<'a> {
             self.cursor_visible,
         );
         row_y = row_y.saturating_add(1);
-        // Matching-mode note, aligned under the search input's value
-        // ("Search " label + two-cell gap).  Quiet hint styling so it
-        // reads as metadata, not another field.  The matcher depends on
-        // the flow: a navigate-only search (empty replace field) is
-        // smartcase — case-insensitive unless the query has an uppercase
-        // letter — while a replace flow stays strictly case-sensitive so a
-        // lowercase find never rewrites a casing variant the user didn't
-        // type.  See `SearchState::ensure_fresh`.
+        // Matching-mode note (see `matching_mode_note`), in quiet hint
+        // styling so it reads as metadata, not another field.
         if row_y < inner.y + inner.height {
             let note_area = Rect {
                 x: inner.x,
@@ -349,13 +387,8 @@ impl<'a> StatefulWidget for SearchModalView<'a> {
                 width: inner.width,
                 height: 1,
             };
-            let note = if state.replace.is_empty() {
-                "(Smart case)"
-            } else {
-                "(Case sensitive)"
-            };
             Paragraph::new(Line::from(vec![
-                Span::raw(" ".repeat(9)),
+                Span::raw(" ".repeat(NOTE_INDENT)),
                 Span::styled(note, self.theme.text_muted()),
             ]))
             .style(self.theme.modal_bg)
@@ -579,15 +612,29 @@ mod tests {
     }
 
     #[test]
-    fn paste_inserts_into_focused_field_and_flattens_newlines() {
+    fn paste_inserts_into_focused_field_and_escapes_newlines() {
         let mut s = SearchModalState::new(String::new(), String::new());
         s.paste("foo\nbar");
-        assert_eq!(s.query, "foobar", "newlines stripped, query targeted");
-        assert_eq!(s.query_cursor, 6);
+        // The field is written in escape syntax, so a pasted break
+        // survives as `\n` rather than vanishing.
+        assert_eq!(s.query, r"foo\nbar", "newline escaped, query targeted");
+        assert_eq!(s.query_cursor, 8);
         s.handle_key(&key(KeyCode::Tab)); // focus Replace
         s.paste("baz");
         assert_eq!(s.replace, "baz");
-        assert_eq!(s.query, "foobar", "query untouched while Replace focused");
+        assert_eq!(
+            s.query, r"foo\nbar",
+            "query untouched while Replace focused"
+        );
+    }
+
+    #[test]
+    fn paste_escapes_a_literal_backslash() {
+        let mut s = SearchModalState::new(String::new(), String::new());
+        s.paste(r"C:\dir");
+        assert_eq!(s.query, r"C:\\dir");
+        // …and it decodes back to what was on the clipboard.
+        assert_eq!(crate::search::escape::decode(&s.query).unwrap(), r"C:\dir");
     }
 
     #[test]
@@ -640,7 +687,7 @@ mod tests {
         assert!(contents.contains("needle"), "{contents}");
         assert!(contents.contains("thread"), "{contents}");
         // A filled replace field selects the case-sensitive replace flow.
-        assert!(contents.contains("(Case sensitive)"), "{contents}");
+        assert!(contents.contains("(Case sensitive"), "{contents}");
         assert!(contents.contains("Cancel"), "{contents}");
     }
 
@@ -667,7 +714,9 @@ mod tests {
             .iter()
             .map(|c| c.symbol().chars().next().unwrap_or(' '))
             .collect();
-        assert!(contents.contains("(Smart case)"), "{contents}");
-        assert!(!contents.contains("(Case sensitive)"), "{contents}");
+        assert!(contents.contains("(Smart case"), "{contents}");
+        assert!(!contents.contains("(Case sensitive"), "{contents}");
+        // The escape hint shares the row.
+        assert!(contents.contains(r"\n for a line break"), "{contents}");
     }
 }

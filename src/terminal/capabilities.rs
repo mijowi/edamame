@@ -130,6 +130,28 @@ impl Capabilities {
         detect_color_depth(&term)
     }
 
+    /// Detect everything that can be known from the environment alone —
+    /// color depth, mouse, and locale — leaving the two probe-derived
+    /// facts at their [`Self::minimal`] values (no image protocol, no
+    /// keyboard enhancement).
+    ///
+    /// Used by `--doctor` when stdout or stdin is not a terminal.  The
+    /// image and keyboard probes both write escape sequences and read
+    /// the replies off the tty; with output redirected those sequences
+    /// would land in the user's file and the probe would report "no
+    /// support" for a terminal that has it.  Reporting the two facts as
+    /// *unknown* is the honest answer, and the caller
+    /// ([`crate::cli::doctor`]) prints them that way.
+    pub fn env_only() -> Self {
+        let term = env::var("TERM").unwrap_or_default();
+        Self {
+            color_depth: detect_color_depth(&term),
+            mouse: detect_mouse(&term),
+            unicode_full: detect_unicode_full(),
+            ..Self::minimal()
+        }
+    }
+
     /// True iff the terminal advertises 24-bit color.  Anything below
     /// truecolor (256-indexed, 16-color, none) quantizes the RGB values
     /// every built-in theme and every rendered image is authored in, so
@@ -393,54 +415,13 @@ fn detect_image_protocol() -> (Option<ImageProtocol>, Option<Picker>) {
 mod tests {
     use super::*;
 
-    /// Save the current value of an env var, set a new value (or clear it),
-    /// and restore on drop.  Lets tests mutate env vars without races — we
-    /// just need to be careful to not run color-depth tests in parallel,
-    /// which cargo does by default per test binary.
-    struct EnvGuard {
-        key: &'static str,
-        prev: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let prev = env::var(key).ok();
-            // SAFETY: this test module is serialized by the `env_mutex` below.
-            unsafe {
-                env::set_var(key, value);
-            }
-            Self { key, prev }
-        }
-
-        fn unset(key: &'static str) -> Self {
-            let prev = env::var(key).ok();
-            unsafe {
-                env::remove_var(key);
-            }
-            Self { key, prev }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            unsafe {
-                match &self.prev {
-                    Some(v) => env::set_var(self.key, v),
-                    None => env::remove_var(self.key),
-                }
-            }
-        }
-    }
-
-    /// Serialise env-var-mutating tests so they don't clobber each other.
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        use std::sync::Mutex;
-        use std::sync::OnceLock;
-        static M: OnceLock<Mutex<()>> = OnceLock::new();
-        M.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-    }
+    // `EnvGuard` (save / set / restore-on-drop) and `env_lock` used to
+    // live here.  They moved to `crate::test_env` when a second module
+    // grew env-mutating tests: a lock private to this module cannot
+    // exclude `config::config`'s `XDG_CONFIG_HOME` writes or
+    // `cli::doctor`'s reads of the very variables set below, and the
+    // race those guard against is process-wide.
+    use crate::test_env::{env_lock, EnvGuard};
 
     // ── Image protocol ────────────────────────────────────────────────
 

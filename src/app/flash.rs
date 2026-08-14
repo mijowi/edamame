@@ -6,6 +6,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::config;
 use crate::config::KeyBindingOverrides;
 use crate::config::KeyMap;
 use crate::ui::{hint_line_for, HintContent, HintCtx, HintSet, ModalKind};
@@ -211,7 +212,8 @@ impl App {
     pub(super) fn save_config_with_flash(&mut self, err_context: &'static str) {
         match self.config.save() {
             Ok(()) => {
-                self.flash("Configuration updated", MessageKind::Success);
+                let msg = format!("Configuration updated{}", config::unpersisted_suffix());
+                self.flash(msg, MessageKind::Success);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "{}", err_context);

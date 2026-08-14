@@ -52,12 +52,15 @@ impl App {
     /// path.  Zero matches never enters the flow — the user gets a
     /// flash and stays where they were.
     pub(crate) fn enter_search_flow(&mut self, query: String, replace: Option<String>) {
-        let Some(state) = SearchState::new(query.clone(), replace) else {
-            // The modal validates non-empty input, so this only fires
-            // for a query the session can't represent (e.g. pasted
-            // newline).
-            self.notify("Search term cannot span lines", ModalKind::Warning);
-            return;
+        let state = match SearchState::new(query.clone(), replace) {
+            Ok(state) => state,
+            Err(e) => {
+                // The modal validates non-empty input and reports escape
+                // errors in its own error row, so this is a backstop for
+                // any path that reaches here without that check.
+                self.notify(e.to_string(), ModalKind::Warning);
+                return;
+            }
         };
         self.editor.enter_search(state);
         if self
@@ -99,9 +102,14 @@ impl App {
     /// which always starts at the first match), this matches vim's semantics.
     /// Zero matches never enters the flow — the user gets a flash.
     pub(crate) fn enter_vim_search(&mut self, query: String, forward: bool) {
-        let Some(state) = SearchState::new(query.clone(), None) else {
-            self.flash("Search term cannot span lines", MessageKind::Info);
-            return;
+        let state = match SearchState::new(query.clone(), None) {
+            Ok(state) => state,
+            // A malformed escape (`/\d`, a trailing `\`) — say so rather
+            // than searching for something the user didn't write.
+            Err(e) => {
+                self.flash(e.to_string(), MessageKind::Info);
+                return;
+            }
         };
         self.editor.enter_search(state);
         if self
@@ -301,7 +309,7 @@ impl App {
         let Some(s) = self.editor.search.as_ref() else {
             return;
         };
-        let (Some(range), Some(replacement)) = (s.focused_range(), s.replace.clone()) else {
+        let (Some(range), Some(replacement)) = (s.focused_range(), s.replacement.clone()) else {
             // Navigate-only flow — `r` is inert.
             return;
         };
@@ -321,10 +329,12 @@ impl App {
             removed,
             inserted: replacement,
         });
-        // `apply_delta` defers the reparse for in-line edits (and a
-        // single-line query means the edit is always in-line), but the
+        // `apply_delta` defers the reparse for in-line edits, but the
         // match recompute and the highlight overlays need fresh
-        // source-map byte ranges on the very next frame.
+        // source-map byte ranges on the very next frame.  (A match or a
+        // replacement may span a line break, in which case `apply_delta`
+        // sees `crosses_line` and has already reparsed — this is then a
+        // no-op.)
         self.editor.flush_parsed_if_dirty();
         self.editor.ensure_search_fresh();
         self.editor.update_cursor_block();
@@ -353,7 +363,7 @@ impl App {
         let Some(s) = self.editor.search.as_ref() else {
             return;
         };
-        let (Some(replacement), false) = (s.replace.clone(), s.matches.is_empty()) else {
+        let (Some(replacement), false) = (s.replacement.clone(), s.matches.is_empty()) else {
             return;
         };
         let matches = s.matches.clone();
@@ -736,6 +746,39 @@ mod tests {
         app.enter_vim_search("zzz".to_owned(), true);
         assert!(app.editor.search.is_none(), "zero matches → no flow");
         assert!(app.transient.is_some(), "a no-match flash is shown");
+    }
+
+    #[test]
+    fn vim_search_matches_across_a_line_break() {
+        // The motivating case: find every line ending in two spaces.
+        let mut app = app_with_buffer("foo  \nbar  \nbaz", 0);
+        app.set_vim_enabled(true);
+        app.enter_vim_search(r"  \n".to_owned(), true);
+        let s = app.editor.search.as_ref().expect("flow entered");
+        assert_eq!(s.matches, vec![3..6, 9..12]);
+        assert_eq!(s.needle, "  \n");
+        assert_eq!(s.query, r"  \n", "the typed form is kept for display");
+    }
+
+    #[test]
+    fn vim_search_with_a_bad_escape_flashes_and_does_not_enter() {
+        // Search is literal, not regex — `\d` must say so rather than
+        // silently matching nothing.
+        let mut app = app_with_buffer("a1b2\n", 0);
+        app.set_vim_enabled(true);
+        app.enter_vim_search(r"\d".to_owned(), true);
+        assert!(app.editor.search.is_none(), "bad escape → no flow");
+        let flash = app.transient.as_ref().expect("an error is flashed");
+        assert!(flash.text.contains("Unsupported escape"), "{}", flash.text);
+    }
+
+    #[test]
+    fn vim_search_finds_a_literal_backslash_when_it_is_escaped() {
+        let mut app = app_with_buffer(r"a \ b", 0);
+        app.set_vim_enabled(true);
+        app.enter_vim_search(r"\\".to_owned(), true);
+        let s = app.editor.search.as_ref().expect("flow entered");
+        assert_eq!(s.matches, vec![2..3]);
     }
 
     #[test]

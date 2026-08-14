@@ -20,6 +20,7 @@ use ratatui::Frame;
 
 use super::types::{Modal, ModalOutcome, ModalRenderCtx};
 use crate::app::{App, MessageKind};
+use crate::config;
 use crate::config::{Config, KeyBindingOverrides, KeyMap};
 use crate::ui::{KeybindsResponse, KeybindsState, KeybindsView, ModalKind};
 
@@ -39,7 +40,17 @@ impl KeybindsOverlayModal {
 /// `Err(message)` on missing config dir or write failure; the caller
 /// surfaces the message via [`App::notify`] and keeps the overlay
 /// open so the user can retry without losing their drafts.
+///
+/// Under `--no-config` this writes nothing and reports success, so the
+/// drafts still take effect for the session.  `save_to` truncates the
+/// whole file from the in-memory overrides — which a `--no-config`
+/// session never read — so without the gate one rebind would replace
+/// the user's entire `keybindings.toml` with that single entry.  See
+/// [`crate::config::persistence`].
 fn try_persist(overrides: &KeyBindingOverrides) -> Result<(), String> {
+    if !config::config_writes_allowed() {
+        return Ok(());
+    }
     let Some(dir) = Config::config_dir() else {
         return Err("No config directory available — keybindings not saved".into());
     };
@@ -51,11 +62,18 @@ fn try_persist(overrides: &KeyBindingOverrides) -> Result<(), String> {
 }
 
 /// Swap the drafts onto `app` after a successful persist.  Only the
-/// in-memory state is touched here; disk has already been written.
+/// in-memory state is touched here; disk has already been written —
+/// unless writes are suppressed, in which case the flash says so rather
+/// than claiming a save that didn't happen.
 fn install_drafts(app: &mut App, keymap: KeyMap, overrides: KeyBindingOverrides) {
     app.keymap = Some(keymap);
     app.keybindings = overrides;
-    app.flash("Keybindings saved", MessageKind::Success);
+    let msg = if config::config_writes_allowed() {
+        "Keybindings saved".to_owned()
+    } else {
+        format!("Keybindings applied{}", config::NOT_PERSISTED_NOTE)
+    };
+    app.flash(msg, MessageKind::Success);
 }
 
 /// Map a `KeybindsResponse::Save` to a `ModalOutcome` that either
@@ -142,5 +160,61 @@ mod tests {
         let handled = app.handle_app_action(&Action::OpenKeybinds, 40, 80);
         assert!(handled);
         assert!(app.modal_stack.contains::<KeybindsOverlayModal>());
+    }
+
+    /// `save_to` truncates the whole file from the in-memory overrides,
+    /// which a `--no-config` session never read — so an ungated Save
+    /// would replace the user's real `keybindings.toml` with whatever
+    /// single rebind they made during a triage run.
+    #[test]
+    fn saving_writes_no_keybindings_file_while_writes_are_suppressed() {
+        let _lock = crate::test_env::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let _xdg = crate::test_env::EnvGuard::set("XDG_CONFIG_HOME", dir.path());
+        let path = dir.path().join("edamame/keybindings.toml");
+
+        let overrides = KeyBindingOverrides(
+            [("Quit".to_owned(), "ctrl+x".to_owned())]
+                .into_iter()
+                .collect(),
+        );
+
+        {
+            let _suppressed = crate::config::persistence::SuppressGuard::new();
+            assert_eq!(
+                try_persist(&overrides),
+                Ok(()),
+                "suppression is not a failure"
+            );
+            assert!(!path.exists(), "--no-config must not create {path:?}");
+        }
+
+        // Ungated, the same call does write — so the assertion above is
+        // about the gate, not about a misdirected path.
+        assert_eq!(try_persist(&overrides), Ok(()));
+        assert!(path.exists());
+        assert!(std::fs::read_to_string(&path).unwrap().contains("ctrl+x"));
+    }
+
+    /// The flash must not claim a save that didn't happen.
+    #[test]
+    fn the_save_flash_says_so_when_nothing_was_written() {
+        let _lock = crate::test_env::env_lock();
+        let mut app = make_app();
+        let keymap = app.ensure_keymap_clone();
+
+        {
+            let _suppressed = crate::config::persistence::SuppressGuard::new();
+            install_drafts(&mut app, keymap.clone(), KeyBindingOverrides::default());
+            let msg = app.transient.as_ref().expect("flash").text.clone();
+            assert!(msg.contains(crate::config::NOT_PERSISTED_NOTE), "{msg}");
+            assert!(msg.starts_with("Keybindings applied"), "{msg}");
+        }
+
+        install_drafts(&mut app, keymap, KeyBindingOverrides::default());
+        assert_eq!(
+            app.transient.as_ref().expect("flash").text,
+            "Keybindings saved"
+        );
     }
 }

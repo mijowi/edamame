@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::init::{ensure_default_files_in, REFERENCE_CONFIG_TOML};
 use super::keymap::KeyBindingOverrides;
+use super::persistence::config_writes_allowed;
 use super::readers::{read_keybindings, read_main_config, read_theme_named};
 pub use super::sections::{
     AppearanceMode, CustomExportEntry, DevConfig, DiagramsConfig, DiagramsEnabled, EditorConfig,
@@ -267,7 +268,17 @@ impl Config {
         }
     }
 
+    /// A `--no-config` session returns `Ok(())` without writing: it never
+    /// read the user's files, so it has no business rewriting them from
+    /// compiled defaults.  Success rather than an error because nothing
+    /// went wrong — callers that show the user a "saved" message append
+    /// [`unpersisted_suffix`](crate::config::unpersisted_suffix) and say
+    /// so.  See [`crate::config::persistence`] for why the gate is a
+    /// process global rather than a field on this struct.
     pub fn save(&self) -> Result<()> {
+        if !config_writes_allowed() {
+            return Ok(());
+        }
         let path = Self::config_path()
             .context("Could not determine config directory (missing XDG_CONFIG_HOME/HOME)")?;
         if let Some(parent) = path.parent() {
@@ -508,6 +519,7 @@ fn value_canonically_equal(a: &toml_edit::Value, b: &toml_edit::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::persistence::SuppressGuard;
 
     #[test]
     fn default_config_is_valid() {
@@ -516,6 +528,38 @@ mod tests {
         assert!(!config.dev.logging);
         assert_eq!(config.modal.handler, "default");
         assert_eq!(config.theme, "Edamame");
+    }
+
+    /// The `--no-config` guarantee, enforced at the write site: a session
+    /// that read nothing must write nothing, or a triage run that toggles
+    /// one setting would overwrite the user's real `config.toml` with
+    /// compiled defaults.
+    ///
+    /// Both halves matter — the second write proves the first assertion
+    /// is about the gate and not about a misdirected path.
+    #[test]
+    fn save_writes_nothing_while_config_writes_are_suppressed() {
+        let _lock = crate::test_env::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        // `save` resolves its own path from the environment, so point the
+        // whole config dir at the tempdir for the duration of the test.
+        let _xdg = crate::test_env::EnvGuard::set("XDG_CONFIG_HOME", dir.path());
+
+        let path = dir.path().join("edamame/config.toml");
+        let config = Config {
+            theme: "Nord".to_owned(),
+            ..Config::default()
+        };
+
+        {
+            let _suppressed = SuppressGuard::new();
+            assert!(config.save().is_ok(), "a suppressed save is not a failure");
+            assert!(!path.exists(), "--no-config must not create {path:?}");
+        }
+
+        config.save().expect("save ok");
+        assert!(path.exists());
+        assert!(std::fs::read_to_string(&path).unwrap().contains("Nord"));
     }
 
     #[test]
