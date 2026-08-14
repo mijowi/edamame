@@ -117,8 +117,9 @@ pub enum Inline {
     /// callers can round-trip the raw text if needed.
     HtmlComment(String),
     /// An inline footnote reference (`[^label]`).  The renderer shows the
-    /// raw `label` as a superscript marker (digits become superscript
-    /// glyphs), so the rendered marker never diverges from the source.
+    /// raw `label` in a bracketed marker (`[1]`), fusing a run of adjacent
+    /// references into one (`[1,2]`), so the rendered marker never
+    /// diverges from the source labels.
     /// pulldown-cmark only emits a reference when a matching definition
     /// exists — an undefined `[^x]` stays literal text, so this variant
     /// always has a definition.

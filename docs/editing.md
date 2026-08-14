@@ -160,7 +160,9 @@ editable text and every guardrail is off.
 ## Footnotes
 
 Write `[^1]` where you want a reference and `[^1]: the note` wherever the
-definition should live. References render as superscript markers.
+definition should live. References render as bracketed markers — `[^1]`
+becomes `[1]` — and references written back to back are joined into one
+marker, so `[^1][^2][^3]` renders as `[1,2,3]`.
 
 `Ctrl-Enter` on a reference jumps to its definition; on a definition, it jumps
 back to the reference you came from. `Alt-←` also walks back.

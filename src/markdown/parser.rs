@@ -572,7 +572,7 @@ where
 
             // Footnote reference (`[^label]`).  pulldown-cmark only emits
             // this when a matching definition exists.  The raw label is
-            // rendered verbatim (digits superscripted) — no display
+            // rendered verbatim inside the bracketed marker — no display
             // renumbering.
             Event::FootnoteReference(label) => {
                 inlines.push(Inline::FootnoteReference {

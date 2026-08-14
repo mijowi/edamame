@@ -87,8 +87,8 @@ pub struct Theme {
     /// In-document heading link (`#section`) — `link` fg, no underline.
     pub link_heading: Style,
     pub image_placeholder: Style,
-    /// Footnote chrome — the superscript reference marker (`[^1]` →
-    /// `⁽¹⁾`) and a definition's leader / return glyph.  `secondary`
+    /// Footnote chrome — the bracketed reference marker (`[^1]` →
+    /// `[1]`) and a definition's leader / return glyph.  `secondary`
     /// so the markers read as structure rather than prose.
     pub footnote: Style,
 
