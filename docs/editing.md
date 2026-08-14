@@ -226,9 +226,26 @@ saving still work.
 capital it becomes exact. Replacing is always case-sensitive, so searching
 `color` never rewrites a `Color` you didn't mean to touch.
 
-Searches are literal text, not regular expressions, and **cannot span
-lines** — a pasted newline is rejected. (Vim mode's `:s` does take regexes;
-see [vim-mode.md](vim-mode.md).)
+Searches are literal text, not regular expressions. (Vim mode's `:s` does take
+regexes; see [vim-mode.md](vim-mode.md).)
+
+**A search can cross a line break**, written as `\n`:
+
+| Type | Matches |
+|---|---|
+| `\n` | a line break |
+| `\t` | a tab |
+| `\r` | a carriage return |
+| `\\` | a single backslash |
+
+So `  \n` finds every line ending in two spaces, and replacing it with a space
+joins those lines. The Replace field takes the same escapes, so you can also
+replace *with* a line break.
+
+Because a backslash starts an escape, **a literal backslash must be typed
+`\\`** — and anything else after a backslash (`\d`, say) is reported as an
+error rather than searched for. Pasting handles this for you: paste text
+containing backslashes or line breaks and it arrives correctly escaped.
 
 **Go to section** (`Ctrl-G`) is often what you actually want: a fuzzy list of
 every heading, previewing as you arrow through it. `Esc` puts you back.

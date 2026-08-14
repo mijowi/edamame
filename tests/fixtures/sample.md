@@ -38,9 +38,9 @@ This sentence also references the first footnote.[^1]
 
 [^2]: Definition for second footnote
 
-![Octocat](./octocat.png)
+![Dog in field](./dog.jpg)
 
-![Github's Mona](https://brand.github.com/_next/static/media/mascots-01.fc6009a2.png)
+![Bowl of edamame](https://upload.wikimedia.org/wikipedia/commons/thumb/a/a1/Edamame_-_Massachusetts.jpg/500px-Edamame_-_Massachusetts.jpg)
 
 Another Heading 1
 ==============

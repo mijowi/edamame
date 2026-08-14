@@ -584,7 +584,12 @@ impl App {
         match saved {
             Ok(()) => {
                 let state = if new_state { "on" } else { "off" };
-                self.flash(format!("{}: {state}", label.trim()), MessageKind::Info);
+                let msg = format!(
+                    "{}: {state}{}",
+                    label.trim(),
+                    crate::config::unpersisted_suffix()
+                );
+                self.flash(msg, MessageKind::Info);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "failed to persist palette setting toggle");

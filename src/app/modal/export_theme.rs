@@ -167,6 +167,19 @@ pub(crate) fn write_exported_theme(
 /// created would silently fail to reach disk.  Creating a theme is an
 /// explicit choice and outranks our substitution.
 fn perform_export(app: &mut App, source: String, new_name: String) {
+    // Refused rather than done-in-memory: a custom theme *is* the file.
+    // With the write suppressed there would be nothing for
+    // `read_theme_named` to resolve, so `set_theme` + `apply` below would
+    // name a theme that doesn't exist and silently fall back — a worse
+    // outcome than saying plainly that this run can't create one.
+    if !crate::config::config_writes_allowed() {
+        app.notify(
+            "Themes are not written to disk while --no-config is in effect",
+            ModalKind::Warning,
+        );
+        return;
+    }
+
     let truecolor = app.capabilities.color_depth == crate::terminal::ColorDepth::TrueColor;
     let theme_file = resolve_source_theme(&source, truecolor);
 
@@ -271,5 +284,27 @@ mod tests {
     fn resolve_source_theme_handles_builtin() {
         let file = resolve_source_theme("Ayu", true);
         let _round_trip = toml::to_string(&file).expect("builtin theme serialises");
+    }
+
+    /// A `--no-config` run must leave no `themes/<name>.toml` behind,
+    /// and must say why rather than appearing to succeed with a theme
+    /// that has no file to resolve.
+    #[test]
+    fn export_is_refused_while_config_writes_are_suppressed() {
+        let _lock = crate::test_env::env_lock();
+        let tmp = TempDir::new().unwrap();
+        let _xdg = crate::test_env::EnvGuard::set("XDG_CONFIG_HOME", tmp.path());
+        let _suppressed = crate::config::persistence::SuppressGuard::new();
+
+        let mut app = crate::app::test_utils::make_app();
+        let before = app.config.theme.clone();
+        perform_export(&mut app, "Ayu".to_owned(), "my-custom".to_owned());
+
+        assert!(!tmp.path().join("edamame/themes").exists());
+        assert_eq!(app.config.theme, before, "the theme must not be switched");
+        assert!(
+            !app.modal_stack.contains::<ExportSuccessModal>(),
+            "a refused export must not report success"
+        );
     }
 }

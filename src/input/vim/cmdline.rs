@@ -120,11 +120,24 @@ fn set_input(cl: &mut CmdLineState, text: String) {
 }
 
 /// Insert pasted `text` at the cursor (a bracketed paste into an open
-/// `/` `?` `:` prompt).  Newlines are dropped — the command line is a
-/// single line, and a multi-line paste would otherwise corrupt it (this
-/// is also what triggered the buffer-paste panic before paste was routed
-/// here).
+/// `/` `?` `:` prompt).  The command line is a single line, so a
+/// multi-line paste would otherwise corrupt it (this is also what
+/// triggered the buffer-paste panic before paste was routed here).
+///
+/// On a **search** prompt the payload is escaped first, so a pasted
+/// multi-line snippet becomes a working `\n`-joined query rather than
+/// silently losing its breaks — search queries are written in escape
+/// syntax (`search::escape`).  An `:` prompt is an ex command, not a
+/// search term, so it keeps the plain strip.  Either way the loop below
+/// drops any break the transform didn't consume.
 pub fn paste_str(cl: &mut CmdLineState, text: &str) {
+    let escaped;
+    let text = if cl.kind.is_search() {
+        escaped = crate::search::escape::escape(text);
+        escaped.as_str()
+    } else {
+        text
+    };
     for c in text.chars().filter(|c| *c != '\n' && *c != '\r') {
         let idx = byte_index(&cl.input, cl.cursor);
         cl.input.insert(idx, c);

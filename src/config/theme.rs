@@ -688,8 +688,17 @@ pub fn list_theme_names() -> Vec<String> {
         .map(|(n, _)| (*n).to_owned())
         .collect();
 
-    if let Some(dir) = super::config::Config::config_dir() {
-        let themes = dir.join("themes");
+    // A `--no-config` run offers built-ins only.  This list feeds the
+    // theme picker, the settings overlay's cycle, and the export-theme
+    // source list, so without the gate a session started specifically to
+    // rule the user's config out could still pick a `themes/*.toml` off
+    // disk and apply it — the read half of the flag, enforced at the
+    // read site.  See [`crate::config::persistence`].
+    let user_themes_dir = super::config::Config::config_dir()
+        .filter(|_| super::persistence::config_reads_allowed())
+        .map(|dir| dir.join("themes"));
+
+    if let Some(themes) = user_themes_dir {
         if let Ok(read) = std::fs::read_dir(&themes) {
             let mut user: Vec<String> = read
                 .flatten()
@@ -1166,6 +1175,32 @@ impl Default for Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The picker, the settings cycle, and the export-theme source list
+    /// all build from this, so a `--no-config` run offering a user theme
+    /// here is how the flag's read half leaks: selecting it loads the
+    /// very `themes/*.toml` the run exists to rule out.  The second half
+    /// proves the omission came from the gate, not from a missed folder.
+    #[test]
+    fn user_themes_are_not_listed_while_the_config_dir_is_disabled() {
+        let _lock = crate::test_env::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let _xdg = crate::test_env::EnvGuard::set("XDG_CONFIG_HOME", dir.path());
+        std::fs::create_dir_all(dir.path().join("edamame/themes")).unwrap();
+        std::fs::write(
+            dir.path().join("edamame/themes/mine.toml"),
+            "[h1]\nfg = \"red\"\n",
+        )
+        .unwrap();
+
+        {
+            let _disabled = super::super::persistence::SuppressGuard::new();
+            let names = list_theme_names();
+            assert!(!names.iter().any(|n| n == "mine"), "{names:?}");
+            assert_eq!(names.len(), BUILTIN_THEMES.len(), "{names:?}");
+        }
+        assert!(list_theme_names().iter().any(|n| n == "mine"));
+    }
 
     /// The built-in theme registry, pinned with each theme's light/dark
     /// classification.

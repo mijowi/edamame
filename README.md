@@ -72,6 +72,8 @@ Requires **Rust 1.90 or newer**.
 ```bash
 edamame notes.md     # open a file
 edamame              # start with an empty buffer
+edamame --help       # the full flag list
+edamame --doctor     # diagnostics to paste into a bug report
 ```
 
 Then:
@@ -99,7 +101,7 @@ edamame runs anywhere, but a few things depend on your terminal:
 
 Where support is missing, edamame adapts rather than breaking — it switches to a 256-color theme, keeps image placeholders, and tells you which chords won't arrive. Every command is reachable from the palette regardless.
 
-Full support in kitty, Ghostty, WezTerm, and foot. Apple Terminal works, with the reduced feature set above.
+Full support in kitty, Ghostty, WezTerm, and foot. Apple Terminal works, with the reduced feature set above. Run `edamame --doctor` to see what your terminal reports.
 
 ## Documentation
 
@@ -127,6 +129,8 @@ To report a vulnerability, please use GitHub's private reporting on the [Securit
 ## Contributing
 
 Start with [CONTRIBUTING.md](https://github.com/mijowi/edamame/blob/main/CONTRIBUTING.md). For anything non-trivial, please open an issue first — edamame keeps a deliberately narrow scope, so a feature can be well-built and still not fit.
+
+Questions, ideas and anything you're not sure is a bug belong in [Discussions](https://github.com/mijowi/edamame/discussions).
 
 [AGENTS.md](https://github.com/mijowi/edamame/blob/main/AGENTS.md) is the architecture guide — the module layout, the invariants that are easy to break, and the code style. `docs/dev/` holds the design specs.
 

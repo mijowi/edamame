@@ -1,25 +1,31 @@
-# Blank issues stay ON.
+# Blank issues are OFF.
 #
-# The usual argument for turning them off is that the bug form collects the
-# terminal details most edamame reports need. That is real, but it only
-# outweighs the cost once there is somewhere else to send everything the
-# forms don't cover — questions, "the docs are wrong", half-formed ideas.
-# With Discussions off, turning blank issues off leaves those people with no
-# route at all, and a lost report costs more than a triage comment.
+# The bug form collects the terminal details most edamame reports need —
+# protocol, color depth, $TERM — and a blank issue almost never has them.
+# That only outweighs the friction because Discussions now catches
+# everything the forms don't cover: questions, "the docs are wrong",
+# half-formed ideas. Q&A is listed first below so it's the first thing a
+# reporter sees on the chooser.
 #
-# Flip this to `false` once Discussions is enabled and listed below as a
-# contact link.
-blank_issues_enabled: true
+blank_issues_enabled: false
 
 contact_links:
+  - name: Question, or something not working the way you expected
+    url: https://github.com/mijowi/edamame/discussions/new?category=q-a
+    about: >
+      Ask in Discussions. If it turns out to be a bug, it can become an issue from there.
+
   - name: Security vulnerability
     url: https://github.com/mijowi/edamame/security/advisories/new
     about: >
-      Please report privately, not as a public issue. edamame opens untrusted
-      documents, so a parsing or decoding flaw may be exploitable.
+      Please report privately, not as a public issue.
 
   - name: Documentation
     url: https://github.com/mijowi/edamame/blob/main/docs/getting-started.md
     about: >
-      Keybindings, configuration, themes and vim mode are all documented —
-      worth a look before filing, especially for terminal-related surprises.
+      Keybindings, configuration, themes and vim mode are all documented; please have a look at the docs before filing.
+
+  - name: Anything else
+    url: https://github.com/mijowi/edamame/discussions/new?category=general
+    about: >
+      Ideas, workflows, what you're using edamame for, etc.

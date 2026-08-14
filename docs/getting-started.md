@@ -7,12 +7,51 @@ edamame notes.md          # open a file
 edamame                   # start with an empty, unnamed buffer
 ```
 
-That's the whole command line — there are no flags yet.
-
 **There is no in-app file picker.** Once you're inside, you get to other
 documents by following links: put the cursor on a link to another `.md` file
 and press `Ctrl-Enter` (or click it in Preview). `Alt-←` and `Alt-→` walk back
 and forward through where you've been, like a browser.
+
+### Command-line flags
+
+The flag list is short by design — everything else is configured from inside the app or in `config.toml`.
+
+| Flag | What it does |
+|---|---|
+| `-h`, `--help` | Print the flag list |
+| `-V`, `--version` | Print the installed version |
+| `--doctor` | Print version, system, and terminal diagnostics |
+| `--no-config` | Run with built-in defaults, ignoring `~/.config/edamame` |
+| `--log` | Write a debug log for this run |
+| `--` | Treat everything after it as the file name |
+
+`--doctor` is the one to reach for when something looks wrong. It reports which edamame you're running, which terminal you're running it in, and what that terminal supports — the same five capabilities the [terminal capabilities notice](#the-terminal-capabilities-notice) shows, without having to launch the app to find them:
+
+```
+$ edamame --doctor
+edamame 0.1.0
+
+System
+  OS:         macOS 15.6 (aarch64)
+  Terminal:   ghostty 1.3.1
+  TERM:       xterm-ghostty
+  COLORTERM:  truecolor
+  Locale:     en_US.UTF-8 (LANG)
+  tmux:       no
+
+Terminal capabilities
+  ok   Color:     truecolor (24-bit)
+  ok   Images:    Kitty graphics
+  ok   Mouse:     enabled
+  ok   Keyboard:  Kitty keyboard protocol
+  ok   Unicode:   UTF-8 locale
+```
+
+Paste that into a [bug report](https://github.com/mijowi/edamame/issues) — it answers most of the questions we'd otherwise have to ask. Note that redirecting either stream (`edamame --doctor > report.txt`, or piping something in) means the Images and Keyboard rows come back as `unknown`: detecting those two means writing a question to the terminal and reading its reply back, so it needs both stdout and stdin attached to a real one. Copy from the screen instead.
+
+`--no-config` is the other one worth knowing. It starts edamame as if you'd never configured it — no theme file, no keybinding overrides, no settings — which separates "edamame is broken" from "my config is broken" in one step. The folder stays out of the way for the whole run, not just at startup: the theme picker lists the built-in themes only, and HTML export offers only its built-in stylesheet, so a custom theme can't sneak back in halfway through the session you started to rule it out.
+
+It writes nothing while it's running either, so your real config is safe: settings you change during a `--no-config` run apply to that session only, and the app tells you so. The same goes for saving keybindings from the keybinds overlay. Two actions that only make sense against a config folder — creating a custom theme, and opening `config.toml` in your editor — are declined for the run, with a note saying why.
 
 ---
 
@@ -42,8 +81,9 @@ If you later open edamame in a different terminal application, you should see a 
 
 If your terminal falls short, edamame adapts rather than breaking: it swaps in a theme designed for 256 colors, keeps `[Image: …]` placeholders in place, and tells you which chords won't arrive. See [Terminal compatibility](keybindings.md#terminal-compatibility) for the workarounds — the command palette reaches everything regardless.
 
-To see the summary again, clear `seen_terminal_fingerprints` in `config.toml`,
-or open "Open welcome / terminal setup" from the palette.
+To see the summary again, run [`edamame --doctor`](#command-line-flags), open
+"Open welcome / terminal setup" from the palette, or clear
+`seen_terminal_fingerprints` in `config.toml`.
 
 ---
 

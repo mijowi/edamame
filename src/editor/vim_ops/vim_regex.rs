@@ -176,8 +176,9 @@ fn translate_escape(
         // Keyword / identifier chars are iskeyword-dependent; approximate.
         'k' | 'i' => push_class(out, "\\w", branch_start),
         't' => push_class(out, "\\t", branch_start),
-        // Vim's pattern `\n` matches a newline; we substitute per line so it
-        // never matches, but pass it through rather than erroring.
+        // Vim's pattern `\n` matches a newline, and so does ours: the
+        // substitution runs over the whole range at once (see
+        // `ex::region_haystack`), so `:%s/  \n/ /g` really does join lines.
         'n' => push_class(out, "\\n", branch_start),
         'r' => push_class(out, "\\r", branch_start),
         // Any other escaped char is a literal (`\.`, `\*`, `\/`, `\~`, …).

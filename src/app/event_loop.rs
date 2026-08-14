@@ -1578,7 +1578,7 @@ mod tests {
     }
 
     #[test]
-    fn command_line_paste_strips_newlines() {
+    fn search_command_line_paste_escapes_newlines() {
         use crate::input::vim::state::{CmdLineKind, CmdLineState};
         let mut app = app_with_buffer("hi\n", 0);
         app.set_vim_enabled(true);
@@ -1588,8 +1588,24 @@ mod tests {
         app.dispatch_paste("a\nb\r\nc".to_owned(), &dims());
         assert_eq!(
             app.vim.as_ref().unwrap().cmdline.as_ref().unwrap().input,
+            r"a\nb\r\nc",
+            "a multi-line paste becomes a single escaped search line"
+        );
+    }
+
+    #[test]
+    fn ex_command_line_paste_still_strips_newlines() {
+        use crate::input::vim::state::{CmdLineKind, CmdLineState};
+        let mut app = app_with_buffer("hi\n", 0);
+        app.set_vim_enabled(true);
+        if let Some(vim) = app.vim.as_mut() {
+            vim.cmdline = Some(CmdLineState::new(CmdLineKind::Ex));
+        }
+        app.dispatch_paste("a\nb\r\nc".to_owned(), &dims());
+        assert_eq!(
+            app.vim.as_ref().unwrap().cmdline.as_ref().unwrap().input,
             "abc",
-            "multi-line paste collapses to a single search line"
+            "an ex command is not a search term — no escape syntax"
         );
     }
 }

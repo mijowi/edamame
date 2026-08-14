@@ -21,6 +21,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::app::modal;
+use crate::config;
 use crate::config::{Config, KeyMap, Theme};
 use crate::terminal::ColorDepth;
 use crate::ui::ModalKind;
@@ -65,6 +66,19 @@ impl App {
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
         rx: &mpsc::Receiver<AppEvent>,
     ) {
+        // `--no-config` rules the config directory out of this session
+        // in both directions, and this one action would cross it twice:
+        // the seeding save below writes `config.toml`, and the reload
+        // after the editor exits would pull the user's real settings
+        // into a run started specifically to exclude them.  Refuse the
+        // whole flow rather than half-honour it.
+        if !config::config_writes_allowed() {
+            self.notify(
+                "The config file is not in use while --no-config is in effect",
+                ModalKind::Warning,
+            );
+            return;
+        }
         let Some(path) = Config::config_path() else {
             self.notify("No config directory available", ModalKind::Error);
             return;

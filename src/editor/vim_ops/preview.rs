@@ -20,11 +20,12 @@
 //! safety valve behind the App-level gates: autosave, mouse, and search
 //! freshness are all suspended while a preview is active).
 
-use fancy_regex::{Regex, RegexBuilder};
+use fancy_regex::RegexBuilder;
 
 use crate::document::{Buffer, EditDelta};
 use crate::editor::vim_ops::ex::{
-    build_substitution, parse_ex, resolve_substitute_lines, ExCommand, ExError, Substitution,
+    build_substitution, for_each_region_match, parse_ex, region_haystack, resolve_substitute_lines,
+    ExCommand, ExError, Substitution,
 };
 use crate::editor::vim_ops::vim_regex::translate_pattern;
 use crate::editor::EditorState;
@@ -95,8 +96,11 @@ pub fn compute_preview_plan(
         return Ok(None);
     }
     let translated = translate_pattern(&sub.pattern)?;
+    // `multi_line` must match the commit path's builder or the preview
+    // would anchor `^`/`$` differently from what Enter commits.
     let re = RegexBuilder::new(&translated)
         .case_insensitive(sub.ignore_case)
+        .multi_line(true)
         .backtrack_limit(BACKTRACK_LIMIT)
         .build()
         .map_err(|e| ExError::InvalidRegex(e.to_string()))?;
@@ -128,14 +132,31 @@ pub fn compute_preview_plan(
 
     // Highlight-only: the replacement field hasn't been typed yet, so
     // nothing is edited — just collect the ranges the substitution WOULD
-    // touch (first match per line without `g`, mirroring what a submit
-    // would actually replace).
+    // touch.  Driving the same walker as the replacement path is what
+    // makes "would" exact: the first-match-per-line rule and the region
+    // bound come from one implementation, so the highlights can't
+    // disagree with what Enter replaces.  Zero-width matches paint
+    // nothing but still set `first_line` (the view scrolls to them).
     let Some((first, last)) =
         resolve_substitute_lines(buffer, cursor_line, sub.range, visual_range)
     else {
         return Ok(None);
     };
-    let (highlights, first_match_line) = scan_matches(buffer, first, last, &re, sub.global)?;
+    let (hay, _start_char, base_byte) = region_haystack(buffer, first, last);
+    let mut highlights: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut first_match_line = None;
+    for_each_region_match(buffer, base_byte, &hay, &re, sub.global, |caps, line| {
+        let m = caps.get(0).expect("group 0 is always present");
+        first_match_line.get_or_insert(line);
+        if m.start() < m.end() {
+            highlights.push(base_byte + m.start()..base_byte + m.end());
+        }
+        if highlights.len() >= MAX_PREVIEW_MATCHES {
+            std::ops::ControlFlow::Break(())
+        } else {
+            std::ops::ControlFlow::Continue(())
+        }
+    })?;
     match first_match_line {
         Some(line) => Ok(Some(PreviewPlan {
             delta: None,
@@ -144,43 +165,6 @@ pub fn compute_preview_plan(
         })),
         None => Ok(None),
     }
-}
-
-/// Collect absolute byte ranges of every match in lines `first..=last`
-/// (first match per line unless `global`), capped at
-/// [`MAX_PREVIEW_MATCHES`].  Zero-width matches are skipped (nothing to
-/// paint).  Returns the ranges and the first line that matched.
-#[allow(clippy::type_complexity)]
-fn scan_matches(
-    buffer: &Buffer,
-    first: usize,
-    last: usize,
-    re: &Regex,
-    global: bool,
-) -> Result<(Vec<std::ops::Range<usize>>, Option<usize>), ExError> {
-    let mut out = Vec::new();
-    let mut first_match_line = None;
-    for li in first..=last {
-        let line_start_byte = buffer.rope().line_to_byte(li);
-        let line = buffer.rope().line(li).to_string();
-        let content = line.strip_suffix('\n').unwrap_or(&line);
-        for m in re.find_iter(content) {
-            let m = m.map_err(|e| ExError::InvalidRegex(e.to_string()))?;
-            if first_match_line.is_none() {
-                first_match_line = Some(li);
-            }
-            if m.start() < m.end() {
-                out.push(line_start_byte + m.start()..line_start_byte + m.end());
-            }
-            if !global || out.len() >= MAX_PREVIEW_MATCHES {
-                break;
-            }
-        }
-        if out.len() >= MAX_PREVIEW_MATCHES {
-            break;
-        }
-    }
-    Ok((out, first_match_line))
 }
 
 // ── Apply / revert ──────────────────────────────────────────────────────────
@@ -252,6 +236,11 @@ pub fn update_substitute_preview(
     // from `saved_cursor` when the session ends, and every recompute uses
     // `saved_cursor` for the `:s` current-line resolution, so the park
     // never leaks into semantics.
+    // A multi-line match can shrink the line count, but `first_line` is
+    // where the first match *starts* and everything before it is
+    // byte-identical pre/post, so the index still names the same text;
+    // the `min` only guards a preview that consumed the tail of the
+    // buffer.
     let target = editor.buffer.line_to_char(
         plan.first_line
             .min(editor.buffer.line_count().saturating_sub(1)),
