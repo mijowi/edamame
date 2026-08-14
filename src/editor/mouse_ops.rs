@@ -26,9 +26,9 @@ use crate::ui::table_view::{TableHit, TableLayoutSnapshot};
 use self::checkbox::toggle_checkbox_at;
 use self::coord::{
     click_to_char_offset, preview_table_cell_band, rendered_click_to_line_col,
-    rendered_line_at_row, span_at_col_has_modifier, table_cell_char_range_at,
+    rendered_line_at_row, table_cell_char_range_at,
 };
-use self::links::{follow_footnote_at_click, follow_link_at_click};
+use self::links::{follow_footnote_at_click, follow_link_at_click, span_at_col_is_link};
 use self::selection::{
     expand_selection_to_inline_markers, select_line_at_cursor, select_word_at_cursor,
     word_range_around,
@@ -171,11 +171,12 @@ pub fn hit_test_clickable(
         return true;
     }
 
-    // Link: check whether the rendered span at `c` was emitted with the
-    // `link_text` style.  The renderer is the only producer of UNDERLINED +
-    // Cyan spans, so the presence of the UNDERLINED modifier is a reliable
-    // marker that the hover landed on a link glyph.
-    if span_at_col_has_modifier(&line, c, ratatui::style::Modifier::UNDERLINED) {
+    // Link: check whether the rendered span at `c` was emitted with one
+    // of the theme's link styles — underlined for web / file links,
+    // link-colored for a quieter in-document heading anchor.  Shared
+    // with the hint-line hover and the click path via
+    // `links::span_at_col_is_link`, so all three agree on what counts.
+    if span_at_col_is_link(&line, c, state.theme()) {
         return true;
     }
 

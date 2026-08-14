@@ -38,23 +38,6 @@ pub(super) fn rendered_line_at_row(
     None
 }
 
-/// True if the span covering char-col `col` in `line` has `modifier` set.
-pub(super) fn span_at_col_has_modifier(
-    line: &Line<'_>,
-    col: usize,
-    modifier: ratatui::style::Modifier,
-) -> bool {
-    let mut walk = 0usize;
-    for span in &line.spans {
-        let span_len = span.content.chars().count();
-        if col < walk + span_len {
-            return span.style.add_modifier.contains(modifier);
-        }
-        walk += span_len;
-    }
-    false
-}
-
 /// Translate a click at `(col, row)` in the document area to a buffer char
 /// offset.  Accounts for current scroll and visual-row wrap.
 ///

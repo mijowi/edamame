@@ -526,6 +526,13 @@ impl EditorState {
         }
     }
 
+    /// The theme the rendered lines were produced with.  Exposed so
+    /// hit-testing can recognise a rendered span by the style the
+    /// renderer gave it — see `mouse_ops::links::is_link_style`.
+    pub fn theme(&self) -> &'static Theme {
+        self.theme
+    }
+
     /// Swap the editor's theme reference and re-render so styled spans
     /// pick up the new palette without the user having to reopen the
     /// document.  Wired to the live theme-change path (settings overlay
