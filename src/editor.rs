@@ -8,6 +8,7 @@ pub mod state;
 pub mod state_cursor_block;
 pub mod state_cursor_visual;
 pub mod state_section_path;
+pub mod state_source_lines;
 pub mod state_viewport;
 pub mod table_edit;
 pub mod table_edit_ops;

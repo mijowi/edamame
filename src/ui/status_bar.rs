@@ -15,12 +15,36 @@ pub struct StatusBarState<'a> {
     pub mode: Mode,
     /// File name or path (display string only).
     pub filename: &'a str,
-    /// Total number of rendered document lines.
+    /// Total number of *source* lines in the document — the count shown as
+    /// "N lines", and the same coordinate space as [`cursor_line`] beside it
+    /// and as the line-number gutter.  Deliberately not the renderer's row
+    /// count: a 6-line document that renders as 10 rows (a table renders
+    /// roughly two rows per data row) has 6 lines, and reporting 10 next to a
+    /// `6:1` cursor read-out contradicts it.
+    ///
+    /// [`cursor_line`]: Self::cursor_line
     pub line_count: usize,
+    /// Total scrollable rows in the active mode, at the current viewport
+    /// width — the denominator of the scroll percentage, and the same
+    /// coordinate space as [`scroll`].  This one *is* the renderer's output
+    /// (wrapped): the percentage answers "how far down the thing I'm
+    /// scrolling am I", which has nothing to do with source lines.
+    ///
+    /// [`scroll`]: Self::scroll
+    pub scroll_total: usize,
+    /// Height of the *document* viewport in rows — how far past [`scroll`]
+    /// the last visible row sits, and so the reach of the percentage's
+    /// numerator.  Deliberately passed in rather than taken from the widget's
+    /// own `area`, which is the one-row status bar: measuring against that
+    /// reports the row at the *top* of the screen, so a document scrolled
+    /// fully to the bottom reads well under 100%.
+    ///
+    /// [`scroll`]: Self::scroll
+    pub viewport_rows: usize,
     /// Whether the buffer has unsaved changes.  Renders as a single
     /// colored `*` glued to the right edge of the filename.
     pub modified: bool,
-    /// Current scroll offset (rendered lines from top).
+    /// Current scroll offset (wrapped visual rows from the top).
     pub scroll: usize,
     /// Cursor line (1-indexed, `None` in Preview mode).
     pub cursor_line: Option<usize>,
@@ -155,12 +179,15 @@ impl<'a> Widget for StatusBar<'a> {
         let cursor_width = UnicodeWidthStr::width(cursor_text.as_str());
         let cursor_span = Span::styled(cursor_text, with_bar_bg(theme.status_info));
 
-        // An empty document has nothing left to scroll to — read it as 100%.
-        let pct = match s.line_count {
+        // Measured against the *last visible* row, so a document whose end is
+        // on screen reads 100% — `scroll` alone would report the top row and
+        // never reach it.  An empty document has nothing left to scroll to,
+        // and a zero-height viewport nothing to measure; read both as 100%.
+        let pct = match s.scroll_total {
             0 => 100,
-            line_count => {
-                let visible_end = s.scroll + area.height as usize;
-                (visible_end.min(line_count) * 100) / line_count
+            total => {
+                let visible_end = s.scroll.saturating_add(s.viewport_rows.max(1));
+                (visible_end.min(total) * 100) / total
             }
         };
         let info_text = format!(" {} lines  {}% ", s.line_count, pct);
@@ -324,6 +351,8 @@ mod tests {
             mode,
             filename,
             line_count: 10,
+            scroll_total: 10,
+            viewport_rows: 1,
             modified: false,
             scroll: 0,
             cursor_line: None,
@@ -465,6 +494,74 @@ mod tests {
     fn shows_line_count() {
         let output = make_bar(Mode::Preview, "f.md", 99, false);
         assert!(output.contains("99"), "output was: {:?}", output);
+    }
+
+    #[test]
+    fn line_count_and_percentage_use_separate_counts() {
+        // 6 source lines rendering as 10 scrollable rows, scrolled to the
+        // last row: the count must read the source lines, the percentage
+        // must still reach 100% at the bottom.
+        let output = render_bar(
+            StatusBarState {
+                line_count: 6,
+                scroll_total: 10,
+                scroll: 9,
+                ..base_state(Mode::Rendered, "f.md")
+            },
+            60,
+        );
+        assert!(output.contains("6 lines"), "output was: {output:?}");
+        assert!(output.contains("100%"), "output was: {output:?}");
+    }
+
+    /// The percentage measures the *last* visible row, so a viewport showing
+    /// the end of the document reads 100% even though `scroll` is well short
+    /// of `scroll_total` — which is where `scroll_to_bottom` parks it.
+    #[test]
+    fn percentage_reaches_100_when_the_document_end_is_on_screen() {
+        let output = render_bar(
+            StatusBarState {
+                scroll_total: 200,
+                viewport_rows: 40,
+                scroll: 160, // `scroll_to_bottom`: total - viewport_rows
+                ..base_state(Mode::Rendered, "f.md")
+            },
+            60,
+        );
+        assert!(output.contains("100%"), "output was: {output:?}");
+    }
+
+    /// …and it is not stuck at 100%: the same viewport at the top of the same
+    /// document reports the fraction it can actually see.
+    #[test]
+    fn percentage_reports_the_viewport_fraction_at_the_top() {
+        let output = render_bar(
+            StatusBarState {
+                scroll_total: 200,
+                viewport_rows: 40,
+                scroll: 0,
+                ..base_state(Mode::Rendered, "f.md")
+            },
+            60,
+        );
+        assert!(output.contains("20%"), "output was: {output:?}");
+    }
+
+    /// A degenerate zero-row viewport must not read 0% for a document whose
+    /// first row is nominally visible — `max(1)` keeps the numerator at the
+    /// pre-`viewport_rows` behavior rather than collapsing it.
+    #[test]
+    fn zero_height_viewport_still_counts_the_top_row() {
+        let output = render_bar(
+            StatusBarState {
+                scroll_total: 10,
+                viewport_rows: 0,
+                scroll: 0,
+                ..base_state(Mode::Rendered, "f.md")
+            },
+            60,
+        );
+        assert!(output.contains("10%"), "output was: {output:?}");
     }
 
     #[test]

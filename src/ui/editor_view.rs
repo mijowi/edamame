@@ -202,8 +202,12 @@ impl<'a> StatefulWidget for EditorView<'a> {
         let mode = self.state.mode;
         let line_count = if self.show_line_numbers {
             match mode {
-                Mode::Preview | Mode::Rendered => self.state.parsed.line_count(),
-                Mode::Raw => self.state.buffer.line_count(),
+                // Buffer lines in every mode: the gutter numbers source
+                // lines (Preview and Rendered translate their rendered rows
+                // back through `source_line_at_visual_row`), and this count
+                // drives the gutter *width*, which must follow the largest
+                // number actually displayed.
+                Mode::Preview | Mode::Rendered | Mode::Raw => self.state.buffer.line_count(),
                 // Diff mode doesn't render a line-number gutter — the
                 // interleaved old/new ropes share no consistent line
                 // numbering, and the per-hunk gutter glyph carries the
@@ -356,7 +360,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
                         ga,
                         scroll,
                         line_count,
-                        |row, w| self.state.rendered_line_at_visual_row(row, w),
+                        |row, w| self.state.source_line_at_visual_row(row, w),
                         content_width,
                         style,
                     );
@@ -367,7 +371,10 @@ impl<'a> StatefulWidget for EditorView<'a> {
                         ga,
                         scroll,
                         line_count,
-                        |row, w| self.state.raw_line_at_visual_row(row, w),
+                        |row, w| {
+                            let (line, sub) = self.state.raw_line_at_visual_row(row, w);
+                            (sub == 0).then_some(line)
+                        },
                         content_width,
                         style,
                     );
@@ -447,14 +454,23 @@ impl<'a> StatefulWidget for EditorView<'a> {
 
         // ── Bottom region (hint line + status line) ───────────────
         let (cursor_line, cursor_col) = self.state.cursor.line_col(&self.state.buffer);
-        let line_count = match mode {
-            Mode::Preview | Mode::Rendered => self.state.parsed.line_count(),
-            Mode::Raw => self.state.buffer.line_count(),
-            // Status-bar "n / N" line indicator in diff mode shows the
-            // *new-side* line count — the most useful frame of
-            // reference when reviewing.
-            Mode::Diff => self.state.buffer.line_count(),
-        };
+        // "N lines" counts source lines in every mode, so it agrees with the
+        // cursor read-out beside it and with the gutter.  In diff mode that's
+        // the *new-side* count — the most useful frame of reference when
+        // reviewing.  The scroll percentage keeps its own denominator below.
+        let line_count = self.state.buffer.line_count();
+        // Denominator of the scroll percentage: total rows in whatever the
+        // active mode is actually scrolling, at the width it's scrolling at.
+        // Must stay in `EditorState::scroll`'s units — wrapped visual rows,
+        // not rendered lines — or the percentage saturates early on a
+        // document with wrapped lines.
+        let scroll_total = self
+            .state
+            .total_visual_rows_for_mode(doc_area.width.max(1) as usize);
+        // Numerator's reach: the document viewport, not the status bar's own
+        // one-row area — the percentage answers "have I seen this far", which
+        // is about the *last* visible row.
+        let viewport_rows = doc_area.height as usize;
         // The canonical scroll is `EditorState::scroll` for every mode
         // (Preview's view-state mirror is updated above before render).
         let scroll = self.state.scroll;
@@ -476,6 +492,8 @@ impl<'a> StatefulWidget for EditorView<'a> {
                 mode,
                 filename: self.filename,
                 line_count,
+                scroll_total,
+                viewport_rows,
                 modified: self.state.dirty,
                 scroll,
                 cursor_line: Some(cursor_line + 1), // 1-indexed display

@@ -36,15 +36,20 @@ pub fn split_gutter(full: Rect, line_count: usize) -> (Option<Rect>, Rect) {
 
 /// Paint right-aligned line numbers into `gutter_area`.
 ///
-/// `line_at_visual_row` maps a global visual-row index (scroll +
-/// screen row) to `(logical_line_index, sub_row_within_that_line)`.
-/// Sub-row 0 gets a number; continuation rows are left blank.
+/// `line_at_visual_row` maps a global visual-row index (scroll + screen
+/// row) to the 0-based *source* line to label it with, or `None` when the
+/// row carries no number: a wrapped continuation row, a pure rendering
+/// artifact (a table border, an image's reserved rows), or a row past the
+/// end of the document.  The caller owns that decision because only it
+/// knows which coordinate space its rows are in — Raw paints buffer lines
+/// directly, Preview and Rendered translate through
+/// `EditorState::source_line_at_visual_row`.
 pub fn paint_gutter(
     buf: &mut Buffer,
     gutter_area: Rect,
     scroll: usize,
     line_count: usize,
-    line_at_visual_row: impl Fn(usize, usize) -> (usize, usize),
+    line_at_visual_row: impl Fn(usize, usize) -> Option<usize>,
     width: usize,
     style: Style,
 ) {
@@ -56,11 +61,11 @@ pub fn paint_gutter(
 
     for vis_y in 0..gutter_area.height {
         let global_row = scroll + vis_y as usize;
-        let (line_idx, sub_row) = line_at_visual_row(global_row, width);
+        let line = line_at_visual_row(global_row, width);
 
         let y = gutter_area.y + vis_y;
 
-        if sub_row == 0 && line_idx < line_count {
+        if let Some(line_idx) = line.filter(|&l| l < line_count) {
             num_buf.clear();
             let _ = write!(num_buf, "{:>w$}  ", line_idx + 1, w = digit_w);
             buf.set_string(gutter_area.x, y, &num_buf, style);

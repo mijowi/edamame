@@ -125,9 +125,10 @@ impl SourceMap {
         self.rendered_to_block.len()
     }
 
-    /// Total number of blocks. Used by integration tests in
-    /// `tests/source_map.rs`.
-    #[allow(dead_code)]
+    /// Total number of blocks — including the virtual one synthesised per
+    /// blank line, so this index space is the source map's own and never
+    /// `ParsedDoc::blocks`'.  Bounds the block walk in
+    /// `editor::state_source_lines`.
     pub fn block_count(&self) -> usize {
         self.extended_ranges.len()
     }
