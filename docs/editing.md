@@ -297,6 +297,11 @@ separately before fetching anything over the network. Both answers can be
 Where images can't be shown you get an `[Image: alt text]` placeholder, so the
 document still reads.
 
+Move the cursor into an image and it's replaced by its `![alt](url)` source
+line, the way any other block reveals — the rows the picture occupied close up
+and the document reflows around the single line you're editing. Move the cursor
+out and the image comes back.
+
 **Formats:** PNG, JPEG, GIF, BMP, WebP, and SVG. Anything else is reported as
 an unsupported image rather than rendered — the list is kept deliberately
 short because edamame decodes images from documents you may not trust.

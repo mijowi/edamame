@@ -211,10 +211,13 @@ impl ParsedDoc {
     /// the column-resize drag to preview widths without writing the
     /// `tui-columns` comment to the buffer on every mouse-move event.
     ///
-    /// `image_row_override` is an optional URL → row-count callback used
-    /// to reserve exactly the rows each decoded image will occupy
-    /// (aspect-aware).  When the callback returns `None` for a URL (or is
-    /// itself `None`), the renderer falls back to `image_max_height`.
+    /// `image_row_override` is an optional `(URL, image-block ordinal)` →
+    /// row-count callback used to reserve exactly the rows each decoded
+    /// image will occupy (aspect-aware), and to collapse the one block
+    /// whose raw source the cursor has revealed.  The ordinal indexes
+    /// [`Self::image_blocks`], which is built from the same document-order
+    /// walk the renderer counts in.  When the callback returns `None` (or
+    /// is itself `None`), the renderer falls back to `image_max_height`.
     // Argument count is high because the parsed-doc build needs every
     // input the renderer cares about; bundling them into a struct is a
     // Phase-C task, not a Phase-A cleanup.

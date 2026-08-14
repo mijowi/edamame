@@ -29,7 +29,7 @@ pub(crate) use self::paint::{
     paint_search_overlays, paint_substitute_preview_overlays, paint_yank_flash,
 };
 use self::raw_text::raw_line_byte_start;
-pub(crate) use self::raw_text::{raw_block_cursor, raw_source_line_count, raw_source_lines};
+pub(crate) use self::raw_text::{raw_block_cursor, raw_source_lines, revealed_source_line_count};
 
 /// State for the `RenderedView` widget.
 ///

@@ -309,12 +309,14 @@ impl App {
         self.last_doc_height = dims.doc_height;
         self.last_doc_width = dims.doc_width;
         self.editor.set_viewport_width(dims.doc_width);
-        // A diagram block reserves its image's rows until the cursor rests
+        // An image block reserves its image's rows until the cursor rests
         // inside it, at which point it reserves one row per raw source line
-        // instead so the whole mermaid fence reveals and the document
-        // reflows around it.  The transition is time-driven (the reveal
-        // delay elapses without an event of its own), so it is resolved per
-        // frame here; the call is a no-op unless the target actually moved.
+        // instead — so the whole mermaid fence reveals, or the lone
+        // `![alt](url)` line does, and the document reflows around it
+        // rather than leaving the image's rows as blank space.  The
+        // transition is time-driven (the reveal delay elapses without an
+        // event of its own), so it is resolved per frame here; the call is
+        // a no-op unless the target actually moved.
         //
         // The reflow moves rendered rows under a cursor that didn't move, so
         // nothing else would scroll it back into view: entering a fence from
@@ -324,7 +326,7 @@ impl App {
         // *before* this reflow — a reveal that changes the document's line
         // count can therefore paint one frame with a stale gutter width or
         // scrollbar reservation; `needs_draw` re-measures on the next frame.
-        if self.editor.sync_diagram_reveal() {
+        if self.editor.sync_image_reveal() {
             self.editor
                 .ensure_cursor_visible(dims.doc_height, dims.doc_width);
             self.needs_draw = true;

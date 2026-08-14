@@ -209,10 +209,7 @@ fn revealed_diagram_reserves_one_row_per_source_line() {
     assert_eq!(block_rows_at(&state, cursor), 12);
 
     state.cursor.offset = state.buffer.rope().byte_to_char(cursor);
-    assert!(
-        state.sync_diagram_reveal(),
-        "entering the block re-lays out"
-    );
+    assert!(state.sync_image_reveal(), "entering the block re-lays out");
     assert_eq!(block_rows_at(&state, cursor), 6);
 }
 
@@ -225,7 +222,7 @@ fn revealed_diagram_grows_past_a_short_image() {
     assert_eq!(block_rows_at(&state, cursor), 2);
 
     state.cursor.offset = state.buffer.rope().byte_to_char(cursor);
-    state.sync_diagram_reveal();
+    state.sync_image_reveal();
     assert_eq!(block_rows_at(&state, cursor), 6);
 }
 
@@ -236,24 +233,24 @@ fn leaving_a_diagram_restores_the_image_reservation() {
     let mut state = reveal_state(12);
     let cursor = diagram_cursor_offset();
     state.cursor.offset = state.buffer.rope().byte_to_char(cursor);
-    state.sync_diagram_reveal();
+    state.sync_image_reveal();
     assert_eq!(block_rows_at(&state, cursor), 6);
 
     let trailer = REVEAL_DOC.find("After.").expect("trailer in fixture");
     state.cursor.offset = state.buffer.rope().byte_to_char(trailer);
-    assert!(state.sync_diagram_reveal(), "leaving the block re-lays out");
+    assert!(state.sync_image_reveal(), "leaving the block re-lays out");
     assert_eq!(block_rows_at(&state, cursor), 12);
 }
 
 #[test]
-fn diagram_reveal_sync_is_idempotent() {
+fn image_reveal_sync_is_idempotent() {
     // Called once per frame, so a no-op frame must neither re-parse nor
     // change the layout.
     let mut state = reveal_state(12);
     state.cursor.offset = state.buffer.rope().byte_to_char(diagram_cursor_offset());
-    assert!(state.sync_diagram_reveal());
-    assert!(!state.sync_diagram_reveal());
-    assert!(!state.sync_diagram_reveal());
+    assert!(state.sync_image_reveal());
+    assert!(!state.sync_image_reveal());
+    assert!(!state.sync_image_reveal());
 }
 
 #[test]
@@ -263,7 +260,7 @@ fn preview_mode_never_expands_a_diagram() {
     state.mode = Mode::Preview;
     let cursor = diagram_cursor_offset();
     state.cursor.offset = state.buffer.rope().byte_to_char(cursor);
-    assert!(!state.sync_diagram_reveal());
+    assert!(!state.sync_image_reveal());
     assert_eq!(block_rows_at(&state, cursor), 12);
 }
 
@@ -306,10 +303,7 @@ fn revealing_a_diagram_at_the_fold_keeps_the_cursor_on_screen() {
     // `update_cursor_block` armed the reveal timer; the reflow is what
     // happens once it elapses, so skip the delay rather than sleep it.
     state.cursor_block_entered_at = None;
-    assert!(
-        state.sync_diagram_reveal(),
-        "entering the block re-lays out"
-    );
+    assert!(state.sync_image_reveal(), "entering the block re-lays out");
     state.ensure_cursor_visible(vh, vw);
 
     // The revealed block reserves one row per source line, so the cursor's
