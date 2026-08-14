@@ -2184,7 +2184,7 @@ fn revealed_diagram_shows_every_source_line() {
     // once it elapses, so skip the delay rather than sleep it.
     state.cursor_block_entered_at = None;
     assert!(
-        state.sync_diagram_reveal(),
+        state.sync_image_reveal(),
         "entering the diagram must re-lay the document out"
     );
 
@@ -2235,5 +2235,76 @@ fn revealed_diagram_shows_every_source_line() {
     assert!(
         after > last_source,
         "trailer must follow the fence: {rows:?}"
+    );
+}
+
+/// The mirror case: an ordinary `![alt](url)` is one source line behind a
+/// reservation as tall as its picture, so revealing it used to leave the
+/// rest of those rows as blank space with the source line floating in it.
+/// The block collapses to its one line instead and the document reflows up
+/// around it — keeping the blank separator line the image's extended block
+/// range absorbs, which is a virtual block of its own.
+#[test]
+fn revealed_image_reflows_the_document_around_its_source_line() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let src = "Above.\n\n![cat](cat.png)\n\nBelow.\n";
+    // Twelve reserved rows: with no decode in flight the renderer falls
+    // back to `image_max_height`, which is what a tall picture would take.
+    let mut state = EditorState::new_with_config(Buffer::from_str(src), theme, true, true, 12);
+    state.mode = Mode::Rendered;
+    let byte = src.find("![cat]").unwrap();
+    state.cursor.offset = state.buffer.rope().byte_to_char(byte);
+    state.update_cursor_block();
+    state.cursor_block_entered_at = None;
+    assert!(
+        state.sync_image_reveal(),
+        "entering the image must re-lay the document out"
+    );
+
+    let backend = TestBackend::new(30, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                cursor_style: theme.status_mode_rendered,
+                visual_kind: None,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let rows: Vec<String> = (0..10u16)
+        .map(|y| {
+            (0..30u16)
+                .map(|x| buf.cell((x, y)).unwrap().symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect();
+
+    let image = rows
+        .iter()
+        .position(|r| r.contains("![cat](cat.png)"))
+        .unwrap_or_else(|| panic!("the raw source line must be painted: {rows:?}"));
+    let below = rows
+        .iter()
+        .position(|r| r.contains("Below."))
+        .unwrap_or_else(|| panic!("trailer must stay visible: {rows:?}"));
+    assert_eq!(
+        below,
+        image + 2,
+        "the trailer must follow one blank separator row, not the \
+         picture's reservation: {rows:?}"
     );
 }

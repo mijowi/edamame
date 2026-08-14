@@ -22,9 +22,9 @@ pub(crate) fn raw_source_lines(source: &str) -> Vec<&str> {
 /// How many lines [`raw_source_lines`] would yield, without building the
 /// `Vec`.
 ///
-/// The diagram reveal wants only the count, and asks for it on every run
-/// of the event loop while the cursor rests in a fence (see
-/// [`EditorState::sync_diagram_reveal`]) — allocating a `Vec` of slices
+/// The image reveal wants only the count, and asks for it on every run
+/// of the event loop while the cursor rests in an image block (see
+/// [`EditorState::sync_image_reveal`]) — allocating a `Vec` of slices
 /// per iteration to read `.len()` off it is pure waste.  Kept beside
 /// `raw_source_lines`, and pinned against it by
 /// `raw_source_line_count_agrees_with_raw_source_lines`, so the reserved
@@ -41,6 +41,31 @@ pub(crate) fn raw_source_line_count(source: &str) -> usize {
     } else {
         count
     }
+}
+
+/// Rows the raw-source reveal should reserve for a block whose source is
+/// `source`: [`raw_source_line_count`] with any *trailing blank* lines
+/// dropped, and never less than one.
+///
+/// A block's byte range is the *extended* one, which for a paragraph — and
+/// so for the `![alt](url)` paragraph promoted into a `Block::ImageBlock` —
+/// absorbs the blank line that follows it.  That blank already has a
+/// rendered row of its own (`ParsedDoc::build` synthesises a virtual block
+/// per blank source line), so counting it here would reserve one row too
+/// many and shift the rest of the document down by a line for exactly as
+/// long as the reveal lasts.  A mermaid fence's range stops at its closing
+/// fence and is unaffected, which is why the diagram reveal never had to
+/// care.
+pub(crate) fn revealed_source_line_count(source: &str) -> usize {
+    let total = raw_source_line_count(source);
+    // Drop the one trailing newline `raw_source_line_count` already
+    // discounted, then walk back over whatever blank lines remain.
+    let body = source.strip_suffix('\n').unwrap_or(source);
+    let trailing = body
+        .rsplit('\n')
+        .take_while(|line| line.trim().is_empty())
+        .count();
+    total.saturating_sub(trailing).max(1)
 }
 
 /// Byte offset within `block_source` where raw line `line_idx` starts.
@@ -169,7 +194,32 @@ mod tests {
         assert_eq!(lines, vec![""]);
     }
 
-    /// The diagram reveal reserves `raw_source_line_count` rows and
+    /// The reveal reserves `revealed_source_line_count` rows, which is the
+    /// line count minus any trailing blank the block's extended range
+    /// absorbed — those blanks are virtual blocks with rendered rows of
+    /// their own, so counting them here shifts the document down by a line
+    /// for as long as the cursor rests in the block.
+    #[test]
+    fn revealed_count_drops_trailing_blank_lines() {
+        // A promoted `![alt](url)` paragraph: one source line, plus the
+        // blank line the paragraph's range absorbed.
+        assert_eq!(revealed_source_line_count("![cat](cat.png)\n\n"), 1);
+        assert_eq!(revealed_source_line_count("![cat](cat.png)\n"), 1);
+        assert_eq!(revealed_source_line_count("![cat](cat.png)"), 1);
+        // A mermaid fence's range stops at the closing fence, so nothing is
+        // dropped — including a blank line *inside* the fence.
+        assert_eq!(
+            revealed_source_line_count("```mermaid\nflowchart LR\n\n    A --> B\n```\n"),
+            5
+        );
+        // Multiple absorbed blanks, and the never-below-one floor.
+        assert_eq!(revealed_source_line_count("text\n\n\n"), 1);
+        assert_eq!(revealed_source_line_count(""), 1);
+        assert_eq!(revealed_source_line_count("\n"), 1);
+        assert_eq!(revealed_source_line_count("\n\n"), 1);
+    }
+
+    /// The reveal reserves rows counted off `raw_source_line_count` and
     /// `RenderedView` paints `raw_source_lines` onto them, so the two must
     /// agree for every shape of block source — a drift here clips the
     /// reveal or pads it with blank rows.  Covers the cases that separate

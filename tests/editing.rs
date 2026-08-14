@@ -744,6 +744,120 @@ fn cursor_traverses_image_block_as_one_line() {
     assert_eq!(line_after, 2, "MoveDown should land on line below image");
 }
 
+/// Rows the block holding `byte` owns in the rendered view.
+fn image_block_rows(st: &EditorState, byte: usize) -> usize {
+    let idx = st
+        .parsed
+        .source_map
+        .block_for_byte(byte)
+        .expect("byte inside a block");
+    st.parsed.block_own_line_count(idx)
+}
+
+/// An image block reserves its picture's rows, but the source it hides is a
+/// single `![alt](url)` line — so while the cursor rests in it the reveal
+/// leaves the rest of the reservation as dead blank space unless the block
+/// collapses.  Same reflow the mermaid reveal gets, in the other direction.
+#[test]
+fn revealed_image_collapses_to_its_source_line() {
+    let src = "Above.\n\n![cat](cat.png)\n\nBelow.\n";
+    let byte = src.find("![cat]").expect("image in fixture");
+    // Twelve reserved rows: the decode is Idle in a test, so the renderer
+    // falls back to `image_max_height` for stable layout.
+    let mut st = EditorState::new_with_config(Buffer::from_str(src), theme(), true, true, 12);
+    st.mode = Mode::Rendered;
+    assert_eq!(image_block_rows(&st, byte), 12);
+
+    st.cursor.offset = st.buffer.rope().byte_to_char(byte);
+    st.update_cursor_block();
+    // `update_cursor_block` arms the reveal timer; the reflow is what
+    // happens once it elapses, so skip the delay rather than sleep it.
+    st.cursor_block_entered_at = None;
+    assert!(st.sync_image_reveal(), "entering the block re-lays out");
+    assert_eq!(
+        image_block_rows(&st, byte),
+        1,
+        "a revealed image reserves one row for its one source line"
+    );
+}
+
+#[test]
+fn leaving_an_image_restores_its_reservation() {
+    let src = "Above.\n\n![cat](cat.png)\n\nBelow.\n";
+    let byte = src.find("![cat]").expect("image in fixture");
+    let mut st = EditorState::new_with_config(Buffer::from_str(src), theme(), true, true, 12);
+    st.mode = Mode::Rendered;
+    st.cursor.offset = st.buffer.rope().byte_to_char(byte);
+    st.update_cursor_block();
+    st.cursor_block_entered_at = None;
+    st.sync_image_reveal();
+    assert_eq!(image_block_rows(&st, byte), 1);
+
+    let below = src.find("Below.").expect("trailer in fixture");
+    st.cursor.offset = st.buffer.rope().byte_to_char(below);
+    st.update_cursor_block();
+    st.cursor_block_entered_at = None;
+    assert!(st.sync_image_reveal(), "leaving the block re-lays out");
+    assert_eq!(
+        image_block_rows(&st, byte),
+        12,
+        "the picture's rows come back once the cursor leaves"
+    );
+}
+
+#[test]
+fn preview_mode_never_collapses_an_image() {
+    // Preview is browse-only: no reveal, so no reflow.
+    let src = "Above.\n\n![cat](cat.png)\n\nBelow.\n";
+    let byte = src.find("![cat]").expect("image in fixture");
+    let mut st = EditorState::new_with_config(Buffer::from_str(src), theme(), true, true, 12);
+    st.mode = Mode::Preview;
+    st.cursor.offset = st.buffer.rope().byte_to_char(byte);
+    st.update_cursor_block();
+    st.cursor_block_entered_at = None;
+    assert!(!st.sync_image_reveal());
+    assert_eq!(image_block_rows(&st, byte), 12);
+}
+
+/// The reveal names its block by ordinal *and* URL, because a document can
+/// use one image twice (a logo in a header and a footer).  Keyed on the URL
+/// alone, revealing either copy collapsed both — the untouched one's picture
+/// squeezed into a single row, and every line below it jumping up for as
+/// long as the cursor rested in the other.
+#[test]
+fn revealing_one_image_leaves_a_duplicate_of_it_alone() {
+    let src = "![cat](cat.png)\n\nMiddle.\n\n![cat](cat.png)\n\nBelow.\n";
+    let first = src.find("![cat]").expect("first image in fixture");
+    let second = src.rfind("![cat]").expect("second image in fixture");
+    let mut st = EditorState::new_with_config(Buffer::from_str(src), theme(), true, true, 12);
+    st.mode = Mode::Rendered;
+    assert_eq!(image_block_rows(&st, first), 12);
+    assert_eq!(image_block_rows(&st, second), 12);
+
+    st.cursor.offset = st.buffer.rope().byte_to_char(first);
+    st.update_cursor_block();
+    st.cursor_block_entered_at = None;
+    assert!(st.sync_image_reveal(), "entering the block re-lays out");
+    assert_eq!(
+        image_block_rows(&st, first),
+        1,
+        "the revealed copy collapses"
+    );
+    assert_eq!(
+        image_block_rows(&st, second),
+        12,
+        "the duplicate keeps its picture's rows"
+    );
+
+    // And the other way round, so the ordinal isn't just pinned at 0.
+    st.cursor.offset = st.buffer.rope().byte_to_char(second);
+    st.update_cursor_block();
+    st.cursor_block_entered_at = None;
+    assert!(st.sync_image_reveal(), "moving between them re-lays out");
+    assert_eq!(image_block_rows(&st, first), 12);
+    assert_eq!(image_block_rows(&st, second), 1);
+}
+
 #[test]
 fn typing_next_to_image_block_keeps_source_map_consistent() {
     // Editing text adjacent to an image block must not corrupt the source

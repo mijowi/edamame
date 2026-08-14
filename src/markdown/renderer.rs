@@ -2,6 +2,8 @@ pub mod list;
 pub mod table;
 pub mod util;
 
+use std::cell::Cell;
+
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -18,8 +20,18 @@ use super::render_cache::{RenderCache, RenderSettings};
 const IMAGE_PREFIX: &str = "Image: ";
 
 /// Callback used by the renderer to look up the aspect-aware row count
-/// for an image block.  See `Renderer::with_image_row_override`.
-pub type ImageRowOverride<'t> = &'t dyn Fn(&str) -> Option<usize>;
+/// for an image block, given its URL and its **ordinal** — the 0-based
+/// index of the block among the document's image blocks, in document
+/// order.  See `Renderer::with_image_row_override`.
+///
+/// The ordinal is what separates two blocks carrying the same URL, which
+/// a document repeating one image (`![logo](logo.png)` in a header and a
+/// footer) does routinely.  It matches the index into
+/// `ParsedDoc::image_blocks`: both count `Block::ImageBlock`s in document
+/// order over the same block list, and both promotions that create one
+/// (`promote_image_paragraphs`, `promote_diagram_code_blocks`) act on
+/// top-level blocks only, so no nested image block can shift the count.
+pub type ImageRowOverride<'t> = &'t dyn Fn(&str, usize) -> Option<usize>;
 
 /// Converts a `Vec<Block>` AST into a `Vec<Line<'static>>` ready for ratatui.
 pub struct Renderer<'t> {
@@ -32,12 +44,21 @@ pub struct Renderer<'t> {
     /// `ImagesConfig::max_height` so the editor and renderer agree on the
     /// row count.  Ignored when a block isn't an image block.
     image_max_height: usize,
-    /// Optional per-image row override keyed by URL.  Returns the aspect-
-    /// aware row count when the image has been decoded; `None` when the
-    /// image is still pending / failed / absent from the cache.  The
-    /// renderer falls back to `image_max_height` whenever this returns
-    /// `None`, so pre-decode layout is stable.
+    /// Optional per-image row override keyed by URL and image-block
+    /// ordinal.  Returns the aspect-aware row count when the image has been
+    /// decoded; `None` when the image is still pending / failed / absent
+    /// from the cache.  The renderer falls back to `image_max_height`
+    /// whenever this returns `None`, so pre-decode layout is stable.
     image_row_override: Option<ImageRowOverride<'t>>,
+    /// How many `Block::ImageBlock`s have been rendered so far in this
+    /// pass — the ordinal handed to `image_row_override`.  A `Cell` because
+    /// the whole render walk takes `&self`; a `Renderer` is built fresh per
+    /// `ParsedDoc` build, so it always starts at 0.  Counted in
+    /// `render_image_block` rather than in the render loops so it stays
+    /// exact under `render_with_counts_cached`, which skips `render_block`
+    /// for cache hits (image blocks are deliberately never cached, but the
+    /// count shouldn't depend on that staying true).
+    image_block_seq: Cell<usize>,
     /// When true, alternating data rows in tables are filled
     /// with `Theme::table_row_even` / `Theme::table_row_odd`.  Off by
     /// default; opt-in via `config.table.row_striping`.
@@ -58,6 +79,7 @@ impl<'t> Renderer<'t> {
             code_wrap: false,
             image_max_height: 24,
             image_row_override: None,
+            image_block_seq: Cell::new(0),
             row_striping: false,
             big_h1: false,
         }
@@ -80,10 +102,11 @@ impl<'t> Renderer<'t> {
         self
     }
 
-    /// Install a URL → row-count callback that overrides `image_max_height`
-    /// per image whenever the callback returns `Some(n)`.  Used to reserve
-    /// exactly the rows a decoded image will occupy so wide images don't
-    /// leave blank padding rows beneath them.
+    /// Install a `(URL, ordinal)` → row-count callback that overrides
+    /// `image_max_height` per image whenever the callback returns `Some(n)`.
+    /// Used to reserve exactly the rows a decoded image will occupy so wide
+    /// images don't leave blank padding rows beneath them, and to collapse
+    /// the one block whose raw source the cursor has revealed.
     pub fn with_image_row_override(mut self, override_fn: ImageRowOverride<'t>) -> Self {
         self.image_row_override = Some(override_fn);
         self
@@ -342,9 +365,11 @@ impl<'t> Renderer<'t> {
             Span::styled("]", self.theme.image_placeholder),
         ]);
         out.push(placeholder);
+        let ordinal = self.image_block_seq.get();
+        self.image_block_seq.set(ordinal + 1);
         let rows = self
             .image_row_override
-            .and_then(|f| f(url))
+            .and_then(|f| f(url, ordinal))
             .unwrap_or(self.image_max_height)
             .max(1);
         for _ in 1..rows {
