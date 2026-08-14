@@ -1,125 +1,94 @@
+# Field Notes: Editing Markdown in the Terminal
 
-# Heading 1
+A sample document for **edamame** — it doubles as a smoke test, so it exercises most of the rendering surface while still reading like something you'd actually write.[^1]
 
-## Heading 2
-
-### Heading 3
-
-#### Heading 4
-
-##### Heading 5
-
-###### Heading 6
-
-<!-- html comment -->
-
-Also Heading 2
---------------
-
-**Bold text** | __Underscore bold__ | *Italic text* | _Underscore italic_ | **_Bold and italic_**
-
-~~Strikethrough~~ no strikethrough
-
-==Highlight==
-
-Block quote
-> You miss 100% of the shots you don't take.
-> \- Wayne Gretzky
-
-[Web link](https://google.com)
-
-[File link](./plan.md)
-
-[Heading link](#escape-characters)
-
-This sentence has two footnotes.[^1][^2]
-
-This sentence also references the first footnote.[^1]
-
-[^2]: Definition for second footnote
-
-![Dog in field](./dog.jpg)
-
-![Bowl of edamame](https://upload.wikimedia.org/wikipedia/commons/thumb/a/a1/Edamame_-_Massachusetts.jpg/500px-Edamame_-_Massachusetts.jpg)
-
-Another Heading 1
-==============
-
-## Another H2
-
-* Unordered list
-* Foo
-    * Nested unordered list item
-* Bar
-
-+ Unordered list with a very long item that should wrap when it exceeds the width of the terminal, which is usually capped at 100 characters.
-+ Foo
-+ Bar
-
-1. Ordered list **bold**
-2. Second item
-    1. nested item
-        1. wefw
-        2. wqefwef
-        3. aedad
-    2. wefwef
-    3. wefwef
-3. Third item
-
-- Bulleted item
-- [ ] A checklist
-- [ ] Incomplete wrapped item aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa dddddda aaaaaaaaaaaaaaaa
-    - [x] Checked item with empty list item below
-    - [ ] 
-- [x] Completed item with `foo() {}` inline code
-
-This sentence also references the first footnote.[^1]
-
-Two horizontal rules
+> Markdown is the right format for most documents, and it has become the medium we use to work with agents — so we all read and edit a lot more of it than we used to.
 
 ---
 
-***
+## The problem
 
-Table
+The tools are mostly split. Electron apps render beautifully but feel slow. Text editors are fast but show you asterisks and pipe characters. Plugins can *decorate* a line without being able to *restructure* it, so a table stays a row of `|` characters no matter how it's colored.
+
+edamame renders the document and lets you edit it in place. Only the line under the cursor drops to raw Markdown, and it snaps back the moment you move away.[^2]
+
+### How a keystroke moves through the app
+
+```mermaid
+flowchart LR
+    K([Keystroke]) --> H[ModeHandler]
+    H --> A{Action}
+    A -- edit --> E[EditorState]
+    A -- app --> M[Modal stack]
+    E --> P[Reparse]
+    P --> S[(Source map)]
+    S --> R[Renderer]
+    M --> R
+    R --> V([Frame])
+```
+
+## What it does
+
+1. **Hybrid rendered/raw editing** — the document stays formatted while you type
+2. **Real table editing** — a grid you move through cell by cell, not a row of pipes
+   1. `Tab` and `Shift-Tab` walk the cells
+   2. Dragging a column divider resizes it
+   3. Rows and columns can be added or removed in place
+3. **Search and replace**, with smartcase navigation
+4. **Diff review** for changes made by something else while the file was open
+
+- [x] Inline images and Mermaid diagrams, where the terminal supports them
+  - [x] Kitty, iTerm2 and Sixel protocols
+  - [ ] Halfblocks everywhere else
+- [x] Footnotes, task lists, list continuation and renumbering
+- [ ] Collaborative editing — *not planned*
+- [ ] A plugin API — see the note on scope in `CONTRIBUTING.md`
+
+## The stack
+
 | Crate | Version | Purpose |
-|---|---|---|
-| `ratatui` | latest (0.29+) | **TUI framework** |
-| `crossterm` | latest | Terminal backend, raw mode, event handling |
+|:---|---:|:---|
+| `ratatui` | 0.29 | **TUI framework** — widgets, layout, rendering |
+| `crossterm` | 0.29 | Terminal backend, raw mode, event handling |
 | `pulldown-cmark` | 0.13 | CommonMark + GFM parsing with source-map offsets |
-| `ropey` | 2.x (beta) or 1.6 stable | Rope data structure for the text buffer |
+| `ropey` | 1.6 | Rope data structure for the text buffer |
+| `fancy-regex` | 0.17 | Backreferences and lookaround for `:s` substitution |
 
+Small tables size themselves to their content:
 
-Another table
-| abc | defghi |
+| Mode | Chord |
 | --- | --- |
-| bar | baz |
+| Preview | `Esc` |
+| Rendered | any key |
+| Raw | ``Ctrl-` `` |
 
-Table with escaped pipes
-| f\|oo  |
-| ------ |
-| b `\|` az |
-| b \| im |
+A column can hold escaped pipes, which stay literal:
 
-Inline code `this is code`
+| Pattern | Matches |
+| ------- | ------- |
+| `a\|b` | either branch |
+| b \| im | a bare escaped pipe |
 
-Super long line of inline code ` let file_appender = tracing_appender::rolling::daily(&log_dir, "debug.log"); let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);`
+## A closer look at the code
 
-Code block
+<!-- The block below is also the fixture for code-block wrapping. -->
+
+#### Block-level render memoization
+
+Rendering is memoized per block, keyed by the AST value rather than the source bytes — `let cached = cache.get(&block, &settings);` is the whole idea, and it is what keeps a live table-column drag from re-rendering the entire document.
+
 ```rust
 // ── Logging setup ─────────────────────────────────────────────────────────────
 
-/// Initialise the file-based tracing subscriber.
+/// Initialize the file-based tracing subscriber.
 ///
 /// Returns the non-blocking writer guard; dropping it flushes and closes the
-/// log file. The guard must be kept alive for the duration of the program.
+/// log file, so it must be kept alive for the duration of the program.
 fn setup_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let log_dir = Config::log_dir()?;
-    if std::fs::create_dir_all(&log_dir).is_err() {
-        return None;
-    }
+    std::fs::create_dir_all(&log_dir).ok()?;
 
-// really super long comment that should be longer than the whole width of the entire screen so that I can see how that behavior looks in a code block blah blah blah blah
+    // A deliberately over-long comment, wider than any sensible terminal, so that horizontal overflow inside a fenced block is easy to eyeball.
     let file_appender = tracing_appender::rolling::daily(&log_dir, "debug.log");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
@@ -133,19 +102,43 @@ fn setup_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
 }
 ```
 
-## Escape characters
-\*not emphasized*
-\<br/> not a tag
-\[not a link](/foo)
-\`not code`
-1\. not a list
-\* not a list
-\# not a heading
-\[foo]: /url "not a reference"
-\&ouml; not a character entity
+Inline code inside a long paragraph wraps with the rest of the text: ` let (non_blocking, guard) = tracing_appender::non_blocking(file_appender); ` sits mid-sentence without breaking the line-fill.
 
-The quick brown fox jumped over the lazy dog.
+## Typography
 
-[^1]: This is the footnote.
+**Bold text** and __underscore bold__, *italic* and _underscore italic_, ***both at once***, ~~struck through~~, and ==highlighted==.
 
-This is the last line of the document.
+A [web link](https://github.com/mijowi/edamame), a [file link](./sample_diagrams.md), and a [link to a heading](#the-stack) further up this document.
+
+Escapes stay verbatim: \*not emphasized*, \# not a heading, \`not code`,
+1\. not a list, and \&ouml; not a character entity.
+
+## Images
+
+Local files render inline where the terminal supports an image protocol:
+
+![A dog in a field](./dog.jpg)
+
+So do remote ones, after you approve the fetch:
+
+![A plate of edamame](https://upload.wikimedia.org/wikipedia/commons/thumb/a/a1/Edamame_-_Massachusetts.jpg/500px-Edamame_-_Massachusetts.jpg)
+
+Loose lists
+-----------
+
++ A list item long enough to wrap on any reasonable terminal width, which is what makes it useful for checking that continuation lines line up under the text rather than under the marker.
+
++ Separated from its neighbors by blank lines, which makes the list *loose*
+
++ Numbering and spacing both come straight from the parser
+
+## Closing
+
+You miss 100% of the shots you don't take.[^3][^4]
+
+***
+
+[^1]: The rest of the rationale lives in `docs/dev/why.md`.
+[^2]: The reveal is delayed by 120 ms so that holding an arrow key doesn't strobe the document.
+[^3]: Attributed to Wayne Gretzky.
+[^4]: Attributed to Michael Scott.

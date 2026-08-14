@@ -63,10 +63,6 @@ cargo build --release
 
 Requires **Rust 1.90 or newer**.
 
-<!-- TODO(homebrew): the `mijowi/tap` tap does not exist yet — create it and
-     confirm the formula name before publishing, or drop that section. -->
-
-
 ## Usage
 
 ```bash
