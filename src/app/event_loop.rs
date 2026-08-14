@@ -309,6 +309,26 @@ impl App {
         self.last_doc_height = dims.doc_height;
         self.last_doc_width = dims.doc_width;
         self.editor.set_viewport_width(dims.doc_width);
+        // A diagram block reserves its image's rows until the cursor rests
+        // inside it, at which point it reserves one row per raw source line
+        // instead so the whole mermaid fence reveals and the document
+        // reflows around it.  The transition is time-driven (the reveal
+        // delay elapses without an event of its own), so it is resolved per
+        // frame here; the call is a no-op unless the target actually moved.
+        //
+        // The reflow moves rendered rows under a cursor that didn't move, so
+        // nothing else would scroll it back into view: entering a fence from
+        // below near the bottom of the viewport grows the block downward and
+        // takes the cursor with it, and `ensure_cursor_visible` otherwise
+        // only runs off a cursor move or an edit.  `dims` is measured
+        // *before* this reflow — a reveal that changes the document's line
+        // count can therefore paint one frame with a stale gutter width or
+        // scrollbar reservation; `needs_draw` re-measures on the next frame.
+        if self.editor.sync_diagram_reveal() {
+            self.editor
+                .ensure_cursor_visible(dims.doc_height, dims.doc_width);
+            self.needs_draw = true;
+        }
         // A non-capturing navigate flow lets the buffer be edited freely, so
         // the match list can go stale outside the in-flow mutation paths.
         // Refresh here (version-guarded → a no-op when nothing changed) so the

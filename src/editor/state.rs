@@ -330,6 +330,18 @@ pub struct EditorState {
     /// are gated, and search freshness/overlays are paused.  See
     /// `editor::vim_ops::preview`.
     pub substitute_preview: Option<SubstitutePreview>,
+    /// Row reservation for the mermaid diagram block whose raw source is
+    /// currently revealed: `(synthetic image URL, rendered rows)`.
+    ///
+    /// A `Block::ImageBlock` reserves as many rendered rows as its image
+    /// occupies, which has nothing to do with how many source lines the
+    /// mermaid fence holds — so the raw-source reveal would be clipped to
+    /// (or padded out to) the image's height.  While the cursor rests in a
+    /// diagram block, the block instead reserves exactly one row per raw
+    /// source line and the document reflows around it.  Kept in sync by
+    /// [`Self::sync_diagram_reveal`], which the run loop calls once per
+    /// frame; `refresh_parsed` feeds it to the renderer's row override.
+    pub(crate) diagram_reveal: Option<(String, usize)>,
     /// Block-level render memoization threaded into every
     /// `refresh_parsed`.  Blocks whose AST is unchanged since the previous
     /// reparse reuse their rendered lines instead of re-rendering — the
@@ -436,6 +448,7 @@ impl EditorState {
             search: None,
             yank_flash: None,
             substitute_preview: None,
+            diagram_reveal: None,
             render_cache: RenderCache::default(),
         };
         // Populate the cursor-block cache so the rendered view's
@@ -553,6 +566,12 @@ impl EditorState {
         // belongs to the old contents (the version stamp would refuse it
         // anyway; dropping here keeps the invariant explicit).
         self.substitute_preview = None;
+        // And any diagram reveal — the reservation names a block of the old
+        // contents.  A surviving one is inert rather than wrong (the URL
+        // hashes the diagram source, so a match implies identical source and
+        // identical row count), but the next `sync_diagram_reveal` owns the
+        // reservation and there is no reason to hand it a stale one.
+        self.diagram_reveal = None;
         let new_len = new_buffer.len_chars();
         self.buffer = new_buffer;
         self.dirty = false;
@@ -907,7 +926,19 @@ impl EditorState {
         // time — when false, `build_with_overrides` leaves the mermaid
         // fenced code blocks intact, so the row override never sees a
         // diagram URL and only has to think about real images.
+        // A revealed diagram block reserves one row per raw source line
+        // instead of the image's height, so the whole mermaid fence is
+        // visible (and the document reflows) while the cursor rests in it.
+        // Checked first: the reveal replaces the image on screen entirely,
+        // so neither the decode cache nor the images-disabled collapse has
+        // a say in how tall the block is.
+        let diagram_reveal = self.diagram_reveal.as_ref();
         let override_fn = |url: &str| {
+            if let Some((revealed, rows)) = diagram_reveal {
+                if revealed == url {
+                    return Some(*rows);
+                }
+            }
             if !images_enabled {
                 return Some(1);
             }
