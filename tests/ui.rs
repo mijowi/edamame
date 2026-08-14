@@ -1937,7 +1937,8 @@ fn mermaid_block_reveals_full_raw_source_on_cursor_entry() {
     let mut state = EditorState::new_with_config(Buffer::from_str(src), theme, true, true, 6);
     state.mode = Mode::Rendered;
     // Cursor on the first content line "flowchart TD".
-    state.cursor.offset = src.find("flowchart").unwrap();
+    let byte = src.find("flowchart").unwrap();
+    state.cursor.offset = state.buffer.rope().byte_to_char(byte);
     state.update_cursor_block();
     // Skip the reveal delay so raw paint runs this frame.
     state.cursor_block_entered_at = None;
@@ -2152,5 +2153,87 @@ fn gutter_numbers_source_lines_in_rendered_mode() {
     assert!(
         gutter.iter().filter(|s| s.is_empty()).count() >= 4,
         "expected blank rows for table borders: {gutter:?}"
+    );
+}
+
+/// Regression (issue #24): a diagram whose rendered image is shorter than
+/// its mermaid source must not clip the raw-source reveal.  The block
+/// reserves the image's rows until the cursor enters it, then reserves one
+/// row per source line — so every line of the fence is on screen and the
+/// content below reflows down.
+#[test]
+fn revealed_diagram_shows_every_source_line() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let src = "```mermaid\nflowchart LR\n    A --> B\n    B --> C\n```\n\nAfter.\n";
+    // Two reserved image rows — the short-wide diagram from the report.
+    let mut state = EditorState::new_with_config(Buffer::from_str(src), theme, true, true, 2);
+    state.mode = Mode::Rendered;
+    let byte = src.find("flowchart").unwrap();
+    state.cursor.offset = state.buffer.rope().byte_to_char(byte);
+    // `RenderedView` reveals the block named by the *cached* `cursor_block_idx`,
+    // which a bare `cursor.offset` write leaves pointing at whatever block the
+    // cursor was constructed on.  Resolve it the way every production cursor
+    // move does, so this test keeps testing the reveal rather than the fence
+    // happening to be block 0.
+    state.update_cursor_block();
+    // `update_cursor_block` arms the reveal timer; the reveal is what happens
+    // once it elapses, so skip the delay rather than sleep it.
+    state.cursor_block_entered_at = None;
+    assert!(
+        state.sync_diagram_reveal(),
+        "entering the diagram must re-lay the document out"
+    );
+
+    let backend = TestBackend::new(30, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                cursor_style: theme.status_mode_rendered,
+                visual_kind: None,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let rows: Vec<String> = (0..10u16)
+        .map(|y| {
+            (0..30u16)
+                .map(|x| buf.cell((x, y)).unwrap().symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect();
+    let joined = rows.join("\n");
+    for line in ["flowchart LR", "A --> B", "B --> C"] {
+        assert!(
+            joined.contains(line),
+            "revealed diagram must show {line:?}: {rows:?}"
+        );
+    }
+    // The document reflowed around the taller block: the trailer is still
+    // painted, below the whole fence.
+    let after = rows
+        .iter()
+        .position(|r| r.contains("After."))
+        .unwrap_or_else(|| panic!("trailer must stay visible: {rows:?}"));
+    let last_source = rows
+        .iter()
+        .position(|r| r.contains("B --> C"))
+        .expect("last diagram line");
+    assert!(
+        after > last_source,
+        "trailer must follow the fence: {rows:?}"
     );
 }

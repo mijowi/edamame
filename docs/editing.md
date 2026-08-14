@@ -325,6 +325,11 @@ graph TD
 Same terminal requirements as images, and its own consent prompt — you can
 enable diagrams without enabling images or vice versa.
 
+Move the cursor into a diagram and the image is replaced by its full mermaid
+source, exactly as a fenced code block reveals — however tall or short the
+rendered image was, every source line is shown and the rest of the document
+reflows around it. Move the cursor out and the image comes back.
+
 Rendering happens in the background and results are cached by content, so
 editing one diagram doesn't re-render the others. Mermaid is the only diagram
 language supported. A diagram that fails to render reports it on the hint line

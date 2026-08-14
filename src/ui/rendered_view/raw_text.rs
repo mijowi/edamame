@@ -19,6 +19,30 @@ pub(crate) fn raw_source_lines(source: &str) -> Vec<&str> {
     lines
 }
 
+/// How many lines [`raw_source_lines`] would yield, without building the
+/// `Vec`.
+///
+/// The diagram reveal wants only the count, and asks for it on every run
+/// of the event loop while the cursor rests in a fence (see
+/// [`EditorState::sync_diagram_reveal`]) — allocating a `Vec` of slices
+/// per iteration to read `.len()` off it is pure waste.  Kept beside
+/// `raw_source_lines`, and pinned against it by
+/// `raw_source_line_count_agrees_with_raw_source_lines`, so the reserved
+/// row count and the painted lines can't drift apart.
+pub(crate) fn raw_source_line_count(source: &str) -> usize {
+    if source.is_empty() {
+        return 1;
+    }
+    let count = source.split('\n').count();
+    // Mirror the trailing-empty pop above: on a non-empty source that last
+    // element is empty exactly when the source ends with a newline.
+    if count > 1 && source.ends_with('\n') {
+        count - 1
+    } else {
+        count
+    }
+}
+
 /// Byte offset within `block_source` where raw line `line_idx` starts.
 pub(super) fn raw_line_byte_start(block_source: &str, line_idx: usize) -> usize {
     let mut byte = 0usize;
@@ -143,5 +167,35 @@ mod tests {
     fn raw_source_lines_empty() {
         let lines = raw_source_lines("");
         assert_eq!(lines, vec![""]);
+    }
+
+    /// The diagram reveal reserves `raw_source_line_count` rows and
+    /// `RenderedView` paints `raw_source_lines` onto them, so the two must
+    /// agree for every shape of block source — a drift here clips the
+    /// reveal or pads it with blank rows.  Covers the cases that separate
+    /// them: empty, no trailing newline, trailing newline, a lone newline,
+    /// interior blanks, and a blank line before the terminating newline.
+    #[test]
+    fn raw_source_line_count_agrees_with_raw_source_lines() {
+        for source in [
+            "",
+            "hello",
+            "hello\n",
+            "\n",
+            "\n\n",
+            "hello\nworld",
+            "hello\nworld\n",
+            "hello\n\nworld",
+            "hello\n\nworld\n",
+            "hello\nworld\n\n",
+            "```mermaid\nflowchart LR\n    A --> B\n```",
+            "```mermaid\nflowchart LR\n    A --> B\n```\n",
+        ] {
+            assert_eq!(
+                raw_source_line_count(source),
+                raw_source_lines(source).len(),
+                "count and split disagree for {source:?}"
+            );
+        }
     }
 }

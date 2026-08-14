@@ -103,4 +103,91 @@ impl EditorState {
             Some(t) => t.elapsed() >= RAW_REVEAL_DELAY,
         }
     }
+
+    /// Bring [`EditorState::diagram_reveal`] in line with where the cursor
+    /// is right now, re-parsing when it changed.  Returns `true` when the
+    /// document was re-laid-out, so the caller can force a redraw.
+    ///
+    /// Called once per frame from `App::prepare_viewport` because the
+    /// reveal is time-driven (the `RAW_REVEAL_DELAY` window elapses without
+    /// any event of its own), so there is no single action site that could
+    /// own the transition.  It is a no-op on every frame where the target
+    /// hasn't moved — the re-parse only fires as the cursor enters or
+    /// leaves a diagram block.
+    pub fn sync_diagram_reveal(&mut self) -> bool {
+        // The target borrows out of `parsed`, so nothing is allocated on
+        // the overwhelmingly common no-op path — this runs on every pass of
+        // the event loop (every keystroke and every idle tick), not just on
+        // the frames that draw.  Only a real transition pays for the
+        // `String`.
+        let target = self.diagram_reveal_target();
+        let unchanged = match (target, self.diagram_reveal.as_ref()) {
+            (Some((url, rows)), Some((cur_url, cur_rows))) => {
+                url == cur_url.as_str() && rows == *cur_rows
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        if unchanged {
+            return false;
+        }
+        self.diagram_reveal = target.map(|(url, rows)| (url.to_owned(), rows));
+        // Only the block's *rendered* row count changed — the source is
+        // untouched, so every byte range (and with it the cached cursor
+        // block and its line range) survives the re-parse unchanged.
+        self.refresh_parsed();
+        true
+    }
+
+    /// The reservation the diagram reveal wants for the current cursor
+    /// position: `(synthetic image URL, one row per raw source line)`, or
+    /// `None` when the cursor isn't resting inside a revealed diagram.
+    ///
+    /// The URL is borrowed out of `self.parsed` rather than cloned: the
+    /// caller runs this per event-loop pass purely to compare against the
+    /// stashed reservation, and owns the result only when they differ.
+    fn diagram_reveal_target(&self) -> Option<(&str, usize)> {
+        // Preview is browse-only and Raw already shows the source, so the
+        // reveal — and its reflow — belongs to Rendered mode alone.
+        if self.mode != Mode::Rendered {
+            return None;
+        }
+        // Mid-typing the parse is stale, and with it the block's synthetic
+        // URL (it hashes the diagram source).  An in-line edit can't change
+        // the block's line count, so hold the current reservation rather
+        // than recomputing one against a URL that no longer exists.
+        if self.parsed_dirty {
+            return self
+                .diagram_reveal
+                .as_ref()
+                .map(|(url, rows)| (url.as_str(), *rows));
+        }
+        if !self.cursor_block_revealed() {
+            return None;
+        }
+        let cursor_byte = self.buffer.rope().char_to_byte(self.cursor.offset);
+        let block_idx = self.parsed.source_map.block_for_byte(cursor_byte)?;
+        if !self.parsed.is_mermaid_block(block_idx) {
+            return None;
+        }
+        let url = self
+            .parsed
+            .image_blocks
+            .iter()
+            .find(|info| info.block_idx == block_idx)?
+            .url
+            .as_str();
+        let range = self.parsed.source_map.original_range_for_block(block_idx)?;
+        // Read the document out of `ParsedDoc`, not the live `Buffer`: the
+        // range is a *parse-time* byte range, and this runs on every frame
+        // the cursor rests in a diagram — `Buffer::contents()` would
+        // allocate the whole document as a `String` each time.
+        let contents = self.parsed.source();
+        let source = contents.get(range.start..range.end.min(contents.len()))?;
+        // Counts exactly the lines `RenderedView` reveals through, so the
+        // reserved rows and the raw lines painted onto them can't disagree
+        // — without allocating the `Vec` of slices just to read its length.
+        let rows = crate::ui::rendered_view::raw_source_line_count(source);
+        Some((url, rows))
+    }
 }
