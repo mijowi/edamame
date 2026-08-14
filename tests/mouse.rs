@@ -589,6 +589,34 @@ fn hit_test_returns_true_over_markdown_link() {
     assert!(!mouse_ops::hit_test_clickable(&st, 10, 0, VW, &[]));
 }
 
+/// An in-document heading anchor (`[text](#section)`) renders with
+/// `Theme::link_heading` — link colored but deliberately NOT underlined
+/// — so the hit-test must recognise it by style, not by the underline
+/// alone.  Without that it stayed an I-beam while web and file links
+/// showed the hand.
+#[test]
+fn hit_test_returns_true_over_heading_anchor_link() {
+    let st = state("See [Setup](#setup) below.\n");
+    // Renders as `See Setup below.` — the link text sits at cols 4..=8.
+    assert!(mouse_ops::hit_test_clickable(&st, 4, 0, VW, &[]));
+    assert!(mouse_ops::hit_test_clickable(&st, 8, 0, VW, &[]));
+    // Surrounding prose is not clickable.
+    assert!(!mouse_ops::hit_test_clickable(&st, 1, 0, VW, &[]));
+    assert!(!mouse_ops::hit_test_clickable(&st, 12, 0, VW, &[]));
+}
+
+/// The hint line's hover tooltip reads the same predicate, so a heading
+/// anchor surfaces its raw `#section` target too.
+#[test]
+fn hovered_link_url_resolves_heading_anchor() {
+    let st = state("See [Setup](#setup) below.\n");
+    assert_eq!(
+        mouse_ops::hovered_link_url(&st, 5, 0, VW).as_deref(),
+        Some("#setup")
+    );
+    assert_eq!(mouse_ops::hovered_link_url(&st, 1, 0, VW), None);
+}
+
 /// Pointer-shape feedback: hovering over any of the four table buttons
 /// (row reorder `⠿`, column reorder `⠿`, row delete `✕`, column delete
 /// `✕`) returns true so the App switches to the hand pointer.  Resize

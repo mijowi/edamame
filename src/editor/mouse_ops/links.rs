@@ -1,8 +1,52 @@
+use ratatui::style::{Modifier, Style};
+use ratatui::text::Line;
+
+use crate::config::Theme;
 use crate::editor::link::LinkTarget;
 use crate::editor::EditorState;
 use crate::ui::line_render;
 
-use super::coord::{click_to_char_offset, rendered_line_at_row, span_at_col_has_modifier};
+use super::coord::{click_to_char_offset, rendered_line_at_row};
+
+/// Does `style` belong to a rendered link?
+///
+/// Web and file links carry `Modifier::UNDERLINED` (`Theme::link_text` /
+/// `link_file`), which is the cheap marker every link path keyed on
+/// originally.  An in-document heading anchor (`[Section](#section)`)
+/// is deliberately quieter — `Theme::link_heading` is the link
+/// foreground with *no* underline (see `docs/dev/theming.md`) — so the
+/// underline test alone silently classified those as ordinary prose:
+/// no hand cursor, no hint-line URL, no AST-backed click resolution.
+/// The heading-link arm therefore matches on the resolved link color
+/// instead, and is gated on that color actually being set so a
+/// colorless theme (`Monochrome Dark`, whose `link_heading` *is*
+/// underlined) can't classify every unstyled span as a link.
+///
+/// The single derivation for every link hit-test — keep the hover
+/// shape, the hint line, and the click path reading the same answer.
+pub(super) fn is_link_style(style: Style, theme: &Theme) -> bool {
+    if style.add_modifier.contains(Modifier::UNDERLINED) {
+        return true;
+    }
+    theme.link_heading.fg.is_some()
+        && style.fg == theme.link_heading.fg
+        && style.bg == theme.link_heading.bg
+}
+
+/// Whether the rendered span covering char column `col` of `line` is a
+/// link span.  Mirrors `coord::span_at_col_has_modifier`'s walk, but
+/// asks [`is_link_style`] so heading anchors count too.
+pub(super) fn span_at_col_is_link(line: &Line<'_>, col: usize, theme: &Theme) -> bool {
+    let mut walk = 0usize;
+    for span in &line.spans {
+        let span_len = span.content.chars().count();
+        if col < walk + span_len {
+            return is_link_style(span.style, theme);
+        }
+        walk += span_len;
+    }
+    false
+}
 
 /// If `(col, row)` falls on a Markdown link, return its raw URL string
 /// exactly as written in the source.  Used by the App to stash the
@@ -23,7 +67,7 @@ pub fn hovered_link_url(
     viewport_width: usize,
 ) -> Option<String> {
     let (line, _) = rendered_line_at_row(state, row as usize)?;
-    if !span_at_col_has_modifier(&line, col as usize, ratatui::style::Modifier::UNDERLINED) {
+    if !span_at_col_is_link(&line, col as usize, state.theme()) {
         return None;
     }
     link_url_for_click(state, col as usize, row as usize, viewport_width)
@@ -34,7 +78,7 @@ pub fn hovered_link_url(
 /// `true`.  Otherwise return `false` so the caller falls through to
 /// normal cursor placement.
 ///
-/// Walks the rendered line's UNDERLINED spans first (the AST-backed
+/// Walks the rendered line's link spans first (the AST-backed
 /// path, matching what `link_view::build_snapshots` exposes), falling
 /// back to a raw-source scan via `link_at_offset` so the raw-reveal
 /// window of a cursor block still detects `[text](url)` clicks.
@@ -51,7 +95,7 @@ pub(super) fn follow_link_at_click(
     // marker is sufficient, and this keeps `mouse_ops::apply`'s signature
     // small.
     if let Some((line, _)) = rendered_line_at_row(state, row as usize) {
-        if span_at_col_has_modifier(&line, col as usize, ratatui::style::Modifier::UNDERLINED) {
+        if span_at_col_is_link(&line, col as usize, state.theme()) {
             // The rendered line has a link span at this col — resolve the
             // URL by matching the N-th link in the block's AST with the
             // N-th underlined span on this line.
@@ -134,10 +178,10 @@ pub(super) fn follow_footnote_at_click(
 }
 
 /// Best-effort: determine which URL was clicked by matching the
-/// underlined-span index at `(col, row)` against the N-th
+/// link-span index at `(col, row)` against the N-th
 /// `Inline::Link` in the clicked rendered line's block.
 ///
-/// Returns `None` when the click doesn't land on an underlined span or
+/// Returns `None` when the click doesn't land on a link span or
 /// we can't associate it with an AST link (which falls back to the raw
 /// scan).
 fn link_url_for_click(
@@ -147,20 +191,18 @@ fn link_url_for_click(
     _viewport_width: usize,
 ) -> Option<String> {
     let (line, _sub_row) = rendered_line_at_row(state, row)?;
-    // Index of the underlined run at `col` within this line.
+    // Index of the link run at `col` within this line.
+    let theme = state.theme();
     let mut walk = 0usize;
     let mut run_index: Option<usize> = None;
     let mut link_count = 0usize;
     let mut in_run = false;
     for span in &line.spans {
         let span_len = span.content.chars().count();
-        let under = span
-            .style
-            .add_modifier
-            .contains(ratatui::style::Modifier::UNDERLINED);
+        let under = is_link_style(span.style, theme);
         if under {
             if !in_run {
-                // Entering a new underlined run — record its index.
+                // Entering a new link run — record its index.
                 if col >= walk && col < walk + span_len {
                     run_index = Some(link_count);
                 }
