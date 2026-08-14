@@ -42,7 +42,7 @@ cargo doc --no-deps --document-private-items --open
 ## Test Commands
 
 ```bash
-cargo test                              # run all unit + integration tests
+cargo test --no-fail-fast               # run all unit + integration tests
 cargo test -- --list                    # list all test names
 
 # Run a single test by exact name:
@@ -67,6 +67,8 @@ cargo test --test diagrams
 # Review / accept updated insta snapshots:
 cargo insta review
 ```
+
+**Use `--no-fail-fast`, and expect the file-watcher tests to fail under an agent sandbox.** Plain `cargo test` stops at the first failing *target*, so a failure in the lib target aborts the run before `tests/` is even built — every integration test then silently goes unrun while the summary still looks like a real result. `watcher::file_watcher` and `tests/watcher.rs` need live filesystem-change notifications (FSEvents / inotify), which a sandbox typically withholds, so four tests there time out with `expected a debounced change: Timeout` and the like. That failure is environmental: outside the sandbox the suite is green. An agent should run `cargo test --no-fail-fast` and disregard *only* watcher timeouts — treat any other failure as real — or re-run the suite outside the sandbox to see the true verdict. `cargo nextest run` also runs every target regardless of failures and is the faster option where it's installed.
 
 **Test frameworks in use:**
 - `insta` — snapshot testing (`assert_debug_snapshot!`, `assert_snapshot!`)
