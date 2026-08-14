@@ -382,4 +382,20 @@ Scrolling never moves the cursor.
 
 **Line numbers**, a **width cap** for wide terminals, and **big block-letter
 H1s** are all available and all off by default — see
-[configuration.md](configuration.md).
+[configuration.md](configuration.md). Line numbers count *source* lines in
+every mode, so a given line carries the same number in Raw as in Rendered, and
+the same one your other editor shows — and the same one `G` and `:{N}` jump to.
+
+What changes between modes is which numbers are *shown*, never which number a
+line gets. A rendered view has rows that belong to no source line, and source
+lines that occupy no row:
+
+- Rows that exist only because of how a block is drawn — a table's borders, the
+  rows an image or a diagram reserves, the continuation rows of a wrapped line
+  — are left blank.
+- A line with no row of its own is simply not numbered anywhere in Preview or
+  Rendered. That covers a hidden block-level HTML comment and a blank line that
+  the renderer swallows inside a list item. Switch to Raw to see them.
+
+So the numbers down the gutter may skip, but they never disagree: the number
+beside a line of text is always that line's number in the file.

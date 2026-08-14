@@ -24,6 +24,8 @@ fn render_status_bar(
                     mode,
                     filename,
                     line_count,
+                    scroll_total: line_count,
+                    viewport_rows: 1,
                     modified,
                     scroll: 0,
                     cursor_line: None,
@@ -116,6 +118,8 @@ fn render_status_bar_vim(label: &str, width: u16) -> String {
                     mode: Mode::Rendered,
                     filename: "notes.md",
                     line_count: 42,
+                    scroll_total: 42,
+                    viewport_rows: 1,
                     modified: false,
                     scroll: 0,
                     cursor_line: Some(1),
@@ -1409,6 +1413,8 @@ fn status_bar_shows_cursor_position() {
                     mode: Mode::Rendered,
                     filename: "f.md",
                     line_count: 10,
+                    scroll_total: 10,
+                    viewport_rows: 1,
                     modified: false,
                     scroll: 0,
                     cursor_line: Some(5),
@@ -2072,5 +2078,79 @@ fn rendered_view_drag_selection_paints_wrapped_cell_continuation() {
         cell.style().bg,
         theme.selection.bg,
         "selection background must paint on the wrapped continuation row mid-drag"
+    );
+}
+
+/// The line-number gutter numbers *source* lines in Rendered mode, not the
+/// renderer's output rows.  A 5-line GFM table plus a trailing paragraph
+/// renders taller than its source, so the numbers must skip the border rows
+/// rather than run 1..N down the side of the document.
+#[test]
+fn gutter_numbers_source_lines_in_rendered_mode() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::terminal::Capabilities;
+    use edamame::ui::bottom_region::{HintContent, HintSet};
+    use edamame::ui::{EditorView, EditorViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\nafter\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+
+    let backend = TestBackend::new(40, 14);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = EditorViewState::new();
+    let caps = Capabilities::default();
+    terminal
+        .draw(|frame| {
+            let view = EditorView {
+                state: &mut state,
+                theme,
+                filename: "test.md",
+                show_table_buttons: false,
+                table_drop_indicator: None,
+                capabilities: &caps,
+                show_line_numbers: true,
+                is_scrolling: false,
+                hint: HintContent::Chords(HintSet::default()),
+                vim_mode_label: None,
+                visual_kind: None,
+                editor_cursor_style: theme.status_mode_rendered,
+                max_width_enabled: false,
+                max_width_cols: 0,
+                scrollbar_active: false,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    // 6 buffer lines → 1 digit + 2 padding.
+    let buf = terminal.backend().buffer().clone();
+    let gutter: Vec<String> = (0..12u16)
+        .map(|y| {
+            (0..3u16)
+                .map(|x| buf.cell((x, y)).unwrap().symbol())
+                .collect::<String>()
+                .trim()
+                .to_string()
+        })
+        .collect();
+
+    // Every number appears exactly once, in source order, and the rows in
+    // between (table borders) are blank.
+    let numbers: Vec<&str> = gutter
+        .iter()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.as_str())
+        .collect();
+    assert_eq!(
+        numbers,
+        vec!["1", "2", "3", "4", "5", "6"],
+        "gutter: {gutter:?}"
+    );
+    assert!(
+        gutter.iter().filter(|s| s.is_empty()).count() >= 4,
+        "expected blank rows for table borders: {gutter:?}"
     );
 }

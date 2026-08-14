@@ -1441,6 +1441,8 @@ mod tests {
                         mode: Mode::Rendered,
                         filename: "test.md",
                         line_count: 3,
+                        scroll_total: 3,
+                        viewport_rows: 1,
                         modified: false,
                         scroll: 0,
                         cursor_line: Some(1),

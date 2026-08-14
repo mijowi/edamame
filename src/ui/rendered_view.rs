@@ -260,7 +260,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // it, the mouse hit-test's revealed-line shortcut) so the three can
         // never disagree about which row is showing raw source.
         let cursor_in_block = crate::editor::state::cursor_sub_line_in_block(
-            editor,
+            &editor.parsed,
             cursor_byte,
             cursor_block_idx,
             cursor_block_own,

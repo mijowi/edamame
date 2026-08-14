@@ -82,6 +82,19 @@ pub struct ImageBlockInfo {
 pub struct ParsedDoc {
     /// Rendered styled lines.
     pub lines: Vec<Line<'static>>,
+    /// The document text this parse was built from — the coordinate space
+    /// every byte range in [`source_map`](Self::source_map) and
+    /// [`real_ranges`](Self::real_ranges) is expressed in.
+    ///
+    /// Kept because the live `Buffer` is *not* that space: a deferred
+    /// in-line edit advances the buffer without rebuilding the parse, so
+    /// slicing the buffer with a range from this parse reads text shifted
+    /// by the edit's length — and a shift that crosses a line boundary
+    /// silently changes how many lines the slice appears to have.  Anything
+    /// resolving a parse-time range back to text or to a line index must
+    /// read it here (see [`byte_to_line`](Self::byte_to_line)); only code
+    /// that already holds a *live* byte offset should touch the buffer.
+    source: Box<str>,
     /// Source map linking rendered lines to source byte ranges.
     pub source_map: SourceMap,
     /// Post-processed block AST, parallel with `real_ranges`.  Stashed
@@ -144,6 +157,16 @@ pub struct ParsedDoc {
     /// `&EditorState` callers need shared access; `ParsedDoc` is
     /// single-threaded.
     pub(super) visual_rows: RefCell<Vec<VisualRowCache>>,
+    /// Lazy rendered-line → source-line table for the line-number gutter,
+    /// filled on first query by `editor::state_source_lines`, which inverts
+    /// `editor::state::sub_lines_in_block` — the batch raw-line → rendered-row
+    /// derivation, which lives a layer up.
+    /// Stored here rather than on `EditorState` so its lifetime is exactly
+    /// this parse's: a deferred in-line edit — which bumps
+    /// `EditorState::parsed_version` without rebuilding the parse — keeps
+    /// painting *these* rendered rows, so it must keep this table too, and a
+    /// reparse drops it by construction.
+    source_lines: OnceCell<Vec<Option<usize>>>,
     /// Lazy per-buffer-line cache of `InlineColMap` — maps between raw char
     /// columns and rendered (inline-markup-collapsed) char columns.  Used by
     /// the selection painter and cursor-indicator overlay.
@@ -468,6 +491,7 @@ impl ParsedDoc {
         let line_count = source.split('\n').count();
         Self {
             lines,
+            source: source.into(),
             source_map,
             blocks,
             real_ranges,
@@ -476,6 +500,7 @@ impl ParsedDoc {
             heading_anchors,
             footnote_anchors,
             visual_rows: RefCell::new(Vec::new()),
+            source_lines: OnceCell::new(),
             inline_maps: (0..line_count).map(|_| OnceCell::new()).collect(),
         }
     }
@@ -483,6 +508,29 @@ impl ParsedDoc {
     /// Number of rendered lines.
     pub fn line_count(&self) -> usize {
         self.lines.len()
+    }
+
+    /// The document text this parse was built from.  See
+    /// [`source`](Self::source) for why a parse-time byte range must be
+    /// resolved against this and never against the live `Buffer`.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// 0-based source line containing byte `byte`, counted in *this
+    /// parse's* text.  The parse-time counterpart of `Buffer::byte_to_line`
+    /// — same answer whenever the two agree, and the correct one when a
+    /// deferred in-line edit has left them disagreeing.
+    ///
+    /// `byte` past the end of the source answers the last line.  O(byte),
+    /// so a caller walking every block in order should track a running
+    /// count instead (as `editor::state_source_lines` does).
+    pub fn byte_to_line(&self, byte: usize) -> usize {
+        let upto = byte.min(self.source.len());
+        self.source.as_bytes()[..upto]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count()
     }
 
     /// Number of rendered lines produced by the renderer for block `block_idx`,
@@ -602,6 +650,16 @@ impl ParsedDoc {
     /// Total visual rows occupied by the rendered document at `width`.
     pub fn total_visual_rows(&self, width: usize) -> usize {
         self.with_visual_rows(width, |c| c.total())
+    }
+
+    /// Rendered-line → source-line table, building it with `init` on first
+    /// call.  See [`source_lines`](Self::source_lines) for why it is cached
+    /// per parse rather than per buffer version.
+    pub fn source_lines_or_init(
+        &self,
+        init: impl FnOnce() -> Vec<Option<usize>>,
+    ) -> &[Option<usize>] {
+        self.source_lines.get_or_init(init)
     }
 
     /// `(rendered_line_idx, sub_row)` for a document-level visual row.
