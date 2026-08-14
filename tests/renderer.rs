@@ -391,12 +391,12 @@ fn snapshot_horizontal_rule() {
 // ── Footnotes ────────────────────────────────────────────────────────────────
 
 #[test]
-fn footnote_reference_renders_as_superscript() {
+fn footnote_reference_renders_as_bracketed_marker() {
     let lines = render("Claim.[^1]\n\n[^1]: Source.\n");
     let text: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
-    // The reference collapses `[^1]` to a superscript-parenthesized marker
-    // `⁽¹⁾`; the raw `[^1]` syntax is gone.
-    assert!(text.contains("⁽¹⁾"), "expected ⁽¹⁾ marker, got: {text:?}");
+    // The reference collapses `[^1]` to the bracketed marker `[1]`; the raw
+    // `[^1]` syntax is gone.
+    assert!(text.contains("[1]"), "expected [1] marker, got: {text:?}");
     assert!(
         !text.contains("[^1]"),
         "raw reference syntax leaked: {text:?}"
@@ -404,12 +404,43 @@ fn footnote_reference_renders_as_superscript() {
 }
 
 #[test]
-fn adjacent_footnote_references_are_each_parenthesized() {
-    // `[^1][^2]` must render as two distinct markers `⁽¹⁾⁽²⁾`, not an
-    // ambiguous `¹²`.
+fn adjacent_footnote_references_fuse_into_one_marker() {
+    // `[^1][^2]` renders as a single comma-joined marker `[1,2]` rather
+    // than two abutting brackets.
     let lines = render("Two.[^1][^2]\n\n[^1]: one.\n\n[^2]: two.\n");
     let para = line_text(&lines[0]);
-    assert!(para.contains("⁽¹⁾⁽²⁾"), "expected ⁽¹⁾⁽²⁾, got: {para:?}");
+    assert!(para.contains("[1,2]"), "expected [1,2], got: {para:?}");
+    assert!(
+        !para.contains("[1][2]"),
+        "adjacent references should fuse: {para:?}"
+    );
+}
+
+#[test]
+fn three_adjacent_footnote_references_fuse_into_one_marker() {
+    let lines = render("T.[^1][^2][^3]\n\n[^1]: a.\n\n[^2]: b.\n\n[^3]: c.\n");
+    let para = line_text(&lines[0]);
+    assert!(para.contains("[1,2,3]"), "expected [1,2,3], got: {para:?}");
+}
+
+#[test]
+fn spaced_footnote_references_stay_separate_markers() {
+    // Only *adjacent* references fuse — a space between them is its own
+    // inline, so each keeps its own brackets.
+    let lines = render("Two.[^1] [^2]\n\n[^1]: one.\n\n[^2]: two.\n");
+    let para = line_text(&lines[0]);
+    assert!(para.contains("[1] [2]"), "expected [1] [2], got: {para:?}");
+}
+
+#[test]
+fn footnote_marker_is_plain_ascii() {
+    // The marker used to be built from U+207D/U+207E superscript
+    // parentheses, which most monospace fonts lack; a terminal falling back
+    // to a proportional face drew the parenthesis over the digit.  Nothing
+    // in the marker may leave Basic Latin.
+    let lines = render("Claim.[^1][^note]\n\n[^1]: a.\n\n[^note]: b.\n");
+    let para = line_text(&lines[0]);
+    assert!(para.is_ascii(), "footnote marker left ASCII: {para:?}");
 }
 
 #[test]
@@ -443,11 +474,11 @@ fn footnote_definition_renders_with_back_link_and_number() {
 #[test]
 fn footnote_marker_matches_raw_label_without_renumbering() {
     // `[^3]` referenced before `[^1]` must keep their raw labels in the
-    // rendered superscripts — no display resequencing.
+    // rendered markers — no display resequencing.
     let lines = render("A[^3] B[^1]\n\n[^1]: one.\n\n[^3]: three.\n");
     let para = line_text(&lines[0]);
-    let pos3 = para.find('³').expect("³ marker");
-    let pos1 = para.find('¹').expect("¹ marker");
+    let pos3 = para.find("[3]").expect("[3] marker");
+    let pos1 = para.find("[1]").expect("[1] marker");
     assert!(
         pos3 < pos1,
         "markers follow source order, not a remap: {para:?}"

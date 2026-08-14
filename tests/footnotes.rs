@@ -71,10 +71,10 @@ fn delete_footnote_wrapper_off_a_footnote_returns_false() {
 
 #[test]
 fn mouse_click_on_reference_stages_footnote_follow() {
-    // Preview mode: a plain click on the rendered superscript marker stages
-    // a footnote follow.  Rendered line 0 is "Body¹ more." — the superscript
-    // sits at column 4 (after "Body"), and the 1:1 raw-column map sends it
-    // onto the `[^1]` source.
+    // Preview mode: a plain click on the rendered marker stages a footnote
+    // follow.  Rendered line 0 is "Body[1] more." — the marker's opening
+    // bracket sits at column 4 (after "Body"), and the 1:1 raw-column map
+    // sends it onto the `[^1]` source.
     let mut st = state("Body[^1] more.\n\n[^1]: the note.\n");
     assert_eq!(st.mode, Mode::Preview);
     let action = MouseAction::Click {
@@ -87,24 +87,57 @@ fn mouse_click_on_reference_stages_footnote_follow() {
     assert_eq!(
         st.pending_link_follow,
         Some(LinkTarget::Footnote("1".into())),
-        "click on the superscript should stage a footnote follow"
+        "click on the marker should stage a footnote follow"
     );
 }
 
 #[test]
 fn hover_over_reference_marker_is_clickable() {
-    // The pointer-shape hit-test should report the superscript marker as
+    // The pointer-shape hit-test should report the reference marker as
     // clickable (hand cursor), but not the surrounding text.
     let st = state("Body[^1] more.\n\n[^1]: the note.\n");
-    // Rendered line 0: "Body¹ more." — superscript at col 4.
+    // Rendered line 0: "Body[1] more." — the marker starts at col 4.
     assert!(
         mouse_ops::hit_test_clickable(&st, 4, 0, VW, &[]),
-        "the footnote superscript should be clickable"
+        "the footnote marker should be clickable"
     );
     assert!(
         !mouse_ops::hit_test_clickable(&st, 1, 0, VW, &[]),
         "plain text should not be clickable"
     );
+}
+
+#[test]
+fn click_inside_a_fused_marker_follows_the_label_clicked() {
+    // Adjacent references render as one marker — `Body[^1][^2] more.`
+    // shows "Body[1,2] more." — and each label stays separately clickable
+    // because `InlineColMap` collapses the fused run exactly (two chars per
+    // abutting reference: its `^` *and* its `[`).  Drop only the carets and
+    // the map runs a column long, landing this click on footnote 1.
+    //
+    // The reference sits on a line away from the cursor so it renders
+    // normally; a click on the cursor's own revealed line maps 1:1 against
+    // the raw source instead, which is a different path.
+    //
+    // Rendered: B0 o1 d2 y3 [4 15 ,6 27 ]8 ' '9 …
+    let src = "First line.\n\nBody[^1][^2] more.\n\n[^1]: one.\n\n[^2]: two.\n";
+    for (col, label) in [(5u16, "1"), (7u16, "2")] {
+        let mut st = state(src);
+        st.cursor.offset = 0;
+        let row = row_containing(&st, "Body");
+        let action = MouseAction::Click {
+            col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        let mut drag = None;
+        mouse_ops::apply(&mut st, action, &mut drag, &[], VP, VW);
+        assert_eq!(
+            st.pending_link_follow,
+            Some(LinkTarget::Footnote(label.into())),
+            "click at col {col} should follow footnote {label}"
+        );
+    }
 }
 
 #[test]
@@ -165,13 +198,13 @@ fn row_containing(st: &EditorState, needle: &str) -> u16 {
 
 #[test]
 fn rendered_mode_plain_click_on_reference_follows() {
-    // A plain (non-Ctrl) click on the superscript in Rendered mode must
+    // A plain (non-Ctrl) click on the marker in Rendered mode must
     // follow the footnote, just like Preview.  The reference is on a line
     // away from the cursor so it renders normally (not revealed as raw).
     let mut st = state("First line.\n\nBody[^1] more.\n\n[^1]: the note.\n");
     st.mode = Mode::Rendered;
     st.cursor.offset = 0;
-    let row = row_containing(&st, "Body"); // "Body¹ more." — superscript at col 4
+    let row = row_containing(&st, "Body"); // "Body[1] more." — marker at col 4
     let action = MouseAction::Click {
         col: 4,
         row,

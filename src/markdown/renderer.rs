@@ -257,7 +257,7 @@ impl<'t> Renderer<'t> {
     //   1.  definition body text… ↩
     //
     // The leader `  <label>.  ` (two spaces, the raw label — matching the
-    // superscript markers, never renumbered for display — a period, then
+    // reference markers, never renumbered for display — a period, then
     // two spaces) is column-width-matched to the raw `[^<label>]: ` leader
     // it replaces, so the 1:1 rendered↔raw column mapping holds across the
     // body and a click anywhere on the leader resolves to the definition's
@@ -507,30 +507,34 @@ impl<'t> Renderer<'t> {
         // break produces its own visual line.  CommonMark collapses soft breaks
         // into spaces, but in a TUI editor we preserve the author's line layout
         // so rendered content mirrors the source line-for-line.
-        let mut current_spans: Vec<Span<'static>> = Vec::new();
+        //
+        // Each break-delimited segment is rendered by `render_inlines` rather
+        // than inline-by-inline: adjacent footnote references fuse into a
+        // single marker, which only that function can see.  `slice::split`
+        // always yields at least one segment, so `last` is well-defined.
+        let segments: Vec<&[Inline]> = inlines
+            .split(|i| matches!(i, Inline::HardBreak | Inline::SoftBreak))
+            .collect();
+        let last = segments.len() - 1;
 
-        if !prefix.is_empty() {
-            current_spans.push(Span::raw(prefix.clone()));
-        }
-
-        for inline in inlines {
-            if matches!(inline, Inline::HardBreak | Inline::SoftBreak) {
-                out.push(Line::from(std::mem::take(&mut current_spans)));
-                if !prefix.is_empty() {
-                    current_spans.push(Span::raw(prefix.clone()));
-                }
-            } else {
-                current_spans.extend(self.render_inline(inline, Style::default()));
+        for (i, segment) in segments.iter().enumerate() {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            if !prefix.is_empty() {
+                spans.push(Span::raw(prefix.clone()));
             }
-        }
+            spans.extend(self.render_inlines(segment, Style::default()));
 
-        // Reads more clearly as "non-empty and not just a single whitespace span";
-        // collapsing into a single negation hides the intent.
-        #[allow(clippy::nonminimal_bool)]
-        if !current_spans.is_empty()
-            && !(current_spans.len() == 1 && current_spans[0].content.trim().is_empty())
-        {
-            out.push(Line::from(current_spans));
+            // Every break emits its line unconditionally (a blank one for an
+            // empty segment); only the trailing segment is suppressed when it
+            // holds nothing but the indent prefix.  Reads more clearly as
+            // "non-empty and not just a single whitespace span"; collapsing
+            // into a single negation hides the intent.
+            #[allow(clippy::nonminimal_bool)]
+            let keep = i < last
+                || (!spans.is_empty() && !(spans.len() == 1 && spans[0].content.trim().is_empty()));
+            if keep {
+                out.push(Line::from(spans));
+            }
         }
     }
 
@@ -689,29 +693,59 @@ impl<'t> Renderer<'t> {
                 IMAGE_PREFIX.chars().count() + name_width + 2
             }
             Inline::HtmlComment(_) => 0,
-            // Footnote reference renders as a superscript-parenthesized
-            // marker of the raw label — one column per character.
+            // Footnote reference renders as a bracketed marker of the raw
+            // label — one column per character.  Unreachable in practice:
+            // `footnote_run_at` matches a run of one as readily as a run of
+            // three, so `rendered_inlines_char_width` — the only caller —
+            // measures *every* reference, lone or fused, before this arm is
+            // consulted.  Kept for exhaustiveness, and deliberately built
+            // from `reference_marker` so it can't state a second format.
             Inline::FootnoteReference { label } => {
-                superscript_reference_marker(label).chars().count()
+                reference_marker(std::iter::once(label.as_str()))
+                    .chars()
+                    .count()
             }
             Inline::SoftBreak | Inline::HardBreak => 1,
         }
     }
 
     pub(super) fn rendered_inlines_char_width(&self, inlines: &[Inline]) -> usize {
-        inlines
-            .iter()
-            .map(|i| self.rendered_inline_char_width(i))
-            .sum()
+        let mut total = 0;
+        let mut i = 0;
+        while i < inlines.len() {
+            // Adjacent references fuse into one marker, so measure the run
+            // through the same helper that renders it.
+            if let Some((marker, run_len)) = footnote_run_at(inlines, i) {
+                total += marker.chars().count();
+                i += run_len;
+                continue;
+            }
+            total += self.rendered_inline_char_width(&inlines[i]);
+            i += 1;
+        }
+        total
     }
 
     // ── Inline rendering ──────────────────────────────────────────
 
     pub(super) fn render_inlines(&self, inlines: &[Inline], base: Style) -> Vec<Span<'static>> {
-        inlines
-            .iter()
-            .flat_map(|i| self.render_inline(i, base))
-            .collect()
+        let mut out: Vec<Span<'static>> = Vec::new();
+        let mut i = 0;
+        while i < inlines.len() {
+            // A run of adjacent references collapses into one marker
+            // (`[^1][^2]` → `[1,2]`), so it has to be consumed as a group
+            // rather than one inline at a time.  This is the only rendering
+            // entry point — `render_paragraph` splits at breaks and calls
+            // back in here — so the fusion can't be bypassed.
+            if let Some((marker, run_len)) = footnote_run_at(inlines, i) {
+                out.push(Span::styled(marker, base.patch(self.theme.footnote)));
+                i += run_len;
+                continue;
+            }
+            out.extend(self.render_inline(&inlines[i], base));
+            i += 1;
+        }
+        out
     }
 
     fn render_inline(&self, inline: &Inline, base: Style) -> Vec<Span<'static>> {
@@ -790,12 +824,16 @@ impl<'t> Renderer<'t> {
             }
 
             Inline::FootnoteReference { label } => {
-                // Superscript-parenthesized marker of the raw label in the
-                // footnote chrome color (`[^1]` → `⁽¹⁾`).  The `[^label]`
-                // source bytes back this single rendered span; `InlineColMap`
-                // accounts for the width difference.
+                // Bracketed marker of the raw label in the footnote chrome
+                // color (`[^1]` → `[1]`).  The `[^label]` source bytes back
+                // this single rendered span; `InlineColMap` accounts for the
+                // width difference.  Unreachable in practice, for the same
+                // reason as the width arm above: `render_inlines` is the only
+                // caller and `footnote_run_at` intercepts a lone reference
+                // too, so nothing reaches here.  Kept for exhaustiveness, and
+                // built from `reference_marker` so the format stays single.
                 vec![Span::styled(
-                    superscript_reference_marker(label),
+                    reference_marker(std::iter::once(label.as_str())),
                     base.patch(self.theme.footnote),
                 )]
             }
@@ -811,35 +849,54 @@ impl<'t> Renderer<'t> {
     }
 }
 
-/// The inline footnote-reference marker: the raw label wrapped in
-/// superscript parentheses (`1` → `⁽¹⁾`, `note` → `⁽note⁾`).  The
-/// parentheses keep the marker unambiguous when references are adjacent
-/// (`[^1][^2]` → `⁽¹⁾⁽²⁾`) and never diverge from the raw label.  HTML
-/// export uses the `[N]` bracket convention instead (via the bundled CSS).
-pub(crate) fn superscript_reference_marker(label: &str) -> String {
-    format!("⁽{}⁾", superscript_label(label))
+/// The inline footnote-reference marker: the raw labels of one run of
+/// adjacent references, comma-joined inside square brackets (`1` → `[1]`,
+/// `note` → `[note]`, `[^1][^2][^3]` → `[1,2,3]`).  Labels are never
+/// renumbered for display, so the marker never diverges from the source.
+///
+/// This is the `[N]` convention the bundled HTML export stylesheet already
+/// uses (`config/export/default.css`), so the two surfaces now agree.
+///
+/// The marker is deliberately plain ASCII.  It used to be superscript —
+/// `⁽¹⁾`, built from U+207D/U+207E — but those two codepoints are absent
+/// from most monospace fonts, and a terminal that falls back to a
+/// proportional face for them draws the parenthesis with an advance wider
+/// than the cell.  Ghostty only shrinks such a glyph to fit for a curated
+/// codepoint list, and otherwise lets it spill into the next cell, so the
+/// parenthesis was drawn on top of the digit.  Nothing here may reintroduce
+/// a codepoint outside Basic Latin without checking that.
+pub(crate) fn reference_marker<'a>(labels: impl IntoIterator<Item = &'a str>) -> String {
+    let mut out = String::from("[");
+    for (i, label) in labels.into_iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(label);
+    }
+    out.push(']');
+    out
 }
 
-/// Convert a footnote label's digits to Unicode superscript glyphs
-/// (`12` → `¹²`); any other characters (named labels like `note`) pass
-/// through unchanged.
-pub(crate) fn superscript_label(label: &str) -> String {
-    label
-        .chars()
-        .map(|c| match c {
-            '0' => '⁰',
-            '1' => '¹',
-            '2' => '²',
-            '3' => '³',
-            '4' => '⁴',
-            '5' => '⁵',
-            '6' => '⁶',
-            '7' => '⁷',
-            '8' => '⁸',
-            '9' => '⁹',
-            other => other,
+/// If a run of adjacent `Inline::FootnoteReference` starts at `start`,
+/// return its fused marker and the number of inlines it consumed.
+///
+/// "Adjacent" means adjacent *inlines* — `[^1][^2]` fuses, `[^1] [^2]`
+/// does not, because the space between them is its own `Inline::Text`.
+/// Rendering and width measurement both route through here so the marker
+/// they produce can't drift apart.
+fn footnote_run_at(inlines: &[Inline], start: usize) -> Option<(String, usize)> {
+    if !matches!(inlines.get(start), Some(Inline::FootnoteReference { .. })) {
+        return None;
+    }
+    let labels: Vec<&str> = inlines[start..]
+        .iter()
+        .map_while(|inline| match inline {
+            Inline::FootnoteReference { label } => Some(label.as_str()),
+            _ => None,
         })
-        .collect()
+        .collect();
+    let run_len = labels.len();
+    Some((reference_marker(labels), run_len))
 }
 
 /// Convert one row of a freshly-painted ratatui `Buffer` into a styled

@@ -195,7 +195,8 @@ sup.footnote-reference a {
 
 /* Square brackets around the reference number — the [N] convention for
    HTML footnotes (the bracket glyphs sit inside the <sup>, so they stay
-   superscript).  The TUI uses superscript parentheses instead. */
+   superscript).  The TUI renders the same [N] convention, minus the
+   superscripting, which a terminal cell can't do. */
 sup.footnote-reference a::before { content: "["; }
 sup.footnote-reference a::after { content: "]"; }
 

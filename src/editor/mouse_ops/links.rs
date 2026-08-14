@@ -85,7 +85,7 @@ pub(super) fn follow_link_at_click(
         state.pending_link_follow = Some(LinkTarget::parse(&url, base_dir.as_deref()));
         return true;
     }
-    // Footnote reference / definition leader.  The rendered superscript
+    // Footnote reference / definition leader.  The rendered marker
     // and the `  N.  ` leader both map (via the 1:1 raw-column coordinate)
     // onto the `[^label]` / `[^label]:` source bytes, so the raw scan
     // resolves both without rendered-span bookkeeping.
