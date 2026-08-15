@@ -149,6 +149,59 @@ pub enum TableHit {
 }
 
 impl TableLayoutSnapshot {
+    /// `TableInfo` row index of the data row nearest to document-relative
+    /// `row`, or `None` when `row` is outside the data-row band entirely.
+    ///
+    /// `row_ranges` covers only the rendered sub-lines of the data rows
+    /// themselves, so consecutive entries are separated by a one-row gap:
+    /// the `├─┼─┤` rule (or, under `table.row_striping`, the blank stripe
+    /// line).  A strict range test therefore answers `None` for every
+    /// *other* row of the gutter, which is what made grabbing the `⠿`
+    /// handle a coin flip and made the drop indicator stall while the
+    /// pointer crossed a separator.  Snapping to the nearest row closes
+    /// those gaps so the whole vertical extent of the table's data rows is
+    /// live.  The band is deliberately bounded at the separator above the
+    /// first data row and the one below the last, so the header /
+    /// alignment rows above it stay un-grabbable (they aren't reorderable)
+    /// and a pointer that has left the table below stops moving the hover.
+    pub fn data_row_at_y(&self, row: u16) -> Option<usize> {
+        let first = self.row_ranges.first()?;
+        let last = self.row_ranges.last()?;
+        if row < first.start.saturating_sub(1) || row > last.end {
+            return None;
+        }
+        let idx = self
+            .row_ranges
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, r)| range_distance(r, row))
+            .map(|(i, _)| i)?;
+        Some(HEADER_ROWS + idx)
+    }
+
+    /// 0-indexed column nearest to document-relative `col`, or `None` when
+    /// `col` is outside the table's horizontal extent (the outer `│`
+    /// borders bound it).
+    ///
+    /// Same rationale as [`Self::data_row_at_y`] on the other axis: the
+    /// `col_ranges` entries are separated by the one-cell `│` / `┬`
+    /// vertices, and a strict test drops every click that lands on one —
+    /// including the `┌`/`┬`/`┐` glyphs of the top border, which is
+    /// exactly where a user aiming at a column-reorder handle tends to
+    /// press.
+    pub fn column_at_x(&self, col: u16) -> Option<usize> {
+        let first = self.col_ranges.first()?;
+        let last = self.col_ranges.last()?;
+        if col < first.start.saturating_sub(1) || col > last.end {
+            return None;
+        }
+        self.col_ranges
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, r)| range_distance(r, col))
+            .map(|(i, _)| i)
+    }
+
     /// Hit-test `(col, row)` — both in document-area-relative coordinates —
     /// against this snapshot.  Returns `None` when the click falls outside
     /// any tracked region.
@@ -180,44 +233,44 @@ impl TableLayoutSnapshot {
             }
         }
 
-        // Column-delete handle — click on the bottom-border row, anywhere
-        // within a column's x range.  Same column-spanning policy as the
-        // top-row column-reorder handle.
+        // Column-delete handle — the `✕` cell on the bottom-border row,
+        // within `±1` of the painted glyph.  Deliberately NOT the column's
+        // whole width: this is the one destructive hit-test on the border
+        // rows, so a user aiming at a column border from below shouldn't
+        // drop a column instead, and a ±1 window is still a comfortable
+        // target.
         if let Some(bot_y) = self.bottom_border_row {
             if row == bot_y {
                 for (c, x_range) in self.col_ranges.iter().enumerate() {
-                    if col >= x_range.start && col < x_range.end {
-                        return Some(TableHit::DeleteColumnHandle { col_idx: c });
+                    if let Some(glyph_x) = column_glyph_x(x_range) {
+                        if col.abs_diff(glyph_x) <= 1 {
+                            return Some(TableHit::DeleteColumnHandle { col_idx: c });
+                        }
                     }
                 }
             }
         }
 
         // Row-reorder handle — click in the external gutter at the row-handle
-        // column AND within a data-row y-range.
+        // column, anywhere across the data rows' vertical band (separators
+        // included; see `data_row_at_y`).
         if let Some(handle_col) = self.row_handle_col {
             if col == handle_col {
-                for (i, y_range) in self.row_ranges.iter().enumerate() {
-                    if row >= y_range.start && row < y_range.end {
-                        return Some(TableHit::RowHandle {
-                            row_idx: HEADER_ROWS + i,
-                        });
-                    }
+                if let Some(row_idx) = self.data_row_at_y(row) {
+                    return Some(TableHit::RowHandle { row_idx });
                 }
             }
         }
 
         // Column-reorder handle — click on the top-border row (the `┌─┬─┐`
-        // line), anywhere within a column's x range.  Interior `│` vertices
-        // (`┬` positions) resolve to the adjacent column for ergonomics —
-        // without that, a user who clicks exactly on the `┬` glyph would
-        // silently miss the handle.
+        // line), anywhere within the table's horizontal extent.  Interior
+        // `│` vertices (`┬` positions) resolve to the adjacent column for
+        // ergonomics — without that, a user who clicks exactly on the `┬`
+        // glyph silently misses the handle and starts a resize instead.
         if let Some(top_y) = self.top_border_row {
             if row == top_y {
-                for (c, x_range) in self.col_ranges.iter().enumerate() {
-                    if col >= x_range.start && col < x_range.end {
-                        return Some(TableHit::ColumnHandle { col_idx: c });
-                    }
+                if let Some(col_idx) = self.column_at_x(col) {
+                    return Some(TableHit::ColumnHandle { col_idx });
                 }
             }
         }
@@ -271,6 +324,31 @@ impl TableLayoutSnapshot {
             .unwrap_or(first_y);
         row >= first_y && row <= last_y
     }
+}
+
+/// Distance from `v` to `range`, in cells — `0` when `v` is inside it.
+/// Used to snap a pointer position onto the nearest row / column when it
+/// lands on one of the box-drawing cells *between* two ranges.
+fn range_distance(range: &Range<u16>, v: u16) -> u16 {
+    if v < range.start {
+        range.start - v
+    } else if v >= range.end {
+        v - range.end + 1
+    } else {
+        0
+    }
+}
+
+/// X of the reorder / delete glyph painted on a column's border cell —
+/// the centre of the column's content span.  Returns `None` for a
+/// zero-width column.  The single derivation shared by `paint_handles`
+/// and the column-delete hit-test, so the `✕` a user sees and the cell
+/// that actually deletes can't drift apart.
+fn column_glyph_x(x_range: &Range<u16>) -> Option<u16> {
+    if x_range.end <= x_range.start {
+        return None;
+    }
+    Some(x_range.start + (x_range.end - x_range.start) / 2)
 }
 
 /// Per-frame instruction for `paint_drop_indicator`.  Captures just the
@@ -746,11 +824,9 @@ pub fn paint_handles(
         if let Some(y) = snap.top_border_row {
             if y < area.height {
                 for x_range in &snap.col_ranges {
-                    if x_range.end <= x_range.start {
+                    let Some(x) = column_glyph_x(x_range) else {
                         continue;
-                    }
-                    let width = x_range.end - x_range.start;
-                    let x = x_range.start + width / 2;
+                    };
                     if x < area.width {
                         if let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) {
                             cell.set_char(REORDER_HANDLE_GLYPH);
@@ -806,11 +882,9 @@ pub fn paint_handles(
         if let Some(y) = snap.bottom_border_row {
             if y < area.height {
                 for x_range in &snap.col_ranges {
-                    if x_range.end <= x_range.start {
+                    let Some(x) = column_glyph_x(x_range) else {
                         continue;
-                    }
-                    let width = x_range.end - x_range.start;
-                    let x = x_range.start + width / 2;
+                    };
                     if x < area.width {
                         if let Some(cell) = buf.cell_mut((area.x + x, area.y + y)) {
                             cell.set_char(DELETE_HANDLE_GLYPH);
@@ -1163,6 +1237,78 @@ mod tests {
         s.header_row = Some(2);
         let hit = s.hit_test(8, 2).unwrap();
         assert_eq!(hit, TableHit::ColumnBorder { col_idx: 1 });
+    }
+
+    /// The `├─┼─┤` separator between two data rows sits in the one-row gap
+    /// between consecutive `row_ranges` entries.  A gutter click there used
+    /// to classify as nothing (falling through to the inert left outer
+    /// border), which is what made grabbing the `⠿` handle feel like a coin
+    /// flip on a striped or separator-ruled table.
+    #[test]
+    fn hit_test_row_handle_covers_the_separator_between_rows() {
+        let mut s = snap(vec![5..8], vec![3..4, 5..6]);
+        s.row_handle_col = Some(2);
+        // y=4 is the separator between data row 0 (y=3) and row 1 (y=5).
+        assert_eq!(s.hit_test(2, 4), Some(TableHit::RowHandle { row_idx: 2 }));
+        // The bounding separators count too: above the first row and below
+        // the last.
+        assert_eq!(s.hit_test(2, 2), Some(TableHit::RowHandle { row_idx: 2 }));
+        assert_eq!(s.hit_test(2, 6), Some(TableHit::RowHandle { row_idx: 3 }));
+        // …but the header / alignment rows above the band do not.
+        assert_eq!(s.hit_test(2, 1), None);
+    }
+
+    /// The `┬` vertices of the top border are exactly where a user aiming
+    /// at a column-reorder handle tends to press.  They must resolve to an
+    /// adjacent column rather than falling through to `ColumnBorder`, which
+    /// would silently start a resize instead of a reorder.
+    #[test]
+    fn hit_test_column_handle_covers_the_border_vertices() {
+        let mut s = snap(vec![5..8, 9..12], vec![3..4]);
+        s.top_border_row = Some(1);
+        // `┌` at x=4, `┬` at x=8, `┐` at x=12.
+        assert_eq!(
+            s.hit_test(4, 1),
+            Some(TableHit::ColumnHandle { col_idx: 0 })
+        );
+        assert_eq!(
+            s.hit_test(8, 1),
+            Some(TableHit::ColumnHandle { col_idx: 0 })
+        );
+        assert_eq!(
+            s.hit_test(12, 1),
+            Some(TableHit::ColumnHandle { col_idx: 1 })
+        );
+        // Past the table's right edge the column-handle band ends and the
+        // right border's `±1` resize window takes over again.
+        assert_eq!(
+            s.hit_test(13, 1),
+            Some(TableHit::ColumnBorder { col_idx: 2 })
+        );
+    }
+
+    /// The column-delete `✕` is a destructive one-shot, so its hitbox is
+    /// the painted glyph ±1 — not the column's whole width.  That keeps the
+    /// bottom border usable as a resize target and stops a click aimed at a
+    /// border from dropping a column.
+    #[test]
+    fn hit_test_column_delete_is_scoped_to_the_glyph() {
+        let mut s = snap(vec![1..8, 9..16], vec![3..4]);
+        s.bottom_border_row = Some(5);
+        // Glyph centre of column 0 is x = 1 + 7/2 = 4.
+        assert_eq!(
+            s.hit_test(4, 5),
+            Some(TableHit::DeleteColumnHandle { col_idx: 0 })
+        );
+        assert_eq!(
+            s.hit_test(5, 5),
+            Some(TableHit::DeleteColumnHandle { col_idx: 0 })
+        );
+        // Well away from the glyph: the interior border at x=8 resizes.
+        assert_eq!(
+            s.hit_test(8, 5),
+            Some(TableHit::ColumnBorder { col_idx: 1 })
+        );
     }
 
     #[test]

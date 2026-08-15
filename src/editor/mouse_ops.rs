@@ -16,6 +16,8 @@ pub use footnotes::footnote_at_offset;
 pub use links::{hovered_link_url, link_at_offset};
 pub use selection::visual_selection_to_rendered_text;
 
+use std::time::Duration;
+
 use crate::document::{Selection, VisualSelection};
 use crate::editor::list_edit;
 use crate::editor::table_edit;
@@ -378,6 +380,191 @@ fn preview_word_range(
     }
 }
 
+/// Hit-test a mouse-down at `(col, row)` against every visible table's
+/// layout snapshot and start / perform whatever that hit implies.
+///
+/// Returns `true` when the click was consumed (a drag target was armed, or
+/// a row / column was deleted) and the caller should stop; `false` when the
+/// click should fall through to ordinary cursor placement — a `Cell` hit,
+/// the inert leftmost outer border, or no table under the pointer at all.
+///
+/// Shared by the single-, double-, and triple-click arms — all three
+/// behave identically.  Multi-clicks matter because a table interaction is
+/// a *gesture*: the user grabs a handle, drags, releases, and — when the
+/// result isn't what they wanted — immediately grabs the same cell again.
+/// That second press arrives as a `DoubleClick`, and while these arms did
+/// no table hit-testing it armed no drag at all, so the retry silently did
+/// nothing (and a third try did nothing either).  Re-dispatching here makes
+/// the retry behave like the first attempt.
+///
+/// The `✕` double-click guard deliberately does **not** live here: it is a
+/// cooldown keyed off the last delete (`table_delete_allowed`), not off the
+/// click chord.  Gating on the chord looks equivalent and isn't — the
+/// multi-click window restarts on every press, so a user clicking `✕`
+/// steadily faster than the window stays in the chord indefinitely and
+/// every press after the first is swallowed with no feedback.
+fn dispatch_table_click(
+    state: &mut EditorState,
+    snapshots: &[TableLayoutSnapshot],
+    col: u16,
+    row: u16,
+    drag_target: &mut Option<DragTarget>,
+    viewport_height: usize,
+    viewport_width: usize,
+) -> bool {
+    let Some((snap, hit)) = snapshots
+        .iter()
+        .find_map(|s| s.hit_test(col, row).map(|h| (s, h)))
+    else {
+        return false;
+    };
+
+    // Handles are painted only on the cursor's table (`paint_handles`), but
+    // hit-testing runs against every visible snapshot — so a press on an
+    // unpainted handle focuses that table first, which is the same click
+    // that makes the buttons appear, rather than acting on a control the
+    // user was never shown.  `Cell` and the inert leftmost outer border are
+    // excluded: they fall through to ordinary cursor placement, which
+    // focuses the table at the *clicked* position rather than at its start.
+    let acts_on_handle = match hit {
+        TableHit::Cell { .. } => false,
+        TableHit::ColumnBorder { col_idx } => col_idx > 0 && col_idx <= snap.col_count,
+        _ => true,
+    };
+    if acts_on_handle && focus_table_first(state, snap, viewport_height, viewport_width) {
+        *drag_target = None;
+        state.drag_in_progress = false;
+        return true;
+    }
+
+    match hit {
+        TableHit::RowHandle { row_idx } => {
+            *drag_target = Some(DragTarget::TableRow {
+                table_byte_start: snap.table_byte_start,
+                row_idx,
+                hover_row_idx: row_idx,
+            });
+            state.drag_in_progress = true;
+            true
+        }
+        TableHit::ColumnHandle { col_idx } => {
+            *drag_target = Some(DragTarget::TableColumnHeader {
+                table_byte_start: snap.table_byte_start,
+                col_idx,
+                hover_col_idx: col_idx,
+            });
+            state.drag_in_progress = true;
+            true
+        }
+        TableHit::ColumnBorder { col_idx } => {
+            // Resize targets: every interior border AND the rightmost
+            // outer border (the latter resizes the last column).  The
+            // leftmost outer border (`col_idx == 0`) has no column to its
+            // left, so it stays inert.
+            if col_idx > 0 && col_idx <= snap.col_count {
+                let source = state.buffer.contents();
+                if let Some(info) = table_edit::find_table_at(&source, snap.table_byte_start) {
+                    let (start_widths, start_user_widths) = current_widths_for_table(state, &info);
+                    *drag_target = Some(DragTarget::TableColumnBorder {
+                        table_byte_start: info.start,
+                        col_idx,
+                        start_widths,
+                        start_user_widths,
+                        anchor_x: col,
+                    });
+                    state.drag_in_progress = true;
+                    return true;
+                }
+            }
+            // Outer border — fall through to cell placement.
+            false
+        }
+        TableHit::DeleteRowHandle { row_idx } => {
+            if !table_delete_allowed(state) {
+                return true;
+            }
+            delete_table_row_at(
+                state,
+                snap.table_byte_start,
+                row_idx,
+                viewport_height,
+                viewport_width,
+            );
+            *drag_target = None;
+            state.drag_in_progress = false;
+            true
+        }
+        TableHit::DeleteColumnHandle { col_idx } => {
+            if !table_delete_allowed(state) {
+                return true;
+            }
+            delete_table_column_at(
+                state,
+                snap.table_byte_start,
+                col_idx,
+                viewport_height,
+                viewport_width,
+            );
+            *drag_target = None;
+            state.drag_in_progress = false;
+            true
+        }
+        // Cell — fall through to normal cursor placement.
+        TableHit::Cell { .. } => false,
+    }
+}
+
+/// A `✕` press within this long of the previous delete is a double-click
+/// on one button, not a request to delete a second row.
+///
+/// Anchored to the *delete*, so it always expires: a user clicking the
+/// handle steadily deletes one row per cooldown rather than — as a
+/// multi-click chord would have it — one row and then nothing at all.
+const TABLE_DELETE_COOLDOWN: Duration = Duration::from_millis(250);
+
+/// Whether enough time has passed since the last click-driven table delete
+/// for another one to count as deliberate.  See [`TABLE_DELETE_COOLDOWN`].
+fn table_delete_allowed(state: &EditorState) -> bool {
+    state
+        .last_table_delete_at
+        .is_none_or(|t| t.elapsed() >= TABLE_DELETE_COOLDOWN)
+}
+
+/// Focus guard for every table handle: when the cursor isn't in `snap`'s
+/// table, move it there and report `true` so the caller consumes the click
+/// *without* acting on the handle.
+///
+/// `paint_handles` draws the `⠿` / `⇔` / `✕` glyphs only on the table the
+/// cursor is currently inside, but hit-testing runs against every visible
+/// table's snapshot — so a press anywhere in another table's handle zones
+/// would drive a control that was never drawn there: a click on its right
+/// border deleting a row, or a drag along its top border reordering its
+/// columns.  Every handle therefore asks the user to focus the table
+/// first, which is the same click that makes the buttons appear, so the
+/// hit-test surface and the painted affordance always describe the same
+/// table.
+fn focus_table_first(
+    state: &mut EditorState,
+    snap: &TableLayoutSnapshot,
+    viewport_height: usize,
+    viewport_width: usize,
+) -> bool {
+    let cursor_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
+    if cursor_byte >= snap.table_byte_start && cursor_byte < snap.table_byte_end {
+        return false;
+    }
+    let offset = state
+        .buffer
+        .rope()
+        .byte_to_char(snap.table_byte_start.min(state.buffer.rope().len_bytes()));
+    state.selection = None;
+    state.cursor.offset = offset.min(state.buffer.len_chars());
+    state.cursor.preferred_col = state.current_visual_col(viewport_width);
+    state.update_cursor_block();
+    state.ensure_cursor_visible(viewport_height, viewport_width);
+    true
+}
+
 /// Apply a mouse action to the editor.
 ///
 /// `drag_target` persists state across a click → drag → release sequence.
@@ -436,83 +623,16 @@ pub fn apply(
             // layout snapshot.  Row-handle / column-handle / column-border
             // hits set a table-specific `DragTarget`; Cell hits fall through
             // to normal cursor placement (the cursor lands inside the cell).
-            if let Some((snap, hit)) = snapshots
-                .iter()
-                .find_map(|s| s.hit_test(col, row).map(|h| (s, h)))
-            {
-                match hit {
-                    TableHit::RowHandle { row_idx } => {
-                        *drag_target = Some(DragTarget::TableRow {
-                            table_byte_start: snap.table_byte_start,
-                            row_idx,
-                            hover_row_idx: row_idx,
-                        });
-                        state.drag_in_progress = true;
-                        return;
-                    }
-                    TableHit::ColumnHandle { col_idx } => {
-                        *drag_target = Some(DragTarget::TableColumnHeader {
-                            table_byte_start: snap.table_byte_start,
-                            col_idx,
-                            hover_col_idx: col_idx,
-                        });
-                        state.drag_in_progress = true;
-                        return;
-                    }
-                    TableHit::ColumnBorder { col_idx } => {
-                        // Resize targets: every interior border AND the
-                        // rightmost outer border (the latter resizes the
-                        // last column).  The leftmost outer border
-                        // (`col_idx == 0`) has no column to its left, so it
-                        // stays inert.
-                        if col_idx > 0 && col_idx <= snap.col_count {
-                            let source = state.buffer.contents();
-                            if let Some(info) =
-                                table_edit::find_table_at(&source, snap.table_byte_start)
-                            {
-                                let (start_widths, start_user_widths) =
-                                    current_widths_for_table(state, &info);
-                                *drag_target = Some(DragTarget::TableColumnBorder {
-                                    table_byte_start: info.start,
-                                    col_idx,
-                                    start_widths,
-                                    start_user_widths,
-                                    anchor_x: col,
-                                });
-                                state.drag_in_progress = true;
-                                return;
-                            }
-                        }
-                        // Outer border — fall through to cell placement.
-                    }
-                    TableHit::DeleteRowHandle { row_idx } => {
-                        delete_table_row_at(
-                            state,
-                            snap.table_byte_start,
-                            row_idx,
-                            viewport_height,
-                            viewport_width,
-                        );
-                        *drag_target = None;
-                        state.drag_in_progress = false;
-                        return;
-                    }
-                    TableHit::DeleteColumnHandle { col_idx } => {
-                        delete_table_column_at(
-                            state,
-                            snap.table_byte_start,
-                            col_idx,
-                            viewport_height,
-                            viewport_width,
-                        );
-                        *drag_target = None;
-                        state.drag_in_progress = false;
-                        return;
-                    }
-                    TableHit::Cell { .. } => {
-                        // Fall through to normal cell placement below.
-                    }
-                }
+            if dispatch_table_click(
+                state,
+                snapshots,
+                col,
+                row,
+                drag_target,
+                viewport_height,
+                viewport_width,
+            ) {
+                return;
             }
 
             if toggle_checkbox_at(state, col as usize, row as usize, viewport_width) {
@@ -627,6 +747,20 @@ pub fn apply(
             row,
             modifiers: _,
         } => {
+            // A re-grab of a table handle arrives here (see
+            // `dispatch_table_click`); only a `Cell` hit falls through to
+            // word selection.
+            if dispatch_table_click(
+                state,
+                snapshots,
+                col,
+                row,
+                drag_target,
+                viewport_height,
+                viewport_width,
+            ) {
+                return;
+            }
             if let Some(offset) =
                 click_to_char_offset(state, col as usize, row as usize, viewport_width)
             {
@@ -642,6 +776,17 @@ pub fn apply(
             row,
             modifiers: _,
         } => {
+            if dispatch_table_click(
+                state,
+                snapshots,
+                col,
+                row,
+                drag_target,
+                viewport_height,
+                viewport_width,
+            ) {
+                return;
+            }
             if let Some(offset) =
                 click_to_char_offset(state, col as usize, row as usize, viewport_width)
             {
@@ -678,18 +823,21 @@ pub fn apply(
                 hover_row_idx,
                 ..
             }) => {
-                // Update `hover_row_idx` to the data-row under the pointer
-                // (if any) so Release has a destination to swap toward.
+                // Update `hover_row_idx` to the data row under the pointer
+                // so Release has a destination to swap toward.  Resolved
+                // from the pointer's *y* alone: a row drag is a vertical
+                // gesture, and asking `hit_test` for a `RowHandle` / `Cell`
+                // classification made the hover stall wherever the pointer
+                // strayed onto a `│` border (which classifies as
+                // `ColumnBorder`) or onto the `├─┼─┤` separator between two
+                // rows (which classifies as nothing at all) — so the drop
+                // indicator only tracked the pointer about half the time.
                 if let Some(snap) = snapshots
                     .iter()
                     .find(|s| s.table_byte_start == *table_byte_start)
                 {
-                    if let Some(TableHit::RowHandle { row_idx })
-                    | Some(TableHit::Cell { row_idx, .. }) = snap.hit_test(col, row)
-                    {
-                        if row_idx >= 2 {
-                            *hover_row_idx = row_idx;
-                        }
+                    if let Some(row_idx) = snap.data_row_at_y(row) {
+                        *hover_row_idx = row_idx;
                     }
                 }
             }
@@ -717,13 +865,15 @@ pub fn apply(
                 hover_col_idx,
                 ..
             }) => {
+                // Mirror of the row case on the other axis: a column drag
+                // is a horizontal gesture, so the hover follows the
+                // pointer's *x* alone — including while it sits on a `│`
+                // border or on the `┬` vertices of the top border.
                 if let Some(snap) = snapshots
                     .iter()
                     .find(|s| s.table_byte_start == *table_byte_start)
                 {
-                    if let Some(TableHit::ColumnHandle { col_idx })
-                    | Some(TableHit::Cell { col_idx, .. }) = snap.hit_test(col, row)
-                    {
+                    if let Some(col_idx) = snap.column_at_x(col) {
                         *hover_col_idx = col_idx;
                     }
                 }

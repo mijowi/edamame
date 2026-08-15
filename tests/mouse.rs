@@ -6,6 +6,8 @@
 
 #![allow(clippy::single_range_in_vec_init)]
 
+use std::time::{Duration, Instant};
+
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use edamame::config::Theme;
 use edamame::document::Buffer;
@@ -796,6 +798,365 @@ fn row_handle_drag_swaps_rows_in_buffer() {
     // `| 3 | 4 |` then `| 1 | 2 |`.
     assert_eq!(row_order[0], "| 3 | 4 |");
     assert_eq!(row_order[1], "| 1 | 2 |");
+}
+
+/// The pointer spends much of a row drag on cells that classify as
+/// something other than a row / cell hit — the `├─┼─┤` separator between
+/// two rows, or any `│` border (which wins the hit-test as a
+/// `ColumnBorder`).  The hover target must still follow the pointer's
+/// height, or the drop indicator freezes at whatever row it last saw.
+#[test]
+fn row_drag_hover_follows_the_pointer_over_separators_and_borders() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    // Data rows at y=3 and y=5; y=4 is the separator between them.  The
+    // interior border sits at x=5.
+    let snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: 0,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 4,
+        col_ranges: vec![2..5, 6..9],
+        row_ranges: vec![3..4, 5..6],
+        row_handle_col: Some(0),
+        top_border_row: Some(0),
+    });
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    mouse_ops::apply(&mut st, click(0, 3), &mut target, &snapshots, VP, VW);
+
+    // Over the separator, in the gutter — snaps to the nearer data row.
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Drag { col: 0, row: 4 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    assert!(
+        matches!(
+            target,
+            Some(mouse_ops::DragTarget::TableRow {
+                hover_row_idx: 2,
+                ..
+            })
+        ),
+        "separator hover should resolve to a data row, got: {target:?}"
+    );
+
+    // Over the interior `│` border on the second data row — classifies as
+    // `ColumnBorder`, which used to leave the hover stale.
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Drag { col: 5, row: 5 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    assert!(
+        matches!(
+            target,
+            Some(mouse_ops::DragTarget::TableRow {
+                hover_row_idx: 3,
+                ..
+            })
+        ),
+        "border hover should still track the row under the pointer, got: {target:?}"
+    );
+}
+
+/// Column-drag counterpart: dragging along the top border crosses the `┬`
+/// vertices between columns, which classify as `ColumnBorder`.
+#[test]
+fn column_drag_hover_follows_the_pointer_over_border_vertices() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    let snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: 0,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 3,
+        col_ranges: vec![2..5, 6..9],
+        row_ranges: vec![3..4],
+        row_handle_col: None,
+        top_border_row: Some(0),
+    });
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    mouse_ops::apply(&mut st, click(3, 0), &mut target, &snapshots, VP, VW);
+    // x=5 is the `┬` vertex between the two columns.
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Drag { col: 5, row: 0 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    assert!(
+        matches!(
+            target,
+            Some(mouse_ops::DragTarget::TableColumnHeader {
+                hover_col_idx: 0,
+                ..
+            })
+        ),
+        "vertex hover should resolve to a column, got: {target:?}"
+    );
+    // Fully inside column 1.
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Drag { col: 7, row: 0 },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    assert!(matches!(
+        target,
+        Some(mouse_ops::DragTarget::TableColumnHeader {
+            hover_col_idx: 1,
+            ..
+        })
+    ));
+}
+
+/// A retry-grab of the same handle within the multi-click window arrives as
+/// a `DoubleClick`.  It must arm the drag exactly like the first press —
+/// the arm used to skip table hit-testing entirely, so the second and third
+/// attempts at the same spot did nothing at all.
+#[test]
+fn multi_click_on_a_row_handle_still_arms_the_drag() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    let snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: 0,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 4,
+        col_ranges: vec![2..5, 6..9],
+        row_ranges: vec![3..4, 5..6],
+        row_handle_col: Some(0),
+        top_border_row: Some(0),
+    });
+    let snapshots = [snap];
+
+    for action in [
+        MouseAction::DoubleClick {
+            col: 0,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        },
+        MouseAction::TripleClick {
+            col: 0,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        },
+    ] {
+        let mut target: Option<mouse_ops::DragTarget> = None;
+        mouse_ops::apply(&mut st, action, &mut target, &snapshots, VP, VW);
+        assert!(
+            matches!(
+                target,
+                Some(mouse_ops::DragTarget::TableRow { row_idx: 2, .. })
+            ),
+            "expected a re-grab to arm the row drag, got: {target:?}"
+        );
+    }
+}
+
+/// The destructive delete handles are the exception: a rapid repeat press
+/// on `✕` is swallowed rather than deleting a second row.  The guard is a
+/// cooldown keyed off the last delete, so it catches a fast plain `Click`
+/// too, not just a press the dispatcher happened to classify as a chord.
+#[test]
+fn rapid_repeat_on_a_delete_handle_does_not_delete_twice() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    let mut snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: 0,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 4,
+        col_ranges: vec![2..5, 6..9],
+        row_ranges: vec![3..4, 5..6],
+        row_handle_col: Some(0),
+        top_border_row: Some(0),
+    });
+    snap.delete_row_handle_col = Some(9);
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    mouse_ops::apply(&mut st, click(9, 3), &mut target, &snapshots, VP, VW);
+    let after_first = st.contents();
+    assert!(!after_first.contains("| 1 | 2 |"), "first click deletes");
+
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::DoubleClick {
+            col: 9,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    assert_eq!(
+        st.contents(),
+        after_first,
+        "a repeat press on the delete handle must not delete another row"
+    );
+}
+
+/// …but the guard always expires, which is the whole reason it is anchored
+/// to the delete rather than to the click chord.  A multi-click window
+/// restarts on every press, so a user clicking `✕` steadily faster than the
+/// window never leaves the chord and deletes exactly one row before the
+/// button goes silently dead.  Backdating the stamp stands in for the
+/// cooldown elapsing.
+#[test]
+fn a_deliberate_repeat_on_a_delete_handle_deletes_again() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    let mut snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: 0,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 4,
+        col_ranges: vec![2..5, 6..9],
+        row_ranges: vec![3..4, 5..6],
+        row_handle_col: Some(0),
+        top_border_row: Some(0),
+    });
+    snap.delete_row_handle_col = Some(9);
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    mouse_ops::apply(&mut st, click(9, 3), &mut target, &snapshots, VP, VW);
+    assert!(!st.contents().contains("| 1 | 2 |"), "first click deletes");
+
+    st.last_table_delete_at = Some(Instant::now() - Duration::from_millis(400));
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::TripleClick {
+            col: 9,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        },
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+    assert!(
+        !st.contents().contains("| 3 | 4 |"),
+        "once the cooldown lapses the handle deletes again, however the \
+         dispatcher classified the press: {:?}",
+        st.contents()
+    );
+}
+
+/// The reorder handles are painted under the same cursor-in-table rule as
+/// the `✕` pair, so they owe the same focus guard: a press on an unfocused
+/// table's top border must not arm a column reorder on a control that was
+/// never drawn there.
+#[test]
+fn column_handle_on_an_unfocused_table_focuses_it_instead_of_arming() {
+    let src = "intro\n\n| a | b |\n|---|---|\n| 1 | 2 |\n";
+    let table_start = src.find("| a |").unwrap();
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 0; // on "intro", outside the table
+
+    let snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: table_start,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 3,
+        col_ranges: vec![2..5, 6..9],
+        row_ranges: vec![5..6],
+        row_handle_col: Some(0),
+        top_border_row: Some(2),
+    });
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    mouse_ops::apply(&mut st, click(3, 2), &mut target, &snapshots, VP, VW);
+    assert!(
+        target.is_none(),
+        "a press on an unfocused table's top border must not arm a reorder, got: {target:?}"
+    );
+    assert_eq!(
+        st.buffer.rope().char_to_byte(st.cursor.offset),
+        table_start,
+        "it focuses the table instead"
+    );
+
+    // Focused now, so the same press grabs the handle.
+    mouse_ops::apply(&mut st, click(3, 2), &mut target, &snapshots, VP, VW);
+    assert!(
+        matches!(
+            target,
+            Some(mouse_ops::DragTarget::TableColumnHeader { col_idx: 0, .. })
+        ),
+        "expected the second press to arm the column drag, got: {target:?}"
+    );
+}
+
+/// The `✕` buttons are painted only on the table the cursor is inside, but
+/// hit-testing runs against every visible table.  A click on an unpainted
+/// delete button must focus the table (making the button appear) rather
+/// than silently deleting a row nobody saw a button for.
+#[test]
+fn delete_handle_on_an_unfocused_table_focuses_it_instead_of_deleting() {
+    let src = "intro\n\n| a | b |\n|---|---|\n| 1 | 2 |\n";
+    let table_start = src.find("| a |").unwrap();
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 0; // on "intro", outside the table
+
+    let mut snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: table_start,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 3,
+        col_ranges: vec![2..5, 6..9],
+        row_ranges: vec![5..6],
+        row_handle_col: Some(0),
+        top_border_row: Some(2),
+    });
+    snap.delete_row_handle_col = Some(9);
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    mouse_ops::apply(&mut st, click(9, 5), &mut target, &snapshots, VP, VW);
+    assert_eq!(st.contents(), src, "first click must not delete");
+    assert_eq!(
+        st.buffer.rope().char_to_byte(st.cursor.offset),
+        table_start,
+        "first click focuses the table"
+    );
+
+    // Now that the cursor is in the table (and the button is painted), the
+    // same click deletes.
+    mouse_ops::apply(&mut st, click(9, 5), &mut target, &snapshots, VP, VW);
+    assert!(!st.contents().contains("| 1 | 2 |"), "second click deletes");
 }
 
 #[test]
