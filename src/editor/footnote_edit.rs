@@ -146,7 +146,7 @@ pub fn renumber_footnotes(source: &str) -> Option<EditDelta> {
         return None;
     }
     let new = rewrite_labels(source, &sites, &mapping);
-    diff_delta(source, &new)
+    EditDelta::diff(source, &new)
 }
 
 /// Remove every reference to `label` plus its definition, then renumber
@@ -201,11 +201,11 @@ pub fn delete_footnote(source: &str, label: &str) -> Option<EditDelta> {
     // Second pass: renumber the remaining numeric footnotes so the
     // sequence stays contiguous.
     let renumbered = match renumber_footnotes(&stripped) {
-        Some(d) => apply_delta_to_string(&stripped, &d),
+        Some(d) => d.apply_to_string(&stripped),
         None => stripped,
     };
 
-    diff_delta(source, &renumbered)
+    EditDelta::diff(source, &renumbered)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -250,53 +250,6 @@ fn rewrite_labels(source: &str, sites: &[Site], mapping: &HashMap<String, usize>
     out
 }
 
-/// Apply a byte-offset [`EditDelta`] to a string (test/compose helper).
-fn apply_delta_to_string(s: &str, d: &EditDelta) -> String {
-    let mut out = String::with_capacity(s.len());
-    out.push_str(&s[..d.offset]);
-    out.push_str(&d.inserted);
-    out.push_str(&s[d.offset + d.removed.len()..]);
-    out
-}
-
-/// Minimal byte-offset delta turning `old` into `new` by trimming the
-/// common (char-aligned) prefix and suffix.  `None` when identical.
-fn diff_delta(old: &str, new: &str) -> Option<EditDelta> {
-    if old == new {
-        return None;
-    }
-    let ob = old.as_bytes();
-    let nb = new.as_bytes();
-
-    let max_p = ob.len().min(nb.len());
-    let mut p = 0;
-    while p < max_p && ob[p] == nb[p] {
-        p += 1;
-    }
-    while !old.is_char_boundary(p) {
-        p = p.saturating_sub(1);
-    }
-
-    let max_s = (ob.len() - p).min(nb.len() - p);
-    let mut s = 0;
-    while s < max_s && ob[ob.len() - 1 - s] == nb[nb.len() - 1 - s] {
-        s += 1;
-    }
-    // `is_char_boundary` inspects only the byte at the index, and the
-    // trailing `s` bytes are identical in both strings, so a boundary in
-    // `old` is also one in `new` — retreating `s` here keeps both slices
-    // valid.  `saturating_sub` honors the no-underflow convention.
-    while !old.is_char_boundary(old.len() - s) {
-        s = s.saturating_sub(1);
-    }
-
-    Some(EditDelta {
-        offset: p,
-        removed: old[p..old.len() - s].to_string(),
-        inserted: new[p..new.len() - s].to_string(),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,7 +271,7 @@ mod tests {
         assert_eq!(delta.removed, "");
         assert_eq!(delta.offset, cursor);
         assert_eq!(target, cursor + "[^2]".len());
-        let out = apply_delta_to_string(src, &delta);
+        let out = delta.apply_to_string(src);
         assert!(out.starts_with("Claim.[^2]"));
     }
 
@@ -337,7 +290,7 @@ mod tests {
         // `2` is referenced before `1`; renumber should swap them.
         let src = "A[^2] B[^1]\n\n[^2]: two\n[^1]: one\n";
         let delta = renumber_footnotes(src).expect("renumber needed");
-        let out = apply_delta_to_string(src, &delta);
+        let out = delta.apply_to_string(src);
         assert_eq!(out, "A[^1] B[^2]\n\n[^1]: two\n[^2]: one\n");
     }
 
@@ -345,7 +298,7 @@ mod tests {
     fn renumber_leaves_named_labels_untouched() {
         let src = "A[^note] B[^2]\n\n[^note]: n\n[^2]: two\n";
         let delta = renumber_footnotes(src).expect("renumber needed");
-        let out = apply_delta_to_string(src, &delta);
+        let out = delta.apply_to_string(src);
         // Only the numeric `2` re-sequences to `1`; `note` stays.
         assert_eq!(out, "A[^note] B[^1]\n\n[^note]: n\n[^1]: two\n");
     }
@@ -361,7 +314,7 @@ mod tests {
         // Delete footnote 1; footnote 2 should renumber down to 1.
         let src = "A[^1] B[^2] C[^1]\n\n[^1]: one\n[^2]: two\n";
         let delta = delete_footnote(src, "1").expect("delete needed");
-        let out = apply_delta_to_string(src, &delta);
+        let out = delta.apply_to_string(src);
         assert_eq!(out, "A B[^1] C\n\n[^1]: two\n");
     }
 
@@ -399,7 +352,7 @@ mod tests {
         // as an orphaned indented code block.
         let src = "A[^1] end\n\n[^1]: first line\n    continuation line\n";
         let delta = delete_footnote(src, "1").expect("delete needed");
-        let out = apply_delta_to_string(src, &delta);
+        let out = delta.apply_to_string(src);
         assert_eq!(out, "A end\n\n");
         assert!(
             !out.contains("continuation line"),
@@ -414,7 +367,7 @@ mod tests {
         // double-removal.
         let src = "A[^1] B[^2]\n\n[^1]: see [^1] again\n[^2]: two\n";
         let delta = delete_footnote(src, "1").expect("delete needed");
-        let out = apply_delta_to_string(src, &delta);
+        let out = delta.apply_to_string(src);
         assert_eq!(out, "A B[^1]\n\n[^1]: two\n");
     }
 }

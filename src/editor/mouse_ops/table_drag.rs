@@ -151,12 +151,13 @@ pub(super) fn resize_widths(
     Some(out)
 }
 
-/// Commit a row-drag release: swap the source row to the hover destination
-/// via a chain of adjacent-swap `EditDelta`s.  Note that
-/// `table_edit::swap_rows` only supports adjacent swaps, so we apply
-/// `|row_idx - hover_row_idx|` of them in the right direction.  Each swap
-/// lands in history as its own undo step — acceptable for now; a future
-/// pass can coalesce them into one delta.
+/// Commit a row-drag release: move the source row to the hover destination
+/// as a **single** undo step.
+///
+/// `table_edit::swap_rows` only supports adjacent swaps, so the move is
+/// `|row_idx - hover_row_idx|` of them in the right direction — but they are
+/// composed on a `String` copy of the document by [`commit_swap_chain`] and
+/// only the net difference reaches the buffer, so one drag is one undo.
 pub(super) fn commit_row_drag(
     state: &mut EditorState,
     table_byte_start: usize,
@@ -166,34 +167,65 @@ pub(super) fn commit_row_drag(
     if src_idx == dst_idx || src_idx < 2 || dst_idx < 2 {
         return;
     }
-    // Preserve the pre-drag cursor offset.  `apply_delta` unconditionally
-    // moves the cursor to `delta.redo_cursor()` — for a structural swap
-    // that lands at `info.end`, which after the trailing-comment merge
-    // sits on the `<!-- tui-columns: ... -->` line.  The raw-reveal in
-    // `RenderedView` then paints the comment text into the last data
-    // row until the user moves the cursor somewhere else.  Since
-    // swap_rows preserves total buffer length the saved offset remains
-    // a valid char offset after every intermediate swap.
-    let saved_cursor = state.cursor.offset;
+    commit_swap_chain(
+        state,
+        table_byte_start,
+        src_idx,
+        dst_idx,
+        table_edit::swap_rows,
+    );
+}
+
+/// Compose the adjacent-swap chain `src_idx → dst_idx` on a copy of the
+/// document, then apply the whole move to the buffer as one `EditDelta`.
+///
+/// `swap` is the axis-specific adjacent-swap primitive (`swap_rows` /
+/// `swap_columns`); both return a delta with *byte* offsets confined to the
+/// table, which is why each intermediate step can be folded into the
+/// simulated string and the table re-located at the unchanged
+/// `table_byte_start` on the next iteration.  A step the primitive refuses
+/// ends the chain and commits what has been composed so far — same
+/// semantics as the old per-step loop, minus the partial history entries.
+///
+/// The pre-drag cursor offset is restored afterwards because `apply_delta`
+/// unconditionally moves the cursor to `delta.redo_cursor()` — for a
+/// structural rewrite that lands at the end of the changed span, which after
+/// the trailing-comment merge sits on the `<!-- tui-columns: ... -->` line.
+/// The raw-reveal in `RenderedView` would then paint the comment text into
+/// the last data row until the user moved the cursor somewhere else.
+fn commit_swap_chain(
+    state: &mut EditorState,
+    table_byte_start: usize,
+    src_idx: usize,
+    dst_idx: usize,
+    swap: fn(&table_edit::TableInfo, usize, usize) -> Option<EditDelta>,
+) {
+    let original = state.buffer.contents();
+    let mut composed = original.clone();
     let mut cur = src_idx;
     while cur != dst_idx {
         let step = if cur < dst_idx { cur + 1 } else { cur - 1 };
-        let source = state.buffer.contents();
-        let Some(info) = table_edit::find_table_at(&source, table_byte_start) else {
+        let Some(info) = table_edit::find_table_at(&composed, table_byte_start) else {
             break;
         };
-        let Some(delta) = table_edit::swap_rows(&info, cur, step) else {
+        let Some(delta) = swap(&info, cur, step) else {
             break;
         };
-        let rope = state.buffer.rope();
-        let char_delta = EditDelta {
-            offset: rope.byte_to_char(delta.offset),
-            removed: delta.removed,
-            inserted: delta.inserted,
-        };
-        state.apply_delta(char_delta);
+        composed = delta.apply_to_string(&composed);
         cur = step;
     }
+
+    let Some(byte_delta) = EditDelta::diff(&original, &composed) else {
+        return; // chain refused every step — nothing to record.
+    };
+    let saved_cursor = state.cursor.offset;
+    let rope = state.buffer.rope();
+    let char_delta = EditDelta {
+        offset: rope.byte_to_char(byte_delta.offset),
+        removed: byte_delta.removed,
+        inserted: byte_delta.inserted,
+    };
+    state.apply_delta(char_delta);
     state.cursor.offset = saved_cursor.min(state.buffer.len_chars());
     state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
     state.update_cursor_block();
@@ -292,9 +324,10 @@ pub(super) fn delete_table_column_at(
     state.ensure_cursor_visible(viewport_height, viewport_width);
 }
 
-/// Commit a column-drag release: swap the source column to the hover
-/// destination via a chain of adjacent-swap `EditDelta`s.  Mirrors
-/// `commit_row_drag` but for columns.
+/// Commit a column-drag release: move the source column to the hover
+/// destination as a single undo step.  Mirrors `commit_row_drag` on the
+/// other axis — see [`commit_swap_chain`] for the composition and the
+/// cursor restore.
 pub(super) fn commit_column_drag(
     state: &mut EditorState,
     table_byte_start: usize,
@@ -304,32 +337,72 @@ pub(super) fn commit_column_drag(
     if src_idx == dst_idx {
         return;
     }
-    // See `commit_row_drag` for why the pre-drag cursor offset must be
-    // restored after each swap: otherwise the cursor ends up at
-    // `info.end`, which after the trailing-`tui-columns`-comment merge
-    // points onto the comment line and the raw-reveal then overlays the
-    // comment's raw text into the table's last data row.
-    let saved_cursor = state.cursor.offset;
-    let mut cur = src_idx;
-    while cur != dst_idx {
-        let step = if cur < dst_idx { cur + 1 } else { cur - 1 };
-        let source = state.buffer.contents();
-        let Some(info) = table_edit::find_table_at(&source, table_byte_start) else {
-            break;
-        };
-        let Some(delta) = table_edit::swap_columns(&info, cur, step) else {
-            break;
-        };
-        let rope = state.buffer.rope();
-        let char_delta = EditDelta {
-            offset: rope.byte_to_char(delta.offset),
-            removed: delta.removed,
-            inserted: delta.inserted,
-        };
-        state.apply_delta(char_delta);
-        cur = step;
+    commit_swap_chain(
+        state,
+        table_byte_start,
+        src_idx,
+        dst_idx,
+        table_edit::swap_columns,
+    );
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Theme;
+    use crate::document::Buffer;
+
+    fn theme() -> &'static Theme {
+        Box::leak(Box::new(Theme::default()))
     }
-    state.cursor.offset = saved_cursor.min(state.buffer.len_chars());
-    state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
-    state.update_cursor_block();
+
+    /// A chain whose destination is out of range commits the steps that *did*
+    /// apply and stops — and, because the whole chain is folded before it
+    /// reaches the buffer, that partial move is still a single undo entry.
+    ///
+    /// The drag path can't reach this today (`data_row_at_y` snaps the hover
+    /// inside the table's extent, so `dst_idx` is always a real row), which is
+    /// exactly why the `break` needs a test of its own: it is the branch that
+    /// would silently regress to the old one-entry-per-step behavior, and the
+    /// end-to-end tests in `tests/mouse.rs` can't see it.
+    #[test]
+    fn a_chain_refused_partway_commits_the_partial_move_as_one_undo_step() {
+        let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n| 5 | 6 |\n";
+        let mut state = EditorState::new(Buffer::from_str(src), theme());
+
+        // Data rows are 2, 3, 4.  Ask for 2 → 6: the 2→3 and 3→4 steps apply,
+        // then `swap_rows(4, 5)` refuses because row 5 doesn't exist.
+        commit_row_drag(&mut state, 0, 2, 6);
+
+        let moved = state.buffer.contents();
+        let rows: Vec<&str> = moved.lines().skip(2).collect();
+        assert_eq!(
+            rows,
+            ["| 3 | 4 |", "| 5 | 6 |", "| 1 | 2 |"],
+            "the two legal steps should have applied"
+        );
+        assert_eq!(state.history.undo_depth(), 1, "partial chain is one entry");
+
+        state.history.undo(&mut state.buffer).expect("one undo");
+        assert_eq!(state.buffer.contents(), src);
+    }
+
+    /// A chain that is refused on its very first step must not record an undo
+    /// entry at all — `EditDelta::diff` returns `None` and the commit bails
+    /// before touching the buffer.
+    #[test]
+    fn a_chain_refused_outright_records_nothing() {
+        let src = "| a | b |\n|---|---|\n| 1 | 2 |\n";
+        let mut state = EditorState::new(Buffer::from_str(src), theme());
+
+        // Row 2 is the only data row; row 3 doesn't exist, so the first step
+        // is refused.
+        commit_row_drag(&mut state, 0, 2, 3);
+
+        assert_eq!(state.buffer.contents(), src);
+        assert_eq!(state.history.undo_depth(), 0);
+        assert!(!state.dirty, "a refused chain must not dirty the buffer");
+    }
 }
