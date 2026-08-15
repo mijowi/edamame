@@ -9,9 +9,9 @@
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use edamame::config::Theme;
+use edamame::config::{Action, Theme};
 use edamame::document::Buffer;
-use edamame::editor::{mouse_ops, EditorState, Mode};
+use edamame::editor::{edit_ops, mouse_ops, EditorState, Mode};
 use edamame::input::{MouseAction, MouseDispatcher};
 use ratatui::layout::Rect;
 
@@ -798,6 +798,169 @@ fn row_handle_drag_swaps_rows_in_buffer() {
     // `| 3 | 4 |` then `| 1 | 2 |`.
     assert_eq!(row_order[0], "| 3 | 4 |");
     assert_eq!(row_order[1], "| 1 | 2 |");
+}
+
+/// A row moved across several positions is composed from a chain of
+/// adjacent swaps, but the chain is folded on a string copy and only the net
+/// result reaches the buffer — so the whole drag is ONE undo step.  It used
+/// to record one entry per intermediate position, leaving the user to press
+/// undo once per row crossed.
+#[test]
+fn a_multi_row_drag_undoes_in_one_step() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n| 5 | 6 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    // Three data rows at y=3, y=5, y=7.
+    let snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: 0,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 5,
+        col_ranges: vec![2..5, 6..9],
+        row_ranges: vec![3..4, 5..6, 7..8],
+        row_handle_col: Some(0),
+        top_border_row: Some(0),
+    });
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    // Grab the first data row and drag it two positions down, to the last.
+    mouse_ops::apply(&mut st, click(0, 3), &mut target, &snapshots, VP, VW);
+    for row in [5, 7] {
+        mouse_ops::apply(
+            &mut st,
+            MouseAction::Drag { col: 0, row },
+            &mut target,
+            &snapshots,
+            VP,
+            VW,
+        );
+    }
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Release,
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+
+    let moved = st.contents();
+    let rows: Vec<&str> = moved.lines().skip(2).collect();
+    assert_eq!(rows, ["| 3 | 4 |", "| 5 | 6 |", "| 1 | 2 |"]);
+
+    edit_ops::apply(&mut st, Action::Undo, VP, VW);
+    assert_eq!(st.contents(), src, "one undo must restore the whole drag");
+}
+
+/// Mirror of `a_multi_row_drag_undoes_in_one_step` on the column axis.
+#[test]
+fn a_multi_column_drag_undoes_in_one_step() {
+    let src = "| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    let snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: 0,
+        table_byte_end: src.len(),
+        col_count: 3,
+        row_count: 3,
+        col_ranges: vec![2..5, 6..9, 10..13],
+        row_ranges: vec![3..4],
+        row_handle_col: None,
+        top_border_row: Some(0),
+    });
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    // Grab column 0's header and drag it across to column 2.
+    mouse_ops::apply(&mut st, click(3, 0), &mut target, &snapshots, VP, VW);
+    for col in [7, 11] {
+        mouse_ops::apply(
+            &mut st,
+            MouseAction::Drag { col, row: 0 },
+            &mut target,
+            &snapshots,
+            VP,
+            VW,
+        );
+    }
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Release,
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+
+    // Assert every line, not just the header: a swap chain that corrupted the
+    // alignment row or the data row while getting the header right would slip
+    // past a `starts_with` check.
+    let moved = st.contents();
+    let lines: Vec<&str> = moved.lines().collect();
+    assert_eq!(
+        lines,
+        ["| b | c | a |", "|---|---|---|", "| 2 | 3 | 1 |"],
+        "column 0 should have moved to the end, got: {moved:?}"
+    );
+
+    edit_ops::apply(&mut st, Action::Undo, VP, VW);
+    assert_eq!(st.contents(), src, "one undo must restore the whole drag");
+}
+
+/// The upward direction of the swap chain (`cur > dst_idx`, decrementing).
+/// Same one-undo guarantee, and the composed net delta must reorder the rows
+/// the other way — a chain that stepped the wrong direction here would still
+/// produce *a* valid table, just the wrong one.
+#[test]
+fn a_multi_row_drag_upward_undoes_in_one_step() {
+    let src = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n| 5 | 6 |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+
+    let snap = fake_snapshot(FakeSnapshotSpec {
+        table_byte_start: 0,
+        table_byte_end: src.len(),
+        col_count: 2,
+        row_count: 5,
+        col_ranges: vec![2..5, 6..9],
+        row_ranges: vec![3..4, 5..6, 7..8],
+        row_handle_col: Some(0),
+        top_border_row: Some(0),
+    });
+    let snapshots = [snap];
+    let mut target: Option<mouse_ops::DragTarget> = None;
+
+    // Grab the *last* data row (y=7) and drag it two positions up, to the
+    // first (y=3).
+    mouse_ops::apply(&mut st, click(0, 7), &mut target, &snapshots, VP, VW);
+    for row in [5, 3] {
+        mouse_ops::apply(
+            &mut st,
+            MouseAction::Drag { col: 0, row },
+            &mut target,
+            &snapshots,
+            VP,
+            VW,
+        );
+    }
+    mouse_ops::apply(
+        &mut st,
+        MouseAction::Release,
+        &mut target,
+        &snapshots,
+        VP,
+        VW,
+    );
+
+    let moved = st.contents();
+    let rows: Vec<&str> = moved.lines().skip(2).collect();
+    assert_eq!(rows, ["| 5 | 6 |", "| 1 | 2 |", "| 3 | 4 |"]);
+
+    edit_ops::apply(&mut st, Action::Undo, VP, VW);
+    assert_eq!(st.contents(), src, "one undo must restore the whole drag");
 }
 
 /// The pointer spends much of a row drag on cells that classify as

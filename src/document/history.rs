@@ -5,9 +5,27 @@ use crate::document::Buffer;
 ///
 /// To undo: remove `inserted` at `offset` and insert `removed` there instead.
 /// To redo: remove `removed` at `offset` and insert `inserted` there instead.
+///
+/// **`offset` carries two units depending on which half of the pipeline the
+/// value is in**, and nothing in the type enforces the difference — see the
+/// field doc.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditDelta {
-    /// Char offset at which the edit occurred.
+    /// Offset at which the edit occurred — **chars or bytes, depending on
+    /// where the delta came from**.
+    ///
+    /// **Chars** for every delta that reaches [`History`] or
+    /// [`EditorState::apply_delta`](crate::editor::EditorState): both index
+    /// the rope by char, and [`Self::undo_cursor`] / [`Self::redo_cursor`]
+    /// count chars, so they are meaningful *only* on a char-offset delta.
+    ///
+    /// **Bytes** for the compose path — every delta produced by
+    /// [`Self::diff`], `table_edit`, `list_edit`, or `footnote_edit`, which
+    /// all work on a `&str` snapshot of the document. Those are converted to
+    /// char offsets by `edit_ops::apply_byte_delta` (or a `byte_to_char` call
+    /// at the use site) before they touch a buffer or the undo stack; calling
+    /// `undo_cursor` / `redo_cursor` on one returns a nonsense offset for any
+    /// document containing multibyte text.
     pub offset: usize,
     /// Text that was removed by the edit (empty for pure insertions).
     pub removed: String,
@@ -24,6 +42,78 @@ impl EditDelta {
     /// Return the cursor offset that should be restored after a redo.
     pub fn redo_cursor(&self) -> usize {
         self.offset + self.inserted.chars().count()
+    }
+
+    /// Apply this delta to `s`, returning the resulting string.
+    ///
+    /// `offset` is interpreted as a **byte** index into `s` — this is the
+    /// compose helper for edit passes that work on a `&str` snapshot of the
+    /// document (footnote renumbering, the table-drag swap chain) before the
+    /// net result is converted to char offsets and handed to
+    /// [`EditorState::apply_delta`](crate::editor::EditorState).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the delta doesn't fit `s`: if `offset` or
+    /// `offset + removed.len()` is past the end of `s`, or if either lands
+    /// inside a multi-byte char. A delta from [`Self::diff`] against the same
+    /// `old` string always satisfies both, as does one from `table_edit` /
+    /// `list_edit` / `footnote_edit` applied to the source it was derived
+    /// from — but a delta composed against a *different* string than the one
+    /// passed here is a caller bug, and this is where it surfaces.
+    pub fn apply_to_string(&self, s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        out.push_str(&s[..self.offset]);
+        out.push_str(&self.inserted);
+        out.push_str(&s[self.offset + self.removed.len()..]);
+        out
+    }
+
+    /// Minimal **byte**-offset delta turning `old` into `new` by trimming the
+    /// common (char-aligned) prefix and suffix.  `None` when identical.
+    ///
+    /// Lets a multi-step rewrite that was simulated on a string collapse into
+    /// one delta — which is one undo step.
+    ///
+    /// Both trims stop on a char boundary, so `offset` and the ends of
+    /// `removed` / `inserted` are always safe to slice with and safe to
+    /// convert with `byte_to_char`. The round trip
+    /// `diff(old, new)?.apply_to_string(old) == new` holds for every pair of
+    /// strings.
+    pub fn diff(old: &str, new: &str) -> Option<Self> {
+        if old == new {
+            return None;
+        }
+        let ob = old.as_bytes();
+        let nb = new.as_bytes();
+
+        let max_p = ob.len().min(nb.len());
+        let mut p = 0;
+        while p < max_p && ob[p] == nb[p] {
+            p += 1;
+        }
+        while !old.is_char_boundary(p) {
+            p = p.saturating_sub(1);
+        }
+
+        let max_s = (ob.len() - p).min(nb.len() - p);
+        let mut s = 0;
+        while s < max_s && ob[ob.len() - 1 - s] == nb[nb.len() - 1 - s] {
+            s += 1;
+        }
+        // `is_char_boundary` inspects only the byte at the index, and the
+        // trailing `s` bytes are identical in both strings, so a boundary in
+        // `old` is also one in `new` — retreating `s` here keeps both slices
+        // valid.  `saturating_sub` honors the no-underflow convention.
+        while !old.is_char_boundary(old.len() - s) {
+            s = s.saturating_sub(1);
+        }
+
+        Some(Self {
+            offset: p,
+            removed: old[p..old.len() - s].to_string(),
+            inserted: new[p..new.len() - s].to_string(),
+        })
     }
 }
 
@@ -193,12 +283,155 @@ fn try_merge_deletion(top: &mut EditDelta, new: &EditDelta) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
     use crate::document::Buffer;
 
     fn buf(s: &str) -> Buffer {
         Buffer::from_str(s)
     }
+
+    // ── EditDelta::diff / apply_to_string ────────────────────────────────
+    //
+    // These two are the compose path's only primitives: `diff` collapses a
+    // rewrite that was simulated on a `String` into one byte-offset delta,
+    // and `apply_to_string` folds a delta back into such a simulation.  Both
+    // slice by byte and both feed a `byte_to_char` conversion afterwards, so
+    // the invariant that matters is that every offset they produce lands on
+    // a char boundary — which is exactly what the ASCII-only footnote tests
+    // that used to be their only coverage never exercise.
+
+    #[test]
+    fn diff_of_identical_strings_is_none() {
+        assert_eq!(EditDelta::diff("same", "same"), None);
+        assert_eq!(EditDelta::diff("", ""), None);
+    }
+
+    #[test]
+    fn diff_trims_to_the_changed_span() {
+        let d = EditDelta::diff("abcXYZdef", "abcQdef").expect("differs");
+        assert_eq!(d.offset, 3);
+        assert_eq!(d.removed, "XYZ");
+        assert_eq!(d.inserted, "Q");
+    }
+
+    #[test]
+    fn diff_of_a_pure_insertion_removes_nothing() {
+        let d = EditDelta::diff("ac", "abc").expect("differs");
+        assert_eq!(d.offset, 1);
+        assert_eq!(d.removed, "");
+        assert_eq!(d.inserted, "b");
+    }
+
+    #[test]
+    fn diff_of_a_pure_deletion_inserts_nothing() {
+        let d = EditDelta::diff("abc", "ac").expect("differs");
+        assert_eq!(d.offset, 1);
+        assert_eq!(d.removed, "b");
+        assert_eq!(d.inserted, "");
+    }
+
+    #[test]
+    fn diff_against_an_empty_string_spans_everything() {
+        let d = EditDelta::diff("abc", "").expect("differs");
+        assert_eq!(d.offset, 0);
+        assert_eq!(d.removed, "abc");
+        assert_eq!(d.inserted, "");
+
+        let d = EditDelta::diff("", "abc").expect("differs");
+        assert_eq!(d.offset, 0);
+        assert_eq!(d.removed, "");
+        assert_eq!(d.inserted, "abc");
+    }
+
+    /// `offset` counts bytes, not chars — the whole reason every call site
+    /// runs it through `byte_to_char` before the delta reaches a buffer.
+    #[test]
+    fn diff_offsets_are_bytes_not_chars() {
+        // "éé" is four bytes but two chars; the change is at char 2 / byte 4.
+        let d = EditDelta::diff("ééa", "ééb").expect("differs");
+        assert_eq!(d.offset, 4);
+        assert_eq!(d.removed, "a");
+        assert_eq!(d.inserted, "b");
+    }
+
+    /// Two different chars can share leading *and* trailing bytes, which is
+    /// what drives both boundary-retreat loops: `😀` (F0 9F 98 80) and `🙀`
+    /// (F0 9F 99 80) agree on the first two bytes and on the last one.  A
+    /// naive byte trim would emit an offset of 2 and a suffix of 1, slicing
+    /// the delta straight through the middle of a char.
+    #[test]
+    fn diff_never_splits_a_multibyte_char() {
+        let d = EditDelta::diff("😀", "🙀").expect("differs");
+        assert_eq!(d.offset, 0);
+        assert_eq!(d.removed, "😀");
+        assert_eq!(d.inserted, "🙀");
+
+        // Same trap with the shared *leading* byte of two 2-byte chars.
+        let d = EditDelta::diff("xéy", "xèy").expect("differs");
+        assert_eq!(d.offset, 1);
+        assert_eq!(d.removed, "é");
+        assert_eq!(d.inserted, "è");
+    }
+
+    #[test]
+    fn apply_to_string_replaces_the_delta_span() {
+        let d = EditDelta {
+            offset: 3,
+            removed: "XYZ".into(),
+            inserted: "Q".into(),
+        };
+        assert_eq!(d.apply_to_string("abcXYZdef"), "abcQdef");
+    }
+
+    #[test]
+    fn diff_and_apply_to_string_round_trip() {
+        let pairs = [
+            ("", "a"),
+            ("a", ""),
+            ("hello", "hello world"),
+            ("| a | b |\n| 1 | 2 |\n", "| b | a |\n| 2 | 1 |\n"),
+            ("A[^2] B[^1]\n", "A[^1] B[^2]\n"),
+            ("héllo wörld", "héllo wörld!"),
+            ("😀😀😀", "😀🙀😀"),
+            ("漢字", "字漢"),
+            ("a\nb\nc\n", "c\nb\na\n"),
+        ];
+        for (old, new) in pairs {
+            let d = EditDelta::diff(old, new).expect("pairs differ");
+            assert!(
+                old.is_char_boundary(d.offset),
+                "offset {} splits a char in {old:?}",
+                d.offset
+            );
+            assert_eq!(d.apply_to_string(old), new, "{old:?} -> {new:?}");
+        }
+    }
+
+    proptest! {
+        /// The property the compose path rests on, over an alphabet mixing
+        /// 1-, 2-, 3- and 4-byte chars plus the newline that table and
+        /// footnote rewrites move around: `diff` is always reversible by
+        /// `apply_to_string`, and its offset is always char-aligned (so the
+        /// `byte_to_char` conversion at every call site is well-defined).
+        #[test]
+        fn proptest_diff_round_trips_over_multibyte_text(
+            old in r"[abé😀漢\n]{0,24}",
+            new in r"[abé😀漢\n]{0,24}",
+        ) {
+            match EditDelta::diff(&old, &new) {
+                None => prop_assert_eq!(&old, &new),
+                Some(d) => {
+                    prop_assert!(old.is_char_boundary(d.offset));
+                    prop_assert!(old.is_char_boundary(d.offset + d.removed.len()));
+                    prop_assert_eq!(d.apply_to_string(&old), new);
+                }
+            }
+        }
+    }
+
+    // ── History ──────────────────────────────────────────────────────────
 
     #[test]
     fn undo_empty_stack_returns_none() {
