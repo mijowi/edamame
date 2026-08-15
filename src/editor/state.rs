@@ -181,6 +181,18 @@ pub struct EditorState {
     /// without further movement on the same line, preventing jitter when scrolling
     /// quickly through multi-line elements such as tables.
     pub cursor_block_entered_at: Option<Instant>,
+    /// When the last click-driven table row / column delete landed.
+    ///
+    /// Guards the `✕` handles against an accidental double-click on one
+    /// button without ever going permanently dead.  The multi-click chord
+    /// can't do this job: its window restarts on every press, so under
+    /// sustained clicking it never expires and every press after the first
+    /// is swallowed forever.  Anchoring to the delete itself means a
+    /// deliberate repeat always gets through one `TABLE_DELETE_COOLDOWN`
+    /// later, however fast the user is clicking.  Stamped by
+    /// `mouse_ops::table_drag`'s two delete helpers, and only on a delete
+    /// that actually applied.
+    pub last_table_delete_at: Option<Instant>,
     /// True while a mouse click-and-drag is in progress.  While true the
     /// cursor's block is never de-rendered, so the user's drag selection
     /// stays anchored to the rendered characters they clicked on — if the
@@ -452,6 +464,7 @@ impl EditorState {
             cursor_block_idx: None,
             cursor_line_idx: None,
             cursor_block_entered_at: None,
+            last_table_delete_at: None,
             drag_in_progress: false,
             theme,
             preserve_blank_lines,

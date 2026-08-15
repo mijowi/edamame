@@ -71,6 +71,13 @@ pub struct MouseDispatcher {
     last_click_cell: Option<(u16, u16)>,
     click_count: u32,
     left_down: bool,
+    /// Whether the gesture that is ending (or just ended) included at least
+    /// one `Drag` event.  A press that turned into a drag is not part of a
+    /// double-click chord — every GUI toolkit breaks the chain there, and
+    /// without it a grab → drag → release → *re-grab the same cell* (the
+    /// natural retry when a table row or column border didn't land where
+    /// the user wanted) arrives as a `DoubleClick` and arms no drag at all.
+    dragged_since_down: bool,
     /// Lines emitted per wheel tick (see `DEFAULT_WHEEL_STEP`).  Seeded from
     /// `config.editor.mouse_scroll_lines` via `with_wheel_step`.
     wheel_step: usize,
@@ -96,6 +103,7 @@ impl MouseDispatcher {
             last_click_cell: None,
             click_count: 0,
             left_down: false,
+            dragged_since_down: false,
             wheel_step: wheel_step.max(1),
         }
     }
@@ -138,11 +146,12 @@ impl MouseDispatcher {
                     .last_click_time
                     .map(|t| now.duration_since(t) <= MULTI_CLICK_WINDOW)
                     .unwrap_or(false);
-                if same_cell && within_threshold {
+                if same_cell && within_threshold && !self.dragged_since_down {
                     self.click_count = (self.click_count + 1).min(3);
                 } else {
                     self.click_count = 1;
                 }
+                self.dragged_since_down = false;
                 self.last_click_time = Some(now);
                 self.last_click_cell = Some((rel_col, rel_row));
                 Some(match self.click_count {
@@ -163,8 +172,12 @@ impl MouseDispatcher {
                     },
                 })
             }
-            MouseEventKind::Drag(MouseButton::Left) if self.left_down && in_area => {
-                Some(MouseAction::Drag {
+            MouseEventKind::Drag(MouseButton::Left) if self.left_down => {
+                // The chord-breaking flag is set even for a drag that left
+                // the document area — the gesture was still a drag, whether
+                // or not the editor got to see this particular step.
+                self.dragged_since_down = true;
+                in_area.then_some(MouseAction::Drag {
                     col: rel_col,
                     row: rel_row,
                 })
@@ -323,6 +336,46 @@ mod tests {
         assert_eq!(
             d.dispatch(drag(7, 3), area()),
             Some(MouseAction::Drag { col: 7, row: 3 })
+        );
+    }
+
+    /// A press that turned into a drag isn't the first half of a chord, so
+    /// re-grabbing the same cell right afterwards must report a fresh
+    /// `Click` — otherwise the retry after an unsatisfying table-row or
+    /// column-border drag silently arms nothing.
+    #[test]
+    fn drag_breaks_the_double_click_chord() {
+        let mut d = MouseDispatcher::new();
+        d.dispatch(down(5, 2), area());
+        d.dispatch(drag(9, 2), area());
+        d.dispatch(up(9, 2), area());
+        assert_eq!(
+            d.dispatch(down(5, 2), area()),
+            Some(MouseAction::Click {
+                col: 5,
+                row: 2,
+                modifiers: KeyModifiers::NONE,
+            })
+        );
+    }
+
+    /// …and the drag that broke it doesn't keep breaking it: the press
+    /// after the retry chords normally again.
+    #[test]
+    fn chord_resumes_after_a_dragless_click() {
+        let mut d = MouseDispatcher::new();
+        d.dispatch(down(5, 2), area());
+        d.dispatch(drag(9, 2), area());
+        d.dispatch(up(9, 2), area());
+        d.dispatch(down(5, 2), area());
+        d.dispatch(up(5, 2), area());
+        assert_eq!(
+            d.dispatch(down(5, 2), area()),
+            Some(MouseAction::DoubleClick {
+                col: 5,
+                row: 2,
+                modifiers: KeyModifiers::NONE,
+            })
         );
     }
 

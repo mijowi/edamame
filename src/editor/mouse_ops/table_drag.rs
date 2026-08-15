@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crate::document::EditDelta;
 use crate::editor::table_edit;
 use crate::editor::EditorState;
@@ -226,6 +228,10 @@ pub(super) fn commit_column_border_drag(state: &mut EditorState, table_byte_star
 /// undo restores the row.  No-op when the table has scrolled off-screen
 /// between snapshot and click, or when `row_idx` is the header /
 /// alignment row (`< 2`) — `table_edit::delete_row` already guards both.
+///
+/// Stamps `EditorState::last_table_delete_at` on success (and only on
+/// success, so a refused delete can't start a cooldown), which is what
+/// arms the `✕` double-click guard in `mouse_ops::table_delete_allowed`.
 pub(super) fn delete_table_row_at(
     state: &mut EditorState,
     table_byte_start: usize,
@@ -248,6 +254,7 @@ pub(super) fn delete_table_row_at(
     };
     state.selection = None;
     state.apply_delta(char_delta);
+    state.last_table_delete_at = Some(Instant::now());
     state.update_cursor_block();
     state.ensure_cursor_visible(viewport_height, viewport_width);
 }
@@ -256,7 +263,8 @@ pub(super) fn delete_table_row_at(
 /// `delete_table_row_at` for the column axis.  No-op when the table
 /// scrolled off-screen between snapshot and click, when the table only
 /// has one column, or when `col_idx` is out of range — all guarded by
-/// `table_edit::delete_column`.
+/// `table_edit::delete_column`.  Stamps `last_table_delete_at` on
+/// success, same as the row axis.
 pub(super) fn delete_table_column_at(
     state: &mut EditorState,
     table_byte_start: usize,
@@ -279,6 +287,7 @@ pub(super) fn delete_table_column_at(
     };
     state.selection = None;
     state.apply_delta(char_delta);
+    state.last_table_delete_at = Some(Instant::now());
     state.update_cursor_block();
     state.ensure_cursor_visible(viewport_height, viewport_width);
 }

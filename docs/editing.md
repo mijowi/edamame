@@ -135,11 +135,26 @@ All ten are in the palette as `Table: …` — worth knowing, because the
 
 ### With a mouse
 
-When your terminal supports a mouse, tables grow handles:
+When your terminal supports a mouse, the table your cursor is in grows
+handles:
 
 - **`⠿`** at the left of a row, or on top of a column — drag to reorder
 - **`⇔`** on the header row's dividers — drag to resize a column
 - **`✕`** on the outer border — delete that row or column
+
+Handles belong to the table your cursor is in — that's the table they're
+drawn on, and the only one they act on. Clicking a handle on another table
+moves your cursor there first, which is the same click that makes its
+handles appear; click again to use them.
+
+Within that table the reorder handles are forgiving to grab: anywhere in
+the left gutter beside the rows starts a row drag, and anywhere along the
+top border starts a column drag. While you drag, every place the row or
+column could land is outlined, with the one under your pointer highlighted.
+The `✕` buttons are deliberately not forgiving — they're the destructive
+pair, so they only respond on the glyph itself, and a second click landing
+within a moment of the first is ignored, so double-clicking one removes a
+single row. Clicking steadily deletes row after row.
 
 Turn them off with "Toggle table buttons" in the palette, or the settings
 overlay.
