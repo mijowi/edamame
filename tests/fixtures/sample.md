@@ -31,15 +31,15 @@ flowchart LR
 
 1. **Hybrid rendered/raw editing** — the document stays formatted while you type
 2. **Real table editing** — a grid you move through cell by cell, not a row of pipes
-   1. `Tab` and `Shift-Tab` walk the cells
-   2. Dragging a column divider resizes it
-   3. Rows and columns can be added or removed in place
+    1. `Tab` and `Shift-Tab` walk the cells
+    2. Dragging a column divider resizes it
+    3. Rows and columns can be added or removed in place
 3. **Search and replace**, with smartcase navigation
 4. **Diff review** for changes made by something else while the file was open
 
 - [x] Inline images and Mermaid diagrams, where the terminal supports them
-  - [x] Kitty, iTerm2 and Sixel protocols
-  - [ ] Halfblocks everywhere else
+    - [x] Kitty, iTerm2 and Sixel protocols
+    - [ ] Halfblocks everywhere else
 - [x] Footnotes, task lists, list continuation and renumbering
 - [ ] Collaborative editing — *not planned*
 - [ ] A plugin API — see the note on scope in `CONTRIBUTING.md`
