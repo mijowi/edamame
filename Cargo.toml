@@ -21,9 +21,7 @@ keywords = ["markdown", "editor", "tui", "terminal", "viewer"]
 categories = ["command-line-utilities", "text-editors"]
 # Keep the published tarball to what a user or downstream builder needs:
 # source, the scaffolded reference config (which is `include_str!`d), the
-# user-facing docs, and the tests.  Only the historical planning documents and
-# the working issue tracker are dropped — they are large and of no use to
-# anyone installing the crate.
+# user-facing docs, and the tests.
 #
 # Note `tests/` and `benches/` deliberately stay: both are auto-discovered (or,
 # for `[[bench]] pipeline`, explicitly declared) target sources, and excluding

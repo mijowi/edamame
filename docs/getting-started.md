@@ -64,6 +64,8 @@ A welcome screen appears the first time you run edamame. It shows a short introd
 - **Remote images** — whether to fetch images from the web. This one is worth a thought: a document you didn't write can use a remote image to find out when you opened it, which is why it's a separate question and defaults to asking. See [security.md](security.md).
 - **Vim mode** — off by default. See [vim-mode.md](vim-mode.md).
 
+![edamame's welcome screen on first launch](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/welcome.jpg)
+
 Everything here is changeable later, so don't worry about it. To get back to it: `Ctrl-P` → "Open welcome / terminal setup".
 
 edamame also writes its config files on this first run, to `~/.config/edamame/` (details in [configuration.md](configuration.md#where-config-lives)). They're heavily commented and safe to edit; edamame never overwrites them afterwards.
@@ -79,6 +81,8 @@ If you later open edamame in a different terminal application, you should see a 
 | Mouse selection, table handles | Mouse reporting |
 | A handful of chords | The kitty keyboard protocol |
 
+![The terminal capabilities notice, listing color, image, mouse and keyboard support](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/terminal_capabilities.jpg)
+
 If your terminal falls short, edamame adapts rather than breaking: it swaps in a theme designed for 256 colors, keeps `[Image: …]` placeholders in place, and tells you which chords won't arrive. See [Terminal compatibility](keybindings.md#terminal-compatibility) for the workarounds — the command palette reaches everything regardless.
 
 To see the summary again, run [`edamame --doctor`](#command-line-flags), open
@@ -93,6 +97,8 @@ This is the one concept worth understanding up front. edamame shows your
 document rendered — real headings, drawn table borders, actual bullet
 characters — while you edit it. The modes control how much of that rendering
 gets out of your way.
+
+![The same document rendered and in raw Markdown, side by side](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/render_raw.jpg)
 
 ### Preview — reading
 
@@ -117,6 +123,8 @@ document doesn't flicker.
 
 This is what edamame is for: you see the formatted document nearly all the
 time, and the raw syntax exactly where you need it.
+
+![The cursor moving through a list, each line showing its Markdown source in turn](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/raw_reveal_and_list_ops.gif)
 
 ### Raw — plain Markdown
 
@@ -145,10 +153,7 @@ screen, so nothing jumps.
 
 ## Reading the bottom two rows
 
-```
- ^P Menu   ^S Save   ^F Find                       ← hint line
- EDIT  notes.md*  › Setup › Install    12:4   340 lines   38%
-```
+![edamame's hint line and status bar](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/hint_line_status_bar.jpg)
 
 **The hint line** shows the chords that apply right now — they change inside a table or a list — and doubles as where messages appear ("Saved", "Copied", "Autosaved"). The chords shown are read from your actual keymap, so they stay correct after you rebind something.
 
@@ -159,6 +164,12 @@ screen, so nothing jumps.
 ## Things worth knowing early
 
 **`Ctrl-P` is the way in.** Every command is there, fuzzy-searchable. Most features deliberately ship without a chord — the palette is how you reach them, and how you discover what exists.
+
+![Filtering commands in edamame's fuzzy command palette](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/command_palette.gif)
+
+**`Ctrl-G` jumps to a heading.** The same fuzzy field, over the document's own structure — quicker than scrolling in anything longer than a screen.
+
+![Jumping to a heading with the go-to-section picker](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/go_to_section.gif)
 
 **`Ctrl-C` copies.** It does not quit. Quit is `Ctrl-Q`.
 

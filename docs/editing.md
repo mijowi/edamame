@@ -8,7 +8,7 @@ What edamame does with your Markdown, and the features built on top of it.
 
 edamame parses CommonMark plus a set of GitHub extensions.
 
-| | |
+| Element| Markdown Source|
 |---|---|
 | Headings | `#` through `######`, and the underlined (setext) form |
 | Emphasis | `**bold**` · `*italic*` · `` `code` `` · `~~strikethrough~~` |
@@ -50,7 +50,7 @@ color; the body is one style. Highlighting is a planned feature.
 
 Select some text, then:
 
-| | |
+| Key (palette)| Action|
 |---|---|
 | `Ctrl-B` | Bold |
 | `Ctrl-I` | Italic |
@@ -106,7 +106,7 @@ flash instead of a table.
 
 ### Moving around
 
-| | |
+| Key| Action|
 |---|---|
 | `Tab` / `Shift-Tab` | Next / previous cell |
 | `Enter` | Next row |
@@ -121,7 +121,7 @@ from you.
 
 The arrow points the direction; `Shift` turns "move" into "insert".
 
-| | |
+| Key| Action|
 |---|---|
 | `Alt-↑` `Alt-↓` | Move row |
 | `Alt-←` `Alt-→` | Move column |
@@ -141,6 +141,8 @@ handles:
 - **`⠿`** at the left of a row, or on top of a column — drag to reorder
 - **`⇔`** on the header row's dividers — drag to resize a column
 - **`✕`** on the outer border — delete that row or column
+
+![Editing a table in edamame](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/table_ops.gif)
 
 Handles belong to the table your cursor is in — that's the table they're
 drawn on, and the only one they act on. Clicking a handle on another table
@@ -221,13 +223,15 @@ across files and within a document. Leaving a modified file prompts first.
 `Ctrl-F` opens a box with **Search** and **Replace** fields. What you get
 depends on whether you fill in Replace.
 
+![Search matches highlighted in a document, with the focused match emphasized](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/search.jpg)
+
 **Leave Replace empty** and you get highlighting you can navigate. Matches are
 marked, `Tab` and `Shift-Tab` walk them, `Esc` clears. You can keep editing
 normally throughout.
 
 **Fill Replace in** and the flow takes over the keyboard until you're done:
 
-| | |
+| Key| Action|
 |---|---|
 | `Tab` / `Shift-Tab` | Next / previous match |
 | `r` | Replace this one and move on |
@@ -271,14 +275,13 @@ every heading, previewing as you arrow through it. `Esc` puts you back.
 
 ## When the file changes underneath you
 
-If something else writes the file you have open — a `git checkout`, a
-formatter, an AI agent — edamame will not silently swap it out.
+If something else writes the file you have open — a `git checkout`, a formatter, an AI agent — edamame will not silently swap it out.
 
-**With no unsaved changes**, it opens **diff review**: your version and the new
-one, stacked, hunk by hunk, with word-level highlighting inside changed lines.
-Tables are split per row, so you can take one row and leave another.
+**With no unsaved changes**, it opens **diff review**: your version and the new one, stacked, hunk by hunk, with word-level highlighting inside changed lines. Tables are split per row, so you can take one row and leave another.
 
-| | |
+![Diff review showing added and removed hunks with word-level highlighting](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/diff_review.jpg)
+
+| Key| Action|
 |---|---|
 | `Tab` / `Shift-Tab` | Move between hunks |
 | `y` / `n` | Accept / reject this hunk |
@@ -286,16 +289,11 @@ Tables are split per row, so you can take one row and leave another.
 | `Backspace` | Undecide this hunk |
 | `Esc` | Finish |
 
-`Esc` only works once every hunk is decided, and then asks before writing. So
-nothing is applied until you've seen all of it and said yes. Editing and
-saving are unavailable while a diff is open; the merged result becomes a normal
-undoable edit afterwards.
+`Esc` only works once every hunk is decided, and then asks before writing. So nothing is applied until you've seen all of it and said yes. Editing and saving are unavailable while a diff is open; the merged result becomes a normal undoable edit afterwards.
 
-**With unsaved changes**, you get a conflict prompt instead, with **Merge** to
-enter diff review when you're ready.
+**With unsaved changes**, you get a conflict prompt instead, with **Merge** to enter diff review when you're ready.
 
-**If the file was deleted**, edamame tells you and offers to write your buffer
-back out — it's now the only copy.
+**If the file was deleted**, edamame tells you and offers to write your buffer back out — it's now the only copy.
 
 If you prefer not to enter diff review when the file is overwritten, set `diff_on_change = false` and a clean buffer reloads silently. A modified buffer always asks so that your changes aren't lost.
 
@@ -316,6 +314,8 @@ Move the cursor into an image and it's replaced by its `![alt](url)` source
 line, the way any other block reveals — the rows the picture occupied close up
 and the document reflows around the single line you're editing. Move the cursor
 out and the image comes back.
+
+![An inline image collapsing to its Markdown source as the cursor enters it, and back again](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/image.gif)
 
 **Formats:** PNG, JPEG, GIF, BMP, WebP, and SVG. Anything else is reported as
 an unsupported image rather than rendered — the list is kept deliberately
@@ -351,6 +351,8 @@ Move the cursor into a diagram and the image is replaced by its full mermaid
 source, exactly as a fenced code block reveals — however tall or short the
 rendered image was, every source line is shown and the rest of the document
 reflows around it. Move the cursor out and the image comes back.
+
+![A rendered Mermaid diagram opening to its source as the cursor enters it](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/diagram_reveal.gif)
 
 Rendering happens in the background and results are cached by content, so
 editing one diagram doesn't re-render the others. Mermaid is the only diagram

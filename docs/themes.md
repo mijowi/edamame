@@ -8,6 +8,8 @@ edamame ships 27 themes and lets you write your own.
 
 `Ctrl-P` → **"Switch theme"**. The picker is fuzzy-searchable and previews live as you move, so you can see a theme before committing. `Esc` puts back what you had.
 
+![Cycling through themes in the picker, each previewing live on the document behind it](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/switch_theme.gif)
+
 The **"Dark mode"** slider in the picker filters the list and sets `appearance` in your config. Themes that come in matching pairs — Solarized Dark and Light, GitHub Dark and Light, and so on — swap to their counterpart when you flip it.
 
 ## Built-in themes
@@ -15,6 +17,8 @@ The **"Dark mode"** slider in the picker filters the list and sets `appearance` 
 **Dark:** 256 Dark, Monochrome Dark, Ayu, Catppuccin, Dracula, Edamame, Everforest, GitHub Dark, Gruvbox, Kanagawa, Monokai, Nord, One Dark, Orng, Rainbow, Rosé Pine, Solarized Dark, SynthWave '84, Tokyo Night, Zenburn
 
 **Light:** 256 Light, Catppuccin Latte, GitHub Light, Gruvbox Light, Rosé Pine Dawn, Solarized Light, Tokyo Night Day
+
+![The same document shown in three of edamame's built-in themes](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/themes.jpg)
 
 Built-in names are reserved: a file in your `themes/` folder named `Dracula.toml` is ignored entirely, without a warning. Pick a different name.
 
