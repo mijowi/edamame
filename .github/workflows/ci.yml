@@ -125,12 +125,23 @@ jobs:
   # `--locked` so the job reflects the committed Cargo.lock; a dependency
   # bump that raises the floor should fail here (loudly, in its own
   # Dependabot PR) rather than silently invalidate the published metadata.
+  #
+  # The version is passed as the `toolchain` INPUT, not baked into the action
+  # ref as `dtolnay/rust-toolchain@1.90`.  Dependabot's github-actions
+  # updater cannot tell an MSRV pin from an action version and rewrote that
+  # ref to `@1.100` (PR #18), which quietly turns the job into a
+  # latest-stable check while still reporting itself as "MSRV (1.90)".  The
+  # `@stable` branch of the action declares `toolchain` with a default, so
+  # the input overrides it; the `@1.90` branch hardcodes it and takes no
+  # input at all.  Keep the number out of the ref.
   msrv:
     name: MSRV (1.90)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.90
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.90"
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --locked --all-targets --all-features
 
