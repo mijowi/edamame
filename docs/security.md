@@ -15,10 +15,7 @@ Concretely, document content reaches several non-trivial subsystems:
 - **HTML export** — the document is serialized to a shareable HTML file.
 - **Subprocess spawning** — `$EDITOR`, custom export commands.
 
-What is **out of scope**: a malicious *local config* (`config.toml`,
-`keybindings.toml`, custom export commands, `$EDITOR`) is trusted — if an
-attacker can write your config they already own your account. The terminal
-emulator itself is also trusted.
+What is **out of scope**: a malicious *local config* (`config.toml`, `keybindings.toml`, custom export commands, `$EDITOR`) is trusted — if an attacker can write your config they already own your account. The terminal emulator itself is also trusted.
 
 Two principles run through the design:
 
@@ -99,5 +96,4 @@ The reporting policy — what's in scope, what to include, expected response tim
 
 ---
 
-*Contributors: the checklist of invariants a change must not regress is in
-[`dev/security-invariants.md`](dev/security-invariants.md).*
+*Contributors: the checklist of invariants a change must not regress is in [`dev/security-invariants.md`](dev/security-invariants.md).*

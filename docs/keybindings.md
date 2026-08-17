@@ -2,12 +2,9 @@
 
 Every default chord, and how to change them.
 
-If you use Vim keys, see [vim-mode.md](vim-mode.md) — vim mode replaces the
-editing keys below but keeps every `Ctrl-*` chord.
+If you use Vim keys, see [vim-mode.md](vim-mode.md) — vim mode replaces the editing keys below but keeps every `Ctrl-*` chord.
 
-**Can't find a key for something?** Many commands ship with no chord at all and
-live in the command palette instead. Press **`Ctrl-P`** and type. That is the
-intended way to reach anything you use rarely.
+**Can't find a key for something?** Many commands ship with no chord at all and live in the command palette instead. Press **`Ctrl-P`** and type.
 
 The keybindings overlay lists every chord and lets you rebind on the spot — `Ctrl-P` → **"Keybindings"**:
 
@@ -27,8 +24,7 @@ The keybindings overlay lists every chord and lets you rebind on the spot — `C
 | `Esc` | Leave editing, back to Preview |
 | ``Ctrl-` `` | Toggle the whole document to raw Markdown |
 
-**`Ctrl-C` is Copy, not quit.** edamame intercepts it before it can raise
-SIGINT. Quit is `Ctrl-Q`.
+**`Ctrl-C` is Copy, not quit.** Quit is `Ctrl-Q`.
 
 ---
 
@@ -92,14 +88,11 @@ Formatting acts on a **non-empty, single-line selection** and toggles — runnin
 | `Ctrl-Enter` | Follow the link under the cursor |
 | `Alt-←` / `Alt-→` | Navigation history back / forward — *only outside a table* |
 
-Inside a table those same `Alt-←` / `Alt-→` keys reorder columns. If you want
-unconditional back/forward, bind `NavigateBack` / `NavigateForward` to chords of
-your own.
+Inside a table those same `Alt-←` / `Alt-→` keys reorder columns. If you want unconditional back/forward, bind `NavigateBack` / `NavigateForward` to chords of your own.
 
 ## Tables
 
-Cell navigation reuses the keys you would press anyway — they only change
-meaning when the cursor is inside a table:
+Cell navigation reuses the keys you would press anyway — they only change meaning when the cursor is inside a table:
 
 | Key | Inside a table | Outside a table |
 |---|---|---|
@@ -108,8 +101,7 @@ meaning when the cursor is inside a table:
 | `Shift-Tab` | Previous cell | *(nothing)* |
 | `Shift-Enter` | Insert a literal `<br>` | New line |
 
-Structural edits follow one scheme: **the arrow points the way, and `Shift`
-promotes "move" into "insert".**
+Structural edits follow one scheme: **the arrow points the way, and `Shift` promotes "move" into "insert".**
 
 | Key | Action |
 |---|---|
@@ -121,16 +113,13 @@ promotes "move" into "insert".**
 | `Alt-Shift-Backspace` | Delete column |
 | `Ctrl-Shift-T` | Insert a new table (cursor must be on a blank line) |
 
-The `Alt-Shift-*` chords and `Ctrl-Shift-T` need the kitty keyboard protocol —
-see [Terminal compatibility](#terminal-compatibility). All of them are also in
-the command palette as `Table: …`.
+The `Alt-Shift-*` chords and `Ctrl-Shift-T` need the kitty keyboard protocol — see [Terminal compatibility](#terminal-compatibility). All of them are also in the command palette as `Table: …`.
 
 ---
 
 ## Keys that are fixed
 
-Two flows take over the keyboard while they are open, so these keys always win
-over your keymap and cannot be rebound.
+Two flows take over the keyboard while they are open, so these keys always win over your keymap and cannot be rebound.
 
 ### Search and replace
 
@@ -141,9 +130,7 @@ over your keymap and cannot be rebound.
 | `a` | Replace all — one undo step — and exit |
 | `Esc` | Leave the search, staying on the current match |
 
-`r` and `a` only do something when you filled in the Replace field. A search
-with an empty Replace field is a lightweight highlight overlay: you keep full
-editing freedom, and only `Tab`, `Shift-Tab` and `Esc` are intercepted.
+`r` and `a` only do something when you filled in the Replace field. A search with an empty Replace field is a lightweight highlight overlay: you keep full editing freedom, and only `Tab`, `Shift-Tab` and `Esc` are intercepted.
 
 ### Diff review
 
@@ -156,14 +143,13 @@ editing freedom, and only `Tab`, `Shift-Tab` and `Esc` are intercepted.
 | `Backspace` | Undecide this hunk |
 | `Esc` | Exit — only once every hunk is decided |
 
-While a diff is open, editing and saving are unavailable; scrolling, quitting
-and the overlays still work.
+While a diff is open, editing and saving are unavailable; scrolling, quitting and the overlays still work.
 
 ---
 
 ## Commands with no default chord
 
-These are reachable from the command palette (`Ctrl-P`), or you can bind them yourself. This is deliberate: a chord per overlay is more to memorize than it is worth.
+These are reachable from the command palette (`Ctrl-P`), or you can bind them yourself.
 
 ![The command palette listing available commands](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/command_palette.jpg)
 
@@ -224,50 +210,31 @@ The whole string is case-insensitive: `"Ctrl+S"` and `"ctrl+s"` are the same. To
 
 ### Three things that will trip you up
 
-**Bindings are added, not replaced.** Your file layers on top of the built-in
-defaults. `Redo = "ctrl+y"` gives Redo *three* chords — it does not remove
-`Ctrl-Shift-Z` or `Ctrl-R`. The only way to displace a default is to bind that
-same chord to a different action.
+**Bindings are added, not replaced.** Your file layers on top of the built-in defaults. `Redo = "ctrl+y"` gives Redo *three* chords — it does not remove `Ctrl-Shift-Z` or `Ctrl-R`. The only way to displace a default is to bind that same chord to a different action.
 
-*(The keybindings overlay behaves differently — rebinding there does replace
-the action's previous chords.)*
+*(The keybindings overlay behaves differently — rebinding there does replace the action's previous chords.)*
 
-**Never write `Action = ""`.** An empty string is a parse error: the entry is
-dropped and you get a warning at startup. An action you don't want bound simply
-has no line in the file.
+**Never write `Action = ""`.** An empty string is a parse error: the entry is dropped and you get a warning at startup. An action you don't want bound simply has no line in the file.
 
-**Avoid `shift+<letter>`.** Terminals report that chord as an uppercase
-character, so `shift+a` will never match anything. Write `"A"` instead. Use
-`shift` with non-letter keys — arrows, tab, enter, backspace.
+**Avoid `shift+<letter>`.** Terminals report that chord as an uppercase character, so `shift+a` will never match anything. Write `"A"` instead. Use `shift` with non-letter keys — arrows, tab, enter, backspace.
 
-If edamame can't parse a line — unknown action name or unreadable chord — it
-drops that entry and tells you once at startup. The rest of the file still
-applies.
+If edamame can't parse a line — unknown action name or unreadable chord — it drops that entry and tells you once at startup. The rest of the file still applies.
 
 ---
 
 ## Terminal compatibility
 
-Some chords can only be delivered by terminals that support the **kitty
-keyboard protocol**. The legacy encoding every terminal falls back to has no
-way to represent `Ctrl` combined with a non-alphabetic key, so those chords
-never arrive — the terminal usually just beeps.
+Some chords can only be delivered by terminals that support the **kitty keyboard protocol**. The legacy encoding every terminal falls back to has no way to represent `Ctrl` combined with a non-alphabetic key, so those chords never arrive — the terminal usually just beeps.
 
 Affected defaults:
 
 - ``Ctrl-` `` (toggle raw mode)
 - `Ctrl-Shift-T` (insert table)
-- `Ctrl-B` / `Ctrl-I` (bold / italic — these collide with `Tab` and a control
-  byte rather than vanishing)
+- `Ctrl-B` / `Ctrl-I` (bold / italic — these collide with `Tab` and a control byte rather than vanishing)
 - The `Alt-Shift-*` table chords
 
-Terminals with support include kitty, Ghostty, WezTerm, foot, and recent
-Alacritty. Apple Terminal does not have it.
+Terminals with support include kitty, Ghostty, WezTerm, foot, and recent Alacritty. Apple Terminal does not have it.
 
-**Workarounds, in order of least effort:** run the command from the palette
-(`Ctrl-P`); or rebind to a plain `Ctrl`+letter, which works everywhere —
-`ToggleRawMode = "ctrl+y"` is a good substitute.
+**Workarounds, in order of least effort:** run the command from the palette (`Ctrl-P`); or rebind to a plain `Ctrl`+letter, which works everywhere — `ToggleRawMode = "ctrl+y"` is a good substitute.
 
-edamame tells you which tier your terminal landed in the first time you launch
-in it, via the capabilities notice. You can reopen that summary any time from
-the palette: "Open welcome / terminal setup".
+edamame tells you which tier your terminal landed in the first time you launch in it, via the capabilities notice. You can reopen that summary any time from the palette: "Open welcome / terminal setup".

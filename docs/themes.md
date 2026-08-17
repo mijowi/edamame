@@ -45,7 +45,7 @@ primary = "#a3d977"
 
 Everything not mentioned falls back to the built-in default, and every styled element in the UI is derived from the palette. **Retinting the palette retints the whole app** — that is the intended way to write a theme.
 
-A fuller example:
+A more complete example:
 
 ```toml
 # Show this theme under "Light" in the picker. Purely a picker filter —
@@ -166,49 +166,31 @@ Those six are the complete set of modifiers. There is no blink or hidden.
 
 **Headings** — `h1` `h1_rule` `h2` `h3` `h4` `h5` `h6`
 
-**Inline** — `bold` `italic` `strikethrough` `highlight` `code_span`
-`code_span_dim` `link_text` `link_file` `link_heading` `image_placeholder`
-`footnote`
+**Inline** — `bold` `italic` `strikethrough` `highlight` `code_span` `code_span_dim` `link_text` `link_file` `link_heading` `image_placeholder` `footnote`
 
-**Blocks** — `code_block_border` `code_block_lang` `code_block_text`
-`blockquote_bar` `blockquote_text` `rule`
+**Blocks** — `code_block_border` `code_block_lang` `code_block_text` `blockquote_bar` `blockquote_text` `rule`
 
 **Lists** — `list_bullet` `list_number`
 
 **Tasks** — `task_unchecked` `task_checked` `task_complete_text`
 
-**Tables** — `table_border` `table_header` `table_header_border` `table_cell`
-`table_row_even` `table_row_odd` `table_drop_indicator` `table_drop_target`
-`table_handle` `table_handle_delete`
+**Tables** — `table_border` `table_header` `table_header_border` `table_cell` `table_row_even` `table_row_odd` `table_drop_indicator` `table_drop_target` `table_handle` `table_handle_delete`
 
-**Status bar** — `status_bar` `status_mode_preview` `status_mode_rendered`
-`status_mode_raw` `status_filename` `status_info` `status_modified`
-`status_breadcrumb_sep` `status_breadcrumb_ancestor` `status_breadcrumb_current`
+**Status bar** — `status_bar` `status_mode_preview` `status_mode_rendered` `status_mode_raw` `status_filename` `status_info` `status_modified` `status_breadcrumb_sep` `status_breadcrumb_ancestor` `status_breadcrumb_current`
 
 **Hint line** — `hint_bar` `hint_chord` `hint_label`
 
-**Messages** — `transient_info` `transient_success` `transient_warning`
-`transient_error`
+**Messages** — `transient_info` `transient_success` `transient_warning` `transient_error`
 
-**Modals** — `modal_bg` `modal_title_normal` `modal_title_warning`
-`modal_title_error` `modal_close_hint` `modal_item` `modal_item_hint`
-`modal_item_selected` `modal_item_selected_unfocused` `modal_item_selected_hint`
-`modal_description` `modal_section_heading` `modal_input_unfocused`
-`modal_input_focused` `modal_button_focused`
+**Modals** — `modal_bg` `modal_title_normal` `modal_title_warning` `modal_title_error` `modal_close_hint` `modal_item` `modal_item_hint` `modal_item_selected` `modal_item_selected_unfocused` `modal_item_selected_hint` `modal_description` `modal_section_heading` `modal_input_unfocused` `modal_input_focused` `modal_button_focused`
 
-**General** — `normal` `selection` `selection_muted` `cursor` `active_line`
-`line_number`
+**General** — `normal` `selection` `selection_muted` `cursor` `active_line` `line_number`
 
-**Mode chips** — `status_mode_search` `status_mode_vim_normal`
-`status_mode_vim_insert` `status_mode_vim_visual` `status_mode_diff`
+**Mode chips** — `status_mode_search` `status_mode_vim_normal` `status_mode_vim_insert` `status_mode_vim_visual` `status_mode_diff`
 
 **Scrollbar** — `scrollbar_track` `scrollbar_thumb` `scrollbar_thumb_active`
 
-**Diff review** — `diff_add_line` `diff_delete_line` `diff_add_line_unfocused`
-`diff_delete_line_unfocused` `diff_add_inline` `diff_delete_inline`
-`diff_add_inline_unfocused` `diff_delete_inline_unfocused`
-`diff_decision_pending` `diff_decision_accepted` `diff_decision_rejected`
-`diff_decision_unfocused` `status_bar_diff` `hint_bar_diff`
+**Diff review** — `diff_add_line` `diff_delete_line` `diff_add_line_unfocused` `diff_delete_line_unfocused` `diff_add_inline` `diff_delete_inline` `diff_add_inline_unfocused` `diff_delete_inline_unfocused` `diff_decision_pending` `diff_decision_accepted` `diff_decision_rejected` `diff_decision_unfocused` `status_bar_diff` `hint_bar_diff`
 
 ---
 

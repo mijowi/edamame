@@ -2,23 +2,66 @@
 
 **A fast Markdown editor and viewer for the terminal.**
 
-edamame shows your document *rendered* with headings, drawn table grids, inline images, and more — while you edit it. Only the line your cursor is on drops to raw Markdown, and it snaps back the moment you move away.
+<!-- GitHub badges -->
+<p>
+  <a href="https://crates.io/crates/edamame"><img src="https://img.shields.io/crates/v/edamame.svg" alt="edamame on crates.io" height="20"></a>
+  <a href="https://docs.rs/edamame"><img src="https://docs.rs/edamame/badge.svg" alt="edamame documentation on docs.rs" height="20"></a>
+  <a href="https://github.com/mijowi/edamame/actions/workflows/ci.yml"><img src="https://github.com/mijowi/edamame/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status for the main branch" height="20"></a>
+  <a href="https://github.com/mijowi/edamame/blob/main/LICENSE"><img src="https://img.shields.io/crates/l/edamame.svg" alt="License: Apache-2.0" height="20"></a>
+</p>
 
 ![The same document in edamame's rendered view and as raw Markdown](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/render_raw.jpg)
 
+edamame shows your document *rendered* with headings, drawn table grids, inline images, and more — while you edit it. Only the line your cursor is on drops to raw Markdown, and it snaps back the moment you move away.
+
 ---
-
-## Why
-
-Markdown is the right format for most documents, and it's become the medium we use to work with AI agents — so we all read and edit a lot more of it than we used to.
-
-The tools are mostly split. Electron apps render beautifully but feel slow. Text editors are fast but show you asterisks and pipe characters. Neovim plugins can decorate lines but can't restructure them, so a table stays a row of `|`. Most tools are good at *viewing* or *editing*, not both.
-
-edamame is an attempt at all of it at once: rendered and editable at the same time, fast enough that it never gets in the way, and small enough to run over SSH.
 
 ## Demo
 
-http://github.com/mijowi/mijowi.com/raw/refs/heads/main/edamame/media/edamame_demo_web.mp4
+https://github.com/user-attachments/assets/85e2a303-08d6-4122-9f1f-18975613a127
+
+## Installation
+
+**Next**: [Getting started](https://github.com/mijowi/edamame/blob/main/docs/getting-started.md)
+
+### Homebrew
+
+```bash
+brew install mijowi/tap/edamame
+```
+
+### Cargo
+
+```bash
+cargo install edamame
+```
+
+Requires Rust 1.90 or newer.
+
+### Prebuilt binaries
+
+Download for your platform from [Releases](https://github.com/mijowi/edamame/releases).
+
+### From source
+
+```bash
+git clone https://github.com/mijowi/edamame
+cd edamame
+cargo build --release
+# binary at target/release/edamame
+```
+
+Requires Rust 1.90 or newer.
+
+## Documentation
+
+- [Getting started](https://github.com/mijowi/edamame/blob/main/docs/getting-started.md) — first run, the three view modes, reading the status bar
+- [Editing](https://github.com/mijowi/edamame/blob/main/docs/editing.md) — tables, lists, links, footnotes, search, diff review, images, export
+- [Keybindings](https://github.com/mijowi/edamame/blob/main/docs/keybindings.md) — every default chord and how to change it
+- [Configuration](https://github.com/mijowi/edamame/blob/main/docs/configuration.md) — every setting
+- [Themes](https://github.com/mijowi/edamame/blob/main/docs/themes.md) — switching, and writing your own
+- [Vim mode](https://github.com/mijowi/edamame/blob/main/docs/vim-mode.md) — what's supported and how it differs from Vim
+- [Security](https://github.com/mijowi/edamame/blob/main/docs/security.md) — what protects you when you open a document you didn't write
 
 ## Features
 
@@ -51,57 +94,6 @@ Tables are drawn, not printed as pipes. `Tab` walks the cells, rows and columns 
 
 ![A grid of edamame's built-in themes](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/themes.jpg)
 
-## Install
-
-### Homebrew
-
-```bash
-brew install mijowi/tap/edamame
-```
-
-### Cargo
-
-```bash
-cargo install edamame
-```
-
-### Prebuilt binaries
-
-Download for your platform from [Releases](https://github.com/mijowi/edamame/releases).
-
-### From source
-
-```bash
-git clone https://github.com/mijowi/edamame
-cd edamame
-cargo build --release
-# binary at target/release/edamame
-```
-
-Requires **Rust 1.90 or newer**.
-
-## Usage
-
-```bash
-edamame notes.md     # open a file
-edamame              # start with an empty buffer
-edamame --help       # the full flag list
-edamame --doctor     # diagnostics to paste into a bug report
-```
-
-Then:
-
-|Key | Action|
-|---|---|
-| **Any key** | Start editing (files open read-only) |
-| `Ctrl-P` | Command palette — everything is here |
-| `Ctrl-S` | Save |
-| `Esc` | Back to reading |
-| ``Ctrl-` `` | Toggle the whole document to raw Markdown |
-| `Ctrl-Q` | Quit |
-
-`Ctrl-C` copies — it doesn't quit.
-
 ## Terminal support
 
 edamame runs anywhere, but a few things depend on your terminal:
@@ -116,23 +108,6 @@ Where support is missing, edamame adapts rather than breaking — it switches to
 
 Full support in kitty, Ghostty, WezTerm, and foot. Apple Terminal works, with the reduced feature set above. Run `edamame --doctor` to see what your terminal reports.
 
-## Documentation
-
-- [Getting started](https://github.com/mijowi/edamame/blob/main/docs/getting-started.md)
-  — first run, the three view modes, reading the status bar
-- [Editing](https://github.com/mijowi/edamame/blob/main/docs/editing.md)
-  — tables, lists, links, footnotes, search, diff review, images, export
-- [Keybindings](https://github.com/mijowi/edamame/blob/main/docs/keybindings.md)
-  — every default chord and how to change it
-- [Configuration](https://github.com/mijowi/edamame/blob/main/docs/configuration.md)
-  — every setting
-- [Themes](https://github.com/mijowi/edamame/blob/main/docs/themes.md)
-  — switching, and writing your own
-- [Vim mode](https://github.com/mijowi/edamame/blob/main/docs/vim-mode.md)
-  — what's supported and how it differs from Vim
-- [Security](https://github.com/mijowi/edamame/blob/main/docs/security.md)
-  — what protects you when you open a document you didn't write
-
 ## Security
 
 edamame is built to open documents you didn't write. Image decoding is bounded against decompression bombs, remote image fetches are consent-gated and filtered against internal addresses, and HTML export strips scripts and unsafe link schemes. Details and the threat model are in [docs/security.md](https://github.com/mijowi/edamame/blob/main/docs/security.md).
@@ -146,6 +121,8 @@ Start with [CONTRIBUTING.md](https://github.com/mijowi/edamame/blob/main/CONTRIB
 Questions, ideas and anything you're not sure is a bug belong in [Discussions](https://github.com/mijowi/edamame/discussions).
 
 [AGENTS.md](https://github.com/mijowi/edamame/blob/main/AGENTS.md) is the architecture guide — the module layout, the invariants that are easy to break, and the code style. `docs/dev/` holds the design specs.
+
+Please run the following *before* opening a PR:
 
 ```bash
 cargo fmt

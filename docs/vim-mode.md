@@ -171,13 +171,11 @@ A rendered table's `|` borders and `|---|` alignment row are drawn chrome, not p
 | `p` / `P` | Paste rows at a legal row boundary |
 | `J`, `>`, `<` | Refused — they'd break the grid |
 
-`j` and `k` still move between rows, and document motions like `gg` and `G`
-still leave the table.
+`j` and `k` still move between rows, and document motions like `gg` and `G` still leave the table.
 
 **Edits that would break the table are refused**, with the reason on the hint line — a delete spanning the header and its alignment row, a change crossing a `|`, pasting something that isn't a table row over one. What *is* allowed: deleting whole data rows, deleting the entire table, editing within one cell, and editing the alignment row itself (which stays hand-editable by design).
 
-Counted forms like `2dd` fall through to ordinary linewise behavior — still
-safe, because the same guard catches them.
+Counted forms like `2dd` fall through to ordinary linewise behavior — still safe, because the same guard catches them.
 
 ---
 

@@ -1,4 +1,4 @@
-# Field Notes: Editing Markdown in the Terminal
+# edamame: Markdown in the Terminal
 
 A sample document for **edamame** — it doubles as a smoke test, so it exercises most of the rendering surface while still reading like something you'd actually write.[^1]
 
