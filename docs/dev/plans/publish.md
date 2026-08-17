@@ -1,8 +1,9 @@
 # Publish checklist
 
 - [x] Make a nice README with screenshots and videos
-- [ ] Release/tag v0.1.0
-- [ ] Compile binaries and add to GitHub Releases. Targets: aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-gnu (build on the oldest Ubuntu runner you can, for glibc compat), x86_64-unknown-linux-musl, aarch64-unknown-linux-gnu
+- [ ] Release/tag v0.1.0 — see [Releases via `dist`](#releases-via-dist-formerly-cargo-dist) below
+- [x] Compile binaries and add to GitHub Releases — automated by `dist` (`.github/workflows/release.yml`), triggered by the tag push. Targets: aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl, aarch64-unknown-linux-gnu; Linux built on `ubuntu-22.04` for glibc compat.
+- [ ] Create the `mijowi/homebrew-tap` repo and add the `HOMEBREW_TAP_TOKEN` secret — **before** tagging, or the Homebrew job fails.
 - [ ] Set GitHub repo to public
 
 After flipping repo to public:
@@ -10,7 +11,7 @@ After flipping repo to public:
 - [ ] Turn on secret scanning + push protection.
 - [ ] Add social preview image — the hero screenshot, once it exists.
 - [ ] Publish to crates.io
-- [ ] **Create the Homebrew tap.** The README documents `brew install mijowi/tap/edamame`; that tap does not exist yet.
+- [ ] **Make the tap repo public.** It has to be *created* before tagging (above); flipping it public is what makes `brew install mijowi/tap/edamame` — as documented in the README — actually resolve.
 
 - [x] Add user-facing documentation — `docs/{getting-started,editing,keybindings,configuration,themes}.md`, plus corrections to `vim-mode.md` / `security.md`
 - [x] Add a license - Apache 2.0 (`LICENSE`, verbatim text + appendix)
@@ -21,44 +22,41 @@ After flipping repo to public:
 - [x] Prune docs, especially plans — `docs/` is now user-facing only, `docs/dev/` holds design specs + plans and is excluded from the published crate
 - [x] Diff edit mode removed. `Action::DiffEnterEdit` / `DiffExitEdit`, the `i` / `Enter` bindings, and the "coming soon" flash are all gone; `i` and `Enter` now fall through to the global keymap. Pinned by `diff_keys::tests::edit_sub_mode_keys_are_unbound`. The `src/diff/` design notes still describe a future Edit sub-mode — that groundwork is untouched, only the user-visible dead end was removed.
 - [x] Turn on Dependabot alerts + security updates, and the dependency graph (Dependabot needs it).
+- [ ] **Re-enable the Windows CI job.** Disabled to `workflow_dispatch` only (`.github/workflows/ci.yml`) because `continue-on-error` still paints a red X on every PR's check list. Four failures, all POSIX path-separator assumptions in the tests rather than product bugs: `app::modal::dirty_conflict::tests::local_copy_path_appends_dot_local{,_with_extension}`, `config::config::tests::config_dir_prefers_absolute_xdg_config_home`, `ui::save_copy_modal::tests::save_as_default_keeps_name_and_shows_absolute_directory`.
 
 ---
 
 ## Releases via `dist` (formerly cargo-dist)
 
-`dist` generates its own release workflow, and that workflow is coupled to the exact `dist` version that wrote it. **Do not hand-write or hand-edit `.github/workflows/release.yml`** — regenerate it instead. That is why this repo does not ship one yet: it has to come out of the tool.
+**This is already set up.** `dist-workspace.toml` holds the config (dist 0.32.0, GitHub CI, `shell` + `homebrew` installers, the five targets, tap `mijowi/homebrew-tap`) and `.github/workflows/release.yml` is the generated workflow. `dist generate --check` passes and `dist plan` produces the expected matrix.
 
-Create the tap repo first (empty is fine), because the Homebrew installer writes its formula there:
+`dist` owns that workflow and it is coupled to the exact `dist` version that wrote it. **Never hand-edit `.github/workflows/release.yml`** — run `dist init` / `dist generate` and commit the result. `dist plan` fails in CI when the file has drifted, which is what it is for.
 
-    github.com/mijowi/homebrew-tap
-
-Then:
+### Releasing
 
 ```bash
-cargo install cargo-dist          # installs the `dist` binary
-dist init                         # interactive; writes [workspace.metadata.dist]
-                                  # into Cargo.toml AND .github/workflows/release.yml
+dist plan                  # dry run: shows the artifact matrix
 ```
 
-Answers to give at the prompts:
-
-| Prompt | Answer |
-|---|---|
-| CI backend | GitHub |
-| Installers | `shell`, `homebrew` (add `powershell` only once Windows is supported) |
-| Homebrew tap | `mijowi/homebrew-tap` |
-| Targets | `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu` |
-
-Then commit both generated files, and release with:
+Then, on the commit that should be v0.1.0:
 
 ```bash
-dist plan                         # dry run: shows the artifact matrix
-git tag v0.1.0 && git push --tags # the workflow builds and publishes
+git tag -a v0.1.0 -m "edamame v0.1.0"
+git push origin v0.1.0     # the tag push is what triggers the workflow
 ```
 
-Notes:
+The workflow builds every target, creates the GitHub Release with the archives + checksums + `edamame-installer.sh`, and pushes the Homebrew formula to the tap. `release.yml` also runs its `plan` job on every pull request as a dry run, so drift and config errors surface before a tag exists.
 
-- `aarch64-unknown-linux-gnu` needs cross-compilation; `dist` handles this, but confirm it in `dist plan` before relying on it.
-- For glibc compatibility, check which Ubuntu image the generated workflow uses — older is better for the `-gnu` target. The `-musl` target sidesteps the question entirely.
+### Prerequisites, in order
+
+1. **The tap repo must exist** — `github.com/mijowi/homebrew-tap`, empty is fine. The `publish-homebrew-formula` job pushes `edamame.rb` into it.
+2. **`HOMEBREW_TAP_TOKEN` secret** — a PAT with write access to the tap repo, set in this repo's Actions secrets. The default `GITHUB_TOKEN` cannot push to another repository. Without it the release still publishes; only the Homebrew job fails.
+3. **The version in `Cargo.toml` must match the tag** (`0.1.0` ↔ `v0.1.0`), and `Cargo.lock` must be committed in sync.
+4. **Merge `pre-publish` to `main` first**, and tag the merge commit — a tag on a side branch produces a release whose source doesn't match the default branch.
+
+### Notes
+
+- `aarch64-unknown-linux-gnu` is cross-compiled by `dist` (musl-cross container); confirmed present in `dist plan`.
+- glibc floor: the generated workflow builds the Linux targets on `ubuntu-22.04`. The `-musl` target sidesteps the question entirely.
 - `dist init` must be re-run after upgrading `dist`, to regenerate the workflow.
-- The tap must exist and the workflow needs a token with permission to push to it (`dist` prompts about this).
+- **Dependabot must not touch `release.yml`.** Its `github-actions` group bumped `actions/checkout` there in PR #18 and `dist plan` failed on the drift. The same PR rewrote `dtolnay/rust-toolchain@1.90` → `@1.100` in `ci.yml`, silently destroying the MSRV pin — that argument is a Rust version, not an action version. Both need exclusions in `.github/dependabot.yml`.
