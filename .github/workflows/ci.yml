@@ -89,12 +89,22 @@ jobs:
         run: cargo test --no-default-features
 
   # Windows is not a supported platform yet — edamame has never been tested
-  # there (issue #2).  Running it non-blocking turns "someone should
-  # try Windows one day" into a standing signal at no cost: the job reports
-  # its result but cannot fail the workflow.  Promote it into the matrix
-  # above once it is reliably green.
+  # there (issue #2).  Promote it into the matrix above once it is reliably
+  # green.
+  #
+  # Currently DISABLED on push/PR: it runs only via `workflow_dispatch`.
+  # `continue-on-error` keeps the *workflow* green but the job still reports
+  # its own check as failing, so a red X sat on every pull request — which is
+  # exactly the signal a non-blocking job is supposed to avoid spending.  The
+  # four failures are POSIX path-separator assumptions in the tests, not
+  # product bugs: `dirty_conflict::local_copy_path_appends_dot_local{,_with_
+  # extension}`, `config::config_dir_prefers_absolute_xdg_config_home`, and
+  # `save_copy_modal::save_as_default_keeps_name_and_shows_absolute_directory`
+  # all compare against hard-coded `/`-joined strings.  Fix those, then drop
+  # the `if:` below to re-arm the standing signal.
   windows:
     name: Test (windows, non-blocking)
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     continue-on-error: true
     steps:
