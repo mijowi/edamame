@@ -9,6 +9,10 @@ editing keys below but keeps every `Ctrl-*` chord.
 live in the command palette instead. Press **`Ctrl-P`** and type. That is the
 intended way to reach anything you use rarely.
 
+The keybindings overlay lists every chord and lets you rebind on the spot — `Ctrl-P` → **"Keybindings"**:
+
+![The keybindings overlay, listing actions and their chords](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/keybinds.jpg)
+
 ---
 
 ## Essentials
@@ -161,6 +165,8 @@ and the overlays still work.
 
 These are reachable from the command palette (`Ctrl-P`), or you can bind them yourself. This is deliberate: a chord per overlay is more to memorize than it is worth.
 
+![The command palette listing available commands](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/command_palette.jpg)
+
 **Files** — Save as…, Open in external editor, Export HTML
 **Overlays** — Settings, Keybindings, Welcome / terminal setup, Markdown cheat sheet, About, Switch theme, Create custom theme
 **Insert** — Link, Image, Footnote
@@ -202,7 +208,7 @@ is no `super` / `cmd` / `meta`.
 
 **Keys** — any single character (`a`, `-`, `` ` ``, `é`), or one of:
 
-| | |
+| Key| Name|
 |---|---|
 | Arrows | `up` `down` `left` `right` |
 | Home / End | `home` `end` |

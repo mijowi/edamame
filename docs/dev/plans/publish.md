@@ -1,11 +1,6 @@
 # Publish checklist
 
-- [ ] Make a nice README with screenshots and videos — README written; **screenshots screencast still needed**, marked with `TODO(screenshot)` / `TODO(screencast comments in the file
-    1. The hero shot. A rendered document showing off range: an H1, a drawn table, a task list with some items checked, inline code, maybe an image. Crucially, put the cursor on a heading so that one line shows its raw ## Heading source while everything around it stays styled. If a reader only looks at one picture, this has to land the concept.
-    2. A short screencast (asciinema or GIF, ~15s), which is where the reveal actually becomes obvious — motion sells it in a way a still can't. Arrow down through a few lines and let each one flip to raw and back, then Tab through table cells, then Ctrl-P and run a command.
-    3. Diff review, mid-review with one hunk accepted (green), one rejected, one focused. This is a strong differentiator and completely invisible from a feature list.
-    4. A theme strip — the same short document in three or four themes side by side. Cheap to produce, and disproportionately effective at making a project look finished.
-- [ ] Add a documentation page for the terminal upgrade notice and a link to the page from within edamame — the prose now exists in `docs/getting-started.md` ("The terminal capabilities notice") and `docs/keybindings.md` ("Terminal compatibility"); still needs a link from inside the capabilities modal once the docs have a public URL
+- [x] Make a nice README with screenshots and videos
 - [ ] Release/tag v0.1.0
 - [ ] Compile binaries and add to GitHub Releases. Targets: aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-gnu (build on the oldest Ubuntu runner you can, for glibc compat), x86_64-unknown-linux-musl, aarch64-unknown-linux-gnu
 - [ ] Set GitHub repo to public

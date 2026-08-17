@@ -2,14 +2,9 @@
 
 **A fast Markdown editor and viewer for the terminal.**
 
-edamame shows your document *rendered* — real headings, drawn table grids, inline images — while you edit it. Only the line your cursor is on drops to raw Markdown, and it snaps back the moment you move away.
+edamame shows your document *rendered* with headings, drawn table grids, inline images, and more — while you edit it. Only the line your cursor is on drops to raw Markdown, and it snaps back the moment you move away.
 
-<!-- TODO(screenshot): a rendered document — H1, a table, a task list, an
-     inline image — with the cursor on a heading showing its raw `## …`
-     source. This is the one image that has to sell the hybrid view. -->
-
-<!-- TODO(screencast): ~15s asciinema — arrow through a document watching
-     lines reveal and re-render, tab through table cells, Ctrl-P palette. -->
+![The same document in edamame's rendered view and as raw Markdown](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/render_raw.jpg)
 
 ---
 
@@ -20,6 +15,10 @@ Markdown is the right format for most documents, and it's become the medium we u
 The tools are mostly split. Electron apps render beautifully but feel slow. Text editors are fast but show you asterisks and pipe characters. Neovim plugins can decorate lines but can't restructure them, so a table stays a row of `|`. Most tools are good at *viewing* or *editing*, not both.
 
 edamame is an attempt at all of it at once: rendered and editable at the same time, fast enough that it never gets in the way, and small enough to run over SSH.
+
+## Demo
+
+http://github.com/mijowi/mijowi.com/raw/refs/heads/main/edamame/media/edamame_demo_web.mp4
 
 ## Features
 
@@ -33,6 +32,24 @@ edamame is an attempt at all of it at once: rendered and editable at the same ti
 - **HTML export**, self-contained or linked
 - **Footnotes, task lists, list continuation and renumbering**
 - Mouse support, fuzzy command palette, jump-to-heading, navigation history
+
+### The hybrid view
+
+The document stays formatted while you work. The cursor's line shows its source, and renders again as soon as you leave it — so list markers, emphasis and links are editable in place without turning the page into syntax.
+
+![Editing a list in edamame, with the cursor's line showing raw Markdown while the rest stays rendered](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/raw_reveal_and_list_ops.gif)
+
+### Tables as grids
+
+Tables are drawn, not printed as pipes. `Tab` walks the cells, rows and columns can be added or removed in place, and the mouse can drag a divider to resize or a handle to reorder.
+
+![Reordering and resizing columns in an edamame table with the mouse](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/table_ops.gif)
+
+### Themes
+
+27 built in, and a documented TOML format for writing your own.
+
+![A grid of edamame's built-in themes](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/themes.jpg)
 
 ## Install
 
@@ -74,7 +91,7 @@ edamame --doctor     # diagnostics to paste into a bug report
 
 Then:
 
-| | |
+|Key | Action|
 |---|---|
 | **Any key** | Start editing (files open read-only) |
 | `Ctrl-P` | Command palette — everything is here |
