@@ -228,6 +228,7 @@ Notes on differences:
 - **`:s`/`:%s` preview live as you type them.** Once the command is complete enough to act on, the substitution is shown applied in the document, updating on every keystroke. Nothing is committed until you press Enter, and `Esc` leaves the buffer exactly as it was — the preview records no undo step and doesn't mark the file modified.
 
   ![Typing a :%s substitution, with the replacement previewed in the document on every keystroke](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/vim_substitution.gif)
+
 - **`:s`/`:%s` use real regex** with Vim's pattern dialect. You type patterns the way you would in Vim:
   - Magic-level escaping (`\( \) \+ \|`) and the `\v \m \M \V` switches.
   - Word boundaries `\<` `\>`.
