@@ -17,6 +17,18 @@
 //!
 //! A test that only *reads* the environment must also take the lock; it
 //! is the read side of the same race.
+//!
+//! The same lock also serialises [`config::persistence::SuppressGuard`],
+//! which flips a process-global `AtomicBool` rather than an environment
+//! variable — and the read side of *that* race is easy to miss, because
+//! such a test touches no environment variable of its own.  Any test
+//! that observes `config_reads_allowed` / `config_writes_allowed` — which
+//! means any test calling `list_export_stylesheets`, `list_theme_names`,
+//! `read_theme_named`, or `Config::save` — must take the lock too, or it
+//! reads the gate while a suppressing test on another thread holds it
+//! closed and sees an empty list it can't explain.
+//!
+//! [`config::persistence::SuppressGuard`]: crate::config::persistence::SuppressGuard
 
 use std::env;
 use std::sync::{Mutex, MutexGuard, OnceLock};
