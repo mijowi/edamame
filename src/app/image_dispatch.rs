@@ -479,6 +479,12 @@ impl App {
             if !self.editor.images.request(&info.url) {
                 continue;
             }
+            tracing::debug!(
+                target: "image", url = %info.url, is_diagram,
+                remote = crate::image::loader::is_remote(&info.url),
+                %session_allow_remote,
+                "decode dispatched",
+            );
             let tx = tx.clone();
             let doc_path = doc_path.clone();
             let url = info.url.clone();
@@ -528,25 +534,53 @@ impl App {
                         // either means the sync fallback in
                         // `get_protocol_pair` handles the cold path.
                         //
+                        // Inside its own `catch_unwind` for the reason
+                        // the decode has one, and then some: this runs
+                        // *after* the result exists, so a panic here
+                        // kills the worker with the image in hand and no
+                        // event ever sent — the cache entry stays
+                        // `Pending` forever, which paints as a permanent
+                        // placeholder under full reserved rows with
+                        // nothing logged.  A scratch is an optimization;
+                        // losing it costs one sync encode on the UI
+                        // thread, so on a panic we log and send the
+                        // image without one rather than dropping it.
                         if let (Some(picker), Some(width), Some((mw, mh)), Some(fs)) =
                             (&scratch_picker, scratch_width, max_cells, font_size)
                         {
-                            let rows =
-                                crate::image::aspect_rows_of(&loaded.image, mw, mh, fs) as u16;
-                            if width > 0 && rows > 0 {
-                                let rect = Rect::new(0, 0, width, rows);
-                                let buf = crate::image::render_halfblocks_scratch(
-                                    picker,
-                                    loaded.image.clone(),
-                                    rect,
-                                );
-                                loaded.scratch = Some((rect, buf));
+                            let scratch =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    let rows =
+                                        crate::image::aspect_rows_of(&loaded.image, mw, mh, fs)
+                                            as u16;
+                                    if width == 0 || rows == 0 {
+                                        return None;
+                                    }
+                                    let rect = Rect::new(0, 0, width, rows);
+                                    let buf = crate::image::render_halfblocks_scratch(
+                                        picker,
+                                        loaded.image.clone(),
+                                        rect,
+                                    );
+                                    Some((rect, buf))
+                                }));
+                            match scratch {
+                                Ok(s) => loaded.scratch = s,
+                                Err(_) => tracing::warn!(
+                                    target: "image", url = %loaded.url,
+                                    "halfblocks scratch render panicked; sending the image without a prebuilt scratch",
+                                ),
                             }
                         }
                         AppEvent::ImageReady(Ok(loaded))
                     }
                     Err(err) => AppEvent::ImageReady(Err(err)),
                 };
+                tracing::debug!(
+                    target: "image",
+                    ok = matches!(event, AppEvent::ImageReady(Ok(_))),
+                    "decode worker finished",
+                );
                 let _ = tx.send(event);
             });
         }
