@@ -72,6 +72,16 @@ impl CursorBlink {
         self.reset();
     }
 
+    /// Whether blinking is turned on at all, independent of the current
+    /// phase.  `is_visible` folds the two together for painting; this
+    /// exposes just the configured half, so a test can assert that a
+    /// freshly built `EditorState` picked the setting up (the two sites
+    /// that build one have drifted on exactly this before — see
+    /// `app::configure_new_editor`).
+    pub fn is_blinking(&self) -> bool {
+        self.blinking
+    }
+
     /// Whether the cursor should be painted this frame.
     pub fn is_visible(&self) -> bool {
         !self.blinking || self.visible

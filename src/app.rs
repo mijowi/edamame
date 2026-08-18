@@ -158,6 +158,21 @@ pub struct App {
     /// the prompt the user just dismissed.  `Never` persists to
     /// `config.images.remote_policy` instead.
     session_remote_declined: bool,
+    /// Sender for the encoder worker's channel, retained so a *newly
+    /// loaded document* can be given one.
+    ///
+    /// `ImageCache::get_protocol_pair` returns `None` without a sender
+    /// attached, and `paint_images` then draws the `[Image: alt]`
+    /// placeholder — so a cache that never receives it renders no image
+    /// at all, however healthy its decodes.  The cache is owned by
+    /// `EditorState`, and `load_file_into_editor` builds a whole new
+    /// one per document, so attaching once in `spawn_event_threads`
+    /// (which is all that used to happen) covered the startup document
+    /// and nothing else: every file opened by following a link or
+    /// navigating back showed reserved rows and a placeholder while its
+    /// images decoded perfectly in the background.  Kept here so the
+    /// swap site can re-attach.
+    resize_tx: Option<mpsc::Sender<ratatui_image::thread::ResizeRequest>>,
     /// Sender for the main loop's mpsc channel; retained so background
     /// decode threads can push `AppEvent::ImageReady`.  Initialised in
     /// `run`, so wrapped in `Option` during `new` construction.
@@ -347,6 +362,49 @@ pub struct App {
     vim: Option<VimState>,
 }
 
+/// Apply the App-level configuration that every freshly built
+/// [`EditorState`] needs, at both of the two sites that build one:
+/// `App::new` for the startup document and
+/// [`App::load_file_into_editor`] for every document opened after it.
+///
+/// It exists because those two sites drifted, twice, and both drifts
+/// were invisible until someone opened a second document: the newer
+/// site never applied `cursor_blink` (so a `cursor_blink = false`
+/// config quietly started blinking again after following a link), and
+/// separately never re-attached the encoder-worker sender (so images
+/// decoded and then painted as placeholders forever — see
+/// [`App::resize_tx`]).  Anything a new `EditorState` needs from
+/// `Config` belongs here, not at a call site.
+///
+/// `images_layout_on` / `diagrams_layout_on` are passed rather than
+/// derived because the two callers know them differently: `App::new`
+/// has no `self` to ask `images_layout_enabled()` yet.  The reparse at
+/// the end is conditional for the same reason it always was — the
+/// constructor already parsed once, and only a layout flag flipping off
+/// invalidates that parse.
+fn configure_new_editor(
+    editor: &mut EditorState,
+    config: &Config,
+    images_layout_on: bool,
+    diagrams_layout_on: bool,
+) {
+    editor.cursor_blink = crate::editor::CursorBlink::from_config(
+        config.editor.cursor_blink,
+        config.editor.cursor_blink_ms,
+    );
+    if !images_layout_on {
+        editor.images_enabled = false;
+    }
+    if !diagrams_layout_on {
+        editor.diagrams_enabled = false;
+    }
+    editor.set_row_striping(config.table.row_striping);
+    editor.set_big_h1(config.editor.big_h1);
+    if !images_layout_on || !diagrams_layout_on {
+        editor.refresh_parsed();
+    }
+}
+
 impl App {
     /// Create the app, loading the file if one is given.
     pub fn new(
@@ -454,10 +512,6 @@ impl App {
             config.images.max_width,
             image_font_size,
         );
-        editor.cursor_blink = crate::editor::CursorBlink::from_config(
-            config.editor.cursor_blink,
-            config.editor.cursor_blink_ms,
-        );
         // When the user has persisted `images.enabled = "never"`, image
         // blocks must collapse to just the `[Image: alt]` placeholder —
         // no reserved rows beneath.  The `Ask` / `Always` paths leave
@@ -475,17 +529,7 @@ impl App {
                 config.diagrams.enabled,
                 crate::config::DiagramsEnabled::Never
             );
-        if images_off {
-            editor.images_enabled = false;
-        }
-        if diagrams_off {
-            editor.diagrams_enabled = false;
-        }
-        editor.set_row_striping(config.table.row_striping);
-        editor.set_big_h1(config.editor.big_h1);
-        if images_off || diagrams_off {
-            editor.refresh_parsed();
-        }
+        configure_new_editor(&mut editor, &config, !images_off, !diagrams_off);
 
         // Vim modal editing is opt-in via `config.modal.handler`.  When
         // enabled the editor never rests in Preview (vim-Normal replaces
@@ -640,6 +684,7 @@ impl App {
             last_pointer_shape: PointerShape::Default,
             session_allow_remote: false,
             session_remote_declined: false,
+            resize_tx: None,
             app_tx: None,
             last_scroll_at: None,
             last_draw_at: None,

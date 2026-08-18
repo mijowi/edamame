@@ -272,6 +272,16 @@ impl ImageCache {
         self.prebuilt_scratches.clear();
     }
 
+    /// Whether an encoder-worker sender has been attached.
+    ///
+    /// Exists for the App-level test that a document swap re-attaches
+    /// it: without one, `get_protocol_pair` returns `None` and every
+    /// image in that document paints as a placeholder no matter how
+    /// well it decodes.
+    pub fn has_resize_sender(&self) -> bool {
+        self.resize_tx.is_some()
+    }
+
     // ── Native-transmission bookkeeping ───────────────────────────────
 
     /// Advance the frame counter.  Called once per `terminal.draw` from

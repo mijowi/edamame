@@ -280,23 +280,23 @@ impl App {
                 })
                 .unwrap_or((10, 20)),
         );
-        // Preserve the current declined state across file loads: a
-        // session-level `No`, a persisted `Never`, or anything else that
-        // zeroed `images_enabled` on the previous editor stays in
-        // effect for the new one.
-        let images_off = !self.images_layout_enabled();
-        let diagrams_off = !self.diagrams_layout_enabled();
-        if images_off {
-            new_editor.images_enabled = false;
+        // The encoder worker's sender lives on the App because the cache
+        // that needs it is rebuilt per document.  Without this the new
+        // document's images decode fine and then paint as placeholders
+        // forever — `get_protocol_pair` returns `None` with no sender.
+        if let Some(tx) = self.resize_tx.clone() {
+            new_editor.images.attach_resize_sender(tx);
         }
-        if diagrams_off {
-            new_editor.diagrams_enabled = false;
-        }
-        new_editor.set_row_striping(self.config.table.row_striping);
-        new_editor.set_big_h1(self.config.editor.big_h1);
-        if images_off || diagrams_off {
-            new_editor.refresh_parsed();
-        }
+        // Everything else a new editor needs from `Config`, shared with
+        // `App::new` — including preserving a session-level `No` or a
+        // persisted `Never` that zeroed `images_enabled` on the previous
+        // editor, which stays in effect for this one.
+        super::configure_new_editor(
+            &mut new_editor,
+            &self.config,
+            self.images_layout_enabled(),
+            self.diagrams_layout_enabled(),
+        );
         self.editor = new_editor;
         // Image cache is owned by `EditorState`, so swapping to a new
         // editor resets it — image URLs on the new doc are resolved
@@ -764,6 +764,46 @@ mod tests {
         assert!(!app.modal_stack.contains::<ImagesEnabledPromptModal>());
         assert!(!app.modal_stack.contains::<DiagramsEnabledPromptModal>());
         assert!(!app.modal_stack.contains::<RemoteImagePromptModal>());
+    }
+
+    #[test]
+    fn navigation_carries_the_cursor_blink_setting_to_the_new_document() {
+        // Second drift found at the same construction site: `App::new`
+        // applied `cursor_blink`, the navigation path didn't, so a
+        // `cursor_blink = false` config started blinking again the
+        // moment the user followed a link.  Both now go through
+        // `configure_new_editor`.
+        let mut app = app_with_buffer("Just prose.\n", 0);
+        app.config.editor.cursor_blink = false;
+        let (_f, path) = md_file("More prose.\n");
+        app.navigate_to_file(path);
+        assert!(
+            !app.editor.cursor_blink.is_blinking(),
+            "the new document must honor the configured blink setting",
+        );
+    }
+
+    #[test]
+    fn navigation_carries_the_encoder_sender_to_the_new_document() {
+        // The decode half of the pipeline is not the whole story: the
+        // *paint* half needs `ImageCache::resize_tx`, and the cache is
+        // rebuilt per document.  Attaching it only in
+        // `spawn_event_threads` left every later document with
+        // `get_protocol_pair` returning `None` — reserved rows and a
+        // placeholder over images that had decoded perfectly.
+        let mut app = app_with_buffer("![a](img.png)\n", 0);
+        let (tx, _rx) = std::sync::mpsc::channel();
+        app.editor.images.attach_resize_sender(tx.clone());
+        app.resize_tx = Some(tx);
+        assert!(app.editor.images.has_resize_sender());
+
+        let (_f, path) = md_file("![b](other.png)\n");
+        app.navigate_to_file(path);
+
+        assert!(
+            app.editor.images.has_resize_sender(),
+            "a document opened mid-session must be able to encode its images",
+        );
     }
 
     #[test]

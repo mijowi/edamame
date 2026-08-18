@@ -161,7 +161,12 @@ impl App {
         }
 
         let (resize_tx, resize_rx) = mpsc::channel::<ratatui_image::thread::ResizeRequest>();
-        self.editor.images.attach_resize_sender(resize_tx);
+        // Attach to the startup document's cache *and* keep a clone:
+        // every later document gets a brand-new `EditorState` (and so a
+        // brand-new `ImageCache`), which needs the same sender or its
+        // images never reach a protocol.  See `App::resize_tx`.
+        self.editor.images.attach_resize_sender(resize_tx.clone());
+        self.resize_tx = Some(resize_tx);
         let tx_encoder = tx.clone();
         std::thread::spawn(move || {
             while let Ok(req) = resize_rx.recv() {
