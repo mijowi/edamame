@@ -249,6 +249,13 @@ impl App {
     /// Replace the editor's buffer with the contents of `path` and
     /// refresh dependent caches.  Does NOT touch the nav stack — the
     /// caller decides whether the transition should record history.
+    ///
+    /// Ends in [`App::on_document_contents_swapped`], which re-runs the
+    /// per-document media prompts for the new document: under the
+    /// default `images.enabled = "ask"` the prompt is what sets
+    /// `session_images_enabled`, so a session that started on a
+    /// document with no images would otherwise never display images in
+    /// any document opened from within edamame.
     pub(super) fn load_file_into_editor(&mut self, path: PathBuf) -> Result<()> {
         let buffer = Buffer::load_file(&path)?;
         // Stamp the watcher's own-write filter from the bytes we
@@ -296,7 +303,11 @@ impl App {
         // against the new base directory on the next draw.
         self.file_path = Some(path.clone());
         self.view_state = EditorViewState::new();
-        self.images_dirty = true;
+        // Marks the image cache dirty and re-evaluates the three
+        // per-document media prompts ("this document contains images —
+        // show them?") against the newly-loaded document.  A session
+        // answer already given is not re-asked.
+        self.on_document_contents_swapped();
         // Repoint the filesystem watcher at the newly-loaded file.
         // Best-effort: failures just leave the user without
         // external-edit prompts on this file.
@@ -467,11 +478,30 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use super::*;
+    use crate::app::modal::{
+        DiagramsEnabledPromptModal, ImagesEnabledPromptModal, RemoteImagePromptModal,
+    };
     use crate::app::test_utils::app_with_buffer;
 
     const H: usize = 20;
     const W: usize = 80;
+
+    /// Write `contents` to a temporary `.md` file.  The handle is
+    /// returned alongside the path so the file outlives the navigation
+    /// under test.
+    fn md_file(contents: &str) -> (tempfile::NamedTempFile, PathBuf) {
+        let mut f = tempfile::Builder::new()
+            .suffix(".md")
+            .tempfile()
+            .expect("temp file");
+        f.write_all(contents.as_bytes()).expect("write");
+        f.flush().expect("flush");
+        let path = f.path().to_path_buf();
+        (f, path)
+    }
 
     #[test]
     fn heading_anchor_jump_records_history_and_back_returns() {
@@ -613,5 +643,200 @@ mod tests {
             "in-document back must not raise the dirty guard"
         );
         assert_eq!(app.editor.scroll, 0);
+    }
+
+    // ── Per-document media prompts (issue #30) ────────────────────────────
+
+    #[test]
+    fn navigating_to_a_document_with_images_queues_the_images_prompt() {
+        // The session starts on a document with no images, so `App::new`
+        // queued no prompt and `session_images_enabled` is still unset.
+        let mut app = app_with_buffer("Just prose.\n", 0);
+        assert_eq!(app.config.images.enabled, crate::config::ImagesEnabled::Ask);
+        assert_eq!(app.session_images_enabled, None);
+        assert!(!app.modal_stack.contains::<ImagesEnabledPromptModal>());
+        assert!(
+            !app.effective_images_enabled(),
+            "no answer yet means no decoding"
+        );
+
+        let (_f, path) = md_file("![a](img.png)\n");
+        app.navigate_to_file(path);
+
+        assert!(
+            app.modal_stack.contains::<ImagesEnabledPromptModal>(),
+            "the linked document's images must raise the prompt that enables them"
+        );
+    }
+
+    #[test]
+    fn navigating_to_a_document_with_a_diagram_queues_the_diagrams_prompt() {
+        let mut app = app_with_buffer("Just prose.\n", 0);
+        let (_f, path) = md_file("```mermaid\ngraph TD;\n```\n");
+        app.navigate_to_file(path);
+        assert!(app.modal_stack.contains::<DiagramsEnabledPromptModal>());
+        assert!(
+            !app.modal_stack.contains::<ImagesEnabledPromptModal>(),
+            "a diagram-only document must not raise the images prompt"
+        );
+    }
+
+    #[test]
+    fn navigating_to_a_document_with_a_remote_image_queues_the_remote_prompt() {
+        let mut app = app_with_buffer("Just prose.\n", 0);
+        let (_f, path) = md_file("![a](https://example.com/a.png)\n");
+        app.navigate_to_file(path);
+        assert!(app.modal_stack.contains::<RemoteImagePromptModal>());
+        // Images on top of remote, mirroring the startup push order.
+        assert!(app.modal_stack.contains::<ImagesEnabledPromptModal>());
+    }
+
+    #[test]
+    fn a_session_answer_is_not_re_asked_after_navigation() {
+        // Answered "Yes" for this session on the startup document …
+        let mut app = app_with_buffer("![a](img.png)\n", 0);
+        app.modal_stack.remove_first::<ImagesEnabledPromptModal>();
+        app.session_images_enabled = Some(true);
+        app.session_diagrams_enabled = Some(true);
+
+        let (_f, path) = md_file("![b](other.png)\n\n```mermaid\ngraph TD;\n```\n");
+        app.navigate_to_file(path);
+
+        assert!(!app.modal_stack.contains::<ImagesEnabledPromptModal>());
+        assert!(!app.modal_stack.contains::<DiagramsEnabledPromptModal>());
+        assert!(
+            app.effective_images_enabled(),
+            "the session answer carries into the new document"
+        );
+    }
+
+    #[test]
+    fn a_session_decline_is_not_re_asked_after_navigation() {
+        let mut app = app_with_buffer("![a](img.png)\n", 0);
+        app.modal_stack.remove_first::<ImagesEnabledPromptModal>();
+        app.session_images_enabled = Some(false);
+        app.session_diagrams_enabled = Some(false);
+        app.session_remote_declined = true;
+
+        let (_f, path) = md_file("![b](https://example.com/b.png)\n\n```mermaid\ngraph TD;\n```\n");
+        app.navigate_to_file(path);
+
+        assert!(!app.modal_stack.contains::<ImagesEnabledPromptModal>());
+        assert!(!app.modal_stack.contains::<DiagramsEnabledPromptModal>());
+        assert!(!app.modal_stack.contains::<RemoteImagePromptModal>());
+        assert!(!app.effective_images_enabled());
+        assert!(
+            !app.editor.images_enabled,
+            "a declined session keeps the new document's image rows collapsed"
+        );
+    }
+
+    #[test]
+    fn an_indexed_terminal_is_not_prompted_by_navigation() {
+        // `App::new` suppresses all three prompts below truecolor —
+        // `media_renderable` refuses to decode there, so an opt-in we
+        // will then decline to honor is pure noise, and `Always` /
+        // `Never` would persist a choice made on a terminal that can't
+        // show the result.  Navigation owes the same suppression.
+        use crate::config::{Config, KeyBindingOverrides, Theme};
+        use crate::terminal::{Capabilities, ColorDepth};
+
+        let caps = Capabilities {
+            color_depth: ColorDepth::Ansi256,
+            ..Capabilities::minimal()
+        };
+        let mut config = Config::default();
+        config.editor.show_welcome = false;
+        let mut app = App::new(
+            config,
+            KeyBindingOverrides::default(),
+            (&Theme::default()).into(),
+            None,
+            caps,
+            Vec::new(),
+        )
+        .expect("build app");
+        assert!(!app.media_renderable());
+
+        let (_f, path) = md_file("![a](https://example.com/a.png)\n\n```mermaid\ngraph TD;\n```\n");
+        app.navigate_to_file(path);
+
+        assert!(!app.modal_stack.contains::<ImagesEnabledPromptModal>());
+        assert!(!app.modal_stack.contains::<DiagramsEnabledPromptModal>());
+        assert!(!app.modal_stack.contains::<RemoteImagePromptModal>());
+    }
+
+    #[test]
+    fn navigation_dispatches_decodes_for_the_new_documents_images() {
+        // The prompts are only half the story: an answer already given
+        // must also reach the *new* document's decode dispatch, which
+        // reads `session_*` off the App and the URLs off the freshly
+        // built `EditorState` (a swap that resets the image cache).
+        // A local path keeps the worker off the network.
+        let mut app = app_with_buffer("Just prose.\n", 0);
+        app.session_images_enabled = Some(true);
+        let (tx, _rx) = std::sync::mpsc::channel();
+        app.app_tx = Some(tx);
+
+        let (_f, path) = md_file("![a](img.png)\n");
+        app.navigate_to_file(path);
+        app.editor.refresh_parsed();
+        app.dispatch_visible_image_decodes(0, 20);
+
+        let url = app.editor.parsed.image_blocks[0].url.clone();
+        assert!(
+            app.editor.images.status(&url).is_some(),
+            "the new document's image must be requested, not left untracked",
+        );
+    }
+
+    #[test]
+    fn images_below_the_dispatch_window_are_not_requested_yet() {
+        // Dispatch is viewport-limited: an image far below the fold is
+        // untouched until the user scrolls toward it.  Pinned because
+        // it looks identical to a broken prompt from the outside —
+        // open a long document, see no image, conclude nothing works.
+        let mut app = app_with_buffer("Just prose.\n", 0);
+        app.session_images_enabled = Some(true);
+        let (tx, _rx) = std::sync::mpsc::channel();
+        app.app_tx = Some(tx);
+
+        let filler = "text\n\n".repeat(200);
+        let (_f, path) = md_file(&format!("{filler}![a](img.png)\n"));
+        app.navigate_to_file(path);
+        app.editor.refresh_parsed();
+        let url = app.editor.parsed.image_blocks[0].url.clone();
+
+        app.dispatch_visible_image_decodes(0, 20);
+        assert!(
+            app.editor.images.status(&url).is_none(),
+            "an image 400 rows down must not be fetched from the top of the document",
+        );
+
+        let rows = app
+            .editor
+            .parsed
+            .source_map
+            .rendered_lines_for_block(app.editor.parsed.image_blocks[0].block_idx);
+        app.dispatch_visible_image_decodes(rows.start.saturating_sub(5), 20);
+        assert!(
+            app.editor.images.status(&url).is_some(),
+            "scrolling to it must request it",
+        );
+    }
+
+    #[test]
+    fn a_pending_prompt_is_not_stacked_twice_by_navigation() {
+        // The startup document already raised the prompt; navigating
+        // before answering it must not queue a second copy.
+        let mut app = app_with_buffer("![a](img.png)\n", 0);
+        app.on_document_contents_swapped();
+        let (_f, path) = md_file("![b](other.png)\n");
+        app.navigate_to_file(path);
+        assert_eq!(
+            app.modal_stack.count::<ImagesEnabledPromptModal>(),
+            1,
+            "one pending images prompt, not one per document"
+        );
     }
 }

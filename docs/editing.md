@@ -234,7 +234,7 @@ If you prefer not to enter diff review when the file is overwritten, set `diff_o
 
 Local and remote images render inline, given a terminal that can do it.
 
-edamame asks before rendering the first time (`"ask"` is the default), and asks separately before fetching anything over the network. Both answers can be "just this once" or "remember this".
+edamame asks the first time a document with images comes up (`"ask"` is the default), and asks separately before fetching anything over the network. That includes a document you open from inside edamame by following a link — if the file you launched on had no images, the question comes when you reach one that does. Both answers can be "just this once" or "remember this"; either way you're only asked once per session.
 
 Where images can't be shown you get an `[Image: alt text]` placeholder, so the document still reads.
 

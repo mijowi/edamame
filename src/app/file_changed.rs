@@ -328,10 +328,13 @@ impl App {
         // but would leave the timer armed).
         self.exit_search_flow();
         self.editor.replace_buffer(new_buffer);
-        // New contents may reference different image links; mark the
-        // image cache for reconciliation on the next loop iteration
-        // to match the convention used by `load_file_into_editor`.
-        self.images_dirty = true;
+        // New contents may reference different image links, and may be
+        // the first in this session to carry an image / diagram /
+        // remote URL at all — under the default `Ask` policy the prompt
+        // is what enables rendering.  Both are
+        // `on_document_contents_swapped`'s job, the same call
+        // `load_file_into_editor` makes.
+        self.on_document_contents_swapped();
         self.needs_draw = true;
         self.flash("Reloaded from disk", super::flash::MessageKind::Info);
     }

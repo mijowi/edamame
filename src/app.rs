@@ -148,6 +148,16 @@ pub struct App {
     /// loads can proceed without a second prompt.  Persists only in
     /// memory; `Always` also writes back to `config.images.remote_policy`.
     session_allow_remote: bool,
+    /// Counterpart of [`Self::session_allow_remote`] for a *declined*
+    /// remote prompt (`No`, or Escape).  The two session-answer flags
+    /// for images and diagrams are `Option<bool>`, so a decline is
+    /// recorded there by construction; `session_allow_remote` is a bare
+    /// bool, and without this companion flag a decline would be
+    /// indistinguishable from "never asked" — so every document opened
+    /// later in the session (link follow, back/forward) would re-queue
+    /// the prompt the user just dismissed.  `Never` persists to
+    /// `config.images.remote_policy` instead.
+    session_remote_declined: bool,
     /// Sender for the main loop's mpsc channel; retained so background
     /// decode threads can push `AppEvent::ImageReady`.  Initialised in
     /// `run`, so wrapped in `Option` during `new` construction.
@@ -629,6 +639,7 @@ impl App {
             scrollbar_hover: false,
             last_pointer_shape: PointerShape::Default,
             session_allow_remote: false,
+            session_remote_declined: false,
             app_tx: None,
             last_scroll_at: None,
             last_draw_at: None,

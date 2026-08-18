@@ -1303,6 +1303,13 @@ impl App {
         self.editor.refresh_parsed();
         self.editor.update_cursor_block();
         self.editor.exit_diff_mode();
+        // The merge replaced the document's contents wholesale, so it
+        // owes the same bookkeeping a file load does — including the
+        // media prompts, since the external change may have introduced
+        // this session's first image / diagram / remote URL.  Must
+        // follow `refresh_parsed`: the prompts are built from
+        // `editor.parsed`.
+        self.on_document_contents_swapped();
         self.flash("Diff resolved", MessageKind::Success);
         self.needs_draw = true;
     }
@@ -1889,6 +1896,38 @@ mod tests {
         for d in app.editor.diff.as_mut().unwrap().decisions.iter_mut() {
             *d = decision;
         }
+    }
+
+    #[test]
+    fn resolving_a_diff_that_adds_an_image_queues_the_images_prompt() {
+        // A clean buffer's external change goes to diff review by
+        // default (`diff_on_change`), so this — not
+        // `reload_buffer_from_disk` — is the usual way a document picks
+        // up its first image mid-session.  Without the prompt,
+        // `effective_images_enabled` stays false and the merged image
+        // never decodes (issue #30).
+        use crate::app::modal::ImagesEnabledPromptModal;
+        let mut app = app_in_diff("Just prose.\n", "Just prose.\n\n![a](img.png)\n");
+        assert!(!app.modal_stack.contains::<ImagesEnabledPromptModal>());
+        resolve_all(&mut app, crate::diff::Decision::Accepted);
+        app.apply_diff_resolution();
+        assert!(app.editor.buffer.contents().contains("![a](img.png)"));
+        assert!(
+            app.modal_stack.contains::<ImagesEnabledPromptModal>(),
+            "the merged document's images must raise the prompt that enables them",
+        );
+        assert!(app.images_dirty, "the image cache needs reconciling");
+    }
+
+    #[test]
+    fn resolving_a_diff_does_not_re_ask_an_answered_question() {
+        use crate::app::modal::ImagesEnabledPromptModal;
+        let mut app = app_in_diff("![a](img.png)\n", "![a](img.png)\n\n![b](other.png)\n");
+        app.modal_stack.remove_first::<ImagesEnabledPromptModal>();
+        app.session_images_enabled = Some(false);
+        resolve_all(&mut app, crate::diff::Decision::Accepted);
+        app.apply_diff_resolution();
+        assert!(!app.modal_stack.contains::<ImagesEnabledPromptModal>());
     }
 
     #[test]

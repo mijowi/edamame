@@ -174,11 +174,7 @@ impl App {
                 // the startup stack, so answering "Yes" to the images
                 // prompt reveals the remote prompt beneath it.
                 self.queue_remote_image_prompt();
-                if let Some(m) =
-                    super::modal::ImagesEnabledPromptModal::from_state(&self.editor, &self.config)
-                {
-                    self.modal_stack.push(Box::new(m));
-                }
+                self.queue_images_enabled_prompt();
             }
             crate::config::ImagesEnabled::Never => {}
         }
@@ -210,13 +206,7 @@ impl App {
             .remove_first::<super::modal::DiagramsEnabledPromptModal>();
         match self.config.diagrams.enabled {
             crate::config::DiagramsEnabled::Always => self.dispatch_image_decodes(),
-            crate::config::DiagramsEnabled::Ask => {
-                if let Some(m) =
-                    super::modal::DiagramsEnabledPromptModal::from_state(&self.editor, &self.config)
-                {
-                    self.modal_stack.push(Box::new(m));
-                }
-            }
+            crate::config::DiagramsEnabled::Ask => self.queue_diagrams_enabled_prompt(),
             crate::config::DiagramsEnabled::Never => {}
         }
         self.images_dirty = true;
@@ -232,8 +222,9 @@ impl App {
     /// remote URL into its blocked placeholder.
     pub(super) fn apply_remote_policy_change(&mut self) {
         // The persisted choice supersedes an earlier session-level
-        // "Yes" on the remote prompt.
+        // answer on the remote prompt — a "Yes" *or* a "No".
         self.session_allow_remote = false;
+        self.session_remote_declined = false;
         self.editor.images.evict_remote();
         self.modal_stack
             .remove_first::<super::modal::RemoteImagePromptModal>();
@@ -246,11 +237,94 @@ impl App {
         self.needs_draw = true;
     }
 
+    /// Single owner of the bookkeeping every *document-contents swap*
+    /// owes, whatever swapped them: a link follow or back/forward
+    /// navigation ([`App::load_file_into_editor`]), an accepted
+    /// external change (`App::reload_buffer_from_disk`), and a resolved
+    /// diff review (`App::apply_diff_resolution`).  Two things:
+    ///
+    /// * `images_dirty` — the new contents reference a different set of
+    ///   image URLs, so the cache needs reconciling on the next loop
+    ///   iteration.
+    /// * the three media prompts, re-evaluated against the new document
+    ///   (see [`Self::queue_images_enabled_prompt`] and its siblings).
+    ///
+    /// It exists as one method rather than three copies because the
+    /// copies are what went wrong: the prompts are built from the
+    /// *document* — the policy is `Ask` **and** this document actually
+    /// contains an image / a diagram / a remote URL — so a document
+    /// arriving mid-session needs the same evaluation `App::new` gives
+    /// the startup one.  Without it, launching on a file with no images
+    /// left `session_images_enabled` at `None` for the rest of the run:
+    /// no prompt was ever queued for the later document, so
+    /// `effective_images_enabled` stayed false and its images silently
+    /// never decoded (issue #30).  A new path that replaces the
+    /// document's contents owes this call.
+    ///
+    /// Nothing is dispatched here: the per-frame
+    /// `dispatch_visible_image_decodes` picks up the new document's
+    /// URLs as soon as an answer permits it.
+    ///
+    /// Push order mirrors `App::new` — remote at the bottom, images on
+    /// top — so answering the top prompt reveals the next one.
+    pub(super) fn on_document_contents_swapped(&mut self) {
+        self.images_dirty = true;
+        self.queue_remote_image_prompt();
+        self.queue_diagrams_enabled_prompt();
+        self.queue_images_enabled_prompt();
+    }
+
+    /// Queue the images-enabled prompt if this terminal, the config and
+    /// the current document warrant one.
+    ///
+    /// A session answer is never re-asked: `Some(_)` on
+    /// `session_images_enabled` means the user has already decided for
+    /// this run, and that decision carries across documents exactly as
+    /// it does while one document stays open.  Idempotent — a prompt
+    /// still waiting on the stack is not stacked twice.
+    fn queue_images_enabled_prompt(&mut self) {
+        if !self.media_renderable()
+            || self.session_images_enabled.is_some()
+            || self
+                .modal_stack
+                .contains::<super::modal::ImagesEnabledPromptModal>()
+        {
+            return;
+        }
+        if let Some(m) =
+            super::modal::ImagesEnabledPromptModal::from_state(&self.editor, &self.config)
+        {
+            self.modal_stack.push(Box::new(m));
+        }
+    }
+
+    /// Counterpart of [`Self::queue_images_enabled_prompt`] for diagram
+    /// blocks, gated on `session_diagrams_enabled` — the two prompts are
+    /// answered independently.
+    fn queue_diagrams_enabled_prompt(&mut self) {
+        if !self.media_renderable()
+            || self.session_diagrams_enabled.is_some()
+            || self
+                .modal_stack
+                .contains::<super::modal::DiagramsEnabledPromptModal>()
+        {
+            return;
+        }
+        if let Some(m) =
+            super::modal::DiagramsEnabledPromptModal::from_state(&self.editor, &self.config)
+        {
+            self.modal_stack.push(Box::new(m));
+        }
+    }
+
     /// Queue the remote-image prompt if the current document and config
     /// warrant one (policy `Ask`, at least one remote image, remote not
-    /// already allowed for this session, no prompt already queued).
+    /// already allowed *or declined* for this session, no prompt already
+    /// queued).
     fn queue_remote_image_prompt(&mut self) {
-        if self.session_allow_remote
+        if !self.media_renderable()
+            || self.session_allow_remote
+            || self.session_remote_declined
             || self
                 .modal_stack
                 .contains::<super::modal::RemoteImagePromptModal>()
@@ -453,6 +527,7 @@ impl App {
                         // picker and an observed area width; missing
                         // either means the sync fallback in
                         // `get_protocol_pair` handles the cold path.
+                        //
                         if let (Some(picker), Some(width), Some((mw, mh)), Some(fs)) =
                             (&scratch_picker, scratch_width, max_cells, font_size)
                         {
