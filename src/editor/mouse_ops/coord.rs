@@ -296,7 +296,23 @@ pub fn rendered_sub_line_to_offset(
     // `RenderedView` keeps the table chrome (pipes and padding) painted
     // for layout, so clicks must continue to use the pipe-aware mapping
     // in the table branch below.
+    //
+    // So are code-block body rows.  `cursor_block_revealed()` answers a
+    // block-level, time-based question and knows nothing about which
+    // *lines* the view actually de-renders — a code body row never does
+    // (only the two fence rows do), so without `line_allows_raw_reveal`
+    // this shortcut maps the click 1:1 against raw text while the screen
+    // is showing the padded rendered row, landing one char past the glyph
+    // the user aimed at.  The code branch below handles those rows.
+    let block_kind = state.parsed.real_block_for_byte(block.range.start);
+    let content_lines = crate::ui::rendered_view::raw_source_lines(block_text);
+    let line_reveals = crate::markdown::code_layout::line_allows_raw_reveal(
+        block_kind,
+        raw_line_idx,
+        &content_lines,
+    );
     let revealed_cursor_line = !is_table
+        && line_reveals
         && state.cursor_block_revealed()
         && rendered_line_idx == crate::editor::state::cursor_rendered_line_idx(state);
     if state.parsed.is_mermaid_block(block.idx) || revealed_cursor_line {
@@ -329,6 +345,30 @@ pub fn rendered_sub_line_to_offset(
         let clamped_col = col.min(row_width);
         table_click_to_raw_col(line_text, rendered_line, clamped_col, table_sub)
             .unwrap_or(clamped_col)
+    } else if let Some(crate::markdown::Block::CodeBlock { fenced, .. }) =
+        block_kind.filter(|_| !line_reveals)
+    {
+        // A code body row shows the raw text behind one leading pad cell
+        // (and, for an indented block, minus the indent pulldown-cmark
+        // stripped), so the rendered column is not the raw column — the
+        // generic mapping below would return it verbatim and land the
+        // cursor one char late (issue #28).  Fence rows are excluded by
+        // `line_reveals`: they de-render, so the shortcut above already
+        // took them.
+        let rendered_chars: Vec<(char, ratatui::style::Style)> = rendered_line
+            .spans
+            .iter()
+            .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
+            .collect();
+        let rendered_idx = click_to_rendered_char_idx(
+            rendered_line,
+            &rendered_chars,
+            col,
+            sub_row_within_line,
+            viewport_width,
+        );
+        let stripped = line_text.strip_suffix('\n').unwrap_or(line_text);
+        crate::markdown::code_layout::code_rendered_col_to_raw_col(stripped, *fenced, rendered_idx)
     } else {
         let buffer_line_idx = state
             .buffer
@@ -510,6 +550,18 @@ fn revealed_raw_row_count(
     // cursor's rendered line, matching the render loop's logic.
     let sub = rendered_line_idx - block_lines.start;
     let raw_line = block_text.split('\n').nth(sub).unwrap_or("");
+    // A row the view doesn't actually de-render (a code block's body) is
+    // still showing its *rendered* line, which the renderer padded to the
+    // viewport width — so the raw line's wrap count is the wrong answer and
+    // would mis-walk every row below it whenever the two differ.  Fall back
+    // to the parsed line's own count.
+    if !crate::markdown::code_layout::line_allows_raw_reveal(
+        state.parsed.real_block_for_byte(block_range.start),
+        sub,
+        &crate::ui::rendered_view::raw_source_lines(block_text),
+    ) {
+        return None;
+    }
     Some(revealed_raw_rows(raw_line, viewport_width).0.len().max(1))
 }
 
@@ -563,39 +615,25 @@ fn raw_line_byte_range(block_text: &str, raw_line_idx: usize) -> (usize, usize) 
     (0, block_text.len())
 }
 
-/// Non-table click: walk the rendered line's wrap layout to find which
-/// sub-row the click landed on, translate the click's cell column into a
-/// char position using the cell-aware mapping (wide-char snap-past,
-/// hanging-indent forbidden zone), then map that rendered char back to a
-/// raw char column on `line_text`.
+/// Which char of the *rendered* line the click at cell `col` on wrap row
+/// `sub_row_within_line` landed on.
 ///
-/// The renderer emits a leading prefix (`• ` / `1. ` / `[ ] ` / `▎ ` /
-/// heading indent) on lists, tasks, blockquotes and headings; that prefix
-/// has no counterpart in pulldown-cmark's `Text` events.  Compare the
-/// rendered char count against the map's content count to recover the
-/// prefix width, then route clicks on the prefix region into the raw
-/// prefix area and clicks past it through the map — so a click on a
-/// `**bold**` span inside a list item lands correctly even though the
-/// raw `**` markers must be skipped.  Falls back to 1:1 when the prefix
-/// width isn't trustworthy (e.g. code blocks pad their lines with
-/// trailing spaces).
-fn non_table_click_to_raw_col(
+/// The wrap layout (hanging indent, wide-char snap-past, the
+/// forbidden-indent zone on continuation rows) is `line_render`'s, so
+/// everything that maps a click onto a rendered line shares this walk
+/// rather than re-deriving it: `non_table_click_to_raw_col`'s generic
+/// prefix inference and the code-block branch, whose raw mapping differs
+/// but whose geometry is identical.
+fn click_to_rendered_char_idx(
     rendered_line: &Line<'_>,
-    line_text: &str,
+    rendered_chars: &[(char, ratatui::style::Style)],
     col: usize,
     sub_row_within_line: usize,
     viewport_width: usize,
-    inline_map: &crate::markdown::InlineColMap,
-    is_list: bool,
 ) -> usize {
     let indent = line_render::compute_hanging_indent(rendered_line);
-    let rendered_chars: Vec<(char, ratatui::style::Style)> = rendered_line
-        .spans
-        .iter()
-        .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
-        .collect();
     let viewport = viewport_width.max(1);
-    let rows = line_render::visual_rows_of_chars(&rendered_chars, viewport, indent);
+    let rows = line_render::visual_rows_of_chars(rendered_chars, viewport, indent);
     let sub = sub_row_within_line.min(rows.len().saturating_sub(1));
     let (start, end, next_start) = rows.get(sub).copied().unwrap_or((0, 0, 0));
     let row_indent = if sub == 0 { 0 } else { indent };
@@ -611,7 +649,50 @@ fn non_table_click_to_raw_col(
         .take(end - start)
         .map(|(c, _)| *c);
     let in_row = line_render::char_idx_at_cell_col(row_chars, col, row_indent);
-    let rendered_idx = (start + in_row).min(max_in_row);
+    (start + in_row).min(max_in_row)
+}
+
+/// Non-table click: walk the rendered line's wrap layout to find which
+/// sub-row the click landed on, translate the click's cell column into a
+/// char position using the cell-aware mapping (wide-char snap-past,
+/// hanging-indent forbidden zone), then map that rendered char back to a
+/// raw char column on `line_text`.
+///
+/// The renderer emits a leading prefix (`• ` / `1. ` / `[ ] ` / `▎ ` /
+/// heading indent) on lists, tasks, blockquotes and headings; that prefix
+/// has no counterpart in pulldown-cmark's `Text` events.  Compare the
+/// rendered char count against the map's content count to recover the
+/// prefix width, then route clicks on the prefix region into the raw
+/// prefix area and clicks past it through the map — so a click on a
+/// `**bold**` span inside a list item lands correctly even though the
+/// raw `**` markers must be skipped.  Falls back to 1:1 when the prefix
+/// width isn't trustworthy.
+///
+/// Code blocks never reach here: their padding would defeat the prefix
+/// inference, so the caller routes them through
+/// [`code_layout::code_rendered_col_to_raw_col`](crate::markdown::code_layout::code_rendered_col_to_raw_col)
+/// instead.
+fn non_table_click_to_raw_col(
+    rendered_line: &Line<'_>,
+    line_text: &str,
+    col: usize,
+    sub_row_within_line: usize,
+    viewport_width: usize,
+    inline_map: &crate::markdown::InlineColMap,
+    is_list: bool,
+) -> usize {
+    let rendered_chars: Vec<(char, ratatui::style::Style)> = rendered_line
+        .spans
+        .iter()
+        .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
+        .collect();
+    let rendered_idx = click_to_rendered_char_idx(
+        rendered_line,
+        &rendered_chars,
+        col,
+        sub_row_within_line,
+        viewport_width,
+    );
 
     let actual_rendered_count = rendered_chars.len();
     let map = inline_map.rendered_to_raw_vec();

@@ -633,6 +633,14 @@ impl<'t> Renderer<'t> {
             // the viewport edge.  Lines longer than viewport_width are not
             // truncated here — the terminal clips them — but we never pad
             // beyond viewport_width, so short lines do not wrap.
+            //
+            // The single leading space below is `code_layout::CODE_PAD_COLS`:
+            // it shifts every raw column one cell right, and the cursor
+            // indicator, the selection / search overlay and the mouse
+            // hit-test all map through that module rather than re-deriving
+            // it.  Changing this prefix means changing it there —
+            // `code_block_render_agrees_with_code_layout_column_map` fails
+            // if the two drift.
             for line in &raw_lines {
                 if line.is_empty() {
                     // Use NBSP (U+00A0) instead of regular spaces: ratatui's WordWrapper

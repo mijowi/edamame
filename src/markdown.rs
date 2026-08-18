@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod code_layout;
 pub mod inline_col_map;
 pub mod list_layout;
 pub mod parse_offsets;

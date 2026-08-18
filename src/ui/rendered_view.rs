@@ -204,27 +204,19 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         // never replace a border or separator line with raw text.
         let is_table = table_edit::is_table_block(&raw_block_source);
         let is_setext = detect_setext(&raw_block_source).is_some();
-        // In a fenced code block only the opening-fence line (raw line 0,
-        // when a language tag is present) should de-render — that's the
-        // language label the renderer turns into ` rust ` styling.  Body
-        // lines render the same as their raw form (just with code-block
-        // background) and the closing fence has no rendered row of its
-        // own, so de-rendering inside the block is visual churn at best
-        // and clobbers the last code line at worst.
+        // In a fenced code block only the fence lines de-render — the
+        // opening one is the language label the renderer turns into
+        // ` rust ` styling.  Body lines render the same as their raw form
+        // (just with code-block background and one leading pad cell), so
+        // de-rendering inside the block is visual churn at best and
+        // clobbers the last code line at worst.  The rule itself lives in
+        // `markdown::code_layout::line_allows_raw_reveal`.
         let cursor_block_ast = editor
             .parsed
             .real_ranges
             .iter()
             .position(|r| r.start <= cursor_byte && cursor_byte < r.end)
             .and_then(|i| editor.parsed.blocks.get(i));
-        let is_code_block = matches!(
-            cursor_block_ast,
-            Some(crate::markdown::Block::CodeBlock { .. })
-        );
-        let is_fenced_code = matches!(
-            cursor_block_ast,
-            Some(crate::markdown::Block::CodeBlock { fenced: true, .. })
-        );
         // Mermaid code blocks are post-processed into synthetic
         // `Block::ImageBlock`s.  When the cursor enters one, every
         // rendered row of the block (where the image placeholder
@@ -246,15 +238,17 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             })
         ) && cursor_block_own > 2;
         // True when the cursor's current line is allowed to de-render: any
-        // non-code-block line, the opening-fence line of a fenced code
-        // block with a language tag, or the closing-fence line of any
-        // fenced code block (the renderer reserves a trailing padded row
-        // for it; revealing that row shows the ``` glyphs).
-        let raw_line_count = raw_lines.len();
-        let is_closing_fence_line =
-            is_fenced_code && raw_line_count > 0 && cursor_raw_line == raw_line_count - 1;
-        let code_block_allows_reveal =
-            !is_code_block || (is_fenced_code && cursor_raw_line == 0) || is_closing_fence_line;
+        // non-code-block line, a fenced block's opening-fence line, or its
+        // closing-fence line where one has actually been typed (the renderer
+        // reserves a trailing padded row for it; revealing that row shows the
+        // ``` glyphs).  Single derivation, shared with the mouse hit-test: a
+        // click mapped against raw text on a row the view never revealed
+        // lands on the wrong character (see `markdown::code_layout`).
+        let code_block_allows_reveal = crate::markdown::code_layout::line_allows_raw_reveal(
+            cursor_block_ast,
+            cursor_raw_line,
+            &raw_lines,
+        );
         // Which rendered sub-line of the block gets the raw-text
         // replacement.  Shared with `cursor_rendered_line_idx` (and, through
         // it, the mouse hit-test's revealed-line shortcut) so the three can
@@ -697,6 +691,35 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         // reveal — avoids a cursor jump at the delay edge.
                         table_raw_col_to_rendered_col(raw_text, line, cursor_col)
                             .unwrap_or(cursor_col)
+                    } else if let Some(crate::markdown::Block::CodeBlock { fenced, .. }) =
+                        cursor_block_ast
+                    {
+                        // A code *body* row never de-renders, so this is the
+                        // steady state rather than a jitter-window glimpse:
+                        // the renderer paints the raw text behind one pad
+                        // cell (plus, for an indented block, minus the
+                        // stripped indent), and without the shift the
+                        // indicator sits one cell LEFT of its character on
+                        // every code line — issue #28.  Fence rows carry
+                        // unrelated text (the ` lang ` label / an NBSP
+                        // placeholder) and reveal within `RAW_REVEAL_DELAY`,
+                        // so leave their brief pre-reveal frame 1:1.
+                        //
+                        // This arm sits ahead of the list arm on purpose: a
+                        // code line whose text happens to read `- foo` would
+                        // otherwise be claimed by the list-marker sniff and
+                        // shifted by a marker width it doesn't have.
+                        if crate::markdown::code_layout::is_code_fence_row(
+                            *fenced,
+                            cursor_raw_line,
+                            &raw_lines,
+                        ) {
+                            cursor_col
+                        } else {
+                            crate::markdown::code_layout::code_raw_col_to_rendered_col(
+                                raw_text, *fenced, cursor_col,
+                            )
+                        }
                     } else if let Some(col) =
                         list_raw_col_to_rendered_col(raw_text, line, cursor_col)
                     {

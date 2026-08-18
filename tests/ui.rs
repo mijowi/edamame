@@ -1790,6 +1790,183 @@ fn rendered_view_code_block_only_opening_fence_de_renders() {
     }
 }
 
+/// Regression: a fenced block's byte range ends with the trailing newline,
+/// so `split('\n')` appends a phantom empty entry and the *real* closing
+/// fence is not the last element.  Testing the fence against that length
+/// classified the closing fence as a body row and mapped its columns
+/// instead of washing the whole rendered row, leaving a selected block
+/// with a three-cell smudge at the bottom instead of a covered row.
+#[test]
+fn rendered_view_selection_covers_the_whole_closing_fence_row() {
+    use edamame::document::{Buffer, Selection};
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // Rendered rows: 0 = " rust " label, 1 = " let x = 1;",
+    // 2 = the closing-fence placeholder row.
+    let src = "```rust\nlet x = 1;\n```\n";
+    let width: u16 = 25;
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    state.set_viewport_width(width as usize);
+    state.selection = Some(Selection {
+        anchor: 0,
+        active: src.chars().count(),
+    });
+    state.cursor.offset = src.chars().count();
+
+    let backend = TestBackend::new(width, 6);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                cursor_style: theme.status_mode_rendered,
+                visual_kind: None,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let selected = |x: u16, y: u16| {
+        buf.cell((x, y))
+            .map(|c| c.style().bg == theme.selection.bg)
+            .unwrap_or(false)
+    };
+    let washed = (0..width).filter(|&x| selected(x, 2)).count();
+    assert!(
+        washed > 3,
+        "closing fence row must be washed whole, only {washed} cells were",
+    );
+}
+
+/// Regression for issue #28: the renderer paints every code body row
+/// behind one leading pad cell, so the cursor indicator must be shifted
+/// right by it — otherwise the block cursor sits on the cell *before* the
+/// character it is logically on, for every character of every code block.
+#[test]
+fn rendered_view_code_block_cursor_indicator_sits_on_its_char() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // Rendered rows: 0 = " rust " label, 1 = " let x = 1;" (padded body).
+    let src = "```rust\nlet x = 1;\n```\n";
+    let width: u16 = 30;
+
+    // Every raw column of the body line, including col 0 and end-of-line:
+    // a single sample at col 0 would pass on an off-by-one that clamped.
+    for raw_col in 0..="let x = 1;".len() {
+        let mut state = EditorState::new(Buffer::from_str(src), theme);
+        state.mode = Mode::Rendered;
+        state.cursor.offset = src.find("let").unwrap() + raw_col;
+        state.set_viewport_width(width as usize);
+
+        let backend = TestBackend::new(width, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut view_state = RenderedViewState::default();
+        terminal
+            .draw(|frame| {
+                let view = RenderedView {
+                    cursor_style: theme.status_mode_rendered,
+                    visual_kind: None,
+                    drop_indicator: None,
+                    show_table_buttons: false,
+                    state: &state,
+                    theme,
+                };
+                frame.render_stateful_widget(view, frame.area(), &mut view_state);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let cursor_x = (0..width).find(|&x| {
+            buf.cell((x, 1))
+                .map(|c| {
+                    c.style().bg == theme.status_mode_rendered.bg
+                        && c.style().fg == theme.status_mode_rendered.fg
+                })
+                .unwrap_or(false)
+        });
+        assert_eq!(
+            cursor_x,
+            Some(raw_col as u16 + 1),
+            "raw col {raw_col} must paint one cell right of itself (the pad)",
+        );
+        // The symbol under the cursor is the real pin: it is independent of
+        // how the theme colours the block.
+        let expected = "let x = 1;".chars().nth(raw_col).unwrap_or(' ');
+        assert_eq!(
+            buf.cell((raw_col as u16 + 1, 1))
+                .map(|c| c.symbol().to_string()),
+            Some(expected.to_string()),
+            "cursor cell must carry the char at raw col {raw_col}",
+        );
+    }
+}
+
+/// Companion to the fenced case: pulldown-cmark strips an indented block's
+/// leading indent, so the rendered column is `raw - strip + pad`.
+#[test]
+fn rendered_view_indented_code_block_cursor_indicator_sits_on_its_char() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // An indented code block: 4 spaces stripped, one pad cell added, so the
+    // `=` at raw col 10 renders at col 10 - 4 + 1 = 7.
+    let src = "Intro.\n\n    let x = 1;\n";
+    let width: u16 = 30;
+
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    state.cursor.offset = src.find('=').unwrap();
+    state.set_viewport_width(width as usize);
+
+    let backend = TestBackend::new(width, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                cursor_style: theme.status_mode_rendered,
+                visual_kind: None,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let code_row = (0..8u16)
+        .find(|&y| (0..width).any(|x| buf.cell((x, y)).map(|c| c.symbol() == "=").unwrap_or(false)))
+        .expect("indented code row must render");
+    let cursor_x = (0..width).find(|&x| {
+        buf.cell((x, code_row))
+            .map(|c| {
+                c.style().bg == theme.status_mode_rendered.bg
+                    && c.style().fg == theme.status_mode_rendered.fg
+            })
+            .unwrap_or(false)
+    });
+    assert_eq!(cursor_x, Some(7), "stripped indent must be subtracted back");
+    assert_eq!(
+        buf.cell((7, code_row)).map(|c| c.symbol().to_string()),
+        Some("=".to_string()),
+    );
+}
+
 #[test]
 fn rendered_view_code_block_blank_body_line_aligns_cursor_indicator() {
     // Regression: blank lines inside code blocks DO render (as NBSP-padded

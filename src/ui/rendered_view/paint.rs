@@ -10,7 +10,8 @@ use crate::editor::table_edit;
 use crate::editor::EditorState;
 use crate::markdown::table_layout::CellOverlay;
 
-use super::raw_text::raw_line_byte_start;
+use super::raw_text::{raw_line_byte_start, raw_source_lines};
+use crate::markdown::code_layout::{code_raw_col_to_rendered_col, is_code_fence_row};
 use crate::markdown::list_layout::{raw_list_marker_char_width, rendered_list_marker_char_width};
 
 /// Build a `Line` showing `raw_text` with a block cursor at `cursor_col`.
@@ -185,6 +186,9 @@ pub(super) fn paint_byte_range_overlay(
 
     // Byte range of the raw line within the block's source text.
     let raw_lines: Vec<&str> = block_text.split('\n').collect();
+    // Real lines (no phantom trailing entry) — the fence test below must use
+    // these, not `raw_lines`.
+    let content_lines = raw_source_lines(block_text);
     if raw_line_idx >= raw_lines.len() {
         // Out-of-range raw line — no highlight rather than a speculative one.
         return;
@@ -274,7 +278,8 @@ pub(super) fn paint_byte_range_overlay(
             // Code body rows render the raw text 1:1 behind one leading
             // pad cell.  Indented (non-fenced) blocks additionally drop
             // the up-to-4-space indent that pulldown-cmark strips from the
-            // content.
+            // content.  Both terms live in `markdown::code_layout`, shared
+            // with the cursor indicator and the mouse hit-test.
             //
             // Fence rows render unrelated text — the ` lang ` label (or an
             // NBSP placeholder) for the opening fence, and an NBSP
@@ -282,16 +287,15 @@ pub(super) fn paint_byte_range_overlay(
             // mapping is meaningless.  When the selection touches a fence
             // row, highlight the whole rendered row so the selection reads
             // as covering it (Visual / V-LINE) rather than leaving a gap at
-            // the top and bottom of a selected block.
-            if *fenced && (raw_line_idx == 0 || raw_line_idx + 1 == raw_lines.len()) {
+            // the top and bottom of a selected block.  The lines come from
+            // `raw_source_lines`, NOT the `raw_lines` split above: a block
+            // range ending in a newline gives `split('\n')` a phantom
+            // trailing entry, which would make the real closing fence look
+            // like a body row and map its columns instead of washing the row.
+            if is_code_fence_row(*fenced, raw_line_idx, &content_lines) {
                 (0, actual_rendered)
             } else {
-                let stripped = if *fenced {
-                    0
-                } else {
-                    code_indent_strip_chars(raw_line)
-                };
-                let map_col = |c: usize| c.saturating_sub(stripped) + 1;
+                let map_col = |c: usize| code_raw_col_to_rendered_col(raw_line, *fenced, c);
                 (map_col(start_raw_col), map_col(end_raw_col))
             }
         } else if let Some(crate::markdown::Block::Heading { level, .. }) = block_kind {
@@ -384,16 +388,6 @@ fn heading_prefix_width(level: pulldown_cmark::HeadingLevel) -> usize {
         H5 => 5,
         H6 => 6,
     }
-}
-
-/// Leading chars pulldown-cmark strips from an indented code block's
-/// raw line before it lands in `Block::CodeBlock::content`: one tab,
-/// or up to four spaces.
-fn code_indent_strip_chars(raw_line: &str) -> usize {
-    if raw_line.starts_with('\t') {
-        return 1;
-    }
-    raw_line.chars().take(4).take_while(|c| *c == ' ').count()
 }
 
 /// Post-render pass: paint every visible search match over the

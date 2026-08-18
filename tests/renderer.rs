@@ -501,3 +501,43 @@ fn footnotes_render_in_place_not_only_at_end() {
         "definition should render before the later paragraph: {texts:?}"
     );
 }
+
+// ── Code-block column geometry ───────────────────────────────────────────────
+
+/// Anti-drift pin between the renderer's literal pad (`format!(" {:<width$}",
+/// …)`) and `markdown::code_layout`, which the cursor indicator, the
+/// selection overlay and the mouse hit-test all map columns through.  If the
+/// renderer's prefix ever changes, this fails rather than silently putting
+/// the cursor beside its character again (issue #28).
+#[test]
+fn code_block_render_agrees_with_code_layout_column_map() {
+    use edamame::markdown::code_layout::code_raw_col_to_rendered_col;
+
+    for (md, raw_line, fenced) in [
+        ("```rust\nlet x = 1;\n```\n", "let x = 1;", true),
+        ("Intro.\n\n    let x = 1;\n", "    let x = 1;", false),
+    ] {
+        let lines = render(md);
+        let rendered = lines
+            .iter()
+            .map(line_text)
+            .find(|t| t.contains("let x = 1;"))
+            .expect("code body row must render");
+        let rendered_chars: Vec<char> = rendered.chars().collect();
+
+        for (raw_col, expected) in raw_line.chars().enumerate() {
+            // Columns inside an indented block's stripped indent have no
+            // rendered cell of their own; they collapse onto the first.
+            if !fenced && raw_col < 4 {
+                continue;
+            }
+            let col = code_raw_col_to_rendered_col(raw_line, fenced, raw_col);
+            assert_eq!(
+                rendered_chars.get(col).copied(),
+                Some(expected),
+                "raw col {raw_col} of {raw_line:?} should render at col {col}, \
+                 rendered row is {rendered:?}",
+            );
+        }
+    }
+}

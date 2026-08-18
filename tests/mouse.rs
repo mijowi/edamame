@@ -1785,6 +1785,101 @@ fn click_on_revealed_loose_list_item_with_inline_code_lands_on_raw_char() {
     );
 }
 
+/// Regression for issue #28: a code body row is painted behind one pad
+/// cell and never de-renders, so a click that maps the rendered column
+/// straight onto the raw line lands one char past the glyph clicked.
+#[test]
+fn click_on_code_block_body_lands_on_clicked_char() {
+    let src = "```rust\nlet x = 1;\n```\n";
+    let line_start = src.find("let").unwrap();
+    // Rendered rows: 0 = " rust " label, 1 = " let x = 1;".
+    // Screen col c shows raw char c - 1.
+    for (screen_col, raw_col) in [(1u16, 0usize), (5, 4), (7, 6), (10, 9)] {
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        let mut anchor: Option<mouse_ops::DragTarget> = None;
+        let mut mouse = MouseDispatcher::new();
+        if let Some(a) = mouse.dispatch(click_event(screen_col, 1), area()) {
+            mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+        }
+        assert_eq!(
+            st.cursor.offset,
+            line_start + raw_col,
+            "click at screen col {screen_col} should land on {:?}, landed on {:?}",
+            "let x = 1;".chars().nth(raw_col),
+            st.contents().chars().nth(st.cursor.offset),
+        );
+    }
+}
+
+/// The indented-code twin: pulldown-cmark strips the leading indent, so
+/// the click has to add it back on top of removing the pad cell.
+#[test]
+fn click_on_indented_code_block_body_lands_on_clicked_char() {
+    let src = "Intro.\n\n    let x = 1;\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    let mut mouse = MouseDispatcher::new();
+    // Rendered rows: 0 = "Intro.", 1 = blank, 2 = " let x = 1;".
+    // The `=` is at raw col 10, rendered col 10 - 4 + 1 = 7.
+    if let Some(a) = mouse.dispatch(click_event(7, 2), area()) {
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+    }
+    assert_eq!(
+        st.cursor.offset,
+        src.find('=').unwrap(),
+        "expected the '=', landed on {:?}",
+        st.contents().chars().nth(st.cursor.offset),
+    );
+}
+
+/// A click in a code row's trailing background fill belongs at the end of
+/// the code line, not somewhere in the next line's bytes.
+#[test]
+fn click_past_end_of_code_line_clamps_to_code_line_end() {
+    let src = "```rust\nlet x = 1;\n```\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    let mut mouse = MouseDispatcher::new();
+    if let Some(a) = mouse.dispatch(click_event(60, 1), area()) {
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+    }
+    assert_eq!(
+        st.cursor.offset,
+        src.find("let").unwrap() + "let x = 1;".len(),
+        "expected end of the code line, landed on {:?}",
+        st.contents().chars().nth(st.cursor.offset),
+    );
+}
+
+/// A fenced block the user is still typing has no closing fence yet, so
+/// its last raw line is ordinary code.  Classifying it as the closing
+/// fence by index alone skipped the pad-cell shift and put the click one
+/// char past the glyph — issue #28, on the line users are actively editing.
+#[test]
+fn click_on_unclosed_code_block_last_line_lands_on_clicked_char() {
+    let src = "```rust\nlet x = 1;\n";
+    let line_start = src.find("let").unwrap();
+    for (screen_col, raw_col) in [(1u16, 0usize), (5, 4), (7, 6)] {
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        let mut anchor: Option<mouse_ops::DragTarget> = None;
+        let mut mouse = MouseDispatcher::new();
+        if let Some(a) = mouse.dispatch(click_event(screen_col, 1), area()) {
+            mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+        }
+        assert_eq!(
+            st.cursor.offset,
+            line_start + raw_col,
+            "click at screen col {screen_col} should land on {:?}, landed on {:?}",
+            "let x = 1;".chars().nth(raw_col),
+            st.contents().chars().nth(st.cursor.offset),
+        );
+    }
+}
+
 /// Regression: clicking past the rendered end of a line containing a
 /// link used to land mid-URL because the click→offset map clamped the
 /// click to the rendered column count and then re-used that as a raw
