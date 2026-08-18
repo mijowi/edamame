@@ -196,7 +196,14 @@ pub fn body_lines(theme: &Theme) -> Vec<Line<'static>> {
 
     // ── Hard line break ───────────────────────────────────────────────
     out.push(section(theme, "Hard line break"));
-    out.push(Line::raw("  Two spaces at end of line  ⏎"));
+    // Both forms are CommonMark hard breaks and both export as `<br />`.
+    // The qualifier is deliberate: `Renderer::render_paragraph` splits at
+    // soft breaks as well, so on screen every source line already gets its
+    // own row and the markers change nothing — they matter on export.
+    out.push(Line::raw(
+        "  Two spaces at end of line  ⏎   or a trailing  \\",
+    ));
+    out.push(Line::raw("  (this matters for exported HTML)"));
     out.push(blank());
 
     // ── Diagrams (Mermaid) ────────────────────────────────────────────
