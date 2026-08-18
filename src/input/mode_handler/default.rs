@@ -134,6 +134,7 @@ fn preview_safe_action(action: &Action) -> bool {
             | Action::ShowCommandPalette
             | Action::ShowMarkdownCheatSheet
             | Action::ShowAbout
+            | Action::CheckForUpdates
             | Action::OpenSettings
             | Action::OpenWelcome
             | Action::OpenKeybinds

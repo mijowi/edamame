@@ -41,6 +41,7 @@ pub mod settings;
 pub mod terminal_capabilities;
 pub mod theme_downgrade;
 pub mod theme_picker;
+pub mod update;
 pub mod welcome;
 pub mod width_injection;
 
@@ -76,5 +77,6 @@ pub use settings::SettingsOverlayModal;
 pub use terminal_capabilities::TerminalCapabilitiesModal;
 pub use theme_downgrade::ThemeDowngradeModal;
 pub use theme_picker::ThemePickerModal;
+pub use update::UpdateModal;
 pub use welcome::WelcomeModal;
 pub use width_injection::WidthInjectionWarning;

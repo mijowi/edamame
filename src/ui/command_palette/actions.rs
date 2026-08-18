@@ -17,6 +17,7 @@ pub(super) const ALL_ACTIONS: &[Action] = &[
     // it twice was redundant and made the palette noisier.
     Action::ShowMarkdownCheatSheet,
     Action::ShowAbout,
+    Action::CheckForUpdates,
     Action::OpenSettings,
     Action::OpenWelcome,
     Action::SwitchTheme,
@@ -138,6 +139,7 @@ pub(super) fn label_for(action: &Action) -> Option<&'static str> {
         Action::ToggleCheckbox => "Toggle checkbox",
         Action::FollowLinkUnderCursor => "Follow link under cursor",
         Action::ShowAbout => "About edamame",
+        Action::CheckForUpdates => "Check for updates",
         Action::NavigateBack => "Navigate back",
         Action::NavigateForward => "Navigate forward",
         Action::GoToSection => "Go to section",

@@ -197,6 +197,7 @@ mod tests {
         "",
         "Autosave",
         "  Char limit",
+        "Check for updates",
         "Diff when file changes",
         "Limit editor width",
         "Show line numbers",

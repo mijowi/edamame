@@ -16,6 +16,7 @@ mod pointer;
 mod search;
 mod section_jump;
 mod update_check;
+mod update_notice;
 
 #[cfg(test)]
 mod test_utils;
@@ -72,11 +73,13 @@ pub(crate) enum AppEvent {
     /// before being acted on; a `ReadError` is surfaced via a
     /// dismissable warning modal.  See [`App::handle_watcher_event`].
     Watcher(WatchedEvent),
-    /// Worker-thread report from the GitHub latest-release check
-    /// spawned when the About modal first opens.  `Ok(tag_name)` on
-    /// success; `Err(message)` is logged and rendered as
-    /// "unavailable".  See [`update_check`].
-    ReleaseCheckResult(std::result::Result<String, String>),
+    /// Worker-thread report from the GitHub latest-release check —
+    /// spawned once at startup (throttled, opt-out) and on every
+    /// explicit "Check for updates".  `Ok` carries the tag plus the
+    /// already-bounded release notes; `Err(message)` is logged and
+    /// surfaces as a failure state on an explicit check only.  See
+    /// [`update_check`].
+    ReleaseCheckResult(std::result::Result<update_check::ReleaseInfo, String>),
     /// Background HTML-export worker finished.  The `u64` is the export
     /// generation id of the spawning modal, so a result from a superseded
     /// export (the user dismissed the modal and opened a fresh one while the
@@ -346,14 +349,34 @@ pub struct App {
     /// `None` only during the brief window between `App::new()` and
     /// the initial load — `Some` for any open file thereafter.
     pub(crate) last_disk_hash: Option<u64>,
-    /// Session cache of the GitHub release check shown on the About
-    /// page: `None` until the first fetch resolves, then `Available` /
-    /// `Failed` for the rest of the process so reopening About never
-    /// re-hits the network.
+    /// Session cache of the GitHub release check: `None` until the
+    /// first fetch resolves, then the last resolved status.  Shared by
+    /// the silent startup check and every explicit one, so the update
+    /// modal has something to render the instant it opens even while a
+    /// fresh fetch is in flight.
     latest_release: Option<update_check::ReleaseStatus>,
-    /// True while a release-check worker is in flight, so closing and
-    /// reopening the About modal can't spawn a duplicate request.
+    /// True while a release-check worker is in flight, so a second
+    /// trigger can't spawn a duplicate request.
     release_check_in_flight: bool,
+    /// Whether the startup check should run, decided in [`App::new`]
+    /// by the pure `update_check::network_check_due` and consumed by
+    /// [`App::spawn_startup_update_check`] from `tick_timers`.  The
+    /// policy decision and the network action are split across that
+    /// boundary for two reasons: `App::new` has no channel to send a
+    /// result on, and the check waits out the first-run welcome modal —
+    /// the surface where the user answers the `check_for_updates`
+    /// question in the first place.
+    startup_update_check_due: bool,
+    /// Set when a *startup* check finds a release worth announcing,
+    /// cleared when `tick_update_notice` finds an empty modal stack and
+    /// pushes it.  An explicit check never touches this — it opens its
+    /// own modal directly.
+    pending_update_notice: Option<update_check::ReleaseInfo>,
+    /// True while the in-flight check is the silent startup one.  Only
+    /// that flavor may arm `pending_update_notice`; an explicit check
+    /// must never queue a notice behind the modal the user just
+    /// opened.
+    update_check_is_startup: bool,
     /// Vim modal-editing state.  `Some` iff `config.modal.handler ==
     /// "vim"`; `None` for the default handler, which keeps every vim
     /// code path inert for existing users.  Survives across keystrokes
@@ -667,6 +690,17 @@ impl App {
             std::thread::spawn(crate::diagram::warm_fontdb);
         }
 
+        // Decide the startup update check here, while `config` is still
+        // owned locally and before any modal can have been dismissed —
+        // but don't act on it: `app_tx` doesn't exist until `run()`
+        // spawns the event threads, so the network half waits for
+        // `spawn_startup_update_check`.
+        let startup_update_check_due = update_check::network_check_due(
+            config.editor.check_for_updates,
+            config.editor.last_update_check,
+            update_check::now_unix(),
+        );
+
         Ok(Self {
             config,
             keybindings,
@@ -717,6 +751,9 @@ impl App {
             last_disk_hash: initial_disk_hash,
             latest_release: None,
             release_check_in_flight: false,
+            startup_update_check_due,
+            pending_update_notice: None,
+            update_check_is_startup: false,
             vim,
         })
     }

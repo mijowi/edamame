@@ -87,3 +87,39 @@ impl Drop for EnvGuard {
         }
     }
 }
+
+/// The crate-wide env lock plus suppressed config reads and writes, as
+/// one guard.
+///
+/// A test that drives a code path calling [`Config::save`] must hold
+/// this.  Nothing in the test environment redirects
+/// `~/.config/edamame` by default, so an unguarded `save()` rewrites the
+/// *developer's own* config — and a value asserted in a test is exactly
+/// the kind of value that does damage there (an update-check test
+/// recording a `v999.0.0` tag suppresses the real update notice
+/// forever).  Suppressing the gate is preferable to pointing
+/// `XDG_CONFIG_HOME` at a tempdir: the write is what the test wants
+/// gone, not merely relocated, and `Config::save` already returns
+/// `Ok(())` under it, so no assertion has to know.
+///
+/// Reads are suppressed alongside writes because the gate is one flag —
+/// see [`crate::config::persistence`].  A test that needs a real write
+/// (`save_writes_nothing_while_config_writes_are_suppressed`) takes
+/// [`env_lock`] and an [`EnvGuard`] on `XDG_CONFIG_HOME` instead.
+pub struct ConfigIsolation {
+    // Declaration order is drop order: the suppression must be lifted
+    // while the lock is still held, or another test observes the gate
+    // mid-restore.
+    _suppress: crate::config::persistence::SuppressGuard,
+    _lock: MutexGuard<'static, ()>,
+}
+
+/// Take [`ConfigIsolation`] for the rest of the current scope.  Hold it
+/// for the whole test body, and take it only once — it is a mutex.
+pub fn config_isolation() -> ConfigIsolation {
+    let lock = env_lock();
+    ConfigIsolation {
+        _suppress: crate::config::persistence::SuppressGuard::new(),
+        _lock: lock,
+    }
+}

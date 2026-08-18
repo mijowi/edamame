@@ -457,7 +457,10 @@ mod tests {
         // in the test environment.  The success branch records a
         // transient; the failure branch pushes a NoticeModal — we
         // accept either so the test is robust to the environment.
+        // Isolated because this drives a real `Config::save`, which
+        // would otherwise rewrite the developer's own config file.
         use crate::app::modal::NoticeModal;
+        let _iso = crate::test_env::config_isolation();
         let mut app = make_app();
         app.save_config_with_flash("test");
         assert!(app.transient.is_some() || app.modal_stack.contains::<NoticeModal>());

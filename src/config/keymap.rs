@@ -228,9 +228,16 @@ pub enum Action {
     /// sequential.
     FixListNumbering,
     /// Show the About edamame popover: bean art, rotating acronym
-    /// tagline, version info (installed + latest GitHub release),
-    /// author credit, and a button that opens the project homepage.
+    /// tagline, the installed version, author credit, and buttons for
+    /// the project homepage and an update check.  Opening it performs
+    /// no network request — see [`Action::CheckForUpdates`].
     ShowAbout,
+    /// Check GitHub for a newer release right now, and report either
+    /// "up to date" or the new version with its release notes.
+    /// Bypasses the daily throttle that governs the automatic startup
+    /// check (`editor.check_for_updates`): that gate bounds unattended
+    /// chatter, and this is an explicit request.
+    CheckForUpdates,
     /// Open the fuzzy-searchable heading list ("Go to section").  Lets
     /// the user jump the viewport to any heading in the document; the
     /// pick is live-previewed (debounced) so holding ↓ doesn't thrash
@@ -368,7 +375,7 @@ action_variants! {
     TableInsertBreak,
     FollowLinkUnderCursor,
     NavigateBack, NavigateForward,
-    ShowCommandPalette, ShowMarkdownCheatSheet, ShowAbout,
+    ShowCommandPalette, ShowMarkdownCheatSheet, ShowAbout, CheckForUpdates,
     OpenSettings, OpenWelcome, OpenKeybinds, OpenConfigFolder, SwitchTheme, CreateCustomTheme,
     ExportHtml, OpenInExternalEditor,
     ToggleTableButtons, InsertTable, InsertImage, InsertLink,

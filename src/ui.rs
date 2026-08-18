@@ -36,6 +36,7 @@ pub mod status_bar;
 pub mod table_view;
 pub mod text_input;
 pub mod theme_picker;
+pub mod update_check;
 pub mod welcome;
 
 pub use bottom_region::{hint_line_for, BottomRegion, HintChord, HintContent, HintCtx, HintSet};

@@ -47,6 +47,23 @@ appearance = "dark"
 # prompts so you are never double-prompted. Default: true.
 # show_welcome = true
 
+# Check GitHub for a newer release at startup, at most once every 24 hours.
+# The check is silent: it says nothing when you are up to date, and shows a
+# modal only the first time a genuinely newer version appears. Turning this
+# off disables only the automatic check — "Check for updates" on the About
+# page and in the command palette always checks on request. Exposed as the
+# settings-overlay row "Check for updates" and on the welcome modal.
+# See docs/security.md for what the request does and does not send.
+# Default: true.
+# check_for_updates = true
+
+# Bookkeeping for the update check, written by edamame rather than by hand:
+# when the last automatic check ran (Unix epoch seconds, 0 = never) and which
+# release tag you have already been shown a notice for. Delete them to be
+# reminded again about the current release.
+# last_update_check = 0
+# update_notified_for = ""
+
 # Fingerprints of terminals that have already shown the capabilities notice.
 # Dismissing the notice (or completing the welcome modal) appends the current
 # terminal's fingerprint here so it won't fire again. Launching in a new,

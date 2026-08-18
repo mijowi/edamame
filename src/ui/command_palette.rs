@@ -238,7 +238,8 @@ fn section_of(action: &Action) -> &'static str {
         | Action::CreateCustomTheme
         | Action::ShowMarkdownCheatSheet
         | Action::OpenInExternalEditor
-        | Action::ShowAbout => "Tools",
+        | Action::ShowAbout
+        | Action::CheckForUpdates => "Tools",
         _ => "Other",
     }
 }

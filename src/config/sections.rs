@@ -34,6 +34,27 @@ pub struct EditorConfig {
     /// are suppressed while the welcome is still pending so the user is never
     /// double-prompted.
     pub show_welcome: bool,
+    /// When true (the default), edamame checks GitHub for a newer
+    /// release at startup — at most once per 24 h, and silently unless
+    /// there is genuinely newer news the user hasn't been shown yet.
+    /// Turning it off suppresses only the *automatic* check: the About
+    /// page's "Check for updates" button and the command-palette action
+    /// always check on request.  See `docs/security.md` for the network
+    /// posture, and `app::update_check` for the mechanics.
+    pub check_for_updates: bool,
+    /// Unix epoch seconds of the last automatic release check, stamped
+    /// when the check is *spawned* rather than when it resolves — a
+    /// worker that hangs, or a process killed before the result lands,
+    /// must not re-check on every launch.  `0` means never checked, so
+    /// a fresh install checks on first run.  Bookkeeping written by
+    /// edamame, not a knob to hand-edit.
+    pub last_update_check: u64,
+    /// The release tag the startup notice has already been shown for,
+    /// so a user who has seen (or explicitly looked up) a version isn't
+    /// told about it again on every launch.  Empty until the first
+    /// notice.  Bookkeeping written by edamame, not a knob to
+    /// hand-edit.
+    pub update_notified_for: String,
     /// When true, line numbers are displayed in a left gutter in all three
     /// modes (Preview, Rendered, Raw).  Numbers are right-aligned and styled
     /// with the theme's `line_number` style (derived from `text_muted`).
@@ -156,6 +177,9 @@ impl Default for EditorConfig {
             visual_line_nav: true,
             seen_terminal_fingerprints: Vec::new(),
             show_welcome: true,
+            check_for_updates: true,
+            last_update_check: 0,
+            update_notified_for: String::new(),
             show_line_numbers: false,
             mouse_scroll_lines: 1,
             transient_ms: 1500,

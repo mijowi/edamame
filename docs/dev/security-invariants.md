@@ -28,6 +28,13 @@ regressing:
   path must respect the remote-image policy (or introduce its own explicit
   gate) and route through `PublicOnlyResolver` (or an equivalent
   resolved-IP filter); don't add a silent or unfiltered `http` request.
+  The update check (`src/app/update_check/fetch.rs`) is the one path with
+  neither, and both omissions are deliberate: its gate is its own
+  `editor.check_for_updates` setting rather than the image policy, and it
+  needs no resolved-IP filter because its host is a compile-time literal
+  that nothing — not the open document, not config — can influence, so
+  there is no attacker-chosen name to rebind. A new fetch that *does* take
+  its host from anywhere else owes the resolver.
 - **Keep the SVG pixmap budget between the caller and the allocation.**
   `src/image/svg.rs` clamps to the cell envelope only when the caller
   supplies one (HTML export deliberately doesn't), so `MAX_RASTER_DIM` /
