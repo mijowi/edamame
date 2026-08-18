@@ -73,7 +73,7 @@ This is what edamame is for: you see the formatted document nearly all the time,
 
 ### Raw — plain Markdown
 
-The whole document as source text, like any text editor. Reach for it when you want to fix something structural — a broken table, an HTML comment, syntax that's confusing the renderer. edamame's helpful behaviors get out of the way here: no auto-renumbering of lists, no table-cell guardrails.
+The whole document as source text, like any text editor. Reach for it when you want to fix something structural — a broken table, an HTML comment, syntax that's confusing the renderer. edamame's helpful behaviors get out of the way here: no auto-renumbering of lists, no table-cell guardrails. A line too long for the terminal still wraps, but its continuation rows start at column 0 rather than aligning under a list marker — every space you see in Raw mode is a space in the file.
 
 Toggle with ``Ctrl-` `` — or, if your terminal doesn't deliver that chord, from the palette or a chord you pick yourself.
 

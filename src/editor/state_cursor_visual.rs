@@ -122,7 +122,7 @@ impl EditorState {
         let target_cell = self.cursor.preferred_col;
 
         let text = line_text_trimmed(&self.buffer, line);
-        let indent = crate::ui::line_render::compute_hanging_indent_str(&text);
+        let indent = hanging_indent_for_mode(&text, self.mode);
         let rows = wrap_rows_for_text(&text, col_width, indent);
         let (sub_idx, _) = crate::ui::line_render::sub_line_of_col(&rows, col);
 
@@ -137,7 +137,7 @@ impl EditorState {
         } else if line > 0 {
             let prev_line = line - 1;
             let prev_text = line_text_trimmed(&self.buffer, prev_line);
-            let prev_indent = crate::ui::line_render::compute_hanging_indent_str(&prev_text);
+            let prev_indent = hanging_indent_for_mode(&prev_text, self.mode);
             let prev_rows = wrap_rows_for_text(&prev_text, col_width, prev_indent);
             let target_idx = prev_rows.len() - 1;
             let target = *prev_rows.last().expect("rows always non-empty");
@@ -162,7 +162,7 @@ impl EditorState {
         let target_cell = self.cursor.preferred_col;
 
         let text = line_text_trimmed(&self.buffer, line);
-        let indent = crate::ui::line_render::compute_hanging_indent_str(&text);
+        let indent = hanging_indent_for_mode(&text, self.mode);
         let rows = wrap_rows_for_text(&text, col_width, indent);
         let (sub_idx, _) = crate::ui::line_render::sub_line_of_col(&rows, col);
 
@@ -179,7 +179,7 @@ impl EditorState {
             if line < last_line {
                 let next_line = line + 1;
                 let next_text = line_text_trimmed(&self.buffer, next_line);
-                let next_indent = crate::ui::line_render::compute_hanging_indent_str(&next_text);
+                let next_indent = hanging_indent_for_mode(&next_text, self.mode);
                 let next_rows = wrap_rows_for_text(&next_text, col_width, next_indent);
                 let target = next_rows[0];
                 let is_last = next_rows.len() == 1;
@@ -204,12 +204,28 @@ impl EditorState {
         }
         let (line, col) = self.cursor.line_col(&self.buffer);
         let text = line_text_trimmed(&self.buffer, line);
-        let indent = crate::ui::line_render::compute_hanging_indent_str(&text);
+        let indent = hanging_indent_for_mode(&text, self.mode);
         let rows = wrap_rows_for_text(&text, col_width, indent);
         let (sub_idx, _) = crate::ui::line_render::sub_line_of_col(&rows, col);
         let row = rows[sub_idx];
         let row_indent = if sub_idx == 0 { 0 } else { indent };
         cell_col_within_row(&text, row, col, row_indent)
+    }
+}
+
+/// Hanging indent to wrap `text` with, for the given view `mode`.
+///
+/// Rendered / Preview reveal the cursor's line as raw source *inside* the
+/// rendered document, and `line_render` hang-indents that revealed line so it
+/// stays aligned with the list around it — so navigation must see the same
+/// indent or the cursor lands in a different column than it appears.
+/// `Mode::Raw` paints flat (`line_render::render_raw_line_with_cursor`), and
+/// so wraps flat here too; see that function for why Raw takes no indent.
+fn hanging_indent_for_mode(text: &str, mode: Mode) -> usize {
+    if mode == Mode::Raw {
+        0
+    } else {
+        crate::ui::line_render::compute_hanging_indent_str(text)
     }
 }
 

@@ -180,6 +180,71 @@ pub fn render_line_reporting_cursor(
     cursor_col_override: Option<(usize, Style)>,
     skip_rows: usize,
 ) -> (u16, Option<(u16, u16)>) {
+    render_line_core(
+        line,
+        area,
+        buf,
+        visual_y,
+        wrap,
+        cursor_col_override,
+        skip_rows,
+        None,
+    )
+}
+
+/// Raw-mode variant of [`render_line_with_cursor_from_visual`]: wraps with a
+/// **flat** layout, never a hanging indent.
+///
+/// Raw mode shows the file, so the only liberty it takes with the source is
+/// word-wrapping a line too long for the viewport; indenting the continuation
+/// rows would draw leading whitespace that isn't in the document.  It is also
+/// what the rest of Raw mode already assumes: `visual_rows_of_str` — which
+/// backs the scroll cache (`EditorState::raw_line_at_visual_row`,
+/// `raw_total_visual_rows`) and the click mapping
+/// (`mouse_ops::coord::raw_click_to_offset`) — wraps at indent 0, so a
+/// hanging indent here would put the painter in a different layout from the
+/// scroll math (a differing *row count* at narrow widths, not just a column
+/// shift) and offset every click on a continuation row by the marker width.
+///
+/// Passing indent 0 also suppresses the blockquote-bar repaint, which is
+/// correct here for the same reason: in Raw mode the `> ` on the first row is
+/// real source text, and the continuation rows have none.
+pub fn render_raw_line_with_cursor(
+    line: &Line<'static>,
+    area: Rect,
+    buf: &mut TuiBuf,
+    visual_y: u16,
+    cursor_col_override: Option<(usize, Style)>,
+    skip_rows: usize,
+) -> u16 {
+    render_line_core(
+        line,
+        area,
+        buf,
+        visual_y,
+        true,
+        cursor_col_override,
+        skip_rows,
+        Some(0),
+    )
+    .0
+}
+
+/// Shared implementation behind [`render_line_reporting_cursor`] and
+/// [`render_raw_line_with_cursor`].  `hanging_indent` of `None` detects the
+/// indent from the line's leading marker (`compute_hanging_indent`); `Some(n)`
+/// forces it, which is how Raw mode asks for a flat wrap.
+#[allow(clippy::too_many_arguments)]
+fn render_line_core(
+    line: &Line<'static>,
+    area: Rect,
+    buf: &mut TuiBuf,
+    visual_y: u16,
+    wrap: bool,
+    cursor_col_override: Option<(usize, Style)>,
+    skip_rows: usize,
+    hanging_indent: Option<usize>,
+) -> (u16, Option<(u16, u16)>) {
     if visual_y >= area.height {
         return (0, None);
     }
@@ -221,7 +286,7 @@ pub fn render_line_reporting_cursor(
 
     // Single source of truth for row breaks — keeps the renderer in lockstep
     // with the navigation/selection helpers below.
-    let indent = compute_hanging_indent(line);
+    let indent = hanging_indent.unwrap_or_else(|| compute_hanging_indent(line));
     let rows = visual_rows_of_chars(&chars, width, indent);
     let effective_indent = if indent + 1 >= width { 0 } else { indent };
     // Blockquote bar to repaint on each wrapped continuation row so the gutter

@@ -1687,6 +1687,44 @@ mod tests {
         assert_eq!(state.cursor.offset, row1_start + 3);
     }
 
+    #[test]
+    fn move_down_visual_in_raw_mode_wraps_flat() {
+        // The same list item as above, in Raw mode.  Raw paints wrapped
+        // rows flat (`line_render::render_raw_line_with_cursor`), so
+        // navigation must wrap flat too: screen cell 5 on the continuation
+        // row is content cell 5, not `5 - 2` as in a rendered view.
+        let text = "- hello world foo bar baz quux wibble";
+        let mut state = EditorState::new(Buffer::from_str(text), theme());
+        state.mode = crate::editor::Mode::Raw;
+        state.cursor.offset = 5;
+        state.cursor.preferred_col = 5;
+
+        state.move_down_visual(20);
+
+        let rows = crate::ui::line_render::visual_rows_of_str(text, 20);
+        assert!(rows.len() >= 2);
+        let (row1_start, _, _) = rows[1];
+        assert_eq!(state.cursor.offset, row1_start + 5);
+    }
+
+    #[test]
+    fn current_visual_col_in_raw_mode_takes_no_hanging_indent() {
+        // `preferred_col` is seeded from this, so an indent counted here
+        // would push every vertical move off by the marker width.
+        let text = "- hello world foo bar baz quux wibble";
+        let mut state = EditorState::new(Buffer::from_str(text), theme());
+        state.mode = crate::editor::Mode::Raw;
+        let rows = crate::ui::line_render::visual_rows_of_str(text, 20);
+        assert!(rows.len() >= 2);
+        let (row1_start, row1_end, _) = rows[1];
+        state.cursor.offset = row1_start + 3.min(row1_end - row1_start);
+        // Flat wrap: content cell 3 on the continuation row *is* screen
+        // cell 3.  In a rendered view the same position reads as cell 5.
+        assert_eq!(state.current_visual_col(20), 3);
+        state.mode = crate::editor::Mode::Rendered;
+        assert_eq!(state.current_visual_col(20), 5);
+    }
+
     /// When the cursor moves to the last rendered line of a document that
     /// contains wrapped lines above it, the scroll offset must back up enough
     /// visual rows (not logical lines) to keep the last line on screen.

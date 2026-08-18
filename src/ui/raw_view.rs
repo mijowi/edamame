@@ -9,7 +9,7 @@ use ratatui::{
 use crate::config::Theme;
 use crate::editor::vim_ops::VisualKind;
 use crate::editor::EditorState;
-use crate::ui::line_render::render_line_with_cursor_from_visual;
+use crate::ui::line_render::render_raw_line_with_cursor;
 
 /// Raw (plain text) document view.
 ///
@@ -196,12 +196,16 @@ impl<'a> StatefulWidget for RawView<'a> {
             let cursor_override =
                 (buf_line == cursor_line && cursor_visible).then_some((cursor_col, cursor_style));
             let display_line = raw_display_line(raw, line_sel_cols, &line_highlights, sel_style);
-            let rows_used = render_line_with_cursor_from_visual(
+            // Flat wrap — never a hanging indent.  Raw mode shows the file,
+            // so wrapping is the one liberty it takes; an indent the source
+            // doesn't contain would both misread as raw text and put this
+            // painter in a different layout from the scroll cache and the
+            // click mapping, which wrap at indent 0.
+            let rows_used = render_raw_line_with_cursor(
                 &display_line,
                 area,
                 buf,
                 vis_row as u16,
-                true,
                 cursor_override,
                 first_sub_row,
             ) as usize;

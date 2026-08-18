@@ -2485,3 +2485,106 @@ fn revealed_image_reflows_the_document_around_its_source_line() {
          picture's reservation: {rows:?}"
     );
 }
+
+// ── Raw mode: flat wrap ───────────────────────────────────────────────────
+
+/// Render `text` in Raw mode at `width` × `height` and return the painted
+/// rows as strings (trailing blanks trimmed).
+fn render_raw_rows(state: &edamame::editor::EditorState, width: u16, height: u16) -> Vec<String> {
+    use edamame::ui::raw_view::{RawView, RawViewState};
+    use ratatui::widgets::StatefulWidget;
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let mut view_state = RawViewState::default();
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            let view = RawView {
+                state,
+                theme,
+                visual_kind: None,
+                cursor_style: theme.status_mode_raw,
+            };
+            StatefulWidget::render(view, frame.area(), frame.buffer_mut(), &mut view_state);
+        })
+        .unwrap();
+
+    let tbuf = terminal.backend().buffer().clone();
+    (0..height)
+        .map(|y| {
+            let row: String = (0..width)
+                .map(|x| {
+                    tbuf.cell((x, y))
+                        .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                })
+                .collect();
+            row.trim_end().to_string()
+        })
+        .collect()
+}
+
+fn raw_state(text: &str) -> edamame::editor::EditorState {
+    let theme = Box::leak(Box::new(Theme::default()));
+    let mut state =
+        edamame::editor::EditorState::new(edamame::document::Buffer::from_str(text), theme);
+    state.mode = Mode::Raw;
+    state
+}
+
+#[test]
+fn raw_view_wraps_a_list_item_without_a_hanging_indent() {
+    // Raw mode shows the file: word-wrap is the one liberty it takes, so a
+    // continuation row starts at column 0 rather than aligning under the
+    // list marker's text column (which would paint two spaces that aren't
+    // in the document).
+    let state = raw_state("- alpha bravo charlie delta echo foxtrot\n");
+    let rows = render_raw_rows(&state, 16, 6);
+    assert_eq!(rows[0], "- alpha bravo");
+    assert!(
+        !rows[1].starts_with(' '),
+        "continuation row is indented: {:?}",
+        rows[1]
+    );
+    assert_eq!(rows[1], "charlie delta");
+}
+
+#[test]
+fn raw_view_wrapped_rows_agree_with_the_click_mapping() {
+    // The painter, the scroll cache and `mouse_ops::coord` must all wrap
+    // the same way.  Click every painted cell of a wrapped list item and
+    // assert the cursor lands on the character drawn there — a hanging
+    // indent in the painter alone would skew every continuation row by the
+    // marker width.
+    use edamame::editor::mouse_ops;
+
+    const W: u16 = 16;
+    let src = "- alpha bravo charlie delta echo foxtrot\nplain tail line\n";
+    let mut state = raw_state(src);
+    let rows = render_raw_rows(&state, W, 8);
+
+    for (y, row) in rows.iter().enumerate() {
+        for (x, painted) in row.chars().enumerate() {
+            if painted == ' ' {
+                continue; // a wrap-eaten space has no unique source char
+            }
+            let mut anchor: Option<mouse_ops::DragTarget> = None;
+            let action = edamame::input::MouseAction::Click {
+                col: x as u16,
+                row: y as u16,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            };
+            mouse_ops::apply(&mut state, action, &mut anchor, &[], 8, W as usize);
+            let at_cursor = state
+                .buffer
+                .rope()
+                .chars_at(state.cursor.offset)
+                .next()
+                .unwrap_or('\n');
+            assert_eq!(
+                at_cursor, painted,
+                "click at ({x}, {y}) landed on {at_cursor:?}, painted {painted:?}"
+            );
+        }
+    }
+}
