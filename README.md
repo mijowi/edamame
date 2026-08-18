@@ -22,8 +22,6 @@ https://github.com/user-attachments/assets/85e2a303-08d6-4122-9f1f-18975613a127
 
 ## Installation
 
-**Next**: [Getting started](https://github.com/mijowi/edamame/blob/main/docs/getting-started.md)
-
 ### Homebrew
 
 ```bash
