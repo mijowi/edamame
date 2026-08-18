@@ -210,6 +210,21 @@ fn run(file_path: Option<PathBuf>, opts: RunOpts) -> Result<()> {
 ///
 /// Returns the non-blocking writer guard; dropping it flushes and closes the
 /// log file. The guard must be kept alive for the duration of the program.
+///
+/// **Level.** The default filter is a bare `debug`, and both halves of that
+/// are deliberate.  `tracing_subscriber::fmt()`'s own default is `info`,
+/// which silently discarded every `debug!` in the crate into a file named
+/// `debug.log` — the whole point of `[dev] logging` / `--log` is the
+/// diagnostic trail (image decode dispatch and results, watcher events,
+/// link handling), and essentially all of it is logged at `debug`.  It is
+/// *unscoped* because the obvious `edamame=debug` would miss most of that
+/// trail: `EnvFilter` matches on target, and the diagnostic call sites set
+/// their own — `image`, `watcher`, `link`, `mouse`, `app` — none of which
+/// live under the crate's target path.  Nothing in the dependency graph
+/// pulls `tracing` (`cargo tree -i tracing` lists only this crate and the
+/// subscriber), so an unscoped filter can't be flooded by a chatty
+/// dependency.  `RUST_LOG` overrides it when a contributor wants something
+/// narrower, or a `trace`.
 fn setup_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let log_dir = Config::log_dir()?;
     if std::fs::create_dir_all(&log_dir).is_err() {
@@ -219,7 +234,11 @@ fn setup_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let file_appender = tracing_appender::rolling::daily(&log_dir, "debug.log");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug"));
+
     tracing_subscriber::fmt()
+        .with_env_filter(filter)
         .with_writer(non_blocking)
         .with_ansi(false)
         .init();

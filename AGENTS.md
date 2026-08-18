@@ -614,7 +614,9 @@ pub enum KeyMapError {
 
 ### Logging
 
-Use `tracing` macros (`tracing::info!`, `tracing::debug!`, etc.) — **never** `println!` or `eprintln!` (would corrupt the TUI). Logging is only initialized when `[dev] logging = true` in config, so tracing calls in production are no-ops.
+Use `tracing` macros (`tracing::info!`, `tracing::debug!`, etc.) — **never** `println!` or `eprintln!` (would corrupt the TUI). Logging is only initialized when `[dev] logging = true` in config (or `--log`), so tracing calls in production are no-ops.
+
+**The subscriber's filter is a bare `debug`, and it has to stay unscoped.** `tracing_subscriber::fmt()` defaults to `info`, which silently dropped every `debug!` in the crate into a file named `debug.log` — the diagnostic trail the flag exists for (image decode dispatch and results, watcher events, link handling) is almost entirely at `debug`, so a bug report gathered with `--log` showed three startup lines and nothing else. The obvious repair, `edamame=debug`, is also wrong: `EnvFilter` matches on *target*, and the diagnostic call sites set their own — `image`, `watcher`, `link`, `mouse`, `app` — none of which live under the crate's target path, so it would still drop most of the trail. Nothing in the dependency graph pulls `tracing` (`cargo tree -i tracing` lists only this crate and the subscriber), so an unscoped filter cannot be flooded by a chatty dependency. `RUST_LOG` overrides it. A new custom target needs no filter change; a new *dependency* that emits `tracing` means re-checking that claim.
 
 ### Tests
 
