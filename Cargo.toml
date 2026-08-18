@@ -1,6 +1,6 @@
 [package]
 name = "edamame"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 # Minimum supported Rust version, found with `cargo-msrv` and pinned by the
 # `msrv` CI job so it can't rot silently.  Cargo enforces it: a user on an

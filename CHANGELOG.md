@@ -8,15 +8,31 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-18
+
 ### Added
 
-- Startup update check. edamame now checks GitHub for a newer release at most once a day and shows a one-time notice, with the release notes, when a new version first appears. It says nothing when you are up to date. Opt out with `editor.check_for_updates`, the "Check for updates" row in the settings overlay, or the toggle on the welcome screen.
-- "Check for updates" in the command palette, and a matching button on the About page, for checking on demand at any time.
+- Startup update check. edamame now checks GitHub for a newer release at most once a day and shows a one-time notice, with the release notes, when a new version first appears. The check can be turned off in settings.
+- "Check for updates" in the command palette, and a matching button on the About page.
 
 ### Changed
 
 - The About page no longer contacts GitHub when it opens, and no longer shows a "Current release" row.
+- The Markdown cheat sheet explains line breaks more clearly.
+
+### Fixed
+
+- Wrapped lines in raw mode no longer get a hanging indent — raw mode shows the file as written.
+- The cursor and mouse clicks now land on the right character inside code blocks.
+- Images now appear in files opened from within edamame, such as by following a link.
+- Alt-Left / Alt-Right now work correctly for e.g. file navigation on macOS and other systems.
+- A failed image render no longer takes the editor down with it.
+- Debug logging (--log) now records the full trace instead of only startup lines.
 
 ## [0.1.0] - 2026-08-17
 
 First public release.
+
+[Unreleased]: https://github.com/mijowi/edamame/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/mijowi/edamame/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/mijowi/edamame/releases/tag/v0.1.0
