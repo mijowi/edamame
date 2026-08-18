@@ -17,7 +17,7 @@
 
 use std::ops::Range;
 
-use ratatui::buffer::{Buffer as TuiBuf, Cell};
+use ratatui::buffer::{Buffer as TuiBuf, Cell, CellDiffOption};
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui_image::{Resize, ResizeEncodeRender};
@@ -457,7 +457,7 @@ fn paint_native(images: &mut ImageCache, snap: &ImageLayoutSnapshot, buf: &mut T
 /// **This makes the frame buffer deliberately lie** — it records blanks
 /// over a region the terminal is actually showing an image in.  What
 /// keeps that from stranding a ghost image is a property of ratatui's
-/// hand-written `impl PartialEq for Cell`: it compares the `skip` flag
+/// hand-written `impl PartialEq for Cell`: it compares the `diff_option`
 /// alongside symbol and style.  So the moment a frame stops skipping
 /// these cells, they compare unequal to the skipped ones and are emitted
 /// — even when both are blank.  That is what erases the image when its
@@ -469,7 +469,7 @@ fn mark_rect_skipped(rect: Rect, buf: &mut TuiBuf) {
     for y in rect.y..rect.y.saturating_add(rect.height) {
         for x in rect.x..rect.x.saturating_add(rect.width) {
             if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_skip(true);
+                cell.set_diff_option(CellDiffOption::Skip);
             }
         }
     }
