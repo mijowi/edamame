@@ -70,6 +70,7 @@ pub(super) fn diff_safe_action(action: &Action) -> Option<Action> {
             | ShowCommandPalette
             | ShowMarkdownCheatSheet
             | ShowAbout
+            | CheckForUpdates
             | OpenSettings
             | OpenWelcome
             | OpenKeybinds
@@ -134,6 +135,7 @@ pub(super) fn search_safe_action(action: &Action) -> Option<Action> {
             | ShowCommandPalette
             | ShowMarkdownCheatSheet
             | ShowAbout
+            | CheckForUpdates
             | OpenSettings
             | OpenWelcome
             | OpenKeybinds
@@ -252,6 +254,10 @@ impl App {
             }
             Action::ShowAbout => {
                 self.open_about_modal();
+                true
+            }
+            Action::CheckForUpdates => {
+                self.open_update_modal();
                 true
             }
             Action::NavigateBack => {
@@ -693,29 +699,15 @@ impl App {
             .push(Box::new(modal::CheatSheetModal::new(self.theme)));
     }
 
-    /// Open the About page.  Spawns the GitHub release check on the
-    /// first open of the session; later opens reuse the cached result
-    /// (or the still-pending state — the in-flight guard prevents a
-    /// duplicate request when the modal is closed and reopened before
-    /// the worker reports back).
+    /// Open the About page.  Deliberately touches no network: the page
+    /// no longer reports release information, and its
+    /// `[ Check for updates ]` button is the only thing here that
+    /// reaches GitHub (see [`App::open_update_modal`]).
     pub fn open_about_modal(&mut self) {
         if self.modal_stack.contains::<modal::AboutModal>() {
             return;
         }
-        let status = self
-            .latest_release
-            .clone()
-            .unwrap_or(crate::app::update_check::ReleaseStatus::Pending);
-        if status == crate::app::update_check::ReleaseStatus::Pending
-            && !self.release_check_in_flight
-        {
-            if let Some(tx) = self.app_tx.clone() {
-                crate::app::update_check::spawn_release_check(tx);
-                self.release_check_in_flight = true;
-            }
-        }
-        self.modal_stack
-            .push(Box::new(modal::AboutModal::new(status)));
+        self.modal_stack.push(Box::new(modal::AboutModal::new()));
         self.needs_draw = true;
     }
 
@@ -1080,6 +1072,9 @@ impl App {
             }
             Action::ShowAbout => {
                 self.open_about_modal();
+            }
+            Action::CheckForUpdates => {
+                self.open_update_modal();
             }
             Action::OpenSettings => {
                 self.open_settings_overlay();

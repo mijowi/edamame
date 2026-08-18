@@ -1037,6 +1037,7 @@ mod tests {
                 "Autosave",
                 "Big H1 headings",
                 "Blink cursor",
+                "Check for updates",
                 "Limit editor width",
                 "  Char limit",
                 "Scroll speed",
@@ -1239,6 +1240,17 @@ mod tests {
         let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
         assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
         assert!(!config.editor.cursor_blink);
+    }
+
+    #[test]
+    fn check_for_updates_row_toggles_config_flag() {
+        let mut config = Config::default();
+        let mut state = SettingsState::new();
+        focus_row(&mut state, &config, "Check for updates");
+        assert!(config.editor.check_for_updates, "opt-out, so on by default");
+        let resp = state.handle_key(&key(KeyCode::Enter), &mut config);
+        assert!(matches!(resp, SettingsResponse::FieldChanged(_)));
+        assert!(!config.editor.check_for_updates);
     }
 
     // ── Click dispatch ──────────────────────────────────────────────────

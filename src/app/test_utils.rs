@@ -216,6 +216,9 @@ mod theme_downgrade_tests {
         // is a session fact enforced by `media_renderable`.  Writing it
         // would overwrite the `Always` the user chose on their capable
         // terminal — one `config.toml` is typically shared between both.
+        // Isolated because Save runs a real `Config::save`, which would
+        // otherwise rewrite the developer's own config file.
+        let _iso = crate::test_env::config_isolation();
         let mut app = app_with_welcome(ColorDepth::Ansi256, "Dracula", false);
         app.config.images.enabled = ImagesEnabled::Always;
         app.config.diagrams.enabled = DiagramsEnabled::Always;

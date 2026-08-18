@@ -1,14 +1,19 @@
-//! About edamame popover: bean art, rotating acronym tagline, version
-//! info (installed + latest GitHub release), author credit, and a
-//! `[ View on GitHub ]` button.
+//! About edamame popover: bean art, rotating acronym tagline, the
+//! installed version, author credit, and the `[ Check for updates ]` /
+//! `[ View on GitHub ]` buttons.
 //!
-//! Time-driven content (the tagline rotation and the release-check
-//! spinner) is *derived* from `opened_at.elapsed()` at render time
-//! rather than mutated by a tick — the modal just reports when the next
-//! visual change is due via [`Modal::next_deadline`], and the run loop
-//! wakes and redraws then.  The release result is pushed in by
-//! `App::handle_async_event` via `ModalStack::find_first_mut`, the same
-//! route the dirty-conflict modal uses for late-arriving data.
+//! It deliberately reports **no** release information of its own.  It
+//! used to fetch the latest release on every first open and show a
+//! "Current release" row, which made merely opening the page a network
+//! request and put a second surface in the business of rendering
+//! release state.  Both jobs now belong to `modal::UpdateModal`, which
+//! the button opens on top of this page — one display site for that
+//! state, so nothing can drift out of sync with it.
+//!
+//! Time-driven content (the tagline rotation) is *derived* from
+//! `opened_at.elapsed()` at render time rather than mutated by a tick —
+//! the modal just reports when the next visual change is due via
+//! [`Modal::next_deadline`], and the run loop wakes and redraws then.
 
 use std::any::Any;
 use std::time::{Duration, Instant};
@@ -19,7 +24,7 @@ use ratatui::Frame;
 
 use super::chrome::ModalChrome;
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
-use crate::app::update_check::{self, ReleaseStatus};
+use crate::app::update_check;
 use crate::app::App;
 use crate::ui::{about, ModalButton, ModalResponse};
 
@@ -28,8 +33,9 @@ const INSTALLED_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// How long each acronym expansion stays up before rotating.
 const TAGLINE_INTERVAL: Duration = Duration::from_secs(4);
 
-/// Spinner frame advance rate while the release check is pending.
-const SPINNER_TICK: Duration = Duration::from_millis(100);
+/// Index of `[ Check for updates ]` in `buttons`, named so the button
+/// order and the `resolve` arm that acts on it can't drift apart.
+const CHECK_UPDATES_BUTTON: usize = 0;
 
 pub struct AboutModal {
     chrome: ModalChrome,
@@ -38,18 +44,12 @@ pub struct AboutModal {
     /// Offset into [`about::TAGLINES`] so the page doesn't open on the
     /// same expansion every time.
     tagline_start: usize,
-    release: ReleaseStatus,
 }
 
 impl AboutModal {
-    /// `release` is the App's session cache — [`ReleaseStatus::Pending`]
-    /// on the first open (the caller spawns the fetch), the cached
-    /// result on every reopen.
-    ///
-    /// `pub(crate)` to match `ReleaseStatus`, which is crate-private —
-    /// as is `set_release` below.  Nothing outside the crate constructs
-    /// a modal.
-    pub(crate) fn new(release: ReleaseStatus) -> Self {
+    /// `pub(crate)` for consistency with the rest of the modal family;
+    /// nothing outside the crate constructs a modal.
+    pub(crate) fn new() -> Self {
         // Vary the opening tagline without a rand dependency: the
         // sub-second nanos of the wall clock are effectively uniform
         // across user-initiated opens.
@@ -59,17 +59,13 @@ impl AboutModal {
             .unwrap_or(0);
         Self {
             chrome: ModalChrome::new(ModalKind::Normal, true),
-            buttons: vec![ModalButton::new("View on GitHub")],
+            buttons: vec![
+                ModalButton::new("Check for updates"),
+                ModalButton::new("View on GitHub"),
+            ],
             opened_at: Instant::now(),
             tagline_start,
-            release,
         }
-    }
-
-    /// Push the resolved release check into the open modal.  Called by
-    /// `App::handle_async_event` when the worker reports back.
-    pub(crate) fn set_release(&mut self, release: ReleaseStatus) {
-        self.release = release;
     }
 
     fn tagline_index(&self) -> usize {
@@ -77,31 +73,18 @@ impl AboutModal {
         self.tagline_start + flips as usize
     }
 
-    fn spinner_frame(&self) -> usize {
-        (self.opened_at.elapsed().as_millis() / SPINNER_TICK.as_millis()) as usize
-    }
-
-    /// The "Current release" text, or `None` while the fetch is in
-    /// flight (the body renders the spinner instead).
-    fn release_display(&self) -> Option<String> {
-        match &self.release {
-            ReleaseStatus::Pending => None,
-            ReleaseStatus::Available(tag) => Some(format!(
-                "{tag}{}",
-                update_check::release_suffix(INSTALLED_VERSION, tag)
-            )),
-            ReleaseStatus::Failed => Some("unavailable".to_owned()),
-        }
-    }
-
     /// Map a resolved response to an outcome — shared by the key and
-    /// click paths.  The GitHub button keeps the modal open
-    /// (`ContinueAnd`) so the user returns from the browser to the
-    /// About page, not to a surprise dismissal.
+    /// click paths.  Both buttons keep the modal open (`ContinueAnd`):
+    /// the user returns from the browser, or from the update modal
+    /// stacked on top, to the About page rather than to a surprise
+    /// dismissal.
     fn resolve(&mut self, response: ModalResponse) -> ModalOutcome {
         match response {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled => ModalOutcome::Close,
+            ModalResponse::ButtonPressed(CHECK_UPDATES_BUTTON) => {
+                ModalOutcome::ContinueAnd(Box::new(|app| app.open_update_modal()))
+            }
             ModalResponse::ButtonPressed(_) => ModalOutcome::ContinueAnd(Box::new(|app| {
                 app.spawn_open_worker(update_check::GITHUB_URL.to_owned());
             })),
@@ -111,14 +94,7 @@ impl AboutModal {
 
 impl Modal for AboutModal {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
-        let release = self.release_display();
-        let body = about::body_lines(
-            ctx.theme,
-            self.tagline_index(),
-            self.spinner_frame(),
-            INSTALLED_VERSION,
-            release.as_deref(),
-        );
+        let body = about::body_lines(ctx.theme, self.tagline_index(), INSTALLED_VERSION);
         self.chrome
             .render(frame, area, ctx, "About edamame", &body, &self.buttons);
     }
@@ -152,21 +128,14 @@ impl Modal for AboutModal {
     }
 
     fn next_deadline(&self) -> Option<Instant> {
-        // Next boundary of an `interval`-spaced grid anchored at
+        // Next boundary of a `TAGLINE_INTERVAL`-spaced grid anchored at
         // `opened_at`.  Saturating conversion: an (absurdly) long
         // session pins the deadline at the far future instead of
         // wrapping it into the past, where the run loop's
         // `> now` filter would silently drop it.
-        let next_boundary = |interval: Duration| {
-            let periods = self.opened_at.elapsed().as_nanos() / interval.as_nanos();
-            let periods = u32::try_from(periods).unwrap_or(u32::MAX);
-            self.opened_at + interval * periods.saturating_add(1)
-        };
-        let mut next = next_boundary(TAGLINE_INTERVAL);
-        if self.release == ReleaseStatus::Pending {
-            next = next.min(next_boundary(SPINNER_TICK));
-        }
-        Some(next)
+        let periods = self.opened_at.elapsed().as_nanos() / TAGLINE_INTERVAL.as_nanos();
+        let periods = u32::try_from(periods).unwrap_or(u32::MAX);
+        Some(self.opened_at + TAGLINE_INTERVAL * periods.saturating_add(1))
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -184,7 +153,6 @@ mod tests {
 
     use super::*;
     use crate::app::test_utils::make_app;
-    use crate::app::AppEvent;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -201,57 +169,56 @@ mod tests {
     }
 
     #[test]
-    fn release_result_event_updates_modal_and_session_cache() {
+    fn opening_about_does_not_touch_the_network() {
+        // The page used to fetch the latest release on first open.  It
+        // must not: an explicit "Check for updates" is the only thing
+        // that reaches GitHub from here now.
         let mut app = make_app();
         app.open_about_modal();
-        app.handle_async_event(AppEvent::ReleaseCheckResult(Ok("v9.9.9".to_owned())));
-        let modal = app.modal_stack.find_first_mut::<AboutModal>().unwrap();
-        assert_eq!(modal.release, ReleaseStatus::Available("v9.9.9".to_owned()));
-        assert_eq!(
-            modal.release_display().as_deref(),
-            Some("v9.9.9 (update available)"),
+        assert!(!app.release_check_in_flight);
+        assert!(app.latest_release.is_none());
+    }
+
+    #[test]
+    fn the_check_button_stacks_the_update_modal_over_about() {
+        let mut app = make_app();
+        app.open_about_modal();
+        let mut modal = AboutModal::new();
+        // Enter activates the focused (first) button.
+        let outcome = modal.handle_key(key(KeyCode::Enter), &mut app, 24, 80);
+        let ModalOutcome::ContinueAnd(action) = outcome else {
+            panic!("expected the About page to stay open");
+        };
+        action(&mut app);
+        assert!(app.modal_stack.contains::<crate::app::modal::UpdateModal>());
+        assert!(
+            app.modal_stack.contains::<AboutModal>(),
+            "About stays underneath"
         );
-        // Reopening picks the cached result up instead of refetching.
-        app.modal_stack.remove_first::<AboutModal>();
-        app.open_about_modal();
-        let modal = app.modal_stack.find_first_mut::<AboutModal>().unwrap();
-        assert_eq!(modal.release, ReleaseStatus::Available("v9.9.9".to_owned()));
-    }
-
-    #[test]
-    fn failed_release_check_shows_unavailable() {
-        let mut app = make_app();
-        app.open_about_modal();
-        app.handle_async_event(AppEvent::ReleaseCheckResult(Err("404".to_owned())));
-        let modal = app.modal_stack.find_first_mut::<AboutModal>().unwrap();
-        assert_eq!(modal.release_display().as_deref(), Some("unavailable"));
-    }
-
-    #[test]
-    fn next_deadline_is_sooner_while_spinner_is_pending() {
-        let pending = AboutModal::new(ReleaseStatus::Pending);
-        let resolved = AboutModal::new(ReleaseStatus::Failed);
-        let now = Instant::now();
-        // Pending: next wake is the ~100 ms spinner tick.
-        let d = pending.next_deadline().expect("pending deadline");
-        assert!(d > now && d <= now + SPINNER_TICK + Duration::from_millis(50));
-        // Resolved: only the ~4 s tagline flip remains.
-        let d = resolved.next_deadline().expect("resolved deadline");
-        assert!(d > now + SPINNER_TICK && d <= now + TAGLINE_INTERVAL);
     }
 
     #[test]
     fn enter_on_github_button_keeps_modal_open() {
         let mut app = make_app();
-        let mut modal = AboutModal::new(ReleaseStatus::Pending);
+        let mut modal = AboutModal::new();
+        // Move focus off "Check for updates" onto "View on GitHub".
+        modal.handle_key(key(KeyCode::Tab), &mut app, 24, 80);
         let outcome = modal.handle_key(key(KeyCode::Enter), &mut app, 24, 80);
         assert!(matches!(outcome, ModalOutcome::ContinueAnd(_)));
     }
 
     #[test]
+    fn the_tagline_keeps_asking_for_a_redraw() {
+        let modal = AboutModal::new();
+        let now = Instant::now();
+        let d = modal.next_deadline().expect("tagline deadline");
+        assert!(d > now && d <= now + TAGLINE_INTERVAL);
+    }
+
+    #[test]
     fn esc_dismisses() {
         let mut app = make_app();
-        let mut modal = AboutModal::new(ReleaseStatus::Pending);
+        let mut modal = AboutModal::new();
         let outcome = modal.handle_key(key(KeyCode::Esc), &mut app, 24, 80);
         assert!(matches!(outcome, ModalOutcome::Close));
     }

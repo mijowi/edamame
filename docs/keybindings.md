@@ -156,7 +156,7 @@ These are reachable from the command palette (`Ctrl-P`), or you can bind them yo
 ![The command palette listing available commands](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/command_palette.jpg)
 
 **Files** — Save as…, Open in external editor, Export HTML
-**Overlays** — Settings, Keybindings, Welcome / terminal setup, Markdown cheat sheet, About, Switch theme, Create custom theme
+**Overlays** — Settings, Keybindings, Welcome / terminal setup, Markdown cheat sheet, About, Check for updates, Switch theme, Create custom theme
 **Insert** — Link, Image, Footnote
 **Fix-ups** — Delete footnote, Renumber footnotes, Fix list numbering
 **Toggles** — Vim mode, Autosave, Big H1, Line numbers, Blink cursor, Visual line navigation, Limit editor width, Diff on external change, Table buttons

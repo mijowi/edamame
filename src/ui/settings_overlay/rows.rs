@@ -35,6 +35,7 @@ pub(crate) const LABEL_AUTOSAVE: &str = "Autosave";
 pub(crate) const LABEL_LIMIT_WIDTH: &str = "Limit editor width";
 pub(crate) const LABEL_DIFF_ON_CHANGE: &str = "Diff when file changes";
 pub(crate) const LABEL_TABLE_BUTTONS: &str = "Show table buttons";
+pub(crate) const LABEL_CHECK_UPDATES: &str = "Check for updates";
 
 /// Minimum accepted value for [`LABEL_SCROLL_SPEED`].  The
 /// dispatcher additionally clamps zero to one as a safety net, but
@@ -354,6 +355,25 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 write_value: Some(|c, v| {
                     if let controls::ControlValue::Toggle(b) = v {
                         c.editor.cursor_blink = b;
+                    }
+                }),
+                options: Some(controls::Control::Toggle),
+                disabled: None,
+            },
+        },
+        RowDef {
+            label: LABEL_CHECK_UPDATES,
+            description: Some("\nCheck GitHub for a new release at startup, once a day"),
+            describe: None,
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Cycle,
+                read: |c, _| bool_label(c.editor.check_for_updates).to_owned(),
+                write_string: no_write,
+                read_value: Some(|c| controls::ControlValue::Toggle(c.editor.check_for_updates)),
+                write_value: Some(|c, v| {
+                    if let controls::ControlValue::Toggle(b) = v {
+                        c.editor.check_for_updates = b;
                     }
                 }),
                 options: Some(controls::Control::Toggle),

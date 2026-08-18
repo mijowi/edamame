@@ -13,12 +13,13 @@ There is no in-app file picker (yet). Once you're inside, you get to other docum
 
 ## Your first launch
 
-A welcome screen appears the first time you run edamame. It shows a short introduction, a summary of what your terminal supports — color depth, images, mouse, keyboard — and asks about four things:
+A welcome screen appears the first time you run edamame. It shows a short introduction, a summary of what your terminal supports — color depth, images, mouse, keyboard — and asks about five things:
 
 - **Theme** — opens the picker; you can change this any time.
 - **Images** and **Diagrams** — whether to render them inline. Each can be *Ask*, *Always* or *Never*, and they're independent.
 - **Remote images** — whether to fetch images from the web. This one is worth a thought: a document you didn't write can use a remote image to find out when you opened it, which is why it's a separate question and defaults to asking. See [security.md](security.md).
 - **Vim mode** — off by default. See [vim-mode.md](vim-mode.md).
+- **Check for updates** — on by default. edamame asks GitHub once a day whether a newer release exists, and tells you once when one appears. It says nothing when you're up to date. This is the one thing edamame does over the network without being asked each time, so it's a question here rather than a buried setting — and nothing is requested until you've answered it; see [security.md](security.md).
 
 ![edamame's welcome screen on first launch](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/welcome.jpg)
 

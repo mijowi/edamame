@@ -158,12 +158,32 @@ back — it is not in the settings overlay.
 | Key | Type | Default | Where |
 |---|---|---|---|
 | `show_welcome` | bool | `true` | welcome modal |
+| `check_for_updates` | bool | `true` | settings overlay, welcome modal |
+| `last_update_check` | integer | `0` | written by edamame |
+| `update_notified_for` | string | `""` | written by edamame |
 | `seen_terminal_fingerprints` | list of string | `[]` | written by edamame |
 
 `seen_terminal_fingerprints` records which terminals have already shown the
 capabilities notice, so it fires once per new terminal rather than every
 launch. **Clear the list to see it again** — useful after changing terminals or
 upgrading one.
+
+`check_for_updates` governs the automatic release check at startup. It runs at
+most once every 24 hours — and never before the first-run welcome screen has
+been answered, so turning it off there stops the first check too. It is silent
+unless there is news: nothing is
+shown when you are already on the latest release, and a given version raises
+the notice only once. Turning it off disables **only** the automatic check —
+"Check for updates" in the command palette, and the button of the same name on
+the About page, always check on request. What the request does and doesn't send
+is documented in [security.md](security.md).
+
+`last_update_check` and `update_notified_for` are the bookkeeping behind those
+two rules: when the last automatic check ran (Unix epoch seconds, `0` for
+never), and which release tag you have already been shown. **Delete
+`update_notified_for` to be reminded about the current release again.** Neither
+is worth editing otherwise, and neither persists under `--no-config`, so that
+flag re-checks on every launch.
 
 ---
 

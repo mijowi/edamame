@@ -3,17 +3,18 @@
 //!
 //! Pure content builder in the [`super::markdown_cheat_sheet`] mold:
 //! the modal adapter (`crate::app::modal::about`) owns the timing and
-//! release-check state and calls [`body_lines`] each frame with plain
-//! values, so this module stays free of any `app`-layer dependency and
-//! is testable as a function of its inputs.
+//! calls [`body_lines`] each frame with plain values, so this module
+//! stays free of any `app`-layer dependency and is testable as a
+//! function of its inputs.  [`super::update_check`] follows the same
+//! rule for the release-status body that used to live here.
 //!
 //! Spans with no domain styling use [`Span::raw`] / `Line::raw` so they
 //! inherit the modal `Paragraph`'s background — see the cheat sheet
 //! module for why `theme.normal` would be wrong here.
 //!
 //! Layout invariant: the body's max line width and its line count are
-//! identical for every tagline rotation and both spinner/resolved
-//! release states, so the modal frame never resizes while open.  The
+//! identical for every tagline rotation, so the modal frame never
+//! resizes while open.  The
 //! taglines are word-wrapped here (to [`TAGLINE_WRAP`], always emitting
 //! [`TAGLINE_ROWS`] rows) rather than left to the `Paragraph` wrap,
 //! which keeps the content width narrow enough for an 80-column
@@ -42,10 +43,6 @@ pub const TAGLINES: &[&str] = &[
     "Extremely Disappointed At Many Aggravating Markdown Editors",
     "Ego Demands Acrimoniously Making A Markdown Editor",
 ];
-
-/// Braille spinner shown on the "Current release" row while the
-/// GitHub release check is in flight.
-pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// A shaded edamame pod: stem at the top, three bulging beans with
 /// pinched necks between them, leaning top-right to bottom-left with
@@ -91,31 +88,17 @@ const TAGLINE_WRAP: usize = 44;
 /// trailing blank) so the modal height is stable across rotations.
 const TAGLINE_ROWS: usize = 2;
 
-/// Build the About body.  `tagline_idx` and `spinner_frame` are free-
-/// running counters (wrapped here, so callers pass raw tick counts);
-/// `installed` is the bare Cargo version (`0.1.0`); `release` is the
-/// resolved "Current release" text, or `None` while the fetch is still
-/// in flight (renders the spinner).
-pub fn body_lines(
-    theme: &Theme,
-    tagline_idx: usize,
-    spinner_frame: usize,
-    installed: &str,
-    release: Option<&str>,
-) -> Vec<Line<'static>> {
+/// Build the About body.  `tagline_idx` is a free-running counter
+/// (wrapped here, so callers pass raw tick counts);
+/// `installed` is the bare Cargo version (`0.1.0`).
+///
+/// Release information deliberately does not appear on this page — see
+/// `crate::app::modal::about` for why it moved to its own modal.
+pub fn body_lines(theme: &Theme, tagline_idx: usize, installed: &str) -> Vec<Line<'static>> {
     let tagline = TAGLINES[tagline_idx % TAGLINES.len()];
 
-    // Version rows, padded to a common width so their left edges stay
-    // aligned once each row is centered independently.
     let installed_row = format!("Installed version: v{installed}");
-    let release_row = match release {
-        Some(text) => format!("Current release:   {text}"),
-        None => format!(
-            "Current release:   {}",
-            SPINNER_FRAMES[spinner_frame % SPINNER_FRAMES.len()]
-        ),
-    };
-    let version_width = installed_row.width().max(release_row.width());
+    let version_width = installed_row.width();
 
     // Fixed content width: taglines wrap at TAGLINE_WRAP, so the
     // widest static row anchors the modal at one stable size instead
@@ -149,10 +132,6 @@ pub fn body_lines(
     out.push(Line::raw(""));
     out.push(centered(
         Span::raw(pad_to(installed_row, version_width)),
-        width,
-    ));
-    out.push(centered(
-        Span::raw(pad_to(release_row, version_width)),
         width,
     ));
     out.push(Line::raw(""));
@@ -229,28 +208,13 @@ mod tests {
     }
 
     #[test]
-    fn pending_release_renders_spinner_frame() {
-        let body = flat(&body_lines(theme(), 0, 2, "0.1.0", None));
-        assert!(body.contains(SPINNER_FRAMES[2]), "{body}");
-        // The spinner index wraps rather than panicking.
-        let body = flat(&body_lines(
-            theme(),
-            0,
-            SPINNER_FRAMES.len() + 1,
-            "0.1.0",
-            None,
-        ));
-        assert!(body.contains(SPINNER_FRAMES[1]), "{body}");
-    }
-
-    #[test]
     fn tagline_index_selects_and_wraps() {
-        let body = normalized(&body_lines(theme(), 4, 0, "0.1.0", None));
+        let body = normalized(&body_lines(theme(), 4, "0.1.0"));
         assert!(body.contains(TAGLINES[4]), "{body}");
-        let wrapped = normalized(&body_lines(theme(), TAGLINES.len() + 4, 0, "0.1.0", None));
+        let wrapped = normalized(&body_lines(theme(), TAGLINES.len() + 4, "0.1.0"));
         assert!(wrapped.contains(TAGLINES[4]), "{wrapped}");
         // A tagline longer than the wrap width still appears whole.
-        let long = normalized(&body_lines(theme(), 2, 0, "0.1.0", None));
+        let long = normalized(&body_lines(theme(), 2, "0.1.0"));
         assert!(long.contains(TAGLINES[2]), "{long}");
     }
 
@@ -261,7 +225,7 @@ mod tests {
         // would resize every flip.
         let sizes: Vec<(usize, usize)> = (0..TAGLINES.len())
             .map(|i| {
-                let body = body_lines(theme(), i, 0, "0.1.0", None);
+                let body = body_lines(theme(), i, "0.1.0");
                 (body.iter().map(|l| l.width()).max().unwrap(), body.len())
             })
             .collect();
@@ -273,7 +237,7 @@ mod tests {
         // Widest body line + the modal chrome's horizontal padding
         // must stay inside a standard 80-column terminal, otherwise
         // the body wraps and the centering shears (the original bug).
-        let body = body_lines(theme(), 2, 0, "0.1.0", Some("v10.20.30 (update available)"));
+        let body = body_lines(theme(), 2, "0.1.0");
         let max = body.iter().map(|l| l.width()).max().unwrap();
         assert!(max <= 72, "body width {max} leaves no room for chrome");
     }
@@ -282,7 +246,7 @@ mod tests {
     fn art_block_keeps_its_shape_when_centered() {
         // Every art row must receive the same left offset — per-row
         // centering would shear the pod.
-        let body = body_lines(theme(), 0, 0, "0.1.0", None);
+        let body = body_lines(theme(), 0, "0.1.0");
         let offsets: Vec<usize> = body[..ART.len()]
             .iter()
             .map(|l| l.spans[0].content.len())

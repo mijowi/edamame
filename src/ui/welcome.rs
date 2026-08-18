@@ -48,16 +48,18 @@ pub enum WelcomeFocus {
     RemoteImages,
     Diagrams,
     VimMotions,
+    CheckUpdates,
     ShowAgain,
     Save,
 }
 
-const FOCUS_ORDER: [WelcomeFocus; 7] = [
+const FOCUS_ORDER: [WelcomeFocus; 8] = [
     WelcomeFocus::Theme,
     WelcomeFocus::Diagrams,
     WelcomeFocus::Images,
     WelcomeFocus::RemoteImages,
     WelcomeFocus::VimMotions,
+    WelcomeFocus::CheckUpdates,
     WelcomeFocus::ShowAgain,
     WelcomeFocus::Save,
 ];
@@ -107,6 +109,16 @@ pub struct WelcomeState {
     /// flips `config.modal.handler` to `"vim"` and activates modal
     /// editing for the running session.
     pub use_vim: bool,
+    /// "Check for updates" toggle.  Mirrors
+    /// `config.editor.check_for_updates`, and a first run can decline
+    /// the automatic startup check before it has ever run: the check is
+    /// spawned from `App::spawn_startup_update_check`, which parks
+    /// while this modal is on the stack and re-reads the setting only
+    /// after it closes — so a decline here means no request is made at
+    /// all, not one already sent.  The toggle therefore shows the
+    /// *config* value; there is nothing about this session's check for
+    /// it to reflect yet.
+    pub check_for_updates: bool,
     /// "Don't show this again" toggle.  Default `true` per spec — Save
     /// writes `show_welcome = false` (the modal won't reappear on next
     /// launch) unless the user opts back in by unchecking this box.
@@ -160,6 +172,7 @@ pub struct WelcomeState {
     pub remote_rect: Option<Rect>,
     pub diagrams_rect: Option<Rect>,
     pub vim_rect: Option<Rect>,
+    pub check_updates_rect: Option<Rect>,
     pub show_again_rect: Option<Rect>,
     pub save_button_rect: Option<Rect>,
 
@@ -184,6 +197,7 @@ impl WelcomeState {
         remote: RemoteImagePolicy,
         diagrams: DiagramsEnabled,
         use_vim: bool,
+        check_for_updates: bool,
     ) -> Self {
         let full_color = caps.full_color();
         // Below 24-bit color every decoded pixel collapses into the
@@ -205,6 +219,7 @@ impl WelcomeState {
             remote,
             diagrams,
             use_vim,
+            check_for_updates,
             dont_show_again: true,
             dismissable: false,
             image_capable: caps.image_protocol.is_some() && full_color,
@@ -217,6 +232,7 @@ impl WelcomeState {
             remote_rect: None,
             diagrams_rect: None,
             vim_rect: None,
+            check_updates_rect: None,
             show_again_rect: None,
             save_button_rect: None,
             focus_offsets: [0; FOCUS_ORDER.len()],
@@ -315,6 +331,13 @@ impl WelcomeState {
                     Control::Toggle.apply(ControlValue::Toggle(self.use_vim), input)
                 {
                     self.use_vim = v;
+                }
+            }
+            WelcomeFocus::CheckUpdates => {
+                if let ControlEvent::Changed(ControlValue::Toggle(v)) =
+                    Control::Toggle.apply(ControlValue::Toggle(self.check_for_updates), input)
+                {
+                    self.check_for_updates = v;
                 }
             }
             WelcomeFocus::ShowAgain => {
@@ -422,6 +445,11 @@ impl WelcomeState {
         }
         if rect_contains(self.vim_rect, col, row) {
             self.focused = WelcomeFocus::VimMotions;
+            self.apply_input(ControlInput::Activate);
+            return WelcomeResponse::Continue;
+        }
+        if rect_contains(self.check_updates_rect, col, row) {
+            self.focused = WelcomeFocus::CheckUpdates;
             self.apply_input(ControlInput::Activate);
             return WelcomeResponse::Continue;
         }
@@ -548,6 +576,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         //  2                 theme label+button row + spacer below
         //  3 * 3             three tri-state sections (row + explanation + spacer)
         //  3                 vim-motions toggle (row + explanation + spacer)
+        //  3                 check-for-updates toggle (row + explanation + spacer)
         //  1                 "Don't show this again" toggle row
         //  1                 spacer
         //  1                 Save button row
@@ -572,6 +601,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
             + 1
             + 2
             + 9
+            + 3
             + 3
             + 1
             + 1
@@ -949,6 +979,36 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         );
         y += 2;
 
+        // ── Check-for-updates toggle ────────────────────────────────
+        state.focus_offsets[WelcomeFocus::CheckUpdates.order_index()] = y;
+        state.check_updates_rect = render_control_row(
+            &mut scratch,
+            scratch_rect,
+            y,
+            "Check for updates",
+            controls::toggle_spans(
+                state.check_for_updates,
+                state.focused == WelcomeFocus::CheckUpdates,
+                false,
+                self.theme,
+            ),
+            toggle_w,
+            state.focused == WelcomeFocus::CheckUpdates,
+            false,
+            self.theme,
+        );
+        y += 1;
+        render_explanation(
+            &mut scratch,
+            body_x,
+            y,
+            body_w,
+            "Check GitHub for a new release at startup",
+            muted_style,
+            self.theme,
+        );
+        y += 2;
+
         // ── "Don't show this again" toggle (standard label-left row) ─
         state.focus_offsets[WelcomeFocus::ShowAgain.order_index()] = y;
         state.show_again_rect = render_control_row(
@@ -1015,6 +1075,7 @@ impl<'a> StatefulWidget for WelcomeView<'a> {
         state.save_button_rect = translate_rect(state.save_button_rect, body, scroll);
         state.show_again_rect = translate_rect(state.show_again_rect, body, scroll);
         state.vim_rect = translate_rect(state.vim_rect, body, scroll);
+        state.check_updates_rect = translate_rect(state.check_updates_rect, body, scroll);
         state.images_rect = translate_rect(state.images_rect, body, scroll);
         state.remote_rect = translate_rect(state.remote_rect, body, scroll);
         state.diagrams_rect = translate_rect(state.diagrams_rect, body, scroll);
@@ -1251,6 +1312,7 @@ mod tests {
             RemoteImagePolicy::Ask,
             DiagramsEnabled::Ask,
             false,
+            true,
         )
     }
 
@@ -1364,6 +1426,24 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert_eq!(r, WelcomeResponse::Save);
+    }
+
+    #[test]
+    fn space_toggles_check_for_updates() {
+        let caps = caps_full();
+        let mut s = make_state(&caps);
+        assert!(s.check_for_updates, "opt-out, so on by default");
+        s.focused = WelcomeFocus::CheckUpdates;
+        s.handle_key(&KeyEvent::new(
+            KeyCode::Char(' '),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(!s.check_for_updates);
+        s.handle_key(&KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(s.check_for_updates, "Enter toggles back on");
     }
 
     #[test]
