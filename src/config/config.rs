@@ -667,6 +667,7 @@ mod tests {
 
     #[test]
     fn read_theme_missing_default_falls_back_to_edamame_on_truecolor() {
+        let _lock = crate::test_env::env_lock();
         // `default` is the historical theme name (still referenced by
         // some user `config.toml` files written by older edamame
         // versions).  It isn't in `BUILTIN_THEMES`, so the loader hits
@@ -689,6 +690,7 @@ mod tests {
 
     #[test]
     fn read_theme_missing_named_falls_back_to_256_dark_without_truecolor() {
+        let _lock = crate::test_env::env_lock();
         // Indexed-color terminals get `256 Dark` instead — the truecolor
         // fallback uses 24-bit RGB values that would degrade on a
         // 256-color emulator.
@@ -702,6 +704,7 @@ mod tests {
 
     #[test]
     fn read_theme_empty_file_stays_empty() {
+        let _lock = crate::test_env::env_lock();
         // Distinct from the missing-file case: if the user deliberately
         // empties their custom theme file, they get an empty theme —
         // their choice.  Uses a non-built-in name so the disk file is
@@ -719,6 +722,7 @@ mod tests {
 
     #[test]
     fn read_theme_builtin_wins_over_user_file() {
+        let _lock = crate::test_env::env_lock();
         // A user file at `themes/<builtin>.toml` must NOT override the
         // compiled-in built-in: the file is ignored entirely, even if
         // it contains valid overrides.  The user's escape hatch is to
@@ -740,6 +744,7 @@ mod tests {
 
     #[test]
     fn read_theme_resolves_light_builtin() {
+        let _lock = crate::test_env::env_lock();
         // The companion light palette resolves from the built-in
         // registry without any disk file.
         use super::super::themes::light_256;
@@ -792,6 +797,7 @@ mod tests {
 
     #[test]
     fn read_theme_parses_from_named_file() {
+        let _lock = crate::test_env::env_lock();
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("themes")).unwrap();
         let theme_path = dir.path().join("themes").join("custom.toml");
@@ -952,6 +958,7 @@ mod tests {
 
     #[test]
     fn read_theme_unknown_key_warns_but_keeps_value() {
+        let _lock = crate::test_env::env_lock();
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("themes")).unwrap();
         let theme_path = dir.path().join("themes").join("custom.toml");
@@ -974,6 +981,7 @@ mod tests {
 
     #[test]
     fn read_theme_parse_error_warns_and_falls_back_to_compiled_theme() {
+        let _lock = crate::test_env::env_lock();
         // Uses a non-built-in name so the disk file is consulted —
         // built-in names short-circuit before any read.
         let dir = tempfile::tempdir().unwrap();
@@ -994,6 +1002,7 @@ mod tests {
 
     #[test]
     fn ensure_default_files_writes_config_and_keybindings_but_not_themes() {
+        let _lock = crate::test_env::env_lock();
         // Built-in themes are compiled in (see `BUILTIN_THEMES`), so
         // first-run scaffolding must not write `themes/<builtin>.toml`
         // — those files would be inert (the built-in always wins) and

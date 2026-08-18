@@ -604,6 +604,7 @@ mod tests {
 
     #[test]
     fn list_export_stylesheets_finds_css_sorted_and_ignores_others() {
+        let _lock = crate::test_env::env_lock();
         let dir = tempfile::tempdir().unwrap();
         let export = dir.path().join("export");
         std::fs::create_dir_all(&export).unwrap();
@@ -624,6 +625,7 @@ mod tests {
 
     #[test]
     fn list_export_stylesheets_missing_dir_is_empty() {
+        let _lock = crate::test_env::env_lock();
         let dir = tempfile::tempdir().unwrap();
         assert!(list_export_stylesheets(dir.path()).is_empty());
     }
