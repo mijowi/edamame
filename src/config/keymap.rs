@@ -677,6 +677,45 @@ impl KeyBindingOverrides {
 
 // ─── KeyMap ───────────────────────────────────────────────────────────────────
 
+/// Map the readline word-motion escapes `ESC b` / `ESC f` — which
+/// crossterm decodes as `Alt+b` / `Alt+f` — onto `Alt+Left` /
+/// `Alt+Right`, or `None` for any other event.
+///
+/// Every mainstream macOS terminal emits those two escapes for
+/// Option+←/→ rather than the modified-arrow CSI the chord would
+/// otherwise produce: it is Apple Terminal's and iTerm2's default key
+/// mapping, and Ghostty ships `keybind = alt+arrow_left=esc:b` (and
+/// `…right=esc:f`) as a compiled-in default.  Without this alias the
+/// column-reorder and navigation-history chords (`Alt-←` / `Alt-→`,
+/// which the App redirects to `NavigateBack` / `NavigateForward`
+/// outside a table) are silently inert on macOS — the event carries
+/// `ALT`, so it matches no binding *and* is not printable enough to
+/// become an `InsertChar`.  See issue #29.
+///
+/// This is deliberately not gated on `cfg(target_os = "macos")`: the
+/// escape originates in the terminal emulator, not the host, so an
+/// edamame running on Linux over SSH from a Mac needs it too.  It is a
+/// *fallback*, consulted only after the primary lookup, so a user who
+/// binds `alt+b` to something of their own keeps it — at the cost of
+/// Option+← on macOS, which is the correct trade for an explicit
+/// binding.
+///
+/// Only the bare `ALT` chord aliases.  `Alt-Shift-←`/`→` are left
+/// alone because no terminal rewrites them: they still arrive as real
+/// modified arrows, and mapping `Alt-Shift-B` onto
+/// `TableInsertColumnLeft` would be a chord nobody asked for.
+fn alt_word_motion_alias(event: &KeyEvent) -> Option<KeyEvent> {
+    if event.modifiers != KeyModifiers::ALT {
+        return None;
+    }
+    let code = match event.code {
+        KeyCode::Char('b') => KeyCode::Left,
+        KeyCode::Char('f') => KeyCode::Right,
+        _ => return None,
+    };
+    Some(KeyEvent::new(code, KeyModifiers::ALT))
+}
+
 /// Maps `KeyEvent`s to `Action`s. Built from compiled-in defaults, then
 /// overridden by the user's `[keybindings]` config.
 #[derive(Debug, Clone)]
@@ -777,6 +816,12 @@ impl KeyMap {
         if event.code == KeyCode::BackTab {
             let fallback = KeyEvent::new(KeyCode::Tab, event.modifiers | KeyModifiers::SHIFT);
             return self.bindings.get(&fallback);
+        }
+        // macOS terminals send the readline word-motion escapes for
+        // Option+←/→ instead of a modified-arrow CSI (see
+        // `alt_word_motion_alias`).
+        if let Some(alias) = alt_word_motion_alias(&normalized) {
+            return self.bindings.get(&alias);
         }
         None
     }
@@ -1035,6 +1080,56 @@ mod tests {
         assert_eq!(km.action_for(&backtab_no_mod), Some(&Action::TablePrevCell));
         let backtab_shift = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
         assert_eq!(km.action_for(&backtab_shift), Some(&Action::TablePrevCell));
+    }
+
+    /// macOS terminals send `ESC b` / `ESC f` for Option+←/→, which
+    /// crossterm decodes as `Alt+b` / `Alt+f`.  Both must reach whatever
+    /// `alt+left` / `alt+right` are bound to (issue #29).
+    #[test]
+    fn alt_b_and_alt_f_reach_the_alt_arrow_bindings() {
+        let km = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        let alt_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT);
+        let alt_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT);
+        assert_eq!(
+            km.action_for(&alt_b),
+            km.action_for(&parse_key("alt+left").unwrap())
+        );
+        assert_eq!(
+            km.action_for(&alt_f),
+            km.action_for(&parse_key("alt+right").unwrap())
+        );
+        assert_eq!(km.action_for(&alt_b), Some(&Action::TableMoveColumnLeft));
+        assert_eq!(km.action_for(&alt_f), Some(&Action::TableMoveColumnRight));
+    }
+
+    /// The alias follows the *live* binding rather than hard-coding the
+    /// default action, so a user who rebinds `alt+left` keeps Option+←
+    /// working on macOS.
+    #[test]
+    fn alt_arrow_alias_follows_a_rebound_alt_left() {
+        let mut overrides = KeyBindingOverrides::default();
+        overrides.0.insert("NavigateBack".into(), "alt+left".into());
+        let km = KeyMap::build(&overrides).unwrap();
+        let alt_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT);
+        assert_eq!(km.action_for(&alt_b), Some(&Action::NavigateBack));
+    }
+
+    /// It is a fallback, not an override: an explicit `alt+b` binding
+    /// wins, and shifted / control-laden variants never alias.
+    #[test]
+    fn explicit_alt_b_binding_wins_over_the_arrow_alias() {
+        let mut overrides = KeyBindingOverrides::default();
+        overrides.0.insert("Save".into(), "alt+b".into());
+        let km = KeyMap::build(&overrides).unwrap();
+        let alt_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT);
+        assert_eq!(km.action_for(&alt_b), Some(&Action::Save));
+
+        let km = KeyMap::build(&KeyBindingOverrides::default()).unwrap();
+        let alt_shift_b =
+            KeyEvent::new(KeyCode::Char('B'), KeyModifiers::ALT | KeyModifiers::SHIFT);
+        assert_eq!(km.action_for(&alt_shift_b), None);
+        let plain_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE);
+        assert_eq!(km.action_for(&plain_b), None);
     }
 
     #[test]
