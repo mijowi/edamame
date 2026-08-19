@@ -12,21 +12,6 @@ The tools are mostly split. Electron apps render beautifully but feel slow. Text
 
 edamame renders the document and lets you edit it in place. Only the line under the cursor drops to raw Markdown, and it snaps back the moment you move away.[^2]
 
-### How a keystroke moves through the app
-
-```mermaid
-flowchart LR
-    K([Keystroke]) --> H[ModeHandler]
-    H --> A{Action}
-    A -- edit --> E[EditorState]
-    A -- app --> M[Modal stack]
-    E --> P[Reparse]
-    P --> S[(Source map)]
-    S --> R[Renderer]
-    M --> R
-    R --> V([Frame])
-```
-
 ## What it does
 
 1. **Hybrid rendered/raw editing** — the document stays formatted while you type
@@ -113,13 +98,29 @@ A [web link](https://github.com/mijowi/edamame), a [file link](./sample_diagrams
 Escapes stay verbatim: \*not emphasized*, \# not a heading, \`not code`,
 1\. not a list, and \&ouml; not a character entity.
 
-## Images
+## Images and diagrams
 
+edamame renders Mermaid diagrams and images inline when the terminal supports an image protocol.
+
+How a keystroke moves through the app:
+
+```mermaid
+flowchart LR
+    K([Keystroke]) --> H[ModeHandler]
+    H --> A{Action}
+    A -- edit --> E[EditorState]
+    A -- app --> M[Modal stack]
+    E --> P[Reparse]
+    P --> S[(Source map)]
+    S --> R[Renderer]
+    M --> R
+    R --> V([Frame])
+```
 Local files render inline where the terminal supports an image protocol:
 
 ![A dog in a field](./dog.jpg)
 
-So do remote ones, after you approve the fetch:
+Remote images are fetched and rendered too (if allowed).
 
 ![A plate of edamame](https://upload.wikimedia.org/wikipedia/commons/thumb/a/a1/Edamame_-_Massachusetts.jpg/500px-Edamame_-_Massachusetts.jpg)
 
