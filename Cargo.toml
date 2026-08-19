@@ -91,7 +91,7 @@ unicode-segmentation = "1"
 # can reach backreferences and lookaround — features the linear-time `regex`
 # engine cannot express.  It delegates to `regex` for the simple fast path
 # and only backtracks when a fancy feature appears.
-fancy-regex = "0.18"
+fancy-regex = "0.19"
 
 # Clipboard (OS clipboard with kill-ring fallback).  `wayland-data-control`
 # is NOT in arboard's default feature set but is required for read access on
@@ -145,7 +145,7 @@ nucleo-matcher = "0.3"
 # `base64` encodes local image bytes into `data:` URIs when the user opts in
 # to self-contained HTML. `tempfile` hosts the intermediate HTML file for
 # custom-command exports (pandoc, weasyprint, …), cleaned up on drop.
-base64 = "0.22"
+base64 = "0.23"
 tempfile = "3"
 
 # Phase 17 — Mermaid diagrams:
@@ -167,7 +167,7 @@ usvg = "0.46"
 # `sha2` produces the synthetic cache-key URLs `diagram-mermaid-<sha>` —
 # stable across reparses so the image cache can reuse already-rendered
 # diagrams when a keystroke elsewhere in the document triggers a reparse.
-sha2 = "0.10"
+sha2 = "0.11"
 
 # Big-text rendering for H1 headings.  Tracks the ratatui 0.30 line via
 # tui-big-text 0.8+; uses `font8x8` glyphs painted via Octant block
@@ -190,7 +190,7 @@ seahash = "4"
 # subsystem (Phase 1 §3).  `TextDiff::from_lines` produces line hunks;
 # `InlineChange` slices each `Replace` hunk into word-level highlights
 # without us writing a tokenizer.
-similar = "2"
+similar = "3"
 
 [features]
 default = ["clipboard"]
@@ -204,7 +204,7 @@ proptest = "1"
 # Parse/render pipeline benchmarks (see docs/perf-benchmark-plan.md).
 # Criterion runs benches in release mode by default, which matters — the
 # dev profile below is tuned for compile speed, not runtime speed.
-criterion = "0.5"
+criterion = "0.8"
 # Note: `tempfile` is a runtime dep (used by export/custom.rs); no separate
 # dev-dependency entry is needed — dev code can import it the same way.
 
