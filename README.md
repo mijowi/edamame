@@ -1,6 +1,6 @@
 # edamame
 
-**A fast Markdown editor and viewer for the terminal.**
+**Terminal Markdown editor that stays rendered while you edit.**
 
 <!-- GitHub badges -->
 <p>
@@ -125,7 +125,7 @@ Please run the following *before* opening a PR:
 ```bash
 cargo fmt
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test
+cargo test --no-fail-fast
 ```
 
 ## License
