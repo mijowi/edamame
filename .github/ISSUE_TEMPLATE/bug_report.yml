@@ -2,17 +2,23 @@ name: Bug report
 description: Something isn't working the way you expected.
 labels: ["bug"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Thanks for taking the time to report an issue.
 
-        **Many edamame bugs turn out to be terminal-specific.** Features like images, themes and some key chords depend on what your terminal supports. The questions below about your terminal may decide whether a report can be reproduced, so please don't skip them.
   - type: textarea
     id: what-happened
     attributes:
       label: What happened
-      description: What went wrong, and what you expected instead.
+      description: >
+        What went wrong, and what you expected instead.
+      placeholder: |
+        Useful things to include:
+
+        - A screenshot, for anything visual. Rendering bugs are much easier
+          to understand with a picture.
+        - Logs. Run "edamame --log yourfile.md", reproduce, then attach the
+          log — the path is printed when edamame exits. This is mainly
+          necessary for more complex bugs.
+        - A backtrace, if it crashed: run with RUST_BACKTRACE=1.
+        - Your config.toml, if the bug only happens with your settings.
     validations:
       required: true
 
@@ -25,14 +31,14 @@ body:
         2. Move the cursor onto line 3
         3. Press Tab
     validations:
-      required: true
+      required: false
 
   - type: textarea
     id: sample
     attributes:
       label: Minimal Markdown that triggers it
       description: >
-        If this is a rendering, table, list or parsing bug, write the smallest Markdown snippet that shows the problem. A five-line example is far more likely to get fixed quickly.
+        If this is a rendering, table, list or parsing bug, write the smallest Markdown snippet that shows the problem.
       render: markdown
     validations:
       required: false
@@ -43,8 +49,10 @@ body:
     id: doctor
     attributes:
       label: Diagnostics (`edamame --doctor`)
-      description: >
-        Run `edamame --doctor` in the **same terminal application** where the bug happens and paste the whole output. It reports the edamame version, your OS, your terminal and its version, and edamame's own view of what that terminal supports which is usually the fastest way to explain a rendering or key-chord problem. Copy it from the screen rather than redirecting it to a file — with output redirected, edamame can't ask the terminal about images and keyboard support and reports both as unknown. 
+      description: |
+        **Some edamame bugs turn out to be terminal-specific.** Features like images, themes, and some key chords depend on what your terminal supports. This information may determine whether a report can be reproduced, so please don't skip it.
+
+        Run `edamame --doctor` in the **same terminal application** where the bug happens and paste the whole output. It reports the edamame version, your OS, your terminal and its version, and edamame's own view of what that terminal supports. Copy it from the screen rather than redirecting it to a file — with output redirected, edamame can't ask the terminal about images and keyboard support and reports both as unknown.
       placeholder: |
         edamame 0.1.0
 
@@ -76,22 +84,7 @@ body:
         - Built from source
         - Other / not sure
     validations:
-      required: true
-
-  - type: dropdown
-    id: multiplexer
-    attributes:
-      label: Running inside a multiplexer?
-      description: >
-        This matters more than it looks. A multiplexer sits between edamame and your real terminal, and can report capabilities that no longer match it — especially a session you detached from one terminal and reattached from another.
-      options:
-        - "No"
-        - tmux
-        - screen
-        - Zellij
-        - Other
-    validations:
-      required: true
+      required: false
 
   - type: checkboxes
     id: clean-config
@@ -104,14 +97,3 @@ body:
           required: false
         - label: I searched existing issues for this
           required: false
-
-  - type: textarea
-    id: extra
-    attributes:
-      label: Anything else
-      description: |
-        Optional. Useful additions:
-
-        - **A screenshot**, for anything visual. Rendering bugs are much easier to understand with a picture. - **Logs.** Run `edamame --log yourfile.md`, reproduce, then attach the log — the path is printed when edamame exits. - **A backtrace**, if it crashed: run with `RUST_BACKTRACE=1`. - Your `config.toml`, if the bug only happens with your settings.
-    validations:
-      required: false

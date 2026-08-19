@@ -5,14 +5,16 @@ body:
   - type: markdown
     attributes:
       value: |
-        Please state what you were *trying to do*, not just what new feature would do it. Keep in mind that edamame's focus is on editing Markdown.
+        Please keep in mind that edamame has a narrow focus on editing Markdown.
 
   - type: textarea
     id: problem
     attributes:
       label: What are you trying to do?
       description: >
-        The task or friction that prompted this. What do you do today instead, and why is that unsatisfying?
+        Please state what you are *trying to do*, not just what new feature would do it.
+
+        What was the task or friction that prompted this? What do you do today instead, and why is that unsatisfying?
     validations:
       required: true
 
@@ -21,15 +23,6 @@ body:
     attributes:
       label: What would you like edamame to do?
       description: >
-        If you have a specific design in mind — a key, a command, a setting — describe it. It's fine to leave this vague.
-    validations:
-      required: false
-
-  - type: textarea
-    id: alternatives
-    attributes:
-      label: Other tools that do this well
-      description: >
-        Optional. If another editor solves this, saying which one and how it behaves is very helpful.
+        If you have a specific design in mind — a key, a command, a setting — describe it. If another editor solves this, saying which one and how it behaves is very helpful.
     validations:
       required: false
