@@ -1,6 +1,6 @@
 # edamame
 
-**Terminal Markdown editor that stays rendered while you edit.**
+**A Terminal Markdown editor that stays rendered while you edit.**
 
 <!-- GitHub badges -->
 <p>
