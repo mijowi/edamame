@@ -28,6 +28,23 @@ cargo clippy --all-targets -- -D warnings   # treat warnings as errors (CI enfor
 
 No custom `rustfmt.toml` or `.clippy.toml` exists; standard Rust defaults apply.
 
+## Git Hooks
+
+```bash
+git config core.hooksPath .githooks   # once per clone — the hooks are inert without it
+```
+
+`.githooks/pre-push` refuses to push a commit whose message carries an AI
+co-author trailer (`Co-Authored-By: Claude …`, `Claude-Session:`,
+`noreply@anthropic.com`). GitHub builds its contributor list from those
+trailers as well as from the author field, so one of them puts a non-human in
+the contributor list, and removing it after the fact means rewriting history
+and force-pushing — which invalidates the signature on every commit it
+touches. The `Trailers` workflow runs the same scan on pull requests; it
+cannot cover a direct push to `main`, because by the time it runs the push has
+landed, which is why the hook exists as well. If you use Claude Code, also set
+`includeCoAuthoredBy: false` in its settings so the trailer is never written.
+
 ## Doc Commands
 
 ```bash

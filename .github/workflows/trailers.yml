@@ -1,0 +1,66 @@
+name: Trailers
+
+# The server-side equivalent of `.githooks/pre-push`, for commits that reach
+# GitHub from a machine where the hook isn't installed.  It cannot block a
+# direct push to `main` — by the time it runs, the push has landed — so it is
+# the hook that protects that path, and this that protects the PR path.
+#
+# See `.githooks/pre-push` for why an AI co-author trailer is worth refusing.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: trailers-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  no-ai-trailer:
+    name: No AI co-author trailer
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: the scan walks a commit range, and the default shallow
+      # fetch has neither the base commit nor the range between.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan pushed commits for an AI co-author trailer
+        env:
+          # A PR is scanned base..head, so the range is what the PR *adds*
+          # rather than whatever it merged in from main.  A push reports the
+          # tip it moved from; on a brand-new branch that is the all-zero sha,
+          # in which case fall back to the single head commit.
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${BASE}" ] || [ "${BASE}" = "0000000000000000000000000000000000000000" ]; then
+            range="${HEAD} -1"
+          else
+            range="${BASE}..${HEAD}"
+          fi
+
+          echo "Scanning ${range}"
+          found=0
+          for sha in $(git rev-list ${range}); do
+            if git log -1 --format=%B "${sha}" \
+                 | grep -qiE '^(co-authored-by:.*claude|claude-session:)|noreply@anthropic\.com'; then
+              echo "::error::$(git log -1 --format='%h %s' "${sha}") carries an AI co-author trailer"
+              found=1
+            fi
+          done
+
+          if [ "${found}" -ne 0 ]; then
+            echo
+            echo "GitHub counts Co-Authored-By trailers as contributors.  Strip the"
+            echo "trailer and force-push the branch, and set includeCoAuthoredBy:false"
+            echo "in your Claude Code settings so it stops being added."
+            exit 1
+          fi
+
+          echo "Clean."

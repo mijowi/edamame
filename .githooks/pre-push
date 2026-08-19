@@ -1,0 +1,55 @@
+#!/bin/sh
+#
+# Refuse to push a commit whose message carries an AI co-author trailer.
+#
+# Claude Code appends `Co-Authored-By: Claude <noreply@anthropic.com>` (and a
+# `Claude-Session:` link) to every commit it writes unless
+# `includeCoAuthoredBy: false` is set.  GitHub builds its contributor list from
+# those trailers as well as from the author field, so a single one puts a
+# non-human in the repo's contributor list — and getting it back out means
+# rewriting history and force-pushing, which invalidates every signature it
+# touches.  Cheaper to catch it here.
+#
+# This is the only guard that covers a direct push to `main`; the Actions check
+# runs after the push has already landed.  Enabled via `core.hooksPath`, set by
+# `git config core.hooksPath .githooks` (see CONTRIBUTING / AGENTS.md).
+#
+# Bypass for a deliberate exception: `git push --no-verify`.
+
+set -eu
+
+zero=$(git hash-object --stdin </dev/null | tr '[:xdigit:]' '0')
+found=""
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+	# Branch deletion — nothing being added, nothing to scan.
+	[ "$local_sha" = "$zero" ] && continue
+
+	if [ "$remote_sha" = "$zero" ]; then
+		# New branch: scan what it adds over everything the remote already has,
+		# rather than its whole history back to the root commit.
+		range="$local_sha --not --remotes=origin"
+	else
+		range="$remote_sha..$local_sha"
+	fi
+
+	# shellcheck disable=SC2086 # $range is deliberately word-split.
+	for sha in $(git rev-list $range); do
+		if git log -1 --format=%B "$sha" | grep -qiE '^(co-authored-by:.*claude|claude-session:)|noreply@anthropic\.com'; then
+			found="$found $sha"
+		fi
+	done
+done
+
+if [ -n "$found" ]; then
+	echo "pre-push: refusing to push — AI co-author trailer found in:" >&2
+	for sha in $found; do
+		echo "  $(git log -1 --format='%h %s' "$sha")" >&2
+	done
+	echo >&2
+	echo "Strip the trailer (git rebase -i --exec 'git commit --amend --no-edit')," >&2
+	echo "or push with --no-verify if this is deliberate." >&2
+	exit 1
+fi
+
+exit 0
