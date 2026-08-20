@@ -10,7 +10,7 @@
   <a href="https://github.com/mijowi/edamame/blob/main/LICENSE"><img src="https://img.shields.io/crates/l/edamame.svg" alt="License: Apache-2.0" height="20"></a>
 </p>
 
-![The same document in edamame's rendered view and as raw Markdown](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/render_raw.jpg)
+![Animation of clicking through a rendered document to reveal the raw Markdown on each line](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/edamame_hero.gif)
 
 edamame shows your document *rendered* with headings, drawn table grids, inline images, and more — while you edit it. Only the line your cursor is on drops to raw Markdown, and it snaps back the moment you move away.
 
