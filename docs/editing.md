@@ -8,8 +8,8 @@ What edamame does with your Markdown, and the features built on top of it.
 
 edamame parses CommonMark plus a set of GitHub extensions.
 
-| Element| Markdown Source|
-|---|---|
+| Element | Markdown Source |
+| --- | --- |
 | Headings | `#` through `######`, and the underlined (setext) form |
 | Emphasis | `**bold**` · `*italic*` · `` `code` `` · `~~strikethrough~~` |
 | Highlight | `==highlighted==` |
@@ -24,6 +24,7 @@ edamame parses CommonMark plus a set of GitHub extensions.
 | Rules | `---`, drawn as a full-width line |
 | Line breaks | Two trailing spaces, and soft wraps |
 | Diagrams | ` ```mermaid ` fenced blocks |
+| Frontmatter | `---` YAML and `+++` TOML metadata blocks |
 
 ### Things to know
 
@@ -32,6 +33,10 @@ edamame parses CommonMark plus a set of GitHub extensions.
 **Other HTML is shown, not rendered.** A `<details>` block or a `<sub>` tag appears as literal text in a muted code style. edamame does not interpret HTML.
 
 **Smart punctuation is on**, and currently not configurable. Straight quotes render as curly ones, `--` becomes an en dash, `...` becomes an ellipsis. Your source file is untouched — this is display only.
+
+**Frontmatter is shown as data, not prose.** A `---`-delimited YAML block (or a `+++`-delimited TOML one) at the top of a file renders verbatim — one row per source line, dimmed, with each key picked out from its value. It stays fully editable, and it is left out of an HTML export, since it describes the document rather than belonging to it.
+
+**Only the very first line of the file can open frontmatter.** The delimiter has to be the first thing in the document — no blank line, no indentation, nothing above it — and it has to be closed by a matching delimiter. A `---` anywhere else is an ordinary horizontal rule, including one sitting directly above a heading, so section separators in an existing document keep working as they always did. A file that opens `+++` gets TOML frontmatter only, and vice versa. Note that a YAML block closed with `...` instead of `---` displays a `---` on that row — the source is unchanged, and moving the cursor into the block shows it as written.
 
 **Bare URLs are not auto-linked.** `https://example.com` on its own renders as plain text. Write `<https://example.com>` or `[text](https://example.com)`.
 
@@ -43,8 +48,8 @@ edamame includes a Markdown cheat sheet that provides a quick reference for what
 
 Select some text, then:
 
-| Key (palette)| Action|
-|---|---|
+| Key (palette) | Action |
+| --- | --- |
 | `Ctrl-B` | Bold |
 | `Ctrl-I` | Italic |
 | *palette* | Inline code, strikethrough, highlight |
@@ -83,8 +88,8 @@ Tables render as a drawn grid, and edit a cell at a time. In Edit mode the cell 
 
 ### Moving around
 
-| Key| Action|
-|---|---|
+| Key | Action |
+| --- | --- |
 | `Tab` / `Shift-Tab` | Next / previous cell |
 | `Enter` | Next row |
 | `Shift-Enter` | Insert a literal `<br>` |
@@ -97,8 +102,8 @@ Outside a table these keys do their normal thing, so nothing is taken away from 
 
 The arrow points the direction; `Shift` turns "move" into "insert".
 
-| Key| Action|
-|---|---|
+| Key | Action |
+| --- | --- |
 | `Alt-↑` `Alt-↓` | Move row |
 | `Alt-←` `Alt-→` | Move column |
 | `Alt-Shift-↑` `Alt-Shift-↓` | Insert row above / below |
@@ -151,7 +156,7 @@ Three palette commands help with upkeep:
 What happens depends on the target:
 
 | Target | Result |
-|---|---|
+| --- | --- |
 | `https://…`, `mailto:…` | Opens in your default application |
 | Another `.md` file | Opens in edamame |
 | Any other local file | Handed to the OS |
@@ -174,8 +179,8 @@ What happens depends on the target:
 
 **Fill Replace in** and the flow takes over the keyboard until you're done:
 
-| Key| Action|
-|---|---|
+| Key | Action |
+| --- | --- |
 | `Tab` / `Shift-Tab` | Next / previous match |
 | `r` | Replace this one and move on |
 | `a` | Replace all — a single undo step — and exit |
@@ -190,13 +195,13 @@ Searches are literal text, not regular expressions. (Vim mode's `:s` does take r
 **A search can cross a line break**, written as `\n`:
 
 | Type | Matches |
-|---|---|
+| --- | --- |
 | `\n` | a line break |
 | `\t` | a tab |
 | `\r` | a carriage return |
 | `\\` | a single backslash |
 
-So `  \n` finds every line ending in two spaces, and replacing it with a space joins those lines. The Replace field takes the same escapes, so you can also replace *with* a line break.
+So `\n` finds every line ending in two spaces, and replacing it with a space joins those lines. The Replace field takes the same escapes, so you can also replace *with* a line break.
 
 Because a backslash starts an escape, **a literal backslash must be typed `\\`** — and anything else after a backslash (`\d`, say) is reported as an error rather than searched for. Pasting handles this for you: paste text containing backslashes or line breaks and it arrives correctly escaped.
 
@@ -212,8 +217,8 @@ If something else writes the file you have open — a `git checkout`, a formatte
 
 ![Diff review showing added and removed hunks with word-level highlighting](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/diff_review.jpg)
 
-| Key| Action|
-|---|---|
+| Key | Action |
+| --- | --- |
 | `Tab` / `Shift-Tab` | Move between hunks |
 | `y` / `n` | Accept / reject this hunk |
 | `Y` / `N` | Accept / reject everything (asks first) |

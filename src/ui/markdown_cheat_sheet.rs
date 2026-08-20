@@ -194,6 +194,24 @@ pub fn body_lines(theme: &Theme) -> Vec<Line<'static>> {
     ]));
     out.push(blank());
 
+    // ── Frontmatter ───────────────────────────────────────────────────
+    out.push(section(theme, "Frontmatter"));
+    out.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("---", theme.frontmatter_delimiter),
+    ]));
+    out.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("title:", theme.frontmatter_key),
+        Span::styled(" My post", theme.frontmatter_value),
+    ]));
+    out.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("---", theme.frontmatter_delimiter),
+    ]));
+    out.push(Line::raw("  (or +++ … +++ for TOML)"));
+    out.push(blank());
+
     // ── Hard line break ───────────────────────────────────────────────
     out.push(section(theme, "Hard line break"));
     // Both forms are CommonMark hard breaks and both export as `<br />`.

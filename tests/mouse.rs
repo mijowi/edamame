@@ -3123,3 +3123,52 @@ fn clicks_on_a_revealed_item_wider_than_the_viewport_land_under_the_pointer() {
         "expected several wrapped rows to check, got {checked}"
     );
 }
+
+/// Frontmatter renders verbatim, so a click maps straight through — but
+/// only if two things hold: a blank line inside the block still occupies a
+/// rendered row of its own (it is data, and the renderer emits it), and the
+/// column mapping skips both the list-marker sniff (a YAML sequence entry
+/// reads as a marker) and the inline collapse map (which would re-parse the
+/// line as Markdown).
+#[test]
+fn click_inside_frontmatter_lands_on_the_clicked_char() {
+    // Rendered rows: 0 `---`, 1 `title: Foo`, 2 blank, 3 `tags: a`,
+    // 4 `---`, 5 the blank virtual block, 6 `Body.`.
+    let src = "---\ntitle: Foo\n\ntags: a\n---\n\nBody.\n";
+    let line_start = src.find("tags: a").unwrap();
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    let mut mouse = MouseDispatcher::new();
+    if let Some(a) = mouse.dispatch(click_event(6, 3), area()) {
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+    }
+    assert_eq!(
+        st.cursor.offset,
+        line_start + 6,
+        "expected the 'a' of `tags: a`, landed on {:?}",
+        st.contents().chars().nth(st.cursor.offset),
+    );
+}
+
+/// A YAML sequence entry is not a list item: the marker map would shift
+/// the click by the rendered marker width and land it a cell or two off.
+#[test]
+fn click_on_a_yaml_sequence_entry_is_not_shifted_by_the_list_marker_map() {
+    // Rendered rows: 0 `---`, 1 `tags:`, 2 `  - alpha`, 3 `---`.
+    let src = "---\ntags:\n  - alpha\n---\n\nBody.\n";
+    let line_start = src.find("  - alpha").unwrap();
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    let mut mouse = MouseDispatcher::new();
+    if let Some(a) = mouse.dispatch(click_event(4, 2), area()) {
+        mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+    }
+    assert_eq!(
+        st.cursor.offset,
+        line_start + 4,
+        "expected the 'a' of `alpha`, landed on {:?}",
+        st.contents().chars().nth(st.cursor.offset),
+    );
+}

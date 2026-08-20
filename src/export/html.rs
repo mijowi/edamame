@@ -94,8 +94,9 @@ impl Default for HtmlExportOptions {
 /// Render `markdown` to a standalone HTML document.
 ///
 /// Mirrors the parser options used by the in-app renderer (tables, task
-/// lists, strikethrough, footnotes, smart punctuation) so exported
-/// documents look the same as the terminal preview.  Raw HTML events —
+/// lists, strikethrough, footnotes, smart punctuation, and — when this
+/// document opens with one — frontmatter) so exported documents look the
+/// same as the terminal preview.  Raw HTML events —
 /// both block-level (`Event::Html`) and inline (`Event::InlineHtml`) —
 /// are filtered out before serialization so attacker-controlled Markdown
 /// cannot inject `<script>` tags or other executable content into the
@@ -107,6 +108,22 @@ pub fn render_html(markdown: &str, opts: &HtmlExportOptions) -> Result<String> {
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
     options.insert(Options::ENABLE_SMART_PUNCTUATION);
+    // Frontmatter must be recognised here for the same reason it is in the
+    // renderer: without it, a `---` block parses as a thematic break plus
+    // a setext H2 and the exported file opens with the file's YAML keys
+    // as its loudest heading.  pulldown-cmark's HTML writer emits nothing
+    // for a metadata block, which is the wanted behavior — the
+    // frontmatter is data *about* the document, not part of its body.
+    //
+    // The extension is enabled only when *this* document opens with the
+    // matching delimiter, and the decision comes from the shared
+    // `metadata_options_for` rather than a second copy of the rule: the
+    // extensions are not anchored to the start of the document on their
+    // own, so leaving them on unconditionally would let a mid-document
+    // `---` separator claim the section under it — and, because the
+    // writer emits nothing for a metadata block, drop that section from
+    // the export without a word.
+    options |= crate::markdown::parse_offsets::metadata_options_for(markdown);
 
     let parser = Parser::new_ext(markdown, options);
 
@@ -462,6 +479,42 @@ mod tests {
         let html = render_html("# Hello\n\nWorld", &opts_inline_css()).unwrap();
         assert!(html.contains("<h1>Hello</h1>"));
         assert!(html.contains("<p>World</p>"));
+    }
+
+    /// Frontmatter is data about the document, not part of its body:
+    /// pulldown-cmark's writer suppresses a metadata block entirely.  The
+    /// options have to be enabled here too, or the export would reproduce
+    /// the rule-plus-setext-H2 misparse the renderer no longer has.
+    #[test]
+    fn frontmatter_is_omitted_from_the_export() {
+        let md = "---\ntitle: Foo\ndate: 2026-01-01\n---\n\n# Heading\n";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert!(html.contains("<h1>Heading</h1>"));
+        assert!(!html.contains("title: Foo"), "got: {html}");
+        assert!(!html.contains("<h2>"), "got: {html}");
+    }
+
+    /// The export must not drop a section a mid-document `---` separator
+    /// happens to bracket.  pulldown-cmark's writer emits *nothing* for a
+    /// metadata block, so an unanchored extension here loses content the
+    /// user wrote — silently, and only in the exported file.
+    #[test]
+    fn a_mid_document_rule_pair_is_not_dropped_from_the_export() {
+        let md = "Intro.\n\n---\n## Section 2\n\nText.\n\n---\n## Section 3\n";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert!(html.contains("Section 2"), "got: {html}");
+        assert!(html.contains("Text."), "got: {html}");
+        assert!(html.contains("Section 3"), "got: {html}");
+    }
+
+    /// The export's gate must be the same one the renderer uses, or the
+    /// two disagree about whether a block is frontmatter at all.
+    #[test]
+    fn a_toml_opening_file_does_not_drop_a_later_dash_pair() {
+        let md = "+++\na = 1\n+++\n\n---\nSection\n---\n\nEnd.\n";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert!(!html.contains("a = 1"), "got: {html}");
+        assert!(html.contains("Section"), "got: {html}");
     }
 
     #[test]

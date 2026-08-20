@@ -22,6 +22,7 @@ pub enum BlockKind {
     Rule,
     HtmlLeaf,
     FootnoteDefinition,
+    MetadataBlock,
 }
 
 fn tag_kind(tag: &Tag<'_>) -> Option<BlockKind> {
@@ -34,6 +35,7 @@ fn tag_kind(tag: &Tag<'_>) -> Option<BlockKind> {
         Tag::Table(_) => BlockKind::Table,
         Tag::HtmlBlock => BlockKind::HtmlBlock,
         Tag::FootnoteDefinition(_) => BlockKind::FootnoteDefinition,
+        Tag::MetadataBlock(_) => BlockKind::MetadataBlock,
         _ => return None,
     })
 }
@@ -48,19 +50,75 @@ fn tag_end_kind(tag_end: &TagEnd) -> Option<BlockKind> {
         TagEnd::Table => BlockKind::Table,
         TagEnd::HtmlBlock => BlockKind::HtmlBlock,
         TagEnd::FootnoteDefinition => BlockKind::FootnoteDefinition,
+        TagEnd::MetadataBlock(_) => BlockKind::MetadataBlock,
         _ => return None,
     })
 }
 
-/// The pulldown-cmark option set shared by every parse in the crate.
-/// The AST parse ([`crate::markdown::parser::parse_raw`]) and the offset scans
-/// here MUST use the same options — block boundaries shift between
+/// The pulldown-cmark option set shared by every parse in the crate,
+/// minus the two metadata-block extensions — take the full set from
+/// [`options_for`], which is what every parse site must call.
+///
+/// The AST parse ([`crate::markdown::parser::parse_raw`]) and the offset
+/// scans here MUST use the same options — block boundaries shift between
 /// option sets, and `ParsedDoc` relies on a 1:1 blocks↔ranges pairing.
-pub(crate) const PARSE_OPTIONS: Options = Options::ENABLE_TABLES
+/// Because the metadata half is now source-dependent, "the same options"
+/// means "the same *source* through `options_for`".
+const BASE_OPTIONS: Options = Options::ENABLE_TABLES
     .union(Options::ENABLE_FOOTNOTES)
     .union(Options::ENABLE_STRIKETHROUGH)
     .union(Options::ENABLE_TASKLISTS)
     .union(Options::ENABLE_SMART_PUNCTUATION);
+
+/// The option set to parse `source` with: [`BASE_OPTIONS`], plus the
+/// metadata-block extension matching `source`'s *own first line* — and
+/// only then.
+///
+/// pulldown-cmark's metadata-block extensions are **not** anchored to the
+/// start of the document: with them on, any later `---` line followed by
+/// non-blank text and eventually closed by another `---` becomes a
+/// metadata block.  That is a separator style ordinary Markdown uses (a
+/// rule immediately above a heading, a reveal.js / Marp slide break), and
+/// the consequences are not cosmetic — the swallowed section renders as
+/// dim key/value data instead of prose, inline-Markdown insertion is
+/// refused inside it, and pulldown-cmark's HTML writer emits *nothing*
+/// for a metadata block, so an export silently drops content the user
+/// wrote.  Frontmatter is defined to be the first thing in the file, so
+/// gating on the first line costs nothing real and confines the
+/// extension to the one place it belongs.
+///
+/// Only the flavor that matches is enabled: a file opening `+++` must not
+/// have a later `---` pair claimed as YAML frontmatter, and vice versa.
+/// A leading blank line means no frontmatter at all — Hugo, Jekyll and
+/// Obsidian all require the delimiter at byte 0.
+///
+/// Every parse of a given document — AST, offset scan, HTML export —
+/// must pass that document's own text here; two parse sites disagreeing
+/// on the option set break the 1:1 blocks↔ranges pairing.
+pub(crate) fn options_for(source: &str) -> Options {
+    BASE_OPTIONS.union(metadata_options_for(source))
+}
+
+/// Just the metadata-block half of [`options_for`]: the extension
+/// matching `source`'s own first line, or [`Options::empty`].
+///
+/// Split out so [`crate::export::html::render_html`] — which keeps its
+/// own base option list on purpose — can adopt the same anchoring rule
+/// without duplicating it.  A parse and an export that disagree on
+/// whether a `---` opens frontmatter disagree on whether the block
+/// survives the export at all.
+pub(crate) fn metadata_options_for(source: &str) -> Options {
+    let first_line = source
+        .split('\n')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('\r');
+    match first_line {
+        "---" => Options::ENABLE_YAML_STYLE_METADATA_BLOCKS,
+        "+++" => Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS,
+        _ => Options::empty(),
+    }
+}
 
 /// Incremental depth-zero block-range scanner.  Feed it every
 /// `(event, byte_range)` pair from an `into_offset_iter()` parse in
@@ -146,7 +204,7 @@ where
     F: FnMut(BlockKind) -> bool,
 {
     let mut tracker = RangeTracker::new(keep);
-    for (event, byte_range) in Parser::new_ext(source, PARSE_OPTIONS).into_offset_iter() {
+    for (event, byte_range) in Parser::new_ext(source, options_for(source)).into_offset_iter() {
         tracker.observe(source, &event, &byte_range);
     }
     tracker.into_ranges()
@@ -181,6 +239,7 @@ pub fn top_level_block_ranges(source: &str) -> Vec<Range<usize>> {
                 | BlockKind::Rule
                 | BlockKind::HtmlLeaf
                 | BlockKind::FootnoteDefinition
+                | BlockKind::MetadataBlock
         )
     })
 }
@@ -200,7 +259,7 @@ pub fn top_level_block_ranges(source: &str) -> Vec<Range<usize>> {
 /// first, but callers that delete should remove every leader, so all are
 /// returned.
 pub fn footnote_definition_ranges(source: &str) -> Vec<(String, Range<usize>)> {
-    let options = PARSE_OPTIONS;
+    let options = options_for(source);
 
     let mut ranges: Vec<(String, Range<usize>)> = Vec::new();
     let mut depth: usize = 0;
@@ -317,5 +376,70 @@ mod tests {
         assert!(text.contains("first line"), "got: {text:?}");
         assert!(text.contains("continuation line"), "got: {text:?}");
         assert!(!text.contains("After."), "should not absorb the next block");
+    }
+
+    /// A metadata block is a depth-zero block like any other: its range
+    /// must cover the whole frontmatter — both delimiter lines included —
+    /// and its trailing newline, or the blocks↔ranges pairing `ParsedDoc`
+    /// relies on drifts by a line.
+    #[test]
+    fn metadata_block_range_covers_both_delimiter_lines() {
+        let src = "---\ntitle: Foo\n---\n\n# H\n";
+        let ranges = top_level_block_ranges(src);
+        assert_eq!(&src[ranges[0].clone()], "---\ntitle: Foo\n---\n");
+        assert_eq!(&src[ranges[1].clone()], "# H\n");
+    }
+
+    /// The metadata-block extensions are not anchored to the start of the
+    /// document on their own: with them on unconditionally, the `---`
+    /// above `## Section 2` opens a block that the next `---` closes, and
+    /// the whole section between them stops being prose.  `options_for`
+    /// is what confines them to a file that actually opens with a
+    /// delimiter line.
+    #[test]
+    fn a_mid_document_rule_pair_is_not_frontmatter() {
+        let src = "Intro.\n\n---\n## Section 2\n\nText.\n\n---\n## Section 3\n";
+        let ranges = top_level_block_ranges(src);
+        assert_eq!(&src[ranges[1].clone()], "---\n", "got: {ranges:?}");
+        assert_eq!(&src[ranges[2].clone()], "## Section 2\n\n");
+    }
+
+    /// Only the flavor the first line names is enabled — a TOML-opening
+    /// file must not have a later `---` pair claimed as YAML frontmatter.
+    #[test]
+    fn options_enable_only_the_flavor_the_first_line_opens() {
+        assert_eq!(
+            metadata_options_for("---\ntitle: Foo\n---\n"),
+            Options::ENABLE_YAML_STYLE_METADATA_BLOCKS,
+        );
+        assert_eq!(
+            metadata_options_for("+++\ntitle = \"Foo\"\n+++\n"),
+            Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS,
+        );
+        // CRLF still counts; a leading blank line, indentation, a longer
+        // delimiter run and a trailing info string do not.
+        assert_eq!(
+            metadata_options_for("---\r\ntitle: Foo\r\n---\r\n"),
+            Options::ENABLE_YAML_STYLE_METADATA_BLOCKS,
+        );
+        for src in [
+            "\n---\na: 1\n---\n",
+            " ---\na: 1\n---\n",
+            "----\na: 1\n----\n",
+            "--- yaml\na: 1\n---\n",
+            "",
+        ] {
+            assert_eq!(metadata_options_for(src), Options::empty(), "got: {src:?}");
+        }
+    }
+
+    #[test]
+    fn a_rule_is_not_a_metadata_block() {
+        // No closing delimiter, so the `---` stays a thematic break and
+        // the line below it stays a paragraph.
+        let src = "---\ntitle: Foo\n\n# H\n";
+        let ranges = top_level_block_ranges(src);
+        assert_eq!(ranges.len(), 3, "got: {ranges:?}");
+        assert_eq!(&src[ranges[0].clone()], "---\n");
     }
 }

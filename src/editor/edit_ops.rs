@@ -1297,6 +1297,9 @@ fn block_allows_inline_markdown_at(state: &mut EditorState, char_offset: usize) 
             | Block::HtmlComment(_)
             | Block::HorizontalRule
             | Block::ImageBlock { .. }
+            // Frontmatter is YAML / TOML, not prose — inline Markdown
+            // there is data corruption, not emphasis.
+            | Block::MetadataBlock { .. }
     )
 }
 

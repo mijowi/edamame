@@ -63,6 +63,25 @@ pub enum Block {
         alt: String,
         url: String,
     },
+    /// A document-metadata block — YAML frontmatter delimited by `---`
+    /// lines, or TOML frontmatter delimited by `+++` lines.  Recognised
+    /// only where CommonMark's metadata-block extensions accept one: the
+    /// delimiter run is exactly three characters, the first line is
+    /// non-blank, and a closing delimiter exists (otherwise the `---` is
+    /// still an ordinary thematic break).
+    ///
+    /// `content` is the raw text *between* the delimiter lines, newlines
+    /// included, exactly as pulldown-cmark emits it — the block is data
+    /// the user edits, so it is never re-flowed.  The delimiter lines
+    /// themselves are not stored: they are reproduced from `kind`, which
+    /// is faithful except for a YAML block closed with `...` or a
+    /// delimiter line carrying trailing spaces.  Both keep the same
+    /// three-column width, so the raw↔rendered column mapping holds
+    /// regardless, and entering the block reveals the true source.
+    MetadataBlock {
+        kind: MetadataKind,
+        content: String,
+    },
     /// A footnote definition (`[^label]: body`).  Rendered in place
     /// wherever it appears in the source (pulldown-cmark emits it at its
     /// source position, not reordered to the document end).  The renderer
@@ -74,6 +93,25 @@ pub enum Block {
         label: String,
         blocks: Vec<Block>,
     },
+}
+
+/// Which delimiter style opened a [`Block::MetadataBlock`] — `---` for
+/// YAML frontmatter (Hugo, Jekyll, Zola, Astro, Obsidian), `+++` for the
+/// TOML flavor Hugo and Zola also accept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MetadataKind {
+    Yaml,
+    Toml,
+}
+
+impl MetadataKind {
+    /// The three-character delimiter line this flavor opens and closes with.
+    pub fn delimiter(self) -> &'static str {
+        match self {
+            MetadataKind::Yaml => "---",
+            MetadataKind::Toml => "+++",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

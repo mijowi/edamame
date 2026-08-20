@@ -298,6 +298,21 @@ pub(super) fn paint_byte_range_overlay(
                 let map_col = |c: usize| code_raw_col_to_rendered_col(raw_line, *fenced, c);
                 (map_col(start_raw_col), map_col(end_raw_col))
             }
+        } else if matches!(
+            block_kind,
+            Some(crate::markdown::Block::MetadataBlock { .. })
+        ) {
+            // Frontmatter renders verbatim — every character in its source
+            // column — so the mapping is the identity.  The inline collapse
+            // map must not be consulted here: it re-parses the line as
+            // Markdown, where a quoted YAML value picks up smart quotes and
+            // a `*` opens emphasis, neither of which the rendered row has.
+            // The list arm below is skipped for the same reason a YAML
+            // sequence entry isn't a list item.
+            (
+                start_raw_col.min(actual_rendered),
+                end_raw_col.min(actual_rendered),
+            )
         } else if let Some(crate::markdown::Block::Heading { level, .. }) = block_kind {
             // Headings render as a level-deep space prefix plus the
             // collapsed inline content; shift the mapped cols right by the
