@@ -69,7 +69,12 @@ pub fn theme() -> Theme {
         code_block_lang: Style::default().add_modifier(Modifier::ITALIC),
         code_block_text: Style::default(),
         blockquote_bar: Style::default(),
-        blockquote_text: Style::default().add_modifier(Modifier::ITALIC),
+        // DIM rather than ITALIC: a colorless theme has no wash to give
+        // the quote, and a blanket italic is exactly what left
+        // `*emphasis*` inside a quote with nothing to say (issue #33).
+        // Dimming marks the region while leaving bold / italic / the
+        // reversed code span free to read on top of it.
+        blockquote_text: Style::default().add_modifier(Modifier::DIM),
         rule: Style::default(),
         frontmatter_delimiter: Style::default(),
         frontmatter_key: Style::default(),

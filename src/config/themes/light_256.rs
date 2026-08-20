@@ -91,6 +91,15 @@ pub fn theme() -> Theme {
     t.code_block_border = Style::default().fg(palette().text).bg(code_bg);
     t.code_block_text = Style::default().fg(palette().text).bg(code_bg);
 
+    // Blockquote surface.  Same `blend` no-op as the code surface, so
+    // the wash is picked by hand.  The greyscale ramp has no room
+    // between `bg` (254) and `code_bg` (253), so unlike the dark theme
+    // the quote wash sits one step *past* the code surface rather than
+    // short of it — a code span inside a quote still separates, just in
+    // the other direction.  252 is also the striped-row bg, which a
+    // quote can never sit inside.
+    t.blockquote_text = Style::default().bg(Color::Indexed(252));
+
     // Muted selection (non-focused search matches).  See the
     // `dark_256` counterpart: the derived blend is a no-op for indexed
     // colors and would leave the highlight as the bare `surface` grey

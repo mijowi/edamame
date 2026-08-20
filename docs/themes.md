@@ -139,8 +139,7 @@ bold = true
 underlined = true
 
 [blockquote_text]
-italic = true
-fg = "gray"
+bg = "#1e2029"        # the quote wash; add `italic = true` to slant quoted prose
 
 [selection]
 bg = "#3d59a1"

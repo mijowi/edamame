@@ -12,6 +12,13 @@ use super::themes::util::{best_contrast, blend};
 /// neutral); closer to 0.0 = closer to the raw `code` shade.
 const CODE_BG_MIX_TOWARD_BG: f32 = 0.92;
 
+/// How heavily to mix `secondary` toward `bg` when deriving the
+/// blockquote surface bg.  Mixed further toward `bg` than the code
+/// surface: a quote is *prose* — it carries emphasis, links and code
+/// spans of its own — so its wash has to stay quiet enough for those
+/// to read on top of it.
+const QUOTE_BG_MIX_TOWARD_BG: f32 = 0.94;
+
 /// Darken `base` by `level` steps for the heading ramp (0 = base,
 /// 1 = medium, 2 = dull).  RGB colors are scaled toward black via a
 /// fixed lightness factor per step.  Indexed and named colors can't
@@ -768,6 +775,13 @@ impl Theme {
         // after `from_palette` returns.
         let code_bg = blend(p.code, p.bg, CODE_BG_MIX_TOWARD_BG);
 
+        // Blockquote surface: the bar's own hue, mixed almost all the
+        // way to `bg`.  Same `blend` caveat as `code_bg` — it returns
+        // `p.secondary` unchanged for non-RGB palettes, so the
+        // indexed-cube built-ins pin `blockquote_text` by hand after
+        // `from_palette` returns.
+        let quote_bg = blend(p.secondary, p.bg, QUOTE_BG_MIX_TOWARD_BG);
+
         // Heading ramp alternates `primary` and `secondary`, getting
         // progressively duller / darker with each level.  RGB themes
         // get a tinted ramp; indexed / named colors fall back to the
@@ -833,9 +847,14 @@ impl Theme {
                 .add_modifier(italic),
             code_block_text: Style::default().fg(p.text).bg(code_bg),
 
-            // Blockquote
+            // Blockquote — a subtle background wash rather than a text
+            // attribute.  It used to be a blanket ITALIC, which left
+            // `*emphasis*` inside a quote with nothing to say (issue
+            // #33) and read as a claim about the quoted text's tone.  A
+            // wash marks the region instead, the way the code surface
+            // does, and leaves every inline style free.
             blockquote_bar: Style::default().fg(p.secondary),
-            blockquote_text: Style::default().add_modifier(italic),
+            blockquote_text: Style::default().bg(quote_bg),
 
             // Horizontal rule
             rule: Style::default().fg(p.secondary),

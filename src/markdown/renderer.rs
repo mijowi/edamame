@@ -736,14 +736,26 @@ impl<'t> Renderer<'t> {
         }
 
         for line in inner_lines {
-            let bar = Span::styled("▎ ", self.theme.blockquote_bar);
+            // The quote's own style is the *base*, not a replacement: each
+            // inner span keeps whatever it resolved to (bold, italic, a code
+            // span's own surface, a highlight, a link's underline) and simply
+            // inherits the quote wash underneath it.  Overwriting the spans
+            // wholesale — which is what this used to do — silenced every
+            // inline style inside a quote (issue #33).  An inner block's own
+            // line style (a nested code block's surface) layers on first so
+            // it wins over the wash, as it does outside a quote.
+            let base = self.theme.blockquote_text.patch(line.style);
+            let bar = Span::styled("▎ ", base.patch(self.theme.blockquote_bar));
             let mut spans = vec![bar];
-            // Re-style the existing spans with blockquote text style
             for span in line.spans {
                 let content = span.content.into_owned();
-                spans.push(Span::styled(content, self.theme.blockquote_text));
+                spans.push(Span::styled(content, base.patch(span.style)));
             }
-            out.push(Line::from(spans));
+            // The line-level style is what `line_render` fills the trailing
+            // cells with, so the wash reaches the viewport edge the way a
+            // code block's does, and what the indent zone of a wrapped
+            // continuation row is blank-filled with.
+            out.push(Line::from(spans).style(base));
         }
     }
 

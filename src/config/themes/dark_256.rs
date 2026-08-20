@@ -86,6 +86,14 @@ pub fn theme() -> Theme {
     t.code_block_border = Style::default().fg(palette().text).bg(code_bg);
     t.code_block_text = Style::default().fg(palette().text).bg(code_bg);
 
+    // Blockquote surface: the faintest lift the greyscale ramp offers
+    // over `bg` (233) — one step below the striped-row bg (235) and
+    // well below the code surface (238), so a code span inside a quote
+    // still reads as code.  Derived from `secondary` (97, mid purple)
+    // via `blend`, which is a no-op for indexed colors and would have
+    // left the wash as that full-strength purple.
+    t.blockquote_text = Style::default().bg(Color::Indexed(234));
+
     // Muted selection (non-focused search matches).  The derived
     // version blends `surface` toward `accent`, which is a no-op for
     // indexed colors — it would leave the highlight as the bare

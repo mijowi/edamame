@@ -11,7 +11,7 @@ draft: false
 
 A sample document for **edamame** — it doubles as a smoke test, so it exercises most of the rendering surface while still reading like something you'd actually write.[^1]
 
-> Markdown is the right format for most documents, and it has become the medium we use to work with agents — so we all read and edit a lot more of it than we used to.
+> ==Markdown== is the right format for most documents, and it has become the medium we use to work with **LLM agents** — so we all read and edit a *lot* more of it than we used to.
 
 ---
 
@@ -125,6 +125,7 @@ flowchart LR
     M --> R
     R --> V([Frame])
 ```
+
 Local files render inline where the terminal supports an image protocol:
 
 ![A dog in a field](./dog.jpg)

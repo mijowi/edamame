@@ -148,6 +148,97 @@ fn blockquote_contains_text() {
     assert!(text.contains("A blockquote"), "got: {text:?}");
 }
 
+/// Issue #33: a quote used to overwrite every inner span's style with
+/// `blockquote_text`, so bold, italic and every other inline style inside
+/// one rendered as plain quoted prose.  Each inline keeps its own styling
+/// and inherits the quote's wash underneath it.
+#[test]
+fn blockquote_preserves_inline_styles() {
+    let theme = Theme::default();
+    let md = "> plain **bold** *italic* `code` ==mark== ~~struck~~ [link](https://example.com)\n";
+    let lines = render(md);
+    let spans = &lines[0].spans;
+
+    let span_for = |needle: &str| {
+        spans
+            .iter()
+            .find(|s| s.content.contains(needle))
+            .unwrap_or_else(|| panic!("no span for {needle:?} in {spans:?}"))
+    };
+
+    assert_eq!(
+        span_for("bold").style.add_modifier,
+        theme.bold.add_modifier,
+        "bold lost its modifier inside a quote"
+    );
+    assert_eq!(
+        span_for("italic").style.add_modifier,
+        theme.italic.add_modifier,
+        "italic lost its modifier inside a quote"
+    );
+    assert_eq!(
+        span_for("code").style.fg,
+        theme.code_span.fg,
+        "a code span lost its color inside a quote"
+    );
+    assert_eq!(
+        span_for("code").style.bg,
+        theme.code_span.bg,
+        "a code span lost its own surface inside a quote"
+    );
+    assert_eq!(
+        span_for("mark").style.bg,
+        theme.highlight.bg,
+        "a highlight lost its background inside a quote"
+    );
+    assert_eq!(
+        span_for("struck").style.add_modifier,
+        theme.strikethrough.add_modifier,
+        "strikethrough lost its modifier inside a quote"
+    );
+    assert_eq!(
+        span_for("link").style.fg,
+        theme.link_text.fg,
+        "a link lost its color inside a quote"
+    );
+
+    // The quote's own wash still reaches the plain prose and the bar, and is
+    // the line-level style `line_render` fills trailing cells with.
+    assert_eq!(lines[0].style.bg, theme.blockquote_text.bg);
+    assert_eq!(span_for("plain").style.bg, theme.blockquote_text.bg);
+    assert_eq!(span_for("▎").style.fg, theme.blockquote_bar.fg);
+}
+
+/// A quote marks its region with a background wash, not a blanket italic —
+/// the italic is what left `*emphasis*` inside a quote with nothing to say.
+#[test]
+fn blockquote_text_is_not_italic_by_default() {
+    let theme = Theme::default();
+    assert!(
+        !theme
+            .blockquote_text
+            .add_modifier
+            .contains(ratatui::style::Modifier::ITALIC),
+        "blockquote text should carry no blanket italic"
+    );
+    assert!(
+        theme.blockquote_text.bg.is_some(),
+        "blockquote text should carry a background wash"
+    );
+}
+
+/// A nested code block keeps its own surface rather than the quote's wash.
+#[test]
+fn code_block_inside_a_blockquote_keeps_the_code_surface() {
+    let theme = Theme::default();
+    let lines = render("> ```\n> fn main() {}\n> ```\n");
+    let body = lines
+        .iter()
+        .find(|l| line_text(l).contains("fn main"))
+        .expect("code body row");
+    assert_eq!(body.style.bg, theme.code_block_text.bg);
+}
+
 #[test]
 fn bullet_list_marker() {
     let lines = render("- item one\n- item two\n");

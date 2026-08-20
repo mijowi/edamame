@@ -566,6 +566,62 @@ fn setext_heading_reveals_both_title_and_underline_on_cursor() {
     );
 }
 
+/// The quote's background wash reaches the viewport edge (the way a code
+/// block's does), and the one row revealed as raw source while the cursor
+/// rests in it keeps that wash rather than dropping out of the block.
+#[test]
+fn blockquote_wash_fills_the_row_and_survives_the_raw_reveal() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let src = "> quoted\n> lines\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    // Cursor on raw line 0.  Leaving `cursor_block_entered_at` as None makes
+    // `cursor_block_revealed` return true immediately.
+    state.cursor.offset = 0;
+
+    let backend = TestBackend::new(20, 4);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                cursor_style: theme.status_mode_rendered,
+                visual_kind: None,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let wash = theme.blockquote_text.bg;
+    // Row 1 is rendered: the bar, the text, and every trailing cell carry
+    // the wash.
+    for x in 0..20u16 {
+        assert_eq!(
+            buf.cell((x, 1)).unwrap().style().bg,
+            wash,
+            "rendered quote row must be washed to the edge at col {x}"
+        );
+    }
+    // Row 0 is revealed as raw `> quoted` — still inside the quote, so still
+    // washed.  Col 0 carries the block cursor, which wins over the wash.
+    for x in 1..20u16 {
+        assert_eq!(
+            buf.cell((x, 0)).unwrap().style().bg,
+            wash,
+            "revealed quote row must keep the wash at col {x}"
+        );
+    }
+}
+
 #[test]
 fn rendered_view_selection_in_table_cell_does_not_spill_into_borders() {
     use edamame::document::{Buffer, Selection};

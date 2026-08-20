@@ -20,7 +20,7 @@ use super::table_view::{self, TableLayoutSnapshot};
 
 use self::cell_overlay::{compute_cell_chunk_overlay, compute_wrapped_cell_overlay};
 use self::paint::{
-    make_code_styled_body_line, make_raw_line_with_selection, overlay_raw_cell,
+    make_code_styled_body_line, make_raw_line_over, make_raw_line_with_selection, overlay_raw_cell,
     paint_byte_range_overlay,
 };
 use crate::markdown::list_layout::list_raw_col_to_rendered_col;
@@ -237,6 +237,18 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                 ..
             })
         ) && cursor_block_own > 2;
+        // A blockquote paints a background wash across its rows, so the one
+        // row revealed as raw source has to keep it — otherwise the line the
+        // user is editing drops out of the quote it visibly belongs to (the
+        // same reason a revealed mermaid body row keeps the code surface).
+        let reveal_base = if matches!(
+            cursor_block_ast,
+            Some(crate::markdown::Block::BlockQuote { .. })
+        ) {
+            self.theme.blockquote_text
+        } else {
+            self.theme.normal
+        };
         // True when the cursor's current line is allowed to de-render: any
         // non-code-block line, a fenced block's opening-fence line, or its
         // closing-fence line where one has actually been typed (the renderer
@@ -634,7 +646,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                         let end_col = raw_text[..end_byte - raw_line_start_abs].chars().count();
                         Some((start_col, end_col))
                     });
-                    let styled = make_raw_line_with_selection(raw_text, sel_cols, self.theme);
+                    let styled = make_raw_line_over(raw_text, sel_cols, self.theme, reveal_base);
                     let cursor_override =
                         cursor_visible.then_some((cursor_col, cursor_indicator_style));
                     rows_used = render_line_with_cursor_from_visual(

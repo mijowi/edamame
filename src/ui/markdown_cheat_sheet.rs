@@ -32,13 +32,16 @@ use crate::config::Theme;
 #[allow(clippy::vec_init_then_push)] // grouped pushes mirror the on-screen sections
 pub fn body_lines(theme: &Theme) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
-    // Indices of lines that belong to a fenced-code or Mermaid block, paired
-    // with the fill style their trailing pad should use.  The language row
-    // uses `code_block_lang` (lighter `surface` bg); body and closing-fence
-    // rows use `code_block_text` (darker `muted` bg) — mirroring the actual
-    // renderer, which paints the lang label on a lighter surface than the
-    // body.  A trailing-padding pass at the end fills the modal body width.
-    let mut code_block_pad: Vec<(usize, Style)> = Vec::new();
+    // Indices of lines that carry a block *surface* — a background the row
+    // is meant to be washed with rather than a color on its glyphs — paired
+    // with the fill style their trailing pad should use.  A fenced-code or
+    // Mermaid language row uses `code_block_lang` (lighter `surface` bg),
+    // body and closing-fence rows `code_block_text` (darker `muted` bg),
+    // mirroring the actual renderer, which paints the lang label on a
+    // lighter surface than the body; a block-quote row uses the quote wash.
+    // A trailing-padding pass at the end fills the modal body width, so each
+    // surface reads as one rectangle instead of ending at its own text.
+    let mut surface_pad: Vec<(usize, Style)> = Vec::new();
 
     // ── Headings ──────────────────────────────────────────────────────
     out.push(section(theme, "Headings"));
@@ -154,11 +157,17 @@ pub fn body_lines(theme: &Theme) -> Vec<Line<'static>> {
 
     // ── Block quote ───────────────────────────────────────────────────
     out.push(section(theme, "Block quote"));
+    // Both rows register for the trailing-pad pass: `blockquote_text` is a
+    // background wash, so without it the two rows paint ragged rectangles of
+    // different widths — and one derived from the editor `bg` rather than
+    // the modal's `surface_elevated`, which makes the mismatch obvious.
+    surface_pad.push((out.len(), theme.blockquote_text));
     out.push(Line::from(vec![
         Span::raw("  "),
         Span::styled(">", theme.blockquote_bar),
         Span::styled(" quoted text spans", theme.blockquote_text),
     ]));
+    surface_pad.push((out.len(), theme.blockquote_text));
     out.push(Line::from(vec![
         Span::raw("  "),
         Span::styled(">", theme.blockquote_bar),
@@ -168,18 +177,18 @@ pub fn body_lines(theme: &Theme) -> Vec<Line<'static>> {
 
     // ── Code block ────────────────────────────────────────────────────
     out.push(section(theme, "Code block"));
-    code_block_pad.push((out.len(), theme.code_block_lang));
+    surface_pad.push((out.len(), theme.code_block_lang));
     out.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("```", theme.code_block_lang),
         Span::styled("rust", theme.code_block_lang),
     ]));
-    code_block_pad.push((out.len(), theme.code_block_text));
+    surface_pad.push((out.len(), theme.code_block_text));
     out.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("fn main() {}", theme.code_block_text),
     ]));
-    code_block_pad.push((out.len(), theme.code_block_text));
+    surface_pad.push((out.len(), theme.code_block_text));
     out.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("```", theme.code_block_text),
@@ -226,51 +235,48 @@ pub fn body_lines(theme: &Theme) -> Vec<Line<'static>> {
 
     // ── Diagrams (Mermaid) ────────────────────────────────────────────
     out.push(section(theme, "Diagrams (Mermaid)"));
-    code_block_pad.push((out.len(), theme.code_block_lang));
+    surface_pad.push((out.len(), theme.code_block_lang));
     out.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("```", theme.code_block_lang),
         Span::styled("mermaid", theme.code_block_lang),
     ]));
-    code_block_pad.push((out.len(), theme.code_block_text));
+    surface_pad.push((out.len(), theme.code_block_text));
     out.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("graph TD; A-->B;", theme.code_block_text),
     ]));
-    code_block_pad.push((out.len(), theme.code_block_text));
+    surface_pad.push((out.len(), theme.code_block_text));
     out.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("```", theme.code_block_text),
     ]));
 
-    pad_code_block_lines(&mut out, &code_block_pad, theme);
+    pad_surface_lines(&mut out, &surface_pad);
     out
 }
 
-/// Pad each code-block line with a trailing space run so the surface
+/// Pad each surface-carrying line with a trailing space run so its
 /// background fills the modal's body width, matching how
-/// `Renderer::render_code_block` pads to `viewport_width`.  Each entry
-/// pairs a row index with the fill style for that row's pad — the
-/// language row uses `code_block_lang` (lighter), body/fence rows use
-/// `code_block_text` (darker).  The target width is the widest non-
-/// code-block row; the modal sizes itself to that width, so
-/// post-padding the code-block lines exactly fill the body area without
-/// changing the modal's overall width.
-fn pad_code_block_lines(
-    lines: &mut [Line<'static>],
-    code_block_pad: &[(usize, Style)],
-    _theme: &Theme,
-) {
-    let code_indices: Vec<usize> = code_block_pad.iter().map(|(i, _)| *i).collect();
+/// `Renderer::render_code_block` pads to `viewport_width` and how
+/// `line_render`'s trailing-cell fill extends a block quote's wash to the
+/// viewport edge.  Each entry pairs a row index with the fill style for
+/// that row's pad — a code block's language row uses `code_block_lang`
+/// (lighter), its body / fence rows `code_block_text` (darker), a quote row
+/// `blockquote_text`.  The target width is the widest *unregistered* row;
+/// the modal sizes itself to that width, so post-padding these lines
+/// exactly fills the body area without changing the modal's overall width.
+fn pad_surface_lines(lines: &mut [Line<'static>], surface_pad: &[(usize, Style)]) {
+    let surface_indices: Vec<usize> = surface_pad.iter().map(|(i, _)| *i).collect();
     let target_width: usize = lines
         .iter()
         .enumerate()
-        .filter(|(i, _)| !code_indices.contains(i))
+        .filter(|(i, _)| !surface_indices.contains(i))
         .map(|(_, l)| l.width())
         .max()
         .unwrap_or(0);
 
-    for &(i, fill_style) in code_block_pad {
+    for &(i, fill_style) in surface_pad {
         let line = &mut lines[i];
         let cur = line.width();
         if cur < target_width {
@@ -493,6 +499,40 @@ mod tests {
                 last.style == theme.code_block_text || last.style == theme.code_block_lang,
                 "trailing fill should use a code-block surface style: {:?}",
                 line,
+            );
+        }
+    }
+
+    /// `blockquote_text` is a background wash, so the two quote rows need the
+    /// same trailing-pad pass the code-block rows get.  Without it each row's
+    /// wash stops at its own text — two ragged rectangles of different widths,
+    /// in a color derived from the editor `bg` rather than the modal's
+    /// `surface_elevated`, which is what makes the mismatch visible.
+    #[test]
+    fn block_quote_rows_are_padded_to_the_body_width() {
+        let theme = Theme::default();
+        let lines = body_lines(&theme);
+
+        let is_quote_line =
+            |line: &Line<'_>| line.spans.iter().any(|s| s.style == theme.blockquote_text);
+        let quote_lines: Vec<&Line<'_>> = lines.iter().filter(|l| is_quote_line(l)).collect();
+        assert_eq!(quote_lines.len(), 2, "expected both block-quote rows");
+
+        let width = quote_lines[0].width();
+        for line in &quote_lines {
+            assert_eq!(
+                line.width(),
+                width,
+                "block-quote rows must share one width: {line:?}"
+            );
+            let last = line.spans.last().expect("non-empty quote row");
+            assert!(
+                last.content.chars().all(char::is_whitespace),
+                "padded quote row should end in a whitespace fill span: {line:?}"
+            );
+            assert_eq!(
+                last.style, theme.blockquote_text,
+                "trailing fill should carry the quote wash: {line:?}"
             );
         }
     }

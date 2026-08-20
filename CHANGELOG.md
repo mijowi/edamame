@@ -8,6 +8,14 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ## [Unreleased]
 
+### Changed
+
+- Block quotes are marked with a subtle background wash instead of italic text, so emphasis inside a quote is visible as emphasis.
+
+### Fixed
+
+- Bold, italic, inline code, highlights, strikethrough and links now keep their styling inside a block quote.
+
 ## [0.1.1] - 2026-08-18
 
 ### Added

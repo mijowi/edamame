@@ -38,6 +38,23 @@ pub(super) fn make_raw_line_with_selection(
     selection_cols: Option<(usize, usize)>,
     theme: &Theme,
 ) -> Line<'static> {
+    make_raw_line_over(raw_text, selection_cols, theme, theme.normal)
+}
+
+/// [`make_raw_line_with_selection`] over a caller-supplied `base` style
+/// instead of `theme.normal`.  A revealed line inside a block that paints
+/// its own surface — a blockquote's wash, the way
+/// [`make_code_styled_body_line`] does for a code block's — must keep that
+/// surface while it shows raw source, or the one row the user is editing
+/// blinks out of the block it belongs to.  `base` is also the line-level
+/// style, so `line_render`'s trailing-cell fill carries the surface to the
+/// viewport edge.
+pub(super) fn make_raw_line_over(
+    raw_text: &str,
+    selection_cols: Option<(usize, usize)>,
+    theme: &Theme,
+    base: Style,
+) -> Line<'static> {
     let sel_style = theme.selection;
     let chars: Vec<char> = raw_text.chars().collect();
     let total = chars.len();
@@ -47,13 +64,13 @@ pub(super) fn make_raw_line_with_selection(
     // be coalesced — ratatui's Line works fine with short spans.
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(total);
     for (i, ch) in chars.iter().enumerate() {
-        let mut style = theme.normal;
+        let mut style = base;
         if matches!(selection_cols, Some((s, e)) if i >= s && i < e) {
             style = style.patch(sel_style);
         }
         spans.push(Span::styled(ch.to_string(), style));
     }
-    Line::from(spans)
+    Line::from(spans).style(base)
 }
 
 /// Build a `Line` for one body row of a mermaid block revealed as a code
