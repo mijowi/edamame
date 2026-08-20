@@ -541,3 +541,120 @@ fn code_block_render_agrees_with_code_layout_column_map() {
         }
     }
 }
+
+// ── Frontmatter ──────────────────────────────────────────────────────────────
+
+/// Frontmatter renders verbatim: one rendered row per source line, each
+/// character in its source column.  Both halves matter — the row count is
+/// what the raw reveal maps against, and the column identity is what the
+/// click / selection / cursor paths assume for a metadata block.
+#[test]
+fn yaml_frontmatter_renders_one_verbatim_row_per_source_line() {
+    let md = "---\ntitle: Foo\n\ntags:\n  - a\n---\n\n# Heading\n";
+    let lines = render(md);
+    let rendered: Vec<String> = lines.iter().map(line_text).collect();
+    assert_eq!(
+        &rendered[..6],
+        &["---", "title: Foo", "", "tags:", "  - a", "---"],
+        "got: {rendered:?}",
+    );
+}
+
+#[test]
+fn toml_frontmatter_keeps_its_pluses_delimiters() {
+    let lines = render("+++\ntitle = \"Foo\"\n+++\n\n# H\n");
+    let rendered: Vec<String> = lines.iter().map(line_text).collect();
+    assert_eq!(
+        &rendered[..3],
+        &["+++", "title = \"Foo\"", "+++"],
+        "got: {rendered:?}",
+    );
+}
+
+/// The regression the extension was enabled for: frontmatter used to parse
+/// as a thematic break plus a setext H2, making the file's YAML keys the
+/// loudest element on the page (issue #34).
+#[test]
+fn frontmatter_is_not_rendered_as_a_rule_plus_heading() {
+    let lines = render("---\ntitle: Foo\ndate: 2026-01-01\n---\n\nBody.\n");
+    let theme = Theme::default();
+    for line in &lines {
+        let text = line_text(line);
+        assert!(
+            !text.contains("────"),
+            "frontmatter must not render a rule: {text:?}",
+        );
+        assert!(
+            line.spans.iter().all(|s| s.style != theme.h2),
+            "frontmatter must not render as a heading: {text:?}",
+        );
+    }
+}
+
+/// A `---` that isn't frontmatter stays a thematic break: the extension
+/// only claims a three-character delimiter run with a non-blank first line
+/// and a closing delimiter.
+#[test]
+fn a_lone_dash_rule_is_still_a_horizontal_rule() {
+    for md in [
+        "Intro.\n\n---\n\nBody.\n",
+        // Unclosed: rule + paragraph, exactly as before the extension.
+        "---\ntitle: Foo\n\n# H\n",
+        // A separator immediately above a heading, closed by the next
+        // one.  The extensions are not anchored to the start of the
+        // document on their own, so without the first-line gate this
+        // pair swallows the whole section between them.
+        "Intro.\n\n---\n## Section 2\n\nText.\n\n---\n## Section 3\n",
+    ] {
+        let lines = render(md);
+        assert!(
+            lines.iter().any(|l| line_text(l).contains("────")),
+            "{md:?} should still render a rule, got: {:?}",
+            lines.iter().map(line_text).collect::<Vec<_>>(),
+        );
+    }
+}
+
+/// Only the file's own opening delimiter enables an extension, so a
+/// `+++` file's later `---` pair stays a rule and a heading rather than
+/// becoming a second, YAML-flavored metadata block.
+#[test]
+fn frontmatter_does_not_claim_a_later_pair_of_the_other_flavor() {
+    let lines = render("+++\na = 1\n+++\n\n---\nSection\n---\n\nEnd.\n");
+    let rendered: Vec<String> = lines.iter().map(line_text).collect();
+    assert_eq!(
+        &rendered[..3],
+        &["+++", "a = 1", "+++"],
+        "got: {rendered:?}"
+    );
+    assert!(
+        rendered.iter().any(|l| l.contains("────")),
+        "the later `---` should still render a rule, got: {rendered:?}",
+    );
+}
+
+/// The key half of a frontmatter line is styled apart from its value, and
+/// the two spans still concatenate back to the source line byte for byte.
+#[test]
+fn frontmatter_key_and_value_are_styled_apart() {
+    let theme = Theme::default();
+    let lines = render("---\ntitle: Foo\n---\n\n# H\n");
+    let row = &lines[1];
+    assert_eq!(line_text(row), "title: Foo");
+    assert_eq!(row.spans.len(), 2, "got: {:?}", row.spans);
+    assert_eq!(row.spans[0].content.as_ref(), "title:");
+    assert_eq!(row.spans[0].style, theme.frontmatter_key);
+    assert_eq!(row.spans[1].content.as_ref(), " Foo");
+    assert_eq!(row.spans[1].style, theme.frontmatter_value);
+}
+
+/// A line the key/value split can't read — a sequence entry, a comment, a
+/// bare scalar — renders whole rather than splitting at a colon that isn't
+/// a separator.
+#[test]
+fn frontmatter_lines_without_a_key_render_whole() {
+    let lines = render("---\ntags:\n  - https://example.com\n---\n\n# H\n");
+    let entry = &lines[2];
+    assert_eq!(line_text(entry), "  - https://example.com");
+    assert_eq!(entry.spans.len(), 1, "got: {:?}", entry.spans);
+}

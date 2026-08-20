@@ -8,9 +8,9 @@ pub use post_pass::{
 
 use std::ops::Range;
 
-use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, MetadataBlockKind, Parser, Tag, TagEnd};
 
-use super::ast::{inlines_to_plain, Block, Inline, ListItem};
+use super::ast::{inlines_to_plain, Block, Inline, ListItem, MetadataKind};
 use super::parse_offsets;
 
 /// Parse a Markdown string into a list of `Block` AST nodes.
@@ -46,7 +46,7 @@ pub fn parse(text: &str) -> Vec<Block> {
 /// module tests and the pipeline benchmarks.
 #[allow(dead_code)]
 pub fn parse_raw(text: &str) -> Vec<Block> {
-    let parser = Parser::new_ext(text, parse_offsets::PARSE_OPTIONS);
+    let parser = Parser::new_ext(text, parse_offsets::options_for(text));
     let mut events = parser.peekable();
     parse_blocks(&mut events)
 }
@@ -64,7 +64,7 @@ pub fn parse_raw(text: &str) -> Vec<Block> {
 /// the prose-document pipeline before the merge.
 pub fn parse_raw_with_ranges(text: &str) -> (Vec<Block>, Vec<Range<usize>>) {
     let mut tracker = parse_offsets::RangeTracker::new(|_| true);
-    let mut events = Parser::new_ext(text, parse_offsets::PARSE_OPTIONS)
+    let mut events = Parser::new_ext(text, parse_offsets::options_for(text))
         .into_offset_iter()
         .map(|(event, byte_range)| {
             tracker.observe(text, &event, &byte_range);
@@ -132,6 +132,9 @@ where
             }
             Some(Event::Start(Tag::FootnoteDefinition(_))) => {
                 blocks.push(parse_footnote_definition_block(events));
+            }
+            Some(Event::Start(Tag::MetadataBlock(_))) => {
+                blocks.push(parse_metadata_block(events));
             }
 
             // Inline content at block level: tight lists emit Text/Code
@@ -222,6 +225,27 @@ where
         label,
         blocks: inner,
     }
+}
+
+/// Consume `Start(MetadataBlock(kind)) … End(MetadataBlock(_))`.  The body
+/// arrives as plain `Event::Text` (pulldown-cmark does no inline parsing
+/// inside a metadata block), so the stored `content` is the frontmatter
+/// verbatim, minus the two delimiter lines the events' *ranges* — but not
+/// their payloads — cover.
+fn parse_metadata_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block
+where
+    I: Iterator<Item = Event<'a>>,
+{
+    let kind = match events.next() {
+        Some(Event::Start(Tag::MetadataBlock(MetadataBlockKind::PlusesStyle))) => {
+            MetadataKind::Toml
+        }
+        // Defensive: the caller only invokes us after peeking the Start,
+        // and YAML is the flavor `---` opens.
+        _ => MetadataKind::Yaml,
+    };
+    let content = collect_text_until_end(events);
+    Block::MetadataBlock { kind, content }
 }
 
 fn parse_code_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block
@@ -1172,5 +1196,95 @@ mod tests {
         assert!(!post_pass::is_html_comment_only("<!-- a"));
         // Too short to be balanced (delimiters would overlap).
         assert!(!post_pass::is_html_comment_only("<!-->"));
+    }
+
+    #[test]
+    fn parse_yaml_frontmatter() {
+        let blocks = parse("---\ntitle: Foo\ntags: [a]\n---\n\nBody.\n");
+        assert_eq!(
+            blocks[0],
+            Block::MetadataBlock {
+                kind: MetadataKind::Yaml,
+                content: "title: Foo\ntags: [a]\n".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_toml_frontmatter() {
+        let blocks = parse("+++\ntitle = \"Foo\"\n+++\n\nBody.\n");
+        assert_eq!(
+            blocks[0],
+            Block::MetadataBlock {
+                kind: MetadataKind::Toml,
+                content: "title = \"Foo\"\n".into(),
+            }
+        );
+    }
+
+    /// Frontmatter is data, not prose: the content must arrive verbatim,
+    /// with no smart-punctuation substitution and no inline parsing, so a
+    /// quoted value or an `*` in a glob round-trips unchanged.
+    #[test]
+    fn frontmatter_content_is_verbatim() {
+        let blocks = parse("---\nglob: \"src/*.rs\" -- x\n---\n\nBody.\n");
+        let Block::MetadataBlock { content, .. } = &blocks[0] else {
+            panic!("expected a metadata block, got: {:?}", blocks[0]);
+        };
+        assert_eq!(content, "glob: \"src/*.rs\" -- x\n");
+    }
+
+    /// Frontmatter is the *first* thing in a file.  pulldown-cmark's
+    /// extensions are not anchored that way, so a `---` separator sitting
+    /// immediately above a heading would otherwise open a block that the
+    /// next `---` closes, turning the section between them into metadata.
+    #[test]
+    fn a_mid_document_rule_pair_stays_prose() {
+        let blocks = parse("Intro.\n\n---\n## Section 2\n\nText.\n\n---\n## Section 3\n");
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, Block::MetadataBlock { .. })),
+            "got: {blocks:?}",
+        );
+        assert_eq!(blocks[1], Block::HorizontalRule);
+    }
+
+    /// A file that opens `+++` enables only the TOML flavor, so a later
+    /// `---` pair cannot be claimed as YAML frontmatter.
+    #[test]
+    fn a_toml_opening_file_does_not_claim_a_later_dash_pair() {
+        let blocks = parse("+++\na = 1\n+++\n\n---\nSection\n---\n\nEnd.\n");
+        let metadata: Vec<_> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::MetadataBlock { .. }))
+            .collect();
+        assert_eq!(metadata.len(), 1, "got: {blocks:?}");
+        assert_eq!(
+            metadata[0],
+            &Block::MetadataBlock {
+                kind: MetadataKind::Toml,
+                content: "a = 1\n".into(),
+            }
+        );
+    }
+
+    /// A leading blank line means the delimiter is not at byte 0, and
+    /// Hugo / Jekyll / Obsidian all require it to be.
+    #[test]
+    fn a_delimiter_below_a_blank_first_line_is_not_frontmatter() {
+        let blocks = parse("\n---\ntitle: Foo\n---\n\nBody.\n");
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, Block::MetadataBlock { .. })),
+            "got: {blocks:?}",
+        );
+    }
+
+    #[test]
+    fn an_unclosed_frontmatter_delimiter_stays_a_rule() {
+        let blocks = parse("---\ntitle: Foo\n\nBody.\n");
+        assert_eq!(blocks[0], Block::HorizontalRule);
     }
 }

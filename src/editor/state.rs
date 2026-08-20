@@ -1360,13 +1360,17 @@ pub(crate) fn sub_lines_in_block(
     // overlay paints raw source onto them 1:1.  Code blocks render every body
     // line — including blank ones, emitted as NBSP-padded rows — so they too
     // map 1:1; counting only rendered-producing lines (below) would drift the
-    // cursor up by one row per blank.
+    // cursor up by one row per blank.  A metadata block renders verbatim for
+    // the same reason: a blank line inside frontmatter is data, and the
+    // renderer emits a row for it.
     let is_mermaid = parsed.is_mermaid_block(block_idx);
-    let is_code_block = matches!(
+    let is_verbatim = matches!(
         parsed.real_block_for_byte(classify_byte),
-        Some(crate::markdown::Block::CodeBlock { .. })
+        Some(
+            crate::markdown::Block::CodeBlock { .. } | crate::markdown::Block::MetadataBlock { .. }
+        )
     );
-    if is_mermaid || is_code_block {
+    if is_mermaid || is_verbatim {
         let last = block_own.saturating_sub(1);
         return (0..=n).map(|r| r.min(last)).collect();
     }

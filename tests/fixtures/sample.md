@@ -1,3 +1,12 @@
+---
+title: edamame — Markdown in the Terminal
+date: 2026-01-01
+tags:
+  - markdown
+  - terminal
+draft: false
+---
+
 # edamame: Markdown in the Terminal
 
 A sample document for **edamame** — it doubles as a smoke test, so it exercises most of the rendering surface while still reading like something you'd actually write.[^1]

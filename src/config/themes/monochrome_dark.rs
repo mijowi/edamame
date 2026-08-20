@@ -71,6 +71,9 @@ pub fn theme() -> Theme {
         blockquote_bar: Style::default(),
         blockquote_text: Style::default().add_modifier(Modifier::ITALIC),
         rule: Style::default(),
+        frontmatter_delimiter: Style::default(),
+        frontmatter_key: Style::default(),
+        frontmatter_value: Style::default(),
 
         list_bullet: Style::default(),
         list_number: Style::default(),

@@ -307,6 +307,7 @@ fn collect_links_from_block(block: &Block, out: &mut Vec<(String, Option<String>
         | Block::HorizontalRule
         | Block::Html(_)
         | Block::HtmlComment(_)
+        | Block::MetadataBlock { .. }
         | Block::ImageBlock { .. } => {}
     }
 }

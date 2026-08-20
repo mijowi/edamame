@@ -14,7 +14,7 @@ use tui_big_text::{BigText, PixelSize};
 use crate::config::Theme;
 
 use self::util::{link_fallback, link_style_for};
-use super::ast::{inlines_to_plain, Block, Inline};
+use super::ast::{inlines_to_plain, Block, Inline, MetadataKind};
 use super::render_cache::{RenderCache, RenderSettings};
 
 const IMAGE_PREFIX: &str = "Image: ";
@@ -267,10 +267,65 @@ impl<'t> Renderer<'t> {
             Block::ImageBlock { alt, url } => {
                 self.render_image_block(alt, url, out);
             }
+            Block::MetadataBlock { kind, content } => {
+                self.render_metadata_block(*kind, content, out);
+            }
             Block::FootnoteDefinition { label, blocks } => {
                 self.render_footnote_definition(label, blocks, out);
             }
         }
+    }
+
+    // ── Frontmatter ───────────────────────────────────────────────
+    //
+    // A metadata block is data the user edits, so it renders *verbatim*
+    // — one rendered row per source line, every character in its source
+    // column.  That keeps the raw↔rendered column mapping the identity
+    // function (so clicks, selection projection and the cursor
+    // indicator need no block-specific arm) and keeps the block's row
+    // count 1:1 with its source lines, which is what the raw reveal
+    // requires.  The only thing rendering adds is color: the delimiter
+    // lines recede, the key half of each line reads as a field name.
+
+    fn render_metadata_block(
+        &self,
+        kind: MetadataKind,
+        content: &str,
+        out: &mut Vec<Line<'static>>,
+    ) {
+        let delim = kind.delimiter();
+        out.push(Line::styled(
+            delim.to_string(),
+            self.theme.frontmatter_delimiter,
+        ));
+        for line in content.lines() {
+            out.push(self.metadata_line(kind, line));
+        }
+        out.push(Line::styled(
+            delim.to_string(),
+            self.theme.frontmatter_delimiter,
+        ));
+    }
+
+    /// Split one frontmatter line into a `key`-styled head and a
+    /// `value`-styled tail.  The split is cosmetic — a shallow scan for
+    /// the flavor's separator, not a YAML/TOML parse — so a line it
+    /// can't read (a list entry, a wrapped scalar, a comment) simply
+    /// renders whole in the value style.  The two spans concatenate back
+    /// to `line` byte for byte either way.
+    fn metadata_line(&self, kind: MetadataKind, line: &str) -> Line<'static> {
+        let sep = match kind {
+            MetadataKind::Yaml => ':',
+            MetadataKind::Toml => '=',
+        };
+        if let Some(idx) = metadata_key_end(line, sep) {
+            let (key, rest) = line.split_at(idx);
+            return Line::from(vec![
+                Span::styled(key.to_string(), self.theme.frontmatter_key),
+                Span::styled(rest.to_string(), self.theme.frontmatter_value),
+            ]);
+        }
+        Line::styled(line.to_string(), self.theme.frontmatter_value)
     }
 
     // ── Footnote definition ───────────────────────────────────────
@@ -1024,6 +1079,34 @@ fn buffer_row_to_line(buf: &Buffer, y: u16) -> Line<'static> {
         spans.push(Span::styled(current, prev));
     }
     Line::from(spans)
+}
+
+/// Byte index just past the `key` + separator run of a frontmatter line,
+/// or `None` when the line has no readable key.
+///
+/// Deliberately conservative: the separator must be the first `sep` on
+/// the line, the key must be non-empty after its indent, and the
+/// separator must be followed by a space or end the line — so a bare
+/// URL value (`url: https://…`) splits at the first colon that reads as
+/// a separator rather than the one inside the scheme, and a line that is
+/// only a value (`  - tag`) gets no split at all.
+fn metadata_key_end(line: &str, sep: char) -> Option<usize> {
+    let idx = line.find(sep)?;
+    if line[..idx]
+        .trim_start()
+        .trim_start_matches("- ")
+        .trim()
+        .is_empty()
+    {
+        return None;
+    }
+    let end = idx + sep.len_utf8();
+    let rest = &line[end..];
+    if rest.is_empty() || rest.starts_with(' ') {
+        Some(end)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

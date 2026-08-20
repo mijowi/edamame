@@ -380,12 +380,19 @@ pub fn rendered_sub_line_to_offset(
         // renderer-normalized nesting indent), which the generic prefix
         // inference below can't represent.  Resolved via the AST — a
         // paragraph line that merely looks like `2. ...` stays generic.
-        let is_list = matches!(
-            state
-                .parsed
-                .real_block_for_byte(block.range.start + line_byte_start),
-            Some(crate::markdown::Block::List { .. })
-        );
+        let line_block = state
+            .parsed
+            .real_block_for_byte(block.range.start + line_byte_start);
+        let mapping = match line_block {
+            Some(crate::markdown::Block::List { .. }) => LineMapping::List,
+            // Frontmatter renders verbatim, so the rendered column IS the
+            // raw one and neither the marker map (a YAML sequence entry
+            // reads as a list marker) nor the inline collapse map (which
+            // would re-parse `*` as emphasis and quotes as smart quotes)
+            // applies.
+            Some(crate::markdown::Block::MetadataBlock { .. }) => LineMapping::Verbatim,
+            _ => LineMapping::Generic,
+        };
         non_table_click_to_raw_col(
             rendered_line,
             line_text,
@@ -393,7 +400,7 @@ pub fn rendered_sub_line_to_offset(
             sub_row_within_line,
             viewport_width,
             &inline_map,
-            is_list,
+            mapping,
         )
     };
 
@@ -672,6 +679,19 @@ fn click_to_rendered_char_idx(
 /// inference, so the caller routes them through
 /// [`code_layout::code_rendered_col_to_raw_col`](crate::markdown::code_layout::code_rendered_col_to_raw_col)
 /// instead.
+/// Which raw↔rendered column relation a non-table line takes, resolved
+/// from the line's AST block rather than from what its text looks like.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineMapping {
+    /// A real `Block::List` line: the marker map composes with the inline
+    /// collapse map.
+    List,
+    /// A block painted exactly as written (frontmatter): identity.
+    Verbatim,
+    /// Everything else: the inline collapse map alone.
+    Generic,
+}
+
 fn non_table_click_to_raw_col(
     rendered_line: &Line<'_>,
     line_text: &str,
@@ -679,7 +699,7 @@ fn non_table_click_to_raw_col(
     sub_row_within_line: usize,
     viewport_width: usize,
     inline_map: &crate::markdown::InlineColMap,
-    is_list: bool,
+    mapping: LineMapping,
 ) -> usize {
     let rendered_chars: Vec<(char, ratatui::style::Style)> = rendered_line
         .spans
@@ -694,6 +714,12 @@ fn non_table_click_to_raw_col(
         viewport_width,
     );
 
+    if mapping == LineMapping::Verbatim {
+        // A verbatim block (frontmatter) paints its source unchanged —
+        // rendered column and raw column are the same number.
+        return rendered_idx;
+    }
+
     let actual_rendered_count = rendered_chars.len();
     let map = inline_map.rendered_to_raw_vec();
     let map_content_count = inline_map.rendered_len();
@@ -706,7 +732,7 @@ fn non_table_click_to_raw_col(
     // 1:1 mapping that lands clicks 1–2 columns off.  A raw line inside a
     // list block without its own marker (continuation line) falls through
     // to the generic path.
-    if is_list {
+    if mapping == LineMapping::List {
         if let (Some(rmw), Some(rmw_r)) = (
             raw_list_marker_char_width(line_text),
             rendered_list_marker_char_width(rendered_line),

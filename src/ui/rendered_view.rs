@@ -720,6 +720,16 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                                 raw_text, *fenced, cursor_col,
                             )
                         }
+                    } else if matches!(
+                        cursor_block_ast,
+                        Some(crate::markdown::Block::MetadataBlock { .. })
+                    ) {
+                        // Frontmatter renders verbatim, so the raw column IS
+                        // the rendered one.  The arm has to sit ahead of the
+                        // list sniff below: a YAML sequence entry (`  - tag`)
+                        // reads as a list marker and would otherwise shift the
+                        // indicator by a marker width the row doesn't have.
+                        cursor_col
                     } else if let Some(col) =
                         list_raw_col_to_rendered_col(raw_text, line, cursor_col)
                     {

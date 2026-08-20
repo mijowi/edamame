@@ -162,13 +162,15 @@ Those six are the complete set of modifiers. There is no blink or hidden.
 
 ### Element names
 
-**All 103 styleable elements:**
+**All 102 styleable elements:**
 
 **Headings** — `h1` `h1_rule` `h2` `h3` `h4` `h5` `h6`
 
 **Inline** — `bold` `italic` `strikethrough` `highlight` `code_span` `code_span_dim` `link_text` `link_file` `link_heading` `image_placeholder` `footnote`
 
 **Blocks** — `code_block_border` `code_block_lang` `code_block_text` `blockquote_bar` `blockquote_text` `rule`
+
+**Frontmatter** — `frontmatter_delimiter` `frontmatter_key` `frontmatter_value`
 
 **Lists** — `list_bullet` `list_number`
 

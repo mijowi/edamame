@@ -100,6 +100,16 @@ pub struct Theme {
     pub blockquote_text: Style,
     pub rule: Style,
 
+    // ── Frontmatter (YAML / TOML metadata block) ──────────────────
+    /// The `---` / `+++` delimiter lines around a metadata block.
+    pub frontmatter_delimiter: Style,
+    /// The `key:` / `key =` half of a frontmatter line — structural, so
+    /// it reads as a field name rather than prose.
+    pub frontmatter_key: Style,
+    /// The value half of a frontmatter line, and any line the key/value
+    /// split doesn't apply to (a list entry, a nested block).
+    pub frontmatter_value: Style,
+
     // ── List markers ──────────────────────────────────────────────
     pub list_bullet: Style,
     pub list_number: Style,
@@ -829,6 +839,15 @@ impl Theme {
 
             // Horizontal rule
             rule: Style::default().fg(p.secondary),
+
+            // Frontmatter — quiet by design: it is data about the
+            // document rather than part of it, so it must not compete
+            // with the first heading below it.
+            frontmatter_delimiter: Style::default()
+                .fg(p.text_muted)
+                .add_modifier(Modifier::DIM),
+            frontmatter_key: Style::default().fg(p.secondary),
+            frontmatter_value: Style::default().fg(p.text_muted),
 
             // List markers — accent so bullets / numbers carry a hint
             // of brand color without competing with body text.

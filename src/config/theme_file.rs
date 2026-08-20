@@ -104,6 +104,11 @@ pub struct ThemeFile {
     pub blockquote_text: StyleSpec,
     pub rule: StyleSpec,
 
+    // Frontmatter
+    pub frontmatter_delimiter: StyleSpec,
+    pub frontmatter_key: StyleSpec,
+    pub frontmatter_value: StyleSpec,
+
     // List markers
     pub list_bullet: StyleSpec,
     pub list_number: StyleSpec,
@@ -230,6 +235,7 @@ macro_rules! style_fields {
             image_placeholder, footnote,
             code_block_border, code_block_lang, code_block_text,
             blockquote_bar, blockquote_text, rule,
+            frontmatter_delimiter, frontmatter_key, frontmatter_value,
             list_bullet, list_number,
             task_unchecked, task_checked, task_complete_text,
             table_border, table_header, table_header_border,
@@ -366,6 +372,9 @@ mod tests {
         check!(blockquote_bar);
         check!(blockquote_text);
         check!(rule);
+        check!(frontmatter_delimiter);
+        check!(frontmatter_key);
+        check!(frontmatter_value);
         check!(list_bullet);
         check!(list_number);
         check!(task_unchecked);
@@ -673,6 +682,9 @@ bold = true
         check!(blockquote_bar);
         check!(blockquote_text);
         check!(rule);
+        check!(frontmatter_delimiter);
+        check!(frontmatter_key);
+        check!(frontmatter_value);
         check!(list_bullet);
         check!(list_number);
         check!(task_unchecked);
