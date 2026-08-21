@@ -496,13 +496,11 @@ const CONTROL_COL: u16 = 22;
 /// Body text describing the editor — wraps at the body's inner width
 /// at render time (see `wrapped_para_rows`).
 const QUICK_START_TEXT: &str = "edamame is a Markdown editor for your terminal, featuring:\n\
-• PREVIEW, hybrid EDIT, and RAW edit modes — PREVIEW is for viewing only; \
-in EDIT, the cursor's line or table cell reveals its raw Markdown and \
-everything else stays formatted; RAW has no formatting. \n\
+• 3 modes — PREVIEW is for viewing; EDIT renders everything \
+but the line the cursor is on; RAW has no formatting \n\
 • Mouse, image, and Mermaid diagram support, depending on your terminal's capabilities\n\
 • GitHub Flavored Markdown, including tables, task lists, and more, plus highlights\n\
 • Diff mode — review external file changes hunk by hunk\n\
-• Bottom bar with status and contextual hints\n\
 • Command palette for access to commands and settings (Ctrl-P)\n\
 • Vim mode — optional Vim-style editing (see docs for what's supported)";
 /// Hint shown below the capability summary when any capability is
