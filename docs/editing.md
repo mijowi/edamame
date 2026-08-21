@@ -159,13 +159,16 @@ What happens depends on the target:
 | --- | --- |
 | `https://…`, `mailto:…` | Opens in your default application |
 | Another `.md` file | Opens in edamame |
+| Another `.md` file with `#heading` | Opens in edamame, scrolled to that heading |
 | Any other local file | Handed to the OS |
 | `#heading` | Jumps within the document |
 | `[^note]` | Jumps to the footnote |
 
+A heading is named by its GitHub-style slug: lowercase, punctuation dropped, spaces turned into hyphens — `## When the file changes` is `#when-the-file-changes`. That is the same fragment GitHub and your browser resolve, so a link that works here works everywhere else too. If nothing in the target document matches, the file still opens and the hint line tells you the section wasn't found.
+
 `Alt-←` / `Alt-→` move back and forward through everywhere you've been — across files and within a document. Leaving a modified file prompts first.
 
-> edamame opens links without asking. That's expected, but it means a link in a document you didn't write can hand an arbitrary target to your OS. See [security.md](security.md).
+> edamame opens links without asking for confirmation. That's expected, but it means a link in a document you didn't write can hand an arbitrary target to your OS. See [security.md](security.md).
 
 ---
 

@@ -317,6 +317,10 @@ impl App {
         self.last_doc_height = dims.doc_height;
         self.last_doc_width = dims.doc_width;
         self.editor.set_viewport_width(dims.doc_width);
+        // A `#section` named on the command line is applied on the first
+        // frame that knows the document's dimensions, and clears itself,
+        // so this is a no-op from the second frame on.
+        self.apply_startup_anchor(dims.doc_height, dims.doc_width);
         // An image block reserves its image's rows until the cursor rests
         // inside it, at which point it reserves one row per raw source line
         // instead — so the whole mermaid fence reveals, or the lone

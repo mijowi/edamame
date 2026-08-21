@@ -377,6 +377,12 @@ pub struct App {
     /// must never queue a notice behind the modal the user just
     /// opened.
     update_check_is_startup: bool,
+    /// A `#section` named on the command line
+    /// (`edamame notes.md#setup`), parked until the first frame knows
+    /// the document's dimensions and consumed there by
+    /// [`App::apply_startup_anchor`].  `None` on every launch that
+    /// named no section, and after the jump has been made.
+    pub(crate) startup_anchor: Option<String>,
     /// Vim modal-editing state.  `Some` iff `config.modal.handler ==
     /// "vim"`; `None` for the default handler, which keeps every vim
     /// code path inert for existing users.  Survives across keystrokes
@@ -754,8 +760,19 @@ impl App {
             startup_update_check_due,
             pending_update_notice: None,
             update_check_is_startup: false,
+            startup_anchor: None,
             vim,
         })
+    }
+
+    /// Record the `#section` the command line named, to be applied on
+    /// the first frame.  A builder rather than a `new` parameter: the
+    /// startup anchor is one caller's concern (`main`), and every other
+    /// construction site — the tests included — wants the default.
+    #[must_use]
+    pub fn with_startup_anchor(mut self, anchor: Option<String>) -> Self {
+        self.startup_anchor = anchor;
+        self
     }
 
     /// Enable or disable vim modal editing for the running session,

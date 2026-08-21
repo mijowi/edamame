@@ -10,7 +10,7 @@
 //! reaches `PathBuf` intact.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// What the command line asked edamame to do.
 ///
@@ -119,6 +119,47 @@ impl Invocation {
             Self::Run { file, opts }
         })
     }
+}
+
+/// Split a `file.md#section` startup argument into the file to open and
+/// the heading to land on — the command-line half of deep linking, so
+/// `edamame docs/editing.md#images` opens the same place the in-document
+/// link of that name does.
+///
+/// This is *not* done in [`Invocation::parse`], which is pure: a `#` is
+/// a legal character in a file name, so the split has to ask the disk
+/// before taking one away from a path. The literal path wins — a file
+/// really named `notes#1.md` opens as itself and no anchor is reported.
+/// Only when that path does not exist is the text after the last `#`
+/// taken as a heading (and only when both halves are non-empty; a
+/// trailing `#` names nothing, and a leading one is the whole file
+/// name).
+///
+/// A non-UTF-8 argument is never split — it reaches `PathBuf` intact,
+/// same as in the parser.
+pub fn split_startup_anchor(arg: &Path) -> (PathBuf, Option<String>) {
+    split_startup_anchor_with(arg, |p| p.exists())
+}
+
+/// [`split_startup_anchor`] with the disk lookup injected, so the rule
+/// is unit-testable without laying files down.
+fn split_startup_anchor_with(
+    arg: &Path,
+    exists: impl Fn(&Path) -> bool,
+) -> (PathBuf, Option<String>) {
+    let keep = || (arg.to_path_buf(), None);
+    let Some(text) = arg.to_str() else {
+        return keep();
+    };
+    // The *last* `#`, so a directory carrying one still resolves:
+    // `~/notes#2024/index.md#intro`.
+    let Some((path, fragment)) = text.rsplit_once('#') else {
+        return keep();
+    };
+    if path.is_empty() || fragment.is_empty() || exists(arg) {
+        return keep();
+    }
+    (PathBuf::from(path), Some(fragment.to_owned()))
 }
 
 #[cfg(test)]
@@ -246,6 +287,54 @@ mod tests {
                 file: Some(PathBuf::from(raw)),
                 opts: RunOpts::default(),
             }
+        );
+    }
+    // ── Startup anchor (`file.md#section`) ────────────────────────────
+
+    /// Nothing on disk under either name — the `#` is a deep link.
+    fn split(arg: &str) -> (PathBuf, Option<String>) {
+        split_startup_anchor_with(Path::new(arg), |_| false)
+    }
+
+    #[test]
+    fn startup_argument_splits_off_its_section() {
+        assert_eq!(
+            split("docs/editing.md#images"),
+            (PathBuf::from("docs/editing.md"), Some("images".to_owned()))
+        );
+    }
+
+    #[test]
+    fn startup_argument_without_a_section_is_untouched() {
+        assert_eq!(
+            split("docs/editing.md"),
+            (PathBuf::from("docs/editing.md"), None)
+        );
+    }
+
+    #[test]
+    fn an_empty_half_is_not_a_section() {
+        assert_eq!(split("notes.md#"), (PathBuf::from("notes.md#"), None));
+        assert_eq!(split("#notes.md"), (PathBuf::from("#notes.md"), None));
+    }
+
+    #[test]
+    fn only_the_last_hash_splits() {
+        assert_eq!(
+            split("notes#2024/index.md#intro"),
+            (
+                PathBuf::from("notes#2024/index.md"),
+                Some("intro".to_owned())
+            )
+        );
+    }
+
+    #[test]
+    fn a_file_really_named_with_a_hash_wins_over_the_split() {
+        let arg = Path::new("notes#1.md");
+        assert_eq!(
+            split_startup_anchor_with(arg, |p| p == Path::new("notes#1.md")),
+            (PathBuf::from("notes#1.md"), None)
         );
     }
 }

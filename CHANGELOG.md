@@ -8,6 +8,11 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ## [Unreleased]
 
+### Added
+
+- Links to a section of another document — `[text](other.md#a-heading)` — now open that file and land on the heading.
+- The same on the command line: `edamame notes.md#a-heading` opens the file at that heading.
+
 ### Changed
 
 - Block quotes are marked with a subtle background wash instead of italic text, so emphasis inside a quote is visible as emphasis.
@@ -15,6 +20,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 ### Fixed
 
 - Bold, italic, inline code, highlights, strikethrough and links now keep their styling inside a block quote.
+- Following a link to a section of another document no longer fails with an OS launcher error.
 - In vim mode, the paste shortcut now fills an open `:` or `/` command line, matching a terminal-level paste (⌘V, right-click); before it did nothing at all.
 
 ## [0.1.1] - 2026-08-18

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+use crate::app::flash::MessageKind;
 use crate::app::modal;
 use crate::document::Buffer;
 use crate::editor::link::LinkTarget;
@@ -104,12 +105,12 @@ impl App {
             LinkTarget::FootnoteBack(label) => {
                 self.follow_footnote_back_link(&label, doc_height, doc_width);
             }
-            LinkTarget::LocalFile(path) => {
+            LinkTarget::LocalFile { path, fragment } => {
                 if is_markdown_path(&path) {
                     if self.editor.dirty {
-                        self.open_dirty_guard(path);
+                        self.open_dirty_guard(path, fragment);
                     } else {
-                        self.navigate_to_file(path);
+                        let _ = self.navigate_to_file_at(path, fragment, doc_height, doc_width);
                     }
                 } else {
                     // Non-Markdown local file — defer to the OS handler
@@ -121,12 +122,31 @@ impl App {
         }
     }
 
+    /// Rendered-line index of the heading `fragment` names in the
+    /// *currently loaded* document, if any.
+    ///
+    /// The match is exact against `ParsedDoc::heading_anchors`, which is
+    /// keyed by GFM slug — the same fragment GitHub, a browser, and any
+    /// other Markdown renderer resolve.  There is deliberately **no**
+    /// leniency here: no slugifying a hand-written `#Getting Started`,
+    /// no case folding.  edamame is an editor, so a document written in
+    /// it travels; a fragment that resolves only here is a link the
+    /// author ships broken everywhere else without ever seeing it fail.
+    /// Being strict is what makes a link that works in edamame a link
+    /// that works, full stop.
+    ///
+    /// Both the in-document `#anchor` path and the cross-file deep link
+    /// resolve through here, so they can't drift.
+    pub(super) fn heading_line_for_fragment(&self, fragment: &str) -> Option<usize> {
+        self.editor.parsed.heading_anchors.get(fragment).copied()
+    }
+
     /// Scroll so `slug`'s heading sits at the top of the viewport.
     /// No-op if the slug isn't in the current document's anchor table.
     /// In editing modes (Rendered / Raw) also moves the cursor onto
     /// the heading so subsequent navigation feels anchored.
     pub(super) fn scroll_to_heading(&mut self, slug: &str, doc_height: usize, doc_width: usize) {
-        let Some(&line_idx) = self.editor.parsed.heading_anchors.get(slug) else {
+        let Some(line_idx) = self.heading_line_for_fragment(slug) else {
             return;
         };
         // Record where we jumped from so `NavigateBack` returns to the
@@ -141,7 +161,12 @@ impl App {
     /// editing modes also move the cursor onto that line's first source
     /// byte so subsequent edits operate there.  Does NOT record nav
     /// history — callers push the origin first.
-    fn scroll_to_rendered_line(&mut self, line_idx: usize, doc_height: usize, doc_width: usize) {
+    pub(super) fn scroll_to_rendered_line(
+        &mut self,
+        line_idx: usize,
+        doc_height: usize,
+        doc_width: usize,
+    ) {
         self.editor.scroll = self.editor.parsed.visual_rows_before(line_idx, doc_width);
         if self.editor.mode != Mode::Preview {
             if let Some(byte) = self
@@ -231,19 +256,94 @@ impl App {
         None
     }
 
+    /// Apply the `#section` the command line named
+    /// (`edamame notes.md#setup`), then clear it so it happens once.
+    ///
+    /// It runs from the first frame's `prepare_viewport` rather than
+    /// from `App::new` for the same reason the update notice does: the
+    /// jump needs the document's live dimensions, and nothing knows
+    /// those until a frame has been measured.  No nav entry is recorded
+    /// — there is no earlier position in this session to go back to.
+    ///
+    /// Like a deep link, a section that resolves to nothing is reported
+    /// on the hint line rather than silently ignored.
+    pub(super) fn apply_startup_anchor(&mut self, doc_height: usize, doc_width: usize) {
+        let Some(fragment) = self.startup_anchor.take() else {
+            return;
+        };
+        match self.heading_line_for_fragment(&fragment) {
+            Some(line_idx) => self.scroll_to_rendered_line(line_idx, doc_height, doc_width),
+            None => self.flash(
+                format!("No section '#{fragment}' in this document"),
+                MessageKind::Info,
+            ),
+        }
+        self.needs_draw = true;
+    }
+
     /// Push the current (file, scroll, cursor, mode) onto `nav_back`
     /// and load `path` into the editor.  Clears `nav_forward` to match
-    /// browser semantics.
-    pub(super) fn navigate_to_file(&mut self, path: PathBuf) {
+    /// browser semantics.  Returns whether the file actually loaded.
+    pub(super) fn navigate_to_file(&mut self, path: PathBuf) -> bool {
         let entry = self.current_file_entry();
         if let Err(err) = self.load_file_into_editor(path.clone()) {
             tracing::warn!(target: "link", path = %path.display(), error = %err, "failed to load linked file");
-            return;
+            return false;
         }
         if let Some(e) = entry {
             self.nav_back.push(e);
         }
         self.nav_forward.clear();
+        true
+    }
+
+    /// [`App::navigate_to_file`] plus the deep-link half: once the file
+    /// is loaded, scroll to the heading `fragment` names.
+    ///
+    /// The jump records *no* in-document history entry — unlike
+    /// [`App::scroll_to_heading`], which is a jump *within* a document.
+    /// `navigate_to_file` already pushed the origin as a file entry, so
+    /// one `NavigateBack` returns the reader to the link they followed
+    /// rather than to the top of a document they never saw.
+    ///
+    /// A fragment naming no heading in the loaded document leaves the
+    /// reader at the top of it and says so on the hint line: the file
+    /// opened, so silently ignoring the second half of the link would
+    /// read as edamame having ignored the anchor rather than the
+    /// document having drifted away from it.
+    ///
+    /// Returns whether the file loaded — and with it, whether this call
+    /// has taken ownership of the viewport.  A caller that would
+    /// otherwise re-assert cursor visibility (the dirty guard) must skip
+    /// doing so on `true`: a freshly loaded editor starts in
+    /// `Mode::Preview`, where the fragment jump deliberately moves
+    /// `scroll` without moving the cursor, so an `ensure_cursor_visible`
+    /// on top of it drags the reader straight back to line 0.
+    pub(super) fn navigate_to_file_at(
+        &mut self,
+        path: PathBuf,
+        fragment: Option<String>,
+        doc_height: usize,
+        doc_width: usize,
+    ) -> bool {
+        if !self.navigate_to_file(path) {
+            return false;
+        }
+        let Some(fragment) = fragment else {
+            return true;
+        };
+        // The new editor was built at a default viewport width; the
+        // anchor table and the scroll arithmetic below both want the
+        // live one.
+        self.editor.set_viewport_width(doc_width);
+        match self.heading_line_for_fragment(&fragment) {
+            Some(line_idx) => self.scroll_to_rendered_line(line_idx, doc_height, doc_width),
+            None => self.flash(
+                format!("No section '#{fragment}' in this document"),
+                MessageKind::Info,
+            ),
+        }
+        true
     }
 
     /// Replace the editor's buffer with the contents of `path` and
@@ -366,7 +466,7 @@ impl App {
             // Dirty guard path: restore the popped entry onto the back
             // stack (so Cancel is a true no-op) and prompt the user.
             self.nav_back.push(dest);
-            self.open_dirty_guard(target);
+            self.open_dirty_guard(target, None);
             return;
         }
         self.navigate_to_entry(dest, doc_height, doc_width, /*forward=*/ false);
@@ -378,7 +478,7 @@ impl App {
         };
         if let Some(target) = self.cross_file_dirty_target(&dest) {
             self.nav_forward.push(dest);
-            self.open_dirty_guard(target);
+            self.open_dirty_guard(target, None);
             return;
         }
         self.navigate_to_entry(dest, doc_height, doc_width, /*forward=*/ true);
@@ -463,22 +563,28 @@ impl App {
 
     /// Show the three-button `Save / Discard / Cancel` modal for the
     /// pending link-follow destination.  Caller supplies the resolved
-    /// destination path.
-    pub(super) fn open_dirty_guard(&mut self, pending: PathBuf) {
+    /// destination path, plus the deep link's `#fragment` when the link
+    /// carried one — the guard has to carry it across the modal's
+    /// lifetime, or answering it drops the reader at the top of the
+    /// target document.
+    pub(super) fn open_dirty_guard(&mut self, pending: PathBuf, fragment: Option<String>) {
         let display = self
             .file_path
             .as_deref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "current file".to_owned());
-        self.modal_stack
-            .push(Box::new(modal::DirtyGuardModal::new(&display, pending)));
+        self.modal_stack.push(Box::new(modal::DirtyGuardModal::new(
+            &display, pending, fragment,
+        )));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::io::Write;
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
     use crate::app::modal::{
@@ -646,6 +752,199 @@ mod tests {
     }
 
     // ── Per-document media prompts (issue #30) ────────────────────────────
+
+    /// The bug in issue #38: a `file.md#section` link classified as a
+    /// non-Markdown local file (its "extension" was
+    /// `md#section`), so it went to the OS opener, which failed.
+    #[test]
+    fn a_deep_link_opens_the_file_in_editor_and_lands_on_the_section() {
+        let target_src =
+            "# Top\n\n".to_string() + &"filler\n\n".repeat(30) + "## Deep Section\n\nEnd.\n";
+        let (_f, path) = md_file(&target_src);
+        let mut app = app_with_buffer("Link here.\n", 0);
+
+        let url = format!("{}#deep-section", path.display());
+        app.follow_link(LinkTarget::parse(&url, None), H, W);
+
+        assert_eq!(
+            app.file_path.as_deref(),
+            Some(path.as_path()),
+            "the link must load in-editor, not hand off to the OS opener"
+        );
+        assert!(
+            app.editor.scroll > 0,
+            "the fragment must scroll to its heading, not stay at the top"
+        );
+    }
+
+    /// The dirty guard sits between a deep link and its destination, so
+    /// the fragment has to survive not just the modal's own state but
+    /// the close callback that resumes the navigation — which used to
+    /// re-assert cursor visibility on the *new* document and, because a
+    /// freshly loaded editor starts in `Mode::Preview` with its cursor
+    /// at byte 0, scrolled straight back off the section it had just
+    /// landed on.  Driven through `dispatch_modal_key` rather than by
+    /// replaying the callback, so the button routing is covered too.
+    #[test]
+    fn a_deep_link_answered_through_the_dirty_guard_still_lands_on_the_section() {
+        for (button, keys) in [
+            ("Discard", vec![KeyCode::Right, KeyCode::Enter]),
+            ("Save", vec![KeyCode::Enter]),
+        ] {
+            let target_src =
+                "# Top\n\n".to_string() + &"filler\n\n".repeat(30) + "## Deep Section\n\nEnd.\n";
+            let (_f, path) = md_file(&target_src);
+            let (_origin_f, origin) = md_file("Link here.\n");
+
+            // Load the origin from disk so the buffer carries a path —
+            // the Save arm branches on that, and without one it detours
+            // through the Save-as modal instead.
+            let mut app = app_with_buffer("Link here.\n", 0);
+            app.load_file_into_editor(origin.clone())
+                .expect("load origin");
+            app.editor.dirty = true;
+            app.last_doc_height = H;
+            app.last_doc_width = W;
+
+            let url = format!("{}#deep-section", path.display());
+            app.follow_link(LinkTarget::parse(&url, None), H, W);
+            assert!(
+                app.modal_stack.contains::<modal::DirtyGuardModal>(),
+                "{button}: a dirty buffer must route the deep link through the guard"
+            );
+            assert_eq!(
+                app.file_path.as_deref(),
+                Some(origin.as_path()),
+                "{button}: the guard must not navigate before it is answered"
+            );
+
+            for code in keys {
+                app.dispatch_modal_key(KeyEvent::new(code, KeyModifiers::NONE), H, W);
+            }
+
+            assert!(
+                !app.modal_stack.contains::<modal::DirtyGuardModal>(),
+                "{button}: answering the guard closes it"
+            );
+            assert_eq!(
+                app.file_path.as_deref(),
+                Some(path.as_path()),
+                "{button}: the pending destination must load"
+            );
+            assert!(
+                app.editor.scroll > 0,
+                "{button}: the fragment must survive the guard — landed at the top instead"
+            );
+            assert_eq!(
+                app.heading_line_for_fragment("deep-section")
+                    .map(|l| app.editor.parsed.visual_rows_before(l, W)),
+                Some(app.editor.scroll),
+                "{button}: the viewport must sit on the linked heading"
+            );
+        }
+    }
+
+    #[test]
+    fn a_deep_link_records_one_file_entry_so_back_returns_to_the_link() {
+        let target_src = "# Top\n\n".to_string() + &"filler\n\n".repeat(30) + "## Deep\n";
+        let (_f, path) = md_file(&target_src);
+        let (_origin_f, origin) = md_file("Link here.\n");
+        let mut app = app_with_buffer("Link here.\n", 0);
+        app.file_path = Some(origin.clone());
+
+        let url = format!("{}#deep", path.display());
+        app.follow_link(LinkTarget::parse(&url, None), H, W);
+        assert_eq!(
+            app.nav_back.len(),
+            1,
+            "the jump within the freshly-loaded document must not record a second entry"
+        );
+
+        app.navigate_back(H, W);
+        assert_eq!(app.file_path.as_deref(), Some(origin.as_path()));
+    }
+
+    #[test]
+    fn a_deep_link_whose_section_is_missing_opens_the_file_and_says_so() {
+        let (_f, path) = md_file("# Top\n\nProse.\n");
+        let mut app = app_with_buffer("Link here.\n", 0);
+
+        let url = format!("{}#no-such-section", path.display());
+        app.follow_link(LinkTarget::parse(&url, None), H, W);
+
+        assert_eq!(app.file_path.as_deref(), Some(path.as_path()));
+        assert_eq!(app.editor.scroll, 0);
+        assert!(
+            app.transient
+                .as_ref()
+                .is_some_and(|m| m.text.contains("no-such-section")),
+            "a fragment that resolves to nothing must be reported, not silently dropped"
+        );
+    }
+
+    /// Only the GFM slug resolves.  edamame accepting a hand-written
+    /// `#Getting Started` or `#Getting-Started` would bless a fragment
+    /// that GitHub, a browser, and every other renderer reject — the
+    /// author would ship the broken link without ever seeing it fail
+    /// here.
+    #[test]
+    fn only_the_gfm_slug_resolves_a_fragment() {
+        let src = "Intro.\n\n".to_string() + &"filler\n\n".repeat(30) + "## Getting Started\n";
+        let mut app = app_with_buffer(&src, 0);
+
+        for near_miss in [
+            "Getting Started",
+            "Getting-Started",
+            "getting started",
+            "getting%20started",
+        ] {
+            app.editor.scroll = 0;
+            app.scroll_to_heading(near_miss, H, W);
+            assert_eq!(
+                app.editor.scroll, 0,
+                "'{near_miss}' is not the slug and must not resolve"
+            );
+        }
+
+        app.scroll_to_heading("getting-started", H, W);
+        assert!(app.editor.scroll > 0, "the slug itself must resolve");
+    }
+
+    #[test]
+    fn a_startup_anchor_lands_on_its_section_once() {
+        let src = "Intro.\n\n".to_string() + &"filler\n\n".repeat(30) + "## Setup\n\nEnd.\n";
+        let mut app = app_with_buffer(&src, 0);
+        app.startup_anchor = Some("setup".to_owned());
+
+        app.apply_startup_anchor(H, W);
+        let landed = app.editor.scroll;
+        assert!(landed > 0, "the named section should be scrolled to");
+        assert!(
+            app.nav_back.is_empty(),
+            "there is no earlier position in the session to go back to"
+        );
+        assert_eq!(app.startup_anchor, None, "the jump happens once");
+
+        // A later frame must not re-apply it — the reader may have
+        // scrolled away by then.
+        app.editor.scroll = 0;
+        app.apply_startup_anchor(H, W);
+        assert_eq!(app.editor.scroll, 0);
+    }
+
+    #[test]
+    fn a_startup_anchor_naming_no_heading_says_so() {
+        let mut app = app_with_buffer("# Top\n\nProse.\n", 0);
+        app.startup_anchor = Some("nowhere".to_owned());
+
+        app.apply_startup_anchor(H, W);
+
+        assert_eq!(app.editor.scroll, 0);
+        assert!(app
+            .transient
+            .as_ref()
+            .is_some_and(|m| m.text.contains("nowhere")));
+    }
 
     #[test]
     fn navigating_to_a_document_with_images_queues_the_images_prompt() {

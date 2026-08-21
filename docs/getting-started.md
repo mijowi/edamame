@@ -4,8 +4,11 @@
 
 ```bash
 edamame notes.md          # open a file
+edamame notes.md#setup    # open it at the "Setup" heading
 edamame                   # start with an empty, unnamed buffer
 ```
+
+A `#section` after the file name opens the document scrolled to that heading. This works the same way as a GitHub-style slug, so `## Getting started` is `#getting-started`. If nothing matches, the file still opens and the hint line says so.
 
 There is no in-app file picker (yet). Once you're inside, you get to other documents by following links: put the cursor on a link to another `.md` file and press `Ctrl-Enter` (or click it in Preview). `Alt-←` and `Alt-→` walk back and forward through where you've been, like a browser.
 

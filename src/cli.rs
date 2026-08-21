@@ -17,6 +17,6 @@ pub mod args;
 pub mod doctor;
 pub mod help;
 
-pub use args::{CliError, Invocation, RunOpts};
+pub use args::{split_startup_anchor, CliError, Invocation, RunOpts};
 pub use doctor::run as run_doctor;
 pub use help::{help_text, version_line, USAGE};

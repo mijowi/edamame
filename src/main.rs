@@ -160,6 +160,18 @@ fn run(file_path: Option<PathBuf>, opts: RunOpts) -> Result<()> {
     }
 
     // ── Run the app ───────────────────────────────────────────────
+    // `file.md#section` on the command line opens the file and lands on
+    // that heading — the CLI half of deep linking.  Split here rather
+    // than in `Invocation::parse`: `#` is a legal character in a file
+    // name, so the rule asks the disk before taking one away from a path
+    // (see `cli::split_startup_anchor`), and the parser is pure.
+    let (file_path, startup_anchor) = match file_path {
+        Some(path) => {
+            let (path, anchor) = cli::split_startup_anchor(&path);
+            (Some(path), anchor)
+        }
+        None => (None, None),
+    };
     let mut app = App::new(
         config,
         keybindings,
@@ -167,7 +179,8 @@ fn run(file_path: Option<PathBuf>, opts: RunOpts) -> Result<()> {
         file_path,
         capabilities,
         config_warnings,
-    )?;
+    )?
+    .with_startup_anchor(startup_anchor);
     let run_result = app.run(terminal);
 
     // ── Restore terminal ──────────────────────────────────────────

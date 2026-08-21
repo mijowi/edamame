@@ -1999,7 +1999,18 @@ fn link_target_parse_classifies_inputs_correctly() {
     let base = PathBuf::from("/docs");
     assert_eq!(
         LinkTarget::parse("sibling.md", Some(&base)),
-        LinkTarget::LocalFile(base.join("sibling.md"))
+        LinkTarget::LocalFile {
+            path: base.join("sibling.md"),
+            fragment: None,
+        }
+    );
+    // A deep link splits into the file half and the `#section` half.
+    assert_eq!(
+        LinkTarget::parse("sibling.md#a-section", Some(&base)),
+        LinkTarget::LocalFile {
+            path: base.join("sibling.md"),
+            fragment: Some("a-section".to_owned()),
+        }
     );
 }
 
