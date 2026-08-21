@@ -3183,3 +3183,70 @@ fn click_on_a_yaml_sequence_entry_is_not_shifted_by_the_list_marker_map() {
         st.contents().chars().nth(st.cursor.offset),
     );
 }
+
+/// Regression: a hard break that absorbed the space after it leaves
+/// `next_start > end`, and the click clamp used to run against `next_start`.
+/// A click on the last cell of such a row then resolved to the absorbed
+/// space — a char that owns no cell and paints at the *next* row's column 0
+/// — so the cursor landed a row below the pointer.  `last_col_in_row` clamps
+/// against `end`, the row's real last char.
+#[test]
+fn click_at_the_right_edge_of_an_absorbing_row_stays_on_that_row() {
+    // Width 10 with wide glyphs: row 0 is five 2-cell chars (10 cells) and
+    // swallows the space after them, so rows are [(0,5,6), (6,16,17), …].
+    // Clicking cell 9 falls inside the fifth glyph, whose snap-past rule
+    // yields in-row index 5 — exactly the absorbed space.
+    let text = "一二三四五 klmnopqrst uvwxyzabcd";
+    let width = 10;
+    let rows = edamame::ui::line_render::visual_rows_of_str(text, width);
+    assert_eq!(rows[0], (0, 5, 6), "fixture stopped absorbing its space");
+
+    let mut st = state(text);
+    st.mode = Mode::Raw;
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    mouse_ops::apply(&mut st, click(9, 0), &mut anchor, &[], VP, width);
+
+    let (sub, _) = edamame::ui::line_render::sub_line_of_col(&rows, st.cursor.offset);
+    assert_eq!(
+        sub, 0,
+        "click on row 0 placed the cursor on row {sub} (offset {})",
+        st.cursor.offset,
+    );
+}
+
+/// Regression: a Preview click past the right edge of a *non-last* wrapped
+/// row used to clamp to that row's `end`, which is already the next row's
+/// first char — so the caret appeared one row below the pointer.
+/// `last_col_in_row` clamps one char short of `end` instead, keeping the
+/// selection on the row the user actually clicked.
+#[test]
+fn preview_click_past_the_end_of_a_wrapped_row_stays_on_that_row() {
+    let text = "alpha bravo charlie delta";
+    let width = 12;
+    let rows = edamame::ui::line_render::visual_rows_of_str(text, width);
+    assert_eq!(
+        rows[1],
+        (12, 20, 20),
+        "fixture stopped wrapping as expected"
+    );
+
+    let mut st = state(&format!("{text}\n"));
+    assert_eq!(st.mode, Mode::Preview);
+    let mut anchor: Option<mouse_ops::DragTarget> = None;
+    // Well past the row's text, in the blank area to its right.
+    mouse_ops::apply(&mut st, click(40, 1), &mut anchor, &[], VP, width);
+
+    let vs = st.visual_selection.expect("click sets a Preview selection");
+    assert_eq!(
+        vs.anchor, vs.active,
+        "a plain click is a collapsed selection"
+    );
+    let (line_idx, char_col) = vs.anchor;
+    assert_eq!(line_idx, 0);
+    let (sub, _) = edamame::ui::line_render::sub_line_of_col(&rows, char_col);
+    assert_eq!(
+        sub, 1,
+        "click on row 1 placed the caret on row {sub} (char col {char_col})",
+    );
+    assert_eq!(char_col, 19, "caret should rest on row 1's last char");
+}

@@ -111,12 +111,8 @@ fn char_in_row_at_cell(
     indent: usize,
     is_last_row: bool,
 ) -> usize {
-    let (start, end, next_start) = row;
-    let max_char_in_row = if is_last_row {
-        end
-    } else {
-        next_start.saturating_sub(1).max(start)
-    };
+    let (start, end, _) = row;
+    let max_char_in_row = line_render::last_col_in_row(row, is_last_row);
     let row_chars = text.chars().skip(start).take(end - start);
     let in_row = line_render::char_idx_at_cell_col(row_chars, target_cell, indent);
     (start + in_row).min(max_char_in_row)
@@ -170,16 +166,18 @@ pub(super) fn rendered_click_to_line_col(
     let indent = line_render::compute_hanging_indent(line);
     let rows = line_render::visual_rows_of_chars(&chars, viewport_width.max(1), indent);
     let sub = sub_row.min(rows.len().saturating_sub(1));
-    let (row_start, row_end, _) = rows
+    let row = rows
         .get(sub)
         .copied()
         .unwrap_or((0, chars.len(), chars.len()));
+    let (row_start, _, _) = row;
+    let max_in_row = line_render::last_col_in_row(row, sub + 1 == rows.len());
     // Continuation rows render with `indent` blank cells of left-padding;
     // subtract them so `col=indent` maps to the first content char of the
     // sub-row, matching `paint_preview_selection`'s x_off calculation.
     let row_indent = if sub == 0 { 0 } else { indent };
     let local_col = col.saturating_sub(row_indent);
-    let char_col = (row_start + local_col).min(row_end);
+    let char_col = (row_start + local_col).min(max_in_row);
     Some((idx, char_col))
 }
 
@@ -318,13 +316,10 @@ pub fn rendered_sub_line_to_offset(
     if state.parsed.is_mermaid_block(block.idx) || revealed_cursor_line {
         let (rows, indent) = revealed_raw_rows(line_text, viewport_width);
         let sub = sub_row_within_line.min(rows.len().saturating_sub(1));
-        let (start, end, next_start) = rows.get(sub).copied().unwrap_or((0, 0, 0));
+        let row = rows.get(sub).copied().unwrap_or((0, 0, 0));
+        let (start, end, _) = row;
         let is_last_row = sub + 1 == rows.len();
-        let max_in_row = if is_last_row {
-            end
-        } else {
-            next_start.saturating_sub(1).max(start)
-        };
+        let max_in_row = line_render::last_col_in_row(row, is_last_row);
         // Continuation rows are painted `indent` cells to the right; the
         // first row is flush.  Mirror `render_line`'s x-offset so a click
         // maps to the char actually under the pointer.
@@ -642,14 +637,11 @@ fn click_to_rendered_char_idx(
     let viewport = viewport_width.max(1);
     let rows = line_render::visual_rows_of_chars(rendered_chars, viewport, indent);
     let sub = sub_row_within_line.min(rows.len().saturating_sub(1));
-    let (start, end, next_start) = rows.get(sub).copied().unwrap_or((0, 0, 0));
+    let row = rows.get(sub).copied().unwrap_or((0, 0, 0));
+    let (start, end, _) = row;
     let row_indent = if sub == 0 { 0 } else { indent };
     let is_last_row = sub + 1 == rows.len();
-    let max_in_row = if is_last_row {
-        end
-    } else {
-        next_start.saturating_sub(1).max(start)
-    };
+    let max_in_row = line_render::last_col_in_row(row, is_last_row);
     let row_chars = rendered_chars
         .iter()
         .skip(start)
