@@ -249,8 +249,12 @@ fn wrap_rows_for_text(text: &str, col_width: usize, indent: usize) -> Vec<(usize
 ///
 /// Wide chars (CJK, emoji) are handled via the snap-past rule: a target
 /// cell that lands inside a wide glyph places the cursor *after* the glyph
-/// rather than splitting it.  For non-last rows, the cursor is kept off the
-/// wrap boundary at `next_start` so it stays visually on this row.  When
+/// rather than splitting it.  For non-last rows, the cursor is clamped by
+/// `line_render::last_col_in_row` — which measures against the row's `end`,
+/// never its `next_start` — so it stays visually on this row.  (Clamping to
+/// `next_start - 1` would land it on a space the break absorbed, a char that
+/// owns no cell and paints at the *next* row's column 0; see that helper.)
+/// When
 /// `indent > 0` (a continuation row of a wrapped list item), the indent
 /// area is a forbidden zone — clicks inside it snap forward to the row's
 /// first content char.
@@ -261,12 +265,8 @@ fn raw_col_for_visual_cells(
     is_last_row: bool,
     indent: usize,
 ) -> usize {
-    let (start, end, next_start) = row;
-    let max_char_in_row = if is_last_row {
-        end
-    } else {
-        next_start.saturating_sub(1).max(start)
-    };
+    let (start, end, _) = row;
+    let max_char_in_row = crate::ui::line_render::last_col_in_row(row, is_last_row);
     let row_chars = text.chars().skip(start).take(end - start);
     let in_row_idx = crate::ui::line_render::char_idx_at_cell_col(row_chars, target_cell, indent);
     let absolute = start + in_row_idx;

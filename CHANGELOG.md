@@ -8,6 +8,10 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ## [Unreleased]
 
+### Fixed
+
+- Improved line wrapping. Wraps no longer splits on contractions, decimals, times, file names, emojis, opening brackets or quotes, and a wrapped line no longer can start with a space.
+
 ## [0.1.1] - 2026-08-18
 
 ### Added

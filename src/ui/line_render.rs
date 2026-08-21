@@ -1,4 +1,5 @@
 use ratatui::{buffer::Buffer as TuiBuf, layout::Rect, style::Style, text::Line};
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
 /// Display width of `ch` in terminal cells.  Wide chars (CJK, most emoji)
@@ -302,6 +303,20 @@ fn render_line_core(
         let cur_abs_y = area.y + cur_visual;
         let row_indent = if row_idx == 0 { 0 } else { effective_indent };
         let row_prefix: &[(char, Style)] = if row_idx == 0 { &[] } else { &cont_prefix };
+        // A space the previous row's break absorbed owns no cell, so the
+        // content loop would never paint a cursor resting on it.  Show it on
+        // this row's first char — the same place `sub_line_of_col` reports.
+        let row_override = match (
+            row_idx.checked_sub(1).and_then(|p| rows.get(p)),
+            cursor_col_override,
+        ) {
+            (Some(&(_, prev_end, prev_next)), Some((col, style)))
+                if col >= prev_end && col < prev_next =>
+            {
+                Some((start, style))
+            }
+            _ => cursor_col_override,
+        };
         if let Some(cell) = paint_row(
             &chars,
             start,
@@ -313,7 +328,7 @@ fn render_line_core(
             buf,
             cur_abs_y,
             line_style,
-            cursor_col_override,
+            row_override,
         ) {
             cursor_cell = Some(cell);
         }
@@ -430,6 +445,176 @@ fn paint_row(
     cursor_cell
 }
 
+/// Where the row after one ending at `end` begins.
+///
+/// Normally `end` — but when a lone space sits right at the break it would
+/// open the next row as what reads like accidental indentation, so the break
+/// absorbs it and the space belongs to no row at all (`next_start > end`;
+/// see the row-tuple contract on `visual_rows_of_chars`).
+///
+/// Most soft breaks are already past their space — the break char *is* the
+/// space, and it ends the row invisibly.  The ones that aren't are the reason
+/// this is applied to every arm rather than only to the hard break: a row may
+/// also end on a `.`, a `)` or an emoji cluster with the sentence's space
+/// still to come.
+///
+/// Two spaces are never absorbed — interior whitespace is content
+/// (`visual_rows_preserves_interior_whitespace_across_wrap`) — and neither is
+/// a trailing one, which would leave the char with no following row to hold
+/// the cursor.
+fn absorbed_next_start(chars: &[(char, Style)], end: usize) -> usize {
+    let lone_space = chars.get(end).is_some_and(|(c, _)| *c == ' ')
+        && end + 1 < chars.len()
+        && chars[end + 1].0 != ' ';
+    if lone_space {
+        end + 1
+    } else {
+        end
+    }
+}
+
+// ── Grapheme clusters ─────────────────────────────────────────────────────
+
+/// Char indices in `chars` at which a grapheme cluster *starts*, as a mask
+/// over `0..=chars.len()` (the past-the-end index is always a boundary).
+///
+/// A row must never end mid-cluster: the terminal draws a cluster as one
+/// glyph, so splitting `👨\u{200d}👩\u{200d}👧\u{200d}👦` across two rows
+/// leaves a partial family on each — which is exactly what the wrap did
+/// before, since it reasoned in `char`s and a ZWJ is a perfectly ordinary
+/// break candidate under "anything non-alphanumeric".
+///
+/// Returns `None` when every char stands alone, which is the common case:
+/// ASCII has no multi-char clusters (`\r\n` aside, and a line has already
+/// been split on `\n`).  The fast path matters because this function sits on
+/// the per-keystroke navigation path as well as the paint path — segmenting
+/// allocates, so plain text must not pay for it.
+fn cluster_starts(chars: &[(char, Style)]) -> Option<Vec<bool>> {
+    if chars.iter().all(|(ch, _)| ch.is_ascii()) {
+        return None;
+    }
+    let text: String = chars.iter().map(|(ch, _)| *ch).collect();
+    // Every consumer of the wrap layout addresses text by char index, so walk
+    // the clusters and carry a running char count rather than materialising a
+    // byte→char table — the segmenter's byte offsets are never needed.
+    let mut starts = vec![false; chars.len() + 1];
+    let mut char_idx = 0usize;
+    for cluster in UnicodeSegmentation::graphemes(text.as_str(), true) {
+        starts[char_idx] = true;
+        char_idx += cluster.chars().count();
+    }
+    starts[chars.len()] = true;
+    Some(starts)
+}
+
+/// Is char index `i` a grapheme-cluster boundary?  `None` (the all-ASCII
+/// fast path) means every index is one.
+fn is_cluster_boundary(clusters: Option<&[bool]>, i: usize) -> bool {
+    clusters.is_none_or(|starts| starts.get(i).copied().unwrap_or(true))
+}
+
+/// Pull `end` back to the nearest cluster boundary at or before it, so a
+/// hard break can't sever a cluster.  Never returns `start` itself — a row
+/// holding a single cluster wider than the viewport must still make
+/// progress, and the renderer clips the overflow.
+fn snap_to_cluster_boundary(clusters: Option<&[bool]>, start: usize, end: usize) -> usize {
+    let mut snapped = end;
+    while snapped > start && !is_cluster_boundary(clusters, snapped) {
+        snapped -= 1;
+    }
+    if snapped == start {
+        end
+    } else {
+        snapped
+    }
+}
+
+// ── Wrap break candidates ─────────────────────────────────────────────────
+
+/// Characters that never carry a wrap break even though they aren't
+/// alphanumeric.  A no-break space is *defined* by not being a wrap point,
+/// and code blocks pad their blank lines with U+00A0 (see the NBSP note in
+/// `Renderer::render_code_block`) — breaking there would split padding the
+/// renderer emits precisely to keep a row intact.
+fn is_no_break_char(ch: char) -> bool {
+    matches!(ch, '\u{a0}' | '\u{202f}' | '\u{2060}' | '\u{feff}')
+}
+
+/// Unambiguous opening delimiters.  Breaking *after* one strands it alone at
+/// the row's right edge, away from the phrase it opens.
+fn is_opening_delimiter(ch: char) -> bool {
+    matches!(
+        ch,
+        '(' | '[' | '{' | '\u{201c}' | '\u{2018}' | '\u{ab}' | '\u{bf}' | '\u{a1}'
+    )
+}
+
+/// Punctuation that binds a token together when it sits *between* two
+/// alphanumerics: contractions and possessives (`they're`, `it’s`), decimals
+/// and thousands separators (`3.14`, `1,000`), clock times (`12:30`), file
+/// names (`file.md`) and identifiers (`snake_case`).  Outside that sandwich
+/// the same character is an ordinary break point, so a URL still breaks
+/// after `//`, `?`, `#` and `&`.
+///
+/// `/` is deliberately **not** in the set.  It would keep `and/or` whole, but
+/// it also strips every break point out of a URL path — the `/` in
+/// `repo/blob/main` is between two alphanumerics just like the one in
+/// `and/or` — leaving a long link to hard-break mid-segment at whatever
+/// column the cell budget ran out on.  Links are far more common in Markdown
+/// than `and/or`, and a path that wraps after a `/` reads better than one
+/// severed mid-word, so the slash stays an ordinary break.
+fn is_intra_word_punctuation(ch: char) -> bool {
+    matches!(ch, '.' | ',' | ':' | '\'' | '\u{2019}' | '_')
+}
+
+/// May a visual row end with `chars[i]` — i.e. is a wrap break allowed
+/// *after* that character?
+///
+/// The base rule is "anything non-alphanumeric", with three refinements that
+/// keep tokens and punctuation pairs intact, over a grapheme-cluster gate
+/// that no refinement can override.  Both neighbours matter, so this takes
+/// the whole slice rather than a lone `char`.
+fn is_break_after(chars: &[(char, Style)], i: usize, clusters: Option<&[bool]>) -> bool {
+    // A break after `i` is only a break at all when the next char opens a new
+    // cluster; otherwise `i` sits inside one (a ZWJ, a combining mark, a
+    // regional-indicator pair) and the row would end mid-glyph.
+    if !is_cluster_boundary(clusters, i + 1) {
+        return false;
+    }
+    let ch = chars[i].0;
+    if ch.is_alphanumeric() || is_no_break_char(ch) {
+        return false;
+    }
+    let prev_alnum = i > 0 && chars[i - 1].0.is_alphanumeric();
+    let next_alnum = chars.get(i + 1).is_some_and(|(c, _)| c.is_alphanumeric());
+
+    if is_opening_delimiter(ch) && next_alnum {
+        return false;
+    }
+    // `"` and `'` are ambiguous: opening when a word follows and none
+    // precedes, closing otherwise (`'` between two words is an apostrophe,
+    // covered by the intra-word rule below).
+    if matches!(ch, '"' | '\'') && next_alnum && !prev_alnum {
+        return false;
+    }
+    if is_intra_word_punctuation(ch) && prev_alnum && next_alnum {
+        return false;
+    }
+    true
+}
+
+/// Does the row `chars[start..=break_at]` end with a one-letter word — an
+/// `a` or `I` marooned at the right edge, away from the noun it belongs to?
+/// Reported only when there is text before it on the row, since moving the
+/// row's *first* word down would leave the row empty.
+fn ends_with_lone_word(chars: &[(char, Style)], start: usize, break_at: usize) -> bool {
+    if !chars[break_at].0.is_whitespace() || break_at < start + 2 {
+        return false;
+    }
+    let word = break_at - 1;
+    chars[word].0.is_alphanumeric() && word > start && chars[word - 1].0.is_whitespace()
+}
+
 /// Compute the list of visual rows produced by wrapping `chars` at `width`
 /// (in terminal cells) with a hanging `indent`.  When `indent > 0`, the
 /// first row uses the full `width` and every continuation row uses
@@ -437,8 +622,12 @@ fn paint_row(
 ///
 /// Returns a list of `(start, end, next_start)` tuples, where:
 /// - `chars[start..end]` is the content placed on that visual row
-/// - `next_start` is the index at which the next visual row begins (equal
-///   to `end` — whitespace is never consumed across the break)
+/// - `next_start` is the index at which the next visual row begins.  It is
+///   normally equal to `end`; it is `end + 1` when the break absorbed the
+///   single space that followed a mid-word hard break, so that space opens
+///   no row of its own.  Chars in `end..next_start` therefore have no cell —
+///   `sub_line_of_col` and the painter both show a cursor resting there at
+///   the start of the following row.
 ///
 /// `width` and `indent` are cell counts; the returned indices are char
 /// indices.  `render_line_with_cursor` calls this directly to drive its
@@ -457,6 +646,10 @@ pub fn visual_rows_of_chars(
     // If the indent leaves no room on continuation rows, ignore it — matches
     // `render_line_with_cursor`'s fallback so wrap-row counts stay in sync.
     let indent = if indent + 1 >= width { 0 } else { indent };
+
+    // One segmentation pass for the whole line, shared by every row.
+    let clusters = cluster_starts(chars);
+    let clusters = clusters.as_deref();
 
     let mut start = 0;
     let mut row_idx = 0usize;
@@ -477,21 +670,33 @@ pub fn visual_rows_of_chars(
         let (row_end, next_start) = if n_chars >= remaining {
             (chars.len(), chars.len())
         } else {
-            let window_end = start + n_chars;
-            let break_rel = chars[start..window_end]
-                .iter()
-                .enumerate()
+            // The cell budget lands wherever it lands; pull it back so a
+            // hard break falls between clusters rather than inside one.
+            let window_end = snap_to_cluster_boundary(clusters, start, start + n_chars);
+            let break_at = (start..window_end)
                 .rev()
-                .find(|(_, (ch, _))| !ch.is_alphanumeric())
-                .map(|(i, _)| i);
+                .find(|&i| is_break_after(chars, i, clusters));
 
-            match break_rel {
+            let end = match break_at {
                 Some(bp) => {
-                    let end = start + bp + 1;
-                    (end, end)
+                    // A break that strands a one-letter word at the row edge
+                    // backs up to the break before that word, carrying it
+                    // down to sit with the noun it belongs to.
+                    let bp = if ends_with_lone_word(chars, start, bp) {
+                        (start..bp - 1)
+                            .rev()
+                            .find(|&i| is_break_after(chars, i, clusters))
+                            .unwrap_or(bp)
+                    } else {
+                        bp
+                    };
+                    bp + 1
                 }
-                None => (window_end, window_end),
-            }
+                // Nothing in the window may carry a break — a single long
+                // word, or one cluster wider than the row.
+                None => window_end,
+            };
+            (end, absorbed_next_start(chars, end))
         };
 
         rows.push((start, row_end, next_start));
@@ -661,6 +866,32 @@ fn leading_bar_prefix(chars: &[(char, Style)]) -> Vec<(char, Style)> {
     out
 }
 
+/// The highest char column of the logical line that the cursor may occupy
+/// while still rendering on visual row `row`.
+///
+/// The *last* row owns the one-past-the-end slot, so an end-of-line cursor
+/// can sit on its trailing blank cell.  Every other row must stop one char
+/// short of `end`: column `end` is already the next row's first char, and it
+/// renders at that row's column 0 — a cursor clamped there looks like it
+/// never left the row below, which makes Up appear stuck.
+///
+/// **Clamp against `end`, never against `next_start`.** The two are equal
+/// for an ordinary wrap, but a hard break that absorbed the following space
+/// leaves `next_start > end` (see `visual_rows_of_chars`), and the chars in
+/// between own no cell at all — clamping to `next_start - 1` lands the
+/// cursor on the absorbed space, which paints at the next row's column 0.
+/// That is the same failure the last-row/other-row split exists to prevent,
+/// so this is the single derivation all four click- and navigation-mapping
+/// sites share.
+pub fn last_col_in_row(row: (usize, usize, usize), is_last_row: bool) -> usize {
+    let (start, end, _) = row;
+    if is_last_row {
+        end
+    } else {
+        end.saturating_sub(1).max(start)
+    }
+}
+
 /// Given the visual-row layout of a line and a raw char column, return
 /// `(sub_line_idx, visual_col)` — which visual row the char is on, and its
 /// visual column within that row (0-based).
@@ -670,6 +901,12 @@ fn leading_bar_prefix(chars: &[(char, Style)]) -> Vec<(char, Style)> {
 pub fn sub_line_of_col(rows: &[(usize, usize, usize)], raw_col: usize) -> (usize, usize) {
     for (i, &(s, e, n)) in rows.iter().enumerate() {
         if raw_col < n {
+            // A space absorbed by the wrap (`end..next_start`) has no cell on
+            // this row.  Report the next row's first column instead of this
+            // row's phantom one past the edge, so the cursor stays visible.
+            if raw_col >= e && i + 1 < rows.len() {
+                return (i + 1, 0);
+            }
             let row_width = e - s;
             let visual_col = raw_col.saturating_sub(s).min(row_width);
             return (i, visual_col);
@@ -908,6 +1145,235 @@ mod tests {
         assert_eq!(rows[2], (10, 15, 15));
         // Row 3: "b" (index 15..16)
         assert_eq!(rows[3], (15, 16, 16));
+    }
+
+    // ── Break-candidate refinements ───────────────────────────────
+
+    #[test]
+    fn contraction_apostrophe_is_not_a_break_point() {
+        // Width 12 fits "when they'r"; the apostrophe must not be taken as a
+        // break, so the whole word moves down and the row ends at the space.
+        let rows = visual_rows_of_str("when they're here", 12);
+        assert_eq!(rows[0], (0, 5, 5)); // "when "
+        assert_eq!(rows[1], (5, 17, 17)); // "they're here"
+    }
+
+    #[test]
+    fn smart_apostrophe_is_not_a_break_point() {
+        // Rendered text carries U+2019, not ASCII \', because smart
+        // punctuation is enabled in the parser.
+        let rows = visual_rows_of_str("when they\u{2019}re here", 12);
+        assert_eq!(rows[0], (0, 5, 5));
+        assert_eq!(rows[1], (5, 17, 17));
+    }
+
+    #[test]
+    fn intra_word_punctuation_keeps_tokens_whole() {
+        for text in ["value 3.14159 x", "count 1,000,00 x", "meet 12:30:00 x"] {
+            let rows = visual_rows_of_str(text, 12);
+            assert_eq!(
+                rows[0].1,
+                text.find(' ').unwrap() + 1,
+                "{text} broke inside its token"
+            );
+        }
+    }
+
+    #[test]
+    fn url_still_breaks_after_the_scheme_slashes() {
+        // The intra-word rule needs alphanumerics on both sides, so `//`
+        // stays a break point even though `example.com` no longer is.
+        let rows = visual_rows_of_str("see https://example.com/x", 20);
+        assert_eq!(rows[0], (0, 12, 12)); // "see https://"
+    }
+
+    #[test]
+    fn a_url_path_breaks_at_a_slash_rather_than_mid_segment() {
+        // `/` is not intra-word punctuation, so a long path still has break
+        // points inside it.  With `/` in that set every slash here sits
+        // between two alphanumerics, the whole path becomes one unbreakable
+        // token, and the row hard-breaks at whatever column the cell budget
+        // happened to run out on.
+        let text = "at github.com/user/repo/blob/main/x";
+        let rows = visual_rows_of_str(text, 20);
+        let chars: Vec<char> = text.chars().collect();
+        for &(start, end, _) in &rows {
+            let row: String = chars[start..end].iter().collect();
+            assert!(
+                row.ends_with('/') || end == chars.len(),
+                "row {row:?} broke mid-segment instead of after a slash"
+            );
+        }
+    }
+
+    #[test]
+    fn no_break_after_an_opening_delimiter() {
+        // Width 10 fits `a note (rem`; breaking after `(` would leave the
+        // paren hanging alone at the row edge.
+        let rows = visual_rows_of_str("a note (remark) here", 11);
+        assert_eq!(rows[0], (0, 7, 7)); // "a note "
+    }
+
+    #[test]
+    fn nbsp_is_never_a_break_point() {
+        let text = "aa\u{a0}bb cc";
+        let rows = visual_rows_of_str(text, 5);
+        // The NBSP is not a candidate, so the row hard-breaks instead.
+        assert_eq!(rows[0].1, 5);
+    }
+
+    #[test]
+    fn one_letter_word_is_carried_down_to_its_noun() {
+        // Width 14 fits "tell them a "; the lone "a" moves down with "story".
+        let rows = visual_rows_of_str("tell them a story", 14);
+        assert_eq!(rows[0], (0, 10, 10)); // "tell them "
+        assert_eq!(rows[1], (10, 17, 17)); // "a story"
+    }
+
+    #[test]
+    fn a_lone_word_starting_the_row_is_left_alone() {
+        // Nothing precedes it on the row, so backing up would empty the row.
+        let rows = visual_rows_of_str("a xyzzyplugh", 3);
+        assert_eq!(rows[0], (0, 2, 2)); // "a "
+    }
+
+    // ── Absorbed wrap space ───────────────────────────────────────
+
+    #[test]
+    fn hard_break_absorbs_the_following_space() {
+        // "abcdefghij" fills the row exactly; the space after it must not
+        // open the next row as visible indentation.
+        let rows = visual_rows_of_str("abcdefghij klm", 10);
+        assert_eq!(rows[0], (0, 10, 11));
+        assert_eq!(rows[1], (11, 14, 14));
+    }
+
+    #[test]
+    fn absorbed_space_maps_the_cursor_to_the_next_row_start() {
+        let rows = visual_rows_of_str("abcdefghij klm", 10);
+        assert_eq!(sub_line_of_col(&rows, 10), (1, 0));
+        assert_eq!(sub_line_of_col(&rows, 11), (1, 0));
+    }
+
+    #[test]
+    fn a_run_of_spaces_at_a_hard_break_is_preserved() {
+        let rows = visual_rows_of_str("abcdefghij  klm", 10);
+        assert_eq!(rows[0], (0, 10, 10));
+    }
+
+    #[test]
+    fn a_trailing_space_at_a_hard_break_is_not_absorbed() {
+        // Nothing follows it, so absorbing would drop the char entirely and
+        // leave no row for the cursor.
+        let rows = visual_rows_of_str("abcdefghij ", 10);
+        assert_eq!(rows[0], (0, 10, 10));
+        assert_eq!(rows[1], (10, 11, 11));
+    }
+
+    #[test]
+    fn last_col_in_row_clamps_against_end_not_next_start() {
+        let rows = visual_rows_of_str("abcdefghij klm", 10);
+        assert_eq!(rows[0], (0, 10, 11));
+        // Row 0 absorbed the space at char 10, so the cursor's last legal
+        // column there is char 9 — not `next_start - 1`, which *is* the
+        // absorbed space and renders at row 1's column 0.
+        assert_eq!(last_col_in_row(rows[0], false), 9);
+        // The last row owns the one-past-the-end slot for an EOL cursor.
+        assert_eq!(last_col_in_row(rows[1], true), 14);
+        // A single-char row can never be clamped below its own start.
+        assert_eq!(last_col_in_row((7, 8, 8), false), 7);
+    }
+
+    #[test]
+    fn cursor_on_an_absorbed_space_paints_on_the_next_row() {
+        let line = Line::from("abcdefghij klm");
+        let area = Rect::new(0, 0, 10, 3);
+        let mut buf = TuiBuf::empty(area);
+        let style = Style::default().fg(ratatui::style::Color::Red);
+        let (_, cursor) =
+            render_line_reporting_cursor(&line, area, &mut buf, 0, true, Some((10, style)), 0);
+        assert_eq!(cursor, Some((0, 1)));
+    }
+
+    #[test]
+    fn a_soft_break_on_punctuation_absorbs_the_space_after_it() {
+        // The row ends on `.`, so the sentence space is still to come — it
+        // would open the next row as visible indentation.
+        let rows = visual_rows_of_str("abcde. fgh", 6);
+        assert_eq!(rows[0], (0, 6, 7));
+        assert_eq!(rows[1], (7, 10, 10));
+    }
+
+    // ── Grapheme clusters ─────────────────────────────────────────
+
+    #[test]
+    fn a_zwj_sequence_is_never_split_across_rows() {
+        // The family emoji is 7 chars (4 emoji + 3 ZWJ) drawn as one glyph.
+        // The ZWJ used to be an ordinary break candidate — non-alphanumeric —
+        // so the row ended mid-family.
+        let text = "a \u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466} family here";
+        let rows = visual_rows_of_str(text, 8);
+        let chars: Vec<char> = text.chars().collect();
+        for &(start, end, _) in &rows {
+            let row: String = chars[start..end].iter().collect();
+            assert!(
+                !row.starts_with('\u{200d}') && !row.ends_with('\u{200d}'),
+                "row {row:?} ends or starts inside the cluster"
+            );
+        }
+    }
+
+    #[test]
+    fn a_combining_mark_stays_with_its_base_char() {
+        // "e" + U+0301 is one cluster; a break between them would strand the
+        // accent at the head of the next row.
+        let text = "cafe\u{301} au lait";
+        let rows = visual_rows_of_str(text, 5);
+        let chars: Vec<char> = text.chars().collect();
+        for &(_, end, _) in &rows {
+            assert_ne!(
+                chars.get(end),
+                Some(&'\u{301}'),
+                "row ended between the base char and its combining mark"
+            );
+        }
+    }
+
+    #[test]
+    fn a_regional_indicator_pair_stays_whole() {
+        // Two regional indicators form one flag glyph.
+        let text = "go \u{1f1ef}\u{1f1f5} now";
+        let rows = visual_rows_of_str(text, 5);
+        let chars: Vec<char> = text.chars().collect();
+        for &(_, end, _) in &rows {
+            assert_ne!(
+                chars.get(end),
+                Some(&'\u{1f1f5}'),
+                "row ended between the two halves of the flag"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cluster_wider_than_the_row_still_makes_progress() {
+        // Nothing can keep it whole, so the wrap falls back to a hard break
+        // rather than emitting an empty row and looping forever.
+        let text = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+        let rows = visual_rows_of_str(text, 3);
+        assert!(rows.len() > 1);
+        assert!(rows.iter().all(|&(s, e, _)| e > s));
+    }
+
+    #[test]
+    fn ascii_text_takes_the_no_segmentation_fast_path() {
+        // Not a behavior assertion so much as a guard on the fast path's
+        // premise: an all-ASCII line has no multi-char clusters, so the
+        // layout must be identical either way.
+        let chars: Vec<(char, Style)> = "hello world foo bar"
+            .chars()
+            .map(|c| (c, Style::default()))
+            .collect();
+        assert!(cluster_starts(&chars).is_none());
     }
 
     // ── Cell-width awareness ──────────────────────────────────────

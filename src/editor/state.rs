@@ -1582,6 +1582,42 @@ mod tests {
         );
     }
 
+    /// Regression: a hard break that absorbed the space after it leaves
+    /// `next_start > end`, and the clamp used to run against `next_start`.
+    /// That put the cursor on the absorbed space — a char that owns no cell
+    /// and renders at the *next* row's column 0 — so Up appeared not to move
+    /// and then stalled there forever.  `last_col_in_row` clamps against
+    /// `end` instead, which is the row's real last char.
+    #[test]
+    fn move_up_visual_never_lands_on_a_space_absorbed_by_the_wrap() {
+        // Width 10: every row fills exactly and swallows its trailing space,
+        // so rows are [(0,10,11), (11,21,22), (22,32,32)].
+        let text = "abcdefghij klmnopqrst uvwxyzabcd";
+        let width = 10;
+        let mut state = EditorState::new(Buffer::from_str(text), theme());
+        let rows = crate::ui::line_render::visual_rows_of_str(text, width);
+        assert_eq!(rows[1], (11, 21, 22), "fixture stopped absorbing its space");
+
+        // End of the last row, so `preferred_col` is a full row width.
+        state.cursor.offset = text.chars().count();
+        state.cursor.preferred_col = state.current_visual_col(width);
+
+        state.move_up_visual(width);
+        let (sub, _) = crate::ui::line_render::sub_line_of_col(&rows, state.cursor.offset);
+        assert_eq!(
+            sub, 1,
+            "Up from row 2 should render on row 1, not row {sub} (offset {})",
+            state.cursor.offset,
+        );
+
+        let before = state.cursor.offset;
+        state.move_up_visual(width);
+        assert_ne!(
+            state.cursor.offset, before,
+            "Up from row 1 must not stall at offset {before}",
+        );
+    }
+
     /// Regression: pressing Down from a wrapped continuation row of a list
     /// item used to land at content cell `preferred_col` on the next line,
     /// off by the hanging-indent width because `preferred_col` was stored
