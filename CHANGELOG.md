@@ -15,6 +15,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 ### Fixed
 
 - Bold, italic, inline code, highlights, strikethrough and links now keep their styling inside a block quote.
+- In vim mode, the paste shortcut now fills an open `:` or `/` command line, matching a terminal-level paste (⌘V, right-click); before it did nothing at all.
 
 ## [0.1.1] - 2026-08-18
 
