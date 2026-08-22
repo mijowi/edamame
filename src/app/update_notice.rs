@@ -199,7 +199,12 @@ impl App {
     /// Under `--no-config` `Config::save` already declines to write, so
     /// this needs no gate of its own — the session simply re-checks on
     /// the next launch, which is what that flag promises.
-    fn save_update_bookkeeping(&mut self, what: &str) {
+    ///
+    /// `pub(super)` for [`super::post_upgrade`], whose
+    /// `last_version_seen` stamp is the same kind of write for the
+    /// same reasons; one helper so the two can't phrase their failure
+    /// logging differently.
+    pub(super) fn save_update_bookkeeping(&mut self, what: &str) {
         if let Err(e) = self.config.save() {
             tracing::warn!(
                 target: "update_check",

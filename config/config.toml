@@ -64,6 +64,13 @@ appearance = "dark"
 # last_update_check = 0
 # update_notified_for = ""
 
+# The version that last ran. After an upgrade, edamame shows the release
+# notes for the new version once, read from the changelog built into the
+# binary — no network, and unrelated to the update check above. Written by
+# edamame rather than by hand. The "Release notes" button on the About page
+# shows them at any time without touching this.
+# last_version_seen = ""
+
 # Fingerprints of terminals that have already shown the capabilities notice.
 # Dismissing the notice (or completing the welcome modal) appends the current
 # terminal's fingerprint here so it won't fire again. Launching in a new,

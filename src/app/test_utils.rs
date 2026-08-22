@@ -85,6 +85,12 @@ mod theme_downgrade_tests {
             ..Config::default()
         };
         config.editor.show_welcome = show_welcome;
+        // Record the running version so the post-upgrade notice stays
+        // out of the stack these tests are asserting about: an empty
+        // `last_version_seen` with `show_welcome` off is precisely the
+        // "upgraded from a build predating the field" case, and would
+        // put a `PostUpgradeModal` on top.
+        config.editor.last_version_seen = crate::app::update_check::INSTALLED_VERSION.to_owned();
         App::new(
             config,
             KeyBindingOverrides::default(),

@@ -1056,6 +1056,9 @@ mod tests {
         };
         let mut config = Config::default();
         config.editor.show_welcome = false;
+        // …which, with no version recorded, would otherwise raise the
+        // post-upgrade notice over the document this test navigates.
+        config.editor.last_version_seen = crate::app::update_check::INSTALLED_VERSION.to_owned();
         let mut app = App::new(
             config,
             KeyBindingOverrides::default(),

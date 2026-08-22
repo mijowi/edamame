@@ -1,6 +1,6 @@
 //! About edamame popover: bean art, rotating acronym tagline, the
-//! installed version, author credit, and the `[ Check for updates ]` /
-//! `[ View on GitHub ]` buttons.
+//! installed version, author credit, and the `[ Release notes ]` /
+//! `[ Check for updates ]` / `[ View on GitHub ]` buttons.
 //!
 //! It deliberately reports **no** release information of its own.  It
 //! used to fetch the latest release on every first open and show a
@@ -33,9 +33,13 @@ const INSTALLED_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// How long each acronym expansion stays up before rotating.
 const TAGLINE_INTERVAL: Duration = Duration::from_secs(4);
 
-/// Index of `[ Check for updates ]` in `buttons`, named so the button
-/// order and the `resolve` arm that acts on it can't drift apart.
-const CHECK_UPDATES_BUTTON: usize = 0;
+/// Indices into `buttons`, named so the button order and the `resolve`
+/// arms acting on them can't drift apart.  Every button has a name:
+/// the old catch-all `ButtonPressed(_)` arm meant a fourth button
+/// would silently have opened GitHub.
+const RELEASE_NOTES_BUTTON: usize = 0;
+const CHECK_UPDATES_BUTTON: usize = 1;
+const VIEW_ON_GITHUB_BUTTON: usize = 2;
 
 pub struct AboutModal {
     chrome: ModalChrome,
@@ -60,6 +64,10 @@ impl AboutModal {
         Self {
             chrome: ModalChrome::new(ModalKind::Normal, true),
             buttons: vec![
+                // Release notes first: it sits directly under the
+                // installed-version row it describes, and unlike the
+                // other two it answers from the binary itself.
+                ModalButton::new("Release notes"),
                 ModalButton::new("Check for updates"),
                 ModalButton::new("View on GitHub"),
             ],
@@ -82,12 +90,21 @@ impl AboutModal {
         match response {
             ModalResponse::Continue => ModalOutcome::Continue,
             ModalResponse::Cancelled => ModalOutcome::Close,
+            ModalResponse::ButtonPressed(RELEASE_NOTES_BUTTON) => {
+                ModalOutcome::ContinueAnd(Box::new(|app| app.open_post_upgrade_modal()))
+            }
             ModalResponse::ButtonPressed(CHECK_UPDATES_BUTTON) => {
                 ModalOutcome::ContinueAnd(Box::new(|app| app.open_update_modal()))
             }
-            ModalResponse::ButtonPressed(_) => ModalOutcome::ContinueAnd(Box::new(|app| {
-                app.spawn_open_worker(update_check::GITHUB_URL.to_owned());
-            })),
+            ModalResponse::ButtonPressed(VIEW_ON_GITHUB_BUTTON) => {
+                ModalOutcome::ContinueAnd(Box::new(|app| {
+                    app.spawn_open_worker(update_check::GITHUB_URL.to_owned());
+                }))
+            }
+            // No other index exists; a stray press acts on nothing
+            // rather than falling into whichever arm happens to be
+            // last.
+            ModalResponse::ButtonPressed(_) => ModalOutcome::Continue,
         }
     }
 }
@@ -179,17 +196,27 @@ mod tests {
         assert!(app.latest_release.is_none());
     }
 
+    /// Press the button at `index`, from a freshly opened page, and
+    /// run whatever it asked the app to do.  Focus starts on button 0,
+    /// so `index` Tabs get there — spelled out once so a change to the
+    /// button order breaks one helper rather than every test.
+    fn press_button(app: &mut App, index: usize) {
+        let mut modal = AboutModal::new();
+        for _ in 0..index {
+            modal.handle_key(key(KeyCode::Tab), app, 24, 80);
+        }
+        let outcome = modal.handle_key(key(KeyCode::Enter), app, 24, 80);
+        let ModalOutcome::ContinueAnd(action) = outcome else {
+            panic!("expected the About page to stay open");
+        };
+        action(app);
+    }
+
     #[test]
     fn the_check_button_stacks_the_update_modal_over_about() {
         let mut app = make_app();
         app.open_about_modal();
-        let mut modal = AboutModal::new();
-        // Enter activates the focused (first) button.
-        let outcome = modal.handle_key(key(KeyCode::Enter), &mut app, 24, 80);
-        let ModalOutcome::ContinueAnd(action) = outcome else {
-            panic!("expected the About page to stay open");
-        };
-        action(&mut app);
+        press_button(&mut app, CHECK_UPDATES_BUTTON);
         assert!(app.modal_stack.contains::<crate::app::modal::UpdateModal>());
         assert!(
             app.modal_stack.contains::<AboutModal>(),
@@ -198,13 +225,48 @@ mod tests {
     }
 
     #[test]
+    fn the_release_notes_button_stacks_the_post_upgrade_modal_over_about() {
+        let mut app = make_app();
+        app.open_about_modal();
+        press_button(&mut app, RELEASE_NOTES_BUTTON);
+        assert!(app
+            .modal_stack
+            .contains::<crate::app::modal::PostUpgradeModal>());
+        assert!(
+            app.modal_stack.contains::<AboutModal>(),
+            "About stays underneath"
+        );
+    }
+
+    #[test]
+    fn the_release_notes_button_reaches_no_network() {
+        // It answers out of the binary's own changelog; opening it
+        // must not look like an update check.
+        let mut app = make_app();
+        app.open_about_modal();
+        press_button(&mut app, RELEASE_NOTES_BUTTON);
+        assert!(!app.release_check_in_flight);
+        assert!(app.latest_release.is_none());
+    }
+
+    #[test]
     fn enter_on_github_button_keeps_modal_open() {
         let mut app = make_app();
         let mut modal = AboutModal::new();
-        // Move focus off "Check for updates" onto "View on GitHub".
-        modal.handle_key(key(KeyCode::Tab), &mut app, 24, 80);
+        // Move focus along to "View on GitHub".
+        for _ in 0..VIEW_ON_GITHUB_BUTTON {
+            modal.handle_key(key(KeyCode::Tab), &mut app, 24, 80);
+        }
         let outcome = modal.handle_key(key(KeyCode::Enter), &mut app, 24, 80);
         assert!(matches!(outcome, ModalOutcome::ContinueAnd(_)));
+    }
+
+    #[test]
+    fn every_button_index_has_a_named_arm() {
+        // The catch-all that used to sit at the end of `resolve` meant
+        // a new button silently opened GitHub.  Assert the count
+        // matches the named indices instead.
+        assert_eq!(AboutModal::new().buttons.len(), VIEW_ON_GITHUB_BUTTON + 1);
     }
 
     #[test]

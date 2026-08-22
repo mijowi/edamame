@@ -55,6 +55,19 @@ pub struct EditorConfig {
     /// notice.  Bookkeeping written by edamame, not a knob to
     /// hand-edit.
     pub update_notified_for: String,
+    /// The version that last ran, used to show the release notes once
+    /// after an upgrade (`app::post_upgrade`).  Read from the bundled
+    /// `CHANGELOG.md`, so this is unrelated to the release *check*
+    /// above and involves no network.
+    ///
+    /// Empty means no version has been recorded yet, which a fresh
+    /// install and an upgrade from a build predating this field share;
+    /// `show_welcome` is what tells them apart, since only a returning
+    /// user could have turned it off.  Bookkeeping written by edamame,
+    /// not a knob to hand-edit; the About page's `[ Release notes ]`
+    /// button is how the notes are read again, and it touches neither
+    /// this field nor the notice.
+    pub last_version_seen: String,
     /// When true, line numbers are displayed in a left gutter in all three
     /// modes (Preview, Rendered, Raw).  Numbers are right-aligned and styled
     /// with the theme's `line_number` style (derived from `text_muted`).
@@ -187,6 +200,7 @@ impl Default for EditorConfig {
             check_for_updates: true,
             last_update_check: 0,
             update_notified_for: String::new(),
+            last_version_seen: String::new(),
             show_line_numbers: false,
             mouse_scroll_lines: 1,
             transient_ms: 1500,

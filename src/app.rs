@@ -15,6 +15,7 @@ mod frame_timer;
 mod image_dispatch;
 mod nav;
 mod pointer;
+mod post_upgrade;
 mod search;
 mod section_jump;
 mod update_check;
@@ -672,6 +673,19 @@ impl App {
         // pending so the user is never double-prompted.
         let welcome_modal = modal::WelcomeModal::from_state(&capabilities, &config);
         let suppress_legacy_prompts = welcome_modal.is_some();
+        // The one-time post-upgrade notice, read from the bundled
+        // `CHANGELOG.md`.  Unlike the release-check notice this waits
+        // on nothing, so it joins the synchronous ordering below
+        // instead of being parked for `tick_update_notice`.  Only the
+        // *decision* happens here: the matching `last_version_seen`
+        // write is `App::run`'s, because `App::new` must stay
+        // disk-free — `test_utils::make_app` builds an `App` through
+        // it, mostly without a config-isolation guard.  See
+        // `app::post_upgrade`.
+        let post_upgrade_modal = post_upgrade::startup_notice(
+            &config.editor.last_version_seen,
+            config.editor.show_welcome,
+        );
         let config_warning_modal = modal::ConfigWarningModal::from_warnings(&config_warnings);
         let capabilities_notice = if suppress_legacy_prompts {
             None
@@ -723,8 +737,16 @@ impl App {
         // Push the queued startup-time modals onto the stack in
         // reverse-priority order so the highest-priority one is on
         // top.  Order shown to the user when present: config-warning →
-        // theme-downgrade → welcome → startup-notice → images-enabled →
-        // diagrams-enabled → remote-image.  The theme-downgrade and
+        // theme-downgrade → welcome → post-upgrade → startup-notice →
+        // images-enabled → diagrams-enabled → remote-image.  The
+        // post-upgrade notice sits under the welcome because a first
+        // run has nothing to be welcomed *back* from.  The two rarely
+        // coincide — `show_welcome` being on is what routes a launch
+        // with no recorded version to the silent branch — but they are
+        // not exclusive: a user who leaves the welcome's "Show on next
+        // launch" toggle on keeps it true, and after an upgrade gets
+        // both.  Stacking is then correct, and this is the order they
+        // should be read in.  The theme-downgrade and
         // startup-notice are mutually exclusive (see above): when both
         // apply, the notice carries the downgrade text.  The legacy prompts (everything below
         // welcome) are suppressed via `suppress_legacy_prompts` whenever
@@ -741,6 +763,9 @@ impl App {
             modal_stack.push(Box::new(m));
         }
         if let Some(m) = capabilities_notice {
+            modal_stack.push(Box::new(m));
+        }
+        if let Some(m) = post_upgrade_modal {
             modal_stack.push(Box::new(m));
         }
         if let Some(m) = welcome_modal {
@@ -923,6 +948,10 @@ impl App {
     /// steps so the control flow is legible at a glance.
     pub fn run(&mut self, mut terminal: Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
         self.startup_pointer_hint();
+        // Records the running version for the post-upgrade notice.
+        // Here rather than in `App::new` because it writes to disk and
+        // the constructor must not — see `app::post_upgrade`.
+        self.stamp_last_version_seen();
         let rx = self.spawn_event_threads();
         self.start_file_watcher();
         self.build_keymap_if_needed()?;

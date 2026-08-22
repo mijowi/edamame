@@ -626,15 +626,21 @@ mod tests {
         assert!(config.editor.check_for_updates);
         assert_eq!(config.editor.last_update_check, 0);
         assert_eq!(config.editor.update_notified_for, "");
+        // Empty here means "no version recorded", which `App::new`
+        // reads together with `show_welcome` to tell a fresh install
+        // from an upgrade — see `app::post_upgrade`.
+        assert_eq!(config.editor.last_version_seen, "");
 
         config.editor.check_for_updates = false;
         config.editor.last_update_check = 1_755_500_000;
         config.editor.update_notified_for = "v0.2.0".to_owned();
+        config.editor.last_version_seen = "0.1.9".to_owned();
         let serialized = toml::to_string(&config).expect("serialize");
         let deserialized: Config = toml::from_str(&serialized).expect("deserialize");
         assert!(!deserialized.editor.check_for_updates);
         assert_eq!(deserialized.editor.last_update_check, 1_755_500_000);
         assert_eq!(deserialized.editor.update_notified_for, "v0.2.0");
+        assert_eq!(deserialized.editor.last_version_seen, "0.1.9");
     }
 
     #[test]

@@ -92,6 +92,11 @@ src/
                     #   notes), policy.rs (pure: is a check due?), status.rs
                     #   (ReleaseInfo / ReleaseStatus; version comparison)
     update_notice.rs  # spawn / route / deferred-push orchestration
+    post_upgrade.rs / post_upgrade/  # the one-time post-upgrade notice:
+                    #   post_upgrade_action (pure policy), the last_version_seen
+                    #   stamp, changelog.rs (the `## [x.y.z]` section out of the
+                    #   `include_str!`d CHANGELOG.md).  No network; shares only
+                    #   update_check's note bounding and renderer
     modal.rs / modal/ # stack.rs (ModalStack, top-of-stack dispatch), types.rs (Modal
                     #   trait, ModalKind, ModalOutcome, ModalRenderCtx), then one
                     #   adapter per file: command_palette, config_warning,
@@ -99,7 +104,7 @@ src/
                     #   diff_quit_confirm, diff_resolve_confirm, dirty_guard,
                     #   export_success, export_theme, images_enabled, insert_table,
                     #   keybinds, markdown_cheat_sheet, notice, overwrite_confirm,
-                    #   quit_confirm, remote_image, save_as, settings,
+                    #   post_upgrade, quit_confirm, remote_image, save_as, settings,
                     #   terminal_capabilities, theme_picker, update, welcome,
                     #   width_injection
 
@@ -484,7 +489,19 @@ Interactive elements inside modals/overlays are one family, defined in `ui::cont
 - **`body` needs a real JSON string decoder; `tag_name` does not.** A tag never contains a quote or backslash, so `parse_tag_name` scans to the next `"`. The body is prose carrying quotes, backslashes, newlines and emoji, so `decode_json_string` walks escapes properly — an embedded `\"` would otherwise terminate the value at the first quotation mark the author typed. Still no `serde_json`: this is a JSON *string-literal* decoder, and every failure degrades to "no notes". (A `"###` sequence terminates an `r#"…"#` literal, so fixtures containing one need different quoting.)
 - **The release notes ship from `CHANGELOG.md`.** `dist` reads the section matching the tag into the top of the GitHub release body, which edamame reads back and shows above `## Install` — so a `CHANGELOG.md` entry *is* what users read in the update modal. A release cut without a matching section still notifies, just with no summary.
 - **`ui::update_check` takes plain values, not `ReleaseStatus`.** Nothing under `src/ui/` imports `crate::app`, and this is not the module to start: the modal adapter maps the status onto `ui`'s own `UpdateReport`. That translation is the only reason `update_check` can stay under `app` rather than becoming a leaf subsystem.
+- **Every About-page button has a named index arm.** `AboutModal::resolve` matches `RELEASE_NOTES_BUTTON` / `CHECK_UPDATES_BUTTON` / `VIEW_ON_GITHUB_BUTTON`, and its final `ButtonPressed(_)` arm does *nothing*. It was a catch-all opening GitHub, so a newly added button silently opened GitHub instead of doing its own job — exactly what `[ Release notes ]` would have done.
 - **The About page reports no release information at all.** It used to fetch on every first open, which made merely opening the page a network request and put a second surface in the business of rendering release state.
+
+### Post-upgrade notice
+
+- **A second, unrelated notion of "new".** `update_check` asks whether a newer release exists on GitHub; `app::post_upgrade` asks whether *this build* is newer than the one that last ran, and answers from the `CHANGELOG.md` compiled into the binary. No network, no consent setting, no throttle — so `ReleaseStatus` gains no variant, since every state it has names the outcome of a fetch. The two share `parse::sanitize_notes` and `ui::update_check`'s renderer, so a changelog entry and a release body reach the screen in one vocabulary with one set of caps.
+- **Synchronous, not park-and-tick.** `update_notice` parks its finding for `tick_timers` only because a network result lands long after `App::new` has fixed the startup modal ordering. Config, changelog and `CARGO_PKG_VERSION` are all in hand in the constructor, so this modal joins that ordering directly — one slot below the welcome — with no `App` field, no per-frame poll and no "wait for the welcome" carve-out.
+- **The decision belongs to `App::new`; the write does not.** `test_utils::make_app` builds an `App` through `App::new` and most callers hold no `config_isolation()` guard, so a `Config::save` there would rewrite *the developer's own* `config.toml` on every `cargo test` run. `App::stamp_last_version_seen` therefore runs from `App::run`. Deciding is exempt because `config_writes_allowed()` is an atomic load, not I/O. A new startup modal recording that it fired owes the same split.
+- **An empty `last_version_seen` means "no version recorded", and `show_welcome` is the tell.** The empty string is what a fresh install has *and* what an upgrade from a build predating the field has; guessing wrong either greets a brand-new user with notes for a version they never ran, or eats the first notice for every existing user. Only a returning user could have turned `show_welcome` off. Once a real version is recorded every later upgrade takes the non-empty branch, so there is no migration path to delete later.
+- **The stamp is unconditional on whether anything was shown, and `--no-config` refuses the notice outright.** A release with no matching changelog section is silent, but still records the version — otherwise "nothing to say" would be re-evaluated forever. Under `--no-config` the stamp cannot persist, so the notice is gated at the decision (`config_writes_allowed()`) rather than left to `Config::save`'s own refusal: shown anyway, a one-time notice becomes an every-launch one.
+- **One body, two entry points, differing only in the opening line.** `PostUpgradeOccasion::Upgrade` opens on `Updated to vX.` with no version row (the headline names the number); `OnDemand` — the About page's `[ Release notes ]` button — opens on an `edamame version: vX` row with no headline, because a verdict line there would claim an upgrade that never happened. `PostUpgradeModal` carries the occasion, since `render` is where the two paths meet again. The on-demand path also *always* answers, rendering `PostUpgradeReport::NotFound` for a version with no section, and reads and writes no bookkeeping — looking is not being notified. `Some(vec![])` (an empty section) and `None` (no section) must stay distinct, or that modal reports an absence about a release that was merely quiet.
+- **The section terminator includes a link-reference definition, not just the next `## `.** The last section in a Keep a Changelog file is followed only by the `[0.1.0]: https://…` block, so without that arm the oldest release's notes end in raw URLs — visible only on the launch where that release is installed, which is the one nobody tests. A `### Added` subheading is deliberately not a terminator (third character `#`, not a space), or every entry would stop at the blank line under its own heading. Versions match on the bracketed text exactly, so `0.1.2` cannot claim `## [0.1.20]`.
+- **A test building an `App` with `show_welcome = false` must record a version too.** With an empty `last_version_seen` that is exactly the "upgraded from a pre-field build" case, so the notice lands on the stack and breaks every assertion about what is on top. `test_utils::app_with_welcome` and `nav`'s builder both stamp `INSTALLED_VERSION`.
 
 ### Images, diagrams, and export
 

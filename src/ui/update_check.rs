@@ -51,6 +51,12 @@ pub enum UpdateReport<'a> {
 /// other.
 const VERSION_LABEL_WIDTH: usize = "Installed version: ".len();
 
+/// Label on the post-upgrade notice's version row.  It names the
+/// program rather than saying "installed", because the row is rendered
+/// only for [`PostUpgradeOccasion::OnDemand`], where nothing was just
+/// installed.
+const VERSION_LABEL: &str = "edamame version:";
+
 /// Build the modal body.  `installed` is the bare Cargo version
 /// (`0.1.0`); the `v` prefix is added here so it reads like a tag.
 ///
@@ -122,6 +128,95 @@ pub fn body_lines(theme: &Theme, report: UpdateReport<'_>, installed: &str) -> V
             out
         }
     }
+}
+
+/// What the post-upgrade notice is reporting — the modal that fires
+/// once after edamame has been updated, and the About page's
+/// `[ Release notes ]` button.
+///
+/// A second enum rather than a variant on [`UpdateReport`] because the
+/// two answer different questions: that one reports a *check* against
+/// GitHub and always has two version numbers to compare, while this
+/// one reports on the build already running and has exactly one.  They
+/// share this module — and so `note_lines` and `version_row`, which
+/// stay private — because what they put on screen must not drift.
+pub enum PostUpgradeReport<'a> {
+    /// The changelog carried a section for the installed version.
+    /// `notes` may still be empty, for a section with no content.
+    Found { notes: &'a [String] },
+    /// No `## [<version>]` section for this build.  Only the on-demand
+    /// path renders this: the startup notice stays silent instead, on
+    /// the grounds that the user already knows they upgraded and the
+    /// version number alone is not news.
+    NotFound,
+}
+
+/// Which entry point is asking, which is the only thing that differs
+/// between the two bodies.
+///
+/// One body serves both, but the opening line cannot: the startup
+/// notice fires *because* the build changed and should say so, while
+/// the About page's `[ Release notes ]` button is a question the user
+/// asked about the build already running, where "Updated to …" would
+/// announce an event that never happened.  Each therefore states the
+/// one fact it can know, and neither carries the other's — a headline
+/// naming the occasion, or a version row that merely repeats it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostUpgradeOccasion {
+    /// The one-time startup notice: this build is newer than the one
+    /// that last ran.
+    Upgrade,
+    /// The About page's `[ Release notes ]` button.
+    OnDemand,
+}
+
+/// Build the post-upgrade body.  `installed` is the bare Cargo version.
+///
+/// The opening line is the [`PostUpgradeOccasion`]'s: a verdict for the
+/// upgrade notice, a labelled version row for the on-demand opening.
+/// The upgrade path gets no version row because the headline already
+/// names the number, and the on-demand path gets no headline because
+/// there is no occasion to name — the row is the same shape
+/// [`body_lines`] uses, so the number is read off a labelled line
+/// rather than out of the middle of a sentence.  One row, not the two
+/// there, because there is nothing to compare against.
+pub fn post_upgrade_body_lines(
+    theme: &Theme,
+    occasion: PostUpgradeOccasion,
+    report: PostUpgradeReport<'_>,
+    installed: &str,
+) -> Vec<Line<'static>> {
+    let mut out = vec![match occasion {
+        PostUpgradeOccasion::Upgrade => {
+            Line::from(Span::styled(format!("Updated to v{installed}."), theme.h1))
+        }
+        // One space after the label, not the update check's shared
+        // column: this row stands alone, so there is nothing to align
+        // it with.
+        PostUpgradeOccasion::OnDemand => version_row(
+            theme,
+            VERSION_LABEL,
+            format!("v{installed}"),
+            VERSION_LABEL.len() + 1,
+        ),
+    }];
+    match report {
+        PostUpgradeReport::NotFound => {
+            out.push(Line::raw(""));
+            out.push(Line::from(Span::styled(
+                "No release notes are bundled for this version.".to_owned(),
+                theme.modal_description,
+            )));
+        }
+        // Same reasoning as the `Available` arm: a section that is
+        // present but empty gets no blank-space heading of its own.
+        PostUpgradeReport::Found { notes } if !notes.is_empty() => {
+            out.push(Line::raw(""));
+            out.extend(note_lines(notes));
+        }
+        PostUpgradeReport::Found { .. } => {}
+    }
+    out
 }
 
 /// Glyph substituted for a list marker (`-`, `*`, `+`).
@@ -211,20 +306,34 @@ fn bulleted(line: &str) -> String {
 /// first, then what is out there, so the comparison reads downward.
 fn version_rows(theme: &Theme, installed: &str, latest: &str) -> [Line<'static>; 2] {
     [
-        version_row(theme, "Installed version:", format!("v{installed}")),
-        version_row(theme, "Latest release:", latest.to_owned()),
+        version_row(
+            theme,
+            "Installed version:",
+            format!("v{installed}"),
+            VERSION_LABEL_WIDTH,
+        ),
+        version_row(
+            theme,
+            "Latest release:",
+            latest.to_owned(),
+            VERSION_LABEL_WIDTH,
+        ),
     ]
 }
 
-/// One label/value row.  The label is padded to a fixed column rather
-/// than styled into a separate aligned block, because the modal body is
+/// One label/value row.  The label is padded out to `width` rather than
+/// styled into a separate aligned block, because the modal body is
 /// left-aligned text: padding is all the alignment there is.
-fn version_row(theme: &Theme, label: &str, value: String) -> Line<'static> {
+///
+/// `width` is a parameter because the two callers align against
+/// different things.  The update check's pair share
+/// [`VERSION_LABEL_WIDTH`] so their values sit in one column; the
+/// post-upgrade notice's lone row has nothing to line up with, and
+/// padding it to that same column would leave a gap the reader has to
+/// cross for no reason.
+fn version_row(theme: &Theme, label: &str, value: String, width: usize) -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            format!("{label:<width$}", width = VERSION_LABEL_WIDTH),
-            theme.text_muted(),
-        ),
+        Span::styled(format!("{label:<width$}"), theme.text_muted()),
         Span::raw(value),
     ])
 }
@@ -415,5 +524,83 @@ mod tests {
             "headline, blank, and the two version rows — nothing else"
         );
         assert!(!text(&body).ends_with('\n'));
+    }
+
+    #[test]
+    fn the_upgrade_notice_announces_the_new_version_and_lists_the_notes() {
+        let notes = vec!["### Added".to_owned(), "- a thing".to_owned()];
+        let body = post_upgrade_body_lines(
+            theme(),
+            PostUpgradeOccasion::Upgrade,
+            PostUpgradeReport::Found { notes: &notes },
+            "0.1.2",
+        );
+        let rendered = text(&body);
+        assert!(rendered.starts_with("Updated to v0.1.2."));
+        // The headline already names the version, so the labelled row
+        // would only repeat it.
+        assert!(!rendered.contains(VERSION_LABEL));
+        assert!(!rendered.contains("Installed version:"));
+        // Structural styling, shared with the release-check path: the
+        // heading loses its `#` run and the marker becomes a bullet.
+        assert!(rendered.contains("Added"));
+        assert!(!rendered.contains("### Added"));
+        assert!(rendered.contains("\u{2022} a thing"));
+    }
+
+    #[test]
+    fn the_on_demand_opening_names_the_build_without_claiming_an_upgrade() {
+        // Reached from the About page, where nothing was just
+        // installed — so the version arrives as a labelled row and
+        // there is no verdict line above it.
+        let notes = vec!["- a thing".to_owned()];
+        let body = post_upgrade_body_lines(
+            theme(),
+            PostUpgradeOccasion::OnDemand,
+            PostUpgradeReport::Found { notes: &notes },
+            "0.1.2",
+        );
+        let rendered = text(&body);
+        assert!(rendered.starts_with("edamame version: v0.1.2"));
+        assert!(!rendered.contains("Updated to"));
+        assert!(rendered.contains("\u{2022} a thing"));
+    }
+
+    #[test]
+    fn a_post_upgrade_report_shows_no_second_version_row() {
+        // There is nothing to compare against, so "Latest release:"
+        // would be a row with no value to put in it — and either
+        // occasion opens on exactly one line.
+        for occasion in [PostUpgradeOccasion::Upgrade, PostUpgradeOccasion::OnDemand] {
+            let body = post_upgrade_body_lines(
+                theme(),
+                occasion,
+                PostUpgradeReport::Found { notes: &[] },
+                "0.1.2",
+            );
+            assert!(!text(&body).contains("Latest release:"));
+            assert_eq!(
+                body.len(),
+                1,
+                "an empty section leaves just the opening line — nothing else"
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_section_says_so_without_claiming_an_update() {
+        // The About page's on-demand opening is the only path that
+        // reaches this: it must answer, but it must not announce an
+        // upgrade that may not have happened.
+        let body = post_upgrade_body_lines(
+            theme(),
+            PostUpgradeOccasion::OnDemand,
+            PostUpgradeReport::NotFound,
+            "0.1.2",
+        );
+        let rendered = text(&body);
+        assert!(rendered.contains("edamame version: v0.1.2"));
+        assert!(rendered.contains("No release notes are bundled"));
+        assert!(!rendered.contains("Updated to"));
     }
 }
