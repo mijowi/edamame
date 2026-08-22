@@ -131,7 +131,7 @@ pub struct App {
     ///
     /// The two exits mean different things across a multi-file review:
     /// `Esc` is "done with this file, show me the next", `Ctrl-Q` is
-    /// "stop reviewing". Acting on the second is `main`'s job and not
+    /// "Quit diff". Acting on the second is `main`'s job and not
     /// this type's, because it happens *after* `terminal::restore` —
     /// see [`crate::app::difftool::stop_walk`], which ends the walk by
     /// signalling the process group rather than by an exit code git

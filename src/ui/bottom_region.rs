@@ -400,11 +400,11 @@ fn diff_review_chords(
         let mut chords = vec![
             mk(&Action::DiffNext, "Next"),
             mk(&Action::DiffPrev, "Prev"),
-            mk(&Action::DiffExit, "Exit"),
+            mk(&Action::DiffExit, "Close file"),
         ];
         // Dropped silently when the user has unbound `Quit`, as
         // everywhere else the row resolves a keymap chord.
-        chords.extend(chords_from(keymap, &[(Action::Quit, "Stop reviewing")]));
+        chords.extend(chords_from(keymap, &[(Action::Quit, "Quit diff")]));
         return chords;
     }
     let mut chords = vec![
@@ -856,7 +856,7 @@ mod tests {
             .into_iter()
             .map(|c| c.label)
             .collect();
-        assert_eq!(labels, vec!["Next", "Prev", "Exit", "Stop reviewing"]);
+        assert_eq!(labels, vec!["Next", "Prev", "Next file", "Quit diff"]);
     }
 
     /// The two exits differ in a difftool walk — `Esc` advances to the
@@ -865,10 +865,13 @@ mod tests {
     #[test]
     fn a_read_only_diff_row_names_a_distinct_chord_for_each_exit() {
         let row = diff_review_chords(&keymap(), false, false, true);
-        let exit = row.iter().find(|c| c.label == "Exit").expect("Esc Exit");
+        let exit = row
+            .iter()
+            .find(|c| c.label == "Close file")
+            .expect("Esc Close file");
         let stop = row
             .iter()
-            .find(|c| c.label == "Stop reviewing")
+            .find(|c| c.label == "Quit diff")
             .expect("Quit chord");
         assert_ne!(exit.chord, stop.chord);
         assert!(!stop.chord.is_empty(), "the quit chord must be nameable");

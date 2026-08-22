@@ -336,7 +336,7 @@ fn run(session: Session, opts: RunOpts) -> Result<()> {
 
     run_result?;
     // `Esc` out of a difftool review returns normally, and git moves to
-    // the next file.  `Quit` (`Ctrl-Q`) means "stop reviewing", which
+    // the next file.  `Quit` (`Ctrl-Q`) means "Quit diff", which
     // an exit code cannot express — git discards a diff tool's status
     // unless `--trust-exit-code` was asked for — so the walk is ended by
     // signalling the process group instead.  After `terminal::restore`

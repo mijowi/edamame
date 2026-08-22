@@ -276,7 +276,7 @@ Either way, git walks the changed files one at a time.
 | --- | --- |
 | `Tab` / `Shift-Tab` | Move between hunks |
 | `Esc` | Done with this file — go to the next |
-| `Ctrl-Q` | Stop reviewing — end the whole walk |
+| `Ctrl-Q` | Quit diff — end the whole walk |
 
 **Quitting ends the walk, with no extra flags.** `Ctrl-Q` stops the review where you are and leaves the remaining files unopened; git exits quietly, the way it does for any interrupted command. (Under the hood it raises the same `SIGINT` a `Ctrl-C` at the terminal would. Your shell may report `git difftool` as interrupted; that is what happened.)
 
