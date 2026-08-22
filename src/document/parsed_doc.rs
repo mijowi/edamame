@@ -479,7 +479,14 @@ impl ParsedDoc {
         // empty raw reveal.  Synthesize a zero-byte virtual block owning
         // one blank rendered line so the phantom line maps 1:1 like every
         // other buffer line.
-        if total_bytes > 0 && src_bytes[total_bytes - 1] == b'\n' {
+        //
+        // An *empty* document takes the same branch, and must: ropey reports
+        // one (empty) line for `""`, but the loops above produce no blocks
+        // at all, so `lines` would be empty and the rendered / preview
+        // painters — which iterate rendered lines — would paint nothing,
+        // cursor included (`RawView` walks the rope, which is why raw mode
+        // showed the cursor and the other views did not).
+        if total_bytes == 0 || src_bytes[total_bytes - 1] == b'\n' {
             push_blank(
                 &mut lines,
                 &mut rendered_to_block,
@@ -921,10 +928,16 @@ mod tests {
         }
     }
 
+    /// An empty document owns exactly one blank rendered line — the same
+    /// count ropey reports for `""` — so the rendered views have a row to
+    /// paint the cursor on.  With zero lines they painted nothing at all
+    /// and the cursor was invisible until raw mode was toggled on.
     #[test]
-    fn empty_doc_builds_without_panic() {
+    fn empty_doc_owns_one_blank_line_for_the_cursor() {
         let doc = ParsedDoc::build("", theme(), false, 24);
-        assert_eq!(doc.line_count(), 0);
+        assert_eq!(doc.line_count(), 1);
+        assert_eq!(doc.source_map.block_for_byte(0), Some(0));
+        assert!(!doc.source_map.rendered_lines_for_byte(0).is_empty());
     }
 
     #[test]

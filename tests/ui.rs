@@ -2644,3 +2644,47 @@ fn raw_view_wrapped_rows_agree_with_the_click_mapping() {
         }
     }
 }
+
+/// Regression: an empty document must still show the block cursor in
+/// Rendered mode.  An empty source produces no Markdown blocks, so before
+/// the phantom-line virtual block covered `total_bytes == 0` there were no
+/// rendered lines at all and `RenderedView`'s paint loop broke out
+/// immediately — the cursor was never drawn.  Raw mode was unaffected
+/// because `RawView` walks the rope, which reports one empty line for `""`.
+#[test]
+fn empty_document_shows_the_cursor_in_rendered_mode() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let mut state = EditorState::new(Buffer::from_str(""), theme);
+    state.mode = Mode::Rendered;
+    state.cursor.offset = 0;
+
+    let backend = TestBackend::new(20, 4);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                cursor_style: theme.status_mode_rendered,
+                visual_kind: None,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let cell = buf.cell((0, 0)).expect("cell (0,0) must exist");
+    let style = cell.style();
+    assert_eq!(
+        (style.fg, style.bg),
+        (theme.status_mode_rendered.fg, theme.status_mode_rendered.bg),
+        "the cursor block must be painted at line 0, column 0 of an empty document"
+    );
+}

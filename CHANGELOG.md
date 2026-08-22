@@ -30,6 +30,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Improved line wrapping. Wraps no longer splits on contractions, decimals, times, file names, emojis, opening brackets or quotes, and a wrapped line no longer can start with a space.
 - Editing `config.toml` from inside edamame now applies every changed setting straight away, not only the theme and keybindings.
 - A recovered failure in the diagram renderer or an image worker no longer hands the terminal back to the shell while edamame is still running.
+- An empty file now correctly displays the cursor.
 
 ## [0.1.1] - 2026-08-18
 
