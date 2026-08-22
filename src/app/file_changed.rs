@@ -269,6 +269,14 @@ impl App {
             .reconcile_with_disk(&new_disk);
         match outcome {
             ReconcileOutcome::StillReviewing { reset } => {
+                // `new_buffer` was replaced wholesale, so
+                // `reconcile_with_disk` dropped the rendered new-side
+                // parse it invalidated.  The editor's own buffer did not
+                // change, so nothing here goes through `refresh_parsed`
+                // and its diff-parse tail call — rebuild explicitly, or
+                // the review paints raw until some unrelated re-render
+                // happens to come along.
+                self.editor.refresh_diff_parse();
                 // Re-center on the focused hunk next frame, when the run
                 // loop knows the viewport height.
                 self.editor.pending_focus_scroll = true;

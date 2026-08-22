@@ -30,6 +30,21 @@ pub enum Invocation {
     Version,
     /// Print the diagnostic report and exit.
     Doctor,
+    /// Open a read-only side-by-side review of two files
+    /// (`--diff <old> <new>`), for use as a `git difftool`.
+    ///
+    /// Deliberately a variant of its own rather than a `RunOpts` flag:
+    /// it takes *two* paths where a run takes one, it opens no file for
+    /// editing, and it never starts the filesystem watcher — the paths
+    /// git hands us are usually temp files it deletes the moment we
+    /// exit.
+    Diff {
+        /// The "before" side — git's `$LOCAL`.
+        old: PathBuf,
+        /// The "after" side — git's `$REMOTE`.
+        new: PathBuf,
+        opts: RunOpts,
+    },
 }
 
 /// Flags that modify a normal editor run.
@@ -50,14 +65,23 @@ pub enum CliError {
     #[error("unknown option '{0}'")]
     UnknownOption(String),
     /// edamame opens one file per process; a second positional argument
-    /// is far more likely a typo'd flag than an intent we should guess at.
-    #[error("unexpected argument '{0}' — edamame opens one file at a time")]
+    /// is far more likely a typo'd flag than an intent we should guess
+    /// at.  The parenthetical is not padding: `--diff` takes two, and
+    /// this same error is what a three-path `--diff` gets, where the
+    /// bare rule would read as a flat contradiction of the command the
+    /// user just ran.
+    #[error("unexpected argument '{0}' — edamame opens one file at a time (two with --diff)")]
     ExtraArgument(String),
     /// A bare `-` conventionally means stdin, which edamame does not
     /// read: the terminal capability probe needs stdin for itself.
     /// Rejecting it beats a confusing "no such file: -".
     #[error("reading from stdin is not supported")]
     StdinNotSupported,
+    /// `--diff` is the one mode that takes two paths, and neither has a
+    /// sensible default: guessing (the open file? the working tree?)
+    /// would silently review something other than what git asked for.
+    #[error("--diff needs exactly two files: edamame --diff <old> <new>")]
+    DiffNeedsTwoFiles,
 }
 
 impl Invocation {
@@ -71,15 +95,28 @@ impl Invocation {
     ///
     /// `--` ends flag parsing, so a file genuinely named `--doctor` is
     /// reachable as `edamame -- --doctor`.
+    ///
+    /// Positionals are collected into a list rather than a single slot,
+    /// because `--diff` takes two and may appear *after* them
+    /// (`edamame a.md b.md --diff`).  The "one file at a time" rule is
+    /// therefore enforced at the end, once the flags are known, instead
+    /// of at the second positional — which also means a stray extra file
+    /// no longer suppresses `--help`, matching how the informational
+    /// flags already outrank everything else.
     pub fn parse<I>(args: I) -> Result<Self, CliError>
     where
         I: IntoIterator<Item = OsString>,
     {
-        let mut file: Option<PathBuf> = None;
+        let mut files: Vec<PathBuf> = Vec::new();
+        // The first positional past the first, remembered verbatim so a
+        // non-`--diff` run can name *it* in the error rather than
+        // whichever argument happened to overflow the list.
+        let mut extra: Option<String> = None;
         let mut opts = RunOpts::default();
         let mut help = false;
         let mut version = false;
         let mut doctor = false;
+        let mut diff = false;
         let mut positional_only = false;
 
         for arg in args {
@@ -96,27 +133,47 @@ impl Invocation {
                 Some("-h" | "--help") => help = true,
                 Some("-V" | "--version") => version = true,
                 Some("--doctor") => doctor = true,
+                Some("--diff") => diff = true,
                 Some("--no-config") => opts.no_config = true,
                 Some("--log") => opts.log = true,
                 Some("-") => return Err(CliError::StdinNotSupported),
                 Some(other) => return Err(CliError::UnknownOption(other.to_owned())),
                 None => {
-                    if file.is_some() {
+                    // Two is the most any mode accepts, so a third can
+                    // never become valid however the flags parse.
+                    if files.len() >= 2 {
                         return Err(CliError::ExtraArgument(arg.to_string_lossy().into_owned()));
                     }
-                    file = Some(PathBuf::from(arg));
+                    if files.len() == 1 {
+                        extra = Some(arg.to_string_lossy().into_owned());
+                    }
+                    files.push(PathBuf::from(arg));
                 }
             }
         }
 
-        Ok(if help {
-            Self::Help
-        } else if version {
-            Self::Version
-        } else if doctor {
-            Self::Doctor
-        } else {
-            Self::Run { file, opts }
+        if help {
+            return Ok(Self::Help);
+        }
+        if version {
+            return Ok(Self::Version);
+        }
+        if doctor {
+            return Ok(Self::Doctor);
+        }
+        if diff {
+            let mut it = files.into_iter();
+            let (Some(old), Some(new)) = (it.next(), it.next()) else {
+                return Err(CliError::DiffNeedsTwoFiles);
+            };
+            return Ok(Self::Diff { old, new, opts });
+        }
+        if let Some(extra) = extra {
+            return Err(CliError::ExtraArgument(extra));
+        }
+        Ok(Self::Run {
+            file: files.pop(),
+            opts,
         })
     }
 }
@@ -264,6 +321,93 @@ mod tests {
         assert_eq!(
             parse(&["a.md", "b.md"]),
             Err(CliError::ExtraArgument("b.md".to_owned()))
+        );
+    }
+
+    // ── --diff ───────────────────────────────────────────────────
+
+    fn diff(args: &[&str]) -> (PathBuf, PathBuf, RunOpts) {
+        match parse(args).expect("parses") {
+            Invocation::Diff { old, new, opts } => (old, new, opts),
+            other => panic!("expected Diff, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diff_takes_two_paths_in_git_difftool_order() {
+        let (old, new, opts) = diff(&["--diff", "left.md", "right.md"]);
+        assert_eq!(old, PathBuf::from("left.md"));
+        assert_eq!(new, PathBuf::from("right.md"));
+        assert_eq!(opts, RunOpts::default());
+    }
+
+    /// The flag may trail its operands: a `difftool.<tool>.cmd` is a
+    /// shell string users reorder freely, and git itself appends nothing.
+    #[test]
+    fn diff_accepts_the_flag_in_any_position() {
+        for args in [
+            ["--diff", "a.md", "b.md"],
+            ["a.md", "--diff", "b.md"],
+            ["a.md", "b.md", "--diff"],
+        ] {
+            let (old, new, _) = diff(&args);
+            assert_eq!((old, new), (PathBuf::from("a.md"), PathBuf::from("b.md")));
+        }
+    }
+
+    #[test]
+    fn diff_combines_with_the_run_flags() {
+        let (_, _, opts) = diff(&["--diff", "--no-config", "a.md", "--log", "b.md"]);
+        assert_eq!(
+            opts,
+            RunOpts {
+                no_config: true,
+                log: true
+            }
+        );
+    }
+
+    /// Neither side has a defensible default, so a short command line is
+    /// an error rather than a guess.
+    #[test]
+    fn diff_with_fewer_than_two_files_is_an_error() {
+        assert_eq!(parse(&["--diff"]), Err(CliError::DiffNeedsTwoFiles));
+        assert_eq!(
+            parse(&["--diff", "only.md"]),
+            Err(CliError::DiffNeedsTwoFiles)
+        );
+    }
+
+    #[test]
+    fn diff_still_rejects_a_third_file() {
+        assert_eq!(
+            parse(&["--diff", "a.md", "b.md", "c.md"]),
+            Err(CliError::ExtraArgument("c.md".to_owned()))
+        );
+    }
+
+    /// `--diff` is a run, so the informational flags still outrank it.
+    #[test]
+    fn informational_flags_win_over_a_diff() {
+        assert_eq!(
+            parse(&["--diff", "a.md", "b.md", "--help"]),
+            Ok(Invocation::Help)
+        );
+        assert_eq!(parse(&["--diff", "--version"]), Ok(Invocation::Version));
+    }
+
+    /// Two positionals are only legal under `--diff`; without it the
+    /// second is still the "one file at a time" error, and it names the
+    /// second file rather than whichever argument overflowed the list.
+    #[test]
+    fn two_files_without_diff_still_name_the_second_one() {
+        assert_eq!(
+            parse(&["a.md", "b.md"]),
+            Err(CliError::ExtraArgument("b.md".to_owned()))
+        );
+        assert_eq!(
+            parse(&["a.md", "b.md", "c.md"]),
+            Err(CliError::ExtraArgument("c.md".to_owned()))
         );
     }
 

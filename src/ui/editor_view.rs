@@ -304,6 +304,15 @@ impl<'a> StatefulWidget for EditorView<'a> {
             }
             Mode::Diff => {
                 if let Some(diff) = self.state.diff.as_ref() {
+                    // Same place Preview and Rendered build theirs: the
+                    // paint pass below reads them off `state.diff`.
+                    image_view::build_diff_snapshots_cached(
+                        diff,
+                        doc_area,
+                        self.state.scroll,
+                        &mut state.diff.image_snapshots,
+                        &mut state.diff.image_snapshots_key,
+                    );
                     StatefulWidget::render(
                         DiffView {
                             diff,
@@ -389,7 +398,11 @@ impl<'a> StatefulWidget for EditorView<'a> {
         // rendering there.  Also skip the cursor's image block while
         // raw-reveal is active so the user can see their `![alt](url)`
         // source line instead of the image.
-        if matches!(mode, Mode::Preview | Mode::Rendered) {
+        // Diff review paints the images of its *clean* regions too — a
+        // changed image block is in a raw region, has no snapshot, and
+        // shows as `![alt](url)` source instead.  There is no cursor
+        // raw-reveal in diff mode, so nothing to suppress there.
+        if matches!(mode, Mode::Preview | Mode::Rendered | Mode::Diff) {
             let suppress = if mode == Mode::Rendered && self.state.cursor_block_revealed() {
                 self.state.cursor_block_idx
             } else {
@@ -398,6 +411,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
             let snapshots: &[crate::ui::ImageLayoutSnapshot] = match mode {
                 Mode::Preview => &state.preview.image_snapshots,
                 Mode::Rendered => &state.rendered.image_snapshots,
+                Mode::Diff => &state.diff.image_snapshots,
                 _ => &[],
             };
             let ctx = image_view::PaintContext {

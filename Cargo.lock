@@ -764,6 +764,7 @@ dependencies = [
  "fancy-regex 0.18.0",
  "image",
  "insta",
+ "libc",
  "mermaid-rs-renderer",
  "notify",
  "nucleo-matcher",

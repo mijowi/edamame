@@ -22,6 +22,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui_image::{Resize, ResizeEncodeRender};
 
+use crate::diff::DiffState;
 use crate::editor::EditorState;
 use crate::image::{paint_halfblocks_partial, ImageCache, NativePaint};
 use crate::terminal::ImageProtocol;
@@ -184,6 +185,102 @@ pub fn build_snapshots(state: &EditorState, area: Rect, scroll: usize) -> Vec<Im
             natural_top: image_top,
         });
     }
+    out
+}
+
+/// Diff-mode counterpart of [`build_snapshots_cached`].
+///
+/// Keys on `DiffState::layout_version` rather than
+/// `EditorState::parsed_version`: the geometry here comes from the diff
+/// layout, and the editor's parse tracks a different document.
+pub fn build_diff_snapshots_cached(
+    diff: &DiffState,
+    area: Rect,
+    scroll: usize,
+    snapshots: &mut Vec<ImageLayoutSnapshot>,
+    cache_key: &mut Option<(usize, Rect, u64)>,
+) {
+    let key = (scroll, area, diff.layout_version());
+    if *cache_key == Some(key) {
+        return;
+    }
+    *snapshots = build_diff_snapshots(diff, area, scroll);
+    *cache_key = Some(key);
+}
+
+/// Geometry for the images visible in a diff review's *clean* regions.
+///
+/// Mirrors [`build_snapshots`], but takes its row arithmetic from the
+/// diff layout's `VisualRowCache` instead of `ParsedDoc::visual_rows_before`
+/// — in diff mode `scroll` counts diff visual rows, and a block's rows
+/// are preceded by raw hunk rows the editor's parse knows nothing about.
+///
+/// An image inside a *changed* region has no `ContextRendered` row at
+/// all (it is shown as raw `![alt](url)` source), so it yields no
+/// snapshot and reserves nothing — which is exactly the wanted
+/// behavior.
+///
+/// The `isize` arithmetic is load-bearing, as it is in `build_snapshots`:
+/// an image scrolled partly off the top must keep a *negative*
+/// `natural_top` rather than saturating at 0, or `paint_images` treats a
+/// half-visible image as fully visible.
+pub fn build_diff_snapshots(
+    diff: &DiffState,
+    area: Rect,
+    scroll: usize,
+) -> Vec<ImageLayoutSnapshot> {
+    let mut out = Vec::new();
+    if area.height == 0 {
+        return out;
+    }
+    let Some(parsed) = diff.parsed_new.as_ref() else {
+        return out;
+    };
+    let width = area.width as usize;
+    diff.with_layout_index(width, |_lines, rc, index| {
+        if scroll >= rc.total() {
+            return;
+        }
+        for info in &parsed.image_blocks {
+            let rendered_range = parsed.source_map.rendered_lines_for_block(info.block_idx);
+            if rendered_range.is_empty() {
+                continue;
+            }
+            // No `ContextRendered` entry for the block's first rendered
+            // row ⇒ it sits in a raw region.
+            let (Some(&first), Some(&last)) = (
+                index.get(&rendered_range.start),
+                index.get(&(rendered_range.end - 1)),
+            ) else {
+                continue;
+            };
+            let block_top = rc.before(first);
+            let y_offset: isize = block_top as isize - scroll as isize;
+            // Reserved height measured the way the row cache measures it,
+            // so the rect matches the rows the layout actually set aside.
+            let reserved = rc.before(last + 1).saturating_sub(block_top) as isize;
+            let image_top = area.y as isize + y_offset;
+            let image_bottom = image_top + reserved;
+            let viewport_top = area.y as isize;
+            let viewport_bottom = (area.y as isize) + area.height as isize;
+            if image_bottom <= viewport_top || image_top >= viewport_bottom {
+                continue;
+            }
+            let rect_y = image_top.max(0).min(u16::MAX as isize) as u16;
+            out.push(ImageLayoutSnapshot {
+                block_idx: info.block_idx,
+                alt: info.alt.clone(),
+                url: info.url.clone(),
+                rect: Rect {
+                    x: area.x,
+                    y: rect_y,
+                    width: area.width,
+                    height: reserved.max(0).min(u16::MAX as isize) as u16,
+                },
+                natural_top: image_top,
+            });
+        }
+    });
     out
 }
 
@@ -526,6 +623,7 @@ fn paint_scratch_partial(
 mod tests {
     use super::*;
     use crate::config::Theme;
+    use crate::diff::DiffState;
     use crate::document::Buffer;
     use crate::editor::EditorState;
 
@@ -888,6 +986,98 @@ mod tests {
         let snaps = build_snapshots(&state, area, 0);
         assert_eq!(snaps.len(), 1);
         assert_eq!(snaps[0].rect.height, 20);
+    }
+
+    // ── Diff-mode snapshots ──────────────────────────────────────────
+
+    /// A review of `old` → `new` with the rendered new-side parse
+    /// installed, built at the same width the tests query at.
+    fn diff_from(old: &str, new: &str, image_max_height: usize) -> DiffState {
+        let mut diff = DiffState::new(old, new).expect("non-empty diff");
+        let parsed = crate::document::ParsedDoc::build(new, theme(), true, image_max_height);
+        diff.set_rendered_parse(Some(parsed));
+        diff
+    }
+
+    #[test]
+    fn diff_snapshot_matches_the_rows_the_layout_reserved() {
+        // The image is untouched; the change is in the paragraph below
+        // it, so the image block stays clean and renders.
+        let old = "Intro.\n\n![cat](cat.png)\n\nTail.\n";
+        let new = "Intro.\n\n![cat](cat.png)\n\nTAIL!\n";
+        let diff = diff_from(old, new, 4);
+        let area = Rect::new(0, 0, 20, 30);
+        let snaps = build_diff_snapshots(&diff, area, 0);
+        assert_eq!(snaps.len(), 1);
+        assert_eq!(snaps[0].url, "cat.png");
+        assert_eq!(snaps[0].rect.height, 4);
+        // `rect.y` is the diff visual row the layout put the block's
+        // first rendered line on.
+        let expected = diff.with_layout_index(area.width as usize, |_lines, rc, index| {
+            let parsed = diff.parsed_new.as_ref().expect("parse installed");
+            let block = parsed
+                .image_blocks
+                .first()
+                .expect("one image block")
+                .block_idx;
+            let range = parsed.source_map.rendered_lines_for_block(block);
+            rc.before(index[&range.start])
+        });
+        assert_eq!(snaps[0].rect.y as usize, expected);
+    }
+
+    #[test]
+    fn a_changed_image_block_yields_no_diff_snapshot() {
+        // The image itself changed, so its block is in a raw region and
+        // shows as `![alt](url)` source — no rows are reserved for it.
+        let old = "Intro.\n\n![cat](cat.png)\n\nTail.\n";
+        let new = "Intro.\n\n![cat](other.png)\n\nTail.\n";
+        let diff = diff_from(old, new, 4);
+        let area = Rect::new(0, 0, 20, 30);
+        assert!(build_diff_snapshots(&diff, area, 0).is_empty());
+    }
+
+    #[test]
+    fn a_partly_scrolled_diff_snapshot_keeps_a_negative_natural_top() {
+        // `isize` regression: saturating at 0 would make `paint_images`
+        // treat a half-scrolled image as fully visible.
+        let old = "Intro.\n\n![cat](cat.png)\n\nTail.\n";
+        let new = "Intro.\n\n![cat](cat.png)\n\nTAIL!\n";
+        let diff = diff_from(old, new, 6);
+        let area = Rect::new(0, 0, 20, 30);
+        let top = build_diff_snapshots(&diff, area, 0)[0].rect.y as usize;
+        let snaps = build_diff_snapshots(&diff, area, top + 2);
+        assert_eq!(snaps.len(), 1);
+        assert!(snaps[0].natural_top < 0, "{:?}", snaps[0]);
+        assert_eq!(snaps[0].rect.height, 6, "reserved height stays full");
+    }
+
+    #[test]
+    fn no_diff_snapshots_without_a_rendered_parse() {
+        let diff = DiffState::new(
+            "Intro.\n\n![cat](cat.png)\n\nTail.\n",
+            "Intro.\n\n![cat](cat.png)\n\nTAIL!\n",
+        )
+        .expect("non-empty diff");
+        let area = Rect::new(0, 0, 20, 30);
+        assert!(build_diff_snapshots(&diff, area, 0).is_empty());
+    }
+
+    #[test]
+    fn build_diff_snapshots_cached_reuses_output_when_key_matches() {
+        let old = "Intro.\n\n![cat](cat.png)\n\nTail.\n";
+        let new = "Intro.\n\n![cat](cat.png)\n\nTAIL!\n";
+        let diff = diff_from(old, new, 4);
+        let area = Rect::new(0, 0, 20, 30);
+        let mut snapshots = Vec::new();
+        let mut key = None;
+        build_diff_snapshots_cached(&diff, area, 0, &mut snapshots, &mut key);
+        assert_eq!(snapshots.len(), 1);
+        let populated = key;
+        build_diff_snapshots_cached(&diff, area, 0, &mut snapshots, &mut key);
+        assert_eq!(key, populated);
+        build_diff_snapshots_cached(&diff, area, 3, &mut snapshots, &mut key);
+        assert_ne!(key, populated);
     }
 
     #[test]

@@ -411,6 +411,29 @@ pub struct EditorState {
     /// plus a render-settings fingerprint, so theme / width / striping
     /// changes clear it automatically.
     render_cache: RenderCache,
+    /// Second render cache, used only for the diff view's rendered
+    /// new-side parse ([`Self::refresh_diff_parse`]).
+    ///
+    /// It cannot share [`Self::render_cache`]: the cache is keyed by
+    /// `Block` value plus a render-settings fingerprint, so two documents
+    /// in one cache collide on every identical block, and eviction is by
+    /// document membership per build — each parse would evict the other's
+    /// entries wholesale.  A dedicated instance pays for itself on the
+    /// first terminal-resize drag, which posts a new width nearly every
+    /// frame and would otherwise re-render the entire new side from
+    /// scratch while 95% of its blocks are trivially reusable.
+    diff_render_cache: RenderCache,
+    /// `true` when the diff's rendered new-side parse is stale and must
+    /// be rebuilt before the next frame paints.  Set by
+    /// [`Self::enter_diff_mode`], which deliberately does *not* build the
+    /// parse itself: at that moment `viewport_width` still holds the
+    /// *editor* mode's document width, which differs whenever
+    /// `show_line_numbers` is on (`compute_doc_dims` reserves a gutter for
+    /// Preview / Rendered / Raw and none for `Mode::Diff`), so a parse
+    /// built there lays every table out against a width the diff view
+    /// never paints at.  `App::prepare_viewport` resolves it right after
+    /// posting the real width.
+    pub(crate) diff_parse_dirty: bool,
 }
 
 /// How long the cursor must rest on a block before it is shown in raw mode.
@@ -518,6 +541,8 @@ impl EditorState {
             substitute_preview: None,
             image_reveal: None,
             render_cache: RenderCache::default(),
+            diff_render_cache: RenderCache::default(),
+            diff_parse_dirty: false,
         };
         // Populate the cursor-block cache so the rendered view's
         // stale-map-tolerant path has correct line-range info on the
@@ -671,6 +696,12 @@ impl EditorState {
         self.scroll = 0;
         self.diff = Some(diff_state);
         self.mode = Mode::Diff;
+        // Build the rendered new-side parse on the next frame instead of
+        // here: `viewport_width` still holds the editor mode's document
+        // width, which reserves a line-number gutter that diff mode does
+        // not, so a parse built now would lay every table out against a
+        // width this view never paints at.  See `diff_parse_dirty`.
+        self.diff_parse_dirty = true;
         self.selection = None;
         self.visual_selection = None;
         // Defer the scroll-to-first-hunk until the next frame, when the
@@ -1057,13 +1088,114 @@ impl EditorState {
         // from growing without bound as the user edits diagrams
         // (every content change inside a ```mermaid block mints a new
         // synthetic URL, so the old entry becomes orphaned).
-        let live: std::collections::HashSet<String> = self
+        //
+        // The live set is the *union* of both parses while a review is
+        // open.  A URL that appears on the diff's new side but not in the
+        // editor's buffer — a diagram whose source changed on disk, an
+        // image the user is about to accept — would otherwise be evicted
+        // here and immediately re-requested by the diff-side dispatch, a
+        // decode/evict loop that runs for the length of the review.
+        let mut live: std::collections::HashSet<String> = self
             .parsed
             .image_blocks
             .iter()
             .map(|i| i.url.clone())
             .collect();
+        if let Some(parsed_new) = self.diff.as_ref().and_then(|d| d.parsed_new.as_ref()) {
+            live.extend(parsed_new.image_blocks.iter().map(|i| i.url.clone()));
+        }
         self.images.gc(&live);
+
+        // Keep the diff's rendered new-side parse in step with the
+        // editor's.  A tail call rather than a hand-maintained list of
+        // sites: everything that re-renders the document — a theme
+        // switch, a width change, big-H1 / striping toggles, an
+        // images-or-diagrams settings change, an arriving decode — goes
+        // through `refresh_parsed`, and several of those are reachable
+        // *during* a review (`OpenSettings`, `SwitchTheme` and
+        // `CreateCustomTheme` are all on the `diff_safe_action`
+        // allowlist).  A stale `parsed_new` would then disagree with the
+        // row cache about block heights.  `refresh_diff_parse` never
+        // calls back into here, so there is no recursion, and it guards
+        // on `self.diff.is_some()` so outside a review this is one
+        // branch.
+        self.refresh_diff_parse();
+    }
+
+    /// Rebuild the diff's rendered new-side parse from
+    /// `diff.new_buffer`.  No-op outside a review.
+    ///
+    /// Built with exactly the render settings `refresh_parsed` uses, so
+    /// a rendered context row in the diff paints identically to the same
+    /// row in Preview.  Three deliberate differences:
+    ///
+    /// - `live_table_widths: None` — the column-drag preview belongs to
+    ///   the editor's document, not the diff's.
+    /// - a dedicated [`Self::diff_render_cache`] (see its doc).
+    /// - no `images.gc()` — running the editor's GC from here would
+    ///   evict the *editor* document's URLs.  `refresh_parsed` owns the
+    ///   GC and unions both parses' URLs into its live set.
+    ///
+    /// Reusing the real row override is what makes unchanged media work:
+    /// `ImageCache` is keyed by URL and lives on `EditorState`, so an
+    /// unchanged image or diagram (identical URL, or identical synthetic
+    /// `diagram-mermaid-<sha256>` key) is a cache hit with no second set
+    /// of workers.  There is no `image_reveal` arm — the reveal is a
+    /// cursor affordance, and diff mode has no in-document cursor.
+    pub(crate) fn refresh_diff_parse(&mut self) {
+        self.diff_parse_dirty = false;
+        if self.diff.is_none() {
+            return;
+        }
+        let content = self
+            .diff
+            .as_ref()
+            .expect("checked above")
+            .new_buffer
+            .contents();
+        let parsed = {
+            let images = &self.images;
+            let max_w = self.image_max_width as u16;
+            let max_h = self.image_max_height as u16;
+            let font_size = self.image_font_size;
+            let images_enabled = self.images_enabled;
+            let override_fn = |url: &str, _ordinal: usize| {
+                if !images_enabled {
+                    return Some(1);
+                }
+                images.reserved_rows(url, max_w, max_h, font_size)
+            };
+            ParsedDoc::build_with_overrides(
+                &content,
+                self.theme,
+                self.preserve_blank_lines,
+                self.image_max_height,
+                None,
+                Some(&override_fn),
+                self.row_striping,
+                self.viewport_width,
+                self.big_h1,
+                self.syntax_highlighting,
+                self.diagrams_enabled,
+                Some(&mut self.diff_render_cache),
+            )
+        };
+        self.diff
+            .as_mut()
+            .expect("checked above")
+            .set_rendered_parse(Some(parsed));
+    }
+
+    /// If [`Self::diff_parse_dirty`] is set, rebuild the diff parse now.
+    /// Mirrors [`Self::flush_parsed_if_dirty`]; called from
+    /// `App::prepare_viewport` immediately after the real diff-mode
+    /// width is posted.  Free when the width genuinely changed —
+    /// `set_viewport_width`'s own `refresh_parsed` tail call has already
+    /// done the work and cleared the flag.
+    pub(crate) fn flush_diff_parse_if_dirty(&mut self) {
+        if self.diff_parse_dirty {
+            self.refresh_diff_parse();
+        }
     }
 
     /// If an in-line edit has left `parsed` stale, re-parse now and
@@ -1937,6 +2069,53 @@ mod tests {
         // call leaves the scroll unchanged.
         state.scroll_focused_hunk_into_view(5, 80);
         assert_eq!(state.scroll, 17);
+    }
+
+    // ── Rendered diff parse ──────────────────────────────────────────
+
+    fn diff_state_for(old: &str, new: &str) -> EditorState {
+        let diff = crate::diff::DiffState::new(old, new).unwrap();
+        let mut state = EditorState::new(Buffer::from_str(old), theme());
+        state.enter_diff_mode(diff);
+        state
+    }
+
+    /// The initial build is deferred by one frame so it happens against
+    /// the *diff mode* viewport width, which reserves no line-number
+    /// gutter.  `App::prepare_viewport` resolves it after posting that
+    /// width.
+    #[test]
+    fn enter_diff_mode_defers_the_rendered_parse_by_one_frame() {
+        let mut state = diff_state_for("# T\n\nbee\n", "# T\n\nBEE\n");
+        assert!(state.diff_parse_dirty);
+        assert!(state.diff.as_ref().unwrap().parsed_new.is_none());
+
+        state.flush_diff_parse_if_dirty();
+        assert!(!state.diff_parse_dirty);
+        assert!(state.diff.as_ref().unwrap().parsed_new.is_some());
+    }
+
+    /// The build rides on `refresh_parsed`'s tail rather than a
+    /// hand-maintained list of sites, so a mid-review setting change
+    /// (all of `OpenSettings` / `SwitchTheme` / `CreateCustomTheme` are
+    /// on the `diff_safe_action` allowlist) rebuilds it too.
+    #[test]
+    fn a_mid_review_render_setting_change_rebuilds_the_diff_parse() {
+        let mut state = diff_state_for("| a |\n|---|\n| 1 |\n", "| a |\n|---|\n| 2 |\n");
+        state.flush_diff_parse_if_dirty();
+        let before = state.diff.as_ref().unwrap().layout_version();
+        state.set_row_striping(true);
+        assert!(state.diff.as_ref().unwrap().parsed_new.is_some());
+        assert!(state.diff.as_ref().unwrap().layout_version() > before);
+    }
+
+    /// Outside a review the tail call is a single branch and installs
+    /// nothing.
+    #[test]
+    fn refresh_diff_parse_is_inert_without_a_review() {
+        let mut state = EditorState::new(Buffer::from_str("hello\n"), theme());
+        state.refresh_parsed();
+        assert!(state.diff.is_none());
     }
 
     /// A hunk already on the first screen needs no scrolling.

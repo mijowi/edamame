@@ -5,6 +5,8 @@ mod actions;
 mod autosave;
 mod cursor_style;
 mod diff_advance;
+pub mod difftool;
+pub use difftool::{diff_label, is_markdown_pair, read_side};
 mod event_loop;
 mod external_editor;
 mod file_changed;
@@ -113,6 +115,27 @@ pub struct App {
     theme: &'static Theme,
     capabilities: Capabilities,
     file_path: Option<PathBuf>,
+    /// Name shown in the status bar in place of a file name, set only by
+    /// the difftool presentation (`--diff`).
+    ///
+    /// That session opens no file — `file_path` is `None` so nothing can
+    /// start a watcher on, or save over, the temp files git hands us —
+    /// which would otherwise leave the status bar reading `[No file]` for
+    /// every file in a `git difftool` loop, exactly when knowing which one
+    /// is under review matters most.
+    diff_label: Option<String>,
+    /// Set when the user ended a difftool session with `Quit` rather
+    /// than `Esc`, so `main` can stop the whole walk once the terminal
+    /// is back.
+    ///
+    /// The two exits mean different things across a multi-file review:
+    /// `Esc` is "done with this file, show me the next", `Ctrl-Q` is
+    /// "stop reviewing". Acting on the second is `main`'s job and not
+    /// this type's, because it happens *after* `terminal::restore` —
+    /// see [`crate::app::difftool::stop_walk`], which ends the walk by
+    /// signalling the process group rather than by an exit code git
+    /// discards by default.
+    diff_stop_walk: bool,
     editor: EditorState,
     view_state: EditorViewState,
     should_quit: bool,
@@ -765,6 +788,8 @@ impl App {
             theme,
             capabilities,
             file_path,
+            diff_label: None,
+            diff_stop_walk: false,
             editor,
             view_state,
             should_quit: false,
@@ -965,7 +990,16 @@ impl App {
         Ok(())
     }
 
+    /// True when a difftool session ended via `Quit` — see
+    /// [`App::diff_stop_walk`].
+    pub fn diff_stop_walk(&self) -> bool {
+        self.diff_stop_walk
+    }
+
     fn display_filename(&self) -> String {
+        if let Some(label) = &self.diff_label {
+            return label.clone();
+        }
         match &self.file_path {
             Some(p) => p
                 .file_name()

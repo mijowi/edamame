@@ -13,9 +13,13 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Syntax highlighting for fenced code blocks, covering over 200 languages. The language comes only from the opening fence — a fence with no language renders as plain code. Colors come from the active theme. Highlighting can be turned off in settings.
 - Links to a section of another document — `[text](other.md#a-heading)` — now open that file and land on the heading.
 - The same on the command line: `edamame notes.md#a-heading` opens the file at that heading.
+- `edamame --diff <old> <new>` opens a read-only review of two files, for use as a `git difftool`. `Tab` moves between hunks, `Esc` goes on to the next file, and `Ctrl-Q` stops the walk. Nothing is written. A pair that isn't Markdown or isn't readable as text is reported and skipped.
+- YAML (`---`) and TOML (`+++`) frontmatter is rendered as a metadata block — one row per source line, dimmed, with keys picked out from values — instead of a horizontal rule followed by a headng. Only the very first line of a file can open frontmatter, so `---` section separators elsewhere still render as rules. Frontmatter is left out of an HTML export.
+- Three theme keys for it: `frontmatter_delimiter`, `frontmatter_key`, `frontmatter_value`.
 
 ### Changed
 
+- Diff review now shows the unchanged parts of a document as rendered Markdown — headings styled, tables as grids, images in place — so only the regions actually under review drop to raw source.
 - Block quotes are marked with a subtle background wash instead of italic text, so emphasis inside a quote is visible as emphasis.
 
 ### Fixed

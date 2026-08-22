@@ -237,6 +237,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, ctx: HintCtx) -> Hint
             search_match: None,
         },
         Mode::Diff => {
+            let read_only = state.diff.as_ref().is_some_and(|d| d.read_only);
             let all_resolved = state.diff.as_ref().is_some_and(|d| d.all_resolved());
             let focused_resolved = state.diff.as_ref().is_some_and(|d| {
                 d.focused_decision()
@@ -244,7 +245,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, ctx: HintCtx) -> Hint
             });
             HintSet {
                 prelude: None,
-                chords: diff_review_chords(all_resolved, focused_resolved),
+                chords: diff_review_chords(keymap, all_resolved, focused_resolved, read_only),
                 search_match: None,
             }
         }
@@ -363,14 +364,49 @@ fn chords_from(keymap: &KeyMap, entries: &[(Action, &str)]) -> Vec<HintChord> {
 /// with the key that actually fires.  The labels are this row's own
 /// (terse, to fit the bar).
 ///
+/// `Quit` is the one entry that comes from the `keymap` instead: it is
+/// not a review binding — it is the global quit chord, honored in diff
+/// mode via `diff_safe_action` — so it is rebindable and has no glyph
+/// in the diff table.  Only the read-only row lists it, which is why
+/// the `keymap` is threaded in.
+///
 /// `Esc Exit` trails the row, and only once every hunk is resolved:
 /// diff mode can't be exited via `Esc` while hunks are still pending
 /// (see `Action::DiffExit`), so advertising the chord before then
 /// would be misleading.
-fn diff_review_chords(all_resolved: bool, focused_resolved: bool) -> Vec<HintChord> {
+fn diff_review_chords(
+    keymap: &KeyMap,
+    all_resolved: bool,
+    focused_resolved: bool,
+    read_only: bool,
+) -> Vec<HintChord> {
     let mk = |action: &Action, label: &str| {
         HintChord::new(crate::input::diff_hint(action), label.to_owned())
     };
+    // A read-only review (`--diff`) refuses every decision action, so
+    // the row carries navigation and exit only — advertising `y Accept`
+    // beside a key that answers "This review is read-only" is worse than
+    // a short row.  `Esc Exit` is unconditional here: there is nothing
+    // to resolve, so the gate below would hide the one way out.
+    //
+    // `Quit` rides this row and no other, because in a difftool session
+    // the two exits mean different things: `Esc` finishes this file and
+    // lets `git difftool` move to the next, while `Quit` ends the whole
+    // walk (`app::difftool::stop_walk`).  A key that stops a multi-file
+    // review has to be discoverable from the review itself, not only
+    // from the docs.  Elsewhere in diff mode `Esc` is the intended exit
+    // and `Quit` stays off the row.
+    if read_only {
+        let mut chords = vec![
+            mk(&Action::DiffNext, "Next"),
+            mk(&Action::DiffPrev, "Prev"),
+            mk(&Action::DiffExit, "Exit"),
+        ];
+        // Dropped silently when the user has unbound `Quit`, as
+        // everywhere else the row resolves a keymap chord.
+        chords.extend(chords_from(keymap, &[(Action::Quit, "Stop reviewing")]));
+        return chords;
+    }
     let mut chords = vec![
         mk(&Action::DiffNext, "Next"),
         mk(&Action::DiffPrev, "Prev"),
@@ -810,11 +846,39 @@ mod tests {
         assert!(set.chords.iter().any(|c| c.label == "Quit"));
     }
 
+    /// A read-only (`--diff`) review advertises navigation and exit
+    /// only: every decision key answers "This review is read-only", and
+    /// `Esc Exit` must appear even though nothing is resolved, because
+    /// it is the one way out of the session.
+    #[test]
+    fn a_read_only_diff_row_offers_only_navigation_and_the_two_exits() {
+        let labels: Vec<String> = diff_review_chords(&keymap(), false, false, true)
+            .into_iter()
+            .map(|c| c.label)
+            .collect();
+        assert_eq!(labels, vec!["Next", "Prev", "Exit", "Stop reviewing"]);
+    }
+
+    /// The two exits differ in a difftool walk — `Esc` advances to the
+    /// next file, `Quit` stops it — so both must be on the row, with
+    /// distinct chords.
+    #[test]
+    fn a_read_only_diff_row_names_a_distinct_chord_for_each_exit() {
+        let row = diff_review_chords(&keymap(), false, false, true);
+        let exit = row.iter().find(|c| c.label == "Exit").expect("Esc Exit");
+        let stop = row
+            .iter()
+            .find(|c| c.label == "Stop reviewing")
+            .expect("Quit chord");
+        assert_ne!(exit.chord, stop.chord);
+        assert!(!stop.chord.is_empty(), "the quit chord must be nameable");
+    }
+
     #[test]
     fn diff_hint_gates_exit_on_full_resolution() {
         // Pending hunks: no `Esc Exit` hint (diff can't be exited yet),
         // and the navigation/decision chords lead the row.
-        let pending = diff_review_chords(false, false);
+        let pending = diff_review_chords(&keymap(), false, false, false);
         assert!(
             !pending.iter().any(|c| c.label == "Exit"),
             "Exit hint must be hidden while hunks are pending",
@@ -823,7 +887,7 @@ mod tests {
 
         // All resolved: the review actions still lead, and `Esc Exit`
         // appears at the very end of the row.
-        let resolved = diff_review_chords(true, true);
+        let resolved = diff_review_chords(&keymap(), true, true, false);
         assert_eq!(resolved[0].label, "Next", "review actions lead the row");
         let last = resolved.last().expect("non-empty row");
         assert_eq!(last.chord, "Esc");
@@ -834,13 +898,13 @@ mod tests {
     fn diff_reset_hint_only_when_focused_hunk_resolved() {
         // Focused hunk still pending → no `Reset` chord (it'd be a
         // no-op there).
-        let pending = diff_review_chords(false, false);
+        let pending = diff_review_chords(&keymap(), false, false, false);
         assert!(
             !pending.iter().any(|c| c.label == "Reset"),
             "Reset hint must be hidden while the focused hunk is pending",
         );
         // Focused hunk decided → `⌫ Reset` is offered.
-        let decided = diff_review_chords(false, true);
+        let decided = diff_review_chords(&keymap(), false, true, false);
         let reset = decided
             .iter()
             .find(|c| c.label == "Reset")

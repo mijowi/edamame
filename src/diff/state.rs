@@ -11,11 +11,11 @@
 //! in `src/diff/history.rs` — does not land until the Edit sub-mode
 //! (CP6).  `Action::Undo` / `Action::Redo` are no-ops in diff Review.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use ropey::Rope;
 
-use crate::document::{Buffer, Cursor};
+use crate::document::{Buffer, Cursor, ParsedDoc};
 
 use super::engine::{
     compute, hunk_new_side_text, match_by_old_overlap, pending_decisions, HunkIdAllocator,
@@ -77,10 +77,61 @@ pub struct DiffState {
     /// `App::enter_diff_mode` flashes a hint on entry so the user
     /// understands why that table isn't reviewable row-by-row.
     pub uneven_table_fallback: bool,
+    /// `true` when this review may only be *read* — the difftool
+    /// presentation (`edamame --diff <old> <new>`).
+    ///
+    /// A `git difftool` invocation is a viewer: the two sides are paths
+    /// git chose (usually at least one a temp file it deletes on our
+    /// exit), so a decision would either be written somewhere the user
+    /// never named or silently discarded.  Rather than offering
+    /// accept/reject and dropping the result, the flag removes the whole
+    /// decision vocabulary — `dispatch_diff_action` denies the five
+    /// decision actions, the hint row advertises only navigation and the
+    /// two exits, `ui::diff_view::decision_divider_spans` drops the
+    /// checkbox and the inline accept/reject prompt from every divider,
+    /// and `Esc` leaves the process instead of the mode.  All four read
+    /// this one flag: a surface that kept offering a decision the
+    /// dispatcher refuses is the failure this is shaped to prevent.
+    ///
+    /// It lives on the review rather than on `App` because every
+    /// consumer already has a `DiffState` in hand (the hint row reaches
+    /// it through `EditorState::diff`), and because it must survive
+    /// [`Self::reconcile_with_disk`] — a plain field does, where a
+    /// recomputed one would have to be threaded back in.
+    pub read_only: bool,
+    /// Rendered parse of the *new side*, when the review is showing
+    /// unchanged regions as rendered Markdown.
+    ///
+    /// `None` means "render every line raw" — the pre-CP5b behavior,
+    /// still reachable and still correct.  Every `DiffState::new` starts
+    /// there, and a review is queried in that state at least once per
+    /// entry: `EditorState::enter_diff_mode` defers the build by a frame
+    /// (see `diff_parse_dirty`) and `App::compute_doc_dims` asks for the
+    /// row total before `prepare_viewport` flushes it.
+    /// [`Self::reconcile_with_disk`] returns to it deliberately, because
+    /// the parse it holds was built from the `new_buffer` that call
+    /// replaces — there is no stamp pairing the two, so the pairing is
+    /// kept true by dropping the parse at the one site that can break
+    /// it.
+    /// The parse is built and installed by
+    /// [`crate::editor::EditorState::refresh_diff_parse`]: `DiffState`
+    /// deliberately holds no theme / width of its own, so ownership of
+    /// *when* to rebuild stays with the state that already tracks both.
+    pub parsed_new: Option<ParsedDoc>,
     /// Lazily-built flat visual-line list + per-width row-count cache
     /// (see [`super::layout`]).  Interior-mutable so the immutable
     /// render / scroll-query paths can populate it on first use.
     pub(crate) layout: RefCell<DiffLayoutCache>,
+    /// Monotonic counter bumped by [`Self::invalidate_layout`] and
+    /// [`Self::set_rendered_parse`] — the diff's analogue of
+    /// `ParsedDoc::parsed_version`, and the cache key for the diff-side
+    /// image-snapshot geometry (`ui::image_view::build_diff_snapshots_cached`).
+    ///
+    /// A `Cell` rather than a plain field because `invalidate_layout`
+    /// takes `&self` (the layout cache behind it is interior-mutable for
+    /// the same reason); every mutation of the line set has to bump this,
+    /// so it has to be reachable from the immutable path too.
+    layout_version: Cell<u64>,
 }
 
 impl DiffState {
@@ -122,8 +173,40 @@ impl DiffState {
             focused_id,
             ids,
             uneven_table_fallback: computation.uneven_table_fallback,
+            read_only: false,
+            parsed_new: None,
             layout: RefCell::new(DiffLayoutCache::default()),
+            layout_version: Cell::new(0),
         })
+    }
+
+    /// Install (or drop) the rendered new-side parse.  Always
+    /// invalidates the layout: the visual-line *set* depends on the
+    /// parse (which blocks are clean, and how many rendered rows each
+    /// one contributes), not just on the hunk list.
+    ///
+    /// Takes an `Option` so the raw state stays expressible after
+    /// construction, which [`Self::reconcile_with_disk`] relies on: it
+    /// replaces `new_buffer` wholesale and drops the parse built from
+    /// the old one, leaving the review raw until its caller reinstalls
+    /// a fresh parse.  The tests that pin the raw layout use the same
+    /// door.
+    pub fn set_rendered_parse(&mut self, parsed: Option<ParsedDoc>) {
+        self.parsed_new = parsed;
+        self.invalidate_layout();
+    }
+
+    /// Current layout version — see [`Self::layout_version`].
+    pub(crate) fn layout_version(&self) -> u64 {
+        self.layout_version.get()
+    }
+
+    /// Advance the layout version.  Called from
+    /// [`Self::invalidate_layout`], which is the single funnel every
+    /// line-set change already goes through.
+    pub(crate) fn bump_layout_version(&self) {
+        self.layout_version
+            .set(self.layout_version.get().wrapping_add(1));
     }
 
     /// Look up the focused hunk's index in `hunks` (or `None` when
@@ -226,11 +309,23 @@ impl DiffState {
             self.first_pending_id().unwrap_or(self.hunks[0].id)
         };
 
-        // The external reshape invalidates the cached layout.  (There is
-        // no in-diff undo history to clear in CP5 — decision undo was
-        // never implemented; the Edit-text `DiffHistory` arrives in CP6,
-        // and `reconcile_with_disk` will then clear it here.)
-        self.invalidate_layout();
+        // The external reshape invalidates the cached layout, *and* the
+        // rendered new-side parse with it: `parsed_new` was built from
+        // the `new_buffer` we just replaced, and `build_visual_lines_rendered`
+        // reads source lines out of the parse while taking the document's
+        // line count from the buffer.  Dropping it here is what makes
+        // that mismatch unreachable rather than merely unreached —
+        // nothing in `DiffState` can rebuild the parse (it holds no
+        // theme and no width; see [`Self::parsed_new`]), so the honest
+        // move is to fall back to the raw layout and let the caller's
+        // `EditorState::refresh_diff_parse` reinstall it.  A caller that
+        // forgets loses the rendered presentation for a frame, until
+        // `refresh_parsed`'s tail call comes round — never a review
+        // partitioned against stale line ranges.  (There is no in-diff
+        // undo history to clear in CP5 — decision undo was never
+        // implemented; the Edit-text `DiffHistory` arrives in CP6, and
+        // `reconcile_with_disk` will then clear it here.)
+        self.set_rendered_parse(None);
         ReconcileOutcome::StillReviewing { reset }
     }
 
@@ -559,6 +654,33 @@ mod tests {
             .iter()
             .position(|h| h.id == id)
             .expect("hunk id present")
+    }
+
+    /// `reconcile_with_disk` replaces `new_buffer`, so the parse built
+    /// from the previous one must not survive: nothing pairs the two,
+    /// and `build_visual_lines_rendered` reads source lines out of the
+    /// parse while taking the line count from the buffer.  Dropping it
+    /// makes the review fall back to the raw layout — correct, if
+    /// plainer — until the caller reinstalls a fresh parse.
+    #[test]
+    fn reconcile_drops_the_stale_rendered_parse() {
+        let theme: &'static crate::config::Theme =
+            Box::leak(Box::new(crate::config::Theme::default()));
+        let old = "# Title\n\nAlpha.\n";
+        let new1 = "# Title\n\nALPHA.\n";
+        let mut state = DiffState::new(old, new1).unwrap();
+        state.set_rendered_parse(Some(ParsedDoc::build(new1, theme, true, 20)));
+        assert!(state.parsed_new.is_some());
+
+        let outcome = state.reconcile_with_disk("# Title\n\nALPHA!\n");
+        assert_eq!(outcome, ReconcileOutcome::StillReviewing { reset: 0 });
+        assert!(
+            state.parsed_new.is_none(),
+            "a parse built from the replaced buffer must not survive"
+        );
+        // And the layout it feeds is rebuilt raw rather than reused.
+        let raw = DiffState::new(old, "# Title\n\nALPHA!\n").unwrap();
+        assert_eq!(state.total_visual_rows(80), raw.total_visual_rows(80));
     }
 
     #[test]

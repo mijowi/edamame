@@ -13,7 +13,8 @@ const DOCS_URL: &str = "https://github.com/mijowi/edamame/blob/main/docs/getting
 const ISSUES_URL: &str = "https://github.com/mijowi/edamame/issues";
 
 /// The usage line, printed under a [`super::CliError`] on stderr.
-pub const USAGE: &str = "USAGE:\n    edamame [OPTIONS] [FILE[#SECTION]]\n\nTry 'edamame --help'.";
+pub const USAGE: &str =
+    "USAGE:\n    edamame [OPTIONS] [FILE[#SECTION]]\n    edamame --diff <OLD> <NEW>\n\nTry 'edamame --help'.";
 
 /// `--version` output: `edamame 0.1.0`.
 ///
@@ -33,6 +34,7 @@ A fast TUI Markdown editor and viewer
 
 USAGE:
     edamame [OPTIONS] [FILE[#SECTION]]
+    edamame --diff <OLD> <NEW>
 
 ARGS:
     <FILE>           Markdown file to open (empty buffer if omitted).
@@ -44,6 +46,9 @@ OPTIONS:
     -V, --version    Print the installed version
         --doctor     Print version, system, and terminal diagnostics;
                      include this output when reporting an issue
+        --diff       Review two Markdown files side by side, read-only.
+                     A pair that isn't Markdown is skipped.  Intended as
+                     a git difftool; see docs/editing.md
         --no-config  Ignore ~/.config/edamame for the whole run: built-in
                      defaults only, and no settings saved
         --log        Write a debug log for this run
@@ -75,6 +80,7 @@ mod tests {
             "-V",
             "--version",
             "--doctor",
+            "--diff",
             "--no-config",
             "--log",
         ] {

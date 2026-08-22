@@ -975,6 +975,27 @@ impl App {
         if self.dispatch_flow_scroll(&action, doc_height, doc_width) {
             return;
         }
+        // A read-only review (`--diff`) has no decision vocabulary: the
+        // sides are paths git chose, so a decision has nowhere to go.
+        // Denied here rather than in `diff_safe_action` because that
+        // gate answers "is this action legal in diff mode at all", a
+        // question with the same answer for both presentations — and it
+        // has no `DiffState` in hand to ask.  The command palette can
+        // reach these actions too, so a key-table omission would not be
+        // enough on its own.
+        if self.editor.diff.as_ref().is_some_and(|d| d.read_only)
+            && matches!(
+                action,
+                Action::DiffAcceptHunk
+                    | Action::DiffRejectHunk
+                    | Action::DiffAcceptAll
+                    | Action::DiffRejectAll
+                    | Action::DiffResetHunk
+            )
+        {
+            self.flash("This review is read-only", MessageKind::Info);
+            return;
+        }
         match action {
             Action::DiffNext => {
                 // Manual navigation supersedes any deferred auto-advance,
@@ -1032,7 +1053,14 @@ impl App {
                 //    must decide every hunk before leaving (Apply on the
                 //    confirm modal is the exit, or Quit to abandon).
                 self.cancel_diff_advance();
-                if self.editor.diff.as_ref().is_some_and(|d| d.all_resolved()) {
+                // A read-only review is the whole session — there is no
+                // editor behind it to return to, and nothing to resolve
+                // — so Esc leaves the process.  git difftool runs one
+                // file per invocation, so this is what advances the loop
+                // to the next file.
+                if self.editor.diff.as_ref().is_some_and(|d| d.read_only) {
+                    self.should_quit = true;
+                } else if self.editor.diff.as_ref().is_some_and(|d| d.all_resolved()) {
                     self.check_diff_resolution();
                 } else {
                     self.flash(
@@ -1046,6 +1074,16 @@ impl App {
             // re-points the buffer path and watcher, which would desync
             // the live diff.
             Action::Quit => {
+                // Nothing is at stake in a read-only review — no
+                // decisions, no unapplied merge — so the confirmation
+                // would be a prompt with one sensible answer.  The flag
+                // is what tells `main` to end the whole `git difftool`
+                // walk and not just this file.
+                if self.editor.diff.as_ref().is_some_and(|d| d.read_only) {
+                    self.diff_stop_walk = true;
+                    self.should_quit = true;
+                    return;
+                }
                 // An active diff review is unapplied work — quitting
                 // would discard the pending external change and every
                 // decision.  Warn first, mirroring the dirty-buffer
@@ -1259,6 +1297,66 @@ impl App {
             );
         }
         self.needs_draw = true;
+    }
+
+    /// Install a **read-only** review of `old` vs `new` and enter diff
+    /// mode — the `--diff` difftool presentation.
+    ///
+    /// Distinct from [`Self::enter_diff_mode`] rather than a flag on it,
+    /// because almost none of that method's work applies: there is no
+    /// vim command line to tear down, no search flow to end, and no
+    /// intro modal to push (it teaches the accept/reject vocabulary this
+    /// review does not have). What it shares is the one thing that
+    /// matters — `DiffState::new` refusing an empty hunk list, and
+    /// `EditorState::enter_diff_mode` as the single door into
+    /// `Mode::Diff`.
+    ///
+    /// The buffer is seeded with the *old* side so the review reads the
+    /// way every other one does (buffer = before, `new_buffer` = after)
+    /// and so `resolved_rope`'s coordinate space stays meaningful should
+    /// a later write-back mode want it. `dirty` is left false by
+    /// `replace_buffer`, and `file_path` stays `None`, so nothing in the
+    /// process has a path to save over.
+    ///
+    /// Returns `false` when the two files are byte-identical — git only
+    /// invokes a difftool for paths it believes differ, but a
+    /// whitespace- or mode-only change can still reach us, and opening
+    /// an empty review would be worse than saying so on stderr.
+    pub fn enter_read_only_diff(&mut self, old: String, new: String) -> bool {
+        let Some(mut diff_state) = crate::diff::DiffState::new(&old, &new) else {
+            return false;
+        };
+        diff_state.read_only = true;
+        let uneven_table_fallback = diff_state.uneven_table_fallback;
+        self.editor
+            .replace_buffer(crate::document::Buffer::from_str(&old));
+        self.editor.enter_diff_mode(diff_state);
+        // `App::new` built the three media prompts from the editor it
+        // was handed, which for a `--diff` session is the empty startup
+        // buffer — so this is the call that asks them against the
+        // document actually under review.  Without it a mermaid diagram
+        // or a remote image in a clean region shows a placeholder for
+        // the whole session under the default `ask` policy, because
+        // nothing else ever sets `session_diagrams_enabled` /
+        // `session_images_enabled` and `effective_*_enabled` is false
+        // until something does (issue #30's shape, one path further on).
+        // After `enter_diff_mode`, since the prompts read
+        // `editor.parsed`, which `replace_buffer` has just rebuilt.
+        self.on_document_contents_swapped();
+        if uneven_table_fallback {
+            self.flash(
+                "Table has uneven row widths — not split into per-row hunks",
+                MessageKind::Info,
+            );
+        }
+        self.needs_draw = true;
+        true
+    }
+
+    /// Set the status-bar label for a difftool session (see
+    /// [`App::diff_label`]).
+    pub fn set_diff_label(&mut self, label: Option<String>) {
+        self.diff_label = label;
     }
 
     /// Apply the merged result to the editor buffer and exit diff
@@ -1822,6 +1920,118 @@ mod tests {
             "diff is taken against the pristine buffer, not preview text",
         );
         assert!(app.editor.diff.is_some());
+    }
+
+    // ── Read-only (difftool) review ──────────────────────────────
+
+    fn read_only_app(old: &str, new: &str) -> crate::app::App {
+        let mut app = make_app();
+        assert!(app.enter_read_only_diff(old.to_owned(), new.to_owned()));
+        app
+    }
+
+    #[test]
+    fn enter_read_only_diff_marks_the_review_and_seeds_the_old_side() {
+        let app = read_only_app("alpha\nbeta\n", "alpha\nBETA\n");
+        assert_eq!(app.editor.mode, crate::editor::Mode::Diff);
+        let diff = app.editor.diff.as_ref().expect("review installed");
+        assert!(diff.read_only);
+        // Buffer holds the *before* side, as in every other review.
+        assert_eq!(app.editor.buffer.contents(), "alpha\nbeta\n");
+        assert!(!app.editor.dirty);
+    }
+
+    /// The intro modal teaches accept/reject, which this review does not
+    /// have — pushing it would document keys that answer "read-only".
+    #[test]
+    fn a_read_only_review_pushes_no_intro_modal() {
+        use crate::app::modal::DiffIntroModal;
+        let app = read_only_app("alpha\nbeta\n", "alpha\nBETA\n");
+        assert!(app.config.editor.show_diff_intro, "intro is on by default");
+        assert!(!app.modal_stack.contains::<DiffIntroModal>());
+    }
+
+    /// Identical sides yield no review at all, rather than an empty one.
+    #[test]
+    fn enter_read_only_diff_declines_identical_files() {
+        let mut app = make_app();
+        assert!(!app.enter_read_only_diff("same\n".to_owned(), "same\n".to_owned()));
+        assert!(app.editor.diff.is_none());
+        assert_ne!(app.editor.mode, crate::editor::Mode::Diff);
+    }
+
+    /// Every decision action is refused, including via the command
+    /// palette — the key table is not the only way to reach them.
+    #[test]
+    fn a_read_only_review_refuses_every_decision_action() {
+        use crate::config::Action;
+        for action in [
+            Action::DiffAcceptHunk,
+            Action::DiffRejectHunk,
+            Action::DiffAcceptAll,
+            Action::DiffRejectAll,
+            Action::DiffResetHunk,
+        ] {
+            let mut app = read_only_app("alpha\nbeta\n", "alpha\nBETA\n");
+            app.dispatch_action(action.clone(), 40, 80);
+            let diff = app.editor.diff.as_ref().expect("still reviewing");
+            assert!(
+                diff.decisions
+                    .iter()
+                    .all(|d| *d == crate::diff::Decision::Pending),
+                "{action:?} changed a decision in a read-only review"
+            );
+            assert!(!app.should_quit, "{action:?} must not end the session");
+        }
+    }
+
+    /// Esc ends the process: there is no editor behind the review to
+    /// return to, and git difftool runs one file per invocation.
+    #[test]
+    fn esc_quits_a_read_only_review_without_resolving() {
+        use crate::config::Action;
+        let mut app = read_only_app("alpha\nbeta\n", "alpha\nBETA\n");
+        app.dispatch_action(Action::DiffExit, 40, 80);
+        assert!(app.should_quit);
+        assert!(!app.diff_stop_walk(), "Esc moves on to the next file");
+    }
+
+    /// Quit skips the discard-confirm modal (nothing is at stake) and
+    /// flags the abort so `main` can exit non-zero.
+    #[test]
+    fn quit_aborts_a_read_only_review_without_confirmation() {
+        use crate::app::modal::DiffQuitConfirmModal;
+        use crate::config::Action;
+        let mut app = read_only_app("alpha\nbeta\n", "alpha\nBETA\n");
+        app.dispatch_action(Action::Quit, 40, 80);
+        assert!(app.should_quit);
+        assert!(app.diff_stop_walk());
+        assert!(!app.modal_stack.contains::<DiffQuitConfirmModal>());
+    }
+
+    /// The review *is* the document for a `--diff` session, so the media
+    /// prompts have to be asked against it: `App::new` built them from
+    /// the empty startup buffer, and under the default `ask` policy
+    /// nothing else would ever set `session_diagrams_enabled` — the
+    /// diagram would render as a placeholder for the whole review with
+    /// no question asked.
+    #[test]
+    fn a_read_only_review_asks_the_media_prompts_for_its_document() {
+        use crate::app::modal::DiagramsEnabledPromptModal;
+        let old = "# Doc\n\n```mermaid\ngraph TD;\nA-->B;\n```\n\nbefore\n";
+        let new = "# Doc\n\n```mermaid\ngraph TD;\nA-->B;\n```\n\nafter\n";
+        let app = read_only_app(old, new);
+        assert!(
+            matches!(
+                app.config.diagrams.enabled,
+                crate::config::DiagramsEnabled::Ask
+            ),
+            "ask is the default policy this test depends on",
+        );
+        assert!(
+            app.modal_stack.contains::<DiagramsEnabledPromptModal>(),
+            "the diagrams prompt must be queued for the reviewed document",
+        );
     }
 
     #[test]

@@ -11,6 +11,7 @@ use ratatui::Terminal;
 
 use edamame::config::Theme;
 use edamame::diff::{Decision, DiffState};
+use edamame::document::ParsedDoc;
 use edamame::ui::{DiffView, DiffViewState};
 
 fn theme() -> &'static Theme {
@@ -501,5 +502,149 @@ fn unfocused_resolved_divider_uses_dim_resolution_hue() {
     assert!(
         !style.add_modifier.contains(Modifier::BOLD),
         "must not be bold"
+    );
+}
+
+// ── Rendered clean regions ──────────────────────────────────────────────
+
+/// A review with the rendered new-side parse installed, as
+/// `EditorState::refresh_diff_parse` installs it.
+fn rendered_state(old: &str, new: &str) -> DiffState {
+    let mut state = DiffState::new(old, new).expect("non-empty diff");
+    state.set_rendered_parse(Some(ParsedDoc::build(new, theme(), true, 20)));
+    state
+}
+
+#[test]
+fn a_heading_in_a_clean_region_paints_rendered_not_raw() {
+    let old = "# Heading\n\nbee\n";
+    let new = "# Heading\n\nBEE\n";
+    let lines = render_to_strings(&rendered_state(old, new), 40, 12);
+    assert!(
+        lines.iter().any(|l| l.trim() == "Heading"),
+        "the unchanged heading must render styled, without its `#`: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("# Heading")),
+        "raw heading source must not appear: {lines:?}"
+    );
+}
+
+#[test]
+fn markers_still_prefix_every_line_inside_a_raw_region() {
+    // The rendered path must not disturb the changed region's
+    // presentation: markers, both sides, and the untouched context lines
+    // *within* the region all stay raw.
+    let old = "# Heading\n\nctx\nbee\n";
+    let new = "# Heading\n\nctx\nBEE\n";
+    let lines = render_to_strings(&rendered_state(old, new), 40, 12);
+    assert!(
+        lines.iter().any(|l| l.starts_with("- bee")),
+        "delete line needs a `- ` marker: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.starts_with("+ BEE")),
+        "add line needs a `+ ` marker: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.starts_with("  ctx")),
+        "raw context inside the region keeps its two-space prefix: {lines:?}"
+    );
+}
+
+/// The raw layout is still a live path — every review is queried in it
+/// on its first frame, before `prepare_viewport` resolves the deferred
+/// parse — so it has to keep painting exactly what it always did.
+#[test]
+fn without_a_parse_the_review_paints_the_raw_view() {
+    // Every other test in this file constructs `parsed_new: None`
+    // already, so "identical to today" proves nothing on its own.  Build
+    // the same review twice: with a parse the output must differ, and
+    // dropping the parse must restore the raw output byte for byte.
+    let old = "# Heading\n\nbee\n";
+    let new = "# Heading\n\nBEE\n";
+    let raw = render_to_strings(&DiffState::new(old, new).unwrap(), 40, 12);
+
+    let mut state = rendered_state(old, new);
+    let with_parse = render_to_strings(&state, 40, 12);
+    assert_ne!(with_parse, raw, "the rendered path must change the output");
+
+    state.set_rendered_parse(None);
+    assert_eq!(
+        render_to_strings(&state, 40, 12),
+        raw,
+        "dropping the parse must restore the raw view exactly"
+    );
+}
+
+// ── Read-only (`--diff`) review ──────────────────────────────────────
+
+/// A read-only review offers no decisions, so its dividers must not
+/// draw a checkbox the user cannot tick or name keys that answer "This
+/// review is read-only".  Gated by the same `DiffState::read_only` flag
+/// that shortens the hint row, so the two surfaces agree.
+#[test]
+fn a_read_only_divider_shows_no_checkbox_and_no_prompt() {
+    let mut state = DiffState::new("a\nb\nc\nd\n", "a\nB\nc\nD\n").unwrap();
+    state.read_only = true;
+    assert_eq!(state.hunks.len(), 2, "need two hunks for focus coverage");
+    let lines = render_to_strings(&state, 60, 12);
+    for line in &lines {
+        assert!(
+            !line.contains("[ ]"),
+            "read-only review must draw no checkbox: {line:?}"
+        );
+        assert!(
+            !line.contains("Accept") && !line.contains("Reject"),
+            "read-only review must not name the decision keys: {line:?}"
+        );
+    }
+}
+
+/// What the divider *is* in a viewer still has to survive: it numbers
+/// the hunks and marks which one is focused.
+#[test]
+fn a_read_only_divider_keeps_its_caret_and_counter() {
+    let mut state = DiffState::new("a\nb\nc\nd\n", "a\nB\nc\nD\n").unwrap();
+    state.read_only = true;
+    let lines = render_to_strings(&state, 60, 12);
+    let focused = lines
+        .iter()
+        .find(|l| l.contains("(1/2)"))
+        .expect("first divider must still be numbered");
+    assert!(
+        focused.contains('>'),
+        "the focused divider keeps its caret: {focused:?}"
+    );
+    let unfocused = lines
+        .iter()
+        .find(|l| l.contains("(2/2)"))
+        .expect("second divider must still be numbered");
+    assert!(
+        !unfocused.contains('>'),
+        "an unfocused divider carries no caret: {unfocused:?}"
+    );
+    // The counter leads the row rather than trailing an absent checkbox.
+    assert!(
+        unfocused.trim_start().starts_with("(2/2)"),
+        "the counter is the whole content of an unfocused read-only divider: {unfocused:?}"
+    );
+}
+
+/// The suppression covers the resolved glyphs too, not just the pending
+/// checkbox: no read-only path can produce a decision, so a `[Y]` /
+/// `[N]` on screen there would be reporting a state the user has no way
+/// to have reached.
+#[test]
+fn a_read_only_divider_shows_no_resolved_glyph() {
+    let mut state = DiffState::new("a\nb\nc\n", "a\nB\nc\n").unwrap();
+    state.read_only = true;
+    state.decisions[0] = Decision::Accepted;
+    let lines = render_to_strings(&state, 60, 6);
+    assert!(
+        lines
+            .iter()
+            .all(|l| !l.contains("[Y]") && !l.contains("[N]")),
+        "read-only dividers carry no decision glyph: {lines:?}"
     );
 }
