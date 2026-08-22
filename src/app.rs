@@ -475,6 +475,21 @@ fn configure_new_editor(
     if !images_layout_on || !diagrams_layout_on {
         editor.refresh_parsed();
     }
+    leave_preview_under_vim(config, editor);
+}
+
+/// Vim modal editing replaces Preview with vim-Normal as the resting
+/// non-editing mode, so no editor may come to rest in Preview while it
+/// is on.  Every `EditorState` is born in `Mode::Preview`, and a new one
+/// is built for *every* document — so without this a file opened by
+/// link, back-navigation or an `$EDITOR` return landed in Preview, with
+/// its "Press any key to edit" prelude and browse-only chord row, while
+/// the status bar still read `NORMAL`.  One helper rather than a copy
+/// per site: the copies are how the per-document path was missed.
+fn leave_preview_under_vim(config: &Config, editor: &mut EditorState) {
+    if config.modal.handler == VIM_HANDLER && editor.mode == crate::editor::Mode::Preview {
+        editor.mode = crate::editor::Mode::Rendered;
+    }
 }
 
 impl App {
@@ -635,15 +650,11 @@ impl App {
         }
         configure_new_editor(&mut editor, &config, !images_off, !diagrams_off);
 
-        // Vim modal editing is opt-in via `config.modal.handler`.  When
-        // enabled the editor never rests in Preview (vim-Normal replaces
-        // it as the non-editing mode), so switch out of the default
-        // Preview mode at startup; the `NORMAL` badge then shows from the
-        // first frame.
+        // Vim modal editing is opt-in via `config.modal.handler`.  The
+        // Preview escape that comes with it is handled by
+        // `configure_new_editor` above, shared with every document
+        // opened later, so the `NORMAL` badge shows from the first frame.
         let vim = (config.modal.handler == VIM_HANDLER).then(VimState::default);
-        if vim.is_some() && editor.mode == crate::editor::Mode::Preview {
-            editor.mode = crate::editor::Mode::Rendered;
-        }
 
         // PreviewView borrows `editor.parsed.lines` at render time, so
         // no per-event clone is needed and the constructor is now
@@ -866,9 +877,7 @@ impl App {
             }
             // Vim-Normal replaces Preview as the resting mode, so leave
             // Preview behind exactly as startup does.
-            if self.editor.mode == crate::editor::Mode::Preview {
-                self.editor.mode = crate::editor::Mode::Rendered;
-            }
+            leave_preview_under_vim(&self.config, &mut self.editor);
         } else {
             self.config.modal.handler = DEFAULT_HANDLER.into();
             self.vim = None;
@@ -1046,6 +1055,26 @@ mod vim_wiring_tests {
         // Vim never rests in Preview — startup switches to Rendered so
         // the NORMAL badge shows from the first frame.
         assert_eq!(app.editor.mode, Mode::Rendered);
+    }
+
+    #[test]
+    fn a_document_opened_under_vim_never_lands_in_preview() {
+        // Every document gets a fresh `EditorState`, born in Preview —
+        // so a link follow / back-navigation used to drop a vim session
+        // into Preview, complete with its "Press any key to edit" hint.
+        let mut app = app_with_handler("vim");
+        assert_eq!(app.editor.mode, Mode::Rendered);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("other.md");
+        std::fs::write(&path, "# Other\n").expect("write");
+        app.load_file_into_editor(path).expect("load");
+
+        assert_eq!(
+            app.editor.mode,
+            Mode::Rendered,
+            "a newly loaded document must not rest in Preview under vim"
+        );
     }
 
     #[test]

@@ -557,6 +557,10 @@ impl App {
         );
         self.editor.cursor.offset = dest.cursor_offset.min(self.editor.buffer.len_chars());
         self.editor.mode = dest.mode;
+        // A nav entry records the mode it was taken in, so an entry
+        // pushed before a mid-session vim toggle carries `Preview` —
+        // which vim has no way back out of.
+        super::leave_preview_under_vim(&self.config, &mut self.editor);
         self.editor.update_cursor_block();
         // Preview decouples scroll from the cursor (jumps move the
         // viewport without the cursor), so the restored scroll is
