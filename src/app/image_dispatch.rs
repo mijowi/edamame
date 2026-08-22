@@ -498,7 +498,15 @@ impl App {
                 // stay `Pending` forever and the placeholder would
                 // never transition to the failure state.
                 let url_for_panic = url.clone();
-                let result: Result<crate::image::LoadedImage, (String, String)> =
+                // Marks this worker thread for the process panic hook,
+                // which would otherwise restore the terminal (and print
+                // through it) for a panic we are about to catch.  Scoped
+                // to the `catch_unwind` alone, so a panic in the event
+                // assembly below still reaches the hook.  `resolve_mermaid`
+                // guards a `catch_unwind` of its own inside this one,
+                // which is why the guard is a counter and not a flag.
+                let result: Result<crate::image::LoadedImage, (String, String)> = {
+                    let _expected = crate::terminal::ExpectedPanic::new();
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &source {
                         Some(crate::diagram::DiagramSource::Mermaid(src)) => {
                             crate::diagram::resolve_mermaid(url.clone(), src, max_cells, font_size)
@@ -514,16 +522,17 @@ impl App {
                         )
                         .map_err(|e| (url.clone(), e.to_string())),
                     }))
-                    .unwrap_or_else(|payload| {
-                        let msg = if let Some(s) = payload.downcast_ref::<String>() {
-                            format!("panic: {s}")
-                        } else if let Some(s) = payload.downcast_ref::<&'static str>() {
-                            format!("panic: {s}")
-                        } else {
-                            "panic".to_string()
-                        };
-                        Err((url_for_panic, msg))
-                    });
+                }
+                .unwrap_or_else(|payload| {
+                    let msg = if let Some(s) = payload.downcast_ref::<String>() {
+                        format!("panic: {s}")
+                    } else if let Some(s) = payload.downcast_ref::<&'static str>() {
+                        format!("panic: {s}")
+                    } else {
+                        "panic".to_string()
+                    };
+                    Err((url_for_panic, msg))
+                });
 
                 let event = match result {
                     Ok(mut loaded) => {
@@ -548,7 +557,8 @@ impl App {
                         if let (Some(picker), Some(width), Some((mw, mh)), Some(fs)) =
                             (&scratch_picker, scratch_width, max_cells, font_size)
                         {
-                            let scratch =
+                            let scratch = {
+                                let _expected = crate::terminal::ExpectedPanic::new();
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     let rows =
                                         crate::image::aspect_rows_of(&loaded.image, mw, mh, fs)
@@ -563,7 +573,8 @@ impl App {
                                         rect,
                                     );
                                     Some((rect, buf))
-                                }));
+                                }))
+                            };
                             match scratch {
                                 Ok(s) => loaded.scratch = s,
                                 Err(_) => tracing::warn!(

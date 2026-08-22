@@ -34,7 +34,13 @@ pub fn warm_fontdb() {
     // Prime mermaid-rs-renderer's own fontdb too (it maintains its own
     // via once_cell::sync::Lazy).  Wrapped in catch_unwind because the
     // upstream crate has known panic bugs and the warmup is
-    // best-effort.
+    // best-effort — and guarded for the same reason every other
+    // `catch_unwind` in the crate is: the process panic hook would
+    // otherwise restore the terminal out from under the TUI this thread
+    // was spawned alongside.  The diagram here is a literal, so this is
+    // the one guarded section that is not about untrusted content; the
+    // hazard is the hook, not the input.  See `terminal::panic_guard`.
+    let _expected = crate::terminal::ExpectedPanic::new();
     let _ = catch_unwind(|| {
         let _ = mermaid_rs_renderer::render("flowchart TD\nA-->B\n");
     });
@@ -119,9 +125,16 @@ pub fn render_mermaid_svg(source: &str) -> Result<String, DiagramError> {
             source.len()
         )));
     }
-    let outcome = catch_unwind(AssertUnwindSafe(|| mermaid_rs_renderer::render(source))).map_err(
-        |payload| DiagramError::RenderFailed(format!("panic: {}", panic_message(&payload))),
-    )?;
+    // Tells the process panic hook this one is caught, so it neither
+    // restores the terminal out from under a running TUI nor prints the
+    // payload through it.  Scoped to the `catch_unwind` alone — a guard
+    // still live afterwards would silence a panic nobody catches.  See
+    // `terminal::panic_guard`.
+    let outcome = {
+        let _expected = crate::terminal::ExpectedPanic::new();
+        catch_unwind(AssertUnwindSafe(|| mermaid_rs_renderer::render(source)))
+    }
+    .map_err(|payload| DiagramError::RenderFailed(format!("panic: {}", panic_message(&payload))))?;
     outcome.map_err(|e| DiagramError::RenderFailed(format!("{e:#}")))
 }
 

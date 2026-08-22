@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use ratatui::style::{Color, Modifier, Style};
 
 use super::sections::AppearanceMode;
-use super::themes::util::{best_contrast, blend};
+use super::themes::util::{best_contrast, blend, legible_on};
 
 /// How heavily to mix `code` toward `bg` when deriving the code
 /// surface bg.  Closer to 1.0 = closer to `bg` (a barely-tinted
@@ -18,6 +18,18 @@ const CODE_BG_MIX_TOWARD_BG: f32 = 0.92;
 /// spans of its own — so its wash has to stay quiet enough for those
 /// to read on top of it.
 const QUOTE_BG_MIX_TOWARD_BG: f32 = 0.94;
+
+/// Contrast floor a `syntax_*` foreground must reach against the code
+/// surface, as a WCAG ratio.  4.5:1 is the body-text threshold rather
+/// than the 3:1 one used for large text and UI affordances, because a
+/// code token is read character by character — and because the plain
+/// `code_block_text` it replaces clears 4.5 in every built-in theme, so
+/// anything less would mean highlighting *lowered* legibility.
+///
+/// It applies only where it can be measured: `legible_on` returns
+/// non-RGB colours untouched, so the indexed built-ins answer for their
+/// own numbers.
+const SYNTAX_MIN_CONTRAST: f32 = 4.5;
 
 /// Darken `base` by `level` steps for the heading ramp (0 = base,
 /// 1 = medium, 2 = dull).  RGB colors are scaled toward black via a
@@ -103,6 +115,33 @@ pub struct Theme {
     pub code_block_border: Style,
     pub code_block_lang: Style,
     pub code_block_text: Style,
+
+    // ── Syntax highlighting (fenced code block bodies) ────────────
+    //
+    // One field per `markdown::highlight::TokenClass`.  Each is
+    // *patched over* `code_block_text`, so a field only needs to say
+    // what differs from the code surface — it must not restate the
+    // background, or a theme that changes `code_block_text`'s bg gets
+    // a patchwork of stale ones.  Text no rule classified keeps
+    // `code_block_text` untouched, which is what makes an unknown
+    // language and a switched-off setting render identically to a
+    // code block from before highlighting existed.
+    /// Control flow, declarations, storage modifiers (`fn`, `if`, `pub`).
+    pub syntax_keyword: Style,
+    /// String and character literals, including their delimiters.
+    pub syntax_string: Style,
+    /// Line and block comments.
+    pub syntax_comment: Style,
+    /// Numeric literals and language constants (`42`, `true`, `nil`).
+    pub syntax_number: Style,
+    /// Type, class, struct and interface *names* — not the keywords
+    /// that declare them, which are [`Self::syntax_keyword`].
+    pub syntax_type: Style,
+    /// Function and method names, at definition and call sites.
+    pub syntax_function: Style,
+    /// Markup tags, attribute names, preprocessor directives.
+    pub syntax_attribute: Style,
+
     pub blockquote_bar: Style,
     pub blockquote_text: Style,
     pub rule: Style,
@@ -782,6 +821,10 @@ impl Theme {
         // `from_palette` returns.
         let quote_bg = blend(p.secondary, p.bg, QUOTE_BG_MIX_TOWARD_BG);
 
+        // Every `syntax_*` foreground goes through here — see the block
+        // comment on the fields themselves.
+        let syntax_fg = |c: Color| legible_on(code_bg, c, p.text, SYNTAX_MIN_CONTRAST);
+
         // Heading ramp alternates `primary` and `secondary`, getting
         // progressively duller / darker with each level.  RGB themes
         // get a tinted ramp; indexed / named colors fall back to the
@@ -846,6 +889,53 @@ impl Theme {
                 .bg(p.surface)
                 .add_modifier(italic),
             code_block_text: Style::default().fg(p.text).bg(code_bg),
+
+            // Syntax highlighting.  Seven classes over the palette's
+            // seven *foreground* slots, so every built-in theme gets a
+            // coherent set for free and no new `Palette` slot is owed.
+            // Each sets `fg` only: these are patched over
+            // `code_block_text`, which owns the code surface's bg.
+            //
+            // Which slots is not a free choice.  A palette's slots split
+            // into ones that carry text (`primary`, `text_muted`,
+            // `link`, `success`, `warning`, `error`, `code`) and ones
+            // that are fills or chrome (`secondary`, `accent`, the
+            // `bg` / `surface` family).  Only the first group has ever
+            // had to be legible *as characters*, and the second group is
+            // where this went wrong: `syntax_type` was `secondary` and
+            // `syntax_function` was `accent` — the slot `dark_256`'s own
+            // comment describes as "selection bg, table header" — which
+            // measured 1.99:1 and 1.51:1 against that theme's code
+            // surface, against 6.97:1 for the plain code text they
+            // replaced.  Highlighting made code *less* readable, on the
+            // theme every indexed terminal is force-substituted into.
+            // `code` and `link` take their places: `code` is the
+            // inline-code foreground, so it is already required to be
+            // legible on this exact surface, and `link` is the brightest
+            // text slot a palette has.  `error` picks up `attribute`,
+            // which is semantic reuse of a colour rather than a claim
+            // that anything is wrong — the same way `success` for a
+            // string literal and `warning` for a number are.
+            //
+            // `legible_on` is the backstop for the rest: a slot chosen
+            // for its role on the *page* background can still land too
+            // close to the code wash, so each colour is lifted toward
+            // `text` until it clears `SYNTAX_MIN_CONTRAST`, keeping its
+            // hue.  It is a no-op for non-RGB palettes, which is why the
+            // two 256-cube built-ins pin all seven by hand — exactly as
+            // they already pin the heading ramp, `code_bg`,
+            // `selection_muted` and the diff washes.
+            // `syntax_contrast_clears_the_floor_for_every_builtin_theme`
+            // holds the whole arrangement to account.
+            syntax_keyword: Style::default().fg(syntax_fg(p.primary)).add_modifier(bold),
+            syntax_string: Style::default().fg(syntax_fg(p.success)),
+            syntax_comment: Style::default()
+                .fg(syntax_fg(p.text_muted))
+                .add_modifier(italic),
+            syntax_number: Style::default().fg(syntax_fg(p.warning)),
+            syntax_type: Style::default().fg(syntax_fg(p.code)),
+            syntax_function: Style::default().fg(syntax_fg(p.link)),
+            syntax_attribute: Style::default().fg(syntax_fg(p.error)),
 
             // Blockquote — a subtle background wash rather than a text
             // attribute.  It used to be a blanket ITALIC, which left
@@ -1213,6 +1303,7 @@ impl Default for Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::themes::util::contrast_ratio;
 
     /// The picker, the settings cycle, and the export-theme source list
     /// all build from this, so a `--no-config` run offering a user theme
@@ -1503,5 +1594,110 @@ mod tests {
         assert!(!dark.iter().any(|n| n == "256 Light"));
         assert!(light.iter().any(|n| n == "256 Light"));
         assert!(!light.iter().any(|n| n == "Edamame"));
+    }
+
+    // ── Syntax highlighting contrast ──────────────────────────────
+
+    /// Resolve an xterm-256 index to its standard RGB value.
+    ///
+    /// Indices 16–231 are the 6×6×6 cube and 232–255 the greyscale
+    /// ramp; both are fixed by the spec, so a built-in theme's indexed
+    /// choices really can be measured.  Indices 0–15 are the terminal's
+    /// user-configurable ANSI slots and have no fixed value — no
+    /// built-in picks one for a `syntax_*` field, and the test below
+    /// treats a hit there as a failure rather than skipping it, so a
+    /// future edit can't opt out of the floor by reaching for one.
+    fn xterm_rgb(i: u8) -> Option<(u8, u8, u8)> {
+        const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+        match i {
+            0..=15 => None,
+            16..=231 => {
+                let i = i - 16;
+                Some((
+                    LEVELS[(i / 36) as usize],
+                    LEVELS[((i % 36) / 6) as usize],
+                    LEVELS[(i % 6) as usize],
+                ))
+            }
+            _ => {
+                let v = 8 + 10 * (i as u16 - 232);
+                Some((v as u8, v as u8, v as u8))
+            }
+        }
+    }
+
+    fn as_rgb(c: Color) -> Option<Color> {
+        match c {
+            Color::Rgb(..) => Some(c),
+            Color::Indexed(i) => xterm_rgb(i).map(|(r, g, b)| Color::Rgb(r, g, b)),
+            _ => None,
+        }
+    }
+
+    /// The invariant behind `SYNTAX_MIN_CONTRAST`, the slot choices in
+    /// `from_palette`, and the two 256-cube themes' hand-picked syntax
+    /// colours.
+    ///
+    /// The floor is `min(SYNTAX_MIN_CONTRAST, plain code text)`, not a
+    /// flat 4.5, because a theme cannot make a token more legible than
+    /// its own body text: `legible_on` lifts a colour toward `text` and
+    /// saturates there.  Solarized Light is the one theme that reaches
+    /// that ceiling — its plain code text measures 4.49:1 — so the
+    /// per-theme form states the real promise, which is that
+    /// highlighting never makes a code block *less* readable than
+    /// leaving it plain.
+    ///
+    /// `legible_on` enforces this for RGB palettes, but it is a no-op
+    /// for indexed ones — so without this test the indexed built-ins
+    /// are unguarded, which is exactly where the regression that
+    /// prompted it lived: `256 Dark`'s `syntax_function` measured
+    /// 1.51:1 against 6.97:1 for the plain code text it replaced, on
+    /// the theme `theme_fallback::apply` substitutes into whenever a
+    /// terminal lacks truecolor.  A theme whose colours can't be
+    /// resolved to RGB at all is skipped, which today is only
+    /// `Monochrome Dark`: every slot is `Color::Reset`, it sets no
+    /// syntax foreground, and it separates its two marked classes with
+    /// `BOLD` / `DIM` instead.
+    #[test]
+    fn syntax_contrast_clears_the_floor_for_every_builtin_theme() {
+        let mut failures = Vec::new();
+        for (name, ctor) in BUILTIN_THEMES {
+            let theme = ctor();
+            let (Some(bg), Some(plain_fg)) = (
+                theme.code_block_text.bg.and_then(as_rgb),
+                theme.code_block_text.fg.and_then(as_rgb),
+            ) else {
+                continue;
+            };
+            let plain = contrast_ratio(plain_fg, bg).expect("both sides are RGB");
+            let floor = SYNTAX_MIN_CONTRAST.min(plain);
+            for (field, style) in [
+                ("syntax_keyword", theme.syntax_keyword),
+                ("syntax_string", theme.syntax_string),
+                ("syntax_comment", theme.syntax_comment),
+                ("syntax_number", theme.syntax_number),
+                ("syntax_type", theme.syntax_type),
+                ("syntax_function", theme.syntax_function),
+                ("syntax_attribute", theme.syntax_attribute),
+            ] {
+                // A class that sets no foreground keeps `code_block_text`
+                // itself, which is the `plain` baseline by definition.
+                let Some(fg) = style.fg else { continue };
+                match as_rgb(fg).and_then(|fg| contrast_ratio(fg, bg)) {
+                    Some(ratio) if ratio >= floor => {}
+                    Some(ratio) => failures.push(format!(
+                        "{name}.{field}: {ratio:.2}:1 (floor {floor:.2}, plain text {plain:.2})"
+                    )),
+                    None => failures.push(format!(
+                        "{name}.{field}: {fg:?} has no fixed value to measure"
+                    )),
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "syntax colours below their theme's contrast floor:\n  {}",
+            failures.join("\n  ")
+        );
     }
 }

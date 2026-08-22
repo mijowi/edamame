@@ -19,7 +19,7 @@ use edamame::markdown::{promote_diagram_code_blocks, Block};
 fn build_parsed(source: &str) -> ParsedDoc {
     let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
     ParsedDoc::build_with_overrides(
-        source, theme, false, 12, None, None, false, 80, false, true, None,
+        source, theme, false, 12, None, None, false, 80, false, false, true, None,
     )
 }
 

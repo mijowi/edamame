@@ -87,6 +87,13 @@ pub struct EditorConfig {
     /// when the title would exceed the viewport width or contains
     /// non-ASCII characters (font8x8 only covers ASCII).  Default: false.
     pub big_h1: bool,
+    /// When true (the default), fenced code blocks are syntax
+    /// highlighted using the language named in the opening fence
+    /// (```` ```rust ````).  There is no auto-detection: a fence with
+    /// no language, or one naming a grammar we do not ship, renders as
+    /// plain code exactly as it did before this setting existed.
+    /// Default: true.
+    pub syntax_highlighting: bool,
     /// When true, the buffer is silently written to disk after
     /// `autosave_idle_ms` of typing inactivity.  Only fires for buffers
     /// with an associated file path; an unnamed buffer never autosaves.
@@ -186,6 +193,7 @@ impl Default for EditorConfig {
             max_width_enabled: false,
             max_width_cols: 100,
             big_h1: false,
+            syntax_highlighting: true,
             autosave_enabled: false,
             autosave_idle_ms: AUTOSAVE_IDLE_MS_DEFAULT,
             diff_on_change: true,

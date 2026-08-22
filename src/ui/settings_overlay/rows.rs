@@ -23,6 +23,7 @@ use crate::ui::controls;
 pub(crate) const HEADER_NOTE: &str = "Common options shown below — all others in config.toml";
 
 pub(crate) const LABEL_BIG_H1: &str = "Big H1 headings";
+pub(crate) const LABEL_SYNTAX_HIGHLIGHTING: &str = "Syntax highlighting";
 pub(crate) const LABEL_VISUAL_LINE_NAV: &str = "Use visual line navigation";
 pub(crate) const LABEL_LINE_NUMBERS: &str = "Show line numbers";
 pub(crate) const LABEL_SCROLL_SPEED: &str = "Scroll speed";
@@ -582,6 +583,25 @@ pub(super) fn build_rows() -> Vec<RowDef> {
                 write_value: Some(|c, v| {
                     if let controls::ControlValue::Toggle(b) = v {
                         c.table.show_buttons = b;
+                    }
+                }),
+                options: Some(controls::Control::Toggle),
+                disabled: None,
+            },
+        },
+        RowDef {
+            label: LABEL_SYNTAX_HIGHLIGHTING,
+            description: Some("\nColor code blocks using the language on the fence"),
+            describe: None,
+            kind: RowKind {
+                focusable: true,
+                action: RowAction::Cycle,
+                read: |c, _| bool_label(c.editor.syntax_highlighting).to_owned(),
+                write_string: no_write,
+                read_value: Some(|c| controls::ControlValue::Toggle(c.editor.syntax_highlighting)),
+                write_value: Some(|c, v| {
+                    if let controls::ControlValue::Toggle(b) = v {
+                        c.editor.syntax_highlighting = b;
                     }
                 }),
                 options: Some(controls::Control::Toggle),

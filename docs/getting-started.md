@@ -138,7 +138,7 @@ The flag list is short by design — everything else is configured from inside t
 
 `--doctor` is the one to reach for when something looks wrong. It reports which edamame you're running, which terminal you're running it in, and what that terminal supports — the same five capabilities the [terminal capabilities notice](#the-terminal-capabilities-notice) shows, without having to launch the app to find them:
 
-```
+```bash
 $ edamame --doctor
 edamame 0.1.0
 

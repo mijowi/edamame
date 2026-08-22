@@ -38,6 +38,12 @@ edamame parses CommonMark plus a set of GitHub extensions.
 
 **Only the very first line of the file can open frontmatter.** The delimiter has to be the first thing in the document — no blank line, no indentation, nothing above it — and it has to be closed by a matching delimiter. A `---` anywhere else is an ordinary horizontal rule, including one sitting directly above a heading, so section separators in an existing document keep working as they always did. A file that opens `+++` gets TOML frontmatter only, and vice versa. Note that a YAML block closed with `...` instead of `---` displays a `---` on that row — the source is unchanged, and moving the cursor into the block shows it as written.
 
+**Fenced code blocks are syntax highlighted**, using the language you name on the opening fence — ```` ```rust ````, ```` ```python ````, ```` ```json ````. Over 200 languages are recognized, by name or by common alias (`rs`, `py`, `ts`, `sh`). Only the first word matters, so ```` ```rust,ignore ```` and ```` ```js {1,3-4} ```` still highlight while the fence label keeps showing what you wrote.
+
+**The language is never guessed.** A fence with no language, or one naming a language edamame doesn't ship, renders as plain code — the same as it always did. That is deliberate: guessing wrong recolors a document you didn't ask to have recolored.
+
+Colors come from the active theme, so they follow whichever theme you're using and a custom theme can restyle them — see [themes.md](themes.md). Turn the whole thing off with **Syntax highlighting** in the settings overlay, or `syntax_highlighting = false` in `config.toml`. 
+
 **Bare URLs are not auto-linked.** `https://example.com` on its own renders as plain text. Write `<https://example.com>` or `[text](https://example.com)`.
 
 edamame includes a Markdown cheat sheet that provides a quick reference for what Markdown is supported and how to write it. You can access it from the command palette (**Show Markdown cheat sheet**).

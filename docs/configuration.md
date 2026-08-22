@@ -81,6 +81,7 @@ default chord for it, and no Appearance row in the settings overlay.
 | `preserve_blank_lines` | bool | `true` | file only |
 | `show_line_numbers` | bool | `false` | overlay, palette |
 | `big_h1` | bool | `false` | overlay, palette |
+| `syntax_highlighting` | bool | `true` | overlay |
 | `max_width_enabled` | bool | `false` | overlay, palette |
 | `max_width_cols` | integer | `100` | overlay |
 
@@ -93,6 +94,8 @@ Markdown collapses them to one; this keeps your spacing.
 `big_h1` renders H1 titles as four-row block characters. It falls back to
 normal rendering when the title is wider than the viewport or contains
 non-ASCII characters.
+
+`syntax_highlighting` colors fenced code blocks. The language comes only from the opening fence — edamame never guesses — so a fence with no language, or one naming a language it doesn't ship, renders as plain code. Token colors are theme fields (`syntax_keyword`, `syntax_string`, and the rest), so a custom theme can restyle or flatten them; see [themes.md](themes.md).
 
 `max_width_cols` caps the content column and centers it, which helps on very
 wide terminals. Values below **20** are clamped up. The status and hint rows
@@ -313,6 +316,7 @@ max_width_cols = 90
 autosave_enabled = true
 autosave_idle_ms = 3000
 big_h1 = true
+syntax_highlighting = true
 cursor_blink = false
 
 [modal]

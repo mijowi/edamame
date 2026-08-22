@@ -1,52 +1,17 @@
 # Security invariants for contributors
 
-The user-facing description of edamame's threat model and the hardening that
-is already in place lives in [`../security.md`](../security.md). **Read it
-first** — this page is only the checklist of things a change must not
-regress, and it won't make sense without the reasoning behind it.
+The user-facing description of edamame's threat model and the hardening that is already in place lives in [`../security.md`](../security.md). **Read it first** — this page is only the checklist of things a change must not regress, and it won't make sense without the reasoning behind it.
 
-When touching any content-handling path — image/SVG decode, remote fetch,
-Mermaid, link opening, HTML export, subprocess spawning — keep these from
-regressing:
+When touching any content-handling path — image/SVG decode, remote fetch, Mermaid, link opening, HTML export, subprocess spawning — keep these from regressing:
 
-- **Decode through `ImageReader` + `Limits`.** A new raster decode site
-  must keep the limits. Never call `image::load_from_memory` on bytes that
-  came from outside the process — a file, a socket, a document. (The one
-  in-tree call, at the end of `image::svg::rasterize_svg`, decodes the PNG
-  it encoded two lines earlier from an already-bounded pixmap; that is the
-  only shape of exemption there is.)
-- **Never spawn a shell with document data.** Use argv vectors. If you add
-  a new subprocess, audit every argument's provenance.
-- **The HTML exporter's three filters are load-bearing.** If you add a new
-  way for content to reach the serialized body (a new `Event::Html` push, a
-  new attribute, a new embedded resource), it bypasses the raw-HTML strip —
-  re-derive its safety explicitly and add a regression test. The existing
-  tests in `src/export/html.rs` (`neutralizes_javascript_link_scheme`,
-  `mermaid_export_never_emits_raw_svg_or_script`,
-  `inline_images_rejects_absolute_path`, …) are the template.
-- **Keep network access consent-gated *and* IP-filtered.** A new fetch
-  path must respect the remote-image policy (or introduce its own explicit
-  gate) and route through `PublicOnlyResolver` (or an equivalent
-  resolved-IP filter); don't add a silent or unfiltered `http` request.
-  The update check (`src/app/update_check/fetch.rs`) is the one path with
-  neither, and both omissions are deliberate: its gate is its own
-  `editor.check_for_updates` setting rather than the image policy, and it
-  needs no resolved-IP filter because its host is a compile-time literal
-  that nothing — not the open document, not config — can influence, so
-  there is no attacker-chosen name to rebind. A new fetch that *does* take
-  its host from anywhere else owes the resolver.
-- **Keep the SVG pixmap budget between the caller and the allocation.**
-  `src/image/svg.rs` clamps to the cell envelope only when the caller
-  supplies one (HTML export deliberately doesn't), so `MAX_RASTER_DIM` /
-  `MAX_RASTER_PIXELS` are what bound every other path. They are applied to
-  the *rounded* dimensions and folded back into the render transform — a
-  refactor that clamps the pixmap without the transform crops the drawing,
-  and one that clamps before `ceil` lets the budget be exceeded by a pixel
-  per axis.
-- **Bound new external input.** Size, timeout, and allocation caps before
-  the input is trusted — mirror the image-loader, Mermaid-source, and
-  update-check patterns.
+- **Decode through `ImageReader` + `Limits`.** A new raster decode site must keep the limits. Never call `image::load_from_memory` on bytes that came from outside the process — a file, a socket, a document. (The one in-tree call, at the end of `image::svg::rasterize_svg`, decodes the PNG it encoded two lines earlier from an already-bounded pixmap; that is the only shape of exemption there is.)
+- **Never spawn a shell with document data.** Use argv vectors. If you add a new subprocess, audit every argument's provenance.
+- **The HTML exporter's three filters are load-bearing.** If you add a new way for content to reach the serialized body (a new `Event::Html` push, a new attribute, a new embedded resource), it bypasses the raw-HTML strip — re-derive its safety explicitly and add a regression test. The existing tests in `src/export/html.rs` (`neutralizes_javascript_link_scheme`, `mermaid_export_never_emits_raw_svg_or_script`, `inline_images_rejects_absolute_path`, …) are the template.
+- **Keep network access consent-gated *and* IP-filtered.** A new fetch path must respect the remote-image policy (or introduce its own explicit gate) and route through `PublicOnlyResolver` (or an equivalent resolved-IP filter); don't add a silent or unfiltered `http` request. The update check (`src/app/update_check/fetch.rs`) is the one path with neither, and both omissions are deliberate: its gate is its own `editor.check_for_updates` setting rather than the image policy, and it needs no resolved-IP filter because its host is a compile-time literal that nothing — not the open document, not config — can influence, so there is no attacker-chosen name to rebind. A new fetch that *does* take its host from anywhere else owes the resolver.
+- **Keep the SVG pixmap budget between the caller and the allocation.** `src/image/svg.rs` clamps to the cell envelope only when the caller supplies one (HTML export deliberately doesn't), so `MAX_RASTER_DIM` / `MAX_RASTER_PIXELS` are what bound every other path. They are applied to the *rounded* dimensions and folded back into the render transform — a refactor that clamps the pixmap without the transform crops the drawing, and one that clamps before `ceil` lets the budget be exceeded by a pixel per axis.
+- **Bound new external input.** Size, timeout, and allocation caps before the input is trusted — mirror the image-loader, Mermaid-source, and update-check patterns.
+- **Keep both syntax-highlighting caps, and keep them bounding color rather than content.** `MAX_HIGHLIGHT_SOURCE_BYTES` bounds the cold parse and `MAX_HIGHLIGHT_LINE_CHARS` the per-keystroke cost; they are not redundant, because incremental reuse needs an unchanged prefix and a one-line block has none, so the byte cap alone leaves every keystroke in a minified line paying a full re-parse. Over either cap the block must still render every byte — a code block that hides its own text to stay safe is worse than an uncoloured one. *Parsing* runs synchronously on the render thread, so a new grammar source, a raised cap, or a switch to a different regex backend owes a fresh run of the `throughput` test in `src/markdown/highlight.rs`, not just a review. *Compiling* is on the warm worker and `MAX_HIGHLIGHT_GRAMMARS` bounds it; don't move it back onto the render thread to make a test deterministic — `warm_inline` exists for that.
+- **A `catch_unwind` over untrusted content owes its thread a `terminal::ExpectedPanic` guard.** The process panic hook restores the terminal and prints the payload to stderr, and it runs *before* unwinding, so it fires for a panic that is about to be caught — leaving the app running with no alt screen and no raw mode, which is strictly worse than the clean crash the hook exists to give. Seven sites have it today (the highlighter's tokenizer and its warm worker, Mermaid's renderer and its font warmup, the image decode worker, its scratch-encode step, the capability probe); an eighth owes the same guard. It applies to *any* `catch_unwind` on a thread running alongside a live TUI, not only ones over untrusted content — `warm_fontdb` renders a hardcoded diagram and still needs it, because the hazard is the hook rather than the input. Scope it to the `catch_unwind` that does the catching and nothing else — a guard left live over the code *after* the catch silences a panic nobody is going to catch, which on the main thread means unwinding out of `main` with the terminal unrestored and nothing printed.
+- **Keep syntect's feature list narrow.** `plist-load` and `yaml-load` compile in runtime parsers for `.tmTheme` / `.sublime-syntax` files, and `html` adds an output layer we do not use. Only pre-built, compile-time dumps are ever deserialized. Cargo unifies features across the graph, so a new dependency on syntect (or on `two-face`) can widen this silently — check with `cargo tree -e features -i syntect`, the same trap the `image` / `ratatui-image` pair documents. The feature we depend on is `parsing` (which implies `dump-load`), **not** `default-syntaxes`: `two_face::syntax::extra_newlines` replaces syntect's bundled set rather than extending it, so that feature's asset dumps would be embedded and never read. `Cargo.toml` carries the full argument; don't add it back because a grammar appears to be missing — check the info-string token against `find_syntax_by_token` first.
 
-When you fix or add one of the "Things to watch out for" items in
-[`../security.md`](../security.md), move it from that section into
-"Hardening in place" and add the regression test alongside.
+When you fix or add one of the "Things to watch out for" items in [`../security.md`](../security.md), move it from that section into "Hardening in place" and add the regression test alongside.

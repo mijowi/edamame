@@ -15,6 +15,8 @@ use crate::config::Theme;
 
 use self::util::{link_fallback, link_style_for};
 use super::ast::{inlines_to_plain, Block, Inline, MetadataKind};
+use super::code_layout;
+use super::highlight::{self, Token};
 use super::render_cache::{RenderCache, RenderSettings};
 
 const IMAGE_PREFIX: &str = "Image: ";
@@ -69,6 +71,12 @@ pub struct Renderer<'t> {
     /// viewport or contains non-ASCII characters.  Wired to
     /// `config.editor.big_h1`.
     big_h1: bool,
+    /// When true, a fenced code block whose info string names a grammar
+    /// we ship is rendered with per-token colours from the theme's
+    /// `syntax_*` fields.  Wired to `config.editor.syntax_highlighting`.
+    /// When false the highlighter is never called and body rows are the
+    /// single-span lines they were before the feature existed.
+    syntax_highlighting: bool,
 }
 
 impl<'t> Renderer<'t> {
@@ -82,6 +90,7 @@ impl<'t> Renderer<'t> {
             image_block_seq: Cell::new(0),
             row_striping: false,
             big_h1: false,
+            syntax_highlighting: false,
         }
     }
 
@@ -123,6 +132,13 @@ impl<'t> Renderer<'t> {
     /// `config.editor.big_h1`.
     pub fn with_big_h1(mut self, on: bool) -> Self {
         self.big_h1 = on;
+        self
+    }
+
+    /// Enable syntax highlighting for fenced code blocks.  Wired to
+    /// `config.editor.syntax_highlighting`.
+    pub fn with_syntax_highlighting(mut self, on: bool) -> Self {
+        self.syntax_highlighting = on;
         self
     }
 
@@ -171,6 +187,27 @@ impl<'t> Renderer<'t> {
             image_max_height: self.image_max_height,
             row_striping: self.row_striping,
             big_h1: self.big_h1,
+            syntax_highlighting: self.syntax_highlighting,
+            // Read here rather than threaded in from `EditorState`: it is
+            // the renderer that consults the warm grammars, so this is
+            // the one place that can't fall out of step with them. Pinned
+            // to 0 when the feature is off so toggling it can't leave a
+            // stale generation in the fingerprint.
+            highlight_generation: if self.syntax_highlighting {
+                highlight::warm_generation()
+            } else {
+                0
+            },
+            // The other half of the same job: a grammar refused for want
+            // of budget warms nothing, so the generation above cannot
+            // move for it.  Without this field the retry that
+            // `App::tick_syntax_warm` acts on would reparse into a fully
+            // warm cache and never call the highlighter again.
+            highlight_retry_epoch: if self.syntax_highlighting {
+                highlight::retry_epoch()
+            } else {
+                0
+            },
         });
 
         let mut lines = Vec::new();
@@ -620,6 +657,62 @@ impl<'t> Renderer<'t> {
 
     // ── Code block ────────────────────────────────────────────────
 
+    /// Build one code-block body row: the pad cell, the line's text, and the
+    /// background fill out to the viewport edge.
+    ///
+    /// `tokens` are char ranges **into `text`** — already re-based by the
+    /// caller for a wrapped segment. With none, this reproduces the
+    /// single-span line the renderer emitted before highlighting existed,
+    /// character for character; that equivalence is what lets an unknown
+    /// language, a switched-off setting and an over-cap block share the
+    /// pre-feature snapshots.
+    ///
+    /// The leading space is [`code_layout::CODE_PAD_COLS`]. The cursor
+    /// indicator, the selection / search overlay and the mouse hit-test all
+    /// map columns through that module, so this prefix and that constant
+    /// have to agree — `code_block_render_agrees_with_code_layout_column_map`
+    /// fails if they drift. Splitting the row into several spans does not
+    /// disturb the mapping: `line_render` flattens spans to `(char, style)`
+    /// pairs, so the raw↔rendered *char index* relation is unchanged.
+    fn code_body_row(&self, text: &str, tokens: &[Token], block_width: usize) -> Line<'static> {
+        let base = self.theme.code_block_text;
+        let pad_to = block_width.saturating_sub(code_layout::CODE_PAD_COLS);
+        if tokens.is_empty() {
+            return Line::styled(format!(" {text:<pad_to$}"), base);
+        }
+
+        let chars: Vec<char> = text.chars().collect();
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(tokens.len() * 2 + 2);
+        spans.push(Span::styled(" ".repeat(code_layout::CODE_PAD_COLS), base));
+
+        let run = |from: usize, to: usize| -> String { chars[from..to].iter().collect() };
+        let mut col = 0usize;
+        for token in tokens {
+            // Clamp defensively: a grammar that reported past end of line
+            // should mis-colour, never panic on a slice.
+            let start = token.range.start.min(chars.len()).max(col);
+            let end = token.range.end.min(chars.len()).max(start);
+            if col < start {
+                spans.push(Span::styled(run(col, start), base));
+            }
+            if start < end {
+                let style = base.patch(highlight::style_for(self.theme, token.class));
+                spans.push(Span::styled(run(start, end), style));
+            }
+            col = end;
+        }
+        if col < chars.len() {
+            spans.push(Span::styled(run(col, chars.len()), base));
+        }
+
+        // Fill to the viewport edge so the code surface reaches it, matching
+        // the `{:<pad_to$}` of the untokenized path above.
+        if let Some(pad) = pad_to.checked_sub(chars.len()).filter(|p| *p > 0) {
+            spans.push(Span::styled(" ".repeat(pad), base));
+        }
+        Line::from(spans).style(base)
+    }
+
     fn render_code_block(
         &self,
         language: Option<&str>,
@@ -660,10 +753,26 @@ impl<'t> Renderer<'t> {
             }
         }
 
+        // Token runs for every body line, or empty when the feature is off,
+        // the fence names no language, the language is one we do not ship, or
+        // the block is over `highlight`'s size caps.  All of those collapse
+        // to the same thing downstream — `code_body_row` with no tokens,
+        // which is byte-for-byte the pre-feature line.
+        //
+        // Note this is asked once for the whole block, not per line: the
+        // grammar's parser state runs across lines, which is what makes a
+        // block comment or a multi-line string classify past its first row.
+        let tokens = if self.syntax_highlighting {
+            highlight::highlight_block(language, &raw_lines)
+        } else {
+            Vec::new()
+        };
+        let row_tokens = |i: usize| tokens.get(i).map(Vec::as_slice).unwrap_or(&[]);
+
         if self.code_wrap {
             // Wrap long lines at viewport_width.
             let wrap_at = self.viewport_width.max(1);
-            for line in &raw_lines {
+            for (i, line) in raw_lines.iter().enumerate() {
                 let chars: Vec<char> = line.chars().collect();
                 if chars.is_empty() {
                     // Use NBSP (U+00A0) instead of regular spaces: ratatui's WordWrapper
@@ -677,8 +786,11 @@ impl<'t> Renderer<'t> {
                 while start < chars.len() {
                     let end = (start + wrap_at - 1).min(chars.len());
                     let slice: String = chars[start..end].iter().collect();
-                    let padded = format!(" {:<width$}", slice, width = block_width - 1);
-                    out.push(Line::styled(padded, self.theme.code_block_text));
+                    // Tokens are addressed against the whole source line, so
+                    // each wrapped segment takes the overlapping part re-based
+                    // to its own column 0.
+                    let seg = highlight::slice_tokens(row_tokens(i), start, end);
+                    out.push(self.code_body_row(&slice, &seg, block_width));
                     start = end;
                 }
             }
@@ -696,7 +808,7 @@ impl<'t> Renderer<'t> {
             // it.  Changing this prefix means changing it there —
             // `code_block_render_agrees_with_code_layout_column_map` fails
             // if the two drift.
-            for line in &raw_lines {
+            for (i, line) in raw_lines.iter().enumerate() {
                 if line.is_empty() {
                     // Use NBSP (U+00A0) instead of regular spaces: ratatui's WordWrapper
                     // treats NBSP as non-whitespace and won't produce a spurious extra
@@ -704,8 +816,7 @@ impl<'t> Renderer<'t> {
                     let padded = "\u{00A0}".repeat(block_width);
                     out.push(Line::styled(padded, self.theme.code_block_text));
                 } else {
-                    let padded = format!(" {:<width$}", line, width = block_width - 1);
-                    out.push(Line::styled(padded, self.theme.code_block_text));
+                    out.push(self.code_body_row(line, row_tokens(i), block_width));
                 }
             }
         }
@@ -1197,6 +1308,31 @@ mod tests {
         assert_eq!(wide_lines, wide.render(&blocks));
     }
 
+    /// Toggling syntax highlighting must invalidate the cache too. The
+    /// `Block` value is unchanged by the toggle, so without the
+    /// `RenderSettings` field a cached hit would keep painting the old
+    /// setting — the exact trap `render_cache`'s module doc warns about.
+    #[test]
+    fn cache_cleared_when_syntax_highlighting_toggles() {
+        let src = "```rust\nfn main() {}\n```\n";
+        warm_fence_languages(src);
+        let blocks = parse(src);
+        let mut cache = RenderCache::default();
+
+        let off = renderer().with_syntax_highlighting(false);
+        let (off_lines, _) = off.render_with_counts_cached(&blocks, &mut cache);
+
+        let on = renderer().with_syntax_highlighting(true);
+        let (on_lines, _) = on.render_with_counts_cached(&blocks, &mut cache);
+
+        assert_ne!(off_lines, on_lines, "the toggle must re-render the block");
+        assert_eq!(on_lines, on.render(&blocks));
+
+        // ...and back again, so the invalidation is not one-way.
+        let (off_again, _) = off.render_with_counts_cached(&blocks, &mut cache);
+        assert_eq!(off_again, off_lines);
+    }
+
     /// Image blocks are never cached — their row count tracks the decode
     /// cache, not the AST.
     #[test]
@@ -1378,6 +1514,153 @@ mod tests {
         // Line 0 is the opening-fence placeholder; the body lives on line 1.
         let body_text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(body_text.contains("foo"));
+    }
+
+    // ── Syntax highlighting ───────────────────────────────────────────
+
+    /// Opt this thread into inline grammar compilation for every language
+    /// the source's fences name.
+    ///
+    /// Compilation is asynchronous in production — a cold grammar renders
+    /// plain and a worker compiles it — so without this a render test
+    /// asserts on whichever grammars an *unrelated* test happened to warm
+    /// first, and passes or fails by test order. See
+    /// `markdown::highlight::warm_inline`.
+    fn warm_fence_languages(src: &str) {
+        for line in src.lines() {
+            let Some(info) = line.trim_start().strip_prefix("```") else {
+                continue;
+            };
+            if !info.trim().is_empty() {
+                highlight::warm_inline(Some(info.trim()));
+            }
+        }
+    }
+
+    /// Render a document with highlighting on, which the plain `render`
+    /// helper leaves off (matching `Renderer::new`'s default).
+    fn render_highlighted(src: &str) -> Vec<Line<'static>> {
+        warm_fence_languages(src);
+        let blocks = parse(src);
+        renderer().with_syntax_highlighting(true).render(&blocks)
+    }
+
+    /// The flattened `(text, style)` pairs of one rendered line.
+    fn spans_of(line: &Line<'static>) -> Vec<(String, Style)> {
+        line.spans
+            .iter()
+            .map(|s| (s.content.to_string(), s.style))
+            .collect()
+    }
+
+    fn plain_text(line: &Line<'static>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn a_highlighted_code_block_splits_its_body_into_styled_spans() {
+        let theme = Theme::default();
+        let lines = render_highlighted("```rust\nfn main() {}\n```\n");
+        // Line 0 is the ` rust ` label row, line 1 the body.
+        let spans = spans_of(&lines[1]);
+        assert!(spans.len() > 1, "body should be tokenized, got {spans:?}");
+        // `fn` is a keyword; `main` is a function name.
+        let keyword = spans.iter().find(|(t, _)| t == "fn").expect("an `fn` span");
+        assert_eq!(keyword.1.fg, theme.syntax_keyword.fg);
+        let func = spans
+            .iter()
+            .find(|(t, _)| t == "main")
+            .expect("a `main` span");
+        assert_eq!(func.1.fg, theme.syntax_function.fg);
+    }
+
+    #[test]
+    fn token_styles_are_patched_over_the_code_surface() {
+        // A token sets a foreground only; the code block's background has
+        // to survive, or highlighting punches holes in the surface.
+        let theme = Theme::default();
+        let lines = render_highlighted("```rust\nfn main() {}\n```\n");
+        for (text, style) in spans_of(&lines[1]) {
+            assert_eq!(
+                style.bg, theme.code_block_text.bg,
+                "span {text:?} lost the code surface background"
+            );
+        }
+    }
+
+    #[test]
+    fn highlighting_does_not_change_the_text_or_the_row_count() {
+        // The column geometry `code_layout` describes is a property of the
+        // characters, not the spans, so highlighting must leave both the
+        // text and the number of rows exactly as they were.
+        let src = "```rust\nfn main() {}\nlet x = 1;\n```\n";
+        let plain = render(src);
+        let lit = render_highlighted(src);
+        assert_eq!(plain.len(), lit.len());
+        for (a, b) in plain.iter().zip(&lit) {
+            assert_eq!(plain_text(a), plain_text(b));
+        }
+    }
+
+    #[test]
+    fn an_unknown_language_renders_exactly_like_highlighting_off() {
+        // The equivalence `TokenClass` having no `Default` variant buys:
+        // unknown language, no language and feature-off are one path.
+        for src in [
+            "```frobnicate\nfn main() {}\n```\n",
+            "```\nfn main() {}\n```\n",
+            "    indented code\n",
+        ] {
+            let plain = render(src);
+            let lit = render_highlighted(src);
+            assert_eq!(
+                plain.iter().map(spans_of).collect::<Vec<_>>(),
+                lit.iter().map(spans_of).collect::<Vec<_>>(),
+                "{src:?} should be untouched by highlighting"
+            );
+        }
+    }
+
+    #[test]
+    fn the_language_label_row_keeps_the_whole_info_string() {
+        // Only the grammar lookup takes the first token; the label shows
+        // what the author actually wrote.
+        let lines = render_highlighted("```rust,ignore\nfn main() {}\n```\n");
+        assert!(plain_text(&lines[0]).contains("rust,ignore"));
+        // ...and the block is still highlighted, via the `rust` prefix.
+        let spans = spans_of(&lines[1]);
+        assert!(spans.iter().any(|(t, _)| t == "fn"));
+    }
+
+    #[test]
+    fn a_wrapped_token_keeps_its_style_on_both_rows() {
+        // `code_wrap` splits a source line into several visual rows, so the
+        // tokens have to be clipped and re-based per segment.
+        let theme = Theme::default();
+        let long = format!("let s = \"{}\";", "x".repeat(60));
+        let src = format!("```rust\n{long}\n```\n");
+        warm_fence_languages(&src);
+        let blocks = parse(&src);
+        let lines = renderer()
+            .with_viewport_width(20)
+            .with_code_wrap(true)
+            .with_syntax_highlighting(true)
+            .render(&blocks);
+        // Every row carrying part of the string literal must style it; the
+        // literal is far longer than the 20-column viewport, so it spans
+        // several rows.
+        let string_rows = lines
+            .iter()
+            .filter(|l| {
+                spans_of(l)
+                    .iter()
+                    .any(|(t, s)| t.contains('x') && s.fg == theme.syntax_string.fg)
+            })
+            .count();
+        assert!(
+            string_rows > 1,
+            "the literal should stay styled across every wrapped row"
+        );
     }
 
     #[test]

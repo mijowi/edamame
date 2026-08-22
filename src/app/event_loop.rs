@@ -247,7 +247,66 @@ impl App {
         self.tick_search_advance();
         self.spawn_startup_update_check();
         self.tick_update_notice();
+        self.tick_syntax_warm();
         self.editor.modal_open = self.any_modal_open();
+    }
+
+    /// Repaint when the grammar warm worker has finished a language.
+    ///
+    /// Compiling a grammar is the one syntax-highlighting cost that is a
+    /// function of how many *languages* a document names rather than how
+    /// much text it holds, so it happens on a worker
+    /// (`markdown::highlight::spawn_warm_worker`) and the block renders
+    /// plain meanwhile.  Nothing else would ever bring the colour in:
+    /// warming changes no `Block` value, so `RenderCache` would keep
+    /// serving the plain render it memoized while the grammar was cold.
+    /// The generation rides in `RenderSettings`, so the `refresh_parsed`
+    /// below misses the cache and re-renders with tokens.
+    ///
+    /// Polled rather than pushed because `markdown` sits far below `app`
+    /// and must not learn about `AppEvent`; the loop already wakes every
+    /// 60 ms for the raw-reveal timer, so an `AtomicU64` load costs
+    /// nothing and the colour lands within a frame of the compile.
+    ///
+    /// **Two reasons to reparse, not one.**  The generation covers the
+    /// grammars that were *queued*; `refused_grammar_retry_due` covers
+    /// the ones `MAX_HIGHLIGHT_GRAMMARS` turned away.  Without the
+    /// second, that cap is a session limit for any document naming more
+    /// languages than it in one render: the whole queued burst compiles
+    /// in a few hundred milliseconds, far inside the one-second refill,
+    /// so the generation stops moving while the refusals still stand and
+    /// nothing re-renders those blocks to ask again.  They would stay
+    /// plain until the user happened to type or resize.  The retry is
+    /// edge-triggered and consumed by the asking, so a standing refusal
+    /// costs one reparse per refilled slot rather than one per tick.
+    ///
+    /// **The reparse below is only a reparse; the cache is what makes it
+    /// a re-render.**  `RenderCache` clears when `RenderSettings`
+    /// differ, and on the retry path nothing else in that fingerprint
+    /// has moved — a retry is granted precisely when no grammar warmed,
+    /// and no `Block` value changed either.  So every block would hit
+    /// the cache, `render_code_block` would never run, and `admit` would
+    /// never be re-asked for the slot just refilled: the slot goes
+    /// unspent and `refused` has already been consumed, leaving the
+    /// language plain for the session.  `refused_grammar_retry_due`
+    /// bumps `highlight::retry_epoch`, which rides in the fingerprint
+    /// alongside the generation, for exactly that reason.
+    fn tick_syntax_warm(&mut self) {
+        if !self.config.editor.syntax_highlighting {
+            return;
+        }
+        let generation = crate::markdown::highlight::warm_generation();
+        let warmed = generation != self.syntax_warm_generation;
+        // Asked unconditionally: it consumes its own edge, and skipping
+        // it on a frame that already reparsed would drop that slot's
+        // retry entirely.
+        let retry_due = crate::markdown::highlight::refused_grammar_retry_due();
+        if !warmed && !retry_due {
+            return;
+        }
+        self.syntax_warm_generation = generation;
+        self.editor.refresh_parsed();
+        self.needs_draw = true;
     }
 
     /// Coalesce any `ImageReady`-driven cache mutations into a single

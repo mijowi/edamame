@@ -164,6 +164,21 @@ impl App {
                     Box::leak(Box::new(Theme::from_file(&theme_file, monochrome)));
                 self.theme = new_theme;
                 self.editor.set_theme(new_theme);
+                // Everything else the editor reads out of `Config`, via
+                // the single site `App::new` and the document-swap path
+                // already share.  The reload replaced `self.config`
+                // wholesale, so without this an edit to `big_h1`,
+                // `syntax_highlighting`, `cursor_blink` or
+                // `table.row_striping` in the very file the user just
+                // saved would have no effect until the next launch —
+                // silently, since the flash still says "Configuration
+                // updated".  Theme and keybindings were live-applied
+                // above precisely because someone noticed them; this
+                // covers the rest of the family, and any future member
+                // of it, without a fourth list to keep in sync.
+                let (images_on, diagrams_on) =
+                    (self.images_layout_enabled(), self.diagrams_layout_enabled());
+                super::configure_new_editor(&mut self.editor, &self.config, images_on, diagrams_on);
                 if let Some(modal) = modal::ConfigWarningModal::from_warnings(&loaded.warnings) {
                     self.modal_stack.push(Box::new(modal));
                     self.needs_draw = true;

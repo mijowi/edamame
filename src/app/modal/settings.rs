@@ -20,7 +20,7 @@ use crate::config::sections::VIM_HANDLER;
 use crate::config::Config;
 use crate::ui::settings_overlay::{
     LABEL_BIG_H1, LABEL_BLINK_CURSOR, LABEL_SCROLL_SPEED, LABEL_SHOW_DIAGRAMS, LABEL_SHOW_IMAGES,
-    LABEL_SHOW_REMOTE_IMAGES, LABEL_VIM_MODE, LABEL_VISUAL_LINE_NAV,
+    LABEL_SHOW_REMOTE_IMAGES, LABEL_SYNTAX_HIGHLIGHTING, LABEL_VIM_MODE, LABEL_VISUAL_LINE_NAV,
 };
 use crate::ui::{ModalKind, SettingsResponse, SettingsState, SettingsView};
 
@@ -76,6 +76,9 @@ fn resolve(app: &mut App, response: SettingsResponse) -> ModalOutcome {
 pub(crate) fn apply_live_update(label: &str, app: &mut App) {
     match label {
         LABEL_BIG_H1 => app.editor.set_big_h1(app.config.editor.big_h1),
+        LABEL_SYNTAX_HIGHLIGHTING => app
+            .editor
+            .set_syntax_highlighting(app.config.editor.syntax_highlighting),
         LABEL_BLINK_CURSOR => app.editor.cursor_blink.apply_config(
             app.config.editor.cursor_blink,
             app.config.editor.cursor_blink_ms,
@@ -180,6 +183,7 @@ mod tests {
         LABEL_SHOW_DIAGRAMS,
         LABEL_SHOW_IMAGES,
         LABEL_SHOW_REMOTE_IMAGES,
+        LABEL_SYNTAX_HIGHLIGHTING,
         LABEL_VISUAL_LINE_NAV,
         LABEL_VIM_MODE,
     ];

@@ -68,6 +68,21 @@ pub fn theme() -> Theme {
         code_block_border: Style::default(),
         code_block_lang: Style::default().add_modifier(Modifier::ITALIC),
         code_block_text: Style::default(),
+
+        // Syntax highlighting with no colour to spend.  Only the two
+        // classes that carry meaning without one are marked: a comment
+        // is set apart because it is *not* code, and a keyword because
+        // it is the load-bearing word on its line.  Types, functions,
+        // strings and numbers stay plain — marking them too would turn
+        // most of a line into attributes and distinguish nothing, which
+        // is the same reasoning as this file's other flat fields.
+        syntax_keyword: Style::default().add_modifier(Modifier::BOLD),
+        syntax_string: Style::default(),
+        syntax_comment: Style::default().add_modifier(Modifier::DIM),
+        syntax_number: Style::default(),
+        syntax_type: Style::default(),
+        syntax_function: Style::default(),
+        syntax_attribute: Style::default(),
         blockquote_bar: Style::default(),
         // DIM rather than ITALIC: a colorless theme has no wash to give
         // the quote, and a blanket italic is exactly what left

@@ -3,12 +3,10 @@ name = "edamame"
 version = "0.1.1"
 edition = "2021"
 # Minimum supported Rust version, found with `cargo-msrv` and pinned by the
-# `msrv` CI job so it can't rot silently.  Cargo enforces it: a user on an
-# older toolchain gets "requires rustc 1.90" instead of a confusing error
-# from somewhere deep in the dependency tree.
-#
-# Raising this is a deliberate change, not a side effect of using a new
-# language feature — re-run `cargo msrv find` and bump the CI job with it.
+# `msrv` CI job so it can't rot silently.  Cargo enforces it, so an older
+# toolchain gets "requires rustc 1.90" rather than an error from deep in the
+# dependency tree.  Raising it is a deliberate change, not a side effect of
+# using a new language feature: re-run `cargo msrv find` and bump the CI job.
 rust-version = "1.90"
 description = "A fast TUI Markdown editor and viewer"
 authors = ["mijowi"]
@@ -20,15 +18,11 @@ documentation = "https://github.com/mijowi/edamame/blob/main/docs/getting-starte
 keywords = ["markdown", "editor", "tui", "terminal", "viewer"]
 categories = ["command-line-utilities", "text-editors"]
 # Keep the published tarball to what a user or downstream builder needs:
-# source, the scaffolded reference config (which is `include_str!`d), the
-# user-facing docs, and the tests.
-#
-# Note `tests/` and `benches/` deliberately stay: both are auto-discovered (or,
-# for `[[bench]] pipeline`, explicitly declared) target sources, and excluding
-# them makes `cargo publish` warn once per ignored target.
-#
-# `CLAUDE.md` is a symlink to `AGENTS.md`, and cargo packages symlinks by
-# dereferencing them — leaving it in would publish the same file twice.
+# source, the `include_str!`d reference config, the user-facing docs, tests.
+# `tests/` and `benches/` deliberately stay — both are target sources, and
+# excluding them makes `cargo publish` warn once per ignored target.
+# `CLAUDE.md` is a symlink to `AGENTS.md`, and cargo dereferences symlinks
+# when packaging, so leaving it in would publish the same file twice.
 exclude = [
     "docs/dev/plans/",
     ".github/",
@@ -44,9 +38,9 @@ name = "edamame"
 path = "src/lib.rs"
 
 [dependencies]
-# TUI framework and terminal backend.  The `serde` feature is enabled so
+# TUI framework and terminal backend.  `serde` is on so
 # `ratatui::style::Color` deserializes from strings ("red", "#ff00aa", "42")
-# directly inside our `ThemeFile` TOML layer.
+# inside our `ThemeFile` TOML layer.
 ratatui = { version = "0.30", features = ["serde", "crossterm_0_29", "unstable-rendered-line-info"] }
 crossterm = "0.29"
 
@@ -59,14 +53,14 @@ ropey = "1.6"
 # Config serialization
 serde = { version = "1", features = ["derive"] }
 toml = "1"
-# Format-preserving TOML parser.  Used by `Config::save` to surgically
-# update values in the user's `config.toml` while preserving comments,
-# blank lines, and section ordering — the shipped reference config is
-# heavily annotated, and a serde round-trip would nuke that.
+# Format-preserving TOML parser.  `Config::save` uses it to update values in
+# the user's `config.toml` without losing comments, blank lines or section
+# order — the shipped reference config is heavily annotated, and a serde
+# round-trip would nuke that.
 toml_edit = "0.25"
-# Detects unknown keys during deserialization so the config loader can
-# surface "unrecognized field" warnings without forcing `deny_unknown_fields`
-# on the structs (we want forward-compat for theme files, not strictness).
+# Detects unknown keys during deserialization, so the config loader can warn
+# about an unrecognized field without `deny_unknown_fields` on the structs —
+# theme files want forward-compatibility, not strictness.
 serde_ignored = "0.1"
 
 # Platform paths (XDG_CONFIG_HOME etc.)
@@ -85,111 +79,126 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 unicode-width = "0.2"
 unicode-segmentation = "1"
 
-# Regex — used only by the vim `:s` / `:%s` ex substitution (CP9).  The `/`
-# search path stays literal-substring (smartcase); regex is confined here.
-# `fancy-regex` (not the `regex` crate) is used so the vim→regex translator
-# can reach backreferences and lookaround — features the linear-time `regex`
-# engine cannot express.  It delegates to `regex` for the simple fast path
-# and only backtracks when a fancy feature appears.
+# Regex — used only by the vim `:s` / `:%s` ex substitution; the `/` search
+# path stays literal-substring (smartcase).  `fancy-regex` rather than
+# `regex` so the vim→regex translator can reach backreferences and
+# lookaround, which the linear-time engine cannot express; it delegates to
+# `regex` for the simple fast path and backtracks only for a fancy feature.
 fancy-regex = "0.18"
 
+# Syntax highlighting for fenced code blocks — parsing only.  The feature
+# list is load-bearing, like `image`'s below:
+#   - `regex-fancy` picks the pure-Rust backend, keeping `onig` (a C
+#     dependency) out of the graph.
+#   - `default-themes` and `html` are syntect's own colour and output
+#     layers; `config::theme::Theme` is this crate's single source of colour.
+#   - `plist-load` / `yaml-load` parse `.tmTheme` / `.sublime-syntax` at
+#     runtime.  We only ever read a pre-built dump, so they would be
+#     untrusted-input surface bought for nothing.
+#   - `default-syntaxes` is absent deliberately, and sounds required when it
+#     is not: `two_face::syntax::extra_newlines` — the only loader
+#     `markdown::highlight` calls — *replaces* syntect's bundled set rather
+#     than extending it, so enabling it embeds ~720 KB of grammar dumps
+#     nothing reads.  Its one live contribution is a transitive `dump-load`,
+#     which `parsing` already implies.
+#
+# Note syntect 5.3 pins fancy-regex 0.16 against the 0.18 above, so cargo
+# compiles two copies — the same cost the `resvg`/`usvg` pins avoid.
+# Re-check on a syntect bump.
+syntect = { version = "5.3", default-features = false, features = [
+    "parsing",
+    "regex-fancy",
+] }
+# 213 language grammars for syntect, syntect's own `default-syntaxes` set
+# included.  `syntect-fancy` (not the default `syntect-onig`) so it agrees
+# with the backend chosen above instead of unifying `onig` back in.
+two-face = { version = "0.5", default-features = false, features = [
+    "syntect-fancy",
+] }
+
 # Clipboard (OS clipboard with kill-ring fallback).  `wayland-data-control`
-# is NOT in arboard's default feature set but is required for read access on
-# pure-Wayland systems (Sway, GNOME without XWayland, etc.); without it
-# `Clipboard::new()` returns `Err` on Wayland and paste from external apps
-# silently falls back to the in-process kill-ring.
+# is not in arboard's defaults but is required for read access on pure
+# Wayland (Sway, GNOME without XWayland); without it `Clipboard::new()`
+# returns `Err` there and paste falls back to the in-process kill-ring.
 arboard = { version = "3", optional = true, features = ["wayland-data-control"] }
 
-# Terminal image-protocol probing (Picker::from_query_stdio).
-# `chafa-dyn` is skipped to avoid a system-library dependency on libchafa —
-# we only use the Picker for detection, not for actual halfblock rendering.
+# Terminal image-protocol probing (`Picker::from_query_stdio`).  `chafa-dyn`
+# is skipped to avoid a libchafa system dependency — the Picker is used for
+# detection, not for halfblock rendering.
 #
-# `image-defaults` is deliberately NOT enabled.  It forwards `image`'s full
-# default feature set, and Cargo unifies features across the graph — so it
-# silently widened the narrow format list declared just below back out to
-# every format `image` supports, us decoding untrusted files in formats we
-# never chose to accept (docs/security.md).  It also pulled the AVIF
-# *encoder* (`ravif` → `rav1e` → the unmaintained `paste`, RUSTSEC-2024-0436)
-# into a program that encodes nothing.  Adding it back re-widens the decode
-# surface no matter what the `image` line says.
+# `image-defaults` is deliberately NOT enabled: it forwards `image`'s full
+# defaults, and Cargo unifies features across the graph, so it silently
+# widens the format list below back out to everything `image` supports —
+# decoding untrusted files in formats we never chose to accept
+# (docs/security.md), no matter what that line says.  It also dragged the
+# AVIF *encoder* (`ravif` → `rav1e` → the unmaintained `paste`,
+# RUSTSEC-2024-0436) into a program that encodes nothing.
 ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
 
 # Image format decoding — transitively pulled by ratatui-image, listed
-# explicitly so `DynamicImage` and `ImageError` are reachable from our own
-# code and the decode branches in `src/image/loader.rs` can compile
-# independently of whether ratatui-image re-exports them.
+# explicitly so `DynamicImage` and `ImageError` are reachable from
+# `src/image/loader.rs` whatever ratatui-image re-exports.
 #
-# This list is the whole set of raster formats edamame accepts, and it is
-# load-bearing rather than incidental: a format outside it is refused by
-# `loader::decode` as an ordinary `Unsupported` decode error (the
-# `with_guessed_format` reader reports it; nothing panics).  Widening it
-# means accepting another decoder's worth of untrusted-input attack surface,
-# so add a format only on request, never as a side effect of a feature flag.
+# This list is the whole set of raster formats edamame accepts, and it is a
+# security boundary: one outside it is refused by `loader::decode` as an
+# ordinary `Unsupported` error (nothing panics).  Widening it accepts
+# another decoder's worth of untrusted-input surface, so add a format only
+# on request, never as a side effect of a feature flag.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
 
-# Blocking HTTP client for remote image fetches (Phase 7).  Uses rustls
-# (not native-tls/OpenSSL) so we have no system-library dependency.
+# Blocking HTTP client for remote image fetches.  rustls, not
+# native-tls/OpenSSL, so there is no system-library dependency.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 
-# Cross-platform URL / file opener used by Phase 8 link navigation.
-# Shells out to `xdg-open` / `open` / `start` depending on platform — no
-# system-library dependency.
+# Cross-platform URL / file opener for link navigation.  Shells out to
+# `xdg-open` / `open` / `start`; no system-library dependency.
 open = "5"
 
-# Phase 10 — fuzzy matching for the command palette.  Helix uses the
-# parent `nucleo` crate; we only need the matcher (no async source
-# layer), so we depend on `nucleo-matcher` directly.
+# Fuzzy matching for the command palette.  Helix uses the parent `nucleo`
+# crate; we need only the matcher, without its async source layer.
 nucleo-matcher = "0.3"
 
-# Phase 16 — HTML export:
-# `base64` encodes local image bytes into `data:` URIs when the user opts in
-# to self-contained HTML. `tempfile` hosts the intermediate HTML file for
+# HTML export: `base64` encodes local image bytes into `data:` URIs for
+# self-contained output; `tempfile` hosts the intermediate HTML file for
 # custom-command exports (pandoc, weasyprint, …), cleaned up on drop.
 base64 = "0.22"
 tempfile = "3"
 
-# Phase 17 — Mermaid diagrams:
-# `mermaid-rs-renderer` is pinned tightly because it's pre-1.0 with known
-# panic bugs and rapid churn.  `default-features = false` drops the `cli`
-# feature (which would pull `clap`) and keeps only `png` (which pulls
-# `resvg` + `usvg`).  `resvg` and `usvg` are declared explicitly because
-# `src/diagram/mermaid.rs` calls their APIs directly for the in-memory
-# SVG→PNG path (the crate's public `write_output_png` writes to a
-# `&Path` — we need `Vec<u8>` so the decode worker can feed
-# `image::load_from_memory` without a tempfile).  Versions MUST match
-# what mermaid-rs-renderer 0.2.1 pulls in transitively (resvg 0.46,
-# usvg 0.46) so cargo doesn't compile two copies.  `tiny_skia` is NOT
-# listed — we use `resvg::tiny_skia::*` re-exports to guarantee the
-# version stays locked to resvg's choice.
+# Mermaid diagrams.  `mermaid-rs-renderer` is pinned exactly because it is
+# pre-1.0 with known panic bugs and rapid churn; `default-features = false`
+# drops `cli` (which would pull `clap`) and keeps `png` (which pulls `resvg`
+# + `usvg`).  Those two are declared explicitly because
+# `src/diagram/mermaid.rs` calls them directly for the in-memory SVG→PNG
+# path — the crate's `write_output_png` writes to a `&Path`, and the decode
+# worker needs `Vec<u8>` to feed `image::load_from_memory`.  Their versions
+# MUST match what mermaid-rs-renderer pulls in transitively (0.46), or cargo
+# compiles two copies.  `tiny_skia` is deliberately not listed:
+# `resvg::tiny_skia::*` re-exports keep it locked to resvg's choice.
 mermaid-rs-renderer = { version = "=0.2.2", default-features = false, features = ["png"] }
 resvg = "0.46"
 usvg = "0.46"
-# `sha2` produces the synthetic cache-key URLs `diagram-mermaid-<sha>` —
-# stable across reparses so the image cache can reuse already-rendered
-# diagrams when a keystroke elsewhere in the document triggers a reparse.
+# Synthetic cache-key URLs (`diagram-mermaid-<sha>`), stable across reparses
+# so the image cache can reuse an already-rendered diagram when a keystroke
+# elsewhere in the document triggers one.
 sha2 = "0.10"
 
-# Big-text rendering for H1 headings.  Tracks the ratatui 0.30 line via
-# tui-big-text 0.8+; uses `font8x8` glyphs painted via Octant block
-# characters (4 cells wide × 2 cells tall per glyph).
+# Big-text H1 headings.  Tracks the ratatui 0.30 line via 0.8+; `font8x8`
+# glyphs painted as Octant blocks, 4 cells wide × 2 tall per glyph.
 tui-big-text = "0.8"
 
-# Cross-platform filesystem watcher.  Pinned to the current major (8.x);
+# Cross-platform filesystem watcher.  Pinned to the current major (8.x):
 # 6→7→8 reshaped the `RecommendedWatcher` constructor and `Event` types.
-# Default features include backends for Linux (inotify), macOS (FSEvents),
-# and Windows (ReadDirectoryChanges).
+# Default features cover inotify / FSEvents / ReadDirectoryChanges.
 notify = "8"
 
-# Fast non-cryptographic hash for the watcher's own-write content-hash
-# filter.  Zero dependencies and sub-microsecond on typical Markdown
-# files — used to skip echoes of our own saves rather than to provide
-# any cryptographic guarantee.
+# Fast non-cryptographic hash for the watcher's own-write content filter:
+# zero dependencies, sub-microsecond on typical Markdown files.  It skips
+# echoes of our own saves; no cryptographic guarantee is intended.
 seahash = "4"
 
-# Line-level + inline word-level diff used by the diff-mode review
-# subsystem (Phase 1 §3).  `TextDiff::from_lines` produces line hunks;
-# `InlineChange` slices each `Replace` hunk into word-level highlights
-# without us writing a tokenizer.
+# Line- and word-level diff for the diff-mode review subsystem.
+# `TextDiff::from_lines` gives line hunks; `InlineChange` slices each
+# `Replace` hunk into word-level highlights without us writing a tokenizer.
 similar = "2"
 
 [features]
@@ -201,12 +210,13 @@ clipboard = ["arboard"]
 insta = { version = "1", features = ["ron"] }
 # Property-based testing
 proptest = "1"
-# Parse/render pipeline benchmarks (see docs/perf-benchmark-plan.md).
-# Criterion runs benches in release mode by default, which matters — the
-# dev profile below is tuned for compile speed, not runtime speed.
+# Parse/render pipeline benchmarks; see
+# docs/dev/plans/archive/perf-benchmark-plan.md.  Criterion runs benches in
+# release mode, which matters — the dev profile below is tuned for compile
+# speed.
 criterion = "0.5"
-# Note: `tempfile` is a runtime dep (used by export/custom.rs); no separate
-# dev-dependency entry is needed — dev code can import it the same way.
+# `tempfile` is a runtime dep (export/custom.rs), so dev code imports it
+# without a separate dev-dependency entry.
 
 [[bench]]
 name = "pipeline"

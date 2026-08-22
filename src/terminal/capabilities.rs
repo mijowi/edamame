@@ -391,7 +391,16 @@ fn resolve_protocol(probed: ProtocolType, iterm2: bool) -> ProtocolType {
 fn detect_image_protocol() -> (Option<ImageProtocol>, Option<Picker>) {
     // Picker::from_query_stdio may write escape sequences; a panic here would
     // be disastrous (corrupted terminal state), so we catch-and-swallow.
-    let result = std::panic::catch_unwind(Picker::from_query_stdio);
+    //
+    // The guard is scoped to the `catch_unwind` alone, and here that is
+    // load-bearing rather than tidiness: this runs on the *main* thread,
+    // after `main` installs the hook, so a guard still live over the
+    // code below would leave an uncaught panic unwinding out of `main`
+    // with the alternate screen up and nothing printed.
+    let result = {
+        let _expected = super::ExpectedPanic::new();
+        std::panic::catch_unwind(Picker::from_query_stdio)
+    };
     let mut picker = match result {
         Ok(Ok(p)) => p,
         _ => return (None, None),

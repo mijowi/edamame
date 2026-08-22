@@ -100,6 +100,13 @@ pub struct ThemeFile {
     pub code_block_border: StyleSpec,
     pub code_block_lang: StyleSpec,
     pub code_block_text: StyleSpec,
+    pub syntax_keyword: StyleSpec,
+    pub syntax_string: StyleSpec,
+    pub syntax_comment: StyleSpec,
+    pub syntax_number: StyleSpec,
+    pub syntax_type: StyleSpec,
+    pub syntax_function: StyleSpec,
+    pub syntax_attribute: StyleSpec,
     pub blockquote_bar: StyleSpec,
     pub blockquote_text: StyleSpec,
     pub rule: StyleSpec,
@@ -234,6 +241,8 @@ macro_rules! style_fields {
             link_text, link_file, link_heading,
             image_placeholder, footnote,
             code_block_border, code_block_lang, code_block_text,
+            syntax_keyword, syntax_string, syntax_comment, syntax_number,
+            syntax_type, syntax_function, syntax_attribute,
             blockquote_bar, blockquote_text, rule,
             frontmatter_delimiter, frontmatter_key, frontmatter_value,
             list_bullet, list_number,
@@ -369,6 +378,13 @@ mod tests {
         check!(code_block_border);
         check!(code_block_lang);
         check!(code_block_text);
+        check!(syntax_keyword);
+        check!(syntax_string);
+        check!(syntax_comment);
+        check!(syntax_number);
+        check!(syntax_type);
+        check!(syntax_function);
+        check!(syntax_attribute);
         check!(blockquote_bar);
         check!(blockquote_text);
         check!(rule);
@@ -627,6 +643,48 @@ bold = true
     }
 
     #[test]
+    fn syntax_styles_derive_from_the_palette_and_accept_overrides() {
+        // The two halves of the syntax fields' contract: they ride the
+        // palette by default, so every built-in theme gets a coherent
+        // set without hand-authoring one, and a theme file can still
+        // name a token colour explicitly.
+        let toml = r##"
+[palette]
+primary = "#abcdef"
+
+[syntax_string]
+fg = "#112233"
+italic = true
+"##;
+        let file: ThemeFile = toml::from_str(toml).unwrap();
+        let theme: Theme = (&file).into();
+        // Derived: keyword follows the `primary` slot it is built from.
+        assert_eq!(theme.syntax_keyword.fg, Some(Color::Rgb(0xab, 0xcd, 0xef)));
+        // Overridden: the explicit section wins outright.
+        assert_eq!(theme.syntax_string.fg, Some(Color::Rgb(0x11, 0x22, 0x33)));
+        assert!(theme.syntax_string.add_modifier.contains(Modifier::ITALIC));
+    }
+
+    #[test]
+    fn syntax_styles_carry_no_background_of_their_own() {
+        // They are patched over `code_block_text`, which owns the code
+        // surface's bg.  A syntax style that set one would paint a
+        // stale background wherever a theme moved the surface.
+        let theme = Theme::default();
+        for (name, style) in [
+            ("syntax_keyword", theme.syntax_keyword),
+            ("syntax_string", theme.syntax_string),
+            ("syntax_comment", theme.syntax_comment),
+            ("syntax_number", theme.syntax_number),
+            ("syntax_type", theme.syntax_type),
+            ("syntax_function", theme.syntax_function),
+            ("syntax_attribute", theme.syntax_attribute),
+        ] {
+            assert_eq!(style.bg, None, "{name} must not set a background");
+        }
+    }
+
+    #[test]
     fn palette_only_file_renders_identical_to_default_theme() {
         // Lock in the contract that the shipped `default.toml` shape
         // (palette + empty per-element sections) produces exactly the
@@ -679,6 +737,13 @@ bold = true
         check!(code_block_border);
         check!(code_block_lang);
         check!(code_block_text);
+        check!(syntax_keyword);
+        check!(syntax_string);
+        check!(syntax_comment);
+        check!(syntax_number);
+        check!(syntax_type);
+        check!(syntax_function);
+        check!(syntax_attribute);
         check!(blockquote_bar);
         check!(blockquote_text);
         check!(rule);

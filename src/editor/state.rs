@@ -279,6 +279,12 @@ pub struct EditorState {
     /// pixel size).  Set by the App at construction time and re-read on
     /// every `refresh_parsed`.
     pub big_h1: bool,
+    /// Propagated from `config.editor.syntax_highlighting`.  Controls
+    /// whether fenced code blocks are tokenized by
+    /// `markdown::highlight`.  Set by the App at construction time (via
+    /// `app::configure_new_editor`, so a document opened mid-session
+    /// gets it too) and re-read on every `refresh_parsed`.
+    pub syntax_highlighting: bool,
     /// Most-recently observed terminal column width, fed
     /// into `Renderer::with_viewport_width` on every `refresh_parsed`
     /// so the min-max proportional column-width algorithm adapts to
@@ -489,6 +495,12 @@ impl EditorState {
             live_table_widths: None,
             row_striping: false,
             big_h1: false,
+            // Off here, like `big_h1`: "on by default" is carried by
+            // `EditorConfig::default()` and applied through
+            // `app::configure_new_editor`, so a bare `EditorState`
+            // (tests, one-shot builds) renders code blocks exactly as it
+            // did before this feature existed.
+            syntax_highlighting: false,
             viewport_width: 80,
             pending_column_widths_commit: None,
             pending_link_follow: None,
@@ -876,6 +888,17 @@ impl EditorState {
         self.refresh_parsed();
     }
 
+    /// Toggle syntax highlighting and re-render so the change is visible
+    /// on the next frame.  Wired to `config.editor.syntax_highlighting`
+    /// at App startup and after a live config reload.
+    pub fn set_syntax_highlighting(&mut self, on: bool) {
+        if self.syntax_highlighting == on {
+            return;
+        }
+        self.syntax_highlighting = on;
+        self.refresh_parsed();
+    }
+
     /// Update the cached terminal width and re-render if it changed.
     /// Called by the App on terminal-resize events so the table
     /// column-width algorithm picks up the new viewport.  Called with
@@ -1023,6 +1046,7 @@ impl EditorState {
             self.row_striping,
             self.viewport_width,
             self.big_h1,
+            self.syntax_highlighting,
             self.diagrams_enabled,
             Some(&mut self.render_cache),
         );

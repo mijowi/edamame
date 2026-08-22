@@ -11,6 +11,7 @@ Concretely, document content reaches several non-trivial subsystems:
 - **Image decoding** — embedded/referenced PNG/JPEG/GIF/BMP/WEBP and SVG.
 - **Remote fetches** — `http(s)` image URLs.
 - **Mermaid diagrams** — fenced ` ```mermaid ` blocks rendered to images.
+- **Syntax highlighting** — fenced code-block bodies parsed by TextMate grammars.
 - **Link opening** — clicking a link hands a URL/path to the OS.
 - **HTML export** — the document is serialized to a shareable HTML file.
 - **Subprocess spawning** — `$EDITOR`, custom export commands.
@@ -66,6 +67,20 @@ A self-contained export base64-embeds referenced images into the output. Because
 `mermaid-rs-renderer` is pure Rust: its dependency set contains no JS engine, no headless browser, and no HTTP client. Mermaid source cannot execute code, read files, or make network requests through the renderer. It is pinned exactly (`=0.2.2`) because it is pre-1.0 with known panic bugs; those panics are contained by `catch_unwind` at two layers (`src/diagram/mermaid.rs`).
 
 The renderer has no internal length, node-count, or timeout bound, so a pathological diagram could otherwise drive unbounded CPU/RAM on the decode worker. `render_mermaid_svg` rejects any source over 64 KiB before dispatch (`MAX_MERMAID_SOURCE_BYTES`) — a single choke point covering both the TUI raster path and the HTML exporter — and an over-cap block falls back to the plain code block.
+
+### Syntax highlighting is bounded and cannot execute code
+
+Fenced code-block bodies are attacker-controlled text, and syntax highlighting hands them to `syntect`'s TextMate grammars — regex programs running on a backtracking engine, which is a classic denial-of-service shape. The grammars are data, not code: they cannot execute anything, read files, or make network requests, and syntect is built with `default-features = false` so neither its `.tmTheme`/`.sublime-syntax` *runtime* loaders (`plist-load`, `yaml-load`) nor its HTML writer are compiled in. The only dumps it deserializes are `include_bytes!` blobs fixed at build time.
+
+Three caps bound the cost before content is trusted (`src/markdown/highlight.rs`), and all three bound **color, never content** — over any of them the block still renders every byte, just without highlighting, because a user must always be able to read their own code:
+
+- `MAX_HIGHLIGHT_SOURCE_BYTES` (64 KiB, matching the Mermaid cap) bounds the *cold* parse. No parser is constructed at all for a larger block.
+- `MAX_HIGHLIGHT_LINE_CHARS` (2 000) bounds the *per-keystroke* cost, which the byte cap cannot: highlighting reuses an unchanged prefix between edits, and a one-line block has none, so each keystroke re-parses the whole line. A minified bundle or a pasted base64 blob is exactly that shape.
+- `MAX_HIGHLIGHT_GRAMMARS` (24) bounds *grammar compilation*, which neither of the others can, because it scales with how many languages a document names rather than with how big any block is. syntect compiles a grammar's regexes lazily, on first use of that language — around 9 ms each, ~18 ms for a large one. A document of fifty one-line fences in fifty different languages sits comfortably inside both other caps and still costs roughly 430 ms; with all 213 bundled grammars that reaches several seconds. That work runs on the warm worker rather than the render thread, so the cap bounds how much background CPU and queue memory one document can claim. It bounds a *burst* rather than the process lifetime: one slot returns every second, and a grammar already compiled is free forever (syntect keeps the regexes in a thread-safe cell in the shared set), so a long session that legitimately visits many languages keeps working while no single document can queue more than two dozen compiles at once. Past the budget a language renders plain exactly as an unknown one does.
+
+The caps were sized against measurement rather than guessed — see the `#[ignore]`d `throughput` test in that module, which reports the parse figures for deliberately pathological inputs. *Parsing* runs synchronously on the render thread (deferring it would make colors flicker on the line being typed, which is worse than the cost), so there is no worker to absorb a slow parse; the tokenizer is wrapped in `catch_unwind`, so a grammar bug degrades one block to plain text rather than taking the process down. That recovery is real rather than nominal: the process panic hook restores the terminal and prints to stderr, which would wreck a running TUI, so each guarded section marks its thread via `terminal::panic_guard` and the hook stands down for a panic that is about to be caught.
+
+*Compiling* a grammar is the one cost that scales with languages rather than text, and it happens on a worker thread (`highlight::spawn_warm_worker`), which also absorbs the ~2 ms dump deserialization. A block whose language is not yet compiled renders plain and picks up its color once the worker lands — so the ~430 ms fifty-language case above never reaches a frame at all, and `MAX_HIGHLIGHT_GRAMMARS` now bounds queued background work and queue memory rather than a stall.
 
 ### SVG parsing reads no external entities, network, or local files
 

@@ -10,6 +10,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ### Added
 
+- Syntax highlighting for fenced code blocks, covering over 200 languages. The language comes only from the opening fence — a fence with no language renders as plain code. Colors come from the active theme. Highlighting can be turned off in settings.
 - Links to a section of another document — `[text](other.md#a-heading)` — now open that file and land on the heading.
 - The same on the command line: `edamame notes.md#a-heading` opens the file at that heading.
 
@@ -23,6 +24,8 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Following a link to a section of another document no longer fails with an OS launcher error.
 - In vim mode, the paste shortcut now fills an open `:` or `/` command line, matching a terminal-level paste (⌘V, right-click); before it did nothing at all.
 - Improved line wrapping. Wraps no longer splits on contractions, decimals, times, file names, emojis, opening brackets or quotes, and a wrapped line no longer can start with a space.
+- Editing `config.toml` from inside edamame now applies every changed setting straight away, not only the theme and keybindings.
+- A recovered failure in the diagram renderer or an image worker no longer hands the terminal back to the shell while edamame is still running.
 
 ## [0.1.1] - 2026-08-18
 

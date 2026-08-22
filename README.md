@@ -18,7 +18,7 @@ edamame shows your document *rendered* with headings, drawn table grids, inline 
 
 ## Demo
 
-https://github.com/user-attachments/assets/85e2a303-08d6-4122-9f1f-18975613a127
+<https://github.com/user-attachments/assets/85e2a303-08d6-4122-9f1f-18975613a127>
 
 ## Installation
 

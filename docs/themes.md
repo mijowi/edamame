@@ -161,13 +161,19 @@ Those six are the complete set of modifiers. There is no blink or hidden.
 
 ### Element names
 
-**All 102 styleable elements:**
+**All 109 styleable elements:**
 
 **Headings** — `h1` `h1_rule` `h2` `h3` `h4` `h5` `h6`
 
 **Inline** — `bold` `italic` `strikethrough` `highlight` `code_span` `code_span_dim` `link_text` `link_file` `link_heading` `image_placeholder` `footnote`
 
 **Blocks** — `code_block_border` `code_block_lang` `code_block_text` `blockquote_bar` `blockquote_text` `rule`
+
+**Syntax highlighting** — `syntax_keyword` `syntax_string` `syntax_comment` `syntax_number` `syntax_type` `syntax_function` `syntax_attribute`
+
+These color the tokens inside a fenced code block, and they are *layered over* `code_block_text` rather than replacing it — so each one only needs to say what differs, and none of them should set a `bg` (the code surface owns that). All seven derive from the palette, so every built-in theme has a coherent set without listing them. Setting all seven to plain `fg = ...` matching `code_block_text` effectively flattens highlighting for that theme; turning it off entirely is `syntax_highlighting = false` in `config.toml`.
+
+A *derived* syntax color is automatically lifted toward `text` until it reaches a 4.5:1 contrast ratio against the code-block background, keeping its hue — a palette slot picked to read well on the page can otherwise land close to the code surface. This applies only to colors edamame derives for you. A color you name explicitly in a `[syntax_*]` section is used exactly as written, so if you override these, check them against your `code_block_text` background yourself.
 
 **Frontmatter** — `frontmatter_delimiter` `frontmatter_key` `frontmatter_value`
 

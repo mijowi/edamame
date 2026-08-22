@@ -123,11 +123,12 @@ const STAGE_PIVOT_SIZE: usize = 20_000;
 // ── Pipeline under test ────────────────────────────────────────────────────
 
 /// Mirrors the arguments `EditorState::refresh_parsed` passes: blank-line
-/// preservation on, realistic image ceiling, striping + big-H1 on (the
-/// costlier paths), width 100, diagrams promoted, no live overrides.
+/// preservation on, realistic image ceiling, striping + big-H1 +
+/// syntax highlighting on (the costlier paths), width 100, diagrams
+/// promoted, no live overrides.
 fn build_doc(source: &str, theme: &Theme) -> ParsedDoc {
     ParsedDoc::build_with_overrides(
-        source, theme, true, 20, None, None, true, 100, true, true, None,
+        source, theme, true, 20, None, None, true, 100, true, true, true, None,
     )
 }
 
@@ -143,6 +144,7 @@ fn build_doc_cached(source: &str, theme: &Theme, cache: &mut RenderCache) -> Par
         None,
         true,
         100,
+        true,
         true,
         true,
         Some(cache),

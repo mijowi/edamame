@@ -135,8 +135,24 @@ fn run(file_path: Option<PathBuf>, opts: RunOpts) -> Result<()> {
     } = terminal::setup()?;
 
     // Install a panic hook so the terminal is always restored, even on panic.
+    //
+    // The hook runs *before* unwinding and cannot see whether anyone is
+    // going to catch the panic, so it has to be told.  Seven call sites
+    // wrap `catch_unwind` around third-party code that touches untrusted
+    // document content or the live terminal — the highlighter's tokenizer
+    // and its warm worker, the Mermaid renderer and its font warmup, the
+    // image decode and scratch-encode workers, and the capability probe —
+    // and each marks its thread with a `terminal::ExpectedPanic` guard.  Restoring the terminal for one of
+    // those left the app *still running* with no alt screen and no raw
+    // mode: strictly worse than the clean crash this hook exists to give.
+    // Chaining to the default hook is suppressed for the same reason —
+    // it prints the payload to stderr, straight through the TUI.
     let orig_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        if terminal::panic_is_expected() {
+            tracing::warn!(%info, "caught a panic in a guarded section");
+            return;
+        }
         let _ = terminal::restore();
         orig_hook(info);
     }));

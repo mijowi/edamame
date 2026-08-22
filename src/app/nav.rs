@@ -1083,6 +1083,48 @@ mod tests {
     }
 
     #[test]
+    fn reconfiguring_an_existing_editor_picks_up_every_config_field() {
+        // `configure_new_editor` is shared by three callers now: the
+        // constructor, the document swap, and — since the drift below —
+        // the post-`$EDITOR` config reload.  That third caller hands it
+        // an editor that is *already* configured, so every field has to
+        // be re-applied rather than merely defaulted.
+        //
+        // The reload used to live-apply only the theme and the keymap,
+        // so hand-editing `syntax_highlighting`, `big_h1`,
+        // `cursor_blink` or `table.row_striping` in `config.toml` from
+        // inside edamame did nothing until the next launch, while the
+        // flash still said "Configuration updated".  Driving the real
+        // reload needs a live `$EDITOR`, so the invariant is pinned at
+        // the shared helper the reload calls.
+        let mut app = app_with_buffer(
+            "```rust
+fn main() {}
+```
+",
+            0,
+        );
+        app.editor.set_syntax_highlighting(false);
+        app.editor.set_big_h1(false);
+        app.editor.set_row_striping(false);
+        assert!(app.editor.cursor_blink.is_blinking());
+
+        // Stand in for the user's hand-edit of `config.toml`.
+        app.config.editor.syntax_highlighting = true;
+        app.config.editor.big_h1 = true;
+        app.config.table.row_striping = true;
+        app.config.editor.cursor_blink = false;
+
+        let (images_on, diagrams_on) = (app.images_layout_enabled(), app.diagrams_layout_enabled());
+        crate::app::configure_new_editor(&mut app.editor, &app.config, images_on, diagrams_on);
+
+        assert!(app.editor.syntax_highlighting, "syntax_highlighting stale");
+        assert!(app.editor.big_h1, "big_h1 stale");
+        assert!(app.editor.row_striping, "row_striping stale");
+        assert!(!app.editor.cursor_blink.is_blinking(), "cursor_blink stale");
+    }
+
+    #[test]
     fn navigation_carries_the_encoder_sender_to_the_new_document() {
         // The decode half of the pipeline is not the whole story: the
         // *paint* half needs `ImageCache::resize_tx`, and the cache is

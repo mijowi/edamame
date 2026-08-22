@@ -91,6 +91,26 @@ pub fn theme() -> Theme {
     t.code_block_border = Style::default().fg(palette().text).bg(code_bg);
     t.code_block_text = Style::default().fg(palette().text).bg(code_bg);
 
+    // Syntax highlighting, hand-picked against `code_bg` (253).  Same
+    // reason as `dark_256`: the derived path's contrast lift uses
+    // `blend`, a no-op for indexed colours.  Every entry clears 4.5:1
+    // on 253.  The cube offers no dark orange that does, so `keyword`
+    // takes the deep red that light editor themes conventionally give
+    // it and `attribute` moves to teal rather than crowding the reds —
+    // the hue families differ from the RGB derivation's, the meanings
+    // do not.
+    t.syntax_keyword = Style::default()
+        .fg(Color::Indexed(124)) // deep red
+        .add_modifier(Modifier::BOLD);
+    t.syntax_string = Style::default().fg(Color::Indexed(22)); // dark green
+    t.syntax_comment = Style::default()
+        .fg(Color::Indexed(59)) // the most recessive grey still legible here
+        .add_modifier(Modifier::ITALIC);
+    t.syntax_number = Style::default().fg(Color::Indexed(58)); // dark olive
+    t.syntax_type = Style::default().fg(Color::Indexed(91)); // purple, the `code` slot
+    t.syntax_function = Style::default().fg(Color::Indexed(21)); // blue, the `link` slot
+    t.syntax_attribute = Style::default().fg(Color::Indexed(23)); // teal
+
     // Blockquote surface.  Same `blend` no-op as the code surface, so
     // the wash is picked by hand.  The greyscale ramp has no room
     // between `bg` (254) and `code_bg` (253), so unlike the dark theme

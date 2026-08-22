@@ -73,6 +73,67 @@ pub fn best_contrast(bg: Color, a: Color, b: Color) -> Color {
     }
 }
 
+/// WCAG relative-contrast ratio between two colors, in `1.0..=21.0`.
+/// `None` when either side is not `Color::Rgb`, for the same reason
+/// [`luminance`] declines: an indexed or named color's real value
+/// depends on the terminal palette.
+pub fn contrast_ratio(a: Color, b: Color) -> Option<f32> {
+    // `luminance` is a plain channel-weighted average of *gamma-encoded*
+    // channels, which is what `best_contrast`'s relative comparison
+    // wants.  A WCAG ratio needs linearized channels, so this does its
+    // own conversion rather than reusing that value.
+    fn linear(c: Color) -> Option<f32> {
+        let Color::Rgb(r, g, b) = c else { return None };
+        let f = |v: u8| {
+            let v = v as f32 / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        Some(0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b))
+    }
+    let (x, y) = (linear(a)?, linear(b)?);
+    let (hi, lo) = if x > y { (x, y) } else { (y, x) };
+    Some((hi + 0.05) / (lo + 0.05))
+}
+
+/// How far toward `ink` a single lift step moves a color.  Small enough
+/// that a color clearing the bar early keeps most of its hue.
+const LEGIBILITY_STEP: f32 = 0.1;
+
+/// Return `fg` if it already reaches `min` contrast against `bg`,
+/// otherwise the same hue blended toward `ink` until it does.
+///
+/// Used for the `syntax_*` styles, whose foregrounds are derived from
+/// palette slots chosen for their *role* rather than measured against
+/// the code surface — a mid-tone accent that reads fine as a heading on
+/// the page background can land near-invisible on a code block's wash.
+/// Blending toward `ink` (the palette's own text color, legible on that
+/// surface by construction) raises luminance separation while keeping
+/// the hue that distinguishes one token class from another.
+///
+/// Returns `fg` unchanged when either color is non-RGB: [`blend`] is a
+/// no-op there and stepping would spin without converging.  Indexed
+/// built-ins therefore hand-pick their `syntax_*` colors, exactly as
+/// they already hand-pick the heading ramp and `code_bg`.
+pub fn legible_on(bg: Color, fg: Color, ink: Color, min: f32) -> Color {
+    if !matches!(
+        (bg, fg, ink),
+        (Color::Rgb(..), Color::Rgb(..), Color::Rgb(..))
+    ) {
+        return fg;
+    }
+    let mut out = fg;
+    let mut t = 0.0;
+    while contrast_ratio(out, bg).is_some_and(|c| c < min) && t < 1.0 {
+        t += LEGIBILITY_STEP;
+        out = blend(fg, ink, t);
+    }
+    out
+}
+
 /// Chroma boost applied to derived chrome surfaces — picked so the
 /// tint reads as "warm dark grey" / "cool dark grey" rather than as
 /// a recognisable hue.  Bump cautiously; values above ~1.0 start to

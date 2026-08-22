@@ -367,6 +367,17 @@ pub struct App {
     /// the surface where the user answers the `check_for_updates`
     /// question in the first place.
     startup_update_check_due: bool,
+    /// Last `markdown::highlight::warm_generation()` this session acted
+    /// on.  Grammar compilation happens on a worker, so a code block in
+    /// a not-yet-compiled language renders plain; when the counter moves
+    /// `tick_syntax_warm` reparses so the colour lands.  Seeded from the
+    /// live counter rather than 0 — a second `App` in one process (the
+    /// test suite) would otherwise see a spurious change on its first
+    /// tick and reparse for nothing — and that read is taken *before*
+    /// this session's own first render queues anything, or a compile
+    /// landing in between would be seeded in as the starting value and
+    /// never seen as a change.
+    syntax_warm_generation: u64,
     /// Set when a *startup* check finds a release worth announcing,
     /// cleared when `tick_update_notice` finds an empty modal stack and
     /// pushes it.  An explicit check never touches this — it opens its
@@ -405,8 +416,16 @@ pub struct App {
 /// [`App::resize_tx`]).  Anything a new `EditorState` needs from
 /// `Config` belongs here, not at a call site.
 ///
+/// It is also the **config-reload** path: `external_editor` re-applies
+/// it after the user hand-edits `config.toml`, where the editor being
+/// configured is an existing one rather than a fresh one.  That is why
+/// every field is written unconditionally rather than only defaulted —
+/// the reload replaced `self.config` wholesale, and a field left alone
+/// here silently keeps its launch-time value while the flash claims the
+/// configuration was updated.
+///
 /// `images_layout_on` / `diagrams_layout_on` are passed rather than
-/// derived because the two callers know them differently: `App::new`
+/// derived because the callers know them differently: `App::new`
 /// has no `self` to ask `images_layout_enabled()` yet.  The reparse at
 /// the end is conditional for the same reason it always was — the
 /// constructor already parsed once, and only a layout flag flipping off
@@ -429,6 +448,7 @@ fn configure_new_editor(
     }
     editor.set_row_striping(config.table.row_striping);
     editor.set_big_h1(config.editor.big_h1);
+    editor.set_syntax_highlighting(config.editor.syntax_highlighting);
     if !images_layout_on || !diagrams_layout_on {
         editor.refresh_parsed();
     }
@@ -558,6 +578,38 @@ impl App {
                 config.diagrams.enabled,
                 crate::config::DiagramsEnabled::Never
             );
+        // Start the grammar warm worker before the first render.  It
+        // does two jobs off the critical path: deserializing the syntax
+        // dump (~2 ms), and compiling each grammar a document names
+        // (~9 ms, ~18 ms for Rust's) — the latter being the one
+        // highlighting cost that is a function of how many *languages*
+        // are in play rather than of how much text is, so neither size
+        // cap bounds it.
+        //
+        // This has to sit *above* `configure_new_editor`, which is where
+        // the first highlighted render happens — it flips
+        // `syntax_highlighting` on, and `set_syntax_highlighting`
+        // reparses.  Spawned below that line the thread has nothing left
+        // to get ahead of on any document containing a code block, which
+        // is the very case it exists for.
+        //
+        // Skipped when the setting is off: nothing would ever ask it for
+        // a grammar, and the dump load would be pure waste.  Turning the
+        // setting on mid-session still works — the first warm request
+        // spawns the worker itself.
+        //
+        // Read the counter *before* either the worker or the first
+        // render exists, and carry that value to the field below.
+        // Reading it at the struct literal instead leaves a window: the
+        // render inside `configure_new_editor` queues the document's
+        // grammars, and a compile landing before the seed is taken would
+        // be captured as the starting value — `tick_syntax_warm` then
+        // sees no change, ever, and the block stays plain until some
+        // unrelated reparse. A read-only viewing session never has one.
+        let syntax_warm_generation = crate::markdown::highlight::warm_generation();
+        if config.editor.syntax_highlighting {
+            crate::markdown::highlight::spawn_warm_worker();
+        }
         configure_new_editor(&mut editor, &config, !images_off, !diagrams_off);
 
         // Vim modal editing is opt-in via `config.modal.handler`.  When
@@ -758,6 +810,7 @@ impl App {
             latest_release: None,
             release_check_in_flight: false,
             startup_update_check_due,
+            syntax_warm_generation,
             pending_update_notice: None,
             update_check_is_startup: false,
             startup_anchor: None,

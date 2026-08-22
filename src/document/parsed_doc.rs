@@ -201,6 +201,7 @@ impl ParsedDoc {
             false,
             80,
             false,
+            false,
             true,
             None,
         )
@@ -232,6 +233,12 @@ impl ParsedDoc {
         row_striping: bool,
         viewport_width: usize,
         big_h1: bool,
+        // When false, `render_code_block` never calls
+        // `markdown::highlight` and a code block's body rows are the
+        // single-span lines they were before highlighting existed.  Set
+        // by `EditorState::refresh_parsed` from
+        // `config.editor.syntax_highlighting`.
+        syntax_highlighting: bool,
         // When false, fenced ```mermaid blocks stay as regular code
         // blocks — the renderer shows the diagram source verbatim
         // instead of substituting a synthetic image placeholder.  Set
@@ -292,7 +299,8 @@ impl ParsedDoc {
             .with_viewport_width(viewport_width.max(1))
             .with_image_max_height(image_max_height)
             .with_row_striping(row_striping)
-            .with_big_h1(big_h1);
+            .with_big_h1(big_h1)
+            .with_syntax_highlighting(syntax_highlighting);
         if let Some(override_fn) = image_row_override {
             renderer = renderer.with_image_row_override(override_fn);
         }
@@ -1078,6 +1086,7 @@ mod tests {
             None,
             false,
             80,
+            false,
             false,
             true,
             None,

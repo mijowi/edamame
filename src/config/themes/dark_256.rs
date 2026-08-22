@@ -86,6 +86,27 @@ pub fn theme() -> Theme {
     t.code_block_border = Style::default().fg(palette().text).bg(code_bg);
     t.code_block_text = Style::default().fg(palette().text).bg(code_bg);
 
+    // Syntax highlighting, hand-picked against `code_bg` (238) for the
+    // same reason the heading ramp and `selection_muted` are: the
+    // derived path lifts a too-dark token colour toward `text` with
+    // `blend`, which is a no-op for indexed colours, so this theme has
+    // to answer for its own numbers.  Every entry clears 4.5:1 on 238
+    // (`syntax_contrast_clears_the_floor_for_every_builtin_theme`);
+    // each is the bright-tint sibling of the palette slot the RGB
+    // derivation would have used, because the mid shades those slots
+    // hold are picked to read on `bg` (233), not on the code surface.
+    t.syntax_keyword = Style::default()
+        .fg(Color::Indexed(214)) // orange, bright sibling of primary 208
+        .add_modifier(bold);
+    t.syntax_string = Style::default().fg(Color::Indexed(76)); // success green
+    t.syntax_comment = Style::default()
+        .fg(Color::Indexed(249)) // the most recessive grey still legible here
+        .add_modifier(Modifier::ITALIC);
+    t.syntax_number = Style::default().fg(Color::Indexed(220)); // warning amber
+    t.syntax_type = Style::default().fg(Color::Indexed(183)); // light purple, cf. code 140
+    t.syntax_function = Style::default().fg(Color::Indexed(117)); // light blue, cf. link 39
+    t.syntax_attribute = Style::default().fg(Color::Indexed(217)); // light red, cf. error 196
+
     // Blockquote surface: the faintest lift the greyscale ramp offers
     // over `bg` (233) — one step below the striped-row bg (235) and
     // well below the code surface (238), so a code span inside a quote

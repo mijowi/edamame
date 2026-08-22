@@ -600,6 +600,17 @@ fn footnotes_render_in_place_not_only_at_end() {
 /// selection overlay and the mouse hit-test all map columns through.  If the
 /// renderer's prefix ever changes, this fails rather than silently putting
 /// the cursor beside its character again (issue #28).
+///
+/// **Both** of `code_body_row`'s branches are exercised, because they build
+/// the row two different ways: an unhighlighted line is one `format!`-padded
+/// span, a highlighted one is a hand-assembled span list that re-derives the
+/// pad from `code_layout::CODE_PAD_COLS` and re-slices the text per token.
+/// The comments on `code_body_row` name this test as the thing that fails if
+/// the two drift, so it has to actually reach the tokenized path — with
+/// highlighting off, the multi-span branch is never entered at all.  The
+/// multibyte case is the one that matters most there: token ranges arrive
+/// from syntect as byte offsets, so a conversion slip inside `highlight`
+/// shifts every column after the first non-ASCII character.
 #[test]
 fn code_block_render_agrees_with_code_layout_column_map() {
     use edamame::markdown::code_layout::code_raw_col_to_rendered_col;
@@ -607,27 +618,76 @@ fn code_block_render_agrees_with_code_layout_column_map() {
     for (md, raw_line, fenced) in [
         ("```rust\nlet x = 1;\n```\n", "let x = 1;", true),
         ("Intro.\n\n    let x = 1;\n", "    let x = 1;", false),
+        // Tokenized: a keyword, a function name and a string literal, so the
+        // row really is split into several spans rather than one.
+        (
+            "```rust\nfn f() { g(\"s\"); }\n```\n",
+            "fn f() { g(\"s\"); }",
+            true,
+        ),
+        // Tokenized and multibyte, inside and outside a token.
+        (
+            "```rust\nlet s = \"héllo\"; // 日本語\n```\n",
+            "let s = \"héllo\"; // 日本語",
+            true,
+        ),
     ] {
-        let lines = render(md);
-        let rendered = lines
-            .iter()
-            .map(line_text)
-            .find(|t| t.contains("let x = 1;"))
-            .expect("code body row must render");
-        let rendered_chars: Vec<char> = rendered.chars().collect();
+        // Highlighting is off in `render` and on in `render_highlighted`;
+        // run every case through both, so the plain cases pin the untokenized
+        // branch and the tokenized ones pin both.
+        for (mode, lines) in [
+            ("plain", render(md)),
+            ("highlighted", render_highlighted(md)),
+        ] {
+            let needle = raw_line.trim_start();
+            let rendered = lines
+                .iter()
+                .map(line_text)
+                .find(|t| t.contains(needle))
+                .unwrap_or_else(|| panic!("code body row must render ({mode})"));
+            let rendered_chars: Vec<char> = rendered.chars().collect();
 
-        for (raw_col, expected) in raw_line.chars().enumerate() {
-            // Columns inside an indented block's stripped indent have no
-            // rendered cell of their own; they collapse onto the first.
-            if !fenced && raw_col < 4 {
-                continue;
+            for (raw_col, expected) in raw_line.chars().enumerate() {
+                // Columns inside an indented block's stripped indent have no
+                // rendered cell of their own; they collapse onto the first.
+                if !fenced && raw_col < 4 {
+                    continue;
+                }
+                let col = code_raw_col_to_rendered_col(raw_line, fenced, raw_col);
+                assert_eq!(
+                    rendered_chars.get(col).copied(),
+                    Some(expected),
+                    "{mode}: raw col {raw_col} of {raw_line:?} should render at col {col}, \
+                     rendered row is {rendered:?}",
+                );
             }
-            let col = code_raw_col_to_rendered_col(raw_line, fenced, raw_col);
+        }
+    }
+}
+
+/// The tokenized branch must also leave the *shape* of the block alone: same
+/// number of rows, same text on each. Column identity (above) is what the
+/// click and cursor paths need; row count is what the raw reveal and the
+/// scroll arithmetic need, and neither is visible in a span-level assertion.
+#[test]
+fn highlighting_changes_no_text_and_no_row_count() {
+    for md in [
+        "```rust\nfn main() {\n    let s = \"héllo 日本語\";\n}\n```\n",
+        // A block comment: cross-line parser state, so every row is tokenized.
+        "```rust\n/* block\n   comment */\nlet x = 1;\n```\n",
+        // Blank body lines, which take the NBSP path rather than `code_body_row`.
+        "```python\n\n\nx = 1\n\n```\n",
+        // A tab-indented line, where the raw and rendered widths differ.
+        "```rust\n\tlet tabbed = 1;\n```\n",
+    ] {
+        let plain = render(md);
+        let lit = render_highlighted(md);
+        assert_eq!(plain.len(), lit.len(), "row count differs for {md:?}");
+        for (i, (a, b)) in plain.iter().zip(&lit).enumerate() {
             assert_eq!(
-                rendered_chars.get(col).copied(),
-                Some(expected),
-                "raw col {raw_col} of {raw_line:?} should render at col {col}, \
-                 rendered row is {rendered:?}",
+                line_text(a),
+                line_text(b),
+                "row {i} text differs for {md:?}"
             );
         }
     }
@@ -748,4 +808,95 @@ fn frontmatter_lines_without_a_key_render_whole() {
     let entry = &lines[2];
     assert_eq!(line_text(entry), "  - https://example.com");
     assert_eq!(entry.spans.len(), 1, "got: {:?}", entry.spans);
+}
+
+// ── Syntax highlighting ──────────────────────────────────────────────────────
+
+/// Opt this thread into inline grammar compilation for every language
+/// the source's fences name.
+///
+/// Compilation is asynchronous in production — a cold grammar renders
+/// plain and a worker compiles it — so without this a render test
+/// asserts on whichever grammars an *unrelated* test happened to warm
+/// first, and passes or fails by test order. See
+/// `markdown::highlight::warm_inline`.
+fn warm_fence_languages(src: &str) {
+    for line in src.lines() {
+        let Some(info) = line.trim_start().strip_prefix("```") else {
+            continue;
+        };
+        if !info.trim().is_empty() {
+            edamame::markdown::highlight::warm_inline(Some(info.trim()));
+        }
+    }
+}
+
+/// Render with syntax highlighting on. The plain `render` helper above leaves
+/// it off, matching `Renderer::new`'s default.
+fn render_highlighted(md: &str) -> Vec<ratatui::text::Line<'static>> {
+    warm_fence_languages(md);
+    let theme = Box::leak(Box::new(Theme::default()));
+    let blocks = parse(md);
+    Renderer::new(theme)
+        .with_syntax_highlighting(true)
+        .render(&blocks)
+}
+
+/// End-to-end over the four fence shapes that decide whether a block is
+/// highlighted at all: a known language, a known language carrying tool
+/// metadata, an unknown one, and a bare fence.
+#[test]
+fn fenced_blocks_highlight_by_language_only() {
+    let theme = Theme::default();
+    let md = "\
+```rust
+fn main() {}
+```
+
+```rust,ignore
+fn other() {}
+```
+
+```frobnicate
+fn main() {}
+```
+
+```
+fn main() {}
+```
+";
+    let lines = render_highlighted(md);
+    let keyword_rows = lines
+        .iter()
+        .filter(|l| {
+            l.spans
+                .iter()
+                .any(|s| s.content.as_ref() == "fn" && s.style.fg == theme.syntax_keyword.fg)
+        })
+        .count();
+    // The two rust fences highlight; the unknown and bare ones do not.
+    assert_eq!(
+        keyword_rows, 2,
+        "only the rust fences should be highlighted"
+    );
+
+    // Every block still shows its text, highlighted or not.
+    let all: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+    assert_eq!(all.matches("fn main() {}").count(), 3);
+    assert!(all.contains("fn other() {}"));
+}
+
+/// With highlighting off, the rendered output must be identical to what the
+/// renderer produced before the feature existed — the regression guard that
+/// keeps "feature off" a genuinely untouched path.
+#[test]
+fn highlighting_off_is_indistinguishable_from_before_the_feature() {
+    let md = "```rust\nfn main() {}\nlet x = 1;\n```\n";
+    let plain = render(md);
+    assert!(plain.iter().all(|l| l
+        .spans
+        .iter()
+        .all(|s| s.style.fg == plain[1].spans[0].style.fg)));
+    // One span per row: the single-span line the renderer always emitted.
+    assert!(plain[1].spans.len() == 1, "got {:?}", plain[1].spans);
 }

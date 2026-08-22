@@ -117,6 +117,13 @@ appearance = "dark"
 # or contains non-ASCII characters. Default: false.
 # big_h1 = false
 
+# Syntax highlight fenced code blocks, using the language named in the
+# opening fence (```rust). The language is never guessed: a fence with no
+# language, or one naming a grammar edamame does not ship, renders as plain
+# code. Token colors come from the active theme's `syntax_*` fields, so a
+# custom theme can restyle them. Default: true.
+# syntax_highlighting = true
+
 # Blink the editor cursor. When false the cursor is drawn solid and never
 # hidden. The settings overlay exposes this on/off toggle. Default: true.
 # cursor_blink = true
