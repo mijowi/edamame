@@ -179,11 +179,16 @@ fn build_line(diff: &DiffState, theme: &Theme, dvl: &DiffVisualLine) -> Line<'st
         let counter_style = Style::default()
             .add_modifier(Modifier::DIM)
             .remove_modifier(Modifier::BOLD);
-        let mut spans = decision_divider_spans(theme, dec, focused);
-        spans.push(Span::styled(
-            format!(" ({position}/{total})"),
-            counter_style,
-        ));
+        let mut spans = decision_divider_spans(theme, dec, focused, diff.read_only);
+        // The counter is the whole content of a read-only unfocused
+        // divider, so it leads the row there rather than trailing a
+        // checkbox that isn't drawn.
+        let counter = if spans.is_empty() {
+            format!("({position}/{total})")
+        } else {
+            format!(" ({position}/{total})")
+        };
+        spans.push(Span::styled(counter, counter_style));
         return Line::from(spans).style(style);
     }
 
@@ -347,7 +352,30 @@ fn prompt_chip_style(theme: &Theme, accept: bool) -> Style {
 ///
 /// Only the divider is color-coded; the diff hint row in
 /// `ui::bottom_region` deliberately stays uniform for now.
-fn decision_divider_spans(theme: &Theme, decision: Decision, focused: bool) -> Vec<Span<'static>> {
+///
+/// **A read-only review has no decision vocabulary, so it gets no
+/// checkbox and no prompt** — `[ ]` is an unticked box the user cannot
+/// tick, and the `Reject [n] Accept [y]` chips name keys that answer
+/// "This review is read-only".  The same `DiffState::read_only` flag
+/// that shortens the hint row in `ui::bottom_region::diff_review_chords`
+/// gates them here, so the two surfaces can never advertise different
+/// vocabularies.  What survives is what the divider is *for* in a
+/// viewer: the boundary between the old side above and the new side
+/// below, the `>` focus caret, and the position counter the caller
+/// appends — hence the empty span list for an unfocused one.
+fn decision_divider_spans(
+    theme: &Theme,
+    decision: Decision,
+    focused: bool,
+    read_only: bool,
+) -> Vec<Span<'static>> {
+    if read_only {
+        return if focused {
+            vec![Span::raw(">")]
+        } else {
+            Vec::new()
+        };
+    }
     let base = decision_line_text(decision);
     if !focused {
         return vec![Span::raw(base.to_owned())];

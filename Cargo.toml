@@ -196,6 +196,12 @@ similar = "2"
 default = ["clipboard"]
 clipboard = ["arboard"]
 
+# Unix only, and for exactly one call: ending a `git difftool` walk by
+# delivering SIGINT to our own process group, the way the tty would have
+# if raw mode had not cleared ISIG.  See `app::difftool::stop_walk`.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # Snapshot testing for rendered output
 insta = { version = "1", features = ["ron"] }

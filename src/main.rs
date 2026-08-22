@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use edamame::app::App;
+use edamame::app::{diff_label, difftool, is_markdown_pair, read_side, App};
 use edamame::cli::{self, Invocation, RunOpts};
 use edamame::config::{self, Config, LoadedConfig};
 use edamame::terminal::{self, Capabilities, ColorDepth, TerminalSetup};
@@ -16,6 +16,24 @@ use edamame::terminal::{self, Capabilities, ColorDepth, TerminalSetup};
 /// long-standing convention for a usage error (as distinct from 1, a
 /// program that ran and failed).
 const EXIT_USAGE: i32 = 2;
+
+/// What [`run`] should put on screen.  The two arms share every step of
+/// startup — config, terminal, capability probe, `App::new` — and differ
+/// only in what is handed to the `App` afterwards, which is why this is
+/// a parameter rather than a second copy of that sequence.
+enum Session {
+    /// Normal editing session; `None` opens an empty, unnamed buffer.
+    Open(Option<PathBuf>),
+    /// Read-only `--diff` review.  Carries the file *contents*, already
+    /// read and compared by `main`: reading them before terminal setup
+    /// means an unreadable path or an identical pair reports on the
+    /// normal screen instead of flashing an alternate one first.
+    Diff {
+        old: String,
+        new: String,
+        label: String,
+    },
+}
 
 fn main() -> Result<()> {
     // ── Parse CLI arguments ────────────────────────────────────────
@@ -40,13 +58,78 @@ fn main() -> Result<()> {
             Ok(())
         }
         Invocation::Doctor => cli::run_doctor(),
-        Invocation::Run { file, opts } => run(file, opts),
+        Invocation::Run { file, opts } => run(Session::Open(file), opts),
+        Invocation::Diff { old, new, opts } => {
+            // ── Three ways a pair is declined, all of them exit 0 ──
+            //
+            // A pair edamame has nothing to say about must not look
+            // like a failure: under `--trust-exit-code` a non-zero
+            // status abandons every file behind it, and even without
+            // that flag an error message per skipped file is noise.  So
+            // each of these reports on stderr and returns success.
+            // Ending the walk deliberately is a signal, not a status —
+            // see `difftool::stop_walk`.
+            //
+            // Not Markdown.  git invokes a difftool on every changed
+            // path, and edamame has nothing to offer a `.rs` or a
+            // `.png`: it would render them as unstyled plain text,
+            // which is worse than `git diff`'s own output, and cost an
+            // `Esc` per file to page past.  Checked before the files
+            // are read, so a binary file is declined by its name and
+            // never reaches a UTF-8 decode.
+            // Named by `diff_label`, not by the path: git's side of the
+            // pair is a temp copy under its own scratch directory, and
+            // a walk that prints those reads as noise rather than as a
+            // list of the files it passed over.
+            let label = diff_label(&old, &new);
+            if !is_markdown_pair(&old, &new) {
+                eprintln!("edamame: {label} is not Markdown — skipped");
+                return Ok(());
+            }
+            // Unreadable — a `.md` that isn't valid UTF-8, or a path
+            // that has gone away between git writing it and us opening
+            // it.
+            let sides = read_side(&old).and_then(|o| read_side(&new).map(|n| (o, n)));
+            let (old_text, new_text) = match sides {
+                Ok(pair) => pair,
+                Err(e) => {
+                    eprintln!("edamame: {e:#}");
+                    return Ok(());
+                }
+            };
+            // Identical.  git only invokes a difftool for paths it
+            // believes differ, but it decides that from the index — a
+            // mode-only change, or a filter that normalises the bytes,
+            // still reaches us with two identical files.  Opening an
+            // empty review would leave the user pressing Esc to learn
+            // nothing.
+            if old_text == new_text {
+                eprintln!("edamame: {label} has no differences to review");
+                return Ok(());
+            }
+            run(
+                Session::Diff {
+                    old: old_text,
+                    new: new_text,
+                    label,
+                },
+                opts,
+            )
+        }
     }
 }
 
 /// Start the editor: load config, set up the terminal, probe
 /// capabilities, run the app, restore.
-fn run(file_path: Option<PathBuf>, opts: RunOpts) -> Result<()> {
+fn run(session: Session, opts: RunOpts) -> Result<()> {
+    // A `--diff` review opens no file: `file_path` is what the watcher
+    // watches and what a save would write to, and both of those would
+    // point at temp files git deletes the moment we exit.  The status
+    // bar gets a display-only label instead (`App::diff_label`).
+    let file_path = match &session {
+        Session::Open(path) => path.clone(),
+        Session::Diff { .. } => None,
+    };
     // ── Load configuration ─────────────────────────────────────────
     // Three files: config.toml (editor/modal/table/image + active theme
     // name), keybindings.toml (overrides), themes/<active>.toml (style
@@ -168,24 +251,45 @@ fn run(file_path: Option<PathBuf>, opts: RunOpts) -> Result<()> {
         capabilities,
         config_warnings,
     )?;
+    if let Session::Diff { old, new, label } = session {
+        app.set_diff_label(Some(label));
+        // `main` already established that the two sides differ, so
+        // `DiffState::new` cannot decline — but restore the terminal
+        // before erroring rather than trusting that, since the panic
+        // hook is the only other thing standing between a bug here and
+        // a wrecked shell.
+        if !app.enter_read_only_diff(old, new) {
+            terminal::restore()?;
+            anyhow::bail!("no differences to review");
+        }
+    }
     let run_result = app.run(terminal);
+    let diff_stop_walk = app.diff_stop_walk();
 
     // ── Restore terminal ──────────────────────────────────────────
     terminal::restore()?;
 
-    // Point `--log` at what it produced.  After `restore`, so the line
-    // lands on the user's normal screen rather than being swallowed with
-    // the alternate one — and after dropping the appender guard, so the
-    // file is flushed and closed by the time we name it.
+    // Drop the appender guard unconditionally, and here rather than at
+    // the end of the function: dropping it flushes and closes the log
+    // file, and the difftool-abort path below leaves via
+    // `std::process::exit`, which runs no destructors.  Logging is
+    // enabled by `[dev] logging = true` as well as by `--log`, so
+    // deferring the drop into the `--log` branch silently discarded the
+    // tail of a config-enabled session's log.
     //
     // The guard, not `log_dir()`, is what says a log exists: `log_dir`
     // only resolves a path, while `setup_logging` also returns `None`
     // when creating that directory failed — in which case no subscriber
     // was ever installed and naming the file would send the user after
     // something that isn't there.
+    let logging_started = log_guard.is_some();
+    drop(log_guard);
+
+    // Point `--log` at what it produced.  After `restore`, so the line
+    // lands on the user's normal screen rather than being swallowed with
+    // the alternate one — and after the drop above, so the file is
+    // flushed and closed by the time we name it.
     if opts.log {
-        let logging_started = log_guard.is_some();
-        drop(log_guard);
         match Config::log_dir().filter(|_| logging_started) {
             // The appender rolls daily, so the file name carries a date
             // we'd need a date library to render.  Naming the directory
@@ -201,7 +305,17 @@ fn run(file_path: Option<PathBuf>, opts: RunOpts) -> Result<()> {
         }
     }
 
-    run_result
+    run_result?;
+    // `Esc` out of a difftool review returns normally, and git moves to
+    // the next file.  `Quit` (`Ctrl-Q`) means "stop reviewing", which
+    // an exit code cannot express — git discards a diff tool's status
+    // unless `--trust-exit-code` was asked for — so the walk is ended by
+    // signalling the process group instead.  After `terminal::restore`
+    // and after the log guard, because nothing below this line runs.
+    if diff_stop_walk && difftool::under_git_difftool() {
+        difftool::stop_walk();
+    }
+    Ok(())
 }
 
 // ── Logging setup ─────────────────────────────────────────────────────────────

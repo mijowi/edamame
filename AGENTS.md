@@ -116,6 +116,9 @@ src/
     actions.rs        # Action → App-level side effects (modal pushes, nav, …)
     autosave.rs       # debounced autosave timer
     diff_advance.rs   # post-decision reveal delay before focus advances
+    difftool.rs       # `--diff` helpers: read a side, decide whether the
+                      #   pair is reviewable, name the status bar.  In the
+                      #   library, not `main`, so they are testable
     event_loop.rs     # main run loop: term events, image-ready, link-open
     file_changed.rs   # watcher event → diff review / dirty-conflict modal /
                       #   mid-review reconcile

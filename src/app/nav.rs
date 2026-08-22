@@ -51,8 +51,14 @@ pub(super) struct NavEntry {
 }
 
 /// True when `path` ends in `.md` / `.markdown` (case-insensitive).
-/// Used by `App::follow_link` to decide whether a LocalFile link
-/// should be opened in-editor or handed off to the OS default app.
+///
+/// Two callers, for the same underlying question — "is this a file
+/// edamame handles?".  `App::follow_link` uses it to decide whether a
+/// `LocalFile` link opens in-editor or is handed to the OS default app;
+/// [`super::difftool::is_markdown_pair`] uses it to decide whether a
+/// `--diff` pair is reviewable at all.  Shared rather than copied,
+/// because the two answers disagreeing is how a `git difftool` walk
+/// would open a full-screen review of a shell script.
 pub(super) fn is_markdown_path(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())

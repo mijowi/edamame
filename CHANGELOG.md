@@ -10,7 +10,8 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ### Added
 
-- YAML (`---`) and TOML (`+++`) frontmatter is rendered as a metadata block — one row per source line, dimmed, with keys picked out from values — instead of a horizontal rule followed by a heading. Only the very first line of a file can open frontmatter, so `---` section separators elsewhere still render as rules. Frontmatter is left out of an HTML export.
+- `edamame --diff <old> <new>` opens a read-only review of two files, for use as a `git difftool`. `Tab` moves between hunks, `Esc` goes on to the next file, and `Ctrl-Q` stops the walk. Nothing is written. A pair that isn't Markdown or isn't readable as text is reported and skipped.
+- YAML (`---`) and TOML (`+++`) frontmatter is rendered as a metadata block — one row per source line, dimmed, with keys picked out from values — instead of a horizontal rule followed by a headng. Only the very first line of a file can open frontmatter, so `---` section separators elsewhere still render as rules. Frontmatter is left out of an HTML export.
 - Three theme keys for it: `frontmatter_delimiter`, `frontmatter_key`, `frontmatter_value`.
 
 ### Changed

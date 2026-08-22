@@ -576,3 +576,75 @@ fn without_a_parse_the_review_paints_the_raw_view() {
         "dropping the parse must restore the raw view exactly"
     );
 }
+
+// ── Read-only (`--diff`) review ──────────────────────────────────────
+
+/// A read-only review offers no decisions, so its dividers must not
+/// draw a checkbox the user cannot tick or name keys that answer "This
+/// review is read-only".  Gated by the same `DiffState::read_only` flag
+/// that shortens the hint row, so the two surfaces agree.
+#[test]
+fn a_read_only_divider_shows_no_checkbox_and_no_prompt() {
+    let mut state = DiffState::new("a\nb\nc\nd\n", "a\nB\nc\nD\n").unwrap();
+    state.read_only = true;
+    assert_eq!(state.hunks.len(), 2, "need two hunks for focus coverage");
+    let lines = render_to_strings(&state, 60, 12);
+    for line in &lines {
+        assert!(
+            !line.contains("[ ]"),
+            "read-only review must draw no checkbox: {line:?}"
+        );
+        assert!(
+            !line.contains("Accept") && !line.contains("Reject"),
+            "read-only review must not name the decision keys: {line:?}"
+        );
+    }
+}
+
+/// What the divider *is* in a viewer still has to survive: it numbers
+/// the hunks and marks which one is focused.
+#[test]
+fn a_read_only_divider_keeps_its_caret_and_counter() {
+    let mut state = DiffState::new("a\nb\nc\nd\n", "a\nB\nc\nD\n").unwrap();
+    state.read_only = true;
+    let lines = render_to_strings(&state, 60, 12);
+    let focused = lines
+        .iter()
+        .find(|l| l.contains("(1/2)"))
+        .expect("first divider must still be numbered");
+    assert!(
+        focused.contains('>'),
+        "the focused divider keeps its caret: {focused:?}"
+    );
+    let unfocused = lines
+        .iter()
+        .find(|l| l.contains("(2/2)"))
+        .expect("second divider must still be numbered");
+    assert!(
+        !unfocused.contains('>'),
+        "an unfocused divider carries no caret: {unfocused:?}"
+    );
+    // The counter leads the row rather than trailing an absent checkbox.
+    assert!(
+        unfocused.trim_start().starts_with("(2/2)"),
+        "the counter is the whole content of an unfocused read-only divider: {unfocused:?}"
+    );
+}
+
+/// The suppression covers the resolved glyphs too, not just the pending
+/// checkbox: no read-only path can produce a decision, so a `[Y]` /
+/// `[N]` on screen there would be reporting a state the user has no way
+/// to have reached.
+#[test]
+fn a_read_only_divider_shows_no_resolved_glyph() {
+    let mut state = DiffState::new("a\nb\nc\n", "a\nB\nc\n").unwrap();
+    state.read_only = true;
+    state.decisions[0] = Decision::Accepted;
+    let lines = render_to_strings(&state, 60, 6);
+    assert!(
+        lines
+            .iter()
+            .all(|l| !l.contains("[Y]") && !l.contains("[N]")),
+        "read-only dividers carry no decision glyph: {lines:?}"
+    );
+}

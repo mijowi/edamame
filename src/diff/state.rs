@@ -77,6 +77,28 @@ pub struct DiffState {
     /// `App::enter_diff_mode` flashes a hint on entry so the user
     /// understands why that table isn't reviewable row-by-row.
     pub uneven_table_fallback: bool,
+    /// `true` when this review may only be *read* — the difftool
+    /// presentation (`edamame --diff <old> <new>`).
+    ///
+    /// A `git difftool` invocation is a viewer: the two sides are paths
+    /// git chose (usually at least one a temp file it deletes on our
+    /// exit), so a decision would either be written somewhere the user
+    /// never named or silently discarded.  Rather than offering
+    /// accept/reject and dropping the result, the flag removes the whole
+    /// decision vocabulary — `dispatch_diff_action` denies the five
+    /// decision actions, the hint row advertises only navigation and the
+    /// two exits, `ui::diff_view::decision_divider_spans` drops the
+    /// checkbox and the inline accept/reject prompt from every divider,
+    /// and `Esc` leaves the process instead of the mode.  All four read
+    /// this one flag: a surface that kept offering a decision the
+    /// dispatcher refuses is the failure this is shaped to prevent.
+    ///
+    /// It lives on the review rather than on `App` because every
+    /// consumer already has a `DiffState` in hand (the hint row reaches
+    /// it through `EditorState::diff`), and because it must survive
+    /// [`Self::reconcile_with_disk`] — a plain field does, where a
+    /// recomputed one would have to be threaded back in.
+    pub read_only: bool,
     /// Rendered parse of the *new side*, when the review is showing
     /// unchanged regions as rendered Markdown.
     ///
@@ -151,6 +173,7 @@ impl DiffState {
             focused_id,
             ids,
             uneven_table_fallback: computation.uneven_table_fallback,
+            read_only: false,
             parsed_new: None,
             layout: RefCell::new(DiffLayoutCache::default()),
             layout_version: Cell::new(0),

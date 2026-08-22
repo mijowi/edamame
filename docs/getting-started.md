@@ -129,6 +129,7 @@ The flag list is short by design — everything else is configured from inside t
 | `-h`, `--help` | Print the flag list |
 | `-V`, `--version` | Print the installed version |
 | `--doctor` | Print version, system, and terminal diagnostics |
+| `--diff <old> <new>` | Review two files read-only, for use as a [git difftool](editing.md#using-edamame-as-a-git-difftool) |
 | `--no-config` | Run with built-in defaults, ignoring `~/.config/edamame` |
 | `--log` | Write a debug log for this run |
 | `--` | Treat everything after it as the file name |

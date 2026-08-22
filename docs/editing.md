@@ -235,6 +235,64 @@ The parts of the document that *didn't* change still look like the document you 
 
 If you prefer not to enter diff review when the file is overwritten, set `diff_on_change = false` and a clean buffer reloads silently. A modified buffer always asks so that your changes aren't lost.
 
+### Using edamame as a git difftool
+
+`edamame --diff <old> <new>` opens the same review over two files you name, **read-only**. Git can hand it a pair without disturbing the diff tool you already use for everything else.
+
+**Nothing to configure** — `-x` runs a command with the two paths appended:
+
+```
+git difftool -y -x 'edamame --diff'
+```
+
+`-y` skips the per-file `Launch 'tool' [Y/n]?` prompt. Your `diff.tool` is neither read nor changed, and no pathspec is needed: edamame automatically skips non-Markdown files (those that don't have a .md or .markdown extension) and those that can't be read as UTF-8 text.
+
+**If you reach for it often**, name the tool once and wrap it in an alias:
+
+```
+git config --global difftool.edamame.cmd 'edamame --diff "$LOCAL" "$REMOTE"'
+git config --global alias.mdiff 'difftool -y -t edamame'
+```
+
+```
+git mdiff
+git mdiff main..HEAD
+```
+
+`-t` overrides `diff.tool` for that one command only, so whatever you use for everything else stays your default.
+
+Either way, git walks the changed files one at a time.
+
+| Key | Action |
+| --- | --- |
+| `Tab` / `Shift-Tab` | Move between hunks |
+| `Esc` | Done with this file — go to the next |
+| `Ctrl-Q` | Stop reviewing — end the whole walk |
+
+**Quitting ends the walk, with no extra flags.** `Ctrl-Q` stops the review where you are and leaves the remaining files unopened; git exits quietly, the way it does for any interrupted command. (Under the hood it raises the same `SIGINT` a `Ctrl-C` at the terminal would. Your shell may report `git difftool` as interrupted; that is what happened.)
+
+If you'd rather see the rest of a changeset in your usual tool in the same pass, that's the gitattributes route below.
+
+Don't combine this with `--dir-diff` (`-d`): that hands the tool two *directories* to compare at once, and edamame only supports one pair of files at a time.
+
+#### Picking edamame for Markdown automatically
+
+To have git choose edamame for Markdown on its own — no flags, and for plain `git diff` as well — use a gitattributes diff driver. It needs a small wrapper, because git calls a driver with seven arguments rather than two:
+
+```sh
+#!/bin/sh
+# ~/bin/edamame-gitdiff
+# git passes: path old-file old-hex old-mode new-file new-hex new-mode
+exec edamame --diff "$2" "$5"
+```
+
+```
+git config --global diff.edamame.command ~/bin/edamame-gitdiff
+echo '*.md diff=edamame' >> .gitattributes
+```
+
+Both `git diff` and `git difftool` honor the attribute, and only for the paths it matches — a `git difftool` run will send your `.md` files to edamame and everything else to your usual tool. The catch is the pager: `git diff` pipes its output through one, which a full-screen program can't share, so use `git --no-pager diff` (or set `GIT_PAGER=cat`). `git difftool` uses no pager and needs nothing extra.
+
 ---
 
 ## Images
