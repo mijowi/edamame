@@ -8,8 +8,14 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ## [Unreleased]
 
+### Added
+
+- YAML (`---`) and TOML (`+++`) frontmatter is rendered as a metadata block — one row per source line, dimmed, with keys picked out from values — instead of a horizontal rule followed by a heading. Only the very first line of a file can open frontmatter, so `---` section separators elsewhere still render as rules. Frontmatter is left out of an HTML export.
+- Three theme keys for it: `frontmatter_delimiter`, `frontmatter_key`, `frontmatter_value`.
+
 ### Changed
 
+- Diff review now shows the unchanged parts of a document as rendered Markdown — headings styled, tables as grids, images in place — so only the regions actually under review drop to raw source.
 - Block quotes are marked with a subtle background wash instead of italic text, so emphasis inside a quote is visible as emphasis.
 
 ### Fixed

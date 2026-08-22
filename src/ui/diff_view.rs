@@ -4,10 +4,23 @@
 //! [`crate::ui::line_render`] helper so the trailing-cell bg fill and
 //! word-aware wrap match the other modes.
 //!
-//! A future iteration (`docs/diff-mode-plan.md` §16) will upgrade this to a
-//! hybrid rendered view; for now it stays raw-only so the
-//! review-and-decide flow ships without touching `ParsedDoc` /
-//! `SourceMap`.
+//! Unchanged regions are painted as *rendered* Markdown when the review
+//! carries a new-side parse (`DiffState::parsed_new`, built by
+//! `EditorState::refresh_diff_parse`): a
+//! `DiffLineSource::ContextRendered` entry is a finished
+//! `ratatui::Line` from that parse, painted at column 0 with no marker
+//! and no diff wash — it *is* the document.  Changed regions keep the
+//! raw stacked old-above-new presentation with their markers, washes,
+//! inline highlights and decision divider.  Without a parse installed
+//! every line is raw — the state a review passes through on its first
+//! frame, and the fallback for a new side that parses to no blocks at
+//! all (see `layout::build_visual_lines_rendered`).
+//!
+//! Rendering the *changed* sides as Markdown too is a separate, larger
+//! change (`docs/dev/plans/diff-mode-plan-phase2.md`): it needs a
+//! source-byte → render-char index map for the inline highlights, N:M
+//! block snapping across two rendered parses, and table sub-diffing in
+//! grid form.
 
 use ratatui::{
     buffer::Buffer as TuiBuf,
@@ -28,10 +41,20 @@ use crate::ui::line_render::render_line_from_visual;
 
 /// Per-frame state for [`DiffView`].  The materialised line sequence
 /// and its wrapped-row counts are cached on [`DiffState`] itself (see
-/// [`crate::diff::layout`]) rather than here, so this is just the
-/// marker required by `StatefulWidget`.
+/// [`crate::diff::layout`]) rather than here; what does live here is the
+/// image-snapshot geometry for the review's clean regions, mirroring
+/// `PreviewViewState` / `RenderedViewState`.
 #[derive(Debug, Default)]
-pub struct DiffViewState {}
+pub struct DiffViewState {
+    /// Screen geometry of the images visible in clean (rendered)
+    /// regions, rebuilt by `image_view::build_diff_snapshots_cached` and
+    /// consumed by the `paint_images` pass in `EditorView`.
+    pub image_snapshots: Vec<crate::ui::ImageLayoutSnapshot>,
+    /// Cache key for the above: `(scroll, area, DiffState::layout_version)`.
+    /// The editor's `parsed_version` tracks a different document and is
+    /// wrong here.
+    pub image_snapshots_key: Option<(usize, Rect, u64)>,
+}
 
 pub struct DiffView<'a> {
     pub diff: &'a DiffState,
@@ -81,6 +104,19 @@ impl<'a> StatefulWidget for DiffView<'a> {
 }
 
 fn build_line(diff: &DiffState, theme: &Theme, dvl: &DiffVisualLine) -> Line<'static> {
+    // An unchanged line in a clean region: hand back the row the
+    // renderer already produced.  No marker, no `line_style`, no wash —
+    // it is the document, and `render_line_from_visual` is the identical
+    // call `PreviewView` makes, so it wraps and fills the same way.
+    if dvl.source == DiffLineSource::ContextRendered {
+        return diff
+            .parsed_new
+            .as_ref()
+            .and_then(|p| p.lines.get(dvl.rope_line))
+            .cloned()
+            .unwrap_or_default();
+    }
+
     // Decision divider: the accept/reject checkbox plus a resolved
     // label, on its own line between the delete and add sides.  The
     // decision style carries a background, set on the line base so the

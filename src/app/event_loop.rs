@@ -316,6 +316,12 @@ impl App {
         self.last_doc_height = dims.doc_height;
         self.last_doc_width = dims.doc_width;
         self.editor.set_viewport_width(dims.doc_width);
+        // Resolve a deferred diff-parse build now that the *diff mode*
+        // document width has been posted (see `diff_parse_dirty`).  A
+        // no-op when the width actually changed: `set_viewport_width`'s
+        // `refresh_parsed` already rebuilt the diff parse via its tail
+        // call and cleared the flag.
+        self.editor.flush_diff_parse_if_dirty();
         // An image block reserves its image's rows until the cursor rests
         // inside it, at which point it reserves one row per raw source line
         // instead — so the whole mermaid fence reveals, or the lone
@@ -362,7 +368,17 @@ impl App {
             self.editor.pending_focus_scroll = false;
             self.needs_draw = true;
         }
-        self.dispatch_visible_image_decodes(self.editor.scroll, dims.doc_height);
+        // Diff mode's `scroll` is a *diff visual row*, so the editor's
+        // source-map window would be computed against a meaningless
+        // offset there; it gets its own window helper over the rendered
+        // context rows.  Without this, an unchanged image that hadn't been
+        // decoded when the review opened would reserve blank rows for the
+        // whole review and never decode.
+        if self.editor.mode == Mode::Diff {
+            self.dispatch_visible_diff_image_decodes(self.editor.scroll, dims.doc_height);
+        } else {
+            self.dispatch_visible_image_decodes(self.editor.scroll, dims.doc_height);
+        }
     }
 
     /// True when the run loop should call `terminal.draw` on this

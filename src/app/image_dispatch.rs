@@ -61,6 +61,59 @@ pub(super) fn infos_in_viewport_window(
         .collect()
 }
 
+/// Diff-mode counterpart of [`infos_in_viewport_window`].
+///
+/// Same half-open intersection and the same margin, but a block's window
+/// range is its span in *diff* visual-line indices — the positions of its
+/// `ContextRendered` entries — because in diff mode `scroll` counts diff
+/// rows, not the new-side parse's rendered rows.  An image in a changed
+/// region has no such entry and is never dispatched: it shows as raw
+/// source, which is also what keeps the remote-image prompt honest during
+/// a review.
+///
+/// Reads the rendered-row index through `DiffState::with_layout_index`,
+/// the same memo the snapshot builder uses, so dispatch and placement
+/// reason about the same rows and neither rebuilds the map per frame.
+pub(super) fn infos_in_diff_viewport_window(
+    diff: &crate::diff::DiffState,
+    width: usize,
+    scroll: usize,
+    doc_height: usize,
+    margin: usize,
+) -> Vec<crate::document::ImageBlockInfo> {
+    let Some(parsed) = diff.parsed_new.as_ref() else {
+        return Vec::new();
+    };
+    // Bail before the rendered-row index, which is a full scan of — and
+    // a `HashMap` sized by — every rendered context row in the review.
+    // The map is memoised per layout version, but the *first* request
+    // still has to build it, and this runs from `prepare_viewport`, i.e.
+    // once per event-loop iteration for the whole length of the review.
+    // On an image-free document (the common one) nothing would ever read
+    // it back.  The non-diff `infos_in_viewport_window` is O(images) and
+    // never pays it.
+    if parsed.image_blocks.is_empty() {
+        return Vec::new();
+    }
+    let window_start = scroll.saturating_sub(margin);
+    let window_end = scroll.saturating_add(doc_height).saturating_add(margin);
+    diff.with_layout_index(width, |_lines, _rc, index| {
+        parsed
+            .image_blocks
+            .iter()
+            .filter_map(|info| {
+                let range = parsed.source_map.rendered_lines_for_block(info.block_idx);
+                if range.is_empty() {
+                    return None;
+                }
+                let first = *index.get(&range.start)?;
+                let last = *index.get(&(range.end - 1))?;
+                (first < window_end && last + 1 > window_start).then(|| info.clone())
+            })
+            .collect()
+    })
+}
+
 impl App {
     /// Whether this terminal can render decoded pixels at all.
     ///
@@ -398,6 +451,27 @@ impl App {
         let infos = infos_in_viewport_window(
             &self.editor.parsed.image_blocks,
             &self.editor.parsed.source_map,
+            scroll,
+            doc_height,
+            VIEWPORT_DISPATCH_MARGIN,
+        );
+        self.dispatch_image_decodes_for(&infos);
+    }
+
+    /// Viewport-limited decode dispatch for a diff review, over the
+    /// new-side parse's images.  Without it, an unchanged image that had
+    /// not been decoded when the review opened (below the fold, or a
+    /// review entered soon after launch) would reserve `image_max_height`
+    /// blank rows for the whole review and never decode —
+    /// `ImageCache::reserved_rows` returns `None` while a URL is unknown,
+    /// and nothing else would ever request it.
+    pub(super) fn dispatch_visible_diff_image_decodes(&mut self, scroll: usize, doc_height: usize) {
+        let Some(diff) = self.editor.diff.as_ref() else {
+            return;
+        };
+        let infos = infos_in_diff_viewport_window(
+            diff,
+            self.last_doc_width.max(1),
             scroll,
             doc_height,
             VIEWPORT_DISPATCH_MARGIN,
@@ -766,5 +840,65 @@ mod tests {
             .map(|i| i.url)
             .collect();
         assert_eq!(urls, vec!["a.png".to_owned(), "b.png".to_owned()]);
+    }
+
+    // ── Diff-mode dispatch window ────────────────────────────────────
+
+    /// A review of `old` → `new` with the rendered new-side parse
+    /// installed, as `EditorState::refresh_diff_parse` installs it.
+    fn diff_review(old: &str, new: &str) -> crate::diff::DiffState {
+        let theme: &'static crate::config::Theme =
+            Box::leak(Box::new(crate::config::Theme::default()));
+        let mut diff = crate::diff::DiffState::new(old, new).expect("non-empty diff");
+        diff.set_rendered_parse(Some(crate::document::ParsedDoc::build(new, theme, true, 4)));
+        diff
+    }
+
+    /// An image-free review returns early, before the full-document
+    /// `rendered_row_index` scan this runs at the frame cadence.
+    #[test]
+    fn diff_viewport_window_is_empty_without_images() {
+        let diff = diff_review("Alpha.\n\nbee\n", "Alpha.\n\nBEE\n");
+        assert!(infos_in_diff_viewport_window(&diff, 40, 0, 20, 0).is_empty());
+    }
+
+    /// An image in a *clean* region is dispatched when its rows fall in
+    /// the window, and skipped when they don't.
+    #[test]
+    fn diff_viewport_window_keeps_clean_images_inside_visible_rows() {
+        let old = "Intro.\n\n![cat](cat.png)\n\nbee\n";
+        let new = "Intro.\n\n![cat](cat.png)\n\nBEE\n";
+        let diff = diff_review(old, new);
+
+        let urls: Vec<String> = infos_in_diff_viewport_window(&diff, 40, 0, 20, 0)
+            .into_iter()
+            .map(|i| i.url)
+            .collect();
+        assert_eq!(urls, vec!["cat.png".to_owned()]);
+
+        // Scrolled far past it, with no prefetch margin, it drops out.
+        assert!(infos_in_diff_viewport_window(&diff, 40, 500, 20, 0).is_empty());
+    }
+
+    /// An image inside a *changed* region has no `ContextRendered` row,
+    /// so it is never dispatched — it shows as `![alt](url)` source.
+    #[test]
+    fn diff_viewport_window_skips_a_changed_image() {
+        let old = "Intro.\n\n![cat](cat.png)\n\nTail.\n";
+        let new = "Intro.\n\n![cat](other.png)\n\nTail.\n";
+        let diff = diff_review(old, new);
+        assert!(infos_in_diff_viewport_window(&diff, 40, 0, 20, 0).is_empty());
+    }
+
+    /// No parse installed — the state every review passes through on
+    /// its first frame → nothing to dispatch; the whole review is raw.
+    #[test]
+    fn diff_viewport_window_is_empty_without_a_rendered_parse() {
+        let diff = crate::diff::DiffState::new(
+            "Intro.\n\n![cat](cat.png)\n\nbee\n",
+            "Intro.\n\n![cat](cat.png)\n\nBEE\n",
+        )
+        .expect("non-empty diff");
+        assert!(infos_in_diff_viewport_window(&diff, 40, 0, 20, 0).is_empty());
     }
 }

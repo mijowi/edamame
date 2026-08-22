@@ -215,6 +215,8 @@ If something else writes the file you have open — a `git checkout`, a formatte
 
 **With no unsaved changes**, it opens **diff review**: your version and the new one, stacked, hunk by hunk, with word-level highlighting inside changed lines. Tables are split per row, so you can take one row and leave another.
 
+The parts of the document that *didn't* change still look like the document you were reading a moment ago — headings styled, tables as grids, images in place. Only the changed regions drop to raw source, so the `-`/`+` markers mark out exactly what is under review and everything else reads as context.
+
 ![Diff review showing added and removed hunks with word-level highlighting](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/diff_review.jpg)
 
 | Key | Action |

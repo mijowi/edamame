@@ -115,7 +115,10 @@ src/
   app/
     actions.rs        # Action → App-level side effects (modal pushes, nav, …)
     autosave.rs       # debounced autosave timer
+    diff_advance.rs   # post-decision reveal delay before focus advances
     event_loop.rs     # main run loop: term events, image-ready, link-open
+    file_changed.rs   # watcher event → diff review / dirty-conflict modal /
+                      #   mid-review reconcile
     external_editor.rs # pause-read / suspend-term / spawn $EDITOR / re-enter
     flash.rs          # TransientMessage on the hint line (MessageKind, ttl)
     frame_timer.rs    # frame-rate / redraw pacing
@@ -134,6 +137,8 @@ src/
       stack.rs        # ModalStack: Vec<Box<dyn Modal>>, top-of-stack dispatch
       types.rs        # Modal trait, ModalKind, ModalOutcome, ModalRenderCtx
       command_palette.rs, config_warning.rs, diagrams_enabled.rs,
+      diff_bulk_confirm.rs, diff_intro.rs, diff_quit_confirm.rs,
+      diff_resolve_confirm.rs,
       dirty_guard.rs, export_success.rs, export_theme.rs, images_enabled.rs,
       insert_table.rs, keybinds.rs, markdown_cheat_sheet.rs, notice.rs,
       overwrite_confirm.rs, quit_confirm.rs, remote_image.rs, save_as.rs,
@@ -171,6 +176,19 @@ src/
   diagram.rs        # facade
   diagram/
     mermaid.rs      # Mermaid → SVG → PNG render pipeline (mermaid-rs-renderer + resvg)
+
+  diff.rs           # facade — re-exports DiffState, Hunk, Decision, …
+  diff/
+    engine.rs       # pure line + word diff; stable HunkIds; per-row table
+                    #   hunk splitting
+    hunk.rs         # Hunk, HunkKind, Decision, InlineSpan / InlineSide
+    layout.rs       # flat stacked visual-line model (DiffVisualLine /
+                    #   DiffLineSource), the clean/changed block partition,
+                    #   and the cached per-width row-count table the
+                    #   renderer and the scroll math share
+    state.rs        # DiffState: hunks, decisions, focused id, new-side
+                    #   buffer, rendered new-side parse, layout cache;
+                    #   reconcile_with_disk / resolved_rope
 
   document.rs       # facade — re-exports Buffer, Cursor, EditDelta, History,
                     #           ParsedDoc, Selection, SourceMap, grapheme helpers
@@ -237,6 +255,8 @@ src/
     mode_handler/
       default.rs    # DefaultHandler: non-modal keybinding implementation;
                     #   preview_safe_action() allowlist
+      diff_keys.rs  # hard-bound diff-review key table (diff_action_for,
+                    #   diff_hint) — mirrors search/search_keys.rs
     mouse.rs        # MouseDispatcher: click-count + drag state machine
 
   markdown.rs       # facade
@@ -297,6 +317,8 @@ src/
                         #   shared block-cursor helpers
     dim.rs              # ContentSize, FrameOpts, centered_rect_for_content,
                         #   draw_frame, ModalKind, MAX_PAD_H (modal layout)
+    diff_view.rs        # DiffView + DiffViewState (stacked review; rendered
+                        #   clean regions, raw changed ones)
     editor_view.rs      # EditorView + EditorViewState; dispatches to sub-views
     export_theme_modal.rs # write-current-theme-to-disk modal
     gutter.rs           # optional line-number column; split_gutter()
@@ -505,6 +527,22 @@ A rendered GFM table's `|` delimiters and alignment row are auto-managed chrome,
 - **`p` picks a legal row boundary.** The ordinary linewise landing spot ("the line after the cursor's") is *between the header and the alignment row* when the cursor is on the header, so `table_paste_plan` clamps the target index below the alignment row and refuses a register that isn't table rows (or a charwise one carrying a `|`). Raw mode keeps the plain landing spot.
 - **Visual `p` asks about the payload, not the register.** A Visual paste reconciles the register's shape with the *selection's* — a charwise register grows a trailing newline to replace whole lines, a linewise one is spliced in as-is over a charwise span — so `run_visual_paste` builds `text` first and hands `paste_over_range_refusal` that string plus the selection's linewise flag. Passing `vim.register.{text,linewise}` instead lets both mismatches through, and each one broke the table: a `dd`'d row pasted over a charwise in-cell selection carried its `|` and newline into mid-cell, and a charwise prose register over a VisualLine row replaced that row with a line that is not a table row. A new paste path owes the guard the bytes it is actually about to write.
 - **Only the table's own lines are read out of the rope.** `table_edit_ops::table_at` slices the contiguous run of table-looking lines around a byte offset rather than calling `Buffer::contents()`. `cell_scope` sits on the per-keystroke motion path, and materializing the whole document per `w`/`$`/`f` is what that avoids. Keep new table queries on `table_at`.
+
+### Diff review
+
+A clean-buffer external write opens **diff review** (`Mode::Diff`): the hunk list stacked old-above-new with a decision divider per hunk. Unchanged regions are painted as *rendered* Markdown; only changed regions drop to raw source. `src/diff/` owns the model, `ui::diff_view` the painting.
+
+- **The rendered/raw split is a display partition, and it must never reshape `hunks`.** `layout::block_spans` partitions the new side by source-map block, marks the blocks a hunk lands in as `touched`, and `build_visual_lines_rendered` emits a maximal run of touched blocks as one *raw region* (today's stacked walk, restricted to that line range) and every other block as its pre-rendered rows. Snapping hunk ranges out to block boundaries instead would collapse the per-row table hunks `engine::split_table_hunk` produces back into one whole-table hunk — the row-by-row review is the feature. A display-only partition leaves `hunks`, `decisions`, `HunkId` stability, `reconcile_with_disk` and `resolved_rope` untouched.
+- **Every source-map block gets a span, zero-row blocks included.** A block that renders nothing — a standalone HTML comment, a `<!-- tui-columns: […] -->` hint, a blank run collapsed by `preserve_blank_lines = false` — is still real and still carries source lines. Without a span, a hunk confined to it would mark nothing touched, fall inside no raw region, and its delete / decision / add rows would never be emitted: the user reviews a diff that does not contain the change while `all_resolved()` still lets them resolve it. Zero rendered rows is a property of a clean block's *emission*, never of its *existence*. Spans run from a block's own first line to the *next* block's first line rather than from its byte range (pulldown-cmark ranges absorb trailing blanks that already have virtual blocks), and the last runs to `len_lines()` — the phantom line included — so the set is a total partition. A `debug_assert!` pins both that and "every hunk emits exactly one decision divider"; a hunk emitted twice would paint two dividers for one decision, and the second would disagree with the first the moment the user presses `y`.
+- **A new side that parses to *no blocks* falls back to the raw walk.** Reachable only when the file was truncated to empty on disk (`> notes.md`, a failed save, a partial sync), which the watcher hands straight through. With an empty partition the whole-document delete has no span to be emitted against, so in release the review is *blank* with `all_resolved()` false — `Esc` refuses to finish a change the user was never shown. The raw walk has no such gap.
+- **`DiffState::parsed_new` is not stamped against `new_buffer`, so the one call that replaces the buffer drops the parse.** `build_visual_lines_rendered` reads source lines out of the parse while taking the document's line count from the buffer, and nothing pairs the two. `DiffState` holds no theme and no width, so it cannot rebuild — `reconcile_with_disk` therefore calls `set_rendered_parse(None)` and lets its caller (`App::reconcile_diff_with_disk`) reinstall a fresh one via `EditorState::refresh_diff_parse`. A caller that forgets loses the rendered presentation until `refresh_parsed`'s tail call comes round; it never gets a review partitioned against stale line ranges. Don't replace that drop with an explicit rebuild at the call site alone — the point is that the *unsafe* state is unrepresentable, not merely unreached.
+- **The initial build is deferred by one frame, on purpose.** `enter_diff_mode` sets `EditorState::diff_parse_dirty` instead of building, because at that moment `viewport_width` still holds the *editor* mode's document width — which reserves a line-number gutter that `Mode::Diff` does not (`compute_doc_dims`) — so a parse built there lays every table out against a width the diff view never paints at. `App::prepare_viewport` calls `flush_diff_parse_if_dirty` immediately after posting the real width. The review is queried in the raw state at least once per entry, which is why `parsed_new: None` is a live path and not just a constructor artifact.
+- **Every later rebuild rides `refresh_parsed`'s tail, not a hand-maintained list of sites.** Everything that re-renders the document — a theme switch, a width change, big-H1 / striping toggles, an images-or-diagrams settings change, an arriving image decode — goes through `refresh_parsed`, and `OpenSettings` / `SwitchTheme` / `CreateCustomTheme` are all on the `diff_safe_action` allowlist, so several are reachable *during* a review. A stale `parsed_new` would then disagree with the row cache about block heights. `refresh_diff_parse` never calls back into `refresh_parsed`, so there is no recursion, and it guards on `self.diff.is_some()` so outside a review the tail call is one branch.
+- **The diff parse gets its own `RenderCache`.** `RenderCache` is keyed by `Block` value plus a render-settings fingerprint, so two documents sharing one cache collide on every identical block, and eviction is by document membership per build — each parse would evict the other's entries wholesale. `EditorState::diff_render_cache` pays for itself on the first terminal-resize drag, which posts a new width nearly every frame.
+- **`refresh_parsed`'s image-GC live set is the *union* of both parses.** A URL on the diff's new side but not in the editor's buffer — a diagram whose source changed on disk, an image the user is about to accept — would otherwise be evicted there and immediately re-requested by the diff-side dispatch: a decode/evict loop that runs for the length of the review. `refresh_diff_parse` runs no GC of its own for the mirror-image reason.
+- **In diff mode `scroll` counts *diff* visual rows, so the image paths need diff-specific geometry — through one memo.** `image_dispatch::infos_in_diff_viewport_window` (decode dispatch) and `image_view::build_diff_snapshots` (placement) both read the rendered-row map via `DiffState::with_layout_index`, which memoises it on the layout cache beside `lines` and drops it with them. Rebuilding it per call was O(rendered rows) plus a `HashMap` allocation at the frame cadence, because dispatch runs from `prepare_viewport`. Dispatch still early-outs on an image-free new side so such a review never builds the map at all. An image inside a *changed* region has no `ContextRendered` row, yields no snapshot and is never dispatched: it shows as `![alt](url)` source, which is also what keeps the media prompts honest mid-review — a clean-region URL is by definition one the editor's own document already carries. Without the dispatch, an unchanged image not yet decoded when the review opened would reserve `image_max_height` blank rows for the whole review and never decode, since `ImageCache::reserved_rows` returns `None` for an unknown URL and nothing else would request it.
+- **`ROW_CACHE_CAP` is 2 because exactly two widths are queried per frame** — the scrollbar-decide width and the post-scrollbar display width. Every new per-frame `with_layout` / `with_layout_index` caller must use one of those two (the image paths use the display width, `last_doc_width`); a third distinct value turns the LRU into a full prefix-sum rebuild on every frame.
+- **A `ContextRendered` row carries no marker and no wash — it *is* the document.** `line_marker` returns `""` for it: a `- ` / `+ ` / two-space prefix would overflow table grids and code-block padding, both laid out by the renderer at the full viewport width. The markers' alignment reference is the raw context *inside* a changed region, which is unaffected. The row cache measures it by handing the finished `Line` to `visual_rows_for_line` — the identical call `PreviewView`'s painter makes — so its wrap and the diff's scroll math agree by construction; that arm sits *ahead* of the `line_text` call, which has nothing to say about a row with no source text.
 
 ### Keyboard and mouse input
 
