@@ -33,7 +33,7 @@ use ratatui::{
 use crate::config::keymap::{format_key, format_key_parseable};
 use crate::config::{Action, KeyBindingOverrides, KeyMap, KeyMapError, Theme};
 use crate::input::diff_hint;
-use crate::ui::button_row::{button_row_width, render_button_row};
+use crate::ui::button_row::{button_row_width, footer_row_count, render_button_row};
 use crate::ui::content_width::{max_row_width, optional_text_width};
 use crate::ui::modal_row::{format_modal_row, RowLayout};
 use crate::ui::overlay_nav::next_focusable;
@@ -479,11 +479,18 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
         let content_width = keybinds_content_width(state);
 
         // Pinned-bottom footer layout:
-        //   1 spacer + 1 buttons     (always)
+        //   1 spacer + the buttons   (always)
         //   + 1 capture hint         (when capturing)
         //   + 1 error                (when last_error present)
+        //
+        // The buttons wrap rather than clipping, so their height is a
+        // function of the width the frame will give them.  Reserving a
+        // flat row instead leaves a wrapped button unpainted but still
+        // focusable and still carrying a click rect.
         let extra_status = (state.capturing as u16) + (state.last_error.is_some() as u16);
-        let pinned_bottom: u16 = 2 + extra_status;
+        let footer_rows =
+            footer_row_count(BUTTON_LABELS, content_width, area.width, KEYBINDS_MAX_PAD_H);
+        let pinned_bottom: u16 = 1 + footer_rows + extra_status;
 
         let content = ContentSize {
             width: content_width,
@@ -594,7 +601,7 @@ impl<'a> StatefulWidget for KeybindsView<'a> {
             x: inner.x,
             y: footer_y,
             width: inner.width,
-            height: 1,
+            height: (inner.y + inner.height).saturating_sub(footer_y),
         };
         // Button order on screen matches BUTTON_LABELS: Cancel (idx 0)
         // on the left, Save (idx 1) on the right.
@@ -1458,6 +1465,19 @@ mod tests {
             cw + 2 * KEYBINDS_MAX_PAD_H,
             "wide-terminal modal width must include raised padding on both sides"
         );
+    }
+
+    #[test]
+    fn a_narrow_terminal_wraps_the_footer_and_still_paints_both_buttons() {
+        // The footer wraps rather than clipping, so the overlay has to
+        // reserve the rows it wrapped onto — and it raises `max_pad_h`
+        // to 8, so the reservation must ask at *that* padding.  A flat
+        // one-row reservation leaves Save unpainted while Tab still
+        // focuses it.
+        let mut state = open();
+        let contents = render(&mut state, 20, 24);
+        assert!(contents.contains("[ Cancel ]"), "{contents}");
+        assert!(contents.contains("[ Save ]"), "{contents}");
     }
 
     #[test]

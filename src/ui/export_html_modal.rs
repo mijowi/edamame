@@ -33,7 +33,7 @@ use ratatui::{
 };
 
 use crate::config::Theme;
-use crate::ui::button_row::{button_row_width, render_button_row};
+use crate::ui::button_row::{button_row_width, footer_row_count, render_button_row};
 use crate::ui::controls::{
     self, control_input_for, control_row_spans, cycle_index, input_delta, pill_spans, pill_width,
     toggle_spans, toggle_width, Control, ControlEvent, ControlInput, ControlValue,
@@ -42,7 +42,7 @@ use crate::ui::cursor::text_field_spans;
 use crate::ui::overlay_nav::next_focusable_wrapping;
 use crate::ui::sanitize_paste;
 use crate::ui::scroll_container::{
-    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind,
+    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind, MAX_PAD_H,
 };
 
 /// Reserved cell width of the title input column.
@@ -848,15 +848,25 @@ impl<'a> ExportHtmlView<'a> {
         buttons: &[&str],
     ) {
         let has_buttons = !buttons.is_empty();
-        let body_h = lines.len() as u16 + if has_buttons { 2 } else { 0 };
         let line_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
         let buttons_w = if has_buttons {
             button_row_width(buttons)
         } else {
             0
         };
+        let content_w = line_w.max(buttons_w);
+        // Rows the footer needs once it has wrapped, asked at the width
+        // the frame will actually give it: `[ Open in browser ]  [ Open
+        // folder ]` is 38 columns, so a terminal under about 40 puts the
+        // pair on two rows and the modal has to be a row taller for it.
+        let footer_rows = if has_buttons {
+            footer_row_count(buttons, content_w, area.width, MAX_PAD_H)
+        } else {
+            0
+        };
+        let body_h = lines.len() as u16 + if has_buttons { 1 + footer_rows } else { 0 };
         let content = ContentSize {
-            width: line_w.max(buttons_w),
+            width: content_w,
             height: 0,
             pinned_top: body_h,
             pinned_bottom: 0,
@@ -908,7 +918,7 @@ impl<'a> ExportHtmlView<'a> {
                 x: inner.x,
                 y,
                 width: inner.width,
-                height: 1,
+                height: bottom.saturating_sub(y),
             };
             state.msg_button_rects =
                 render_button_row(button_area, buf, buttons, state.btn_focus, self.theme);

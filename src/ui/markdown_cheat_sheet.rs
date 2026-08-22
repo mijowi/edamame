@@ -22,15 +22,36 @@
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::config::Theme;
 
-/// Build the styled cheat-sheet body, one logical row per line.
-/// Returned `Line`s carry theme-driven styling so the popover looks
-/// like preview/rendered mode while still showing the raw Markdown
-/// syntax markers.
+/// Columns every example row is indented by, and so the margin a block
+/// surface keeps on *both* sides of the body — see [`pad_surface_lines`].
+const EXAMPLE_INDENT: usize = 2;
+
+/// Build the styled cheat-sheet body for a body area of `avail`
+/// columns, one logical row per line.  Returned `Line`s carry
+/// theme-driven styling so the popover looks like preview/rendered mode
+/// while still showing the raw Markdown syntax markers.
+///
+/// `avail` reaches only the surface rows (see [`pad_surface_lines`]).
+/// Everything else is *content* and wraps like any other modal body: a
+/// wrapped example is still readable, and clipping one would hide the
+/// syntax the sheet exists to show.
+pub fn body_lines(theme: &Theme, avail: u16) -> Vec<Line<'static>> {
+    let (mut lines, surface_pad) = build(theme);
+    pad_surface_lines(&mut lines, &surface_pad, avail);
+    lines
+}
+
+/// The rows, plus the indices of the ones carrying a block surface and
+/// the fill style each one's pad takes.  Split out from [`body_lines`]
+/// so the width-dependent pass is separable from the content — and so a
+/// test can tell a wash row from a content row that merely happens to
+/// end in a coloured span (`==highlight==` does).
 #[allow(clippy::vec_init_then_push)] // grouped pushes mirror the on-screen sections
-pub fn body_lines(theme: &Theme) -> Vec<Line<'static>> {
+fn build(theme: &Theme) -> (Vec<Line<'static>>, Vec<(usize, Style)>) {
     let mut out: Vec<Line<'static>> = Vec::new();
     // Indices of lines that carry a block *surface* — a background the row
     // is meant to be washed with rather than a color on its glyphs — paired
@@ -252,38 +273,90 @@ pub fn body_lines(theme: &Theme) -> Vec<Line<'static>> {
         Span::styled("```", theme.code_block_text),
     ]));
 
-    pad_surface_lines(&mut out, &surface_pad);
-    out
+    (out, surface_pad)
 }
 
-/// Pad each surface-carrying line with a trailing space run so its
-/// background fills the modal's body width, matching how
+/// Size each surface-carrying line to exactly the body width, so its
+/// background reads as one rectangle — matching how
 /// `Renderer::render_code_block` pads to `viewport_width` and how
 /// `line_render`'s trailing-cell fill extends a block quote's wash to the
 /// viewport edge.  Each entry pairs a row index with the fill style for
 /// that row's pad — a code block's language row uses `code_block_lang`
 /// (lighter), its body / fence rows `code_block_text` (darker), a quote row
-/// `blockquote_text`.  The target width is the widest *unregistered* row;
-/// the modal sizes itself to that width, so post-padding these lines
-/// exactly fills the body area without changing the modal's overall width.
-fn pad_surface_lines(lines: &mut [Line<'static>], surface_pad: &[(usize, Style)]) {
-    let surface_indices: Vec<usize> = surface_pad.iter().map(|(i, _)| *i).collect();
-    let target_width: usize = lines
+/// `blockquote_text`.
+///
+/// The width is the widest *unregistered* row — which is what the modal
+/// sizes itself to — but never more than the `avail` columns the body
+/// will actually get.  A wash wider than that is the one row here that
+/// must not wrap: it is a picture of a block, and a wrapped one repeats
+/// its surface on a second, ragged row instead of continuing anything.
+///
+/// It stops [`EXAMPLE_INDENT`] columns short of that width, which is
+/// where it *starts*: every example row on the sheet is indented by
+/// that much, so a wash running flush to the body's right edge is a
+/// rectangle with a margin down one side and none down the other —
+/// visibly crowding the frame however much padding the modal has.
+fn pad_surface_lines(lines: &mut [Line<'static>], surface_pad: &[(usize, Style)], avail: u16) {
+    // A mask rather than a `contains` scan per row: this runs on every
+    // frame, and both sequences are the length of the whole sheet.
+    let mut is_surface = vec![false; lines.len()];
+    for &(i, _) in surface_pad {
+        is_surface[i] = true;
+    }
+    let natural: usize = lines
         .iter()
         .enumerate()
-        .filter(|(i, _)| !surface_indices.contains(i))
+        .filter(|(i, _)| !is_surface[*i])
         .map(|(_, l)| l.width())
         .max()
         .unwrap_or(0);
+    let target_width = natural.min(avail as usize).saturating_sub(EXAMPLE_INDENT);
 
     for &(i, fill_style) in surface_pad {
         let line = &mut lines[i];
         let cur = line.width();
-        if cur < target_width {
-            line.spans
-                .push(Span::styled(" ".repeat(target_width - cur), fill_style));
+        match cur.cmp(&target_width) {
+            std::cmp::Ordering::Less => line
+                .spans
+                .push(Span::styled(" ".repeat(target_width - cur), fill_style)),
+            // Only reachable in a terminal too narrow for the example's
+            // own text.  Truncating keeps the rectangle honest; the row
+            // is a picture, so a lost tail costs less than a wrap.
+            std::cmp::Ordering::Greater => truncate_line(line, target_width),
+            std::cmp::Ordering::Equal => {}
         }
     }
+}
+
+/// Drop whatever of `line` sits past `width` display columns, span by
+/// span.  A span straddling the boundary is cut on a char boundary.
+fn truncate_line(line: &mut Line<'static>, width: usize) {
+    let mut used = 0;
+    let mut kept: Vec<Span<'static>> = Vec::with_capacity(line.spans.len());
+    for span in line.spans.drain(..) {
+        let w = span.content.width();
+        if used + w <= width {
+            used += w;
+            kept.push(span);
+            continue;
+        }
+        let room = width - used;
+        if room > 0 {
+            let mut text = String::new();
+            let mut text_w = 0;
+            for ch in span.content.chars() {
+                let cw = ch.width().unwrap_or(0);
+                if text_w + cw > room {
+                    break;
+                }
+                text_w += cw;
+                text.push(ch);
+            }
+            kept.push(Span::styled(text, span.style));
+        }
+        break;
+    }
+    line.spans = kept;
 }
 
 /// Empty row — uses `Line::raw` rather than a styled blank so the
@@ -318,8 +391,12 @@ fn task_done_text_style(theme: &Theme) -> Style {
 mod tests {
     use super::*;
 
+    /// A body area wide enough for the sheet's own natural width, so a
+    /// test about content is not also a test about narrow layout.
+    const WIDE: u16 = 120;
+
     fn joined(theme: &Theme) -> String {
-        body_lines(theme)
+        body_lines(theme, WIDE)
             .iter()
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
@@ -362,7 +439,7 @@ mod tests {
     #[test]
     fn cheat_sheet_footnote_markers_use_footnote_style() {
         let theme = Theme::default();
-        let lines = body_lines(&theme);
+        let lines = body_lines(&theme, WIDE);
         let marker = find_span(&lines, "[^1]").expect("footnote reference span");
         assert_eq!(marker.style, theme.footnote);
     }
@@ -397,8 +474,8 @@ mod tests {
             ..Theme::default()
         };
 
-        let lines_a = body_lines(&a);
-        let lines_b = body_lines(&b);
+        let lines_a = body_lines(&a, WIDE);
+        let lines_b = body_lines(&b, WIDE);
         let bold_a = find_span(&lines_a, "**bold**").expect("bold span in a");
         let bold_b = find_span(&lines_b, "**bold**").expect("bold span in b");
         assert_eq!(bold_a.style, a.bold);
@@ -412,9 +489,68 @@ mod tests {
         // so they read as a modal-internal divider rather than as a
         // document H2 floating on top of the modal surface.
         let theme = Theme::default();
-        let lines = body_lines(&theme);
+        let lines = body_lines(&theme, WIDE);
         let headings_label = find_span(&lines, "Headings").expect("Headings label");
         assert_eq!(headings_label.style, theme.modal_section_heading);
+    }
+
+    /// The rows carrying a block surface, at `avail` columns.
+    fn surface_rows(avail: u16) -> Vec<Line<'static>> {
+        let theme = Theme::default();
+        let (_, surface_pad) = build(&theme);
+        let lines = body_lines(&theme, avail);
+        surface_pad.iter().map(|&(i, _)| lines[i].clone()).collect()
+    }
+
+    #[test]
+    fn a_wash_never_exceeds_the_body_it_is_drawn_in() {
+        // A wash is a picture of a block, so a wrap would repeat its
+        // surface on a second ragged row rather than continue it.  It is
+        // capped at the body width instead — and because that width is
+        // the *padded* body, the wash stops inside the modal's padding
+        // rather than at the frame edge.
+        for avail in [20u16, 40, 64, 120] {
+            for line in surface_rows(avail) {
+                assert!(
+                    line.width() <= avail as usize,
+                    "{} > {avail}: {line:?}",
+                    line.width()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_wash_keeps_the_same_margin_on_both_sides() {
+        // It begins at the example indent, so it ends that far from the
+        // body's right edge; flush against it, the rectangle reads as
+        // crowding the frame no matter what the modal's padding is.
+        let avail = 40;
+        for line in surface_rows(avail) {
+            assert_eq!(line.width(), avail as usize - EXAMPLE_INDENT, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn only_the_washes_are_capped_and_the_content_still_wraps() {
+        // The regression this guards: clipping the whole body to keep
+        // the washes intact also truncated every example on the sheet,
+        // which is the syntax it exists to show.  Content rows keep
+        // their full width and let the modal wrap them.
+        let theme = Theme::default();
+        let (_, surface_pad) = build(&theme);
+        let surfaces: Vec<usize> = surface_pad.iter().map(|&(i, _)| i).collect();
+        let widest_content = body_lines(&theme, 40)
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !surfaces.contains(i))
+            .map(|(_, l)| l.width())
+            .max()
+            .unwrap();
+        assert!(
+            widest_content > 40,
+            "content was truncated: {widest_content}"
+        );
     }
 
     #[test]
@@ -428,7 +564,7 @@ mod tests {
         // carry an explicit bg, however — that's how the code-block
         // sections fill their surface color out to the modal width.
         let theme = Theme::default();
-        let lines = body_lines(&theme);
+        let lines = body_lines(&theme, WIDE);
         for span in lines.iter().flat_map(|l| l.spans.iter()) {
             if span.content.chars().all(char::is_whitespace) {
                 // The hazard guarded here is `theme.normal`'s
@@ -458,7 +594,7 @@ mod tests {
         // padded code-block rows must be the same width as the widest
         // non-code-block row (the modal sizes itself to that width).
         let theme = Theme::default();
-        let lines = body_lines(&theme);
+        let lines = body_lines(&theme, WIDE);
 
         // Find rows that have a span styled with code_block_border /
         // code_block_lang / code_block_text — i.e. the code-block rows.
@@ -482,8 +618,9 @@ mod tests {
         for line in &code_lines {
             assert_eq!(
                 line.width(),
-                max_other,
-                "code-block row not padded to body width: {:?}",
+                max_other - EXAMPLE_INDENT,
+                "code-block row not padded to the body width less its \
+                 right-hand margin: {:?}",
                 line,
             );
             // The trailing span on each padded row should be the surface
@@ -511,7 +648,7 @@ mod tests {
     #[test]
     fn block_quote_rows_are_padded_to_the_body_width() {
         let theme = Theme::default();
-        let lines = body_lines(&theme);
+        let lines = body_lines(&theme, WIDE);
 
         let is_quote_line =
             |line: &Line<'_>| line.spans.iter().any(|s| s.style == theme.blockquote_text);

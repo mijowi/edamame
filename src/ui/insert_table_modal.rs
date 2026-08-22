@@ -21,11 +21,11 @@ use ratatui::{
 };
 
 use crate::config::Theme;
-use crate::ui::button_row::{button_row_width, render_button_row};
+use crate::ui::button_row::{button_row_width, footer_row_count, render_button_row};
 use crate::ui::controls;
 use crate::ui::cursor::text_field_spans;
 use crate::ui::scroll_container::{
-    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind,
+    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind, MAX_PAD_H,
 };
 
 const BUTTON_LABELS: &[&str] = &["Insert", "Cancel"];
@@ -268,19 +268,25 @@ impl<'a> StatefulWidget for InsertTableView<'a> {
     type State = InsertTableState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        // Layout: 2 field rows + 1 spacer + 1 button row + (optional)
-        // 1 error row.  All content sits in `pinned_top` so the modal
+        // Layout: 2 field rows + 1 spacer + the buttons (more than one
+        // row in a terminal too narrow for the pair) + (optional) 1
+        // error row.  All content sits in `pinned_top` so the modal
         // sizes precisely to its body — no scrolling needed.
-        let body_rows = if state.last_error.is_some() { 5 } else { 4 };
+        let base_rows = if state.last_error.is_some() { 4 } else { 3 };
         let label_w = "Columns".chars().count() as u16;
         let field_w = 6u16; // "[ NNNN ]" → 8, content 6 inside the box
         let gap = 2u16;
         let buttons_w = button_row_width(BUTTON_LABELS);
         let content_width = (label_w + gap + field_w).max(buttons_w);
+        // The footer wraps rather than clipping, so its height is a
+        // function of the width the frame will give it.  Reserving a
+        // flat row instead leaves a wrapped button unpainted but still
+        // focusable and still carrying a click rect.
+        let footer_rows = footer_row_count(BUTTON_LABELS, content_width, area.width, MAX_PAD_H);
         let content = ContentSize {
             width: content_width,
             height: 0,
-            pinned_top: body_rows,
+            pinned_top: base_rows + footer_rows,
             pinned_bottom: 0,
             ..Default::default()
         };
@@ -363,7 +369,7 @@ impl<'a> StatefulWidget for InsertTableView<'a> {
             x: inner.x,
             y: row_y,
             width: inner.width,
-            height: 1,
+            height: (inner.y + inner.height).saturating_sub(row_y),
         };
         render_buttons(button_area, buf, state.focus, self.theme);
     }
@@ -598,6 +604,36 @@ mod tests {
         let ctrl_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
         s.handle_key(&ctrl_p);
         assert_eq!(s.rows, "2", "Ctrl-P should not modify the rows field");
+    }
+
+    #[test]
+    fn a_narrow_terminal_wraps_the_footer_and_still_paints_both_buttons() {
+        // The footer wraps rather than clipping, so the modal has to
+        // reserve the rows it wrapped onto.  A flat one-row reservation
+        // leaves Cancel unpainted while Tab still focuses it.
+        let backend = TestBackend::new(18, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = InsertTableState::new();
+        terminal
+            .draw(|frame| {
+                let m = InsertTableView {
+                    theme: theme(),
+                    cursor_visible: true,
+                };
+                frame.render_stateful_widget(m, frame.area(), &mut state);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let painted: String = (0..14)
+            .map(|y| {
+                (0..18)
+                    .map(|x| buf[(x, y)].symbol().to_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(painted.contains("[ Insert ]"), "{painted}");
+        assert!(painted.contains("[ Cancel ]"), "{painted}");
     }
 
     #[test]

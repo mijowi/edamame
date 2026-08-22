@@ -22,11 +22,11 @@ use ratatui::{
 };
 
 use crate::config::Theme;
-use crate::ui::button_row::{button_row_width, render_button_row};
+use crate::ui::button_row::{button_row_width, footer_row_count, render_button_row};
 use crate::ui::controls;
 use crate::ui::cursor::text_field_spans;
 use crate::ui::scroll_container::{
-    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind,
+    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind, MAX_PAD_H,
 };
 
 const BUTTON_LABELS: &[&str] = &["Search", "Cancel"];
@@ -325,8 +325,9 @@ impl<'a> StatefulWidget for SearchModalView<'a> {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         // Layout: search field row + case note row + replace field row
-        // + (optional) 1 error row + 1 spacer + 1 buttons row.
-        let body_rows = if state.last_error.is_some() { 6 } else { 5 };
+        // + (optional) 1 error row + 1 spacer + the buttons, which take
+        // more than one row in a terminal too narrow for the pair.
+        let base_rows = if state.last_error.is_some() { 5 } else { 4 };
         let label_w = "Replace".chars().count() as u16;
         let longest_value = state
             .query
@@ -340,10 +341,15 @@ impl<'a> StatefulWidget for SearchModalView<'a> {
         let note = matching_mode_note(state);
         let note_w = NOTE_INDENT as u16 + note.chars().count() as u16;
         let content_width = (label_w + 2 + value_w).max(buttons_w).max(note_w);
+        // The footer wraps rather than clipping, so its height is a
+        // function of the width the frame will give it.  Reserving a
+        // flat row instead leaves a wrapped button unpainted but still
+        // focusable and still carrying a click rect.
+        let footer_rows = footer_row_count(BUTTON_LABELS, content_width, area.width, MAX_PAD_H);
         let content = ContentSize {
             width: content_width,
             height: 0,
-            pinned_top: body_rows,
+            pinned_top: base_rows + footer_rows,
             pinned_bottom: 0,
             ..Default::default()
         };
@@ -438,7 +444,7 @@ impl<'a> StatefulWidget for SearchModalView<'a> {
             x: inner.x,
             y: row_y,
             width: inner.width,
-            height: 1,
+            height: (inner.y + inner.height).saturating_sub(row_y),
         };
         let focused_idx = match state.focus {
             SearchModalField::Search => 0,
@@ -653,6 +659,32 @@ mod tests {
         s.paste("ignored");
         assert_eq!(s.query, "q");
         assert_eq!(s.replace, "");
+    }
+
+    #[test]
+    fn a_narrow_terminal_wraps_the_footer_and_still_paints_both_buttons() {
+        // The footer wraps rather than clipping, so the modal has to
+        // reserve the rows it wrapped onto.  A flat one-row reservation
+        // leaves Cancel unpainted while Tab still focuses it.
+        let backend = TestBackend::new(20, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = SearchModalState::new("a".to_owned(), "b".to_owned());
+        terminal
+            .draw(|frame| {
+                let m = SearchModalView {
+                    theme: theme(),
+                    cursor_visible: true,
+                };
+                frame.render_stateful_widget(m, frame.area(), &mut state);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let rows: Vec<String> = (0..16)
+            .map(|y| (0..20).map(|x| buf[(x, y)].symbol().to_owned()).collect())
+            .collect();
+        let painted = rows.join("\n");
+        assert!(painted.contains("[ Search ]"), "{painted}");
+        assert!(painted.contains("[ Cancel ]"), "{painted}");
     }
 
     #[test]

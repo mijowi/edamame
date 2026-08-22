@@ -35,6 +35,19 @@ use ratatui::Frame;
 use super::types::{ModalKind, ModalRenderCtx};
 use crate::ui::{ModalButton, ModalResponse, ModalState, ModalView};
 
+/// Columns a chrome-backed body can use at most, given the whole
+/// terminal `area`.
+///
+/// The modal sizes itself to its content, so the body's real width is
+/// not known until after the content exists — but the *ceiling* is:
+/// [`ModalView`] clamps the frame to the terminal and `compute_pad_h`
+/// floors the padding at [`crate::ui::MIN_PAD_H`] per side.  A body that has to be
+/// built for its width (the About page's pod, the cheat sheet's washes)
+/// builds against this.
+pub fn body_columns(area: Rect) -> u16 {
+    area.width.saturating_sub(2 * crate::ui::MIN_PAD_H)
+}
+
 /// Shared state + input plumbing for [`ModalView`]-backed modals.
 pub struct ModalChrome {
     /// Scroll / focus / cached hit-rects.  `pub` so the rare caller

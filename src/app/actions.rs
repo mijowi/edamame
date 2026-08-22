@@ -696,7 +696,7 @@ impl App {
     /// generic [`Self::dispatch_modal_key`] / wheel routes.
     pub fn open_markdown_cheat_sheet(&mut self) {
         self.modal_stack
-            .push(Box::new(modal::CheatSheetModal::new(self.theme)));
+            .push(Box::new(modal::CheatSheetModal::new()));
     }
 
     /// Open the About page.  Deliberately touches no network: the page

@@ -1,45 +1,53 @@
-//! Markdown syntax cheat-sheet popover.  Static body, no footer
-//! buttons — dismissed via Escape or the `esc` close hint.  The
-//! simplest of the modal implementations and the reference example
-//! for trait-based migration.
+//! Markdown syntax cheat-sheet popover.  No footer buttons — dismissed
+//! via Escape or the `esc` close hint.  The simplest of the modal
+//! implementations and the reference example for trait-based migration.
+//!
+//! The body is rebuilt each frame rather than cached, because it is a
+//! function of the width: the code-block and block-quote rows are
+//! background washes sized to the body, and a wash built for a wider
+//! terminal wraps onto a second, ragged row.  Everything else is
+//! content and wraps normally.
 
 use std::any::Any;
 
 use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
-use ratatui::text::Line;
 use ratatui::Frame;
 
-use super::chrome::ModalChrome;
+use super::chrome::{self, ModalChrome};
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
-use crate::config::Theme;
 use crate::ui::{markdown_cheat_sheet_body, ModalButton, ModalResponse};
 
 pub struct CheatSheetModal {
-    body: Vec<Line<'static>>,
     buttons: Vec<ModalButton>,
     chrome: ModalChrome,
 }
 
 impl CheatSheetModal {
-    pub fn new(theme: &Theme) -> Self {
+    pub fn new() -> Self {
         Self {
-            body: markdown_cheat_sheet_body(theme),
             buttons: Vec::new(),
             chrome: ModalChrome::new(ModalKind::Normal, true),
         }
     }
 }
 
+impl Default for CheatSheetModal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Modal for CheatSheetModal {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
+        let body = markdown_cheat_sheet_body(ctx.theme, chrome::body_columns(area));
         self.chrome.render(
             frame,
             area,
             ctx,
             "Markdown Cheat Sheet",
-            &self.body,
+            &body,
             &self.buttons,
         );
     }

@@ -22,7 +22,7 @@ use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::Frame;
 
-use super::chrome::ModalChrome;
+use super::chrome::{body_columns, ModalChrome};
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::update_check;
 use crate::app::App;
@@ -111,7 +111,12 @@ impl AboutModal {
 
 impl Modal for AboutModal {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
-        let body = about::body_lines(ctx.theme, self.tagline_index(), INSTALLED_VERSION);
+        let body = about::body_lines(
+            ctx.theme,
+            self.tagline_index(),
+            INSTALLED_VERSION,
+            body_columns(area),
+        );
         self.chrome
             .render(frame, area, ctx, "About edamame", &body, &self.buttons);
     }
@@ -170,6 +175,7 @@ mod tests {
 
     use super::*;
     use crate::app::test_utils::make_app;
+    use crate::ui::MIN_PAD_H;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -267,6 +273,18 @@ mod tests {
         // a new button silently opened GitHub.  Assert the count
         // matches the named indices instead.
         assert_eq!(AboutModal::new().buttons.len(), VIEW_ON_GITHUB_BUTTON + 1);
+    }
+
+    #[test]
+    fn the_body_is_built_for_the_columns_the_frame_will_have() {
+        // `body_columns` is the ceiling `ModalView` can give the body:
+        // the terminal less the minimum padding on each side.  The About
+        // body drops its pod against that number, so getting it wrong
+        // draws a pod into a frame too narrow to hold it.
+        assert_eq!(body_columns(Rect::new(0, 0, 80, 24)), 80 - 2 * MIN_PAD_H);
+        // A terminal narrower than the padding itself still asks for a
+        // body rather than underflowing.
+        assert_eq!(body_columns(Rect::new(0, 0, 1, 24)), 0);
     }
 
     #[test]

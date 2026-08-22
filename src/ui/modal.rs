@@ -31,7 +31,7 @@ use ratatui::{
 };
 
 use crate::config::Theme;
-use crate::ui::button_row::{buttons_row_width, render_buttons, Button};
+use crate::ui::button_row::{button_rows_height, buttons_row_width, render_buttons, Button};
 use crate::ui::scroll_container::{
     centered_rect_for_content, compute_pad_h, draw_frame, wrapped_rows, ContentSize, FrameOpts,
     ModalKind, ScrollContainerState, MAX_PAD_H, VERTICAL_CHROME_ROWS,
@@ -317,10 +317,27 @@ impl<'a> StatefulWidget for ModalView<'a> {
         let prospective_body_inner_w = prospective_modal_width
             .saturating_sub(2 * prospective_pad_h)
             .max(1);
-        let wrapped_body_height = wrapped_rows(self.body, prospective_body_inner_w);
-        // Pinned bottom = 1 spacer + 1 button row when buttons present;
-        // otherwise the body fills all the way to the bottom pad.
-        let pinned_bottom: u16 = if self.buttons.is_empty() { 0 } else { 2 };
+        // The body is rendered as a block of its own natural width,
+        // centred in the modal (see the `body_area` construction), so it
+        // is measured at that width too — otherwise a body narrower than
+        // the button row would be sized against columns it never paints.
+        let prospective_body_render_w = body_width.clamp(1, prospective_body_inner_w);
+        let wrapped_body_height = wrapped_rows(self.body, prospective_body_render_w);
+        // Pinned bottom = 1 spacer + however many rows the footer needs.
+        // A row too narrow for every button wraps rather than clipping,
+        // so this is a function of the width, not a constant — and it
+        // must be asked at the same width `render_buttons` will pack
+        // against.
+        let button_row_count = if self.buttons.is_empty() {
+            0
+        } else {
+            button_rows_height(&button_specs, prospective_body_inner_w).max(1)
+        };
+        let pinned_bottom: u16 = if self.buttons.is_empty() {
+            0
+        } else {
+            1 + button_row_count
+        };
         let content = ContentSize {
             width: content_width,
             height: wrapped_body_height,
@@ -342,7 +359,8 @@ impl<'a> StatefulWidget for ModalView<'a> {
         // padding here exactly matches what `draw_frame` will apply.
         let pad_h = compute_pad_h(modal_area.width, content_width, self.max_pad_h);
         let body_inner_w = modal_area.width.saturating_sub(2 * pad_h).max(1);
-        let total = wrapped_rows(self.body, body_inner_w);
+        let body_render_w = body_width.clamp(1, body_inner_w);
+        let total = wrapped_rows(self.body, body_render_w);
         state.scroll_state.observe(total, text_body_height);
 
         let layout = draw_frame(
@@ -366,10 +384,16 @@ impl<'a> StatefulWidget for ModalView<'a> {
             .wrap(Wrap { trim: false })
             .style(self.theme.modal_bg);
 
+        // Centre the body as a block whenever the modal is wider than
+        // the body needs — which happens whenever the footer is the
+        // widest thing in it.  Left-aligning inside the full inner width
+        // instead pushes a self-centred body (the About page's art and
+        // title column) off-centre by half the difference.  Text stays
+        // left-aligned *within* the block; only the block moves.
         let body_area = Rect {
-            x: inner.x,
+            x: inner.x + inner.width.saturating_sub(body_render_w) / 2,
             y: inner.y,
-            width: inner.width,
+            width: body_render_w,
             height: text_body_height,
         };
         body_paragraph
@@ -393,9 +417,9 @@ impl<'a> StatefulWidget for ModalView<'a> {
         if !self.buttons.is_empty() {
             let button_area = Rect {
                 x: inner.x,
-                y: inner.y + inner.height.saturating_sub(1),
+                y: inner.y + inner.height.saturating_sub(button_row_count),
                 width: inner.width,
-                height: 1,
+                height: button_row_count,
             };
             state.button_rects =
                 render_buttons(button_area, buf, &button_specs, state.focused, self.theme);
@@ -655,6 +679,102 @@ mod tests {
             "expected scrollbar thumb glyph, got: {contents}"
         );
         assert!(state.scroll_state.last_total > state.scroll_state.last_visible);
+    }
+
+    /// Render `body` + `buttons` at `w`x`h` and return the state plus the
+    /// painted rows, so a test can assert on both geometry and glyphs.
+    fn render_modal(
+        w: u16,
+        h: u16,
+        body: &[Line<'static>],
+        buttons: &[ModalButton],
+    ) -> (ModalState, Vec<String>) {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        let mut state = ModalState::new();
+        terminal
+            .draw(|frame| {
+                let m = ModalView::new("Title", body, buttons, theme(), ModalKind::Normal, true);
+                frame.render_stateful_widget(m, frame.area(), &mut state);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let rows = (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_owned()).collect())
+            .collect();
+        (state, rows)
+    }
+
+    #[test]
+    fn a_footer_too_wide_for_the_modal_wraps_onto_a_second_row() {
+        // Clipping instead would leave a button the keyboard can still
+        // focus and the click rect still points at, off the frame.
+        let body = vec![Line::raw("Short.")];
+        let buttons = vec![
+            ModalButton::new("Release notes"),
+            ModalButton::new("Check for updates"),
+            ModalButton::new("View on GitHub"),
+        ];
+        let (state, rows) = render_modal(44, 20, &body, &buttons);
+        assert_eq!(state.button_rects.len(), 3);
+        let ys: Vec<u16> = state.button_rects.iter().map(|r| r.y).collect();
+        assert!(ys[0] < ys[2], "the row wrapped: {ys:?}");
+        // Every button is painted, and inside the terminal.
+        let painted = rows.join("\n");
+        for label in ["Release notes", "Check for updates", "View on GitHub"] {
+            assert!(painted.contains(label), "{label} missing:\n{painted}");
+        }
+        assert!(state
+            .button_rects
+            .iter()
+            .all(|r| r.x + r.width <= 44 && r.y < 20));
+    }
+
+    #[test]
+    fn a_wrapped_footer_gets_the_rows_it_needs() {
+        // The body must not be painted over: the frame grows by a row
+        // instead, which only happens if the sizing pass packs the
+        // footer at the same width the render does.
+        let body: Vec<Line<'static>> = (0..3).map(|i| Line::raw(format!("Body {i}"))).collect();
+        let buttons = vec![
+            ModalButton::new("Release notes"),
+            ModalButton::new("Check for updates"),
+            ModalButton::new("View on GitHub"),
+        ];
+        let (_, rows) = render_modal(44, 20, &body, &buttons);
+        let painted = rows.join("\n");
+        for i in 0..3 {
+            assert!(painted.contains(&format!("Body {i}")), "\n{painted}");
+        }
+    }
+
+    #[test]
+    fn a_body_narrower_than_the_footer_is_centred_in_the_modal() {
+        // The About page centres its own art and title column, so
+        // left-aligning that block inside a modal the footer widened
+        // pushes the whole page off-centre by half the difference.
+        let body = vec![Line::raw("|....|")];
+        let buttons = vec![
+            ModalButton::new("Check for updates"),
+            ModalButton::new("View on GitHub"),
+        ];
+        let (_, rows) = render_modal(80, 12, &body, &buttons);
+        let body_row = rows
+            .iter()
+            .find(|r| r.contains("|....|"))
+            .expect("body row");
+        let start = body_row.find('|').unwrap();
+        let end = body_row.rfind('|').unwrap() + 1;
+        let button_row = rows.iter().find(|r| r.contains("[ View")).expect("footer");
+        let b_start = button_row.find('[').unwrap();
+        let b_end = button_row.rfind(']').unwrap() + 1;
+        // Both blocks share a centre, within the rounding of an odd
+        // leftover column.
+        let body_centre = start + end;
+        let footer_centre = b_start + b_end;
+        assert!(
+            body_centre.abs_diff(footer_centre) <= 1,
+            "body {start}..{end} vs footer {b_start}..{b_end}"
+        );
     }
 
     /// Width of the painted modal — the run of rows whose cells carry

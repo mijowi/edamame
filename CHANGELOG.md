@@ -32,6 +32,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Editing `config.toml` from inside edamame now applies every changed setting straight away, not only the theme and keybindings.
 - A recovered failure in the diagram renderer or an image worker no longer hands the terminal back to the shell while edamame is still running.
 - An empty file now correctly displays the cursor.
+- Improved modal wrapping; modals no longer break up in a small terminal.
 
 ## [0.1.1] - 2026-08-18
 
