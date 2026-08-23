@@ -1593,9 +1593,20 @@ mod tests {
 
         // The worker compiles it and bumps the generation, which is what
         // `App::tick_syntax_warm` polls to know a reparse is owed.
+        //
+        // Waited on *lua landing*, not on the counter moving: `warm` is
+        // process-global and `cargo test` runs this binary's tests on
+        // parallel threads, so any other grammar finishing first also
+        // bumps the generation.  Waiting on the counter alone therefore
+        // races — it releases this thread while lua is still pending,
+        // and the classification below answers `[]`.  A test whose
+        // precondition is shared mutable state has to wait for the
+        // thing it actually needs.
         let deadline = Instant::now() + Duration::from_secs(10);
-        while warm_generation() == before && Instant::now() < deadline {
+        let mut out = highlight_block(Some("lua"), &lines);
+        while out.is_empty() && Instant::now() < deadline {
             std::thread::yield_now();
+            out = highlight_block(Some("lua"), &lines);
         }
         assert!(
             warm_generation() > before,
@@ -1604,7 +1615,6 @@ mod tests {
 
         // Warm: the same call now classifies, on the render thread, with
         // no compilation left to do.
-        let out = highlight_block(Some("lua"), &lines);
         assert_eq!(out.len(), 2);
         assert_eq!(class_at(&out[0], 0), Some(TokenClass::Comment));
     }
