@@ -12,14 +12,21 @@ use ratatui::text::Line;
 use ratatui::Frame;
 
 use super::chrome::ModalChrome;
+use super::docs_link::{follow_and_close, DocsFootnote};
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
 use crate::app::App;
 use crate::config::{ConfigWarning, WarningKind};
-use crate::ui::{ModalButton, ModalResponse};
+use crate::docs::DocId;
+use crate::ui::modal::LinkableResponse;
+use crate::ui::{ModalButton, ModalLink, ModalLinkTarget, ModalResponse};
 
 pub struct ConfigWarningModal {
     pub(crate) body: Vec<Line<'static>>,
     pub(crate) buttons: Vec<ModalButton>,
+    /// Rebuilt each render — the warning list above it varies in
+    /// length, so the footnote's line index is only known once the
+    /// body is assembled.
+    links: Vec<ModalLink>,
     chrome: ModalChrome,
 }
 
@@ -84,20 +91,49 @@ impl ConfigWarningModal {
         Some(Self {
             body,
             buttons: Vec::new(),
+            links: Vec::new(),
             chrome: ModalChrome::new(ModalKind::Warning, true),
         })
     }
+    /// Map a resolved response to an outcome.  Shared by the key and
+    /// click paths so mouse and keyboard behave identically.
+    fn resolve(&self, response: LinkableResponse) -> ModalOutcome {
+        match response {
+            LinkableResponse::Modal(ModalResponse::Continue) => ModalOutcome::Continue,
+            LinkableResponse::Modal(ModalResponse::Cancelled | ModalResponse::ButtonPressed(_)) => {
+                ModalOutcome::Close
+            }
+            LinkableResponse::Link(idx) => match self.links.get(idx) {
+                Some(link) => follow_and_close(link.target.clone()),
+                None => ModalOutcome::Continue,
+            },
+        }
+    }
 }
+
+/// The manual section explaining what edamame does with a config it
+/// could not fully read, and where that config lives.
+const DOCS_FOOTNOTE: DocsFootnote = DocsFootnote {
+    label: "When something is wrong with your config",
+    target: ModalLinkTarget {
+        id: DocId::Configuration,
+        fragment: Some("when-something-is-wrong-with-your-config"),
+    },
+    trailer: " explains how these are handled.",
+};
 
 impl Modal for ConfigWarningModal {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ModalRenderCtx<'_>) {
-        self.chrome.render(
+        let mut body = self.body.clone();
+        self.links = DOCS_FOOTNOTE.append_to(&mut body, self.chrome.focused_link(), ctx.theme);
+        self.chrome.render_with_links(
             frame,
             area,
             ctx,
             "Config warnings",
-            &self.body,
+            &body,
             &self.buttons,
+            &self.links,
         );
     }
 
@@ -108,10 +144,10 @@ impl Modal for ConfigWarningModal {
         _doc_height: usize,
         _doc_width: usize,
     ) -> ModalOutcome {
-        match self.chrome.on_key(&key, self.buttons.len()) {
-            ModalResponse::Continue => ModalOutcome::Continue,
-            ModalResponse::Cancelled | ModalResponse::ButtonPressed(_) => ModalOutcome::Close,
-        }
+        let response = self
+            .chrome
+            .on_key_linkable(&key, self.links.len(), self.buttons.len());
+        self.resolve(response)
     }
 
     fn handle_wheel(&mut self, delta: i32) {
@@ -119,10 +155,8 @@ impl Modal for ConfigWarningModal {
     }
 
     fn handle_click(&mut self, col: u16, row: u16, _app: &mut App) -> ModalOutcome {
-        match self.chrome.on_click(col, row) {
-            ModalResponse::Continue => ModalOutcome::Continue,
-            ModalResponse::Cancelled | ModalResponse::ButtonPressed(_) => ModalOutcome::Close,
-        }
+        let response = self.chrome.on_click_linkable(col, row);
+        self.resolve(response)
     }
 
     fn kind(&self) -> ModalKind {
@@ -150,7 +184,25 @@ mod tests {
     //! formatting shows up without rendering through ratatui.
 
     use super::*;
+    use crate::config::Theme;
+    use crate::document::ParsedDoc;
     use std::path::PathBuf;
+
+    /// Fragments are matched exactly, so renaming that heading in
+    /// `docs/configuration.md` dead-ends this link silently, and only
+    /// for the reader who followed it.
+    #[test]
+    fn the_docs_link_names_a_heading_that_exists() {
+        let ModalLinkTarget { id, fragment } = DOCS_FOOTNOTE.target;
+        let fragment = fragment.expect("the link names a section, not just a page");
+        let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
+        let parsed = ParsedDoc::build(&id.source(), theme, true, 80);
+        assert!(
+            parsed.heading_anchors.contains_key(fragment),
+            "'{fragment}' is not a heading in {}",
+            id.title()
+        );
+    }
 
     #[test]
     fn empty_warnings_returns_none() {

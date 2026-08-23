@@ -24,6 +24,7 @@ pub mod cli;
 pub mod config;
 pub mod diagram;
 pub mod diff;
+pub mod docs;
 pub mod document;
 pub mod editor;
 pub mod export;

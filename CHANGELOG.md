@@ -10,6 +10,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ### Added
 
+- The manual now ships inside the binary and opens in the app. `Ctrl-P` → **Help: Documentation** for the index, or jump straight to a page (**Docs: Keybindings**, **Docs: Vim mode**, …). Pages are read-only, searchable, and link to each other; `Alt+Left` returns to what you were writing.
 - After an upgrade, edamame shows the new version's release notes once, read from the changelog built into it. The Release notes button on the About page shows them again at any time.
 - Syntax highlighting for fenced code blocks, covering over 200 languages. The language comes only from the opening fence — a fence with no language renders as plain code. Colors come from the active theme. Highlighting can be turned off in settings.
 - Links to a section of another document — `[text](other.md#a-heading)` — now open that file and land on the heading.

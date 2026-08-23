@@ -1692,6 +1692,28 @@ mod tests {
     }
 
     #[test]
+    fn a_bracketed_paste_cannot_edit_a_read_only_documentation_page() {
+        // A terminal paste (⌘V) lands in `edit_ops::paste_text` without
+        // ever becoming an `Action`, so no gate over `Action` can see
+        // it.  It is refused two layers down instead, by
+        // `enter_edit_if_preview` and `apply_delta` — which is the
+        // whole point of putting the guarantee there.
+        let mut app = app_with_buffer("notes\n", 0);
+        app.open_doc_page(crate::docs::DocId::Security, None, 20, 80);
+        let before = app.editor.buffer.contents();
+        app.dispatch_paste("pasted text".to_owned(), &dims());
+        assert_eq!(app.editor.buffer.contents(), before);
+        assert!(!app.editor.dirty);
+    }
+
+    #[test]
+    fn a_bracketed_paste_still_works_in_an_ordinary_document() {
+        let mut app = app_with_buffer("hello\n", 0);
+        app.dispatch_paste("XYZ".to_owned(), &dims());
+        assert!(app.editor.buffer.contents().contains("XYZ"));
+    }
+
+    #[test]
     fn paste_into_an_open_vim_command_line_fills_the_prompt_not_the_buffer() {
         use crate::input::vim::state::{CmdLineKind, CmdLineState};
         let mut app = app_with_buffer("hello\n", 0);

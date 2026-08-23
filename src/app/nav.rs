@@ -12,6 +12,7 @@ use anyhow::Result;
 
 use crate::app::flash::MessageKind;
 use crate::app::modal;
+use crate::docs::DocId;
 use crate::document::Buffer;
 use crate::editor::link::LinkTarget;
 use crate::editor::{mouse_ops, EditorState, Mode};
@@ -37,7 +38,37 @@ use super::App;
 #[derive(Debug, Clone)]
 pub(super) enum NavDest {
     File(PathBuf),
-    InDocument { footnote: Option<String> },
+    InDocument {
+        footnote: Option<String>,
+    },
+    /// A page of the embedded manual (`crate::docs`).  Named by id
+    /// rather than by path because it has none — the text lives in the
+    /// binary, so there is nothing on disk for a `PathBuf` to point at.
+    EmbeddedDoc(DocId),
+}
+
+/// A destination a navigation is about to go to, held across the dirty
+/// guard.
+///
+/// The guard has to name where it is heading in its prose and resume it
+/// on Save / Discard, and a manual page cannot be spelled as a
+/// `PathBuf` without inventing a fake one — which would then have to be
+/// recognised and stripped back out at every point that treats a path
+/// as a real file (the watcher, `Save`, the own-write hash).
+#[derive(Debug, Clone)]
+pub(crate) enum NavPending {
+    File(PathBuf),
+    Doc(DocId),
+}
+
+impl NavPending {
+    /// How the destination is named in the dirty guard's prose.
+    pub(crate) fn display_name(&self) -> String {
+        match self {
+            NavPending::File(p) => p.display().to_string(),
+            NavPending::Doc(id) => format!("the {} documentation", id.title()),
+        }
+    }
 }
 
 /// One entry on [`App::nav_back`] / [`App::nav_forward`] — records
@@ -112,9 +143,40 @@ impl App {
                 self.follow_footnote_back_link(&label, doc_height, doc_width);
             }
             LinkTarget::LocalFile { path, fragment } => {
+                // A link inside a manual page resolves against the
+                // *embedded* set, not the filesystem.  That page is
+                // pathless, so `LinkTarget::parse` had no `base_dir`
+                // and handed back a bare relative path — which the
+                // branch below would resolve against the process's
+                // working directory, opening whatever `security.md`
+                // happens to sit next to the user's shell.
+                //
+                // Gated on a manual page actually being open rather
+                // than folded into `LinkTarget::parse`, which is pure
+                // and must keep answering the same way for an ordinary
+                // document that links to a file of its own by one of
+                // these names.
+                if self.open_doc.is_some() {
+                    match crate::docs::resolve_doc_reference(&path, fragment) {
+                        crate::docs::DocLinkResolution::Doc(id, frag) => {
+                            // No dirty guard: a manual page is
+                            // read-only, so `dirty` cannot be set while
+                            // one is open.
+                            self.open_doc_page(id, frag, doc_height, doc_width);
+                        }
+                        // A page that ships in the repository but not in
+                        // the binary — the contributor docs and the root
+                        // `SECURITY.md`.  Hand it to the browser rather
+                        // than failing silently.
+                        crate::docs::DocLinkResolution::External(url) => {
+                            self.spawn_open_worker(url);
+                        }
+                    }
+                    return;
+                }
                 if is_markdown_path(&path) {
                     if self.editor.dirty {
-                        self.open_dirty_guard(path, fragment);
+                        self.open_dirty_guard(NavPending::File(path), fragment);
                     } else {
                         let _ = self.navigate_to_file_at(path, fragment, doc_height, doc_width);
                     }
@@ -362,12 +424,19 @@ impl App {
     /// `session_images_enabled`, so a session that started on a
     /// document with no images would otherwise never display images in
     /// any document opened from within edamame.
-    pub(super) fn load_file_into_editor(&mut self, path: PathBuf) -> Result<()> {
-        let buffer = Buffer::load_file(&path)?;
-        // Stamp the watcher's own-write filter from the bytes we
-        // just read so the inotify event that some backends
-        // synthesize on `open(2)` is suppressed.
-        self.set_disk_hash(buffer.contents().as_bytes());
+    /// Build the `EditorState` for a document that is replacing the
+    /// current one, wired to everything an editor needs from `App` and
+    /// `Config`.
+    ///
+    /// Extracted because a new `EditorState` is built per document and
+    /// the wiring has drifted twice, invisibly until a *second*
+    /// document was opened: the encoder worker's `ResizeRequest` sender
+    /// (without which images decode perfectly and paint as placeholders
+    /// forever) and `cursor_blink`.  Both callers — a file off disk and
+    /// a page out of the embedded manual — differ only in where the
+    /// `Buffer` came from, so sharing the wiring is what keeps a third
+    /// caller from reintroducing that class of bug.
+    pub(super) fn editor_for_buffer(&self, buffer: Buffer) -> EditorState {
         let mut new_editor = EditorState::new_with_image_config(
             buffer,
             self.theme,
@@ -403,12 +472,33 @@ impl App {
             self.images_layout_enabled(),
             self.diagrams_layout_enabled(),
         );
-        self.editor = new_editor;
+        new_editor
+    }
+
+    pub(super) fn load_file_into_editor(&mut self, path: PathBuf) -> Result<()> {
+        let buffer = Buffer::load_file(&path)?;
+        // Stamp the watcher's own-write filter from the bytes we
+        // just read so the inotify event that some backends
+        // synthesize on `open(2)` is suppressed.
+        self.set_disk_hash(buffer.contents().as_bytes());
+        self.editor = self.editor_for_buffer(buffer);
         // Image cache is owned by `EditorState`, so swapping to a new
         // editor resets it — image URLs on the new doc are resolved
         // against the new base directory on the next draw.
         self.file_path = Some(path.clone());
+        // `open_doc` and `file_path` are mutually exclusive, and this is
+        // the transition back to a real file — from a manual page
+        // followed by Back, or by a link out of one.  Leaving it set
+        // would keep the status bar naming a page the reader has left
+        // and, worse, keep `follow_link` resolving this document's
+        // relative links against the embedded manual instead of against
+        // its own directory.
+        self.open_doc = None;
         self.view_state = EditorViewState::new();
+        // The editable counterpart of `load_doc_into_editor`'s park:
+        // a vim session suspended for a read-only document comes back
+        // with the next document that can actually be edited.
+        self.sync_vim_suspension();
         // Marks the image cache dirty and re-evaluates the three
         // per-document media prompts ("this document contains images —
         // show them?") against the newly-loaded document.  A session
@@ -436,6 +526,24 @@ impl App {
             cursor_offset: self.editor.cursor.offset,
             mode: self.editor.mode,
         })
+    }
+
+    /// Snapshot wherever we are now as the entry to return *to*.
+    ///
+    /// `current_file_entry` cannot answer for a manual page — that page
+    /// is pathless, so it returns `None` and the reader loses the way
+    /// back.  Every site that records an origin before replacing the
+    /// document goes through here instead.
+    pub(super) fn current_origin_entry(&self) -> Option<NavEntry> {
+        if let Some(id) = self.open_doc {
+            return Some(NavEntry {
+                dest: NavDest::EmbeddedDoc(id),
+                scroll: self.editor.scroll,
+                cursor_offset: self.editor.cursor.offset,
+                mode: self.editor.mode,
+            });
+        }
+        self.current_file_entry()
     }
 
     /// Snapshot the editor's current position as an *in-document* nav
@@ -494,14 +602,15 @@ impl App {
     /// away from a dirty buffer to a *different* file.  In-document
     /// restores and same-file restores never lose unsaved edits, so they
     /// bypass the dirty guard entirely.
-    fn cross_file_dirty_target(&self, dest: &NavEntry) -> Option<PathBuf> {
+    fn cross_file_dirty_target(&self, dest: &NavEntry) -> Option<NavPending> {
         if !self.editor.dirty {
             return None;
         }
         match &dest.dest {
             NavDest::File(path) if self.file_path.as_deref() != Some(path.as_path()) => {
-                Some(path.clone())
+                Some(NavPending::File(path.clone()))
             }
+            NavDest::EmbeddedDoc(id) if self.open_doc != Some(*id) => Some(NavPending::Doc(*id)),
             _ => None,
         }
     }
@@ -525,13 +634,19 @@ impl App {
             }
             _ => None,
         };
+        // The same question for a manual page: a different page than the
+        // one showing has to be rebuilt from the embedded text.
+        let reload_doc = match &dest.dest {
+            NavDest::EmbeddedDoc(id) if self.open_doc != Some(*id) => Some(*id),
+            _ => None,
+        };
 
         // Snapshot where we are now for the opposite stack.  If this
         // restore reloads a different file, returning here needs a file
         // entry (so the reverse navigation reloads); otherwise an
         // in-document entry suffices and also works for `[No file]`.
-        let current = if reload_path.is_some() {
-            self.current_file_entry()
+        let current = if reload_path.is_some() || reload_doc.is_some() {
+            self.current_origin_entry()
         } else {
             Some(self.current_in_doc_entry(None))
         };
@@ -541,6 +656,9 @@ impl App {
                 tracing::warn!(target: "link", path = %path.display(), error = %err, "nav load failed");
                 return;
             }
+        }
+        if let Some(id) = reload_doc {
+            self.load_doc_into_editor(id);
         }
         if let Some(e) = current {
             if forward {
@@ -577,7 +695,7 @@ impl App {
     /// carried one — the guard has to carry it across the modal's
     /// lifetime, or answering it drops the reader at the top of the
     /// target document.
-    pub(super) fn open_dirty_guard(&mut self, pending: PathBuf, fragment: Option<String>) {
+    pub(super) fn open_dirty_guard(&mut self, pending: NavPending, fragment: Option<String>) {
         let display = self
             .file_path
             .as_deref()

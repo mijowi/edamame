@@ -133,6 +133,11 @@ fn preview_safe_action(action: &Action) -> bool {
             // browsing.
             | Action::ShowCommandPalette
             | Action::ShowMarkdownCheatSheet
+            // Opening the manual replaces the document rather than
+            // popping a modal, but it is read-only in the sense that
+            // matters here: it starts no edit and the dirty guard
+            // protects anything unsaved.
+            | Action::OpenDoc(_)
             | Action::ShowAbout
             | Action::CheckForUpdates
             | Action::OpenSettings
@@ -245,6 +250,131 @@ mod tests {
         let mut s = EditorState::new(Buffer::new(), theme);
         s.mode = mode;
         s
+    }
+
+    // ── Read-only documentation pages ─────────────────────────────
+
+    fn readonly_state(mode: Mode) -> EditorState {
+        let mut s = state(mode);
+        s.readonly = true;
+        s
+    }
+
+    /// A read-only page has **no bespoke key table**: it resolves every
+    /// key through the ordinary keymap, exactly as an editable document
+    /// does.  There was briefly a vim-flavored scroll table here
+    /// (`j`/`k`, `Ctrl-D`/`Ctrl-U`, `Space`); it was removed, and this
+    /// is the guard that it does not creep back.  Scrolling a page is
+    /// the arrow keys, `PageUp`/`PageDown`, `Home`/`End` and the wheel,
+    /// which the keymap already owns.
+    #[test]
+    fn a_read_only_page_resolves_keys_through_the_ordinary_keymap() {
+        let km = keymap();
+        let mut h = DefaultHandler::new(&km);
+        let readonly = readonly_state(Mode::Preview);
+        let editable = state(Mode::Preview);
+        for (code, mods) in [
+            (KeyCode::Char('j'), KeyModifiers::NONE),
+            (KeyCode::Char('k'), KeyModifiers::NONE),
+            (KeyCode::Char('g'), KeyModifiers::NONE),
+            (KeyCode::Char(' '), KeyModifiers::NONE),
+            (KeyCode::Char('d'), KeyModifiers::CONTROL),
+            (KeyCode::Char('u'), KeyModifiers::CONTROL),
+            (KeyCode::Home, KeyModifiers::NONE),
+            (KeyCode::End, KeyModifiers::NONE),
+        ] {
+            let ev = KeyEvent::new(code, mods);
+            assert_eq!(
+                h.handle(ev, &readonly),
+                h.handle(ev, &editable),
+                "{code:?} must resolve the same on a read-only page"
+            );
+        }
+    }
+
+    /// Preview's "press any key to edit" is unchanged — `j` starts
+    /// editing an ordinary document, and is merely refused downstream
+    /// on a read-only one.
+    #[test]
+    fn an_ordinary_preview_still_edits_on_a_letter_key() {
+        let km = keymap();
+        let mut h = DefaultHandler::new(&km);
+        let st = state(Mode::Preview);
+        assert_eq!(
+            h.handle(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE), &st),
+            Some(Action::InsertChar('j'))
+        );
+    }
+
+    /// Falling through is what keeps every bound chord working: the
+    /// table only claims the handful of keys it lists.
+    #[test]
+    fn unbound_keys_still_reach_the_keymap_on_a_read_only_page() {
+        let km = keymap();
+        let mut h = DefaultHandler::new(&km);
+        let st = readonly_state(Mode::Preview);
+        assert_eq!(
+            h.handle(
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+                &st
+            ),
+            Some(Action::Quit)
+        );
+    }
+
+    /// The handler knows nothing about `readonly` at all.
+    ///
+    /// It used to answer `None` for every unbound key on a read-only
+    /// page, because the App's gate flashed "read-only" once per
+    /// keystroke and a hand resting on the letter keys would strobe the
+    /// hint line.  Both halves of that are gone: a read-only document
+    /// rests in Preview, where `edit_ops::enter_edit_if_preview` refuses
+    /// the transition (and `apply_delta` the write) *silently*.  So the
+    /// synthesized action is produced and then goes nowhere, which is
+    /// one guard instead of two.
+    #[test]
+    fn a_read_only_page_no_longer_suppresses_the_keymap_bypassing_arms() {
+        let km = keymap();
+        let mut h = DefaultHandler::new(&km);
+        let st = readonly_state(Mode::Preview);
+        // Arm 3: a printable key with no reading binding.
+        assert_eq!(
+            h.handle(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE), &st),
+            Some(Action::InsertChar('z'))
+        );
+        // Arm 2: a `Ctrl-Backspace` encoding the keymap does not match.
+        // Dropped in Preview by the Preview guard, not by `readonly`.
+        let ev = KeyEvent::new(
+            KeyCode::Backspace,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_eq!(h.handle(ev, &st), None);
+        assert_eq!(
+            h.handle(ev, &readonly_state(Mode::Rendered)),
+            Some(Action::DeleteWordBack)
+        );
+    }
+
+    #[test]
+    fn bound_chords_still_resolve_on_a_read_only_page() {
+        // Every bound chord still produces its action; the App's
+        // `readonly_safe_action` decides which of them may run.
+        let km = keymap();
+        let mut h = DefaultHandler::new(&km);
+        let st = readonly_state(Mode::Rendered);
+        let ev = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
+        assert_eq!(h.handle(ev, &st), Some(Action::Quit));
+    }
+
+    #[test]
+    fn an_ordinary_document_still_types() {
+        let km = keymap();
+        let mut h = DefaultHandler::new(&km);
+        let st = state(Mode::Rendered);
+        assert_eq!(
+            h.handle(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE), &st),
+            Some(Action::InsertChar('a'))
+        );
     }
 
     #[test]

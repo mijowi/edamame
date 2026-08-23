@@ -237,6 +237,7 @@ fn section_of(action: &Action) -> &'static str {
         | Action::SwitchTheme
         | Action::CreateCustomTheme
         | Action::ShowMarkdownCheatSheet
+        | Action::OpenDoc(_)
         | Action::OpenInExternalEditor
         | Action::ShowAbout
         | Action::CheckForUpdates => "Tools",

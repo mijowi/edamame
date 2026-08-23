@@ -43,69 +43,131 @@ use super::App;
 /// to future readers of this list.
 pub(super) const NOT_YET_IMPLEMENTED: &[Action] = &[Action::Open];
 
-/// Default-deny gate over [`Action`]s in diff mode.  Returns
-/// `Some(action)` when the action is allowed in Review sub-mode (the
-/// only sub-mode today); `None` for everything else.  When an in-diff
-/// Edit mode lands, this can grow a `(action, sub_mode)` signature so
-/// Edit-only and Review-only actions refine the gate.
-pub(super) fn diff_safe_action(action: &Action) -> Option<Action> {
-    use Action::*;
-    let allowed = matches!(
-        action,
-        DiffNext
-            | DiffPrev
-            | DiffAcceptHunk
-            | DiffRejectHunk
-            | DiffAcceptAll
-            | DiffRejectAll
-            | DiffResetHunk
-            | DiffExit
-            | ScrollUp
-            | ScrollDown
-            | ScrollPageUp
-            | ScrollPageDown
-            | ScrollToTop
-            | ScrollToBottom
-            | Quit
-            | ShowCommandPalette
-            | ShowMarkdownCheatSheet
-            | ShowAbout
-            | CheckForUpdates
-            | OpenSettings
-            | OpenWelcome
-            | OpenKeybinds
-            | SwitchTheme
-            | CreateCustomTheme
-            | OpenConfigFolder
-    );
-    if allowed {
-        Some(action.clone())
-    } else {
-        None
-    }
+/// What an [`Action`] can *do*, tagged once per variant.
+///
+/// The three default-deny gates in this module — diff review, a
+/// capturing search flow, a read-only document — used to be three
+/// hand-maintained allowlists of 25, 45 and 51 variants, seventeen of
+/// them identical across all three.  Every new `Action` therefore
+/// defaulted to *denied* in three places at once, silently, and the
+/// only way to notice was to try the chord in each context.
+///
+/// Inverting it fixes both halves of that.  The tag is a single
+/// exhaustive match with **no wildcard arm**, so a new variant is a
+/// compile error until somebody says what it does; and each gate
+/// becomes a rule over the tags rather than a list, so the seventeen
+/// shared entries collapse into [`ActionCaps::always_safe`].
+///
+/// The flags are deliberately about *capability*, not about any one
+/// gate's policy: "writes to the text", not "denied in diff".  A gate
+/// that wants an exception spells that exception out at its own site,
+/// where the reason for it is readable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ActionCaps {
+    /// Writes to the document's text — anything that could dirty the
+    /// buffer.  Conservative: a variant that mutates only in some
+    /// states (`TableNextCell` appends a row at the end of a table)
+    /// still carries the flag, because a gate asks "could this write?".
+    pub mutates_buffer: bool,
+    /// Replaces the live document, or leaves the current position for
+    /// another.
+    ///
+    /// **No gate reads this today, and that is the point of writing it
+    /// down.**  A capturing search flow does leave these out — going
+    /// somewhere else mid-replace abandons a task in progress — but it
+    /// does so by *not* listing them in its allowlist, which is the
+    /// default-deny behavior every unlisted variant already gets.
+    /// Denying on the flag as well would say the same thing twice.  The
+    /// read-only gate is the one that has an opinion worth stating, and
+    /// its opinion is the opposite: cross-linking and section jumping
+    /// are what a manual is *for*, so it allows these emphatically
+    /// (`a_read_only_document_denies_every_write_and_allows_every_navigation`
+    /// asserts that, which is what keeps the tag honest).  Tagging is
+    /// cheap and a wrong tag is loud; a future gate that needs the
+    /// distinction finds it already made rather than having to
+    /// re-derive it over eighty variants.
+    pub navigates_away: bool,
+    /// Writes the document out, or needs it to have a path on disk.
+    /// A pathless document (a page of the embedded manual) must refuse
+    /// these outright rather than detour into a Save-as prompt for a
+    /// document nobody can own.
+    pub needs_path: bool,
+    /// Reads the buffer without writing it: cursor motion, selection,
+    /// copy.  Distinct from "not `mutates_buffer`", which is also true
+    /// of every config toggle and every mode transition.
+    pub read_only_nav: bool,
+    /// Safe in every gated context: the six scroll actions, the ten
+    /// overlay openers, and `Quit`.  These are the seventeen that were
+    /// triplicated across the three old allowlists.
+    pub always_safe: bool,
 }
 
-/// Default-deny gate over [`Action`]s while a *capturing* search flow
-/// (a replace flow) is active.  Returns `Some(action)` for the
-/// search-flow actions, read-only navigation (cursor moves, selection,
-/// copy), and the always-safe set (scrolling, overlay openers, save,
-/// quit, undo/redo of in-flow replaces); `None` for everything that
-/// mutates the buffer — those stay unavailable for the duration of the
-/// flow, mirroring diff mode.  Navigate-only flows don't capture, so
-/// they never reach this gate.
-pub(super) fn search_safe_action(action: &Action) -> Option<Action> {
+/// Tag `action` with what it can do.  Exhaustive by construction —
+/// **do not add a wildcard arm**; the compile error a new variant
+/// produces here is the whole point.
+pub(super) fn action_caps(action: &Action) -> ActionCaps {
     use Action::*;
-    let allowed = matches!(
+    // Start from "does nothing dangerous, but is not blanket-safe" and
+    // let each group turn on what it needs.  Written as five booleans
+    // over one match rather than five matches so a variant's whole
+    // answer is readable in one place.
+    let mutates_buffer = matches!(
         action,
-        OpenSearch
-            | SearchNext
-            | SearchPrev
+        InsertChar(_)
+            | InsertTab
+            | Newline
+            | DeleteCharBack
+            | DeleteCharForward
+            | DeleteWordBack
+            | DeleteWordForward
+            | DeleteLine
+            | Cut
+            | Paste
+            | BoldSelection
+            | ItalicizeSelection
+            | InlineCodeSelection
+            | StrikethroughSelection
+            | HighlightSelection
+            | Undo
+            | Redo
+            | ToggleCheckbox
+            // Every table command may rewrite the grid.  The four
+            // "motion" ones are included on purpose: Tab off the last
+            // cell appends a row, and Shift-Tab outside a table
+            // outdents a list item.
+            | TableNextCell
+            | TablePrevCell
+            | TableNextRow
+            | TablePrevRow
+            | TableMoveRowUp
+            | TableMoveRowDown
+            | TableMoveColumnLeft
+            | TableMoveColumnRight
+            | TableInsertRowAbove
+            | TableInsertRowBelow
+            | TableInsertColumnLeft
+            | TableInsertColumnRight
+            | TableDeleteRow
+            | TableDeleteColumn
+            | TableInsertBreak
+            | InsertTable
+            | InsertImage
+            | InsertLink
+            | InsertFootnote
+            | DeleteFootnote
+            | RenumberFootnotes
+            | FixListNumbering
             | SearchReplace
             | SearchReplaceAll
-            | SearchExit
-            // Read-only navigation: the user can move the cursor, select,
-            // and copy while the replace flow holds the `Tab`/`r`/`a` keys.
-            | MoveLeft
+    );
+    let navigates_away = matches!(
+        action,
+        FollowLinkUnderCursor | NavigateBack | NavigateForward | GoToSection | OpenDoc(_) | Open
+    );
+    let needs_path = matches!(action, Save | SaveAs | ExportHtml | OpenInExternalEditor);
+    let read_only_nav = matches!(
+        action,
+        MoveLeft
             | MoveRight
             | MoveUp
             | MoveDown
@@ -121,16 +183,15 @@ pub(super) fn search_safe_action(action: &Action) -> Option<Action> {
             | SelectDown
             | SelectAll
             | Copy
-            | ScrollUp
+    );
+    let always_safe = matches!(
+        action,
+        ScrollUp
             | ScrollDown
             | ScrollPageUp
             | ScrollPageDown
             | ScrollToTop
             | ScrollToBottom
-            | Undo
-            | Redo
-            | Save
-            | SaveAs
             | Quit
             | ShowCommandPalette
             | ShowMarkdownCheatSheet
@@ -143,17 +204,151 @@ pub(super) fn search_safe_action(action: &Action) -> Option<Action> {
             | CreateCustomTheme
             | OpenConfigFolder
     );
-    if allowed {
-        Some(action.clone())
-    } else {
-        None
+    // The exhaustiveness check.  Every variant must appear here, so a
+    // new one cannot be added without an author deciding which group it
+    // joins — including "none of them", which is a real answer for the
+    // mode transitions and the config toggles.
+    match action {
+        ScrollUp | ScrollDown | ScrollPageUp | ScrollPageDown | ScrollToTop | ScrollToBottom
+        | Quit | ShowCommandPalette | ShowMarkdownCheatSheet | ShowAbout | CheckForUpdates
+        | OpenSettings | OpenWelcome | OpenKeybinds | SwitchTheme | CreateCustomTheme
+        | OpenConfigFolder | MoveLeft | MoveRight | MoveUp | MoveDown | MoveWordLeft
+        | MoveWordRight | MoveLineStart | MoveLineEnd | MoveDocStart | MoveDocEnd | SelectLeft
+        | SelectRight | SelectUp | SelectDown | SelectAll | Copy | InsertChar(_) | InsertTab
+        | Newline | DeleteCharBack | DeleteCharForward | DeleteWordBack | DeleteWordForward
+        | DeleteLine | Cut | Paste | BoldSelection | ItalicizeSelection | InlineCodeSelection
+        | StrikethroughSelection | HighlightSelection | Undo | Redo | ToggleCheckbox
+        | TableNextCell | TablePrevCell | TableNextRow | TablePrevRow | TableMoveRowUp
+        | TableMoveRowDown | TableMoveColumnLeft | TableMoveColumnRight | TableInsertRowAbove
+        | TableInsertRowBelow | TableInsertColumnLeft | TableInsertColumnRight | TableDeleteRow
+        | TableDeleteColumn | TableInsertBreak | InsertTable | InsertImage | InsertLink
+        | InsertFootnote | DeleteFootnote | RenumberFootnotes | FixListNumbering | SearchReplace
+        | SearchReplaceAll | FollowLinkUnderCursor | NavigateBack | NavigateForward
+        | GoToSection | OpenDoc(_) | Open | Save | SaveAs | ExportHtml | OpenInExternalEditor
+        // Neither reads nor writes the document: the mode transitions
+        // and the persisted-setting flips.
+        | EnterEditMode | ExitToPreview | ToggleRawMode | ToggleTableButtons | ToggleBigH1
+        | ToggleLineNumbers | ToggleBlinkCursor | ToggleAutosave | ToggleVisualLineNav
+        | ToggleVimMode | ToggleLimitWidth | ToggleDiffOnChange
+        // The two bespoke command vocabularies.  Each gate names its
+        // own set explicitly, because "is a diff command" is a fact
+        // about one context rather than a capability.
+        | OpenSearch | SearchNext | SearchPrev | SearchExit | DiffNext | DiffPrev
+        | DiffAcceptHunk | DiffRejectHunk | DiffAcceptAll | DiffRejectAll | DiffResetHunk
+        | DiffExit => {}
     }
+    ActionCaps {
+        mutates_buffer,
+        navigates_away,
+        needs_path,
+        read_only_nav,
+        always_safe,
+    }
+}
+
+/// Default-deny gate over [`Action`]s in diff mode.  Returns
+/// `Some(action)` when the action is allowed in Review sub-mode (the
+/// only sub-mode today); `None` for everything else.  When an in-diff
+/// Edit mode lands, this can grow a `(action, sub_mode)` signature so
+/// Edit-only and Review-only actions refine the gate.
+///
+/// The narrowest of the three gates: the review has no text-editing UI
+/// wired up at all, so nothing beyond the always-safe set and diff's
+/// own vocabulary is allowed — not even cursor motion, which in diff
+/// mode would move a cursor the stacked view does not draw.
+pub(super) fn diff_safe_action(action: &Action) -> Option<Action> {
+    use Action::*;
+    let allowed = action_caps(action).always_safe
+        || matches!(
+            action,
+            DiffNext
+                | DiffPrev
+                | DiffAcceptHunk
+                | DiffRejectHunk
+                | DiffAcceptAll
+                | DiffRejectAll
+                | DiffResetHunk
+                | DiffExit
+        );
+    allowed.then(|| action.clone())
+}
+
+/// Default-deny gate over [`Action`]s while a *capturing* search flow
+/// (a replace flow) is active.  Navigate-only flows don't capture, so
+/// they never reach this gate.
+///
+/// The rule: the flow's own commands, read-only navigation (the user
+/// can move, select and copy while the flow holds the `Tab`/`r`/`a`
+/// keys), and the always-safe set.  Everything that mutates the buffer
+/// stays unavailable for the duration, mirroring diff mode — and so
+/// does everything that navigates away, because leaving the document
+/// mid-replace abandons a task in progress.
+pub(super) fn search_safe_action(action: &Action) -> Option<Action> {
+    use Action::*;
+    let caps = action_caps(action);
+    let allowed = caps.always_safe
+        || caps.read_only_nav
+        || matches!(
+            action,
+            OpenSearch
+                | SearchNext
+                | SearchPrev
+                | SearchReplace
+                | SearchReplaceAll
+                | SearchExit
+                // Undo / redo mutate, and are allowed anyway: they are
+                // how the user takes back a replace they just made,
+                // which is part of the flow rather than an escape from
+                // it.
+                | Undo
+                | Redo
+                // Saving mid-flow is the ordinary "commit what I have
+                // so far" reflex, and writes the document the flow is
+                // already editing — no detour, since the flow can only
+                // run on a document that is open.
+                | Save
+                | SaveAs
+        );
+    allowed.then(|| action.clone())
+}
+
+/// Default-deny gate over [`Action`]s while the live document is
+/// read-only (today: a page of the embedded manual, `crate::docs`).
+///
+/// **Five denials, expressed as a rule rather than a list.**  A
+/// read-only document refuses exactly what writes its text
+/// (`mutates_buffer`) and what writes it out or needs it to have a path
+/// (`needs_path`) — which resolves to `InsertTable`, `Save`, `SaveAs`,
+/// `ExportHtml` and `OpenInExternalEditor` plus the editing actions a
+/// reader has no way to reach anyway.  Everything else is allowed,
+/// `navigates_away` emphatically included: cross-linking and jumping to
+/// a section is the entire point of a manual.
+///
+/// This gate is a *courtesy*, not the guarantee.  The guarantee is made
+/// two layers down, where it cannot be forgotten: `enter_edit_if_preview`
+/// refuses the transition out of `Mode::Preview` (all twenty-six call
+/// sites at once) and `EditorState::apply_delta` refuses the write.
+/// This exists so a palette pick of `Save` doesn't open a Save-as
+/// prompt for a document nobody can own, and so the refusal can be
+/// silent rather than half-performed.
+pub(super) fn readonly_safe_action(action: &Action) -> bool {
+    let caps = action_caps(action);
+    !caps.mutates_buffer && !caps.needs_path
 }
 
 /// True when the editor's cursor sits inside a table block.  Mirrors
 /// the check used by `edit_ops::cursor_in_table`; re-implemented here
 /// to keep the App free of a cross-module private dep.
 pub(super) fn cursor_in_table(state: &EditorState) -> bool {
+    // A read-only document has no column to reorder — every table
+    // command is denied by `readonly_safe_action` — so `Alt+Left` /
+    // `Alt+Right` must stay the Back / Forward chord the hint row
+    // advertises, even when a `GoToSection` jump has parked the cursor
+    // inside one of `keybindings.md`'s many tables.  Without this the
+    // reader gets a dead chord for the one navigation they use most.
+    if state.readonly {
+        return false;
+    }
     let cursor_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
     let source = state.buffer.contents();
     crate::editor::table_edit::find_table_at(&source, cursor_byte).is_some()
@@ -231,11 +426,32 @@ impl App {
         !self.modal_stack.is_empty()
     }
 
+    /// Resolve an [`Action`] whose meaning depends on where the cursor
+    /// is, so every gate downstream judges what will actually run.
+    ///
+    /// One case today: the default `Alt+Left` / `Alt+Right` bindings
+    /// land on `TableMoveColumnLeft` / `TableMoveColumnRight`, which
+    /// mean "reorder a column" inside a table and "navigate back /
+    /// forward" outside one.  `cursor_in_table` answers `false` for a
+    /// read-only document, so there the redirect always fires — which
+    /// is what the hint row's `⌥←→ Back/fwd` chord promises.
+    ///
+    /// Deliberately ahead of the gates rather than inside
+    /// `handle_app_action`: a gate that judges the pre-redirect action
+    /// denies a navigation because of what a *different* action would
+    /// have done.
+    fn normalize_context_action(&self, action: Action) -> Action {
+        match action {
+            Action::TableMoveColumnLeft if !cursor_in_table(&self.editor) => Action::NavigateBack,
+            Action::TableMoveColumnRight if !cursor_in_table(&self.editor) => {
+                Action::NavigateForward
+            }
+            other => other,
+        }
+    }
+
     /// Intercept App-level actions (`FollowLinkUnderCursor`,
     /// `NavigateBack`, `NavigateForward`) before they hit `edit_ops::apply`.
-    /// `TableMoveColumnLeft` / `TableMoveColumnRight` outside a table
-    /// also short-circuit to navigation so the default Alt+Arrow
-    /// keybinding feels natural even without an override.
     ///
     /// Returns `true` when the action was fully handled here; `false`
     /// means the caller should fall through to `edit_ops::apply`.
@@ -268,16 +484,6 @@ impl App {
                 self.navigate_forward(doc_height, doc_width);
                 true
             }
-            // Default Alt+Arrow bindings land on the table actions; when
-            // the cursor is outside any table, redirect them to nav.
-            Action::TableMoveColumnLeft if !cursor_in_table(&self.editor) => {
-                self.navigate_back(doc_height, doc_width);
-                true
-            }
-            Action::TableMoveColumnRight if !cursor_in_table(&self.editor) => {
-                self.navigate_forward(doc_height, doc_width);
-                true
-            }
             // Palette + configuration overlays.
             Action::ShowCommandPalette => {
                 self.open_command_palette();
@@ -293,6 +499,16 @@ impl App {
             }
             Action::ShowMarkdownCheatSheet => {
                 self.open_markdown_cheat_sheet();
+                true
+            }
+            Action::OpenDoc(id) => {
+                // Opening a page replaces the document, so an unsaved
+                // buffer gets the same guard a cross-file link gets.
+                if self.editor.dirty {
+                    self.open_dirty_guard(crate::app::nav::NavPending::Doc(*id), None);
+                } else {
+                    self.open_doc_page(*id, None, doc_height, doc_width);
+                }
                 true
             }
             Action::OpenSettings => {
@@ -743,6 +959,35 @@ impl App {
     /// guard, `edit_ops::apply`, scroll tracking, post-action flashes,
     /// and pending link-follow draining are sequenced.
     pub fn dispatch_action(&mut self, action: Action, doc_height: usize, doc_width: usize) {
+        // Resolve the context-dependent meaning of an action *before*
+        // any gate judges it, so each gate judges the action that will
+        // actually run.
+        //
+        // This is what makes `Alt+Left` work in a read-only document.
+        // The redirect used to live inside `handle_app_action`, behind
+        // the gates — so the read-only gate saw the pre-redirect
+        // `TableMoveColumnLeft`, denied it as a buffer mutation, and
+        // the reader got a dead chord for the one navigation the hint
+        // row tells them is Back.
+        let action = self.normalize_context_action(action);
+        // A read-only document refuses the five actions that would
+        // write it or write it out.  Outermost on purpose:
+        // `search_safe_action` allows `SearchReplace` /
+        // `SearchReplaceAll`, so a replace flow started while reading
+        // would otherwise rewrite the in-memory page through an
+        // allowlist that never heard of it.  The gates compose by
+        // narrowing.
+        //
+        // Silent, and keyed on `editor.readonly` rather than on
+        // `open_doc`: nothing here depends on the document being the
+        // manual, which is what leaves the door open for a `--readonly`
+        // flag or a file opened without write permission.  The refusal
+        // says nothing because in reading mode there is nothing left to
+        // refuse out loud — the hint row advertises none of these, and
+        // `Mode::Preview` draws no editing surface to be confused by.
+        if self.editor.readonly && !readonly_safe_action(&action) {
+            return;
+        }
         // Search flow owns its own dispatch — gated *before*
         // `handle_app_action` (unlike diff) so app-level actions that
         // mutate the buffer or navigate away (insert table, footnotes,
@@ -1721,6 +1966,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use super::{action_caps, readonly_safe_action, search_safe_action};
 
     // ── The diff-mode gate sits ahead of `handle_app_action` ───────
 
@@ -1783,8 +2029,9 @@ mod tests {
         KeyModifiers as CtKeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
 
-    use super::{edit_ops, linewise_paste_payload, modal_wheel_delta};
-    use crate::app::test_utils::make_app;
+    use super::{diff_safe_action, edit_ops, linewise_paste_payload, modal_wheel_delta};
+    use crate::app::test_utils::{app_with_buffer, make_app};
+    use crate::config::Action;
     use crate::document::Buffer;
 
     #[test]
@@ -2399,5 +2646,131 @@ mod tests {
         assert_eq!(modal_wheel_delta(&scroll_up, 0), -1);
         // Non-wheel events return 0 so callers can blindly forward.
         assert_eq!(modal_wheel_delta(&click, 1), 0);
+    }
+
+    /// Every `Action` variant, for the gate sweeps below.
+    ///
+    /// `EVERY_UNIT_ACTION` is derived from the `action_variants!` list
+    /// that drives `Display` / `FromStr`, so it cannot fall behind the
+    /// enum; the two payload-bearing variants are appended by hand
+    /// because they need a value.
+    fn every_action() -> Vec<Action> {
+        let mut all = crate::config::keymap::EVERY_UNIT_ACTION.to_vec();
+        all.push(Action::InsertChar('a'));
+        all.push(Action::OpenDoc(crate::docs::DocId::Index));
+        all
+    }
+
+    /// The seventeen that were triplicated across the three old
+    /// allowlists, pinned as one set.
+    #[test]
+    fn always_safe_is_exactly_the_scroll_openers_and_quit() {
+        use Action::*;
+        let expected = [
+            ScrollUp,
+            ScrollDown,
+            ScrollPageUp,
+            ScrollPageDown,
+            ScrollToTop,
+            ScrollToBottom,
+            Quit,
+            ShowCommandPalette,
+            ShowMarkdownCheatSheet,
+            ShowAbout,
+            CheckForUpdates,
+            OpenSettings,
+            OpenWelcome,
+            OpenKeybinds,
+            SwitchTheme,
+            CreateCustomTheme,
+            OpenConfigFolder,
+        ];
+        for action in &expected {
+            assert!(action_caps(action).always_safe, "{action} should be safe");
+            // The always-safe set is what every gate shares, so it must
+            // clear all three.
+            assert!(diff_safe_action(action).is_some(), "{action} in diff");
+            assert!(search_safe_action(action).is_some(), "{action} in search");
+            assert!(readonly_safe_action(action), "{action} while read-only");
+        }
+    }
+
+    /// A capability tag is about what the action *does*, so the three
+    /// flags that gate policy must not overlap in ways that make a
+    /// rule ambiguous.
+    #[test]
+    fn read_only_navigation_never_mutates_or_needs_a_path() {
+        for action in every_action() {
+            let caps = action_caps(&action);
+            if caps.read_only_nav {
+                assert!(!caps.mutates_buffer, "{action} both reads and writes");
+                assert!(!caps.needs_path, "{action} both reads and needs a path");
+            }
+            if caps.always_safe {
+                assert!(!caps.mutates_buffer, "{action} is safe yet writes");
+                assert!(!caps.needs_path, "{action} is safe yet needs a path");
+            }
+        }
+    }
+
+    /// Diff review is the narrowest gate: its own vocabulary plus the
+    /// always-safe set, and nothing else — not even cursor motion,
+    /// which would move a cursor the stacked view does not draw.
+    #[test]
+    fn diff_allows_only_its_own_commands_and_the_always_safe_set() {
+        for action in every_action() {
+            let allowed = diff_safe_action(&action).is_some();
+            let expected = action_caps(&action).always_safe
+                || matches!(
+                    action,
+                    Action::DiffNext
+                        | Action::DiffPrev
+                        | Action::DiffAcceptHunk
+                        | Action::DiffRejectHunk
+                        | Action::DiffAcceptAll
+                        | Action::DiffRejectAll
+                        | Action::DiffResetHunk
+                        | Action::DiffExit
+                );
+            assert_eq!(allowed, expected, "{action}");
+        }
+    }
+
+    /// Nothing that writes the buffer may run in a capturing replace
+    /// flow except the flow's own replace commands and the undo/redo
+    /// that takes one back.
+    #[test]
+    fn a_capturing_search_flow_admits_no_other_buffer_mutation() {
+        for action in every_action() {
+            if !action_caps(&action).mutates_buffer {
+                continue;
+            }
+            let allowed = search_safe_action(&action).is_some();
+            let expected = matches!(
+                action,
+                Action::SearchReplace | Action::SearchReplaceAll | Action::Undo | Action::Redo
+            );
+            assert_eq!(allowed, expected, "{action}");
+        }
+    }
+
+    /// The read-only rule, stated as the property it is meant to have
+    /// rather than as the five names it happens to resolve to today.
+    #[test]
+    fn a_read_only_document_denies_every_write_and_allows_every_navigation() {
+        for action in every_action() {
+            let caps = action_caps(&action);
+            let allowed = readonly_safe_action(&action);
+            if caps.mutates_buffer || caps.needs_path {
+                assert!(!allowed, "{action} must be denied while read-only");
+            } else {
+                assert!(allowed, "{action} must be allowed while read-only");
+            }
+            // Cross-linking and section jumping are the whole point of
+            // a manual, so `navigates_away` is never a reason to deny.
+            if caps.navigates_away {
+                assert!(allowed, "{action} navigates and must stay available");
+            }
+        }
     }
 }

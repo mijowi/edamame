@@ -223,6 +223,24 @@ pub fn value_unfocused_style(theme: &Theme) -> Style {
     Style::default().fg(theme.palette.secondary)
 }
 
+/// Style for an inline hyperlink in a modal body — see
+/// [`crate::ui::modal_links`].
+///
+/// Resting is the theme's own `link_text`, so a modal link reads as
+/// the same thing a link in the document reads as; focused takes the
+/// shared [`focused_style`] fill, which is what makes a link and a
+/// footer button announce focus in one language as the user Tabs
+/// between them.  Modal authors must call this rather than reaching
+/// for `theme.link_text` directly, or the focused half drifts per
+/// modal — the same rule every other control here follows.
+pub(crate) fn link_style(focused: bool, theme: &Theme) -> Style {
+    if focused {
+        focused_style(theme)
+    } else {
+        theme.link_text
+    }
+}
+
 /// Style for a disabled (cascade- or capability-locked) control:
 /// `text_muted` foreground, no fill, dimmed.
 pub fn disabled_style(theme: &Theme) -> Style {

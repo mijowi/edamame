@@ -33,6 +33,8 @@ use ratatui::text::Line;
 use ratatui::Frame;
 
 use super::types::{ModalKind, ModalRenderCtx};
+use crate::ui::modal::LinkableResponse;
+use crate::ui::modal_links::ModalLink;
 use crate::ui::{ModalButton, ModalResponse, ModalState, ModalView};
 
 /// Columns a chrome-backed body can use at most, given the whole
@@ -111,9 +113,33 @@ impl ModalChrome {
         body: &[Line<'_>],
         buttons: &[ModalButton],
     ) {
+        self.render_with_links(frame, area, ctx, title, body, buttons, &[]);
+    }
+
+    /// [`Self::render`] for a modal carrying inline body links.
+    ///
+    /// `links` is rebuilt each frame alongside `body` — the modal reads
+    /// [`Self::focused_link`] to decide which one draws focused, the
+    /// same way it already reads `state.focused` for buttons.  Passing
+    /// an empty slice is exactly `render`, which is how that method is
+    /// implemented.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_with_links(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        ctx: &ModalRenderCtx<'_>,
+        title: &str,
+        body: &[Line<'_>],
+        buttons: &[ModalButton],
+        links: &[ModalLink],
+    ) {
         let mut view = ModalView::new(title, body, buttons, ctx.theme, self.kind, self.dismissable);
         if let Some(w) = self.max_content_w {
             view = view.with_max_content_width(w);
+        }
+        if !links.is_empty() {
+            view = view.with_links(links);
         }
         frame.render_stateful_widget(view, area, &mut self.state);
     }
@@ -125,6 +151,32 @@ impl ModalChrome {
     /// `Continue`.
     pub fn on_key(&mut self, key: &KeyEvent, num_buttons: usize) -> ModalResponse {
         self.state.handle_key(key, num_buttons, self.dismissable)
+    }
+
+    /// [`Self::on_key`] for a link-bearing modal: Tab walks one ring
+    /// over links then buttons, and Enter on a link reports
+    /// [`LinkableResponse::Link`].
+    pub(crate) fn on_key_linkable(
+        &mut self,
+        key: &KeyEvent,
+        num_links: usize,
+        num_buttons: usize,
+    ) -> LinkableResponse {
+        self.state
+            .handle_key_linkable(key, num_links, num_buttons, self.dismissable)
+    }
+
+    /// [`Self::on_click`] for a link-bearing modal.  A click inside a
+    /// link's rect reports [`LinkableResponse::Link`]; everything else
+    /// resolves exactly as before.
+    pub(crate) fn on_click_linkable(&self, col: u16, row: u16) -> LinkableResponse {
+        self.state.handle_click_linkable(col, row, self.dismissable)
+    }
+
+    /// Which body link currently holds focus, for the render pass to
+    /// style via [`crate::ui::controls::link_style`].
+    pub(crate) fn focused_link(&self) -> Option<usize> {
+        self.state.focused_link
     }
 
     /// Translate a left-click into a [`ModalResponse`] — a footer

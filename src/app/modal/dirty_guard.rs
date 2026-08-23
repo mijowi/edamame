@@ -5,7 +5,6 @@
 //! resume it once the user picks a button.
 
 use std::any::Any;
-use std::path::PathBuf;
 
 use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
@@ -14,6 +13,7 @@ use ratatui::Frame;
 
 use super::chrome::ModalChrome;
 use super::types::{Modal, ModalKind, ModalOutcome, ModalRenderCtx};
+use crate::app::nav::NavPending;
 use crate::app::App;
 use crate::ui::{ModalButton, ModalResponse};
 
@@ -24,7 +24,10 @@ pub struct DirtyGuardModal {
     /// The destination that was about to be followed when the guard
     /// fired.  Restored to the App via the close callback after Save
     /// or Discard.
-    pending: PathBuf,
+    ///
+    /// An `Option` purely so the close callback can take ownership of
+    /// it; a resolved guard is dropped immediately afterwards.
+    pending: Option<NavPending>,
     /// The deep link's `#fragment`, when the link carried one.  It
     /// rides along with `pending` so answering the guard resumes the
     /// *whole* link — dropping it here would land the reader at the top
@@ -33,11 +36,18 @@ pub struct DirtyGuardModal {
 }
 
 impl DirtyGuardModal {
-    pub fn new(current_display: &str, pending: PathBuf, fragment: Option<String>) -> Self {
+    pub(crate) fn new(
+        current_display: &str,
+        pending: NavPending,
+        fragment: Option<String>,
+    ) -> Self {
         let body = vec![
             Line::raw(format!("{current_display} has unsaved changes.")),
             Line::raw(""),
-            Line::raw(format!("Opening {} will abandon them.", pending.display())),
+            Line::raw(format!(
+                "Opening {} will abandon them.",
+                pending.display_name()
+            )),
             Line::raw(""),
             Line::raw("What would you like to do?"),
         ];
@@ -45,7 +55,7 @@ impl DirtyGuardModal {
             body,
             buttons: vec![ModalButton::new("Save"), ModalButton::new("Discard")],
             chrome: ModalChrome::new(ModalKind::Warning, true),
-            pending,
+            pending: Some(pending),
             fragment,
         }
     }
@@ -61,7 +71,7 @@ impl DirtyGuardModal {
     ///
     /// They are a correction for the document the modal was covering,
     /// and so are skipped on every branch where the navigation actually
-    /// happened: [`App::navigate_to_file_at`] owns the new document's
+    /// happened: [`App::navigate_to_pending`] owns the new document's
     /// viewport, and a deep link's fragment jump moves `scroll` without
     /// moving the cursor (a freshly loaded editor starts in
     /// `Mode::Preview`), so re-asserting visibility on top of it scrolls
@@ -74,7 +84,9 @@ impl DirtyGuardModal {
                 app.editor.ensure_cursor_visible(h, w);
             })),
             ModalResponse::ButtonPressed(idx) => {
-                let pending = std::mem::take(&mut self.pending);
+                let Some(pending) = self.pending.take() else {
+                    return ModalOutcome::Close;
+                };
                 let fragment = self.fragment.take();
                 match idx {
                     0 => ModalOutcome::CloseAnd(Box::new(move |app| {
@@ -82,7 +94,7 @@ impl DirtyGuardModal {
                         if app.editor.buffer.path().is_some() {
                             match app.save_buffer() {
                                 Ok(()) => {
-                                    if app.navigate_to_file_at(pending, fragment, h, w) {
+                                    if app.navigate_to_pending(pending, fragment, h, w) {
                                         return;
                                     }
                                 }
@@ -98,7 +110,7 @@ impl DirtyGuardModal {
                             // while the Save-as modal is open.
                             app.open_save_as_modal(Some(Box::new(move |app| {
                                 let (h, w) = (app.last_doc_height, app.last_doc_width);
-                                let _ = app.navigate_to_file_at(pending, fragment, h, w);
+                                let _ = app.navigate_to_pending(pending, fragment, h, w);
                             })));
                         }
                         app.editor.ensure_cursor_visible(h, w);
@@ -106,7 +118,7 @@ impl DirtyGuardModal {
                     _ => ModalOutcome::CloseAnd(Box::new(move |app| {
                         app.editor.dirty = false;
                         let (h, w) = (app.last_doc_height, app.last_doc_width);
-                        if !app.navigate_to_file_at(pending, fragment, h, w) {
+                        if !app.navigate_to_pending(pending, fragment, h, w) {
                             app.editor.ensure_cursor_visible(h, w);
                         }
                     })),

@@ -32,8 +32,12 @@ impl Buffer {
     }
 
     /// Create a buffer pre-filled with `text` and no associated file.
-    /// Used by integration tests in `tests/`.
-    #[allow(dead_code, clippy::should_implement_trait)]
+    ///
+    /// The pathless entry point: used by `App::load_doc_into_editor`
+    /// for a page of the embedded manual, whose text lives in the
+    /// binary rather than on disk, and by integration tests in
+    /// `tests/`.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(text: &str) -> Self {
         Self {
             rope: Rope::from_str(text),

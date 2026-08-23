@@ -72,7 +72,9 @@ pub fn apply(
 
         // ── Mode transitions ──────────────────────────────────────
         Action::EnterEditMode => {
-            if state.mode == Mode::Preview {
+            // A read-only document rests in Preview: leaving it is what
+            // the whole reading mode is defined by refusing.
+            if state.mode == Mode::Preview && !state.readonly {
                 sync_cursor_to_scroll(state, viewport_height);
                 state.mode = Mode::Rendered;
                 state.visual_selection = None;
@@ -84,6 +86,13 @@ pub fn apply(
             state.visual_selection = None;
         }
         Action::ToggleRawMode => {
+            // Same reason `EnterEditMode` is refused: Rendered and Raw
+            // both draw a cursor and reveal raw source under it, which
+            // is the editing presentation a read-only document never
+            // enters.
+            if state.readonly {
+                return false;
+            }
             if state.mode == Mode::Preview {
                 sync_cursor_to_scroll(state, viewport_height);
             }
@@ -753,7 +762,21 @@ pub fn apply(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// The single door out of Preview and into an editing mode — twenty-six
+/// call sites, one function, `Action::Paste` among them.
+///
+/// **The `readonly` guard is the mode-level backstop**, the twin of
+/// [`EditorState::apply_delta`]'s text-level one: a read-only document
+/// rests in [`Mode::Preview`], which is already the codebase's
+/// browse-only presentation (no cursor drawn, no raw reveal, no
+/// checkbox or table controls in `mouse_ops::apply_preview_action`).
+/// Refusing the transition here makes all twenty-six no-ops at once, so
+/// the guarantee is *made* rather than maintained by an audit of every
+/// mutating path.
 fn enter_edit_if_preview(state: &mut EditorState, viewport_height: usize) {
+    if state.readonly {
+        return;
+    }
     if state.mode == Mode::Preview {
         sync_cursor_to_scroll(state, viewport_height);
         state.mode = Mode::Rendered;

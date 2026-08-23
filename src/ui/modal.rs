@@ -32,6 +32,7 @@ use ratatui::{
 
 use crate::config::Theme;
 use crate::ui::button_row::{button_rows_height, buttons_row_width, render_buttons, Button};
+use crate::ui::modal_links::{link_rects, wrap_rows, ModalLink, WrappedRow};
 use crate::ui::scroll_container::{
     centered_rect_for_content, compute_pad_h, draw_frame, wrapped_rows, ContentSize, FrameOpts,
     ModalKind, ScrollContainerState, MAX_PAD_H, VERTICAL_CHROME_ROWS,
@@ -58,6 +59,25 @@ pub enum ModalResponse {
     ButtonPressed(usize),
     /// The user dismissed with Escape without activating a specific button.
     Cancelled,
+}
+
+/// A [`ModalResponse`] widened with the one outcome a link-bearing
+/// modal can produce that a button-only one cannot.
+///
+/// Deliberately a *parallel* type rather than a new `ModalResponse`
+/// variant: every `resolve()` in `app::modal` matches `ModalResponse`
+/// exhaustively without a wildcard, so a fourth variant would be a
+/// compile error in twenty-two files that will never carry a link.
+/// Wrapping instead keeps `ModalResponse` — and all of them —
+/// untouched, and the modals that do opt in unwrap `Modal(..)` back
+/// into their existing `resolve`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LinkableResponse {
+    /// Everything a button-only modal could already produce.
+    Modal(ModalResponse),
+    /// The user activated the body link at this index into the
+    /// modal's own `[ModalLink]` slice.
+    Link(usize),
 }
 
 /// A single modal button (label only; actions live on the caller side).
@@ -93,6 +113,18 @@ pub struct ModalState {
     /// hit-test a mouse click without re-deriving the centred layout.
     /// Empty when the modal has no buttons.
     pub button_rects: Vec<Rect>,
+    /// `Some(i)` when body link `i` holds focus instead of a button.
+    /// `focused` keeps its meaning throughout — it is always the
+    /// focused *button* index — so every existing modal reads it
+    /// exactly as before and only link-bearing modals consult this.
+    pub(crate) focused_link: Option<usize>,
+    /// `(link index, rect)` for every link row visible after scrolling,
+    /// refreshed each render.  One entry per *row* a link occupies, so
+    /// a link wrapped across two rows appears twice — the same model
+    /// [`crate::ui::link_view`] uses in the editor.  Always empty for a
+    /// modal that declares no links, which is what lets the button-only
+    /// hit-test path below stay literally unchanged.
+    pub(crate) link_rects: Vec<(usize, Rect)>,
 }
 
 impl ModalState {
@@ -116,6 +148,33 @@ impl ModalState {
         self.button_rects
             .iter()
             .position(|r| rect_contains(*r, col, row))
+    }
+
+    /// Index of the body link whose last-rendered rect contains
+    /// `(col, row)`, or `None`.  Only rects for rows inside the
+    /// scrolled window are recorded, so a link scrolled out of view
+    /// cannot be hit.
+    pub(crate) fn link_at(&self, col: u16, row: u16) -> Option<usize> {
+        self.link_rects
+            .iter()
+            .find(|(_, r)| rect_contains(*r, col, row))
+            .map(|(i, _)| *i)
+    }
+
+    /// [`Self::handle_click`] widened with body links, which take
+    /// priority over the footer: a link is *inside* the body, so no
+    /// button or `esc` rect can overlap it, and checking it first keeps
+    /// the ordering obvious rather than incidental.
+    pub(crate) fn handle_click_linkable(
+        &self,
+        col: u16,
+        row: u16,
+        dismissable: bool,
+    ) -> LinkableResponse {
+        match self.link_at(col, row) {
+            Some(i) => LinkableResponse::Link(i),
+            None => LinkableResponse::Modal(self.handle_click(col, row, dismissable)),
+        }
     }
 
     /// Translate a left-click at `(col, row)` into the same
@@ -152,6 +211,33 @@ impl ModalState {
         num_buttons: usize,
         dismissable: bool,
     ) -> ModalResponse {
+        match self.handle_key_linkable(key, 0, num_buttons, dismissable) {
+            LinkableResponse::Modal(r) => r,
+            // Unreachable with `num_links == 0`: the ring has no link
+            // positions to focus and `link_at` finds nothing, so
+            // `Link` is never constructed.
+            LinkableResponse::Link(_) => ModalResponse::Continue,
+        }
+    }
+
+    /// The real key handler, shared by [`Self::handle_key`] and the
+    /// link-aware path.
+    ///
+    /// Tab / Left / Right walk **one ring over links then buttons**, so
+    /// a body link is reachable without a mouse — which matters here
+    /// because mouse support is capability-gated and simply absent in
+    /// some terminals.  Enter activates whichever the ring is parked
+    /// on.  With `num_links == 0` every branch below collapses to the
+    /// button-only behavior this method replaced, which is why the
+    /// twenty-odd modals that never declare a link need no changes and
+    /// their existing tests still pin the same behavior.
+    pub(crate) fn handle_key_linkable(
+        &mut self,
+        key: &crossterm::event::KeyEvent,
+        num_links: usize,
+        num_buttons: usize,
+        dismissable: bool,
+    ) -> LinkableResponse {
         use crossterm::event::{KeyCode, KeyModifiers};
         // Up/Down/PgUp/PgDn/Home/End drive scroll, not button focus.
         // They're returned as `Continue` because a scroll doesn't dismiss
@@ -159,23 +245,47 @@ impl ModalState {
         // for button-less modals so a future text-only modal can still
         // page through its body.
         if self.scroll_state.handle_scroll_key(key) {
-            return ModalResponse::Continue;
+            return LinkableResponse::Modal(ModalResponse::Continue);
         }
         let has_buttons = num_buttons > 0;
+        let ring_len = num_links + num_buttons;
+        // Ring positions `0..num_links` are links; the rest are
+        // buttons, offset by `num_links`.
+        //
+        // `None` means the ring holds no focus *at all*, which is the
+        // resting state of a modal with links and no buttons — the
+        // config-warning modal's exact shape.  There is no button to
+        // rest on there, so seeding the position as if there were one
+        // put focus on a phantom button: Enter reported
+        // `ButtonPressed(0)` against an empty button list, and with two
+        // or more links the first Tab landed on link 1.
+        let pos: Option<usize> = match self.focused_link {
+            Some(i) => Some(i),
+            None => has_buttons.then_some(num_links + self.focused),
+        };
         let response = match key.code {
-            KeyCode::Left | KeyCode::BackTab if has_buttons => {
-                if self.focused == 0 {
-                    self.focused = num_buttons - 1;
-                } else {
-                    self.focused -= 1;
+            KeyCode::Left | KeyCode::BackTab if ring_len > 0 => {
+                // Unfocused, stepping backwards enters at the far end.
+                let next = pos.map_or(ring_len - 1, |p| (p + ring_len - 1) % ring_len);
+                self.set_ring_pos(next, num_links);
+                ModalResponse::Continue
+            }
+            KeyCode::Right | KeyCode::Tab if ring_len > 0 => {
+                let next = pos.map_or(0, |p| (p + 1) % ring_len);
+                self.set_ring_pos(next, num_links);
+                ModalResponse::Continue
+            }
+            // A focused link swallows Enter; otherwise it presses the
+            // focused button, and with no buttons there is nothing to
+            // press — the pre-link behavior for a button-less modal,
+            // where only Esc resolves it.
+            KeyCode::Enter | KeyCode::Char(' ') if ring_len > 0 => {
+                if let Some(i) = self.focused_link {
+                    return LinkableResponse::Link(i);
                 }
-                ModalResponse::Continue
-            }
-            KeyCode::Right | KeyCode::Tab if has_buttons => {
-                self.focused = (self.focused + 1) % num_buttons;
-                ModalResponse::Continue
-            }
-            KeyCode::Enter | KeyCode::Char(' ') if has_buttons => {
+                if !has_buttons {
+                    return LinkableResponse::Modal(ModalResponse::Continue);
+                }
                 ModalResponse::ButtonPressed(self.focused)
             }
             KeyCode::Esc if dismissable => ModalResponse::Cancelled,
@@ -187,8 +297,14 @@ impl ModalState {
             {
                 ModalResponse::Cancelled
             }
+            // `y` stays a shortcut for the focused *button* only.  With
+            // a link focused it would otherwise fire whatever button the
+            // ring last sat on, which is a different action than the one
+            // the user is looking at.
             KeyCode::Char('y') | KeyCode::Char('Y')
-                if has_buttons && key.modifiers == KeyModifiers::NONE =>
+                if has_buttons
+                    && self.focused_link.is_none()
+                    && key.modifiers == KeyModifiers::NONE =>
             {
                 ModalResponse::ButtonPressed(self.focused)
             }
@@ -197,7 +313,22 @@ impl ModalState {
         if !matches!(response, ModalResponse::Continue) {
             self.response = Some(response.clone());
         }
-        response
+        LinkableResponse::Modal(response)
+    }
+
+    /// Park the focus ring on `pos`, splitting it back into the
+    /// `focused_link` / `focused` pair the render path reads.
+    ///
+    /// `focused` is left alone while a link holds focus so Tabbing
+    /// through the links and back onto the buttons returns to the
+    /// button the user started from, rather than resetting to zero.
+    fn set_ring_pos(&mut self, pos: usize, num_links: usize) {
+        if pos < num_links {
+            self.focused_link = Some(pos);
+        } else {
+            self.focused_link = None;
+            self.focused = pos - num_links;
+        }
     }
 }
 
@@ -234,6 +365,13 @@ pub struct ModalView<'a> {
     /// Never narrows the modal below its button row — see the clamp in
     /// `render`.
     pub max_content_w: Option<u16>,
+    /// Inline hyperlinks in `body`, declared by coordinate — see
+    /// [`crate::ui::modal_links`].  Empty by default, and empty is the
+    /// path every pre-existing modal takes: it renders through
+    /// `Paragraph`'s own `Wrap` exactly as before.  A non-empty slice
+    /// switches `render` onto the pre-wrapped path, which is the only
+    /// way to know where a span landed.
+    pub(crate) links: &'a [ModalLink],
 }
 
 impl<'a> ModalView<'a> {
@@ -259,6 +397,7 @@ impl<'a> ModalView<'a> {
             dismissable,
             max_pad_h: MAX_PAD_H,
             max_content_w: None,
+            links: &[],
         }
     }
 
@@ -275,6 +414,18 @@ impl<'a> ModalView<'a> {
     /// Chainable: `ModalView::new(...).with_max_content_width(PROSE_CONTENT_WIDTH)`.
     pub fn with_max_content_width(mut self, width: u16) -> Self {
         self.max_content_w = Some(width);
+        self
+    }
+
+    /// Declare inline body links.  Chainable:
+    /// `ModalView::new(...).with_links(&links)`.
+    ///
+    /// The slice must outlive the render call and its coordinates must
+    /// index `body`; a link naming a span that does not exist simply
+    /// never produces a rect, so a stale coordinate degrades to an
+    /// unclickable label rather than a panic.
+    pub(crate) fn with_links(mut self, links: &'a [ModalLink]) -> Self {
+        self.links = links;
         self
     }
 }
@@ -360,7 +511,19 @@ impl<'a> StatefulWidget for ModalView<'a> {
         let pad_h = compute_pad_h(modal_area.width, content_width, self.max_pad_h);
         let body_inner_w = modal_area.width.saturating_sub(2 * pad_h).max(1);
         let body_render_w = body_width.clamp(1, body_inner_w);
-        let total = wrapped_rows(self.body, body_render_w);
+        // A link-bearing body is wrapped here rather than by
+        // `Paragraph`, because a hit-test needs to know which row and
+        // column each span landed on and ratatui exposes no such
+        // mapping.  `wrap_rows` reproduces `Wrap { trim: false }` row
+        // for row (pinned by `wrap_matches_ratatui_paragraph_wrapping`),
+        // so the two paths agree on height and the scroll math below is
+        // shared unchanged.
+        let wrapped: Option<Vec<WrappedRow>> =
+            (!self.links.is_empty()).then(|| wrap_rows(self.body, body_render_w));
+        let total = match &wrapped {
+            Some(rows) => rows.len() as u16,
+            None => wrapped_rows(self.body, body_render_w),
+        };
         state.scroll_state.observe(total, text_body_height);
 
         let layout = draw_frame(
@@ -377,12 +540,27 @@ impl<'a> StatefulWidget for ModalView<'a> {
         state.esc_button_rect = layout.esc_hit_rect;
         let inner = layout.body;
         if inner.height == 0 || inner.width == 0 {
+            // Nothing is painted this frame, so nothing is clickable.
+            // Left alone, the rects from the last frame that *did* paint
+            // would keep answering `link_at`, and a click could follow a
+            // link that is not on screen.
+            state.link_rects.clear();
             return;
         }
 
-        let body_paragraph = Paragraph::new(self.body.to_vec())
-            .wrap(Wrap { trim: false })
-            .style(self.theme.modal_bg);
+        // Pre-wrapped rows are already cut to width, so no `Wrap` is
+        // set on their `Paragraph`.  That is deliberate: with no
+        // wrapping configured ratatui truncates instead, so any residual
+        // disagreement with `WordWrapper` would clip one trailing cell
+        // rather than reflow the row out from under the link rects
+        // computed beside it.
+        let body_paragraph = match &wrapped {
+            Some(rows) => Paragraph::new(rows.iter().map(|r| r.line.clone()).collect::<Vec<_>>())
+                .style(self.theme.modal_bg),
+            None => Paragraph::new(self.body.to_vec())
+                .wrap(Wrap { trim: false })
+                .style(self.theme.modal_bg),
+        };
 
         // Centre the body as a block whenever the modal is wider than
         // the body needs — which happens whenever the footer is the
@@ -399,6 +577,13 @@ impl<'a> StatefulWidget for ModalView<'a> {
         body_paragraph
             .scroll((state.scroll_state.scroll, 0))
             .render(body_area, buf);
+
+        // Recorded after `body_area` is final so the rects are absolute
+        // terminal coordinates, matching what a click carries.
+        state.link_rects = match &wrapped {
+            Some(rows) => link_rects(rows, self.links, body_area, state.scroll_state.scroll),
+            None => Vec::new(),
+        };
 
         // Scrollbar paints into the rightmost padding column when the
         // body overflows.  Click-and-drag on the modal gutter would
@@ -443,6 +628,62 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    // ── The focus ring on a modal with links and no buttons ───────
+
+    /// The config-warning modal's shape: one link, no footer buttons.
+    /// Nothing rests on a button there, so Enter must not report one.
+    #[test]
+    fn enter_presses_nothing_on_a_button_less_modal() {
+        let mut st = ModalState::default();
+        assert_eq!(
+            st.handle_key_linkable(&key(KeyCode::Enter), 1, 0, true),
+            LinkableResponse::Modal(ModalResponse::Continue),
+            "there is no button 0 to press"
+        );
+        // Tab onto the link, and Enter follows it.
+        st.handle_key_linkable(&key(KeyCode::Tab), 1, 0, true);
+        assert_eq!(
+            st.handle_key_linkable(&key(KeyCode::Enter), 1, 0, true),
+            LinkableResponse::Link(0)
+        );
+    }
+
+    /// With no button to start from, the ring has no resting position,
+    /// so the first Tab has to enter it at the first link rather than
+    /// stepping off a phantom one.
+    #[test]
+    fn the_first_tab_reaches_the_first_link_when_there_are_no_buttons() {
+        let mut st = ModalState::default();
+        st.handle_key_linkable(&key(KeyCode::Tab), 3, 0, true);
+        assert_eq!(st.focused_link, Some(0));
+        st.handle_key_linkable(&key(KeyCode::Tab), 3, 0, true);
+        assert_eq!(st.focused_link, Some(1));
+    }
+
+    /// And backwards enters at the far end, the way a ring should.
+    #[test]
+    fn the_first_back_tab_reaches_the_last_link_when_there_are_no_buttons() {
+        let mut st = ModalState::default();
+        st.handle_key_linkable(&key(KeyCode::BackTab), 3, 0, true);
+        assert_eq!(st.focused_link, Some(2));
+    }
+
+    /// A modal that has buttons still rests on button 0, so its ring is
+    /// unchanged: the first Tab steps off the button, not onto it.
+    #[test]
+    fn a_modal_with_buttons_still_rests_on_its_first_button() {
+        let mut st = ModalState::default();
+        assert_eq!(st.focused_link, None);
+        assert_eq!(
+            st.handle_key_linkable(&key(KeyCode::Enter), 1, 2, true),
+            LinkableResponse::Modal(ModalResponse::ButtonPressed(0))
+        );
+        st.handle_key_linkable(&key(KeyCode::Tab), 1, 2, true);
+        assert_eq!(st.focused, 1, "Tab walks to the second button first");
+        st.handle_key_linkable(&key(KeyCode::Tab), 1, 2, true);
+        assert_eq!(st.focused_link, Some(0), "then wraps onto the link");
     }
 
     fn state_with_scroll(scroll: u16, total: u16, visible: u16) -> ModalState {

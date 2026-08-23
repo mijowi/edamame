@@ -7,6 +7,7 @@
 //! file under `src/app/modal/`.
 
 pub mod chrome;
+pub(crate) mod docs_link;
 pub mod stack;
 pub mod types;
 

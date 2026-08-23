@@ -51,7 +51,36 @@ impl App {
     /// replace keys when non-empty).  Called from the modal's confirm
     /// path.  Zero matches never enters the flow — the user gets a
     /// flash and stays where they were.
+    ///
+    /// **A read-only document gets the find half only.**  The replace
+    /// field is dropped here rather than refused downstream, because
+    /// this is the one funnel every caller passes through (the modal's
+    /// confirm path, the vim `/` entry, the tests) — and because a
+    /// replace flow does two things a read-only page must not have.  It
+    /// is *capturing*, so it would hold `Tab` / `r` / `a` for commands
+    /// `readonly_safe_action` then denies, and it would take the
+    /// reading keys (`j` / `k` / `Space`) with them; and it transitions
+    /// Preview → Rendered below, which is the one transition the whole
+    /// reading mode is defined by refusing.  That assignment is a bare
+    /// `editor.mode = …`, so neither `enter_edit_if_preview` nor
+    /// `apply_delta` can backstop it — dropping the replacement is what
+    /// makes the branch unreachable rather than merely unproductive.
     pub(crate) fn enter_search_flow(&mut self, query: String, replace: Option<String>) {
+        let replace = if self.editor.readonly {
+            // Said out loud, unlike the silent `readonly_safe_action`
+            // denials: the user typed this replacement into a field the
+            // modal offered them, so a wordless find-only flow would
+            // read as the replacement having quietly failed.
+            if replace.is_some() {
+                self.flash(
+                    "This document is read-only — searching without replacing.".to_owned(),
+                    MessageKind::Info,
+                );
+            }
+            None
+        } else {
+            replace
+        };
         let state = match SearchState::new(query.clone(), replace) {
             Ok(state) => state,
             Err(e) => {

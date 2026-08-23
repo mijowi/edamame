@@ -16,6 +16,20 @@ pub(super) const ALL_ACTIONS: &[Action] = &[
     // where users go to discover config-file locations.  Surfacing
     // it twice was redundant and made the palette noisier.
     Action::ShowMarkdownCheatSheet,
+    // The manual, shipped inside the binary.  The index first, then one
+    // entry per page so fuzzy search finds a topic by name without
+    // having to go through the index.  Written out rather than derived
+    // from `docs::ALL_DOCS` because this is a `const` array; the two are
+    // held in step by
+    // `tests::the_palette_lists_every_embedded_page_exactly_once`.
+    Action::OpenDoc(crate::docs::DocId::Index),
+    Action::OpenDoc(crate::docs::DocId::GettingStarted),
+    Action::OpenDoc(crate::docs::DocId::Editing),
+    Action::OpenDoc(crate::docs::DocId::Keybindings),
+    Action::OpenDoc(crate::docs::DocId::Configuration),
+    Action::OpenDoc(crate::docs::DocId::Themes),
+    Action::OpenDoc(crate::docs::DocId::VimMode),
+    Action::OpenDoc(crate::docs::DocId::Security),
     Action::ShowAbout,
     Action::CheckForUpdates,
     Action::OpenSettings,
@@ -94,6 +108,7 @@ pub(super) const ALL_ACTIONS: &[Action] = &[
 pub(super) fn label_for(action: &Action) -> Option<&'static str> {
     Some(match action {
         Action::ShowMarkdownCheatSheet => "Show Markdown cheat sheet",
+        Action::OpenDoc(id) => id.palette_label(),
         Action::OpenSettings => "Open settings",
         Action::OpenWelcome => "Open welcome / terminal setup",
         Action::SwitchTheme => "Switch theme",
@@ -155,4 +170,55 @@ pub(super) fn label_for(action: &Action) -> Option<&'static str> {
         Action::TableDeleteColumn => "Table: Delete column",
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::docs::{DocId, ALL_DOCS};
+
+    #[test]
+    fn the_palette_lists_every_embedded_page_exactly_once() {
+        // `ALL_ACTIONS` is hand-written, so adding a page to
+        // `docs::ALL_DOCS` without adding its entry here would leave it
+        // reachable only by a link from another page — silently, with
+        // nothing failing to compile.  Pinned for the same reason
+        // `indexed_safe_themes_are_registered` pins the theme list
+        // against `BUILTIN_THEMES`.
+        let listed: Vec<DocId> = ALL_ACTIONS
+            .iter()
+            .filter_map(|a| match a {
+                Action::OpenDoc(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+
+        for page in ALL_DOCS {
+            let n = listed.iter().filter(|id| **id == page.id).count();
+            assert_eq!(n, 1, "{} appears {n} times in the palette", page.slug);
+        }
+        assert_eq!(
+            listed.iter().filter(|id| **id == DocId::Index).count(),
+            1,
+            "the index needs exactly one palette entry"
+        );
+        assert_eq!(
+            listed.len(),
+            ALL_DOCS.len() + 1,
+            "the palette lists a page that is not in ALL_DOCS"
+        );
+    }
+
+    #[test]
+    fn every_palette_documentation_entry_has_a_label() {
+        for action in ALL_ACTIONS
+            .iter()
+            .filter(|a| matches!(a, Action::OpenDoc(_)))
+        {
+            assert!(
+                label_for(action).is_some_and(|l| !l.is_empty()),
+                "{action} has no palette label"
+            );
+        }
+    }
 }

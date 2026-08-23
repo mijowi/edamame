@@ -6,6 +6,7 @@ mod autosave;
 mod cursor_style;
 mod diff_advance;
 pub mod difftool;
+mod docs;
 pub use difftool::{diff_label, is_markdown_pair, read_side};
 mod event_loop;
 mod external_editor;
@@ -125,6 +126,17 @@ pub struct App {
     /// every file in a `git difftool` loop, exactly when knowing which one
     /// is under review matters most.
     diff_label: Option<String>,
+    /// The manual page currently open, if the live buffer came out of
+    /// [`crate::docs`] rather than off disk.
+    ///
+    /// Mutually exclusive with `file_path` for the same reason
+    /// `diff_label` is: an embedded page is pathless, so nothing can
+    /// watch it or save over it, and the status bar would otherwise
+    /// read `[No file]` for a document that has a perfectly good name.
+    /// It is also the gate that lets `follow_link` resolve a relative
+    /// link against the embedded set instead of the working directory
+    /// — see `App::open_doc_page`.
+    open_doc: Option<crate::docs::DocId>,
     /// Set when the user ended a difftool session with `Quit` rather
     /// than `Esc`, so `main` can stop the whole walk once the terminal
     /// is back.
@@ -424,6 +436,17 @@ pub struct App {
     /// (counts, pending operators, the active sub-mode) and is read by
     /// the UI for the mode badge.
     vim: Option<VimState>,
+    /// The vim session parked while a read-only document is open.
+    ///
+    /// Reading mode rests in `Mode::Preview`, and vim-Normal and Preview
+    /// are alternative *resting* states that never coexist (see
+    /// [`leave_preview_under_vim`]) — so a read-only document suspends
+    /// vim rather than fighting it.  Parked rather than destroyed, so
+    /// the reader's session (registers, last search, sub-mode) survives
+    /// a trip into the manual and comes back with the next editable
+    /// buffer.  Moved in both directions by
+    /// [`App::sync_vim_suspension`], which is the only writer.
+    parked_vim: Option<VimState>,
 }
 
 /// Apply the App-level configuration that every freshly built
@@ -488,6 +511,14 @@ fn configure_new_editor(
 /// the status bar still read `NORMAL`.  One helper rather than a copy
 /// per site: the copies are how the per-document path was missed.
 fn leave_preview_under_vim(config: &Config, editor: &mut EditorState) {
+    // A read-only document is the one editor that *must* rest in
+    // Preview: vim is suspended for its duration (`App::sync_vim_suspension`),
+    // so "force Preview" and "suspend vim" are one decision, not two.
+    // Leaving it here would drop the reader into Rendered with a cursor
+    // and a raw reveal, and no vim session to justify either.
+    if editor.readonly {
+        return;
+    }
     if config.modal.handler == VIM_HANDLER && editor.mode == crate::editor::Mode::Preview {
         editor.mode = crate::editor::Mode::Rendered;
     }
@@ -825,6 +856,8 @@ impl App {
             capabilities,
             file_path,
             diff_label: None,
+            open_doc: None,
+            parked_vim: None,
             diff_stop_walk: false,
             editor,
             view_state,
@@ -906,6 +939,31 @@ impl App {
         } else {
             self.config.modal.handler = DEFAULT_HANDLER.into();
             self.vim = None;
+            // Nothing to come back to: a session the user turned off
+            // must not reappear when they leave the manual.
+            self.parked_vim = None;
+        }
+        // Enabling vim while a read-only document is open parks the
+        // fresh session straight away, so the toggle takes effect on
+        // the next editable buffer rather than being lost.
+        self.sync_vim_suspension();
+    }
+
+    /// Park or restore the vim session to match the live document's
+    /// read-only-ness.
+    ///
+    /// The single writer of [`App::parked_vim`], called by every path
+    /// that swaps the document (`load_doc_into_editor`,
+    /// `load_file_into_editor`) and by [`App::set_vim_enabled`].  It is
+    /// idempotent, so a path that calls it twice costs nothing and a
+    /// new document-swapping path only has to remember to call it once.
+    pub(super) fn sync_vim_suspension(&mut self) {
+        if self.editor.readonly {
+            if let Some(vim) = self.vim.take() {
+                self.parked_vim = Some(vim);
+            }
+        } else if self.vim.is_none() {
+            self.vim = self.parked_vim.take();
         }
     }
 
@@ -1038,6 +1096,9 @@ impl App {
         if let Some(label) = &self.diff_label {
             return label.clone();
         }
+        if let Some(id) = self.open_doc {
+            return format!("Docs: {}", id.title());
+        }
         match &self.file_path {
             Some(p) => p
                 .file_name()
@@ -1104,6 +1165,72 @@ mod vim_wiring_tests {
             Mode::Rendered,
             "a newly loaded document must not rest in Preview under vim"
         );
+    }
+
+    /// Reading mode rests in `Mode::Preview`, and vim-Normal and
+    /// Preview are alternative resting states — so opening a read-only
+    /// document suspends vim rather than fighting it.
+    #[test]
+    fn a_read_only_document_parks_the_vim_session_and_gives_it_back() {
+        let mut app = app_with_handler("vim");
+        app.vim.as_mut().expect("vim active").pending_g = true;
+
+        app.open_doc_page(crate::docs::DocId::Keybindings, None, 20, 80);
+        assert!(app.vim.is_none(), "vim is suspended while reading");
+        assert_eq!(
+            app.editor.mode,
+            crate::editor::Mode::Preview,
+            "a read-only document rests in Preview even under vim"
+        );
+
+        // The session comes back with the next editable buffer, carrying
+        // the state it was parked with.
+        let mut f = tempfile::Builder::new()
+            .suffix(".md")
+            .tempfile()
+            .expect("temp file");
+        {
+            use std::io::Write;
+            f.write_all(b"alpha\n").expect("write");
+            f.flush().expect("flush");
+        }
+        app.load_file_into_editor(f.path().to_path_buf())
+            .expect("load");
+        assert!(
+            app.vim.as_ref().is_some_and(|v| v.pending_g),
+            "the parked session is restored, not rebuilt"
+        );
+        assert_ne!(
+            app.editor.mode,
+            crate::editor::Mode::Preview,
+            "an editable document under vim leaves Preview again"
+        );
+    }
+
+    /// Turning vim off while reading must not leave a session waiting to
+    /// reappear on the next editable document.
+    #[test]
+    fn disabling_vim_while_reading_clears_the_parked_session() {
+        let mut app = app_with_handler("vim");
+        app.open_doc_page(crate::docs::DocId::Editing, None, 20, 80);
+        assert!(app.parked_vim.is_some());
+
+        app.set_vim_enabled(false);
+        assert!(app.parked_vim.is_none(), "parked session cleared");
+    }
+
+    /// Enabling vim while reading parks the fresh session straight away,
+    /// so the toggle takes effect on the next editable buffer instead of
+    /// dropping a cursor into a document that draws none.
+    #[test]
+    fn enabling_vim_while_reading_parks_it_instead_of_leaving_preview() {
+        let mut app = app_with_handler("default");
+        app.open_doc_page(crate::docs::DocId::Editing, None, 20, 80);
+
+        app.set_vim_enabled(true);
+        assert!(app.vim.is_none(), "not active while reading");
+        assert!(app.parked_vim.is_some(), "parked for the next document");
+        assert_eq!(app.editor.mode, crate::editor::Mode::Preview);
     }
 
     #[test]

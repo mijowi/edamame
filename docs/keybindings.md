@@ -157,6 +157,7 @@ These are reachable from the command palette (`Ctrl-P`), or you can bind them yo
 
 **Files** — Save as…, Open in external editor, Export HTML
 **Overlays** — Settings, Keybindings, Welcome / terminal setup, Markdown cheat sheet, About, Check for updates, Switch theme, Create custom theme
+**Documentation** — Help: Documentation (the index), and one entry per page: Docs: Getting started, Editing, Keybindings, Configuration, Themes, Vim mode, Security
 **Insert** — Link, Image, Footnote
 **Fix-ups** — Delete footnote, Renumber footnotes, Fix list numbering
 **Toggles** — Vim mode, Autosave, Big H1, Line numbers, Blink cursor, Visual line navigation, Limit editor width, Diff on external change, Table buttons

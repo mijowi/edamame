@@ -20,6 +20,7 @@ pub mod line_render;
 pub mod link_view;
 pub mod markdown_cheat_sheet;
 pub mod modal;
+pub(crate) mod modal_links;
 pub mod modal_row;
 pub mod overlay_nav;
 pub mod preview;
@@ -55,6 +56,7 @@ pub use keybinds_overlay::{KeybindsState, KeybindsView};
 pub use link_view::LinkLayoutSnapshot;
 pub use markdown_cheat_sheet::body_lines as markdown_cheat_sheet_body;
 pub use modal::{ModalButton, ModalResponse, ModalState, ModalView};
+pub(crate) use modal_links::{ModalLink, ModalLinkTarget};
 pub use scroll_container::{ModalKind, MAX_PAD_H, MIN_PAD_H, PROSE_CONTENT_WIDTH};
 // Used by integration tests in tests/ui.rs.
 #[allow(unused_imports)]

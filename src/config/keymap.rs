@@ -136,6 +136,16 @@ pub enum Action {
     /// Show the static Markdown syntax cheat sheet (CommonMark + GFM
     /// tables / task lists / strikethrough / footnotes).
     ShowMarkdownCheatSheet,
+    /// Open a page of the manual shipped inside the binary
+    /// (`crate::docs`) as a read-only document.
+    ///
+    /// Payload-bearing, and therefore palette-only: like
+    /// [`Action::InsertChar`] it is excluded from `action_variants!`,
+    /// so `FromStr` cannot reconstruct it and it can never be named in
+    /// `keybindings.toml`.  That is the right shape here rather than a
+    /// limitation — there is no keystroke-sized way to say *which*
+    /// page, and the palette lists each one by name.
+    OpenDoc(crate::docs::DocId),
     /// Open the settings overlay — edits `[editor] / [modal] / [table]
     /// / [images] / [export]` keys in `config.toml` in place.
     OpenSettings,
@@ -328,11 +338,31 @@ impl Action {
 /// payload).
 macro_rules! action_variants {
     ($( $variant:ident ),* $(,)?) => {
+        /// Every unit variant of [`Action`], in declaration order.
+        ///
+        /// Derived from the same list that drives `Display` / `FromStr`
+        /// — whose `Display` match is exhaustive, so a new unit variant
+        /// cannot compile without joining it.  That is what lets a
+        /// caller sweep the whole action surface without maintaining a
+        /// second list beside this one.
+        ///
+        /// The two payload-bearing variants (`InsertChar`, `OpenDoc`)
+        /// are absent: they need a value to construct.  A sweep that
+        /// cares about them names them itself.
+        ///
+        /// Test-only, and gated rather than merely `pub(crate)`: its
+        /// sole purpose is letting the `ActionCaps` gate sweeps in
+        /// `app::actions` enumerate the whole surface, so in a release
+        /// build it would be a dead 80-entry array.
+        #[cfg(test)]
+        pub(crate) const EVERY_UNIT_ACTION: &[Action] = &[ $( Action::$variant, )* ];
+
         impl fmt::Display for Action {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 let s: &str = match self {
                     $( Action::$variant => stringify!($variant), )*
                     Action::InsertChar(_) => "InsertChar",
+                    Action::OpenDoc(_) => "OpenDoc",
                 };
                 f.write_str(s)
             }

@@ -185,12 +185,20 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, ctx: HintCtx) -> Hint
             // table: `Alt+Left/Right` reorder columns there (the nav
             // redirect in `app::actions` only fires outside a table), and
             // the cursor offset persists into Preview, so a table cell is
-            // reachable here too.
+            // reachable here too.  A read-only document needs no arm of
+            // its own here: `cursor_in_table` already answers `false`
+            // while `readonly`, so the chord is unconditional there.
             if ctx.nav_available && !cursor_in_table(state) {
                 chords.insert(0, nav_chord());
             }
             HintSet {
-                prelude: Some("Press any key to edit".to_owned()),
+                // The one thing a read-only document changes about this
+                // row: it rests in Preview permanently, so opening with
+                // an invitation to edit would advertise the single
+                // transition the mode is defined by refusing.  The
+                // chords are identical — everything a reader can do
+                // here, an ordinary Preview can do too.
+                prelude: (!state.readonly).then(|| "Press any key to edit".to_owned()),
                 chords,
                 search_match: None,
             }
@@ -333,7 +341,8 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, ctx: HintCtx) -> Hint
 /// `NavigateBack` / `NavigateForward` carry no default binding — the keys
 /// that actually fire them are `Alt+Left` / `Alt+Right`, which the `App`
 /// redirects from `TableMoveColumnLeft` / `TableMoveColumnRight` when the
-/// cursor is outside any table (see `app::actions::handle_app_action`).
+/// cursor is outside any table (see `App::normalize_context_action`, which
+/// resolves that redirect ahead of every action gate).
 /// One badge stands in for both directions, mirroring the table arm's
 /// bundled `⌥↑↓←→` glyph.
 fn nav_chord() -> HintChord {
@@ -782,6 +791,15 @@ impl<'a> Widget for BottomRegion<'a> {
 /// of the App-internal helper so pure hint-line code doesn't depend on
 /// private app state.
 fn cursor_in_table(state: &EditorState) -> bool {
+    // A read-only document has no column to reorder — every table
+    // command is denied by `readonly_safe_action` — so `Alt+Left` /
+    // `Alt+Right` must stay the Back / Forward chord the hint row
+    // advertises, even when a `GoToSection` jump has parked the cursor
+    // inside one of `keybindings.md`'s many tables.  Without this the
+    // reader gets a dead chord for the one navigation they use most.
+    if state.readonly {
+        return false;
+    }
     let cursor_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
     let source = state.buffer.contents();
     crate::editor::table_edit::find_table_at(&source, cursor_byte).is_some()
@@ -846,17 +864,61 @@ mod tests {
         assert!(set.chords.iter().any(|c| c.label == "Quit"));
     }
 
+    /// A read-only document differs from an ordinary Preview in exactly
+    /// one way: no "Press any key to edit", because that is the one
+    /// transition the mode refuses.  The chords are the same row —
+    /// there is no reading-specific vocabulary to advertise.
+    #[test]
+    fn the_read_only_row_drops_only_the_edit_invitation() {
+        let mut st = state("hello");
+        let editable = hint_line_for(&st, &keymap(), HintCtx::default());
+        st.readonly = true;
+        let set = hint_line_for(&st, &keymap(), HintCtx::default());
+
+        assert_eq!(editable.prelude.as_deref(), Some("Press any key to edit"));
+        assert_eq!(set.prelude, None);
+        let labels =
+            |s: &HintSet| -> Vec<String> { s.chords.iter().map(|c| c.label.clone()).collect() };
+        assert_eq!(labels(&set), labels(&editable));
+        // Nothing that writes the document may appear.
+        for denied in ["Paste", "Cut", "Save", "Undo", "Redo"] {
+            assert!(
+                !set.chords.iter().any(|c| c.label == denied),
+                "the read-only row must not advertise {denied}"
+            );
+        }
+    }
+
+    /// `keybindings.md` is mostly tables, and the Back chord used to
+    /// vanish from the row whenever a section jump parked the cursor in
+    /// one — matching a redirect that had itself stopped firing.
+    #[test]
+    fn the_back_chord_survives_a_table_in_a_read_only_document() {
+        let mut st = state("| a | b |\n|---|---|\n| 1 | 2 |\n");
+        st.readonly = true;
+        st.cursor.offset = 3;
+        let ctx = HintCtx {
+            nav_available: true,
+            ..HintCtx::default()
+        };
+        let set = hint_line_for(&st, &keymap(), ctx);
+        assert_eq!(
+            set.chords[0].chord, "⌥←→",
+            "Back/fwd must lead the row even inside a table"
+        );
+    }
+
     /// A read-only (`--diff`) review advertises navigation and exit
     /// only: every decision key answers "This review is read-only", and
-    /// `Esc Exit` must appear even though nothing is resolved, because
-    /// it is the one way out of the session.
+    /// `Esc Close file` must appear even though nothing is resolved,
+    /// because it is the one way out of the session.
     #[test]
     fn a_read_only_diff_row_offers_only_navigation_and_the_two_exits() {
         let labels: Vec<String> = diff_review_chords(&keymap(), false, false, true)
             .into_iter()
             .map(|c| c.label)
             .collect();
-        assert_eq!(labels, vec!["Next", "Prev", "Next file", "Quit diff"]);
+        assert_eq!(labels, vec!["Next", "Prev", "Close file", "Quit diff"]);
     }
 
     /// The two exits differ in a difftool walk — `Esc` advances to the

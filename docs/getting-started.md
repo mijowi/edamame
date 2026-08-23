@@ -167,6 +167,16 @@ Your real config is safe: settings you change during a `--no-config` run apply t
 
 ---
 
+## The manual is inside the app
+
+Everything under `docs/` ships **inside the binary**, so you can read it without a browser or a network connection. Open the command palette (`Ctrl-P`) and pick **Help: Documentation** for the index, or jump straight to a page — the palette lists each one as **Docs: Editing**, **Docs: Keybindings**, and so on, so typing `docs vim` gets you there in two keystrokes.
+
+Docs open in **Preview mode**: the rendered view, with no cursor and nothing to edit. The page you are reading is the one that shipped with your build, and it stays that way. Everything that makes sense for reading still works — search it with `Ctrl-F`, jump between headings with `Ctrl-G`, follow the links between pages, select and copy. `Alt+Left` goes back, including back to whatever you were writing before you opened it. If that document had unsaved changes, you get the usual save-or-discard prompt first; nothing is lost by taking a look at the manual mid-sentence.
+
+Scroll with the arrow keys, `PageUp` / `PageDown`, `Home` / `End` or the mouse wheel — the same keys that scroll any other document. A page introduces no reading-only shortcuts of its own, so nothing you learn here stops working when you go back to editing.
+
+---
+
 ## Where to go next
 
 - [editing.md](editing.md) — tables, lists, links, footnotes, search and replace, images, export

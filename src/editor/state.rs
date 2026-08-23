@@ -372,6 +372,33 @@ pub struct EditorState {
     /// intercepts the flow keys (`search::search_keys`) and the App's
     /// `search_safe_action` default-denies everything else.
     pub search: Option<SearchState>,
+    /// True for a document that cannot be edited — today, a pathless
+    /// page opened out of the embedded manual (`crate::docs`).
+    ///
+    /// **The flag does two things, and they are one decision.**  It
+    /// pins the editor in [`Mode::Preview`], which is already this
+    /// codebase's browse-only presentation — no cursor drawn, no raw
+    /// reveal, and `mouse_ops::apply_preview_action` refusing the
+    /// checkbox toggle and the table handles — and it makes
+    /// `edit_ops::enter_edit_if_preview` refuse the transition out of
+    /// it, which turns all twenty-six of that function's call sites
+    /// into no-ops at once.  [`EditorState::apply_delta`] is the second
+    /// backstop, for text rather than for mode.
+    ///
+    /// The App reads it too (`actions::readonly_safe_action`), but only
+    /// to refuse politely — a `Save` that would otherwise detour into a
+    /// Save-as prompt for a document nobody can own.  The *guarantee*
+    /// is made here, below every input path.
+    ///
+    /// Deliberately a bare flag rather than a `DocId`: `editor` is
+    /// layer 5 and has no business knowing what documentation *is*.
+    /// It learns only the fact, exactly as it learns `search` /`diff`
+    /// as opaque session state the App sets.  It is also not a `Mode` —
+    /// a doc page renders in the ordinary Preview / Rendered / Raw
+    /// views, and a fourth variant would force an "effective view
+    /// mode" indirection through every render-dispatch site, the same
+    /// reason the search flow is not one.
+    pub readonly: bool,
     /// Recently-yanked span, painted as a brief highlight "flash" to
     /// confirm the copy (neovim-style).  Armed by `flash_yank` on every
     /// `y` operator and cleared once its window elapses by the App's
@@ -537,6 +564,9 @@ impl EditorState {
             pre_diff_scroll: 0,
             pending_focus_scroll: false,
             search: None,
+            // Set by `App::open_doc_page` after construction; every
+            // other document is editable.
+            readonly: false,
             yank_flash: None,
             substitute_preview: None,
             image_reveal: None,
@@ -1227,6 +1257,24 @@ impl EditorState {
     /// single re-parse at the moment the user moves off the line, and
     /// eliminates the mid-typing rendered → raw → rendered flash.
     pub(crate) fn apply_delta(&mut self, delta: EditDelta) {
+        // The text backstop for a read-only document; the mode
+        // backstop is `edit_ops::enter_edit_if_preview`.
+        //
+        // Every edit in the crate lands here, so this is the one place
+        // the guarantee can be made rather than *maintained*.
+        // Enforcing it at each mutation funnel instead was tried first,
+        // and is how `:s`, bracketed paste, `>>`, `~`, `u`/`U`, `J`,
+        // `o`/`O`, Visual `r` and the table-scoped `dd` were each
+        // missed in turn: a per-site rule is only as good as the next
+        // person's audit of it.  Those eight per-site guards are gone
+        // now, and this is what replaced them.
+        //
+        // Silent by design at this depth — `EditorState` has no way to
+        // flash, and every path a user can actually reach reports the
+        // refusal before getting here.
+        if self.readonly {
+            return;
+        }
         let crosses_line = delta.inserted.contains('\n') || delta.removed.contains('\n');
         let new_cursor = delta.redo_cursor();
         // Apply the edit.
