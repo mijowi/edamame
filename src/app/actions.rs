@@ -788,6 +788,24 @@ impl App {
                 return;
             }
         }
+        // Diff mode default-denies *before* `handle_app_action`, for the
+        // same reason the search flow does: `handle_app_action` answers
+        // `true` for everything it handles, so a gate placed behind it
+        // never sees those actions at all.  `InsertTable`, the footnote
+        // fix-ups and `FollowLinkUnderCursor` are all off the diff
+        // allowlist and all handled there — and all reachable mid-review
+        // from the command palette, which *is* on the allowlist.  Gated
+        // here, the insert-table modal opened over a diff review and its
+        // edit landed on the pre-merge buffer.
+        //
+        // Only the refusal moves.  Dispatch stays below, so an allowed
+        // action still reaches `handle_app_action` first (that is what
+        // opens the palette and the overlays) and falls through to
+        // `dispatch_diff_action` only when nothing there claimed it.
+        if self.editor.mode == crate::editor::Mode::Diff && diff_safe_action(&action).is_none() {
+            self.flash_action_unavailable("diff review");
+            return;
+        }
         let handled = self.handle_app_action(&action, doc_height, doc_width);
         if !handled {
             // Diff mode owns its own dispatch — checked *before* the
@@ -795,15 +813,9 @@ impl App {
             // buffer still holds the pre-merge text, so that guard's
             // "Save" path would persist the wrong contents.  `Quit` in
             // diff mode routes to `dispatch_diff_action`, which opens the
-            // diff-specific `DiffQuitConfirmModal`.  `diff_safe_action`
-            // filters everything that isn't on the diff-mode allowlist
-            // (default-deny per §10).
+            // diff-specific `DiffQuitConfirmModal`.
             if self.editor.mode == crate::editor::Mode::Diff {
-                let Some(safe) = diff_safe_action(&action) else {
-                    self.flash_action_unavailable("diff review");
-                    return;
-                };
-                self.dispatch_diff_action(safe, doc_height, doc_width);
+                self.dispatch_diff_action(action, doc_height, doc_width);
                 return;
             }
             if matches!(action, Action::Quit) && self.editor.dirty {
@@ -1709,6 +1721,64 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
+    // ── The diff-mode gate sits ahead of `handle_app_action` ───────
+
+    /// `handle_app_action` answers `true` for everything it handles, so
+    /// a gate placed behind it never sees those actions.  `InsertTable`
+    /// is off the diff allowlist *and* handled there, and the command
+    /// palette — which is on the allowlist — can reach it mid-review.
+    #[test]
+    fn an_app_level_action_off_the_allowlist_is_refused_in_diff_review() {
+        let mut app = app_with_buffer("alpha\n", 0);
+        app.enter_diff_mode("bravo\n".to_owned());
+        assert_eq!(app.editor.mode, crate::editor::Mode::Diff);
+        assert!(
+            diff_safe_action(&Action::InsertTable).is_none(),
+            "precondition: InsertTable is not diff-safe"
+        );
+
+        let before = app.modal_stack.len();
+        app.dispatch_action(Action::InsertTable, 20, 80);
+        assert_eq!(
+            app.modal_stack.len(),
+            before,
+            "the insert-table modal must not open over a diff review"
+        );
+    }
+
+    /// The same hole let a link follow replace the document mid-review.
+    #[test]
+    fn following_a_link_is_refused_in_diff_review() {
+        let mut app = app_with_buffer("[x](other.md)\n", 0);
+        app.enter_diff_mode("bravo\n".to_owned());
+        assert!(diff_safe_action(&Action::FollowLinkUnderCursor).is_none());
+
+        app.dispatch_action(Action::FollowLinkUnderCursor, 20, 80);
+        assert_eq!(
+            app.editor.mode,
+            crate::editor::Mode::Diff,
+            "a link follow must not navigate out of a review"
+        );
+    }
+
+    /// Only the *refusal* moved: an allowed app-level action still
+    /// reaches `handle_app_action`, which is what opens the palette and
+    /// the overlays during a review.
+    #[test]
+    fn an_allowed_app_level_action_still_runs_in_diff_review() {
+        let mut app = app_with_buffer("alpha\n", 0);
+        app.enter_diff_mode("bravo\n".to_owned());
+        assert!(diff_safe_action(&Action::ShowCommandPalette).is_some());
+
+        let before = app.modal_stack.len();
+        app.dispatch_action(Action::ShowCommandPalette, 20, 80);
+        assert_eq!(
+            app.modal_stack.len(),
+            before + 1,
+            "the palette still opens during a review"
+        );
+    }
     use crossterm::event::{
         KeyModifiers as CtKeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
