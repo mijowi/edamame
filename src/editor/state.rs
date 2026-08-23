@@ -407,7 +407,7 @@ pub struct EditorState {
     /// `refresh_parsed`.  Blocks whose AST is unchanged since the previous
     /// reparse reuse their rendered lines instead of re-rendering — the
     /// renderer was the dominant pipeline cost for table-heavy and mixed
-    /// documents (see docs/perf-benchmark-plan.md).  Keyed by block value
+    /// documents (see docs/dev/performance.md).  Keyed by block value
     /// plus a render-settings fingerprint, so theme / width / striping
     /// changes clear it automatically.
     render_cache: RenderCache,

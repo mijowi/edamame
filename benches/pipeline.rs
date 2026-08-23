@@ -1,4 +1,4 @@
-//! Parse/render pipeline benchmarks — see docs/perf-benchmark-plan.md.
+//! Parse/render pipeline benchmarks — see docs/dev/performance.md.
 //!
 //! Measures the eager full-document work done by `refresh_parsed()`:
 //!   - `full_pipeline`      — `ParsedDoc::build_with_overrides` end to end, no cache
@@ -21,6 +21,7 @@ use std::hint::black_box;
 
 use edamame::config::Theme;
 use edamame::document::ParsedDoc;
+use edamame::markdown::highlight;
 use edamame::markdown::parser::parse_raw;
 use edamame::markdown::{parse_offsets, parse_raw_with_ranges, RenderCache, Renderer};
 
@@ -105,6 +106,17 @@ fn mixed(target: usize) -> String {
     s
 }
 
+/// Compile the corpus grammars on this thread before measuring.
+///
+/// Highlighting is eventually-consistent in the live app: a cold grammar
+/// renders plain and a background worker compiles it, so a bench that
+/// didn't warm first would measure a mixture of both paths depending on
+/// how much of the warm-up phase the worker happened to win.  `code` and
+/// `mixed` are `rust` fences; the call is idempotent.
+fn warm_grammars() {
+    highlight::warm_inline(Some("rust"));
+}
+
 /// A named corpus generator: (mix name, source generator).
 type Corpus = (&'static str, fn(usize) -> String);
 
@@ -167,6 +179,7 @@ fn altered_variant(source: &str) -> String {
 // ── Benchmarks ─────────────────────────────────────────────────────────────
 
 fn bench_full_pipeline(c: &mut Criterion) {
+    warm_grammars();
     let theme = Theme::default();
     let mut g = c.benchmark_group("full_pipeline");
     for (mix, gen) in MIXES {
@@ -181,6 +194,7 @@ fn bench_full_pipeline(c: &mut Criterion) {
 }
 
 fn bench_full_pipeline_memoized(c: &mut Criterion) {
+    warm_grammars();
     let theme = Theme::default();
     let mut g = c.benchmark_group("full_pipeline_memoized");
     for &(mix, gen) in MIXES {
@@ -218,6 +232,7 @@ fn stage_pairs() -> Vec<(Corpus, usize)> {
 }
 
 fn bench_parse_offsets(c: &mut Criterion) {
+    warm_grammars();
     let mut g = c.benchmark_group("parse_offsets");
     for ((mix, gen), size) in stage_pairs() {
         let source = gen(size);
@@ -229,6 +244,7 @@ fn bench_parse_offsets(c: &mut Criterion) {
 }
 
 fn bench_parse_ast(c: &mut Criterion) {
+    warm_grammars();
     let mut g = c.benchmark_group("parse_ast");
     for ((mix, gen), size) in stage_pairs() {
         let source = gen(size);
@@ -240,6 +256,7 @@ fn bench_parse_ast(c: &mut Criterion) {
 }
 
 fn bench_parse_merged(c: &mut Criterion) {
+    warm_grammars();
     let mut g = c.benchmark_group("parse_merged");
     for ((mix, gen), size) in stage_pairs() {
         let source = gen(size);
@@ -251,17 +268,22 @@ fn bench_parse_merged(c: &mut Criterion) {
 }
 
 fn bench_render_only(c: &mut Criterion) {
+    warm_grammars();
     let theme = Theme::default();
     let mut g = c.benchmark_group("render_only");
     for ((mix, gen), size) in stage_pairs() {
         let source = gen(size);
         let blocks = parse_raw(&source);
         g.bench_with_input(BenchmarkId::new(mix, size), &blocks, |b, blocks| {
+            // Mirrors `build_doc`'s settings — highlighting included, or
+            // the `code` and `mixed` numbers understate the real render
+            // and the derived "other" residual goes negative.
             let renderer = Renderer::new(&theme)
                 .with_viewport_width(100)
                 .with_image_max_height(20)
                 .with_row_striping(true)
-                .with_big_h1(true);
+                .with_big_h1(true)
+                .with_syntax_highlighting(true);
             b.iter(|| renderer.render_with_counts(black_box(blocks)));
         });
     }
@@ -269,6 +291,7 @@ fn bench_render_only(c: &mut Criterion) {
 }
 
 fn bench_visual_cache(c: &mut Criterion) {
+    warm_grammars();
     let theme = Theme::default();
     let mut g = c.benchmark_group("visual_cache_build");
     for &size in SIZES {

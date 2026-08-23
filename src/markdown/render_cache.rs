@@ -5,7 +5,7 @@
 //! memoizes each block's rendered lines keyed by the block's AST value, so
 //! an unchanged block costs a clone of its cached lines instead of a full
 //! re-render (inline styling, word measurement, table column layout).
-//! See docs/perf-benchmark-plan.md — rendering dominated the pipeline for
+//! See docs/dev/performance.md — rendering dominated the pipeline for
 //! table-heavy and mixed documents before memoization.
 //!
 //! Keying by the `Block` value (not the source byte slice) is what makes

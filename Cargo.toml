@@ -216,8 +216,8 @@ libc = "0.2"
 insta = { version = "1", features = ["ron"] }
 # Property-based testing
 proptest = "1"
-# Parse/render pipeline benchmarks; see
-# docs/dev/plans/archive/perf-benchmark-plan.md.  Criterion runs benches in
+# Parse/render pipeline benchmarks; see docs/dev/performance.md, which
+# records the numbers they produce.  Criterion runs benches in
 # release mode, which matters — the dev profile below is tuned for compile
 # speed.
 criterion = "0.5"

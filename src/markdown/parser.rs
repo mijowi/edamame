@@ -60,8 +60,10 @@ pub fn parse_raw(text: &str) -> Vec<Block> {
 /// construction.
 ///
 /// This is the editor pipeline's parse entry point (`ParsedDoc::build`);
-/// see docs/perf-benchmark-plan.md — the second full parse cost ~35% of
-/// the prose-document pipeline before the merge.
+/// see docs/dev/performance.md — the pass this merge removed
+/// (`parse_offsets::top_level_block_ranges`) measures 4.6 ms on the
+/// 20k-line prose corpus against a 20.5 ms single-pass pipeline, so it
+/// was ~18% of the two-pass total.
 pub fn parse_raw_with_ranges(text: &str) -> (Vec<Block>, Vec<Range<usize>>) {
     let mut tracker = parse_offsets::RangeTracker::new(|_| true);
     let mut events = Parser::new_ext(text, parse_offsets::options_for(text))
