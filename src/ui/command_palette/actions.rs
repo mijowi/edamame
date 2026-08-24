@@ -26,6 +26,7 @@ pub(super) const ALL_ACTIONS: &[Action] = &[
     Action::OpenDoc(crate::docs::DocId::GettingStarted),
     Action::OpenDoc(crate::docs::DocId::Editing),
     Action::OpenDoc(crate::docs::DocId::Keybindings),
+    Action::OpenDoc(crate::docs::DocId::TerminalCompatibility),
     Action::OpenDoc(crate::docs::DocId::Configuration),
     Action::OpenDoc(crate::docs::DocId::Themes),
     Action::OpenDoc(crate::docs::DocId::VimMode),

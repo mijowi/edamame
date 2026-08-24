@@ -189,7 +189,7 @@ Note that an unrecognized value is accepted without complaint and behaves as `"d
 
 `max_width` / `max_height` are ceilings in terminal cells. Images scale to fit inside that box, keeping their aspect ratio.
 
-> **Images need 24-bit color** as well as a supporting terminal. Below that, edamame declines to render them regardless of these settings — for that session only, so a config shared with a capable terminal keeps working. See [editing.md](editing.md#images).
+> **Images need 24-bit color** as well as a supporting terminal. Below that, edamame declines to render them regardless of these settings — for that session only, so a config shared with a capable terminal keeps working. See [editing.md](editing.md#images) and [terminal-compatibility.md](terminal-compatibility.md#images-and-diagrams).
 
 ---
 

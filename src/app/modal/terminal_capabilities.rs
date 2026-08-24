@@ -51,18 +51,20 @@ use crate::ui::{
 /// `resolve` match arm and the button-list order can't drift.
 const ADJUST_BUTTON: usize = 0;
 
-/// The manual section this notice points at.
+/// The manual page this notice points at.
 ///
-/// Named rather than written inline so the test below can assert the
-/// fragment against the real page — a fragment is matched exactly, so
-/// renaming that heading in `docs/keybindings.md` would otherwise
-/// dead-end this link silently, and only for the reader who followed
-/// it.
+/// The one footnote in the crate carrying no fragment, deliberately:
+/// `docs/terminal-compatibility.md` is a page *about* what this modal
+/// just reported, so its opening paragraphs are already the answer to
+/// "what do I do about a ✗".  Landing a reader mid-page — the reason
+/// every other footnote names a section — would skip past that to
+/// whichever capability the fragment happened to name, and this notice
+/// has no way to know which of the five rows the reader cares about.
 const DOCS_FOOTNOTE: DocsFootnote = DocsFootnote {
     label: "Terminal compatibility",
     target: ModalLinkTarget {
-        id: DocId::Keybindings,
-        fragment: Some("terminal-compatibility"),
+        id: DocId::TerminalCompatibility,
+        fragment: None,
     },
     trailer: " lists what each capability affects and which terminals support it.",
 };
@@ -327,21 +329,21 @@ mod tests {
         assert_eq!(modal.buttons.len(), 1);
     }
 
-    /// The whole point of a deep link is that it lands on the section,
-    /// and fragments are matched exactly — so a heading rename in
-    /// `docs/keybindings.md` breaks this silently.  Resolve it against
-    /// the real page the way the app will.
+    /// The footnote must name a page that is really embedded.  This
+    /// one carries no fragment (see `DOCS_FOOTNOTE`), so the assertion
+    /// is that the page resolves and parses — and that the fragment is
+    /// still absent, since adding one would silently change where a
+    /// reader lands without failing anything else.
     #[test]
-    fn the_docs_link_names_a_heading_that_exists() {
+    fn the_docs_link_names_a_page_that_exists() {
         let ModalLinkTarget { id, fragment } = DOCS_FOOTNOTE.target;
-        let fragment = fragment.expect("the link names a section, not just a page");
+        assert_eq!(
+            fragment, None,
+            "this notice points at the page top; see DOCS_FOOTNOTE"
+        );
         let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
         let parsed = ParsedDoc::build(&id.source(), theme, true, 80);
-        assert!(
-            parsed.heading_anchors.contains_key(fragment),
-            "'{fragment}' is not a heading in {}",
-            id.title()
-        );
+        assert!(!parsed.blocks.is_empty(), "{} embedded empty", id.title());
     }
 
     #[test]
@@ -454,7 +456,7 @@ mod click_tests {
 
         assert_eq!(
             app.open_doc,
-            Some(DocId::Keybindings),
+            Some(DOCS_FOOTNOTE.target.id),
             "the click opened the manual page the link named"
         );
         // Recorded on the link path too, or the notice re-fires next

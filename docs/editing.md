@@ -62,7 +62,7 @@ Select some text, then:
 
 These toggle — run bold on already-bold text and the markers come off. They need a **non-empty selection on a single line**.
 
-If `Ctrl-B` / `Ctrl-I` do nothing (or insert a tab), your terminal is the reason — see [Terminal compatibility](keybindings.md#terminal-compatibility).
+If `Ctrl-B` / `Ctrl-I` do nothing (or insert a tab), your terminal is the reason — see [terminal-compatibility.md](terminal-compatibility.md#keyboard).
 
 **Insert Link** and **Insert Image** (palette) drop a `[link text](file path or URL)` snippet at the cursor, or wrap your selection as the visible text. The placeholder is left selected, so you can type straight over it.
 
@@ -318,7 +318,7 @@ Move the cursor into an image and it's replaced by its `![alt](url)` source line
 
 **Formats:** PNG, JPEG, GIF, BMP, WebP, and SVG. Anything else is reported as an unsupported image rather than rendered — the list is kept deliberately short because edamame decodes images from documents you may not trust. Animation is not supported for any format.
 
-**Requirements:** an image protocol — Kitty, iTerm2, or Sixel — *and* 24-bit color. Below truecolor, edamame declines to render images at all, because the result would be badly quantized. Half-block rendering is available as a low-fidelity fallback and is used when images are clipped off screen and when scrolling, as an optimization.
+**Requirements:** an image protocol — Kitty, iTerm2, or Sixel — *and* 24-bit color. Below truecolor, edamame declines to render images at all, because the result would be badly quantized. Half-block rendering is available as a low-fidelity fallback and is used when images are clipped off screen and when scrolling, as an optimization. See [terminal-compatibility.md](terminal-compatibility.md#images-and-diagrams) for which terminals qualify.
 
 Size ceilings are `max_width` / `max_height` in [configuration](configuration.md#images); images scale to fit and keep their aspect ratio.
 

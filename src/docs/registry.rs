@@ -30,6 +30,7 @@ pub enum DocId {
     GettingStarted,
     Editing,
     Keybindings,
+    TerminalCompatibility,
     Configuration,
     Themes,
     VimMode,
@@ -81,6 +82,13 @@ pub const ALL_DOCS: &[DocPage] = &[
         title: "Keybindings",
         palette_label: "Docs: Keybindings",
         source: include_str!("../../docs/keybindings.md"),
+    },
+    DocPage {
+        id: DocId::TerminalCompatibility,
+        slug: "terminal-compatibility.md",
+        title: "Terminal compatibility",
+        palette_label: "Docs: Terminal compatibility",
+        source: include_str!("../../docs/terminal-compatibility.md"),
     },
     DocPage {
         id: DocId::Configuration,

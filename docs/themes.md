@@ -22,7 +22,7 @@ The **"Dark mode"** slider in the picker filters the list and sets `appearance` 
 
 Built-in names are reserved: a file in your `themes/` folder named `Dracula.toml` is ignored entirely, without a warning. Pick a different name.
 
-> **`256 Dark`, `256 Light` and `Monochrome Dark` are the ones designed for weaker terminals. ** Every other theme picks 24-bit colors. On a terminal without truecolor, edamame switches to whichever `256` theme matches your current theme's light/dark appearance and tells you why. That switch lasts for the session only — your `config.toml` keeps the theme you chose, so sharing one config between a capable and a limited terminal works.
+> **`256 Dark`, `256 Light` and `Monochrome Dark` are the ones designed for weaker terminals. ** Every other theme picks 24-bit colors. On a terminal without truecolor, edamame switches to whichever `256` theme matches your current theme's light/dark appearance and tells you why. That switch lasts for the session only — your `config.toml` keeps the theme you chose, so sharing one config between a capable and a limited terminal works. See [terminal-compatibility.md](terminal-compatibility.md#color).
 
 ---
 
@@ -234,7 +234,7 @@ This does not apply to hex themes, which is nearly all of them.
 
 **My theme file has an error.** Parse failures fall back to the default theme with a warning naming the file. Unknown keys are kept and reported rather than rejected, so a theme written by a different version still loads.
 
-**Colors look wrong or washed out.** Your terminal probably lacks 24-bit color — see the note at the top. Check with `Ctrl-P` → "Open welcome / terminal setup".
+**Colors look wrong or washed out.** Your terminal probably lacks 24-bit color — see the note at the top, and [terminal-compatibility.md](terminal-compatibility.md#color). Check with `Ctrl-P` → "Open welcome / terminal setup".
 
 ---
 

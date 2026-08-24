@@ -90,7 +90,7 @@ Formatting acts on a **non-empty, single-line selection** and toggles — runnin
 
 Inside a table those same `Alt-←` / `Alt-→` keys reorder columns. If you want unconditional back/forward, bind `NavigateBack` / `NavigateForward` to chords of your own.
 
-On macOS these two chords need a word about the terminal — see [Option and the Alt chords on macOS](#option-and-the-alt-chords-on-macos).
+On macOS these two chords need a word about the terminal — see [Option and the Alt chords on macOS](terminal-compatibility.md#option-and-the-alt-chords-on-macos).
 
 ## Tables
 
@@ -227,33 +227,13 @@ If edamame can't parse a line — unknown action name or unreadable chord — it
 
 ## Terminal compatibility
 
-Some chords can only be delivered by terminals that support the **kitty keyboard protocol**. The legacy encoding every terminal falls back to has no way to represent `Ctrl` combined with a non-alphabetic key, so those chords never arrive — the terminal usually just beeps.
-
-Affected defaults:
+A few default chords depend on the **kitty keyboard protocol** and never arrive in terminals without it:
 
 - ``Ctrl-` `` (toggle raw mode)
 - `Ctrl-Shift-T` (insert table)
 - `Ctrl-B` / `Ctrl-I` (bold / italic — these collide with `Tab` and a control byte rather than vanishing)
 - The `Alt-Shift-*` table chords
 
-Terminals with support include kitty, Ghostty, WezTerm, foot, and recent Alacritty. Apple Terminal does not have it.
+Rebinding any of them to a plain `Ctrl`+letter works everywhere — `ToggleRawMode = "ctrl+y"` is a good substitute — and the palette (`Ctrl-P`) reaches all of them regardless of what your terminal delivers.
 
-**Workarounds, in order of least effort:** run the command from the palette (`Ctrl-P`); or rebind to a plain `Ctrl`+letter, which works everywhere — `ToggleRawMode = "ctrl+y"` is a good substitute.
-
-### Option and the Alt chords on macOS
-
-The `Option` key is not delivered as `Alt` uniformly, and the arrow chords are where it shows.
-
-| Terminal | `Option-←` / `Option-→` | Works out of the box? |
-|---|---|---|
-| Ghostty | Sent as the escapes `Alt-B` / `Alt-F` | Yes |
-| iTerm2 | Sent as `Alt-B` / `Alt-F` | Yes |
-| Apple Terminal | `Option` is dropped — arrives as a plain `←` / `→` | No |
-
-edamame accepts `Alt-B` / `Alt-F` as aliases for `Alt-←` / `Alt-→`, which is what makes the first two rows work: those escapes are the readline word-motion sequences, and both terminals map the chord to them by default rather than sending a modified arrow. The alias is a fallback, so binding `alt+b` or `alt+f` to something of your own takes precedence over it.
-
-Apple Terminal sends nothing that distinguishes `Option-←` from `←`, so no application can tell them apart. To fix it, add the mappings yourself in **Settings → Profiles → Keyboard**: `⌥←` → `\033b` and `⌥→` → `\033f` (using "Send Text"), which lands you on the same escapes the other terminals use. Or you can simply use the command palette for any affected actions.
-
-`Option-↑` / `Option-↓` and the `Option-Shift-*` table chords are a separate matter: no terminal rewrites those, so they arrive as genuine modified arrows wherever `Option` is delivered as `Alt` at all (Ghostty does this by default on U.S. keyboard layouts; elsewhere set `macos-option-as-alt = true`).
-
-edamame tells you which tier your terminal landed in the first time you launch in it, via the capabilities notice. You can reopen that summary any time from the palette: "Open welcome / terminal setup".
+[terminal-compatibility.md](terminal-compatibility.md#keyboard) explains why those chords are lost, lists which terminals have the protocol, and covers the macOS `Option` key — along with everything else that depends on the terminal, and which terminals support what.

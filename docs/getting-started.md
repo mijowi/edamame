@@ -32,18 +32,11 @@ edamame also writes its config files on this first run, to `~/.config/edamame/` 
 
 ### The terminal capabilities notice
 
-If you later open edamame in a different terminal application, you should see a notice for what the new terminal supports — color depth, images, mouse, keyboard. This appears **once per terminal**, not every launch, and it matters because a few features depend on the terminal rather than on edamame:
-
-| Feature | Needs |
-|---|---|
-| Images and diagrams | 24-bit color **and** an image protocol |
-| Most themes | 24-bit color |
-| Mouse selection, table handles | Mouse reporting |
-| A handful of chords | The kitty keyboard protocol |
+If you later open edamame in a different terminal application, you should see a notice for what the new terminal supports — color depth, images, mouse, keyboard, unicode. This appears **once per terminal**, not every launch, and it matters because a few features are delivered by the terminal rather than by edamame: images and diagrams, most themes, mouse selection, and a handful of chords.
 
 ![The terminal capabilities notice, listing color, image, mouse and keyboard support](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/terminal_capabilities.jpg)
 
-If your terminal falls short, edamame adapts rather than breaking: it swaps in a theme designed for 256 colors, keeps `[Image: …]` placeholders in place, and tells you which chords won't arrive. See [Terminal compatibility](keybindings.md#terminal-compatibility) for the workarounds — the command palette reaches everything regardless.
+If your terminal falls short, edamame adapts rather than breaking: it swaps in a theme designed for 256 colors, keeps `[Image: …]` placeholders in place, and tells you which chords won't arrive. [terminal-compatibility.md](terminal-compatibility.md) has the full picture — what each capability affects, the workarounds, and which terminals support what. The command palette reaches everything regardless.
 
 To see the summary again, run [`edamame --doctor`](#command-line-flags), open
 "Open welcome / terminal setup" from the palette, or clear
@@ -181,6 +174,7 @@ Scroll with the arrow keys, `PageUp` / `PageDown`, `Home` / `End` or the mouse w
 
 - [editing.md](editing.md) — tables, lists, links, footnotes, search and replace, images, export
 - [keybindings.md](keybindings.md) — every default chord, and how to change it
+- [terminal-compatibility.md](terminal-compatibility.md) — what depends on your terminal, and what to do about each gap
 - [configuration.md](configuration.md) — every setting
 - [themes.md](themes.md) — switching themes and writing your own
 - [vim-mode.md](vim-mode.md) — modal editing, and how it differs from real Vim

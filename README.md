@@ -56,6 +56,7 @@ Requires Rust 1.90 or newer.
 - [Getting started](https://github.com/mijowi/edamame/blob/main/docs/getting-started.md) — first run, the three view modes, reading the status bar
 - [Editing](https://github.com/mijowi/edamame/blob/main/docs/editing.md) — tables, lists, links, footnotes, search, diff review, images, export
 - [Keybindings](https://github.com/mijowi/edamame/blob/main/docs/keybindings.md) — every default chord and how to change it
+- [Terminal compatibility](https://github.com/mijowi/edamame/blob/main/docs/terminal-compatibility.md) — what depends on your terminal, and what to do about each gap
 - [Configuration](https://github.com/mijowi/edamame/blob/main/docs/configuration.md) — every setting
 - [Themes](https://github.com/mijowi/edamame/blob/main/docs/themes.md) — switching, and writing your own
 - [Vim mode](https://github.com/mijowi/edamame/blob/main/docs/vim-mode.md) — what's supported and how it differs from Vim

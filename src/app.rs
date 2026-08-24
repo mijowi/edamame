@@ -290,8 +290,8 @@ pub struct App {
     /// written in the source), updated on every `MouseEventKind::Moved`
     /// event.  While `Some`, the hint line replaces its chord row with
     /// the URL — browser-status-bar style.  Only Preview and Rendered
-    /// produce hovers: the hit-test keys on UNDERLINED link spans,
-    /// which Raw mode never renders.
+    /// produce hovers: the hit-test pairs link-styled spans with the
+    /// block's AST links, and Raw mode renders neither.
     hovered_link: Option<String>,
     /// Transient message overlayed on the hint line.  Non-
     /// error kinds auto-expire after `config.editor.transient_ms`;
