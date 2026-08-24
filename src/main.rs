@@ -130,6 +130,33 @@ fn run(session: Session, opts: RunOpts) -> Result<()> {
         Session::Open(path) => path.clone(),
         Session::Diff { .. } => None,
     };
+
+    // ── Split a `file.md#section` deep link and validate the file ──
+    // `file.md#section` on the command line opens the file and lands on
+    // that heading — the CLI half of deep linking.  Split here rather
+    // than in `Invocation::parse`: `#` is a legal character in a file
+    // name, so the rule asks the disk before taking one away from a
+    // path (see `cli::split_startup_anchor`), and the parser is pure.
+    //
+    // Both the split and the validation happen *before* `terminal::setup`
+    // on purpose.  A directory or a binary file makes `Buffer::load_file`
+    // (inside `App::new`) fail, and that failure used to propagate out of
+    // `run` with raw mode and the alternate screen already engaged and
+    // nothing restoring them — a wrecked shell.  Refusing the file here
+    // reports on the normal screen and exits before the terminal is ever
+    // touched.
+    let (file_path, startup_anchor) = match file_path {
+        Some(path) => {
+            let (path, anchor) = cli::split_startup_anchor(&path);
+            if let Err(e) = preflight_open(&path) {
+                eprintln!("edamame: {e}");
+                std::process::exit(1);
+            }
+            (Some(path), anchor)
+        }
+        None => (None, None),
+    };
+
     // ── Load configuration ─────────────────────────────────────────
     // Three files: config.toml (editor/modal/table/image + active theme
     // name), keybindings.toml (overrides), themes/<active>.toml (style
@@ -259,27 +286,25 @@ fn run(session: Session, opts: RunOpts) -> Result<()> {
     }
 
     // ── Run the app ───────────────────────────────────────────────
-    // `file.md#section` on the command line opens the file and lands on
-    // that heading — the CLI half of deep linking.  Split here rather
-    // than in `Invocation::parse`: `#` is a legal character in a file
-    // name, so the rule asks the disk before taking one away from a path
-    // (see `cli::split_startup_anchor`), and the parser is pure.
-    let (file_path, startup_anchor) = match file_path {
-        Some(path) => {
-            let (path, anchor) = cli::split_startup_anchor(&path);
-            (Some(path), anchor)
-        }
-        None => (None, None),
-    };
-    let mut app = App::new(
+    // The deep-link anchor was split off and the file validated before
+    // terminal setup (see the top of `run`).  `App::new` can still fail
+    // for reasons the pre-flight can't foresee, so restore the terminal
+    // before propagating rather than trusting the panic hook, which only
+    // fires on an actual panic.
+    let mut app = match App::new(
         config,
         keybindings,
         theme,
         file_path,
         capabilities,
         config_warnings,
-    )?
-    .with_startup_anchor(startup_anchor);
+    ) {
+        Ok(app) => app.with_startup_anchor(startup_anchor),
+        Err(e) => {
+            let _ = terminal::restore();
+            return Err(e);
+        }
+    };
     if let Session::Diff { old, new, label } = session {
         app.set_diff_label(Some(label));
         // `main` already established that the two sides differ, so
@@ -343,6 +368,44 @@ fn run(session: Session, opts: RunOpts) -> Result<()> {
     // and after the log guard, because nothing below this line runs.
     if diff_stop_walk && difftool::under_git_difftool() {
         difftool::stop_walk();
+    }
+    Ok(())
+}
+
+/// Refuse a file edamame cannot open, *before* the terminal is set up.
+///
+/// edamame is a text editor, so the two things it must turn away are a
+/// directory and a file that isn't text.  Both make `Buffer::load_file`
+/// fail from inside `App::new`, which runs after raw mode and the
+/// alternate screen are engaged — and that failure has no path back to
+/// `terminal::restore`, so it left the shell unusable (a directory was
+/// the common way to trip it).  Checking here reports on the normal
+/// screen and exits cleanly.
+///
+/// A *non-existent* path is allowed through: `App::new` opens it as a
+/// new, empty buffer that the first save creates, matching `vim` /
+/// `nano`.  There is deliberately no extension gate — a file the user
+/// named explicitly is opened whatever it is called (`README`, `.txt`,
+/// `.mdx`), since Markdown is a superset of plain text and any text file
+/// renders sensibly.  That is the opposite of the `--diff` path, which
+/// *is* extension-gated because git invokes it unattended on every
+/// changed file (see `difftool::is_markdown_pair`).
+///
+/// The UTF-8 check reads the file, which `App::load_file` then reads
+/// again; the second read is cheap for Markdown-sized files and buys a
+/// pre-terminal decision without threading the loaded bytes through
+/// `App::new`.
+fn preflight_open(path: &std::path::Path) -> Result<(), String> {
+    // A path that doesn't exist (or can't be stat'd) is a new file;
+    // `App::new` handles it.  Only an existing target is validated.
+    let Ok(meta) = std::fs::metadata(path) else {
+        return Ok(());
+    };
+    if meta.is_dir() {
+        return Err(format!("{} is a directory", path.display()));
+    }
+    if let Err(e) = std::fs::read_to_string(path) {
+        return Err(format!("cannot open {}: {e}", path.display()));
     }
     Ok(())
 }
