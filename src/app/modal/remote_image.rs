@@ -247,6 +247,10 @@ mod tests {
 
     #[test]
     fn always_clears_a_session_decline() {
+        // Answering `Always` persists the policy through
+        // `save_config_with_flash`; isolate so it can't rewrite the
+        // developer's own `config.toml`.
+        let _iso = crate::test_env::config_isolation();
         let mut a = app();
         a.session_remote_declined = true;
         // Focus starts on `Yes`; two Rights land on `Always`.
@@ -281,6 +285,11 @@ mod tests {
         // Inert in isolation — the persisted `Never` already suppresses
         // every later prompt — but pinned so all four arms agree that a
         // fresh answer clears the session decline.
+        //
+        // Answering `Never` persists the policy through
+        // `save_config_with_flash`; isolate so it can't rewrite the
+        // developer's own `config.toml`.
+        let _iso = crate::test_env::config_isolation();
         let mut a = app();
         a.session_remote_declined = true;
         // Focus starts on `Yes`; three Rights land on `Never`.
