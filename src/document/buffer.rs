@@ -267,6 +267,27 @@ impl Buffer {
         self.rope.slice(start..end).to_string()
     }
 
+    /// Return the source between byte offsets `start..end` as a `String`,
+    /// or `None` when the range is out of bounds or lands mid-character.
+    ///
+    /// The byte-addressed counterpart of [`Buffer::slice_to_string`], for
+    /// the callers that already hold a byte range — a source-map block
+    /// range, say.  The whole point is to *not* be `contents()`: a link
+    /// hit-test runs on every mouse-move event, and materializing the
+    /// document to slice one block out of it is O(document) per pointer
+    /// report.  Non-panicking (ropey's `get_byte_slice`) so the caller
+    /// keeps the defensive fallback it had when it was slicing a `String`.
+    pub fn byte_slice_to_string(&self, start: usize, end: usize) -> Option<String> {
+        self.rope
+            .get_byte_slice(start..end)
+            .map(|slice| slice.to_string())
+    }
+
+    /// Total length of the buffer in bytes.
+    pub fn len_bytes(&self) -> usize {
+        self.rope.len_bytes()
+    }
+
     /// Replace the underlying rope wholesale while preserving the
     /// buffer's `path`.  Bumps `version` so downstream consumers
     /// (autosave detector, raw-view visual-row cache, parsed-doc
@@ -297,6 +318,21 @@ mod tests {
             path: None,
             version: 0,
         }
+    }
+
+    #[test]
+    fn byte_slice_to_string_extracts_a_range_and_declines_a_bad_one() {
+        let b = buf("héllo wörld");
+        // `é` is two bytes, so the byte range is not the char range.
+        assert_eq!(b.byte_slice_to_string(0, 6).as_deref(), Some("héllo"));
+        assert_eq!(
+            b.byte_slice_to_string(0, b.len_bytes()).as_deref(),
+            Some("héllo wörld")
+        );
+        // Mid-character and out-of-bounds both decline rather than panic —
+        // the link hit-test relies on that for its defensive fallback.
+        assert_eq!(b.byte_slice_to_string(2, 6), None);
+        assert_eq!(b.byte_slice_to_string(0, b.len_bytes() + 1), None);
     }
 
     #[test]

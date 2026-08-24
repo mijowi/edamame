@@ -1981,6 +1981,213 @@ fn hovered_link_url_none_outside_link_span() {
     assert!(mouse_ops::hovered_link_url(&st, 0, 0, VW).is_none());
 }
 
+/// Every item of a link list is one `Block::List`, so pairing the
+/// rendered link runs with the AST's links has to count across the
+/// block's lines.  Counting the run index within each *line* restarted
+/// at zero on every item, and every row of the manual's index page (or a
+/// README's documentation list) reported the first link's URL.
+#[test]
+fn each_item_of_a_link_list_resolves_to_its_own_url() {
+    let st = state(concat!(
+        "# Manual\n\n",
+        "- [Getting started](getting-started.md)\n",
+        "- [Editing](editing.md)\n",
+        "- [Keybindings](keybindings.md)\n",
+    ));
+    // Rendered as `• Getting started` / `• Editing` / `• Keybindings`,
+    // one rendered row each below the H1 and its rule.
+    assert_eq!(
+        mouse_ops::hovered_link_url(&st, 4, 3, VW).as_deref(),
+        Some("getting-started.md")
+    );
+    assert_eq!(
+        mouse_ops::hovered_link_url(&st, 4, 4, VW).as_deref(),
+        Some("editing.md")
+    );
+    assert_eq!(
+        mouse_ops::hovered_link_url(&st, 4, 5, VW).as_deref(),
+        Some("keybindings.md")
+    );
+}
+
+/// The default theme underlines H2-H6, so the old underline-marker test
+/// classified a heading as a link — and then resolved it against
+/// whatever block the (wrap-blind) row lookup landed on, which for a
+/// README is the documentation list right below it.
+#[test]
+fn an_underlined_heading_is_not_a_link() {
+    let st = state("## Documentation\n\n- [Getting started](getting-started.md)\n");
+    for col in 0..16u16 {
+        assert_eq!(
+            mouse_ops::hovered_link_url(&st, col, 0, VW),
+            None,
+            "col {col} of the heading reported a link"
+        );
+    }
+    assert!(!mouse_ops::hit_test_clickable(&st, 4, 0, VW, &[]));
+    // The list item below still resolves.
+    assert_eq!(
+        mouse_ops::hovered_link_url(&st, 4, 2, VW).as_deref(),
+        Some("getting-started.md")
+    );
+}
+
+/// …and a real link *inside* a heading still resolves, over its own text
+/// only.  The whole heading line is underlined, so a marker-based run
+/// walk coalesced heading text and link text into one run.
+#[test]
+fn a_link_inside_a_heading_covers_only_its_own_text() {
+    let st = state("## See [Docs](x.md) now\n");
+    // Renders as `  See Docs now` — the two-space heading indent puts
+    // `Docs` at cols 6..=9.
+    assert_eq!(mouse_ops::hovered_link_url(&st, 3, 0, VW), None);
+    assert_eq!(
+        mouse_ops::hovered_link_url(&st, 6, 0, VW).as_deref(),
+        Some("x.md")
+    );
+    assert_eq!(
+        mouse_ops::hovered_link_url(&st, 9, 0, VW).as_deref(),
+        Some("x.md")
+    );
+    assert_eq!(mouse_ops::hovered_link_url(&st, 11, 0, VW), None);
+}
+
+/// A wrapped line above the pointer used to shift the lookup down by one
+/// rendered line per extra visual row, so the link resolved against a
+/// different block entirely.
+#[test]
+fn a_wrapped_paragraph_above_does_not_shift_the_lookup() {
+    let long = "word ".repeat(40);
+    let st = state(&format!("{long}\n\n[Docs](x.md)\n"));
+    // At width 20 the paragraph wraps over several rows; find the row
+    // the link landed on by walking down until something resolves.
+    let width = 20usize;
+    let hit = (0..40u16)
+        .find_map(|row| mouse_ops::hovered_link_url(&st, 1, row, width).map(|url| (row, url)));
+    let (row, url) = hit.expect("the link resolves on some row");
+    assert_eq!(url, "x.md");
+    // …and only on that row: the rows above are paragraph text.
+    for above in 0..row {
+        assert_eq!(mouse_ops::hovered_link_url(&st, 1, above, width), None);
+    }
+}
+
+/// The blank space after a line that ends in a link is not the link.
+/// Cursor placement clamps a click past the end of a row onto its last
+/// character; hit-testing must decline instead.
+#[test]
+fn the_space_after_a_trailing_link_is_not_the_link() {
+    let st = state("See [docs](https://example.com)\n");
+    assert_eq!(
+        mouse_ops::hovered_link_url(&st, 5, 0, VW).as_deref(),
+        Some("https://example.com")
+    );
+    assert_eq!(mouse_ops::hovered_link_url(&st, 40, 0, VW), None);
+    assert!(!mouse_ops::hit_test_clickable(&st, 40, 0, VW, &[]));
+}
+
+/// The pointer-shape path composes `hit_test_clickable_non_link` with the
+/// hover it already resolved, so the split has to add back up: the
+/// non-link half must decline a link, and the pair must answer exactly
+/// what the whole does.
+#[test]
+fn the_non_link_hit_test_declines_a_link_and_the_pair_adds_back_up() {
+    let st = state("See [docs](https://example.com) and - [ ] a task\n");
+    for col in 0..48u16 {
+        let whole = mouse_ops::hit_test_clickable(&st, col, 0, VW, &[]);
+        let composed = mouse_ops::hit_test_clickable_non_link(&st, col, 0, VW, &[])
+            || mouse_ops::hovered_link_url(&st, col, 0, VW).is_some();
+        assert_eq!(whole, composed, "col {col} disagreed");
+    }
+    // The link half really is the half that answers over the link text.
+    assert!(mouse_ops::hit_test_clickable(&st, 5, 0, VW, &[]));
+    assert!(!mouse_ops::hit_test_clickable_non_link(&st, 5, 0, VW, &[]));
+}
+
+/// An in-document heading anchor is the one link the underline marker
+/// cannot see: `Theme::link_heading` is the link foreground with *no*
+/// underline, deliberately quieter than a web link.  It is the whole
+/// reason `is_link_style` keys on the foreground, and nothing else in
+/// the suite would fail if that branch went away.
+#[test]
+fn an_in_document_heading_anchor_is_a_link() {
+    let st = state("# Alpha\n\nSee [Alpha](#alpha) here\n");
+    // `# Alpha` renders as a big-text / rule pair above the paragraph;
+    // the anchor sits on the paragraph's own rendered row.
+    let hit = (0..8u16)
+        .find_map(|row| mouse_ops::hovered_link_url(&st, 6, row, VW).map(|url| (row, url)));
+    let (row, url) = hit.expect("the anchor resolves on some row");
+    assert_eq!(url, "#alpha");
+    assert!(mouse_ops::hit_test_clickable(&st, 6, row, VW, &[]));
+    // The word before it is prose, not part of the link.
+    assert_eq!(mouse_ops::hovered_link_url(&st, 0, row, VW), None);
+}
+
+/// An inline image is painted with `Theme::image_placeholder` — the link
+/// foreground, with the alt text underlined — so both run-finding walks
+/// see a run there.  It is not a link, and the AST pairing must consume
+/// an entry for it anyway: without one, `![logo](l.png) see [docs](d.md)`
+/// had the image opening `d.md` and the real link opening nothing.
+#[test]
+fn an_inline_image_is_not_a_link_and_does_not_shift_the_one_after_it() {
+    let st = state("![logo](l.png) see [docs](d.md)\n");
+    // `[Image: logo]` occupies cols 0..=12, then ` see `, then `docs`.
+    for col in [0u16, 3, 8, 12] {
+        assert_eq!(
+            mouse_ops::hovered_link_url(&st, col, 0, VW),
+            None,
+            "col {col} of the image placeholder reported a link"
+        );
+        assert!(!mouse_ops::hit_test_clickable(&st, col, 0, VW, &[]));
+    }
+    for col in 18..=21u16 {
+        assert_eq!(
+            mouse_ops::hovered_link_url(&st, col, 0, VW).as_deref(),
+            Some("d.md"),
+            "col {col} of the link did not resolve"
+        );
+    }
+}
+
+/// …and because runs are now counted across a block's lines, one inline
+/// image used to shift every *later* line of the block too: item two
+/// resolved to item three's URL and item three to nothing.
+#[test]
+fn an_inline_image_does_not_shift_later_lines_of_the_block() {
+    let st = state(concat!(
+        "- ![b](b.png) [one](one.md)\n",
+        "- [two](two.md)\n",
+        "- [three](three.md)\n",
+    ));
+    assert_eq!(
+        mouse_ops::hovered_link_url(&st, 14, 0, VW).as_deref(),
+        Some("one.md")
+    );
+    assert_eq!(
+        mouse_ops::hovered_link_url(&st, 3, 1, VW).as_deref(),
+        Some("two.md")
+    );
+    assert_eq!(
+        mouse_ops::hovered_link_url(&st, 3, 2, VW).as_deref(),
+        Some("three.md")
+    );
+}
+
+/// An image *inside* a link is one run, not two: the renderer paints the
+/// placeholder and the AST walk does not descend into a link's own text,
+/// so the badge still follows the link wrapped around it.
+#[test]
+fn an_image_wrapped_in_a_link_still_follows_the_link() {
+    let st = state("[![badge](b.png)](https://example.com) and [docs](d.md)\n");
+    assert_eq!(
+        mouse_ops::hovered_link_url(&st, 3, 0, VW).as_deref(),
+        Some("https://example.com")
+    );
+    let docs = (0..VW as u16)
+        .find_map(|col| mouse_ops::hovered_link_url(&st, col, 0, VW).filter(|u| u == "d.md"));
+    assert_eq!(docs.as_deref(), Some("d.md"));
+}
+
 #[test]
 fn link_target_parse_classifies_inputs_correctly() {
     use std::path::PathBuf;

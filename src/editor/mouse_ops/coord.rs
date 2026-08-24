@@ -150,6 +150,21 @@ pub(super) fn rendered_click_to_line_col(
     row: usize,
     viewport_width: usize,
 ) -> Option<(usize, usize)> {
+    let (idx, char_col, _) =
+        rendered_click_to_line_col_with_layout(state, col, row, viewport_width)?;
+    Some((idx, char_col))
+}
+
+/// [`rendered_click_to_line_col`] plus the [`LineLayout`] it wrapped
+/// against, so a caller inverting the mapping doesn't rebuild it.  The
+/// layout is `None` for an empty rendered line, which short-circuits
+/// before any wrapping happens.
+fn rendered_click_to_line_col_with_layout(
+    state: &EditorState,
+    col: usize,
+    row: usize,
+    viewport_width: usize,
+) -> Option<(usize, usize, Option<LineLayout>)> {
     let (idx, sub_row) = walk_rendered_rows(state, row, viewport_width)?;
     let line = state.parsed.lines.get(idx)?;
     let chars: Vec<(char, ratatui::style::Style)> = line
@@ -161,7 +176,7 @@ pub(super) fn rendered_click_to_line_col(
         })
         .collect();
     if chars.is_empty() {
-        return Some((idx, 0));
+        return Some((idx, 0, None));
     }
     let indent = line_render::compute_hanging_indent(line);
     let rows = line_render::visual_rows_of_chars(&chars, viewport_width.max(1), indent);
@@ -178,7 +193,68 @@ pub(super) fn rendered_click_to_line_col(
     let row_indent = if sub == 0 { 0 } else { indent };
     let local_col = col.saturating_sub(row_indent);
     let char_col = (row_start + local_col).min(max_in_row);
-    Some((idx, char_col))
+    let layout = LineLayout {
+        rows,
+        indent,
+        char_count: chars.len(),
+    };
+    Some((idx, char_col, Some(layout)))
+}
+
+/// Like [`rendered_click_to_line_col`], but declines when the cell lies
+/// past the last painted character of its visual row instead of clamping
+/// onto it.
+///
+/// The clamp is right for cursor placement (a click in the empty space
+/// after a line puts the cursor at its end) and wrong for hit-testing: a
+/// line ending in a link would report that link for every cell of blank
+/// space to its right, so the hand pointer and the hint-line tooltip
+/// would follow the pointer out past the text.
+pub(super) fn rendered_click_to_line_col_on_text(
+    state: &EditorState,
+    col: usize,
+    row: usize,
+    viewport_width: usize,
+) -> Option<(usize, usize)> {
+    let (idx, char_col, layout) =
+        rendered_click_to_line_col_with_layout(state, col, row, viewport_width)?;
+    let layout = layout?;
+    if char_col >= layout.char_count {
+        return None;
+    }
+    // `rendered_click_to_line_col` clamps a cell past the row's last
+    // character onto that character; re-deriving the cell the clamped
+    // column would occupy is how we tell a real hit from a clamped one.
+    // The layout it wrapped against comes back with it — this runs on
+    // every mouse-move event, and rebuilding the char vector and the row
+    // table to invert a mapping we just applied doubled that per-event
+    // cost for nothing.
+    let cell = cell_col_for_char_col(&layout, char_col)?;
+    (cell == col).then_some((idx, char_col))
+}
+
+/// The wrap layout [`rendered_click_to_line_col`] resolved a click
+/// against: the row table, the hanging indent it was built with, and the
+/// line's total char count.  Returned so the inverse mapping can reuse
+/// it rather than recomputing both from `state`.
+pub(super) struct LineLayout {
+    /// `(row_start, row_end, next_start)` per visual row, as
+    /// [`line_render::visual_rows_of_chars`] produces them.
+    rows: Vec<(usize, usize, usize)>,
+    /// Hanging indent applied to every row past the first.
+    indent: usize,
+    /// Total chars on the logical line, across all its spans.
+    char_count: usize,
+}
+
+/// The screen cell column at which `char_col` is painted, including a
+/// continuation row's hanging indent.  The inverse of the mapping
+/// [`rendered_click_to_line_col`] applies, over that call's own layout.
+fn cell_col_for_char_col(layout: &LineLayout, char_col: usize) -> Option<usize> {
+    let (sub, _) = line_render::sub_line_of_col(&layout.rows, char_col);
+    let (row_start, _, _) = layout.rows.get(sub).copied()?;
+    let row_indent = if sub == 0 { 0 } else { layout.indent };
+    Some(row_indent + char_col.saturating_sub(row_start))
 }
 
 /// Walk rendered lines from `state.scroll`, accumulating per-line wrapped

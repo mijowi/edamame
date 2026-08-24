@@ -4,48 +4,42 @@ use ratatui::text::Line;
 use crate::config::Theme;
 use crate::editor::link::LinkTarget;
 use crate::editor::EditorState;
-use crate::ui::line_render;
+use crate::ui::LinkRun;
 
-use super::coord::{click_to_char_offset, rendered_line_at_row};
+use super::coord::{click_to_char_offset, rendered_click_to_line_col_on_text};
 
 /// Does `style` belong to a rendered link?
 ///
-/// Web and file links carry `Modifier::UNDERLINED` (`Theme::link_text` /
-/// `link_file`), which is the cheap marker every link path keyed on
-/// originally.  An in-document heading anchor (`[Section](#section)`)
-/// is deliberately quieter — `Theme::link_heading` is the link
-/// foreground with *no* underline (see `docs/dev/theming.md`) — so the
-/// underline test alone silently classified those as ordinary prose:
-/// no hand cursor, no hint-line URL, no AST-backed click resolution.
-/// The heading-link arm therefore matches on the resolved link color
-/// instead, and is gated on that color actually being set so a
-/// colorless theme (`Monochrome Dark`, whose `link_heading` *is*
-/// underlined) can't classify every unstyled span as a link.
+/// The discriminator is the *foreground*, not `Modifier::UNDERLINED`.
+/// The underline is what a link is decorated with, but it is not
+/// exclusive to links: the default theme underlines H2-H6 as well, so
+/// the marker test classified every heading as a link — and the run
+/// coalescing then swallowed a real link sitting inside one.  Every
+/// theme paints link text in the link color (`link_text` / `link_file`
+/// for web and file links, the deliberately quieter, underline-free
+/// `link_heading` for an in-document anchor), inside a heading and
+/// inside a blockquote alike, so the color is the honest signal.
 ///
-/// The single derivation for every link hit-test — keep the hover
-/// shape, the hint line, and the click path reading the same answer.
+/// This is a *candidate* test, not a verdict: an unrelated slot may
+/// share the link color (`syntax_function` is derived from it), so
+/// callers go through [`link_at_rendered_pos`], which only believes a
+/// run it can pair with a real `Inline::Link` in the block's AST.
 pub(super) fn is_link_style(style: Style, theme: &Theme) -> bool {
-    if style.add_modifier.contains(Modifier::UNDERLINED) {
-        return true;
+    let link_fgs = [
+        theme.link_text.fg,
+        theme.link_file.fg,
+        theme.link_heading.fg,
+    ];
+    if link_fgs.iter().any(Option::is_some) {
+        return link_fgs.iter().any(|fg| fg.is_some() && *fg == style.fg);
     }
-    theme.link_heading.fg.is_some()
-        && style.fg == theme.link_heading.fg
-        && style.bg == theme.link_heading.bg
-}
-
-/// Whether the rendered span covering char column `col` of `line` is a
-/// link span.  Mirrors `coord::span_at_col_has_modifier`'s walk, but
-/// asks [`is_link_style`] so heading anchors count too.
-pub(super) fn span_at_col_is_link(line: &Line<'_>, col: usize, theme: &Theme) -> bool {
-    let mut walk = 0usize;
-    for span in &line.spans {
-        let span_len = span.content.chars().count();
-        if col < walk + span_len {
-            return is_link_style(span.style, theme);
-        }
-        walk += span_len;
-    }
-    false
+    // A colorless theme (`Monochrome Dark`) spends UNDERLINED on its link
+    // slots and has no foreground to tell them apart with, so the marker
+    // is all that is left.  It over-matches there — that theme underlines
+    // H2-H6 too — which is exactly why every consumer resolves the run
+    // against the block's AST links before believing it (see
+    // [`link_at_rendered_pos`]).
+    style.add_modifier.contains(Modifier::UNDERLINED)
 }
 
 /// If `(col, row)` falls on a Markdown link, return its raw URL string
@@ -66,11 +60,7 @@ pub fn hovered_link_url(
     row: u16,
     viewport_width: usize,
 ) -> Option<String> {
-    let (line, _) = rendered_line_at_row(state, row as usize)?;
-    if !span_at_col_is_link(&line, col as usize, state.theme()) {
-        return None;
-    }
-    link_url_for_click(state, col as usize, row as usize, viewport_width)
+    link_at_rendered_pos(state, col as usize, row as usize, viewport_width).map(|(url, _)| url)
 }
 
 /// If `(col, row)` lands on a Markdown link, set
@@ -94,22 +84,15 @@ pub(super) fn follow_link_at_click(
     // snapshot slice here — `hit_test_clickable` already shows the span
     // marker is sufficient, and this keeps `mouse_ops::apply`'s signature
     // small.
-    if let Some((line, _)) = rendered_line_at_row(state, row as usize) {
-        if span_at_col_is_link(&line, col as usize, state.theme()) {
-            // The rendered line has a link span at this col — resolve the
-            // URL by matching the N-th link in the block's AST with the
-            // N-th underlined span on this line.
-            if let Some(url) = link_url_for_click(state, col as usize, row as usize, viewport_width)
-            {
-                let base_dir = state
-                    .buffer
-                    .path()
-                    .and_then(|p| p.parent())
-                    .map(|p| p.to_owned());
-                state.pending_link_follow = Some(LinkTarget::parse(&url, base_dir.as_deref()));
-                return true;
-            }
-        }
+    if let Some((url, _)) = link_at_rendered_pos(state, col as usize, row as usize, viewport_width)
+    {
+        let base_dir = state
+            .buffer
+            .path()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_owned());
+        state.pending_link_follow = Some(LinkTarget::parse(&url, base_dir.as_deref()));
+        return true;
     }
 
     // Raw fallback — click on the revealed raw `[text](url)` syntax of the
@@ -177,86 +160,123 @@ pub(super) fn follow_footnote_at_click(
     false
 }
 
-/// Best-effort: determine which URL was clicked by matching the
-/// link-span index at `(col, row)` against the N-th
-/// `Inline::Link` in the clicked rendered line's block.
+/// Resolve the Markdown link under rendered position `(col, row)`, if
+/// any, returning its raw URL and optional title.
 ///
-/// Returns `None` when the click doesn't land on a link span or
-/// we can't associate it with an AST link (which falls back to the raw
-/// scan).
-fn link_url_for_click(
+/// The single derivation behind the hand pointer, the hint-line hover
+/// tooltip and the click-to-follow path, so all three answer the same
+/// question the same way.
+///
+/// Two things make it exact where the older span-index walk was not:
+///
+/// * **The position is resolved with [`rendered_click_to_line_col_on_text`]**,
+///   which is scroll- *and* wrap-aware.  The previous walk counted one
+///   rendered line per screen row, so any wrapped line above the pointer
+///   (a long HTML block, a wrapped list item) shifted the lookup down by
+///   one line per extra row and the click resolved against a different
+///   block entirely.
+/// * **Link runs are counted per *block*, not per line.**  A block's
+///   N-th link-styled run pairs with the block's N-th
+///   `ui::link_view::LinkRun` — the same list `link_view::build_snapshots`
+///   pairs its own runs against, though the two find their runs by
+///   different tests (see [`link_run_ranges`]).  Counting the run index
+///   within the clicked *line* instead made every line of a multi-line
+///   block start again at zero, so every item of a link list (the
+///   generated manual index, a README's documentation list) resolved to
+///   the list's first URL.
+///
+/// A run that pairs with a `LinkRun::ImagePlaceholder` resolves to
+/// `None`: an inline image is painted in the link foreground but is not
+/// a link, and the caller falls through to the raw-source scan.
+pub(super) fn link_at_rendered_pos(
     state: &EditorState,
     col: usize,
     row: usize,
-    _viewport_width: usize,
-) -> Option<String> {
-    let (line, _sub_row) = rendered_line_at_row(state, row)?;
-    // Index of the link run at `col` within this line.
+    viewport_width: usize,
+) -> Option<(String, Option<String>)> {
+    let (line_idx, char_col) = rendered_click_to_line_col_on_text(state, col, row, viewport_width)?;
     let theme = state.theme();
-    let mut walk = 0usize;
-    let mut run_index: Option<usize> = None;
-    let mut link_count = 0usize;
-    let mut in_run = false;
-    for span in &line.spans {
-        let span_len = span.content.chars().count();
-        let under = is_link_style(span.style, theme);
-        if under {
-            if !in_run {
-                // Entering a new link run — record its index.
-                if col >= walk && col < walk + span_len {
-                    run_index = Some(link_count);
-                }
-                link_count += 1;
-                in_run = true;
-            } else if col >= walk && col < walk + span_len {
-                // Still in the same run — run_index already set.
-                run_index.get_or_insert(link_count - 1);
-            }
-        } else {
-            in_run = false;
-        }
-        walk += span_len;
-    }
-    let target_idx = run_index?;
+    let line = state.parsed.lines.get(line_idx)?;
+    let runs = link_run_ranges(line, theme);
+    let run_in_line = runs
+        .iter()
+        .position(|(start, end)| char_col >= *start && char_col < *end)?;
 
-    // Walk the block's AST to find the `target_idx`-th link.
-    let cursor_byte = state
+    // Every link run on the block's earlier rendered lines comes first in
+    // the AST's link order.
+    let block_byte = state
         .parsed
         .source_map
-        .original_byte_for_rendered_line(index_for_row(state, row)?)?;
+        .original_byte_for_rendered_line(line_idx)?;
     let block_range = state
         .parsed
         .source_map
-        .original_range_for_byte(cursor_byte)?;
-    let source = state.buffer.contents();
-    // Char-boundary defensive fallback — see `rendered_sub_line_to_offset`
-    // for the rationale; the App flushes the parse before mouse dispatch
-    // so the unwrap_or path is for safety, not correctness.
-    let block_src = source
-        .get(block_range.start..block_range.end.min(source.len()))
-        .unwrap_or("");
-    let blocks = crate::markdown::parse(block_src);
-    let mut urls: Vec<(String, Option<String>)> = Vec::new();
-    for block in &blocks {
-        crate::ui::link_view::collect_links_from_block_public(block, &mut urls);
+        .original_range_for_byte(block_byte)?;
+    let rendered_range = state
+        .parsed
+        .source_map
+        .rendered_lines_for_byte(block_range.start);
+    let preceding: usize = (rendered_range.start..line_idx.min(rendered_range.end))
+        .filter_map(|idx| state.parsed.lines.get(idx))
+        .map(|earlier| link_run_ranges(earlier, theme).len())
+        .sum();
+
+    // Slice the block out of the rope directly rather than materializing
+    // the whole document: this runs on every mouse-move event over a
+    // link-styled run, and `Buffer::contents()` there is O(document) per
+    // pointer report.  Char-boundary defensive fallback — see
+    // `rendered_sub_line_to_offset` for the rationale; the App flushes the
+    // parse before mouse dispatch so the `unwrap_or_default` path is for
+    // safety, not correctness.
+    let block_src = state
+        .buffer
+        .byte_slice_to_string(
+            block_range.start,
+            block_range.end.min(state.buffer.len_bytes()),
+        )
+        .unwrap_or_default();
+    let mut runs_in_block: Vec<LinkRun> = Vec::new();
+    for block in &crate::markdown::parse(&block_src) {
+        crate::ui::link_view::collect_link_runs_from_block_public(block, &mut runs_in_block);
     }
-    urls.into_iter().nth(target_idx).map(|(u, _)| u)
+    match runs_in_block.into_iter().nth(preceding + run_in_line)? {
+        LinkRun::Link { url, title } => Some((url, title)),
+        LinkRun::ImagePlaceholder => None,
+    }
 }
 
-/// Resolve the rendered-line index that corresponds to document-area
-/// row `row`, accounting for scroll.  Mirrors the inner loop of
-/// `rendered_line_at_row` but returns the index rather than the line.
-fn index_for_row(state: &EditorState, row: usize) -> Option<usize> {
-    let lines = &state.parsed.lines;
-    let mut y = 0usize;
-    for (idx, line) in lines.iter().enumerate().skip(state.scroll) {
-        let rows_used = line_render::visual_rows_for_line(line, usize::MAX).max(1);
-        if row < y + rows_used {
-            return Some(idx);
+/// `[(start_col, end_col)]` char-column ranges for every run of
+/// consecutive link-styled spans in `line`.  Adjacent runs coalesce so a
+/// link whose text carries bold / italic substyling still counts once.
+///
+/// This is the *foreground*-keyed counterpart of
+/// `link_view::underlined_char_ranges`, which keys on
+/// `Modifier::UNDERLINED`: both walk the renderer's spans in emission
+/// order and both consume one `link_view::LinkRun` per run, but they do
+/// not agree run for run, and the difference is deliberate.  An
+/// in-document heading anchor (`link_heading`) carries the link colour
+/// and no underline, so it is a run here and not one there — which is
+/// why this path resolves anchors and the snapshot path does not.  Any
+/// change to either predicate has to be argued against both.
+fn link_run_ranges(line: &Line<'_>, theme: &Theme) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut col = 0usize;
+    let mut run_start: Option<usize> = None;
+    for span in &line.spans {
+        let span_len = span.content.chars().count();
+        if is_link_style(span.style, theme) {
+            if run_start.is_none() {
+                run_start = Some(col);
+            }
+        } else if let Some(start) = run_start.take() {
+            out.push((start, col));
         }
-        y += rows_used;
+        col += span_len;
     }
-    None
+    if let Some(start) = run_start {
+        out.push((start, col));
+    }
+    out
 }
 
 /// Scan the source line containing `click_byte` for Markdown link syntax

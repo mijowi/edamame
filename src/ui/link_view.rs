@@ -10,10 +10,13 @@
 //! the same pattern used for table handles and images.
 //!
 //! The snapshots are AST-backed: we walk `Block::Heading`, `Paragraph`,
-//! `List`, `Table`, and `BlockQuote` to extract every `Inline::Link` in
-//! document order and pair it with the rendered line(s) for its block.
-//! The rendered-column range is then read back from the styled
-//! `Line<'static>`'s UNDERLINED + `link_text` span(s).
+//! `List`, `Table`, and `BlockQuote` to extract every link-styled run
+//! ([`LinkRun`]) in document order and pair it with the rendered line(s)
+//! for its block.  The rendered-column range is then read back from the
+//! styled `Line<'static>`'s UNDERLINED + `link_text` span(s).  An inline
+//! image's placeholder underlines its alt text too, so it earns a
+//! `LinkRun` of its own that consumes a run without emitting a snapshot
+//! — otherwise every link after an inline image pairs with the wrong URL.
 //!
 //! For the raw-reveal fallback path (when the cursor block is being
 //! shown as raw text and the AST-styled spans aren't present), callers
@@ -29,6 +32,27 @@ use ratatui::text::Line;
 use crate::editor::link::LinkTarget;
 use crate::editor::EditorState;
 use crate::markdown::{Block, Inline};
+
+/// One link-styled run the renderer emits, in document order.
+///
+/// The renderer paints an inline image's `[Image: alt]` placeholder with
+/// `Theme::image_placeholder` — the link foreground, with the alt text
+/// underlined — so every consumer that finds runs by style sees one
+/// there.  Carrying the placeholder as its own variant is what keeps a
+/// run's index and the AST's index the same number; see
+/// [`collect_link_runs_from_block`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkRun {
+    /// A real `Inline::Link`.
+    Link {
+        /// Raw URL from the Markdown source.
+        url: String,
+        /// The optional link title (Markdown: `[text](url "title")`).
+        title: Option<String>,
+    },
+    /// An `Inline::Image` placeholder: styled like a link, but not one.
+    ImagePlaceholder,
+}
 
 /// Per-frame geometry for one visible link.
 ///
@@ -166,9 +190,12 @@ fn extract_block_links(
     // links.  Collecting URLs first lets us skip the per-line geometry
     // walk for those blocks entirely — the dominant win on link-sparse
     // documents like plan.md.
-    let mut link_urls: Vec<(String, Option<String>)> = Vec::new();
-    collect_links_from_block(block, &mut link_urls);
-    if link_urls.is_empty() {
+    let mut link_runs: Vec<LinkRun> = Vec::new();
+    collect_link_runs_from_block(block, &mut link_runs);
+    if !link_runs
+        .iter()
+        .any(|run| matches!(run, LinkRun::Link { .. }))
+    {
         return;
     }
 
@@ -202,15 +229,20 @@ fn extract_block_links(
     // Walk each visible line of the block, extracting UNDERLINED spans
     // in order.  For each UNDERLINED-span slice we pop the next URL
     // from `link_urls` and produce one snapshot per visual row.
-    let mut link_iter = link_urls.into_iter().peekable();
+    let mut link_iter = link_runs.into_iter().peekable();
     for (line_idx, y_start, rows_used) in line_positions {
         let Some(line) = state.parsed.lines.get(line_idx) else {
             continue;
         };
         let underlined_ranges = underlined_char_ranges(line);
         for (start_col, end_col) in underlined_ranges {
-            let Some((url, title)) = link_iter.next() else {
+            // Every run consumes an entry, image placeholders included —
+            // that is what keeps the pairing aligned past an inline image.
+            let Some(run) = link_iter.next() else {
                 return;
+            };
+            let LinkRun::Link { url, title } = run else {
+                continue;
             };
             let target = LinkTarget::parse(&url, base_dir);
             // For wrap-aware placement, split the char range across the
@@ -264,42 +296,52 @@ fn underlined_char_ranges(line: &Line<'_>) -> Vec<(usize, usize)> {
     out
 }
 
-/// Public wrapper around [`collect_links_from_block`] for callers
-/// outside this module (notably `mouse_ops::link_url_for_click`).  The
-/// private function is kept so the build-pass call-site doesn't need
+/// Public wrapper around [`collect_link_runs_from_block`] for callers
+/// outside this module (notably `mouse_ops::links::link_at_rendered_pos`).
+/// The private function is kept so the build-pass call-site doesn't need
 /// to shuffle through the public API.
-pub fn collect_links_from_block_public(block: &Block, out: &mut Vec<(String, Option<String>)>) {
-    collect_links_from_block(block, out);
+pub fn collect_link_runs_from_block_public(block: &Block, out: &mut Vec<LinkRun>) {
+    collect_link_runs_from_block(block, out);
 }
 
-/// Collect every `Inline::Link` in `block`, walking nested block / inline
-/// structures (list items, table cells, block quotes).  Preserves
-/// document order so the N-th link emitted here matches the N-th
-/// UNDERLINED span the renderer produces.
-fn collect_links_from_block(block: &Block, out: &mut Vec<(String, Option<String>)>) {
+/// Collect one [`LinkRun`] per link-styled run the renderer will emit for
+/// `block`, walking nested block / inline structures (list items, table
+/// cells, block quotes).  Preserves document order, so the N-th entry
+/// here pairs with the N-th run a consumer finds on the rendered lines.
+///
+/// `Inline::Image` earns an entry of its own even though it is not a
+/// link: the renderer paints its placeholder with `Theme::image_placeholder`,
+/// which carries the link foreground *and* underlines the alt text, so
+/// both consumers see a run there.  Without a placeholder entry to
+/// consume it, every link after an inline image pairs with the wrong
+/// URL (`![logo](l.png) see [docs](d.md)` had the image opening `d.md`
+/// and the real link opening nothing).  An image *inside* a link is not
+/// counted twice — the walk does not descend into a link's own text,
+/// and the renderer emits one run for the pair.
+fn collect_link_runs_from_block(block: &Block, out: &mut Vec<LinkRun>) {
     match block {
         Block::Heading { inlines, .. } | Block::Paragraph { inlines } => {
-            collect_links_from_inlines(inlines, out);
+            collect_link_runs_from_inlines(inlines, out);
         }
         Block::BlockQuote { blocks } | Block::FootnoteDefinition { blocks, .. } => {
             for inner in blocks {
-                collect_links_from_block(inner, out);
+                collect_link_runs_from_block(inner, out);
             }
         }
         Block::List { items, .. } => {
             for item in items {
                 for inner in &item.blocks {
-                    collect_links_from_block(inner, out);
+                    collect_link_runs_from_block(inner, out);
                 }
             }
         }
         Block::Table { headers, rows, .. } => {
             for cell in headers {
-                collect_links_from_inlines(cell, out);
+                collect_link_runs_from_inlines(cell, out);
             }
             for row in rows {
                 for cell in row {
-                    collect_links_from_inlines(cell, out);
+                    collect_link_runs_from_inlines(cell, out);
                 }
             }
         }
@@ -312,21 +354,24 @@ fn collect_links_from_block(block: &Block, out: &mut Vec<(String, Option<String>
     }
 }
 
-fn collect_links_from_inlines(inlines: &[Inline], out: &mut Vec<(String, Option<String>)>) {
+fn collect_link_runs_from_inlines(inlines: &[Inline], out: &mut Vec<LinkRun>) {
     for inline in inlines {
         match inline {
             Inline::Link { url, title, .. } => {
-                out.push((url.clone(), title.clone()));
+                out.push(LinkRun::Link {
+                    url: url.clone(),
+                    title: title.clone(),
+                });
             }
+            Inline::Image { .. } => out.push(LinkRun::ImagePlaceholder),
             Inline::Bold(inner)
             | Inline::Italic(inner)
             | Inline::Strikethrough(inner)
             | Inline::Highlight(inner) => {
-                collect_links_from_inlines(inner, out);
+                collect_link_runs_from_inlines(inner, out);
             }
             Inline::Text(_)
             | Inline::Code(_)
-            | Inline::Image { .. }
             | Inline::HtmlComment(_)
             | Inline::FootnoteReference { .. }
             | Inline::SoftBreak

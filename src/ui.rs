@@ -53,7 +53,7 @@ pub use image_view::ImageLayoutSnapshot;
 pub use insert_table_modal::{InsertTableResponse, InsertTableState, InsertTableView};
 pub use keybinds_overlay::KeybindsResponse;
 pub use keybinds_overlay::{KeybindsState, KeybindsView};
-pub use link_view::LinkLayoutSnapshot;
+pub use link_view::{LinkLayoutSnapshot, LinkRun};
 pub use markdown_cheat_sheet::body_lines as markdown_cheat_sheet_body;
 pub use modal::{ModalButton, ModalResponse, ModalState, ModalView};
 pub(crate) use modal_links::{ModalLink, ModalLinkTarget};

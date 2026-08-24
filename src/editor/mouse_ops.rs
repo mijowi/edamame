@@ -30,7 +30,7 @@ use self::coord::{
     click_to_char_offset, preview_table_cell_band, rendered_click_to_line_col,
     rendered_line_at_row, table_cell_char_range_at,
 };
-use self::links::{follow_footnote_at_click, follow_link_at_click, span_at_col_is_link};
+use self::links::{follow_footnote_at_click, follow_link_at_click, link_at_rendered_pos};
 use self::selection::{
     expand_selection_to_inline_markers, select_line_at_cursor, select_word_at_cursor,
     word_range_around,
@@ -120,9 +120,35 @@ pub const MOUSE_SCROLL_OVERSHOOT: usize = 0;
 /// there's no column to its left to resize, so a click there falls
 /// through to cell placement and the cursor stays as text.
 ///
-/// Used by the app's mouse-move handler to update the terminal pointer shape
-/// so the mouse cursor renders as a pointing hand over clickable regions.
+/// The complete answer, and the one tests ask.  The app's mouse-move
+/// handler instead composes [`hit_test_clickable_non_link`] with the
+/// hover it has already resolved for the hint line — see that function
+/// for why the link half is worth not asking twice.
 pub fn hit_test_clickable(
+    state: &EditorState,
+    col: u16,
+    row: u16,
+    viewport_width: usize,
+    snapshots: &[TableLayoutSnapshot],
+) -> bool {
+    hit_test_clickable_non_link(state, col, row, viewport_width, snapshots)
+        || link_at_rendered_pos(state, col as usize, row as usize, viewport_width).is_some()
+}
+
+/// [`hit_test_clickable`] minus the link test: checkboxes, footnote
+/// markers, the table buttons and the resizable column borders.
+///
+/// The split exists for one caller.  `App::dispatch_mouse_event` resolves
+/// the hovered link for the hint line on every `Moved` event and then
+/// asked for the pointer shape at the same coordinates, so the full
+/// resolver — whose miss path allocates the line's char vector and wrap
+/// table, and whose hit path slices and re-parses the block — ran twice
+/// per pointer report for one answer.  It now passes its own
+/// `hovered_link` in place of the second call.  Keep the two composed in
+/// that order: `hovered_link` must be resolved for the *same* position
+/// and viewport width, which is what makes the substitution exact rather
+/// than approximate.
+pub fn hit_test_clickable_non_link(
     state: &EditorState,
     col: u16,
     row: u16,
@@ -170,15 +196,6 @@ pub fn hit_test_clickable(
     // with no raw byte, so it needs the rendered-line hit-test (the leader
     // and reference markers are covered by the source scan below).
     if footnotes::back_link_glyph_at_click(state, col, row).is_some() {
-        return true;
-    }
-
-    // Link: check whether the rendered span at `c` was emitted with one
-    // of the theme's link styles — underlined for web / file links,
-    // link-colored for a quieter in-document heading anchor.  Shared
-    // with the hint-line hover and the click path via
-    // `links::span_at_col_is_link`, so all three agree on what counts.
-    if span_at_col_is_link(&line, c, state.theme()) {
         return true;
     }
 

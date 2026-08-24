@@ -1003,13 +1003,20 @@ impl App {
         let desired = if in_doc {
             let rel_col = mouse_event.column - dims.doc_area.x;
             let rel_row = mouse_event.row - dims.doc_area.y;
-            if mouse_ops::hit_test_clickable(
-                &self.editor,
-                rel_col,
-                rel_row,
-                dims.doc_width,
-                &self.view_state.rendered.table_snapshots,
-            ) {
+            // `refresh_hovered_link` just resolved the link at exactly
+            // this position and width, so reuse its answer instead of
+            // asking `hit_test_clickable` to resolve it a second time —
+            // the resolver slices and re-parses the block on a hit, and
+            // this runs on every pointer report.
+            if self.hovered_link.is_some()
+                || mouse_ops::hit_test_clickable_non_link(
+                    &self.editor,
+                    rel_col,
+                    rel_row,
+                    dims.doc_width,
+                    &self.view_state.rendered.table_snapshots,
+                )
+            {
                 PointerShape::Hand
             } else {
                 PointerShape::Text
