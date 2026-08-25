@@ -1,6 +1,6 @@
 [package]
 name = "edamame"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 # Minimum supported Rust version, found with `cargo-msrv` and pinned by the
 # `msrv` CI job so it can't rot silently.  Cargo enforces it, so an older
@@ -23,11 +23,7 @@ categories = ["command-line-utilities", "text-editors"]
 # excluding them makes `cargo publish` warn once per ignored target.
 # `CLAUDE.md` is a symlink to `AGENTS.md`, and cargo dereferences symlinks
 # when packaging, so leaving it in would publish the same file twice.
-exclude = [
-    "docs/dev/plans/",
-    ".github/",
-    "CLAUDE.md",
-]
+exclude = ["docs/dev/plans/", ".github/", "CLAUDE.md"]
 
 [[bin]]
 name = "edamame"
@@ -41,7 +37,11 @@ path = "src/lib.rs"
 # TUI framework and terminal backend.  `serde` is on so
 # `ratatui::style::Color` deserializes from strings ("red", "#ff00aa", "42")
 # inside our `ThemeFile` TOML layer.
-ratatui = { version = "0.30", features = ["serde", "crossterm_0_29", "unstable-rendered-line-info"] }
+ratatui = { version = "0.30", features = [
+  "serde",
+  "crossterm_0_29",
+  "unstable-rendered-line-info",
+] }
 crossterm = "0.29"
 
 # Markdown parsing
@@ -106,21 +106,23 @@ fancy-regex = "0.18"
 # compiles two copies — the same cost the `resvg`/`usvg` pins avoid.
 # Re-check on a syntect bump.
 syntect = { version = "5.3", default-features = false, features = [
-    "parsing",
-    "regex-fancy",
+  "parsing",
+  "regex-fancy",
 ] }
 # 213 language grammars for syntect, syntect's own `default-syntaxes` set
 # included.  `syntect-fancy` (not the default `syntect-onig`) so it agrees
 # with the backend chosen above instead of unifying `onig` back in.
 two-face = { version = "0.5", default-features = false, features = [
-    "syntect-fancy",
+  "syntect-fancy",
 ] }
 
 # Clipboard (OS clipboard with kill-ring fallback).  `wayland-data-control`
 # is not in arboard's defaults but is required for read access on pure
 # Wayland (Sway, GNOME without XWayland); without it `Clipboard::new()`
 # returns `Err` there and paste falls back to the in-process kill-ring.
-arboard = { version = "3", optional = true, features = ["wayland-data-control"] }
+arboard = { version = "3", optional = true, features = [
+  "wayland-data-control",
+] }
 
 # Terminal image-protocol probing (`Picker::from_query_stdio`).  `chafa-dyn`
 # is skipped to avoid a libchafa system dependency — the Picker is used for
@@ -133,7 +135,9 @@ arboard = { version = "3", optional = true, features = ["wayland-data-control"] 
 # (docs/security.md), no matter what that line says.  It also dragged the
 # AVIF *encoder* (`ravif` → `rav1e` → the unmaintained `paste`,
 # RUSTSEC-2024-0436) into a program that encodes nothing.
-ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
+ratatui-image = { version = "11", default-features = false, features = [
+  "crossterm",
+] }
 
 # Image format decoding — transitively pulled by ratatui-image, listed
 # explicitly so `DynamicImage` and `ImageError` are reachable from
@@ -144,7 +148,13 @@ ratatui-image = { version = "11", default-features = false, features = ["crosste
 # ordinary `Unsupported` error (nothing panics).  Widening it accepts
 # another decoder's worth of untrusted-input surface, so add a format only
 # on request, never as a side effect of a feature flag.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
+image = { version = "0.25", default-features = false, features = [
+  "png",
+  "jpeg",
+  "gif",
+  "bmp",
+  "webp",
+] }
 
 # Blocking HTTP client for remote image fetches.  rustls, not
 # native-tls/OpenSSL, so there is no system-library dependency.
@@ -174,7 +184,9 @@ tempfile = "3"
 # MUST match what mermaid-rs-renderer pulls in transitively (0.46), or cargo
 # compiles two copies.  `tiny_skia` is deliberately not listed:
 # `resvg::tiny_skia::*` re-exports keep it locked to resvg's choice.
-mermaid-rs-renderer = { version = "=0.2.2", default-features = false, features = ["png"] }
+mermaid-rs-renderer = { version = "=0.2.2", default-features = false, features = [
+  "png",
+] }
 resvg = "0.46"
 usvg = "0.46"
 # Synthetic cache-key URLs (`diagram-mermaid-<sha>`), stable across reparses
