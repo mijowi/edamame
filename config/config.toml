@@ -196,20 +196,41 @@ remote_policy = "ask"
 enabled = "ask"
 
 # ── Export ────────────────────────────────────────────────────────────────────
-# HTML is edamame's only export target. Run it from the command palette
-# (Ctrl-P → "Export HTML"). These are the defaults the Export HTML modal opens
-# with; choosing different options in that modal writes them back here.
+# Run an export from the command palette (Ctrl-P → "Export…"). Pick the
+# output format — HTML, or anything you configure under [[export.custom]]
+# below — from the Format list at the bottom of the modal. These are the
+# defaults that modal opens with; choosing different options in it writes
+# them back here.
 # [export.html]
 # stylesheet     = "builtin"    # "builtin" (the bundled default), or a path to
 #                               # a .css file. Drop custom stylesheets in the
 #                               # `export/` folder beside this file and they
-#                               # show up in the Export HTML modal's picker. A
-#                               # `default.css.example` reference is written
-#                               # there on first run — copy it to `<name>.css`
-#                               # and edit it as a starting point.
+#                               # show up in the export modal's stylesheet
+#                               # picker. A `default.css.example` reference is
+#                               # written there on first run — copy it to
+#                               # `<name>.css` and edit it as a starting point.
 # inline_images  = false        # when true, local images are base64-embedded
 # diagrams       = true         # render ```mermaid blocks as inline SVG
 #                               # (false → leave as <pre><code class="language-mermaid">)
+
+# Custom export targets. Each block adds one format to the export modal's
+# Format list. edamame renders the document to HTML first — using the
+# [export.html] options above, so the stylesheet and the two inline toggles
+# shape the result — then runs your command over it. Output lands beside the
+# document: `notes/guide.md` with extension = "pdf" writes `notes/guide.pdf`.
+#
+# Two placeholders are substituted anywhere in `command`:
+#   {html}  the rendered HTML (a temp file, deleted afterwards)
+#   {out}   the file to write
+# A command that writes to stdout instead of {out} also works — edamame
+# captures it. Nothing goes through a shell, so `command` is an argv list,
+# not a string; use ["sh", "-c", "..."] if you want shell syntax.
+#
+# Repeat the block for as many targets as you like.
+# [[export.custom]]
+# name      = "PDF (weasyprint)"
+# command   = ["weasyprint", "{html}", "{out}"]
+# extension = "pdf"
 
 # ── Dev ───────────────────────────────────────────────────────────────────────
 # Developer tooling. When `logging` is true, structured `tracing` logs are

@@ -23,7 +23,7 @@ pub mod dirty_conflict;
 pub mod dirty_conflict_discard_confirm;
 pub mod dirty_conflict_save_copy;
 pub mod dirty_guard;
-pub mod export_html;
+pub mod export;
 pub mod export_success;
 pub mod export_theme;
 pub mod file_deleted;

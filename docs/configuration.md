@@ -211,13 +211,67 @@ Controls rendering of ` ```mermaid ` blocks. Deliberately independent of `[image
 | `inline_images` | bool | `false` |
 | `diagrams` | bool | `true` |
 
-These are the values the Export HTML modal opens with; whatever you pick in that modal is written back here.
+Facilitates custom export formats.
+
+```toml
+[[export.custom]]
+name      = "PDF (weasyprint)"
+command   = ["weasyprint", "{html}", "{out}"]
+extension = "pdf"
+```
+
+That adds "PDF (weasyprint)" to the Format list in the export modal, beside "HTML". Pick it and the rest of the form is unchanged — because the HTML your converter reads is the HTML those options describe, the stylesheet in particular. Choose your stylesheet with the final format in mind: for print, a `@page` rule in a custom `.css` is usually what you want.
+
+`{html}` is the rendered file and `{out}` is where the result goes, both substituted anywhere in `command`. If your converter writes to standard output rather than to a named file, leave `{out}` out and edamame will capture it. The command runs in your document's directory, so relative image paths resolve the way they did on screen.
+
+`command` is a list of arguments, not a command line: nothing is passed through a shell, so quoting and `$VAR` don't apply and a file name with a space in it needs no special handling. If you do want shell syntax, ask for it explicitly with `["sh", "-c", "..."]`.
+
+Everything else works as it does for HTML — the output lands beside your document under the extension you configured, you're asked before overwriting, and the converter runs in the background so edamame stays responsive. If it fails, the modal shows you its exit status and whatever it wrote to standard error.
+
+You can configure as many as you like; each becomes another row in the Format list. An entry that couldn't work — no name, no command, no extension — is left out of that list with a warning naming it, rather than becoming a format that fails once you've filled in the form. Your `config.toml` is left untouched, so the block stays there for you to correct.
+
+See [configuration.md](configuration.md#exportcustom) for the full field reference.
+
+
+These are the values the export modal opens with — for a custom target as well as for HTML, since a custom export converts the HTML these settings describe. Whatever you pick in that modal is written back here.
 
 `stylesheet` is either the literal `"builtin"` or a path to a `.css` file. Drop stylesheets into the `export/` folder beside `config.toml` and they appear in the modal's picker. A `default.css.example` is written there on first run to copy from.
 
 `inline_images` base64-embeds local images into the HTML so the file is self-contained. Off by default, partly because it makes large files and partly because an embedded file leaves your machine when you share the export — only images inside the document's own directory tree are ever inlined.
 
-See [editing.md](editing.md#exporting-to-html).
+See [editing.md](editing.md#exporting).
+
+---
+
+## `[[export.custom]]`
+
+| Key | Type | Default |
+|---|---|---|
+| `name` | string | — |
+| `command` | array of strings | — |
+| `extension` | string | — |
+
+An array of tables: repeat the block once per converter. Each entry adds a format to the export modal's Format list (beside HTML); choosing it renders the document to HTML using `[export.html]` above and then runs `command` over the result.
+
+```toml
+[[export.custom]]
+name      = "PDF (weasyprint)"
+command   = ["weasyprint", "{html}", "{out}"]
+extension = "pdf"
+
+[[export.custom]]
+name      = "DOCX"
+command   = ["pandoc", "{html}", "-o", "{out}"]
+extension = "docx"
+```
+
+`name` is what the format will be listed as in the export modal's Format list.
+
+`command` is an argv list, not a command line — it is executed directly, never through a shell, so quoting, globbing and `$VAR` don't apply. Use `["sh", "-c", "…"]` if you want them. Two placeholders are substituted anywhere in the list: `{html}` is the rendered intermediate file (a temp file, removed afterwards) and `{out}` is the file to write. A converter that writes to standard output instead is also handled — omit `{out}` and edamame captures the output. The command runs with the document's directory as its working directory.
+
+`extension` sets the output extension. `notes/guide.md` with `extension = "pdf"` writes `notes/guide.pdf`.
+
+All three fields are required in practice. An entry missing one is left out of the export modal's Format list, with a startup warning that names its position.
 
 ---
 
@@ -264,4 +318,9 @@ enabled = "always"
 
 [export.html]
 inline_images = true
+
+[[export.custom]]
+name      = "PDF (weasyprint)"
+command   = ["weasyprint", "{html}", "{out}"]
+extension = "pdf"
 ```

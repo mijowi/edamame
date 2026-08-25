@@ -88,9 +88,9 @@ pub(crate) enum AppEvent {
     /// generation id of the spawning modal, so a result from a superseded
     /// export (the user dismissed the modal and opened a fresh one while the
     /// worker ran) is routed to the hint line instead of hijacking the new
-    /// modal.  When the still-open `ExportHtmlModal` matches that id it is
+    /// modal.  When the still-open `ExportModal` matches that id it is
     /// advanced to its success / error phase
-    /// (`ExportHtmlModal::on_export_done`).  `Ok(path)` is the written file;
+    /// (`ExportModal::on_export_done`).  `Ok(path)` is the written file;
     /// `Err(message)` is a presentable failure string.
     ExportDone(u64, crate::export::ExportOutcome),
 }

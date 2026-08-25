@@ -10,6 +10,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ### Added
 
+- Export to PDF, DOCX or anything else a converter on your machine can produce. Describe the converter once under `[[export.custom]]` in `config.toml` — a name, an argv-style command, and an output extension — and it appears in the export modal's Format list, beside HTML. Run **Export…** from the command palette, pick a format, and edamame renders the document to HTML, hands that file to your command, and writes the result next to the document.
 - A Terminal compatibility page in the manual: what each capability affects, the workarounds, and a table of which terminals support what. The terminal-capabilities notice links straight to it.
 - The manual now ships inside the binary and opens in the app. `Ctrl-P` → **Help: Documentation** for the index, or jump straight to a page (**Docs: Keybindings**, **Docs: Vim mode**, …). Pages are read-only, searchable, and link to each other; `Alt+Left` returns to what you were writing.
 - After an upgrade, edamame shows the new version's release notes once, read from the changelog built into it. The Release notes button on the About page shows them again at any time.

@@ -374,23 +374,37 @@ impl Default for DiagramsConfig {
 
 /// Export configuration.
 ///
-/// HTML is the only export target that has shipped.  It is *designed* to
-/// double as the intermediate format for user-defined custom commands that
-/// produce PDF, DOCX, etc., and the machinery for that exists
-/// ([`CustomExportEntry`], [`export::spawn_custom_export`]) — but nothing
-/// calls it yet, so `custom` is inert.
+/// HTML is the built-in target and also the intermediate format for the
+/// user-defined custom commands that produce PDF, DOCX, etc.
+/// ([`CustomExportEntry`], [`export::spawn_custom_export`]).
 ///
 /// [`export::spawn_custom_export`]: crate::export::spawn_custom_export
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ExportConfig {
     pub html: HtmlExportConfig,
-    /// User-defined extra export entries.  **Parsed but not yet wired up:**
-    /// nothing reads this field, so entries a user writes here have no
-    /// effect and produce no warning.  `config/config.toml` documents no
-    /// `[[export.custom]]` block for that reason — restore it, and the
-    /// palette entries described on [`CustomExportEntry`], when the feature
-    /// actually ships.
+    /// User-defined extra export entries, in the order they appear in
+    /// `config.toml`.  **The palette carries no per-converter row and no
+    /// per-converter [`Action`]:** one `Export…` entry
+    /// ([`Action::ExportHtml`]) opens the export modal, whose Format list
+    /// offers HTML plus each entry here, in this order.
+    ///
+    /// The modal resolves that list *once, at open time*, cloning each
+    /// entry into an `ExportJob` — never storing an index into this
+    /// vector.  Returning from the external editor reloads config
+    /// wholesale, so an index captured when the modal opened could name a
+    /// different converter, or none, by the time `[ Export ]` is pressed.
+    ///
+    /// Entries that could not produce a working command (no name, no
+    /// command, no usable extension) are reported at load time with a
+    /// [`WarningKind::InvalidValue`] warning and then *ignored* — they
+    /// stay in this vector (so a later save preserves the user's block)
+    /// but are left out of the Format list, so every format the modal
+    /// offers is runnable.  See [`CustomExportEntry::config_problem`].
+    ///
+    /// [`Action`]: crate::config::Action
+    /// [`Action::ExportHtml`]: crate::config::Action::ExportHtml
+    /// [`WarningKind::InvalidValue`]: crate::config::WarningKind::InvalidValue
     pub custom: Vec<CustomExportEntry>,
 }
 
@@ -430,12 +444,9 @@ impl Default for HtmlExportConfig {
 
 /// A single user-configured custom-export entry.
 ///
-/// **Not reachable yet.** The intent is for each entry to show up in the
-/// command palette as `Export <name>`, but nothing constructs those palette
-/// items or calls [`export::spawn_custom_export`], so an entry in
-/// `config.toml` is parsed and then ignored.  Everything below describes the
-/// runner's contract, which is implemented and tested — only the UI hookup
-/// is missing.
+/// Each entry appears in the command palette as `Export <name>` and opens
+/// the shared export modal, which renders the document to HTML with the
+/// options on its form and then runs `command` over the result.
 ///
 /// `command` is run verbatim with two placeholders substituted:
 ///
@@ -445,16 +456,78 @@ impl Default for HtmlExportConfig {
 ///   configured `extension` appended).
 ///
 /// [`export::spawn_custom_export`]: crate::export::spawn_custom_export
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// **Every field defaults, and the validator is what enforces them.**  A
+/// missing `extension` used to be a hard `toml::de::Error`, and because
+/// the loader answers a parse failure by falling back to
+/// `Config::default()`, one typo inside an export entry silently reset
+/// the user's *entire* config — theme, keybindings, autosave and all —
+/// for that launch.  Defaulting here keeps the blast radius to the entry:
+/// `readers::validate_custom_exports` reports an unusable one with a
+/// warning naming its index, and everything else in `config.toml` still
+/// applies.
+///
+/// A reported entry is **ignored, not deleted** — it stays in this vector
+/// so the next `Config::save` writes the user's block back untouched
+/// (rather than erasing the very lines the warning asked them to fix).
+/// It is merely excluded from the palette; see [`Self::config_problem`].
+///
+/// It also makes the block in the shipped reference config checkable,
+/// since `shipped_reference_config_examples_are_all_uncommentable`
+/// uncomments one line at a time.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CustomExportEntry {
-    /// Human-readable label — intended to render as `Export <name>` in the
-    /// palette once the entries are surfaced there.
+    /// Human-readable label, rendered as `Export <name>` in the command
+    /// palette.
     pub name: String,
     /// argv-style command.  Element 0 is the executable; remaining
     /// elements are arguments with `{html}` / `{out}` substitution.
     pub command: Vec<String>,
-    /// Extension (no leading dot) for the output file.
+    /// Extension for the output file.  A leading dot and surrounding
+    /// whitespace are tolerated in config but not part of the value used
+    /// — see [`Self::output_extension`].
     pub extension: String,
+}
+
+impl CustomExportEntry {
+    /// The extension actually used to name the output file: `extension`
+    /// trimmed of surrounding whitespace and a single leading dot.  So
+    /// `"pdf"`, `" pdf "` and `".pdf"` all name a `.pdf` output, while
+    /// `""`, `"  "` and `"."` name *no* extension (which is why
+    /// [`Self::config_problem`] rejects them — otherwise the export would
+    /// overwrite the document's own neighbour instead of a sibling file).
+    pub fn output_extension(&self) -> &str {
+        let trimmed = self.extension.trim();
+        trimmed.strip_prefix('.').unwrap_or(trimmed)
+    }
+
+    /// The reason this entry cannot produce a working palette command, or
+    /// `None` if it is runnable.  The single predicate behind two
+    /// decisions: `readers::validate_custom_exports` turns a `Some` into a
+    /// startup warning, and the command palette offers only the entries
+    /// that answer `None`.  Keeping both on one function is what stops a
+    /// warned-about entry from also appearing as a row that fails after
+    /// the user fills in the options form.
+    ///
+    /// The three rules are exactly the ones the runner and the palette
+    /// cannot recover from: an empty `name` has nothing to label the row
+    /// with; an empty `command` is
+    /// [`crate::export::CustomExportError::EmptyCommand`], discovered only
+    /// after the export is spawned; and an empty (or path-bearing)
+    /// [`Self::output_extension`] would move or unname the output.
+    pub fn config_problem(&self) -> Option<&'static str> {
+        if self.name.trim().is_empty() {
+            Some("`name` is empty; it is what labels the command-palette entry")
+        } else if self.command.is_empty() {
+            Some("`command` is empty; it needs at least the program to run")
+        } else if self.output_extension().is_empty() {
+            Some("`extension` is empty; the export would replace the document's own name")
+        } else if self.output_extension().contains(['/', '\\']) {
+            Some("`extension` contains a path separator; it must name a suffix, not a location")
+        } else {
+            None
+        }
+    }
 }
 
 /// Developer/diagnostic settings.  Kept separate from `[editor]` because these

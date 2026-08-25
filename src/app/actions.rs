@@ -224,7 +224,8 @@ pub(super) fn action_caps(action: &Action) -> ActionCaps {
         | TableDeleteColumn | TableInsertBreak | InsertTable | InsertImage | InsertLink
         | InsertFootnote | DeleteFootnote | RenumberFootnotes | FixListNumbering | SearchReplace
         | SearchReplaceAll | FollowLinkUnderCursor | NavigateBack | NavigateForward
-        | GoToSection | OpenDoc(_) | Open | Save | SaveAs | ExportHtml | OpenInExternalEditor
+        | GoToSection | OpenDoc(_) | Open | Save | SaveAs | ExportHtml
+        | OpenInExternalEditor
         // Neither reads nor writes the document: the mode transitions
         // and the persisted-setting flips.
         | EnterEditMode | ExitToPreview | ToggleRawMode | ToggleTableButtons | ToggleBigH1
@@ -532,7 +533,7 @@ impl App {
                 true
             }
             Action::ExportHtml => {
-                self.open_export_html_modal();
+                self.open_export_modal();
                 true
             }
             Action::OpenConfigFolder => {

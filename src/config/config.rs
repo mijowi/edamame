@@ -1222,6 +1222,49 @@ show_buttons = true
         assert!(!out.contains("mouse_scroll_lines"));
     }
 
+    /// A malformed `[[export.custom]]` block the config validator flagged
+    /// must survive an ordinary save.  The validator keeps such entries in
+    /// the in-memory vector precisely so the merge writes them back — a
+    /// bookkeeping save (update check, autosave settings, …) fires within
+    /// seconds of launch, and erasing the block here would delete the very
+    /// lines the startup warning asked the user to fix.
+    #[test]
+    fn save_merge_preserves_a_custom_export_block_flagged_by_the_validator() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "theme = \"Nord\"\n\n\
+             # my PDF converter\n\
+             [[export.custom]]\n\
+             name = \"PDF\"\n\
+             command = [\"weasyprint\", \"{html}\", \"{out}\"]\n\
+             # extension is missing on purpose — the validator warns but keeps it\n",
+        )
+        .unwrap();
+
+        // The loader leaves the flagged entry in place (non-mutating
+        // validation), so the in-memory config still carries it.
+        let config = Config {
+            theme: "Nord".to_owned(),
+            export: ExportConfig {
+                custom: vec![CustomExportEntry {
+                    name: "PDF".to_owned(),
+                    command: vec!["weasyprint".into(), "{html}".into(), "{out}".into()],
+                    extension: String::new(),
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let out = save_merge(&config, &path).expect("merge ok");
+        assert!(
+            out.contains("[[export.custom]]") && out.contains("name = \"PDF\""),
+            "the user's custom-export block must not be erased by a save:\n{out}"
+        );
+    }
+
     /// Changing an existing key in the user's file replaces just
     /// the value — the trailing comment on the same line stays.
     #[test]

@@ -168,8 +168,9 @@ pub enum Action {
     /// Reveal the active config directory in the OS file manager / open
     /// it via `open::that`.
     OpenConfigFolder,
-    /// Palette entry for the built-in HTML exporter.  Wired
-    /// up here so the palette's `Suggested` list can reference it.
+    /// Open the export modal.  Its Format list offers HTML plus every
+    /// configured `[[export.custom]]` converter, so this one action reaches
+    /// every target; the palette shows it as `Export…`.
     ExportHtml,
     /// Save the current buffer and open it in `$VISUAL` / `$EDITOR`
     /// (falling back to the OS handler).  Reuses the same suspend /

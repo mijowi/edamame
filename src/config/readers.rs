@@ -154,6 +154,34 @@ fn validate_main_config(path: &Path, config: &mut Config, warnings: &mut Vec<Con
             },
         });
     }
+
+    validate_custom_exports(path, config, warnings);
+}
+
+/// Warn once for every `[[export.custom]]` entry that could not produce a
+/// working palette command.
+///
+/// **Reports, but does not remove.**  Unlike the range checks above there
+/// is no default to fall back on, but *deleting* the entry from `config`
+/// would be worse than the problem: the loader's result is written back on
+/// the next `Config::save`, so a `retain` here erases the user's block from
+/// their `config.toml` — the very lines the warning is asking them to fix.
+/// The entry stays put and is instead excluded from the palette at the
+/// point rows are built ([`crate::config::CustomExportEntry::config_problem`]
+/// is the shared predicate), so a row that cannot run is never offered
+/// while the config on disk is left intact.
+fn validate_custom_exports(path: &Path, config: &mut Config, warnings: &mut Vec<ConfigWarning>) {
+    for (index, entry) in config.export.custom.iter().enumerate() {
+        if let Some(message) = entry.config_problem() {
+            warnings.push(ConfigWarning {
+                path: path.to_path_buf(),
+                kind: WarningKind::InvalidValue {
+                    key: format!("export.custom[{index}]"),
+                    message: format!("{message}; this export is not offered in the palette"),
+                },
+            });
+        }
+    }
 }
 
 /// Read `keybindings.toml`.  In addition to the usual parse-error /
@@ -330,6 +358,100 @@ pub(super) fn read_theme_named(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::CustomExportEntry;
+
+    /// Build a `Config` with the given custom-export entries, run it
+    /// through validation, and report what survived plus the warnings.
+    fn validated(entries: Vec<CustomExportEntry>) -> (Vec<CustomExportEntry>, Vec<ConfigWarning>) {
+        let mut config = Config::default();
+        config.export.custom = entries;
+        let mut warnings = Vec::new();
+        validate_custom_exports(Path::new("config.toml"), &mut config, &mut warnings);
+        (config.export.custom, warnings)
+    }
+
+    fn entry(name: &str, command: &[&str], extension: &str) -> CustomExportEntry {
+        CustomExportEntry {
+            name: name.to_owned(),
+            command: command.iter().map(|s| (*s).to_owned()).collect(),
+            extension: extension.to_owned(),
+        }
+    }
+
+    /// A well-formed entry warns about nothing and is left exactly as
+    /// written.
+    #[test]
+    fn a_usable_custom_export_survives_untouched() {
+        let good = entry("PDF", &["pandoc", "{html}", "-o", "{out}"], "pdf");
+        let (kept, warnings) = validated(vec![good.clone()]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].name, good.name);
+        assert_eq!(kept[0].command, good.command);
+        assert_eq!(kept[0].extension, good.extension);
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// Each unusable shape warns once, naming its index — but the entry is
+    /// **kept**, not removed.  Deleting it would erase the user's block on
+    /// the next `Config::save`; the palette excludes it instead
+    /// (`CustomExportEntry::config_problem`), so the config on disk is left
+    /// intact for the user to fix.
+    #[test]
+    fn every_unusable_custom_export_is_reported_but_kept() {
+        for (label, bad) in [
+            ("no name", entry("", &["pandoc"], "pdf")),
+            ("blank name", entry("   ", &["pandoc"], "pdf")),
+            ("no command", entry("PDF", &[], "pdf")),
+            ("no extension", entry("PDF", &["pandoc"], "")),
+            ("blank extension", entry("PDF", &["pandoc"], "  ")),
+            ("dot-only extension", entry("PDF", &["pandoc"], ".")),
+            ("path in extension", entry("PDF", &["pandoc"], "../out.pdf")),
+        ] {
+            let (kept, warnings) = validated(vec![bad]);
+            assert_eq!(kept.len(), 1, "{label} should be kept, not removed");
+            assert_eq!(warnings.len(), 1, "{label} should warn exactly once");
+            match &warnings[0].kind {
+                WarningKind::InvalidValue { key, .. } => {
+                    assert_eq!(key, "export.custom[0]", "{label}")
+                }
+                other => panic!("{label}: expected InvalidValue, got {other:?}"),
+            }
+        }
+    }
+
+    /// One bad entry must not cost the user a warning against the wrong
+    /// line: the index the message carries is the offender's *own*
+    /// position, which is what the palette builds its rows from, so an
+    /// off-by-one would point the user at working config.  All three are
+    /// kept — only the palette-offering is filtered.
+    #[test]
+    fn a_bad_entry_is_reported_at_its_own_index_without_taking_its_neighbours() {
+        let (kept, warnings) = validated(vec![
+            entry("PDF", &["pandoc"], "pdf"),
+            entry("broken", &[], "docx"),
+            entry("DOCX", &["pandoc"], "docx"),
+        ]);
+        assert_eq!(kept.len(), 3, "no entry is removed");
+        assert_eq!(warnings.len(), 1);
+        match &warnings[0].kind {
+            WarningKind::InvalidValue { key, .. } => assert_eq!(key, "export.custom[1]"),
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    /// A tolerated-but-nonempty extension is not a problem, and the value
+    /// actually used for the filename is normalized: whitespace and a
+    /// single leading dot are stripped.
+    #[test]
+    fn output_extension_normalizes_dot_and_whitespace() {
+        assert!(entry("PDF", &["pandoc"], " pdf ")
+            .config_problem()
+            .is_none());
+        assert_eq!(entry("PDF", &["pandoc"], " pdf ").output_extension(), "pdf");
+        assert_eq!(entry("PDF", &["pandoc"], ".pdf").output_extension(), "pdf");
+        // Trims to empty → a real problem, caught before it can unname the file.
+        assert!(entry("PDF", &["pandoc"], ".").config_problem().is_some());
+    }
 
     /// The shipped `config/config.toml` is copied verbatim into every new
     /// user's config directory, so a typo in it greets a first-time user

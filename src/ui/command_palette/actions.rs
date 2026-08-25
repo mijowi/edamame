@@ -115,7 +115,7 @@ pub(super) fn label_for(action: &Action) -> Option<&'static str> {
         Action::SwitchTheme => "Switch theme",
         Action::CreateCustomTheme => "Create custom theme",
         Action::OpenKeybinds => "Open keybindings",
-        Action::ExportHtml => "Export HTML",
+        Action::ExportHtml => "Export…",
         Action::OpenInExternalEditor => "Open current file in system editor",
         Action::ToggleTableButtons => "Toggle table buttons",
         Action::ToggleBigH1 => "Toggle big H1 headings",

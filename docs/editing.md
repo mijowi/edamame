@@ -346,24 +346,25 @@ Rendering happens in the background and results are cached by content, so editin
 
 ---
 
-## Exporting to HTML
+## Exporting
 
-"Export HTML" in the palette. The output lands beside your document — `notes/guide.md` exports `notes/guide.html`.
-
-Four choices, remembered for next time:
+"Export…" in the palette opens the export modal. There are four options here:
 
 - **Title** — the document title
 - **Inline images** — embed local images in the file as Base64 (self-contained but larger) or leave them as links
 - **Inline diagrams** — render mermaid blocks into the file, or leave them as code blocks
 - **Stylesheet** — the bundled one, or your own
+- **Format** — the output format, HTML by default
 
 For your own stylesheet, drop a `.css` file into the `export/` folder in your config directory and it appears in the picker. A `default.css.example` is written there to start from.
 
-Exports are written atomically, and you're asked before overwriting an existing file. When it's done you can open it in a browser or reveal the folder.
+The output lands beside your document — `notes/guide.md` exports `notes/guide.html`.
 
 Some things are deliberately stripped on the way out, because an exported file is usually one you share: raw HTML, and links using schemes other than `http`, `https`, `mailto` and `tel`. Diagrams are rasterized rather than embedded as SVG. Only images inside the document's own folder are ever inlined. The reasoning is in [security.md](security.md).
 
-HTML is currently the only export target.
+### Other formats
+
+HTML is the only format edamame writes itself, but it will hand that HTML to a converter you nominate, which is how you get PDF, DOCX, EPUB or anything else your tools can produce. See [configuration.md](configuration.md#exportcustom) for how to add your own custom export formats.
 
 ---
 

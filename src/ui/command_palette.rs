@@ -45,6 +45,10 @@ const PLACEHOLDER: &str = "Search commands…";
 const NO_MATCHES_WIDTH: u16 = 12;
 
 /// Build the palette's list component from `keymap`.
+///
+/// A single `Export…` entry covers every target — the format (HTML, or any
+/// configured `[[export.custom]]` converter) is chosen inside the export
+/// modal's Format list, so the palette carries no per-converter rows.
 pub fn build_palette_list(keymap: &KeyMap) -> SearchableList<PaletteEntry> {
     SearchableList::new(build_entries(keymap), |e: &PaletteEntry| e.label.as_str())
         .with_sections(palette_sections)
@@ -330,7 +334,7 @@ mod tests {
                 "Go to section".to_owned(),
                 "Insert table".to_owned(),
                 "Toggle table buttons".to_owned(),
-                "Export HTML".to_owned(),
+                "Export…".to_owned(),
                 "Open current file in system editor".to_owned(),
                 "Show Markdown cheat sheet".to_owned(),
                 "About edamame".to_owned()
@@ -428,6 +432,19 @@ mod tests {
         let ctrl_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
         list.handle_key(&ctrl_p);
         assert!(list.query().is_empty());
+    }
+
+    /// A single `Export…` entry represents every target; the format is
+    /// chosen inside the modal, so there is exactly one export row.
+    #[test]
+    fn there_is_a_single_export_entry() {
+        let entries = build_entries(&keymap());
+        let exports: Vec<&PaletteEntry> = entries
+            .iter()
+            .filter(|e| e.action == Action::ExportHtml)
+            .collect();
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].label, "Export…");
     }
 
     #[test]
