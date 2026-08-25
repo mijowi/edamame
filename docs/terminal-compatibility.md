@@ -1,6 +1,6 @@
 # Terminal compatibility
 
-edamame runs in any terminal, but a handful of features are delivered by the terminal rather than by edamame. Where one is missing, edamame adapts — it swaps in a theme built for 256 colors, keeps `[Image: …]` placeholders in place of pictures, and tells you which chords won't arrive. Nothing breaks, and the command palette (`Ctrl-P`) reaches every command regardless of what your terminal can do.
+edamame runs in any terminal, but a handful of features are dependent on certain features not all terminals have. When one is missing, edamame adapts — it swaps in a theme built for 256 colors, keeps `[Image: …]` placeholders in place of pictures, and tells you which key chords won't work. The command palette (`Ctrl-P`) reaches every command regardless of mouse and key chord support.
 
 This page covers what depends on the terminal, how to find out what yours supports, and what to do about each gap.
 
@@ -20,13 +20,11 @@ This page covers what depends on the terminal, how to find out what yours suppor
 
 Three ways, all showing the same five capabilities:
 
+- **The welcome notice.** When you first open edamame, a terminal capabilities summary is displayed in the welcome screen, which shows what your terminal supports. `Ctrl-P` → "Open welcome / terminal setup" reopens the setup screen, which carries the same summary and lets you change the settings that depend on it.
 - **The capabilities notice.** The first time you launch edamame in a terminal it hasn't seen before, it reports what that terminal supports. This appears **once per terminal**, not every launch.
-- **`edamame --doctor`.** Prints the same summary plus system facts, formatted for pasting into a bug report. See [getting-started.md](getting-started.md#command-line-flags).
-- **`Ctrl-P` → "Open welcome / terminal setup".** Reopens the setup screen, which carries the same summary and lets you change the settings that depend on it.
+- **`edamame --doctor`.** This command prints the same summary plus system facts, formatted for pasting into a bug report. See [getting-started.md](getting-started.md#command-line-flags).
 
 ![The terminal capabilities notice, listing color, image, mouse and keyboard support](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/terminal_capabilities.jpg)
-
-To make the notice fire again, clear `seen_terminal_fingerprints` in `config.toml`.
 
 ---
 
@@ -45,8 +43,6 @@ See [themes.md](themes.md) for the theme list and how to write your own.
 ## Images and diagrams
 
 Inline images and Mermaid diagrams need **an image protocol** — Kitty graphics, iTerm2 inline images, or Sixel — **and** 24-bit color. Below truecolor edamame declines to render them at all, because the result would be badly quantized; that refusal is session-only too, so a config shared with a capable terminal keeps working.
-
-Half-block rendering is available as a low-fidelity fallback, and is what edamame uses while scrolling and for images clipped off screen.
 
 Where an image can't be shown you get an `[Image: alt text]` placeholder, so the document still reads. Diagrams and images are separate settings — you can enable one without the other. Details in [editing.md](editing.md#images).
 
@@ -104,22 +100,22 @@ edamame works under tmux, with two caveats worth knowing:
 
 ## Tested terminals
 
-> **In progress.** This table is being filled in as terminals are tested. A `?` means not yet verified, not "doesn't work" — if you run one of those, `edamame --doctor` output on an [issue](https://github.com/mijowi/edamame/issues) is welcome, and so is a terminal that isn't listed.
+> **In progress.** This table is being filled in as terminals are tested. A `?` means not yet verified, not "doesn't work" — if you run one of those, or another terminal not listed, `edamame --doctor` and a verification of the output on an [issue](https://github.com/mijowi/edamame/issues) is welcome.
 
-✓ works · ✗ not supported · ? not yet tested
+✓ works · ✗ degraded or not supported · ? not yet tested
 
 | Terminal | Color | Images | Mouse | Keyboard | Notes |
 |---|---|---|---|---|---|
-| kitty | ✓ truecolor | ✓ Kitty graphics | ✓ | ✓ | The protocols both features are named after |
+| kitty | ? | ? Kitty graphics | ? | ? | The protocols both features are named after |
 | Ghostty | ✓ truecolor | ✓ Kitty graphics | ✓ | ✓ | On macOS, `macos-option-as-alt` for the `Alt` chords outside U.S. layouts |
-| WezTerm | ✓ truecolor | ✓ | ✓ | ✓ | ? |
-| foot | ✓ truecolor | ? Sixel | ✓ | ✓ | Wayland; clipboard needs `wayland-data-control` |
-| iTerm2 | ✓ truecolor | ✓ iTerm2 inline | ✓ | ? | Answers the Kitty graphics query without supporting placements; edamame corrects for this |
-| Alacritty | ✓ truecolor | ✗ | ✓ | ✓ recent | No image protocol |
+| WezTerm | ? truecolor | ? | ? | ? |  |
+| foot | ? | ? Sixel | ? | ? | Wayland; clipboard needs `wayland-data-control` |
+| iTerm2 | ✓ truecolor | ✓ iTerm2 inline | ✓ | ✓ | Answers the Kitty graphics query without supporting placements; edamame corrects for this |
+| Alacritty | ?  | ? | ? | ? recent | No image protocol |
 | Apple Terminal | ✗ 256 | ✗ | ✓ | ✗ | Themes fall back to `256 Dark` / `256 Light`; see the `Option` notes above |
-| VS Code terminal | ✓ truecolor | ? | ✓ | ? | ? |
-| Windows Terminal | ? | ? | ? | ? | ? |
-| tmux (any host) | ? | ? | ✓ | ? | Depends on configuration — see [above](#tmux-and-multiplexers) |
+| VS Code terminal | ? | ? | ? | ? |  |
+| Windows Terminal | ? | ? | ? | ? |  |
+| tmux (any host) | ✓ | ✓ | ✓ | ✗ | Depends on configuration — see [above](#tmux-and-multiplexers). Some `Ctrl` chords don't work. |
 
 ---
 
@@ -127,7 +123,7 @@ edamame works under tmux, with two caveats worth knowing:
 
 **Colors look wrong or washed out.** Your terminal probably lacks 24-bit color; see [Color](#color).
 
-**Images show as `[Image: …]`.** Either no image protocol, or no truecolor — the capabilities notice says which.
+**Images show as `[Image: …]`.** Either no image protocol, or no truecolor (or you don't have them enabled) — the capabilities notice says which.
 
 **`Ctrl-B` / `Ctrl-I` do nothing, or insert a tab.** The legacy key encoding; see [Keyboard](#keyboard).
 
