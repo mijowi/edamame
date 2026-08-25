@@ -389,9 +389,7 @@ impl DiffState {
     /// or all-rejected in a single keystroke (a per-pending-only version
     /// would be a silent no-op in that state).
     pub fn bulk_decide(&mut self, decision: Decision) {
-        for d in &mut self.decisions {
-            *d = decision;
-        }
+        self.decisions.fill(decision);
     }
 
     /// Advance `focused_id` to the next hunk in document order
