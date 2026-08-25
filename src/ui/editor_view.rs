@@ -496,10 +496,15 @@ impl<'a> StatefulWidget for EditorView<'a> {
             Mode::Preview => self.state.scroll_section_chain(),
             _ => self.state.cursor_section_chain(),
         };
+        // The counter tracks merge decisions made, so it belongs to an
+        // editable review only.  A read-only `git difftool` session makes
+        // no decisions — there is nothing to count — so its badge stays
+        // the bare `DIFF`.
         let diff_progress = self
             .state
             .diff
             .as_ref()
+            .filter(|d| !d.read_only)
             .map(|d| (d.resolved_count(), d.hunks.len()));
         let region = BottomRegion {
             status: StatusBarState {
