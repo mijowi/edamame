@@ -8,6 +8,13 @@
  *   stylesheet = "/path/to/your.css"
  *
  * in config.toml.
+ *
+ * The same file is what a [[export.custom]] converter (weasyprint,
+ * pandoc, …) is handed, so the page geometry below is written for print
+ * first: 1in margins on every side, and a text column sized to what that
+ * leaves on a US Letter sheet.  On screen those same two numbers set the
+ * gutters and the measure, so a browser window and the PDF break lines in
+ * the same places.
  */
 
 :root {
@@ -19,10 +26,31 @@
     --link: #0969da;
     --code-bg: #f6f8fa;
     --quote-border: #d0d7de;
-    --max-width: 46rem;
+
+    /* Page geometry.  `--measure` is 8.5in of paper less the two 1in
+       margins; changing `--page-margin` alone keeps the column centered
+       but no longer matches Letter, so change both together. */
+    --page-margin: 1in;
+    --measure: 6.5in;
+
+    /* 15px/1.5 on screen reads as ~11pt in print, the body size a printed
+       page conventionally uses; `@media print` states the pt value so a
+       converter that resolves px against something other than 96dpi still
+       lands there. */
+    --font-size: 15px;
+    --line-height: 1.5;
+
+    /* One vertical rhythm for every block.  Headings take `--space-block`
+       above and `--space-tight` below whatever their size, so the gap
+       above an h1 matches the gap above an h4 — em-based margins made a
+       heading's spacing scale with its own font size, which put a much
+       larger gap above the largest headings than anywhere else. */
+    --space-block: 1rem;
+    --space-tight: 0.5rem;
+    --space-section: 2rem;
 }
 
-@media (prefers-color-scheme: dark) {
+@media screen and (prefers-color-scheme: dark) {
     :root {
         --fg: #c9d1d9;
         --fg-muted: #8b949e;
@@ -44,28 +72,36 @@ body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue",
         Helvetica, Arial, sans-serif;
-    font-size: 16px;
-    line-height: 1.6;
+    font-size: var(--font-size);
+    line-height: var(--line-height);
+    /* A URL or an identifier longer than the column has nowhere to scroll
+       to on paper, so let it break rather than run off the page. */
+    overflow-wrap: break-word;
 }
 
 main.markdown-body {
     box-sizing: border-box;
-    max-width: var(--max-width);
+    max-width: calc(var(--measure) + 2 * var(--page-margin));
     margin: 0 auto;
-    padding: 2rem 1.5rem 4rem;
+    padding: var(--page-margin);
 }
+
+/* The document's own first and last blocks must not add to the page
+   margin — a leading h1 otherwise sat a full section-gap below a padding
+   that already measured 1in, while the side gutters stayed exactly 1in. */
+main.markdown-body > :first-child { margin-top: 0; }
+main.markdown-body > :last-child  { margin-bottom: 0; }
 
 /* ── Headings ────────────────────────────────────────────────────────────── */
 
 h1, h2, h3, h4, h5, h6 {
     font-weight: 600;
     line-height: 1.25;
-    margin-top: 1.8em;
-    margin-bottom: 0.6em;
+    margin: var(--space-section) 0 var(--space-tight);
 }
 
-h1 { font-size: 2em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
-h2 { font-size: 1.5em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+h1 { font-size: 2em; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem; }
+h2 { font-size: 1.5em; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem; }
 h3 { font-size: 1.25em; }
 h4 { font-size: 1em; }
 h5 { font-size: 0.875em; }
@@ -74,7 +110,7 @@ h6 { font-size: 0.85em; color: var(--fg-muted); }
 /* ── Paragraphs & inline ─────────────────────────────────────────────────── */
 
 p, ul, ol, dl, blockquote, pre, table, figure {
-    margin: 0 0 1em;
+    margin: 0 0 var(--space-block);
 }
 
 a { color: var(--link); text-decoration: none; }
@@ -87,17 +123,20 @@ del, s { color: var(--fg-muted); }
 hr {
     border: 0;
     border-top: 1px solid var(--border);
-    margin: 2em 0;
+    margin: var(--space-section) 0;
 }
 
 /* ── Lists ───────────────────────────────────────────────────────────────── */
 
 ul, ol { padding-left: 2em; }
 li + li { margin-top: 0.25em; }
-li > p { margin-bottom: 0.5em; }
+li > p { margin-bottom: var(--space-tight); }
 
+/* Task lists keep the same indent as every other list — dropping them to a
+   narrower one left a checklist and the bullet list beside it starting in
+   different columns.  The checkbox hangs back into that indent. */
 ul.contains-task-list,
-ol.contains-task-list { list-style: none; padding-left: 1em; }
+ol.contains-task-list { list-style: none; }
 
 li.task-list-item > input[type="checkbox"] {
     margin: 0 0.5em 0 -1.4em;
@@ -208,11 +247,94 @@ sup.footnote-reference a::after { content: "]"; }
    styled by the existing code-block rules, so no fallback styles are
    needed here. */
 figure.mermaid-diagram {
-    margin: 1em 0;
+    margin: var(--space-block) 0;
     text-align: center;
 }
 
 figure.mermaid-diagram svg {
     max-width: 100%;
     height: auto;
+}
+
+/* ── Print ───────────────────────────────────────────────────────────────── */
+
+/*
+ * Everything below is for the [[export.custom]] path — weasyprint, pandoc's
+ * HTML-to-PDF writers, wkhtmltopdf, or the browser's own Print dialog.
+ * Each converter supports a different vintage of the fragmentation
+ * properties, so the legacy `page-break-*` forms are stated alongside the
+ * modern `break-*` ones.
+ */
+
+@page {
+    /* No `size` on purpose: the sheet is the converter's (and the user's)
+       to choose, and pinning `letter` here would crop an A4 print.  The
+       1in margin is the part that is a convention rather than a locale.
+       Written as a literal rather than `var(--page-margin)`: a custom
+       property resolves against an element, and support for one inside
+       `@page` is uneven across converters.  It is the same 1in the
+       `:root` variable holds — change the two together. */
+    margin: 1in;
+}
+
+@media print {
+    :root {
+        /* Force the light palette.  A converter running under a dark
+           desktop can match `prefers-color-scheme: dark` and would
+           otherwise flood every sheet with ink. */
+        --fg: #000000;
+        --fg-muted: #444444;
+        --bg: #ffffff;
+        --bg-muted: #f2f2f2;
+        --border: #999999;
+        --code-bg: #f2f2f2;
+        --quote-border: #999999;
+        --font-size: 11pt;
+    }
+
+    /* The 1in comes from `@page` now; keeping it on the element too would
+       double it.  The measure is the page's, so the cap comes off as well. */
+    main.markdown-body {
+        max-width: none;
+        padding: 0;
+    }
+
+    /* Two lines is the typographic floor for a fragment left alone at a
+       page boundary. */
+    p, li, blockquote { orphans: 2; widows: 2; }
+
+    /* A heading stranded at the foot of a page is the most common ugly
+       break; the rest are blocks that read as a single object. */
+    h1, h2, h3, h4, h5, h6 {
+        break-after: avoid;
+        page-break-after: avoid;
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }
+
+    pre, blockquote, figure, img, tr, .footnote-definition {
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }
+
+    /* `overflow: auto` is a screen affordance — on paper the overflow is
+       simply gone, so long code lines wrap instead of being cut off. */
+    pre {
+        overflow: visible;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+    }
+
+    pre > code { white-space: inherit; }
+
+    /* Back to a real table so it can fragment across pages and repeat its
+       header on each; `display: block` (the screen scroll container) makes
+       both impossible. */
+    table { display: table; overflow: visible; }
+    thead { display: table-header-group; }
+
+    /* An image taller than the text column pushes itself onto a page of
+       its own and can still overflow it; `height: auto` above keeps the
+       aspect ratio while this bounds the height. */
+    img { max-height: 8in; }
 }
