@@ -8,17 +8,18 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-24
+
 ### Added
 
-- Export to PDF, DOCX or anything else a converter on your machine can produce. Describe the converter once under `[[export.custom]]` in `config.toml` — a name, an argv-style command, and an output extension — and it appears in the export modal's Format list, beside HTML. Run **Export…** from the command palette, pick a format, and edamame renders the document to HTML, hands that file to your command, and writes the result next to the document.
+- Export to PDF, DOCX or anything else a converter on your machine can produce. See Docs: Configuration for more info.
 - A Terminal compatibility page in the manual: what each capability affects, the workarounds, and a table of which terminals support what. The terminal-capabilities notice links straight to it.
-- The manual now ships inside the binary and opens in the app. `Ctrl-P` → **Help: Documentation** for the index, or jump straight to a page (**Docs: Keybindings**, **Docs: Vim mode**, …). Pages are read-only, searchable, and link to each other; `Alt+Left` returns to what you were writing.
+- The manual now ships with and opens in the app. Ctrl-P → Help: Documentation for the index, or jump straight to a page (Docs: Keybindings, Docs: Vim mode, …). Pages are read-only, searchable, and link to each other; `Alt+Left` returns to what you were writing.
 - After an upgrade, edamame shows the new version's release notes once, read from the changelog built into it. The Release notes button on the About page shows them again at any time.
-- Syntax highlighting for fenced code blocks, covering over 200 languages. The language comes only from the opening fence — a fence with no language renders as plain code. Colors come from the active theme. Highlighting can be turned off in settings.
-- Links to a section of another document — `[text](other.md#a-heading)` — now open that file and land on the heading.
-- The same on the command line: `edamame notes.md#a-heading` opens the file at that heading.
+- Syntax highlighting for fenced code blocks, covering over 200 languages. A fence with no language renders as plain code. Colors come from the active theme. Highlighting can be turned off in settings.
+- Links to a section of another document — `[text](other.md#a-heading)` — now open that file and land on the heading. Works from the command line, too.
 - `edamame --diff <old> <new>` opens a read-only review of two files, for use as a `git difftool`. `Tab` moves between hunks, `Esc` goes on to the next file, and `Ctrl-Q` stops the walk. Nothing is written. A pair that isn't Markdown or isn't readable as text is reported and skipped.
-- YAML (`---`) and TOML (`+++`) frontmatter is rendered as a metadata block — one row per source line, dimmed, with keys picked out from values — instead of a horizontal rule followed by a headng. Only the very first line of a file can open frontmatter, so `---` section separators elsewhere still render as rules. Frontmatter is left out of an HTML export.
+- YAML (`---`) and TOML (`+++`) frontmatter is rendered as a metadata block.
 - Three theme keys for it: `frontmatter_delimiter`, `frontmatter_key`, `frontmatter_value`.
 
 ### Changed
