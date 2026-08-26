@@ -8,6 +8,7 @@
   <a href="https://docs.rs/edamame"><img src="https://docs.rs/edamame/badge.svg" alt="edamame documentation on docs.rs" height="20"></a>
   <a href="https://github.com/mijowi/edamame/actions/workflows/ci.yml"><img src="https://github.com/mijowi/edamame/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status for the main branch" height="20"></a>
   <a href="https://github.com/mijowi/edamame/blob/main/LICENSE"><img src="https://img.shields.io/crates/l/edamame.svg" alt="License: Apache-2.0" height="20"></a>
+  <img src="https://ratatui.rs/built-with-ratatui/badge.svg" alt="Built with ratatui" height="20">
 </p>
 
 ![Animation of clicking through a rendered document to reveal the raw Markdown on each line](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/edamame_hero.gif)
