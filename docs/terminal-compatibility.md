@@ -106,14 +106,14 @@ edamame works under tmux, with two caveats worth knowing:
 
 | Terminal | Color | Images | Mouse | Keyboard | Notes |
 |---|---|---|---|---|---|
-| kitty | ? | ? Kitty graphics | ? | ? | The protocols both features are named after |
-| Ghostty | ✓ truecolor | ✓ Kitty graphics | ✓ | ✓ | On macOS, `macos-option-as-alt` for the `Alt` chords outside U.S. layouts |
-| WezTerm | ? truecolor | ? | ? | ? |  |
+| kitty | ✓ | ✓ Kitty graphics | ✓ | ✓ | The protocols both features are named after |
+| Ghostty | ✓ | ✓ Kitty graphics | ✓ | ✓ | On macOS, `macos-option-as-alt` for the `Alt` chords outside U.S. layouts |
+| WezTerm | ✓ | ✓ | ✓ | ✓ |  Add `config.enable_kitty_keyboard = true` to your Wezterm configuration for full keyboard support|
 | foot | ? | ? Sixel | ? | ? | Wayland; clipboard needs `wayland-data-control` |
-| iTerm2 | ✓ truecolor | ✓ iTerm2 inline | ✓ | ✓ | Answers the Kitty graphics query without supporting placements; edamame corrects for this |
-| Alacritty | ?  | ? | ? | ? recent | No image protocol |
+| iTerm2 | ✓ | ✓ iTerm2 inline | ✓ | ✓ | Answers the Kitty graphics query without supporting placements; edamame corrects for this |
+| Alacritty | ✓  | ✗ | ✓ | ✓ recent | Halfblocks only |
 | Apple Terminal | ✗ 256 | ✗ | ✓ | ✗ | Themes fall back to `256 Dark` / `256 Light`; see the `Option` notes above |
-| VS Code terminal | ? | ? | ? | ? |  |
+| VS Code terminal | ✓ | ✗ | ✓ |  ✗|  Halfblocks only; legacy keyboard encoding|
 | Windows Terminal | ? | ? | ? | ? |  |
 | tmux (any host) | ✓ | ✓ | ✓ | ✗ | Depends on configuration — see [above](#tmux-and-multiplexers). Some `Ctrl` chords don't work. |
 
