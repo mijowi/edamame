@@ -355,6 +355,14 @@ fn do_read_and_send(path: &Path, event_tx: &mpsc::Sender<WatchedEvent>) {
 
 #[cfg(test)]
 mod tests {
+    //! The two tests below that wait on an organic notify event are
+    //! `#[ignore]`d, as are their two counterparts in
+    //! `tests/watcher.rs` — see that file's module docs for why, and
+    //! for the command CI runs them under. The rest reach the
+    //! post-debounce read through `force_reconcile`, so they assert
+    //! the same delivery path without depending on the OS to speak
+    //! first.
+
     use std::io::Write;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -380,6 +388,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires live filesystem notifications (inotify/FSEvents)"]
     fn watcher_emits_change_on_external_write() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("file.md");
@@ -463,6 +472,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires live filesystem notifications (inotify/FSEvents)"]
     fn rapid_writes_coalesce_into_a_single_change() {
         // Five writes inside the 200 ms window should produce one
         // change carrying the final contents.  Exact event count is

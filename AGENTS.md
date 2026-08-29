@@ -57,10 +57,14 @@ cargo test --lib                        # unit tests only (covers every module,
                                         #   incl. `app`; main.rs declares none)
 cargo test --test renderer              # one integration file (ui, editing,
                                         #   source_map, palette, diagrams, …)
+cargo test --test watcher -- --ignored  # the watcher tests that need live
+cargo test --lib -- --ignored watcher:: #   inotify / FSEvents (see below)
 cargo insta review                      # review / accept updated snapshots
 ```
 
-**Use `--no-fail-fast`, and expect the file-watcher tests to fail under an agent sandbox.** Plain `cargo test` stops at the first failing *target*, so a lib-target failure aborts the run before `tests/` is built — every integration test silently goes unrun while the summary still looks real. `watcher::file_watcher` and `tests/watcher.rs` need live filesystem-change notifications (FSEvents / inotify), which a sandbox typically withholds, so four tests there time out (`expected a debounced change: Timeout`). Disregard *only* watcher timeouts; treat any other failure as real. `cargo nextest run` also runs every target regardless of failures and is faster where installed.
+**Use `--no-fail-fast`.** Plain `cargo test` stops at the first failing *target*, so a lib-target failure aborts the run before `tests/` is built — every integration test silently goes unrun while the summary still looks real. `cargo nextest run` also runs every target regardless of failures and is faster where installed.
+
+**A test that waits on an OS-delivered event is `#[ignore]`d, not expected to fail.** Four watcher tests — two in `watcher::file_watcher`, two in `tests/watcher.rs` — assert on a live inotify / FSEvents notification, which a sandbox typically withholds; Nix's Darwin builders deliver none at all. They carry `#[ignore = "requires live filesystem notifications (inotify/FSEvents)"]`, so a bare `cargo test` is both green *and* honest wherever the stream is missing, and a downstream packager needs no hand-maintained skip list (nixpkgs kept one, and it silently missed `rewatching_a_different_file_redirects_events` — the name does not contain `watcher` — which is how the gap reached a Darwin build failure). The remaining watcher coverage is unconditional because none of it needs the stream: the debouncer is pure, `force_reconcile` drives the read synchronously, and the post-`unwatch` assertion is a negative one. CI spends the ignored half on the Linux and macOS runners, which do deliver — run the same two commands locally before touching the watcher. Keep that step *filtered*: the crate's other `#[ignore]`d tests want system fonts and a live mermaid renderer, and a bare `--ignored` would drag them in.
 
 **Test frameworks:** `insta` (snapshots), `proptest` (`tests/source_map.rs`), `tempfile`, `ratatui::backend::TestBackend` (headless widget rendering).
 

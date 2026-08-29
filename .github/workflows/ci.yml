@@ -88,6 +88,20 @@ jobs:
       - name: Test
         run: cargo test --no-default-features
 
+      # The four watcher tests that wait on an OS-delivered inotify /
+      # FSEvents notification are `#[ignore]`d so that a bare `cargo test`
+      # stays green in a sandbox that withholds the stream (Nix builders,
+      # agent sandboxes) — see the module docs in `tests/watcher.rs`.  Both
+      # runners here do deliver, so this is where that coverage is actually
+      # spent; without the step, ignoring them would silently mean losing
+      # them.  The filters keep this to the watcher: the crate's other
+      # `#[ignore]`d tests need system fonts and a live mermaid renderer,
+      # which is a different (deliberately unpinned) bet.
+      - name: Test (watcher — needs live filesystem notifications)
+        run: |
+          cargo test --no-default-features --test watcher -- --ignored
+          cargo test --no-default-features --lib -- --ignored watcher::
+
   # Windows is not a supported platform yet — edamame has never been tested
   # there (issue #2).  Promote it into the matrix above once it is reliably
   # green.

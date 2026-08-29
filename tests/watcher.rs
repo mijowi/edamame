@@ -8,6 +8,29 @@
 //! App-level hash-filter semantics are exercised by unit tests in
 //! `src/app/file_changed.rs` because they need access to the
 //! private `App::handle_file_changed` API.
+//!
+//! **Every test that waits on an OS-delivered event is `#[ignore]`d.**
+//! Four tests — two here, two in `src/watcher::file_watcher` — assert
+//! on a notification the kernel has to hand us (inotify / FSEvents).
+//! A build sandbox withholds those entirely: Nix's Darwin builders
+//! deliver no FSEvents at all, and most agent sandboxes suppress
+//! inotify, so the assertion times out for an environmental reason
+//! rather than a real one. Marking them keeps a bare `cargo test`
+//! honest and green wherever the stream is missing, and spares
+//! downstream packagers a hand-maintained, name-matched skip list
+//! (nixpkgs previously had to skip two patterns, one of them because
+//! `rewatching_…` does not contain the substring `watcher`). CI runs
+//! them explicitly on Linux and macOS runners, which do deliver:
+//!
+//! ```text
+//! cargo test --test watcher -- --ignored
+//! cargo test --lib -- --ignored watcher::
+//! ```
+//!
+//! The rest of the coverage is unconditional, because none of it
+//! needs the stream: the debouncer is pure, `force_reconcile` drives
+//! the read synchronously, and the post-`unwatch` assertion is a
+//! negative one.
 
 use std::io::Write;
 use std::sync::mpsc;
@@ -65,6 +88,7 @@ fn debouncer_burst_extends_deadline() {
 }
 
 #[test]
+#[ignore = "requires live filesystem notifications (inotify/FSEvents)"]
 fn notify_watcher_emits_debounced_change_on_external_write() {
     // End-to-end: create a temp file, watch it, mutate it, expect a
     // single change carrying the latest bytes.  Exact event count
@@ -146,6 +170,7 @@ fn unwatch_stops_event_delivery() {
 }
 
 #[test]
+#[ignore = "requires live filesystem notifications (inotify/FSEvents)"]
 fn rewatching_a_different_file_redirects_events() {
     // The watcher's public API explicitly allows `watch(path)` to
     // replace the current watch.  Verify that events for the
