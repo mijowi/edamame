@@ -84,7 +84,7 @@ unicode-segmentation = "1"
 # `regex` so the vim→regex translator can reach backreferences and
 # lookaround, which the linear-time engine cannot express; it delegates to
 # `regex` for the simple fast path and backtracks only for a fancy feature.
-fancy-regex = "0.18"
+fancy-regex = "0.19"
 
 # Syntax highlighting for fenced code blocks — parsing only.  The feature
 # list is load-bearing, like `image`'s below:
@@ -171,7 +171,7 @@ nucleo-matcher = "0.3"
 # HTML export: `base64` encodes local image bytes into `data:` URIs for
 # self-contained output; `tempfile` hosts the intermediate HTML file for
 # custom-command exports (pandoc, weasyprint, …), cleaned up on drop.
-base64 = "0.22"
+base64 = "0.23"
 tempfile = "3"
 
 # Mermaid diagrams.  `mermaid-rs-renderer` is pinned exactly because it is
@@ -192,7 +192,7 @@ usvg = "0.46"
 # Synthetic cache-key URLs (`diagram-mermaid-<sha>`), stable across reparses
 # so the image cache can reuse an already-rendered diagram when a keystroke
 # elsewhere in the document triggers one.
-sha2 = "0.10"
+sha2 = "0.11"
 
 # Big-text H1 headings.  Tracks the ratatui 0.30 line via 0.8+; `font8x8`
 # glyphs painted as Octant blocks, 4 cells wide × 2 tall per glyph.
@@ -211,7 +211,7 @@ seahash = "4"
 # Line- and word-level diff for the diff-mode review subsystem.
 # `TextDiff::from_lines` gives line hunks; `InlineChange` slices each
 # `Replace` hunk into word-level highlights without us writing a tokenizer.
-similar = "2"
+similar = "3"
 
 [features]
 default = ["clipboard"]
@@ -232,7 +232,7 @@ proptest = "1"
 # records the numbers they produce.  Criterion runs benches in
 # release mode, which matters — the dev profile below is tuned for compile
 # speed.
-criterion = "0.5"
+criterion = "0.8"
 # `tempfile` is a runtime dep (export/custom.rs), so dev code imports it
 # without a separate dev-dependency entry.
 
