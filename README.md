@@ -36,6 +36,14 @@ cargo install edamame
 
 Requires Rust 1.90 or newer.
 
+### Shell installer
+
+```bash
+curl -LsSf https://github.com/mijowi/edamame/releases/latest/download/edamame-installer.sh | sh
+```
+
+Downloads the prebuilt binary for your platform, verifies its checksum, and places it in `~/.cargo/bin`, adding that directory to your `PATH` if it isn't already there. Set `EDAMAME_NO_MODIFY_PATH=1` to skip the `PATH` change. Linux (x86_64, aarch64, and a static musl build) and macOS (Intel and Apple Silicon) are supported.
+
 ### Prebuilt binaries
 
 Download for your platform from [Releases](https://github.com/mijowi/edamame/releases).
@@ -50,6 +58,17 @@ cargo build --release
 ```
 
 Requires Rust 1.90 or newer.
+
+### Upgrading
+
+edamame checks for a new release once a day and tells you when one appears (see [getting started](https://github.com/mijowi/edamame/blob/main/docs/getting-started.md)). It does not update itself; use the same method you installed with:
+
+| Installed with | Upgrade command |
+|---|---|
+| Homebrew | `brew upgrade edamame` |
+| Shell installer | Re-run the installer one-liner above — it replaces the binary in place |
+| Cargo | `cargo install edamame` (`cargo update` does not touch installed binaries) |
+| Prebuilt binary | Download the new release and replace the file |
 
 ## Documentation
 
