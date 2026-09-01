@@ -425,10 +425,12 @@ pub(crate) fn region_haystack(
 /// Length in chars of the line-break sequence ending `line`, or 0 when it
 /// has none (the buffer's last line).  Not a bare `strip_suffix('\n')`:
 /// ropey is built with default features, so it splits lines on the full
-/// Unicode set (`\r\n`, VT, FF, NEL, LS, PS as well as LF) and a line may
-/// end in any of them.  A `\r\n` reports 1, leaving the `\r` in the
-/// haystack — exactly what the old per-line `strip_suffix('\n')` did, and
-/// what keeps `(?m)$` anchoring in the same place.
+/// Unicode set (a lone `\r`, VT, FF, NEL, LS, PS as well as LF) and a line
+/// may end in any of them.  (`\r\n` never reaches here — document text is
+/// normalized to pure `\n` on load; see `Buffer::load_file` — but a lone
+/// `\r` embedded in content still splits a line, hence the `'\r'` arm.)
+/// Each is one char, matching what the old per-line `strip_suffix('\n')`
+/// did, and keeping `(?m)$` anchoring in the same place.
 fn line_break_len(line: ropey::RopeSlice) -> usize {
     let n = line.len_chars();
     if n == 0 {

@@ -108,11 +108,9 @@ pub(crate) fn options_for(source: &str) -> Options {
 /// whether a `---` opens frontmatter disagree on whether the block
 /// survives the export at all.
 pub(crate) fn metadata_options_for(source: &str) -> Options {
-    let first_line = source
-        .split('\n')
-        .next()
-        .unwrap_or("")
-        .trim_end_matches('\r');
+    // Document text is `\n`-normalized before it reaches any parse (see
+    // `Buffer::load_file`), so the first line carries no trailing `\r`.
+    let first_line = source.split('\n').next().unwrap_or("");
     match first_line {
         "---" => Options::ENABLE_YAML_STYLE_METADATA_BLOCKS,
         "+++" => Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS,
@@ -416,12 +414,10 @@ mod tests {
             metadata_options_for("+++\ntitle = \"Foo\"\n+++\n"),
             Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS,
         );
-        // CRLF still counts; a leading blank line, indentation, a longer
-        // delimiter run and a trailing info string do not.
-        assert_eq!(
-            metadata_options_for("---\r\ntitle: Foo\r\n---\r\n"),
-            Options::ENABLE_YAML_STYLE_METADATA_BLOCKS,
-        );
+        // A leading blank line, indentation, a longer delimiter run and a
+        // trailing info string do not open a metadata block.  (CRLF is not
+        // tested here: document text is `\n`-normalized before it reaches
+        // this function, so a `---\r\n` first line never occurs.)
         for src in [
             "\n---\na: 1\n---\n",
             " ---\na: 1\n---\n",

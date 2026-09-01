@@ -46,6 +46,8 @@ Colors come from the active theme, so they follow whichever theme you're using a
 
 **Bare URLs are not auto-linked.** `https://example.com` on its own renders as plain text. Write `<https://example.com>` or `[text](https://example.com)`.
 
+**Your file's line endings are preserved.** A file saved with Windows `CRLF` line endings is written back as `CRLF`, a Unix `LF` file as `LF` — including the lines you add while editing. A brand-new file uses your platform's default. This also means a `CRLF` file that changes underneath you no longer shows up as one big change in diff review just because of its line endings.
+
 edamame includes a Markdown cheat sheet that provides a quick reference for what Markdown is supported and how to write it. You can access it from the command palette (**Show Markdown cheat sheet**).
 
 ---

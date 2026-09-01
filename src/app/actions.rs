@@ -1712,11 +1712,13 @@ impl App {
         self.editor.buffer.save_file()?;
         self.editor.dirty = false;
         // Stamp the just-written contents so the watcher's own-write
-        // filter drops the inotify echo that our own save is about
-        // to generate.  Computed from the in-memory rope rather than
-        // re-reading disk — they are byte-identical at this point
-        // (Buffer::save_file just wrote `rope.to_string()`) and the
-        // memory read is dramatically cheaper.
+        // filter drops the inotify echo that our own save is about to
+        // generate.  Hashed from the in-memory rope (its `\n`-only form)
+        // rather than re-reading disk: for a CRLF buffer the on-disk
+        // bytes are *not* identical — `save_file` widens each `\n` to
+        // `\r\n` — but `handle_file_changed` normalizes the echoed read
+        // back to `\n` before hashing, so both sides meet in `\n` space
+        // and the memory read stays dramatically cheaper.
         let bytes = self.editor.buffer.contents();
         self.set_disk_hash(bytes.as_bytes());
         Ok(())

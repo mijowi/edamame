@@ -1116,16 +1116,26 @@ const OS_CLIPBOARD: bool = !cfg!(test);
 /// Write `text` to the OS clipboard (best-effort via arboard AND OSC 52)
 /// and always mirror into the in-process kill-ring so internal paste still
 /// works when neither external path is available.
+///
+/// `text` is the rope's `\n`-only form.  The kill-ring keeps it verbatim
+/// (internal paste re-normalizes anyway, and staying `\n`-only matches the
+/// buffer), but the *external* clipboard receives the buffer's on-disk
+/// newline convention — the symmetric counterpart of the save-time
+/// translation.  This fires for any CRLF-detected buffer regardless of
+/// host platform (a CRLF file opened on Linux copies `\r\n` too), not
+/// just on Windows.  Without it, copying a CRLF document would hand other
+/// applications bare `\n`, which some render as a single line.
 fn copy_to_clipboard(state: &mut EditorState, text: String) {
     if OS_CLIPBOARD {
+        let external = crate::document::buffer::encode_newlines(&text, state.buffer.line_ending());
         #[cfg(feature = "clipboard")]
-        copy_to_system_clipboard(text.clone());
+        copy_to_system_clipboard(external.clone());
         // OSC 52 also reaches the terminal emulator's clipboard — the only
         // path that works over SSH, on Wayland without
         // `wayland-data-control`, and in WSL.  Any terminal that doesn't
         // understand the escape silently ignores it, so emitting
         // unconditionally is safe.
-        osc52_copy(&text);
+        osc52_copy(&external);
     }
     state.kill_ring = text;
 }
@@ -1201,7 +1211,11 @@ pub fn clipboard_text(state: &EditorState) -> String {
     if OS_CLIPBOARD {
         if let Ok(mut cb) = arboard::Clipboard::new() {
             if let Ok(text) = cb.get_text() {
-                return text;
+                // External text may carry CRLF (the Windows clipboard
+                // convention); collapse to the internal `\n`-only form so
+                // the rope invariant holds and a later CRLF save does not
+                // double the `\r`.  The kill-ring is already `\n`-only.
+                return crate::document::buffer::normalize_newlines(text);
             }
         }
     }
@@ -1221,6 +1235,11 @@ pub fn paste_text(
     if text.is_empty() {
         return;
     }
+    // A terminal bracketed paste can carry CRLF; collapse to the internal
+    // `\n`-only form so the rope invariant holds (and a CRLF save does not
+    // double the `\r`), matching the OS-clipboard path in `clipboard_text`.
+    let text = crate::document::buffer::normalize_newlines(text.to_owned());
+    let text = text.as_str();
     let buffer_len_before = state.buffer.len_chars();
     let history_depth_before = state.history.undo_depth();
 
@@ -1943,7 +1962,48 @@ fn list_move_horizontal(state: &mut EditorState, forward: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::base64_encode;
+    use super::{base64_encode, paste_text};
+    use crate::config::Theme;
+    use crate::document::Buffer;
+    use crate::editor::{EditorState, Mode};
+
+    fn theme() -> &'static Theme {
+        Box::leak(Box::new(Theme::default()))
+    }
+
+    #[test]
+    fn paste_normalizes_crlf_to_lf() {
+        // A bracketed paste carrying CRLF (the Windows convention) must land
+        // in the rope as pure `\n` — the invariant every downstream consumer
+        // and the save-time translation now depend on.
+        let mut state = EditorState::new(Buffer::from_str(""), theme());
+        state.mode = Mode::Raw;
+        paste_text(&mut state, "one\r\ntwo\r\n", 24, 80);
+        let contents = state.buffer.contents();
+        assert!(
+            !contents.contains('\r'),
+            "rope must hold no CR: {contents:?}"
+        );
+        assert_eq!(contents, "one\ntwo\n");
+    }
+
+    #[test]
+    fn paste_into_crlf_buffer_does_not_double_cr_on_save() {
+        // The corruption this guards against: a CRLF-detected buffer that
+        // receives pasted CRLF text would, without normalization, write
+        // `\r\r\n` when the save widens the already-`\r`-suffixed `\n`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("crlf.md");
+        std::fs::write(&src, "a\r\nb\r\n").expect("seed");
+        let mut state = EditorState::new(Buffer::load_file(&src).expect("load"), theme());
+        state.mode = Mode::Raw;
+        state.cursor.offset = 0;
+
+        paste_text(&mut state, "X\r\n", 24, 80);
+        let out = dir.path().join("out.md");
+        state.buffer.save_copy(&out).expect("save");
+        assert_eq!(std::fs::read(&out).expect("read"), b"X\r\na\r\nb\r\n");
+    }
 
     #[test]
     fn base64_encodes_empty() {

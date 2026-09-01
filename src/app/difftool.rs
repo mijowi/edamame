@@ -33,8 +33,12 @@ const EXIT_INTERRUPTED: i32 = 130;
 /// happily invoke a difftool on a binary) fails here rather than being
 /// rendered as mojibake.
 pub fn read_side(path: &Path) -> Result<String> {
-    std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read {} for review", path.display()))
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {} for review", path.display()))?;
+    // Normalize to the app's internal `\n`-only form so a CRLF side does
+    // not diff as wholly changed against an LF side (git happily hands us
+    // one of each), matching how `Buffer` ingests document text.
+    Ok(crate::document::buffer::normalize_newlines(raw))
 }
 
 /// Whether a `--diff` pair is Markdown, and so whether there is a

@@ -124,13 +124,23 @@ impl App {
 
     /// Dispatch a single successful read from the watcher.  See
     /// module docs for the decision tree.
-    pub(crate) fn handle_file_changed(&mut self, change: WatchedChange) {
+    pub(crate) fn handle_file_changed(&mut self, mut change: WatchedChange) {
         // Drop events for files we are not currently editing.  Can
         // happen if the user rapidly switches files while a debounce
         // window is in flight on the previous one.
         if self.file_path.as_deref() != Some(change.path.as_path()) {
             return;
         }
+
+        // Normalize the delivered bytes to the app's internal `\n`-only
+        // form before anything hashes, diffs, or stores them.  The buffer
+        // is already `\n`-only, so a raw CRLF read must be collapsed here
+        // or every comparison below (own-write echo filter, buffer-vs-disk
+        // short-circuit, diff review) would see a spurious whole-file
+        // change on a CRLF document — and the own-write filter, which
+        // stamps `last_disk_hash` from the `\n` rope, would never match
+        // the CRLF bytes our own save wrote back.
+        change.contents = crate::document::buffer::normalize_newlines(change.contents);
 
         // The user is mid-`[Save as…]` after a deletion: they have
         // already committed to writing their buffer out as the
@@ -329,7 +339,12 @@ impl App {
             return;
         };
         let previous_version = self.editor.buffer.version();
-        let new_buffer = crate::document::Buffer::reload(&path, &contents, previous_version);
+        // Carry the buffer's existing newline convention forward: `contents`
+        // has already been normalized to `\n` upstream, so re-detecting it
+        // would always report `Lf` and silently flip a CRLF document.
+        let line_ending = self.editor.buffer.line_ending();
+        let new_buffer =
+            crate::document::Buffer::reload(&path, &contents, previous_version, line_ending);
         // Tear down any active search flow at the App level first so
         // the deferred-advance timer is cancelled along with the
         // session (`replace_buffer` would drop the session anyway,

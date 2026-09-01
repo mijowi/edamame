@@ -191,19 +191,11 @@ fn end_of_line_offset(state: &crate::editor::EditorState, line_idx: usize) -> us
     let start = state.buffer.line_to_char(idx);
     let line_slice = state.buffer.rope().line(idx);
     let len = line_slice.len_chars();
-    // A non-final line ends in `\n` (or `\r\n` on CRLF files —
-    // `std::fs::read_to_string` doesn't normalise on Linux/macOS).
-    // Trim the line ending from the offset so the cursor lands before
-    // it rather than at column 0 of the next line.
-    let trim = if len > 0 && line_slice.char(len - 1) == '\n' {
-        if len >= 2 && line_slice.char(len - 2) == '\r' {
-            2
-        } else {
-            1
-        }
-    } else {
-        0
-    };
+    // A non-final line ends in `\n`.  Trim it from the offset so the
+    // cursor lands before it rather than at column 0 of the next line.
+    // The buffer is always `\n`-normalized on load (see
+    // `Buffer::load_file`), so there is no `\r` to account for.
+    let trim = usize::from(len > 0 && line_slice.char(len - 1) == '\n');
     start + len.saturating_sub(trim)
 }
 
@@ -307,12 +299,13 @@ mod tests {
     #[test]
     fn end_of_line_offset_handles_crlf_line_endings() {
         let mut app = make_app();
+        // CRLF is normalized to `\n` on load, so the rope is "abc\ndef\n"
+        // and offsets are the same as an LF file — no `\r` to trim.
         load(&mut app, "abc\r\ndef\r\n");
-        // Line 0 is "abc\r\n" — end_of_line should land after 'c'
-        // (offset 3), trimming both `\r` and `\n`.
+        // Line 0 is "abc\n" — end_of_line lands after 'c' (offset 3).
         assert_eq!(end_of_line_offset(&app.editor, 0), 3);
-        // Line 1 starts at 5 ("def\r\n"); end should be after 'f' (8).
-        assert_eq!(end_of_line_offset(&app.editor, 1), 8);
+        // Line 1 starts at 4 ("def\n"); end is after 'f' (7).
+        assert_eq!(end_of_line_offset(&app.editor, 1), 7);
     }
 
     #[test]

@@ -1,17 +1,125 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use ropey::Rope;
 
+/// The newline convention a document uses on disk.
+///
+/// The rope is always stored with pure `\n` line breaks (see
+/// [`normalize_newlines`]); this records what the file used so a save can
+/// reproduce it. New/empty buffers pick the host platform's default —
+/// `Crlf` on Windows, `Lf` everywhere else — via [`LineEnding::default`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineEnding {
+    /// Unix `\n`.  The default off Windows.
+    #[cfg_attr(not(windows), default)]
+    Lf,
+    /// Windows `\r\n`.  The default on Windows.
+    #[cfg_attr(windows, default)]
+    Crlf,
+}
+
+impl LineEnding {
+    /// Classify `text` by its **first** line break: `\r\n` → [`Crlf`],
+    /// a bare `\n` → [`Lf`]. A text with no line break at all adopts the
+    /// platform default ([`LineEnding::default`]) so a one-line file saved
+    /// with a newline appended matches its neighbors.
+    ///
+    /// [`Crlf`]: LineEnding::Crlf
+    /// [`Lf`]: LineEnding::Lf
+    pub fn detect(text: &str) -> Self {
+        match text.find('\n') {
+            // `find` gives a byte index; a preceding `\r` is one byte.
+            Some(i) if i > 0 && text.as_bytes()[i - 1] == b'\r' => LineEnding::Crlf,
+            Some(_) => LineEnding::Lf,
+            None => LineEnding::default(),
+        }
+    }
+
+    /// The byte sequence this convention writes for one line break.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LineEnding::Lf => "\n",
+            LineEnding::Crlf => "\r\n",
+        }
+    }
+}
+
+/// Collapse CRLF to the internal `\n`-only form.
+///
+/// The whole app models a document with pure `\n` line breaks, so every
+/// path that ingests document text from disk (buffer load/reload, the
+/// filesystem watcher, `--diff` reads) funnels through here. Returns the
+/// input untouched — no reallocation — when it holds no `\r`, the common
+/// Unix/macOS case. A lone `\r` (classic-Mac line ends, essentially
+/// extinct) is left as-is: only the `\r` of a `\r\n` pair is removed.
+pub(crate) fn normalize_newlines(text: String) -> String {
+    if text.as_bytes().contains(&b'\r') {
+        text.replace("\r\n", "\n")
+    } else {
+        text
+    }
+}
+
+/// Expand the internal `\n`-only form back to `ending`'s convention.
+///
+/// The counterpart to [`normalize_newlines`] for the *outgoing* clipboard
+/// boundary — copying document text to another application should hand it
+/// the newline style the document uses, just as a save does (see
+/// [`write_lines`]). `text` is assumed already `\n`-normalized (it comes
+/// from the rope), so [`Lf`] returns it untouched and [`Crlf`] simply
+/// widens each `\n` to `\r\n`.
+///
+/// [`Lf`]: LineEnding::Lf
+/// [`Crlf`]: LineEnding::Crlf
+pub(crate) fn encode_newlines(text: &str, ending: LineEnding) -> String {
+    match ending {
+        LineEnding::Lf => text.to_owned(),
+        LineEnding::Crlf => text.replace('\n', "\r\n"),
+    }
+}
+
+/// Write `rope` to `w`, translating each `\n` to `ending`'s byte
+/// sequence. Streams the rope chunk by chunk rather than materializing a
+/// translated `String`: `\n` is a single byte and never straddles a
+/// chunk boundary, so each chunk can be split independently.
+fn write_lines<W: Write>(rope: &Rope, ending: LineEnding, w: &mut W) -> std::io::Result<()> {
+    let crlf = ending == LineEnding::Crlf;
+    for chunk in rope.chunks() {
+        if !crlf {
+            w.write_all(chunk.as_bytes())?;
+            continue;
+        }
+        let mut rest = chunk;
+        while let Some(i) = rest.find('\n') {
+            w.write_all(&rest.as_bytes()[..i])?;
+            w.write_all(b"\r\n")?;
+            rest = &rest[i + 1..];
+        }
+        w.write_all(rest.as_bytes())?;
+    }
+    Ok(())
+}
+
 /// Wraps a `ropey::Rope` with file-level I/O and basic edit operations.
 ///
 /// All positions and lengths are in Unicode scalar values (Rust `char`s),
 /// matching ropey's native char-index API.
+///
+/// The rope always holds pure `\n` line breaks; [`line_ending`] records
+/// the on-disk convention so a save reproduces it. See [`LineEnding`] and
+/// [`normalize_newlines`].
+///
+/// [`line_ending`]: Buffer::line_ending
 #[derive(Debug, Clone)]
 pub struct Buffer {
     rope: Rope,
     /// The file this buffer was loaded from or last saved to.
     path: Option<PathBuf>,
+    /// The newline convention to write on save. Detected on load,
+    /// platform-default for a new buffer.
+    line_ending: LineEnding,
     /// Monotonically-increasing counter bumped on every content mutation.
     /// Consumers that cache buffer-derived data (e.g. the raw-mode visual
     /// row cache in `EditorState`) compare this against their stored
@@ -27,6 +135,7 @@ impl Buffer {
         Self {
             rope: Rope::new(),
             path: None,
+            line_ending: LineEnding::default(),
             version: 0,
         }
     }
@@ -39,9 +148,12 @@ impl Buffer {
     /// `tests/`.
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(text: &str) -> Self {
+        let line_ending = LineEnding::detect(text);
+        let normalized = normalize_newlines(text.to_owned());
         Self {
-            rope: Rope::from_str(text),
+            rope: Rope::from_str(&normalized),
             path: None,
+            line_ending,
             version: 0,
         }
     }
@@ -54,17 +166,24 @@ impl Buffer {
         Self {
             rope,
             path: None,
+            line_ending: LineEnding::default(),
             version: 0,
         }
     }
 
     /// Load a file from disk into the buffer.
+    ///
+    /// Detects the file's line-ending convention (from its first line
+    /// break) and normalizes the rope to pure `\n`; a later save
+    /// reproduces the detected convention.
     pub fn load_file(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read file: {}", path.display()))?;
+        let line_ending = LineEnding::detect(&content);
         Ok(Self {
-            rope: Rope::from_str(&content),
+            rope: Rope::from_str(&normalize_newlines(content)),
             path: Some(path.to_owned()),
+            line_ending,
             version: 0,
         })
     }
@@ -75,6 +194,7 @@ impl Buffer {
         Self {
             rope: Rope::new(),
             path: Some(path.to_owned()),
+            line_ending: LineEnding::default(),
             version: 0,
         }
     }
@@ -88,11 +208,22 @@ impl Buffer {
     /// the buffer swap.  Unlike [`Self::load_file`], the bytes come
     /// from the caller — the watcher worker has already read them —
     /// so there is no second disk hit and no chance of racing the
-    /// next watcher event.
-    pub fn reload(path: &Path, contents: &str, previous_version: u64) -> Self {
+    /// next watcher event.  `contents` is normalized to pure `\n` here
+    /// (the watcher may hand it over verbatim); `line_ending` is passed in
+    /// rather than re-detected — the caller carries the buffer's existing
+    /// convention forward so an external rewrite does not flip a `Crlf`
+    /// document to `Lf` merely because the delivered bytes were already
+    /// normalized upstream.
+    pub fn reload(
+        path: &Path,
+        contents: &str,
+        previous_version: u64,
+        line_ending: LineEnding,
+    ) -> Self {
         Self {
-            rope: Rope::from_str(contents),
+            rope: Rope::from_str(&normalize_newlines(contents.to_owned())),
             path: Some(path.to_owned()),
+            line_ending,
             version: previous_version.wrapping_add(1),
         }
     }
@@ -105,9 +236,20 @@ impl Buffer {
             .path
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("Buffer has no associated file path"))?;
-        let content = self.rope.to_string();
-        std::fs::write(path, content)
-            .with_context(|| format!("Failed to write file: {}", path.display()))?;
+        self.write_to_disk(path)
+    }
+
+    /// Stream the rope to `path`, translating `\n` to the buffer's
+    /// [`line_ending`](Self::line_ending) on the way out.  The shared
+    /// write primitive behind every save path; a `BufWriter` keeps the
+    /// per-line `\r\n` translation from turning into a syscall per line.
+    fn write_to_disk(&self, path: &Path) -> Result<()> {
+        let ctx = || format!("Failed to write file: {}", path.display());
+        let file = std::fs::File::create(path).with_context(ctx)?;
+        let mut w = std::io::BufWriter::new(file);
+        write_lines(&self.rope, self.line_ending, &mut w)
+            .and_then(|()| w.flush())
+            .with_context(ctx)?;
         Ok(())
     }
 
@@ -125,9 +267,7 @@ impl Buffer {
     /// saving over the buffer's own path is a normal in-place save and
     /// needs no confirmation.
     pub fn save_as(&mut self, path: &Path) -> Result<()> {
-        let content = self.rope.to_string();
-        std::fs::write(path, &content)
-            .with_context(|| format!("Failed to write file: {}", path.display()))?;
+        self.write_to_disk(path)?;
         self.path = Some(path.to_owned());
         Ok(())
     }
@@ -151,10 +291,7 @@ impl Buffer {
     /// buffer's associated path.  The user keeps editing the original
     /// file; `path` receives a snapshot of the current contents.
     pub fn save_copy(&self, path: &Path) -> Result<()> {
-        let content = self.rope.to_string();
-        std::fs::write(path, &content)
-            .with_context(|| format!("Failed to write file: {}", path.display()))?;
-        Ok(())
+        self.write_to_disk(path)
     }
 
     // ── Query ─────────────────────────────────────────────────────
@@ -162,6 +299,16 @@ impl Buffer {
     /// The file path associated with this buffer, if any.
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// The newline convention this buffer writes on save.
+    pub fn line_ending(&self) -> LineEnding {
+        self.line_ending
+    }
+
+    /// Override the newline convention used for subsequent saves.
+    pub fn set_line_ending(&mut self, line_ending: LineEnding) {
+        self.line_ending = line_ending;
     }
 
     /// Total number of Unicode scalar values in the buffer.
@@ -316,6 +463,7 @@ mod tests {
         Buffer {
             rope: Rope::from_str(text),
             path: None,
+            line_ending: LineEnding::Lf,
             version: 0,
         }
     }
@@ -460,5 +608,154 @@ mod tests {
         assert_eq!(buf3.contents(), buf.contents());
 
         Ok(())
+    }
+
+    // ── Line endings ──────────────────────────────────────────────
+
+    #[test]
+    fn detect_classifies_by_first_line_break() {
+        assert_eq!(LineEnding::detect("a\r\nb\r\n"), LineEnding::Crlf);
+        assert_eq!(LineEnding::detect("a\nb\n"), LineEnding::Lf);
+        // First break wins: a bare `\n` up front reads as Lf even when a
+        // later line is CRLF.
+        assert_eq!(LineEnding::detect("a\nb\r\n"), LineEnding::Lf);
+        // A leading `\r\n` still counts (the `\r` sits at index 0's
+        // predecessor of the first `\n`).
+        assert_eq!(LineEnding::detect("\r\nx"), LineEnding::Crlf);
+        // No line break at all → platform default.
+        assert_eq!(LineEnding::detect("no newline"), LineEnding::default());
+    }
+
+    #[test]
+    fn normalize_newlines_strips_only_crlf_pairs() {
+        assert_eq!(normalize_newlines("a\r\nb\r\n".to_owned()), "a\nb\n");
+        // Already-LF text is returned untouched (and does not reallocate,
+        // though that we cannot assert directly).
+        assert_eq!(normalize_newlines("a\nb\n".to_owned()), "a\nb\n");
+        // A lone `\r` (not part of a pair) is preserved.
+        assert_eq!(normalize_newlines("a\rb".to_owned()), "a\rb");
+    }
+
+    #[test]
+    fn encode_newlines_widens_only_for_crlf() {
+        // Lf is the identity on already-`\n` text.
+        assert_eq!(encode_newlines("a\nb\n", LineEnding::Lf), "a\nb\n");
+        // Crlf widens each `\n`.
+        assert_eq!(encode_newlines("a\nb\n", LineEnding::Crlf), "a\r\nb\r\n");
+        // Round-trips with normalize_newlines (the clipboard boundary).
+        let lf = "one\ntwo\nthree";
+        let crlf = encode_newlines(lf, LineEnding::Crlf);
+        assert_eq!(normalize_newlines(crlf), lf);
+    }
+
+    #[test]
+    fn load_detects_crlf_and_normalizes_rope() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("crlf.md");
+        std::fs::write(&path, "# Title\r\n\r\nBody\r\n")?;
+
+        let buf = Buffer::load_file(&path)?;
+        assert_eq!(buf.line_ending(), LineEnding::Crlf);
+        // The rope holds no `\r`: every consumer sees pure `\n`.
+        assert_eq!(buf.contents(), "# Title\n\nBody\n");
+        assert!(!buf.contents().contains('\r'));
+        Ok(())
+    }
+
+    #[test]
+    fn load_detects_lf() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("lf.md");
+        std::fs::write(&path, "# Title\n\nBody\n")?;
+
+        let buf = Buffer::load_file(&path)?;
+        assert_eq!(buf.line_ending(), LineEnding::Lf);
+        assert_eq!(buf.contents(), "# Title\n\nBody\n");
+        Ok(())
+    }
+
+    #[test]
+    fn save_reproduces_crlf_on_disk_while_rope_stays_lf() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let src = dir.path().join("crlf.md");
+        std::fs::write(&src, "one\r\ntwo\r\n")?;
+
+        let buf = Buffer::load_file(&src)?;
+        let out = dir.path().join("out.md");
+        buf.save_copy(&out)?;
+
+        // Read back the raw bytes (not `read_to_string`, which would not
+        // reveal the `\r`): CRLF was reproduced verbatim.
+        let raw = std::fs::read(&out)?;
+        assert_eq!(raw, b"one\r\ntwo\r\n");
+        Ok(())
+    }
+
+    #[test]
+    fn save_writes_lf_for_an_lf_buffer() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut buf = Buffer::from_str("one\ntwo\n");
+        assert_eq!(buf.line_ending(), LineEnding::Lf);
+        let out = dir.path().join("out.md");
+        buf.save_as(&out)?;
+        assert_eq!(std::fs::read(&out)?, b"one\ntwo\n");
+        Ok(())
+    }
+
+    #[test]
+    fn crlf_file_round_trips_through_load_and_save() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("doc.md");
+        let original = b"a\r\nb\r\nc";
+        std::fs::write(&path, original)?;
+
+        let buf = Buffer::load_file(&path)?;
+        // Save back in place.
+        buf.save_file()?;
+        assert_eq!(std::fs::read(&path)?, original);
+        Ok(())
+    }
+
+    #[test]
+    fn edits_to_a_crlf_buffer_still_save_as_crlf() -> Result<()> {
+        // An inserted newline is a bare `\n` in the rope, but the save
+        // translation applies to it too — no mixed endings on disk.
+        let dir = tempfile::tempdir()?;
+        let src = dir.path().join("crlf.md");
+        std::fs::write(&src, "a\r\nb\r\n")?;
+        let mut buf = Buffer::load_file(&src)?;
+
+        // Insert "X\n" at the start.
+        buf.insert(0, "X\n");
+        let out = dir.path().join("out.md");
+        buf.save_copy(&out)?;
+        assert_eq!(std::fs::read(&out)?, b"X\r\na\r\nb\r\n");
+        Ok(())
+    }
+
+    #[test]
+    fn from_str_detects_and_normalizes() {
+        let buf = Buffer::from_str("x\r\ny\r\n");
+        assert_eq!(buf.line_ending(), LineEnding::Crlf);
+        assert_eq!(buf.contents(), "x\ny\n");
+    }
+
+    #[test]
+    fn new_and_empty_buffers_use_the_platform_default() {
+        assert_eq!(Buffer::new().line_ending(), LineEnding::default());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let f = Buffer::for_new_file(&dir.path().join("new.md"));
+        assert_eq!(f.line_ending(), LineEnding::default());
+    }
+
+    #[test]
+    fn reload_carries_the_ending_forward_and_normalizes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("doc.md");
+        // Watcher may hand over verbatim CRLF bytes; reload normalizes.
+        let reloaded = Buffer::reload(&path, "p\r\nq\r\n", 7, LineEnding::Crlf);
+        assert_eq!(reloaded.contents(), "p\nq\n");
+        assert_eq!(reloaded.line_ending(), LineEnding::Crlf);
+        assert_eq!(reloaded.version(), 8);
     }
 }

@@ -8,6 +8,10 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ## [Unreleased]
 
+### Fixed
+
+- edamame now respects your documents' existing line endings, whether Windows CRLF or Mac/Linux LF. A file with CRLF line endings no longer shows up as one big change in diff review. New documents decide line ending based on your OS.
+
 ## [0.1.2] - 2026-08-24
 
 ### Added
