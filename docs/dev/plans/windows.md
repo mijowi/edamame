@@ -62,12 +62,12 @@ Goal: the `windows` job in `.github/workflows/ci.yml` runs on every push and PR,
 
   *Five `/`-rooted literals.* A `/`-rooted path is not absolute on Windows (`Path::new("/tmp/notes.md").is_absolute()` is `false` — there is no drive letter), so code that calls `std::path::absolute` prepends the cwd, and code that checks `is_absolute()` takes its fallback branch. The tests were asserting the intended behavior; only the fixtures were wrong.
 
-  | Test | Fix |
-  |---|---|
-  | `app::modal::dirty_conflict::tests::local_copy_path_appends_dot_local_{with,without}_extension` | Input from `tempfile::tempdir()`, expectation from `dir.path().join(..).display()` |
-  | `ui::save_copy_modal::tests::save_as_default_keeps_name_and_shows_absolute_directory` | Same; the relative and unnamed halves already compared against `cwd.join(..)` |
-  | `export::custom::tests::absolutize_makes_a_relative_path_absolute` (new since the plan) | Same, for the already-absolute half |
-  | `config::config::tests::config_dir_prefers_absolute_xdg_config_home` | `resolve_config_dir` is pure, so no tempdir: an `abs_root()` helper picks `C:\name` / `/name` by `cfg!(windows)`. `config_dir_falls_back_to_dot_config_on_every_platform` got the same treatment, since its `/home/u` home was only absolute on Unix |
+| Test | Fix |
+|---|---|
+| `app::modal::dirty_conflict::tests::local_copy_path_appends_dot_local_{with,without}_extension` | Input from `tempfile::tempdir()`, expectation from `dir.path().join(..).display()` |
+| `ui::save_copy_modal::tests::save_as_default_keeps_name_and_shows_absolute_directory` | Same; the relative and unnamed halves already compared against `cwd.join(..)` |
+| `export::custom::tests::absolutize_makes_a_relative_path_absolute` (new since the plan) | Same, for the already-absolute half |
+| `config::config::tests::config_dir_prefers_absolute_xdg_config_home` | `resolve_config_dir` is pure, so no tempdir: an `abs_root()` helper picks `C:\name` / `/name` by `cfg!(windows)`. `config_dir_falls_back_to_dot_config_on_every_platform` got the same treatment, since its `/home/u` home was only absolute on Unix |
 
   Rule applied: real paths from `tempdir()` wherever a path reaches the filesystem or `absolute()`; a `cfg!`-selected literal only for a pure function. None of these got a `#[cfg(unix)]` gate — the point is that the behavior holds on Windows.
 
@@ -85,15 +85,15 @@ Goal: the `windows` job in `.github/workflows/ci.yml` runs on every push and PR,
 
 - [x] **Widen what the job checks.** The current job runs `cargo test --no-default-features` only. Bring it to parity with the Unix jobs and add the one thing they can't cover:
 
-  ```yaml
-  - run: cargo clippy --all-targets --all-features -- -D warnings   # the only place arboard's Windows backend is linted
-  - run: cargo test --no-default-features
-  - name: Test (watcher — needs live filesystem notifications)
-    shell: bash
-    run: |
-      cargo test --no-default-features --test watcher -- --ignored
-      cargo test --no-default-features --lib -- --ignored watcher::
-  ```
+```yaml
+- run: cargo clippy --all-targets --all-features -- -D warnings   # the only place arboard's Windows backend is linted
+- run: cargo test --no-default-features
+- name: Test (watcher — needs live filesystem notifications)
+shell: bash
+run: |
+  cargo test --no-default-features --test watcher -- --ignored
+  cargo test --no-default-features --lib -- --ignored watcher::
+```
 
   `shell: bash` because the runner's default shell on Windows is `pwsh`; the multi-line `run:` works either way but bash keeps it identical to the Unix step. The watcher step exercises `notify`'s `ReadDirectoryChangesW` backend, currently exercised by nothing — the `#[ignore]` filter reasoning in `AGENTS.md` applies unchanged. If the Windows notifications prove flaky under the runner's filesystem, gate *that step* rather than dropping the job.
 
@@ -101,13 +101,9 @@ Goal: the `windows` job in `.github/workflows/ci.yml` runs on every push and PR,
 
 - [x] **Re-arm the job.** Delete the `if: github.event_name == 'workflow_dispatch'` and `continue-on-error: true` lines. Kept as a separate named job rather than a third matrix entry: its step list differs (the extra `--all-features` clippy), and a conditional step inside the matrix is exactly the awkwardness that argued against folding. Rewrite the comment block above the job: it currently explains why the job is disabled and lists the four failures; it should now say Windows is best-effort, that the job is the *only* Windows verification, and where the cfg-gated Unix-only tests live so a future Windows contributor knows what to port.
 
-- [ ] **Decide whether a red Windows run blocks a merge.** With the job in the matrix it reports like any other check, so if branch protection requires CI it blocks. That is the recommendation: a compile or deterministic-test failure on Windows is cheap to fix or `cfg`-gate, and "best-effort" describes what we *verify*, not what we tolerate in CI. If a Linux-only contributor is stalled by a Windows-only failure, the escape hatch is a `#[cfg(not(windows))]` on the test with a comment, not `continue-on-error`.
-
 - [ ] **Job time.** Windows runners build Rust roughly 2–3× slower than ubuntu. `Swatinem/rust-cache` is already in the job and works on Windows; check the first few runs' wall clock and, if it dominates the workflow, consider trimming to `cargo test --no-default-features` plus the clippy step and dropping the watcher step to a nightly `schedule:` instead.
 
 - [x] **Say it in the docs.** User-facing — a `### Platforms` section in the README's install block, since `getting-started.md` has no install section and the README owns that: Windows builds from source and passes CI, is not smoke-tested, and Windows Terminal is the only console likely to work — legacy conhost has no alternate screen or mouse support worth relying on. `docs/terminal-compatibility.md:117` keeps its `?` row: those cells are observations, and there are none. Contributor-facing: tick the "Re-enable the Windows CI job" box in `publish.md` and point it here.
-
-- [ ] **Close the loop on issue #2** with a comment stating the decision and linking this file.
 
 ### What this tier does not prove
 
