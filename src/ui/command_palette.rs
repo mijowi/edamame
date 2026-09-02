@@ -49,9 +49,16 @@ const NO_MATCHES_WIDTH: u16 = 12;
 /// A single `Export…` entry covers every target — the format (HTML, or any
 /// configured `[[export.custom]]` converter) is chosen inside the export
 /// modal's Format list, so the palette carries no per-converter rows.
-pub fn build_palette_list(keymap: &KeyMap) -> SearchableList<PaletteEntry> {
-    SearchableList::new(build_entries(keymap), |e: &PaletteEntry| e.label.as_str())
-        .with_sections(palette_sections)
+///
+/// `vim_enabled` drops `Exit to preview`: vim never rests in Preview
+/// (Normal is its resting mode), so the action would flip the editor into
+/// Preview only for the next keystroke to leave it again.  The keybinds
+/// overlay and the hint line hide the same action for the same reason.
+pub fn build_palette_list(keymap: &KeyMap, vim_enabled: bool) -> SearchableList<PaletteEntry> {
+    SearchableList::new(build_entries(keymap, vim_enabled), |e: &PaletteEntry| {
+        e.label.as_str()
+    })
+    .with_sections(palette_sections)
 }
 
 /// Render the palette modal.  Returns the `esc` close-hint rect for click
@@ -252,10 +259,12 @@ fn section_of(action: &Action) -> &'static str {
 /// Build the full action list shown in the palette.  Each entry has a
 /// human-readable label and (optionally) the bound chord.  Sorted
 /// alphabetically by label (the empty-state view re-orders via sections; a
-/// typed query is sorted by fuzzy score).
-fn build_entries(keymap: &KeyMap) -> Vec<PaletteEntry> {
+/// typed query is sorted by fuzzy score).  See [`build_palette_list`] for
+/// the `vim_enabled` gate.
+fn build_entries(keymap: &KeyMap, vim_enabled: bool) -> Vec<PaletteEntry> {
     let mut entries: Vec<PaletteEntry> = ALL_ACTIONS
         .iter()
+        .filter(|a| !(vim_enabled && **a == Action::ExitToPreview))
         .filter_map(|a| {
             let label = label_for(a)?;
             let chord = keymap.first_key_for(a);
@@ -285,6 +294,23 @@ mod tests {
         KeyMap::build(&KeyBindingOverrides::default()).unwrap()
     }
 
+    #[test]
+    fn exit_to_preview_hidden_under_vim() {
+        // Vim never rests in Preview, so the entry is dropped — and only
+        // that entry: every other action survives the gate unchanged.
+        let default = build_entries(&keymap(), false);
+        let vim = build_entries(&keymap(), true);
+        assert!(default.iter().any(|e| e.action == Action::ExitToPreview));
+        assert!(!vim.iter().any(|e| e.action == Action::ExitToPreview));
+        let default_rest: Vec<&Action> = default
+            .iter()
+            .map(|e| &e.action)
+            .filter(|a| **a != Action::ExitToPreview)
+            .collect();
+        let vim_all: Vec<&Action> = vim.iter().map(|e| &e.action).collect();
+        assert_eq!(vim_all, default_rest);
+    }
+
     /// Render once into a TestBackend so the list observes its visible-window
     /// size (needed before scroll/paging assertions).
     fn render(list: &mut SearchableList<PaletteEntry>, w: u16, h: u16) -> String {
@@ -309,7 +335,7 @@ mod tests {
 
     #[test]
     fn empty_state_has_suggested_section_first_in_curated_order() {
-        let list = build_palette_list(&keymap());
+        let list = build_palette_list(&keymap(), false);
         let rows = palette_sections(list.items());
         assert!(matches!(&rows[0], VisibleRow::Header(h) if h == "Suggested"));
         let second_header = rows
@@ -344,7 +370,7 @@ mod tests {
 
     #[test]
     fn empty_state_shows_all_actions_in_category_sections() {
-        let list = build_palette_list(&keymap());
+        let list = build_palette_list(&keymap(), false);
         let rows = palette_sections(list.items());
         let second_header_pos = rows
             .iter()
@@ -371,7 +397,7 @@ mod tests {
 
     #[test]
     fn typing_save_file_finds_save_file() {
-        let mut list = build_palette_list(&keymap());
+        let mut list = build_palette_list(&keymap(), false);
         for c in "save f".chars() {
             list.handle_key(&key(KeyCode::Char(c)));
         }
@@ -383,7 +409,7 @@ mod tests {
 
     #[test]
     fn enter_with_no_matches_is_continue() {
-        let mut list = build_palette_list(&keymap());
+        let mut list = build_palette_list(&keymap(), false);
         for c in "zzzznotanything".chars() {
             list.handle_key(&key(KeyCode::Char(c)));
         }
@@ -393,13 +419,13 @@ mod tests {
 
     #[test]
     fn escape_cancels() {
-        let mut list = build_palette_list(&keymap());
+        let mut list = build_palette_list(&keymap(), false);
         assert_eq!(list.handle_key(&key(KeyCode::Esc)), ListEvent::Cancelled);
     }
 
     #[test]
     fn enter_returns_focused_action() {
-        let mut list = build_palette_list(&keymap());
+        let mut list = build_palette_list(&keymap(), false);
         for c in "markd".chars() {
             list.handle_key(&key(KeyCode::Char(c)));
         }
@@ -413,7 +439,7 @@ mod tests {
 
     #[test]
     fn down_advances_focus_skipping_headers() {
-        let mut list = build_palette_list(&keymap());
+        let mut list = build_palette_list(&keymap(), false);
         let count = list.match_count();
         assert!(count > 1);
         let first = list.focused_item_index();
@@ -428,7 +454,7 @@ mod tests {
 
     #[test]
     fn ctrl_chars_do_not_pollute_query() {
-        let mut list = build_palette_list(&keymap());
+        let mut list = build_palette_list(&keymap(), false);
         let ctrl_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
         list.handle_key(&ctrl_p);
         assert!(list.query().is_empty());
@@ -438,7 +464,7 @@ mod tests {
     /// chosen inside the modal, so there is exactly one export row.
     #[test]
     fn there_is_a_single_export_entry() {
-        let entries = build_entries(&keymap());
+        let entries = build_entries(&keymap(), false);
         let exports: Vec<&PaletteEntry> = entries
             .iter()
             .filter(|e| e.action == Action::ExportHtml)
@@ -449,14 +475,14 @@ mod tests {
 
     #[test]
     fn entries_carry_the_chord_for_save() {
-        let entries = build_entries(&keymap());
+        let entries = build_entries(&keymap(), false);
         let save = entries.iter().find(|e| e.action == Action::Save).unwrap();
         assert!(save.chord.is_some(), "Save chord should be Ctrl-S");
     }
 
     #[test]
     fn palette_renders_scrollbar_when_more_rows_than_visible_height() {
-        let mut list = build_palette_list(&keymap());
+        let mut list = build_palette_list(&keymap(), false);
         list.handle_key(&key(KeyCode::Char('e')));
         let contents = render(&mut list, 80, 10);
         assert!(contents.contains('█'), "expected scrollbar thumb glyph");
@@ -464,7 +490,7 @@ mod tests {
 
     #[test]
     fn palette_wheel_scrolls_without_moving_focus() {
-        let mut list = build_palette_list(&keymap());
+        let mut list = build_palette_list(&keymap(), false);
         list.handle_key(&key(KeyCode::Char('e')));
         render(&mut list, 80, 10);
         let focused_before = list.focused_item_index();

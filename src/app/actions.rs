@@ -931,8 +931,12 @@ impl App {
     /// Open the fuzzy-searchable command palette.
     pub fn open_command_palette(&mut self) {
         let keymap = self.ensure_keymap_clone();
+        let vim_enabled = self.vim.is_some();
         self.modal_stack
-            .push(Box::new(modal::CommandPaletteModal::new(&keymap)));
+            .push(Box::new(modal::CommandPaletteModal::new(
+                &keymap,
+                vim_enabled,
+            )));
     }
 
     /// Build a fresh copy of the keymap, populating `self.keymap` if

@@ -60,7 +60,7 @@ fn palette_save_entry_resolves_to_same_action_as_keyboard_save() {
 
     // Palette path: open palette, type "save f" (the trailing " f"
     // disambiguates "Save file" from "Save as…"), press Enter.
-    let mut palette = build_palette_list(&keymap());
+    let mut palette = build_palette_list(&keymap(), false);
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     for c in "save f".chars() {
         palette.handle_key(&KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
