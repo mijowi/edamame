@@ -98,7 +98,7 @@ edamame works under tmux, with two caveats worth knowing:
 
 ## Windows and WSL
 
-**Windows is a best-effort platform.** edamame builds from source on Windows and passes its test suite there in CI, but nobody smoke-tests the running program, so everything on this page that depends on the terminal — images, mouse, the keyboard protocol, the clipboard, opening links, the external editor — is unverified there. The [README](../README.md#platforms) has the short version; if you run it, an [issue](https://github.com/mijowi/edamame/issues) with `edamame --doctor` output is the most useful thing you can send, whether or not something is wrong.
+**Windows is a best-effort platform.** edamame builds from source on Windows and passes its test suite there in CI, but nobody smoke-tests the running program, so everything on this page that depends on the terminal — images, mouse, the keyboard protocol, the clipboard, opening links, the external editor — is unverified there. If you run it, an [issue](https://github.com/mijowi/edamame/issues) with `edamame --doctor` output is the most useful thing you can send, whether or not something is wrong.
 
 - **Use [Windows Terminal](https://github.com/microsoft/terminal).** The legacy console (`conhost.exe`) has no alternate screen and no mouse reporting worth relying on; the TUI depends on both. Windows Terminal 1.22 and later can display Sixel images; it does not speak the Kitty graphics protocol.
 - **Config lives at `C:\Users\<you>\.config\edamame`**, not under `%APPDATA%` — see [configuration.md](configuration.md#where-config-lives).
