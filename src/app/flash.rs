@@ -163,9 +163,12 @@ impl App {
         // A vim VisualLine selection on a single line is charwise-empty, so the
         // hint line can't infer it from `selection_size` alone — pass the flag
         // through so the selection row shows under a V-LINE highlight.
+        // `vim_enabled` drops the `Esc Preview` chord: vim owns `Esc` and
+        // never rests in Preview, so the action is unreachable there.
         let ctx = HintCtx {
             nav_available: !self.nav_back.is_empty() || !self.nav_forward.is_empty(),
             visual_line: self.vim.as_ref().is_some_and(|v| v.is_visual_line()),
+            vim_enabled: self.vim.is_some(),
         };
         HintContent::Chords(hint_line_for(&self.editor, keymap, ctx))
     }

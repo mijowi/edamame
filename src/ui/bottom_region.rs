@@ -103,6 +103,12 @@ pub struct HintCtx {
     /// active`) even though the whole line paints as highlighted, so the
     /// selection row can't be inferred from `state.selection_size()` alone.
     pub visual_line: bool,
+    /// True while the vim handler is active.  Vim never rests in Preview
+    /// (Normal is its resting mode) and consumes `Esc` in every sub-mode,
+    /// so `ExitToPreview` can never fire and its chord is dropped from the
+    /// baseline row — the same rule the keybinds overlay applies to its
+    /// `Preview mode` row.
+    pub vim_enabled: bool,
 }
 
 /// Pick the default hint set for `state`, adapting to the cursor's
@@ -133,7 +139,9 @@ pub struct HintCtx {
 /// rather than re-advertising vim's keys.  A Visual selection lands on the
 /// shared selection row (Cut / Copy / Paste / …) because vim Visual sets
 /// the editor `selection` just like a mouse drag does; VisualLine gets its
-/// own shorter row (see [`visual_line_chords`]).
+/// own shorter row (see [`visual_line_chords`]).  The one baseline chord
+/// vim does drop is `Esc Preview`: under vim `Esc` returns to Normal and
+/// Preview is never entered, so advertising it would be a lie.
 pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, ctx: HintCtx) -> HintSet {
     // An active search flow replaces the row wholesale, whatever the
     // view mode — only the flow keys work while it's active.  The
@@ -270,7 +278,11 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, ctx: HintCtx) -> Hint
             // selection-override arm above.  The view-mode chord
             // label flips with the current mode (Rendered → "Raw",
             // Raw → "Render") and "Preview" / "Raw" / "Render" are
-            // all destination labels — never the current state.
+            // all destination labels — never the current state.  The
+            // Preview chord is gated on `!ctx.vim_enabled`: vim consumes
+            // `Esc` itself and never rests in Preview, so the action is
+            // unreachable there and the keybinds overlay already hides
+            // its row for the same reason.
             //
             // Contextual chords (those that only make sense in a
             // specific state) are prepended to the front of the row
@@ -283,6 +295,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, ctx: HintCtx) -> Hint
                 _ => "Raw",
             };
             let redo_entry = state.history.can_redo().then_some((Action::Redo, "Redo"));
+            let preview_entry = (!ctx.vim_enabled).then_some((Action::ExitToPreview, "Preview"));
             let baseline = [
                 Some((Action::ShowCommandPalette, "Menu")),
                 Some((Action::GoToSection, "Go to")),
@@ -292,7 +305,7 @@ pub fn hint_line_for(state: &EditorState, keymap: &KeyMap, ctx: HintCtx) -> Hint
                 redo_entry,
                 Some((Action::Open, "Open")),
                 Some((Action::Save, "Save")),
-                Some((Action::ExitToPreview, "Preview")),
+                preview_entry,
                 Some((Action::ToggleRawMode, view_toggle_label)),
                 Some((Action::Quit, "Quit")),
             ];
@@ -1462,6 +1475,46 @@ mod tests {
             !set.chords.iter().any(|c| c.label == "Back/fwd"),
             "Back/fwd must stay hidden in a table even in Raw mode"
         );
+    }
+
+    #[test]
+    fn preview_chord_hidden_under_vim() {
+        // Vim consumes `Esc` in every sub-mode and never rests in Preview,
+        // so `ExitToPreview` is unreachable there: the chord must vanish
+        // from the baseline row (Rendered and Raw alike) while every other
+        // baseline entry stays put.
+        for mode in [Mode::Rendered, Mode::Raw] {
+            let mut st = state("hello");
+            st.mode = mode;
+            let default = hint_line_for(&st, &keymap(), HintCtx::default());
+            assert!(
+                default.chords.iter().any(|c| c.label == "Preview"),
+                "{mode:?}: Preview must show under the default handler"
+            );
+            let vim = hint_line_for(
+                &st,
+                &keymap(),
+                HintCtx {
+                    vim_enabled: true,
+                    ..Default::default()
+                },
+            );
+            assert!(
+                !vim.chords.iter().any(|c| c.label == "Preview"),
+                "{mode:?}: Preview must be hidden under vim"
+            );
+            let without_preview: Vec<&str> = default
+                .chords
+                .iter()
+                .map(|c| c.label.as_str())
+                .filter(|l| *l != "Preview")
+                .collect();
+            let vim_labels: Vec<&str> = vim.chords.iter().map(|c| c.label.as_str()).collect();
+            assert_eq!(
+                vim_labels, without_preview,
+                "{mode:?}: only Preview may differ"
+            );
+        }
     }
 
     #[test]
