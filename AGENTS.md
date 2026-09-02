@@ -28,6 +28,18 @@ cargo clippy --all-targets -- -D warnings   # CI enforcement (lib + bin + tests 
 
 No custom `rustfmt.toml` or `.clippy.toml`; standard Rust defaults apply.
 
+### Cross-checking the Windows build
+
+Windows is a best-effort platform (`docs/dev/plans/windows.md`): it must compile, lint, and pass tests, and nothing more is verified. From Linux, the msvc target can be type-checked and linted but not run:
+
+```bash
+rustup target add x86_64-pc-windows-msvc && cargo install cargo-xwin   # once
+cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings
+cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets --no-default-features -- -D warnings
+```
+
+`cargo-xwin` rather than plain `cargo clippy --target` because `ring` (via `ureq` → rustls) compiles C and needs the MSVC CRT headers; `xwin` downloads them into `~/.cache/cargo-xwin` on first use and drives `clang-cl` / `llvm-lib`, which Debian's `clang` package provides. The `--all-features` pass is the one that matters: it is the only place `arboard`'s Windows clipboard backend gets compiled, since the CI test jobs run `--no-default-features`. Run both before touching a `cfg(unix)` gate or a test module whose imports serve only `cfg(unix)` tests — an import that goes unused once those are compiled out is a hard error here.
+
 ## Git Hooks
 
 ```bash

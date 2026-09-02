@@ -254,6 +254,10 @@ fn substitute_command(command: &[String], html_path: &Path, out_path: &Path) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the `cfg(unix)` spawn tests below drive a worker through a
+    // channel; on Windows they are compiled out and this import would be
+    // unused, which `clippy -D warnings` against the msvc target rejects.
+    #[cfg(unix)]
     use std::sync::mpsc;
     use tempfile::tempdir;
 
@@ -279,11 +283,12 @@ mod tests {
             "a relative target must absolutize: {abs:?}"
         );
         assert!(abs.ends_with("docs/guide.pdf"), "tail preserved: {abs:?}");
-        // An already-absolute path passes through unchanged.
-        assert_eq!(
-            absolutize(Path::new("/tmp/x.pdf")),
-            PathBuf::from("/tmp/x.pdf")
-        );
+        // An already-absolute path passes through unchanged.  A real
+        // directory rather than `/tmp/x.pdf`: a `/`-rooted literal has no
+        // drive letter and so is not absolute on Windows.
+        let dir = tempdir().unwrap();
+        let already = dir.path().join("x.pdf");
+        assert_eq!(absolutize(&already), already);
     }
 
     /// `absolutize("")` is the cwd, not the empty path.  `target.parent()`
