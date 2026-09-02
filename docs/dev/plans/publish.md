@@ -75,7 +75,7 @@ cargo publish --locked
 
 ---
 
-- [ ] **Re-enable the Windows CI job.** Disabled to `workflow_dispatch` only (`.github/workflows/ci.yml`) because `continue-on-error` still paints a red X on every PR's check list. Windows is a best-effort platform; the plan for the local cross-check, the four test fixes, and re-arming the job is [`windows.md`](windows.md).
+- [x] **Re-enable the Windows CI job.** Runs on every push and PR since `87cc5e8`. Windows is a best-effort platform; the stance, what the job verifies, and the test rules are in [`docs/dev/windows.md`](../windows.md).
 - [ ] **Automate the crates.io publish.** Step 8 of Releasing is manual because   `dist`'s `publish-jobs` has no crates.io publisher — only `homebrew`, `npm`,   and `./user-defined` custom jobs. It needs a custom job plus a   `CARGO_REGISTRY_TOKEN` secret, wired through `dist-workspace.toml` and   `dist init` — never by hand-editing `release.yml`.
 
 - [x] Add user-facing documentation — `docs/{getting-started,editing,keybindings,configuration,themes}.md`, plus corrections to `vim-mode.md` / `security.md`

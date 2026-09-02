@@ -96,6 +96,22 @@ edamame works under tmux, with two caveats worth knowing:
 
 `edamame --doctor` reports whether it's running under tmux.
 
+## Windows and WSL
+
+**Windows is a best-effort platform.** edamame builds from source on Windows and passes its test suite there in CI, but nobody smoke-tests the running program, so everything on this page that depends on the terminal — images, mouse, the keyboard protocol, the clipboard, opening links, the external editor — is unverified there. The [README](../README.md#platforms) has the short version; if you run it, an [issue](https://github.com/mijowi/edamame/issues) with `edamame --doctor` output is the most useful thing you can send, whether or not something is wrong.
+
+- **Use [Windows Terminal](https://github.com/microsoft/terminal).** The legacy console (`conhost.exe`) has no alternate screen and no mouse reporting worth relying on; the TUI depends on both. Windows Terminal 1.22 and later can display Sixel images; it does not speak the Kitty graphics protocol.
+- **Config lives at `C:\Users\<you>\.config\edamame`**, not under `%APPDATA%` — see [configuration.md](configuration.md#where-config-lives).
+- **`CRLF` files are preserved as `CRLF`**, and a new file gets `CRLF` on Windows — see [editing.md](editing.md).
+
+**WSL runs the Linux build**, so it's supported the way Linux is, with three limitations that come from WSL itself rather than from edamame:
+
+- **Documents under `/mnt/c` (or any other Windows drive) don't report changes.** The Windows-drive mount delivers no inotify events, so edamame never notices when another program edits a file there — the diff review that normally opens on an external change stays silent, and you'll see the new contents only on reopening. Files under the Linux filesystem (your WSL home, for instance) work normally.
+- **Opening links needs an opener.** edamame hands URLs and non-Markdown files to `xdg-open`, which a bare WSL distribution may not have. Installing `wslu` provides `wslview`, which opens them on the Windows side; symlink or alias it as `xdg-open`.
+- **The clipboard needs WSLg.** With WSLg (Windows 11, or Windows 10 with the Store version of WSL) the OS clipboard works through Wayland. Without it, copy and paste stay inside edamame's own kill-ring — everything works, but nothing crosses to other programs.
+
+Windows Terminal is the usual host for WSL, so its notes above apply to the terminal side.
+
 ---
 
 ## Tested terminals
@@ -114,7 +130,7 @@ edamame works under tmux, with two caveats worth knowing:
 | Alacritty | ?  | ? | ? | ? recent | No image protocol |
 | Apple Terminal | ✗ 256 | ✗ | ✓ | ✗ | Themes fall back to `256 Dark` / `256 Light`; see the `Option` notes above |
 | VS Code terminal | ? | ? | ? | ? |  |
-| Windows Terminal | ? | ? | ? | ? |  |
+| Windows Terminal | ? | ? Sixel (1.22+) | ? | ? | Best-effort platform, not yet tested — see [Windows and WSL](#windows-and-wsl) |
 | tmux (any host) | ✓ | ✓ | ✓ | ✗ | Depends on configuration — see [above](#tmux-and-multiplexers). Some `Ctrl` chords don't work. |
 
 ---

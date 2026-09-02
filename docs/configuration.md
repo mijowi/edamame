@@ -15,6 +15,8 @@ $XDG_CONFIG_HOME/edamame/     # if XDG_CONFIG_HOME is set to an absolute path
 ~/.config/edamame/            # otherwise
 ```
 
+On Windows that `~` is your profile folder, so the config is at `C:\Users\<you>\.config\edamame` rather than under `%APPDATA%`. Under WSL it's the Linux home directory, not the Windows one.
+
 Inside it:
 
 | File | Purpose |

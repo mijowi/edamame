@@ -30,7 +30,7 @@ No custom `rustfmt.toml` or `.clippy.toml`; standard Rust defaults apply.
 
 ### Cross-checking the Windows build
 
-Windows is a best-effort platform (`docs/dev/plans/windows.md`): it must compile, lint, and pass tests, and nothing more is verified. From Linux, the msvc target can be type-checked and linted but not run:
+Windows is a best-effort platform (`docs/dev/windows.md`): it must compile, lint, and pass tests, and nothing more is verified. From Linux, the msvc target can be type-checked and linted but not run:
 
 ```bash
 rustup target add x86_64-pc-windows-msvc && cargo install cargo-xwin   # once
@@ -248,7 +248,7 @@ docs/               # USER-facing — shipped, kept accurate: getting-started, k
                     #   terminal-compatibility, configuration, editing, themes,
                     #   vim-mode, security
   dev/              # CONTRIBUTOR-facing: performance.md, security-invariants.md,
-                    #   theming.md, why.md, plans/ (historical), and one per-subsystem
+                    #   theming.md, why.md, windows.md, plans/ (historical), and one per-subsystem
                     #   deep-dive per subject (see "Architecture deep-dives" below)
 ```
 
@@ -314,6 +314,7 @@ Longer-standing contributor docs live alongside them:
 - [Security invariants](docs/dev/security-invariants.md) — the checklist for content-handling paths
 - [Theming](docs/dev/theming.md) — authoring themes and the focus-vs-selection styling convention
 - [Why](docs/dev/why.md) — design rationale
+- [Windows](docs/dev/windows.md) — the best-effort stance: what CI verifies, what nobody has run, and the path-literal rules for tests
 
 ## Code Style
 

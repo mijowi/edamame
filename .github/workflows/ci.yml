@@ -107,7 +107,7 @@ jobs:
           cargo test --no-default-features --test watcher -- --ignored
           cargo test --no-default-features --lib -- --ignored watcher::
 
-  # Windows is a best-effort platform (docs/dev/plans/windows.md): it must
+  # Windows is a best-effort platform (docs/dev/windows.md): it must
   # compile, lint, and pass the suite, and this job is the *only* place
   # that is checked — nobody smoke-tests the running TUI there.  Its steps
   # differ from the Unix matrix, which is why it is a separate job rather
