@@ -450,8 +450,12 @@ mod tests {
     fn save_as_default_keeps_name_and_shows_absolute_directory() {
         // Save As keeps the filename (no "… copy") but resolves to an
         // absolute path so the destination directory is visible/editable.
-        let p = Path::new("/tmp/notes.md");
-        assert_eq!(default_save_as_path(Some(p)), "/tmp/notes.md");
+        // A real directory, not `/tmp/notes.md`: a `/`-rooted literal is
+        // not absolute on Windows (no drive letter) and would be
+        // re-rooted at the cwd.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("notes.md");
+        assert_eq!(default_save_as_path(Some(&p)), p.display().to_string());
 
         let cwd = std::env::current_dir().expect("cwd");
         let rel = default_save_as_path(Some(Path::new("notes.md")));

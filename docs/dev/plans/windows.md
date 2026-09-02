@@ -56,20 +56,26 @@ Goal: the `windows` job in `.github/workflows/ci.yml` runs on every push and PR,
 
 ### Steps
 
-- [ ] **Re-baseline first.** The four failures were recorded some time ago and the tree has moved. Trigger the job by hand (`gh workflow run ci.yml`, then `gh run watch`) and diff its failure list against the four below before fixing anything. Latent candidates the grep turned up, in case the list has grown: `app/modal/config_warning.rs` asserts on `/home/u/.config/edamame/config.toml`; `tests/mouse.rs` builds a base of `/docs`; `editor/state_source_lines.rs` and `tests/vim.rs` use `/`-rooted literals that may be display-only.
+- [x] **Re-baseline first.** Run 33588933260 (2026-09-01) against `main` at `cfd3d8d`: **7 failures in the lib target, 2210 passed** — and because the job had no `--no-fail-fast`, `tests/` was never built, so the integration suite had never run on Windows at all. The re-armed job passes `--no-fail-fast` for that reason. The suspected latent candidates (`config_warning`, `tests/mouse.rs`, `tests/vim.rs`) were *not* among the failures — their literals are display-only or never reach an `is_absolute` check.
 
-- [ ] **Fix the four known test failures.** All share one root cause: a `/`-rooted literal is not an absolute path on Windows (`Path::new("/tmp/notes.md").is_absolute()` is `false` — there is no drive letter), so code that calls `std::path::absolute` prepends the cwd, and code that checks `is_absolute()` takes its fallback branch. The tests are asserting the intended behavior; only the fixtures are wrong.
+- [x] **Fix the seven test failures.** Three causes:
 
-  | Test | Why it fails | Fix |
-  |---|---|---|
-  | `app::modal::dirty_conflict::tests::local_copy_path_appends_dot_local_with_extension` | `/tmp/notes.md` gets the cwd prepended | Build the input from `tempfile::tempdir()` and assert against `dir.path().join("notes.local.md").display().to_string()` |
-  | `…::local_copy_path_appends_dot_local_without_extension` | same, `/etc/README` | same, `README` → `README.local` |
-  | `config::config::tests::config_dir_prefers_absolute_xdg_config_home` | `/xdg` fails the absolute check, falls back to `~/.config` | `resolve_config_dir` is pure, so no tempdir: take the root from a `cfg!(windows)`-conditional literal (`C:\xdg` / `/xdg`) and assert `root.join("edamame")`. Extend `config_dir_falls_back_to_dot_config_on_every_platform` the same way, since its `/home/u` home is only absolute on Unix |
-  | `ui::save_copy_modal::tests::save_as_default_keeps_name_and_shows_absolute_directory` | `/tmp/notes.md` gets the cwd prepended | `tempdir()`, as for `dirty_conflict`; the relative and unnamed halves already compare against `cwd.join(..)` and are fine |
+  *Five `/`-rooted literals.* A `/`-rooted path is not absolute on Windows (`Path::new("/tmp/notes.md").is_absolute()` is `false` — there is no drive letter), so code that calls `std::path::absolute` prepends the cwd, and code that checks `is_absolute()` takes its fallback branch. The tests were asserting the intended behavior; only the fixtures were wrong.
 
-  Prefer real paths from `tempdir()` over `cfg!`-selected literals wherever a path reaches the filesystem or `absolute()`; reserve the literal for pure functions. Don't add a `#[cfg(unix)]` gate to any of these — the whole point is that the behavior holds on Windows.
+  | Test | Fix |
+  |---|---|
+  | `app::modal::dirty_conflict::tests::local_copy_path_appends_dot_local_{with,without}_extension` | Input from `tempfile::tempdir()`, expectation from `dir.path().join(..).display()` |
+  | `ui::save_copy_modal::tests::save_as_default_keeps_name_and_shows_absolute_directory` | Same; the relative and unnamed halves already compared against `cwd.join(..)` |
+  | `export::custom::tests::absolutize_makes_a_relative_path_absolute` (new since the plan) | Same, for the already-absolute half |
+  | `config::config::tests::config_dir_prefers_absolute_xdg_config_home` | `resolve_config_dir` is pure, so no tempdir: an `abs_root()` helper picks `C:\name` / `/name` by `cfg!(windows)`. `config_dir_falls_back_to_dot_config_on_every_platform` got the same treatment, since its `/home/u` home was only absolute on Unix |
 
-- [ ] **Pin line endings at checkout.** GitHub's Windows runner images configure `core.autocrlf=true`, and the repo has no `.gitattributes`, so every LF file may arrive as CRLF: the 13 `insta` snapshots, `tests/fixtures/*.md` (byte offsets feed `source_map`), and the `include_str!`d `config/config.toml` and `CHANGELOG.md`. The one recorded run showed only the four path failures, so either the conversion didn't bite or those tests tolerate it — but a checkout that depends on a runner-image default is a flake waiting to happen. Add:
+  Rule applied: real paths from `tempdir()` wherever a path reaches the filesystem or `absolute()`; a `cfg!`-selected literal only for a pure function. None of these got a `#[cfg(unix)]` gate — the point is that the behavior holds on Windows.
+
+  *One Unix feature.* `app::difftool::tests::read_side_reads_dev_null_as_an_empty_side` (new since the plan) asserts on the OS's null device, which is legitimately Unix-only; it is now `#[cfg(unix)]` with a comment, and a new unconditional `read_side_reads_an_empty_file_as_an_empty_side` covers the property on every platform. Whether Git for Windows hands `edamame --diff` a `/dev/null` or a `nul` for an absent side is unverified — a question for a Windows contributor.
+
+  *One CRLF checkout.* `editor::state_source_lines::tests::fixture_labels_are_unique_ascending_and_agree_with_the_cursor` (new since the plan) reads `tests/fixtures/sample.md` from disk and was off by one row. That is the `core.autocrlf=true` conversion described in the next step, observed rather than suspected. No test change; `.gitattributes` is the fix.
+
+- [x] **Pin line endings at checkout.** GitHub's Windows runner images configure `core.autocrlf=true`, and the repo has no `.gitattributes`, so every LF file may arrive as CRLF: the 13 `insta` snapshots, `tests/fixtures/*.md` (byte offsets feed `source_map`), and the `include_str!`d `config/config.toml` and `CHANGELOG.md`. The baseline run confirmed it: the one test that reads a fixture from disk and depends on byte offsets failed on Windows and nowhere else. Add:
 
   ```gitattributes
   * text=auto eol=lf
@@ -77,7 +83,7 @@ Goal: the `windows` job in `.github/workflows/ci.yml` runs on every push and PR,
 
   This also protects the CRLF-preservation feature's own tests, which construct their `\r\n` input in code and must not have the *surrounding* source rewritten.
 
-- [ ] **Widen what the job checks.** The current job runs `cargo test --no-default-features` only. Bring it to parity with the Unix jobs and add the one thing they can't cover:
+- [x] **Widen what the job checks.** The current job runs `cargo test --no-default-features` only. Bring it to parity with the Unix jobs and add the one thing they can't cover:
 
   ```yaml
   - run: cargo clippy --all-targets --all-features -- -D warnings   # the only place arboard's Windows backend is linted
@@ -93,13 +99,13 @@ Goal: the `windows` job in `.github/workflows/ci.yml` runs on every push and PR,
 
   Keep `--no-default-features` on the test invocations for the reason the Unix jobs give: the OS clipboard is process-global and the tests would race on it. Skip the `--no-default-features` clippy pass here — the ubuntu job already lints the platform-neutral code that configuration reaches, and Windows minutes cost more.
 
-- [ ] **Re-arm the job.** Delete the `if: github.event_name == 'workflow_dispatch'` and `continue-on-error: true` lines. Either fold `windows-latest` into the `test` matrix (cleanest; the `strategy.fail-fast: false` already there means a Windows failure won't cancel the Unix runs) or keep it as a separate named job — fold it unless the extra clippy step makes the matrix awkward. Rewrite the comment block above the job: it currently explains why the job is disabled and lists the four failures; it should now say Windows is best-effort, that the job is the *only* Windows verification, and where the cfg-gated Unix-only tests live so a future Windows contributor knows what to port.
+- [x] **Re-arm the job.** Delete the `if: github.event_name == 'workflow_dispatch'` and `continue-on-error: true` lines. Kept as a separate named job rather than a third matrix entry: its step list differs (the extra `--all-features` clippy), and a conditional step inside the matrix is exactly the awkwardness that argued against folding. Rewrite the comment block above the job: it currently explains why the job is disabled and lists the four failures; it should now say Windows is best-effort, that the job is the *only* Windows verification, and where the cfg-gated Unix-only tests live so a future Windows contributor knows what to port.
 
 - [ ] **Decide whether a red Windows run blocks a merge.** With the job in the matrix it reports like any other check, so if branch protection requires CI it blocks. That is the recommendation: a compile or deterministic-test failure on Windows is cheap to fix or `cfg`-gate, and "best-effort" describes what we *verify*, not what we tolerate in CI. If a Linux-only contributor is stalled by a Windows-only failure, the escape hatch is a `#[cfg(not(windows))]` on the test with a comment, not `continue-on-error`.
 
 - [ ] **Job time.** Windows runners build Rust roughly 2–3× slower than ubuntu. `Swatinem/rust-cache` is already in the job and works on Windows; check the first few runs' wall clock and, if it dominates the workflow, consider trimming to `cargo test --no-default-features` plus the clippy step and dropping the watcher step to a nightly `schedule:` instead.
 
-- [ ] **Say it in the docs.** User-facing (`docs/getting-started.md`, and the README's platform line if it has one): Windows builds from source and passes CI, is not smoke-tested, and Windows Terminal is the only console likely to work — legacy conhost has no alternate screen or mouse support worth relying on. `docs/terminal-compatibility.md:117` keeps its `?` row: those cells are observations, and there are none. Contributor-facing: tick the "Re-enable the Windows CI job" box in `publish.md` and point it here.
+- [x] **Say it in the docs.** User-facing — a `### Platforms` section in the README's install block, since `getting-started.md` has no install section and the README owns that: Windows builds from source and passes CI, is not smoke-tested, and Windows Terminal is the only console likely to work — legacy conhost has no alternate screen or mouse support worth relying on. `docs/terminal-compatibility.md:117` keeps its `?` row: those cells are observations, and there are none. Contributor-facing: tick the "Re-enable the Windows CI job" box in `publish.md` and point it here.
 
 - [ ] **Close the loop on issue #2** with a comment stating the decision and linking this file.
 
@@ -112,4 +118,4 @@ Every layer that `cargo test` exercises through `TestBackend` — parser, render
 - `cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` is clean on a Linux checkout, and `AGENTS.md` says how to run it.
 - The `windows` job runs on push and PR with no `if:` and no `continue-on-error`, and has been green on `main` for at least two consecutive pushes.
 - `.gitattributes` pins LF.
-- `docs/getting-started.md` states the best-effort status; `publish.md` and issue #2 point here.
+- The README's install section states the best-effort status; `publish.md` and issue #2 point here.

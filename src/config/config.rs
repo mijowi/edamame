@@ -562,10 +562,23 @@ mod tests {
         assert!(std::fs::read_to_string(&path).unwrap().contains("Nord"));
     }
 
+    /// An absolute root for the platform under test.  `/xdg` is only
+    /// absolute on Unix — on Windows it lacks a drive letter, so
+    /// [`resolve_config_dir`]'s `is_absolute` check would (correctly)
+    /// reject it and the test would fail for the wrong reason.
+    fn abs_root(name: &str) -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(format!(r"C:\{name}"))
+        } else {
+            PathBuf::from(format!("/{name}"))
+        }
+    }
+
     #[test]
     fn config_dir_prefers_absolute_xdg_config_home() {
-        let dir = resolve_config_dir(Some("/xdg".into()), Some(PathBuf::from("/home/u")));
-        assert_eq!(dir, Some(PathBuf::from("/xdg/edamame")));
+        let xdg = abs_root("xdg");
+        let dir = resolve_config_dir(Some(xdg.clone().into()), Some(abs_root("home")));
+        assert_eq!(dir, Some(xdg.join("edamame")));
     }
 
     #[test]
@@ -573,9 +586,10 @@ mod tests {
         // Unset, empty, and relative XDG values all fall back to `~/.config`
         // — including on macOS, where `dirs::config_dir()` would have
         // returned `~/Library/Application Support`.
+        let home = abs_root("home");
         for xdg in [None, Some(OsString::from("")), Some(OsString::from("rel"))] {
-            let dir = resolve_config_dir(xdg, Some(PathBuf::from("/home/u")));
-            assert_eq!(dir, Some(PathBuf::from("/home/u/.config/edamame")));
+            let dir = resolve_config_dir(xdg, Some(home.clone()));
+            assert_eq!(dir, Some(home.join(".config").join("edamame")));
         }
     }
 

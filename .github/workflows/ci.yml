@@ -102,30 +102,51 @@ jobs:
           cargo test --no-default-features --test watcher -- --ignored
           cargo test --no-default-features --lib -- --ignored watcher::
 
-  # Windows is not a supported platform yet — edamame has never been tested
-  # there (issue #2).  Promote it into the matrix above once it is reliably
-  # green.
+  # Windows is a best-effort platform (docs/dev/plans/windows.md): it must
+  # compile, lint, and pass the suite, and this job is the *only* place
+  # that is checked — nobody smoke-tests the running TUI there.  Its steps
+  # differ from the Unix matrix, which is why it is a separate job rather
+  # than a third `os:` entry:
   #
-  # Currently DISABLED on push/PR: it runs only via `workflow_dispatch`.
-  # `continue-on-error` keeps the *workflow* green but the job still reports
-  # its own check as failing, so a red X sat on every pull request — which is
-  # exactly the signal a non-blocking job is supposed to avoid spending.  The
-  # four failures are POSIX path-separator assumptions in the tests, not
-  # product bugs: `dirty_conflict::local_copy_path_appends_dot_local{,_with_
-  # extension}`, `config::config_dir_prefers_absolute_xdg_config_home`, and
-  # `save_copy_modal::save_as_default_keeps_name_and_shows_absolute_directory`
-  # all compare against hard-coded `/`-joined strings.  Fix those, then drop
-  # the `if:` below to re-arm the standing signal.
+  #   * The clippy step is `--all-features`, and it is the one place
+  #     `arboard`'s Windows clipboard backend is compiled at all.  The
+  #     `clippy` job is ubuntu-only and every test job runs
+  #     `--no-default-features`, so without this step that code is linted
+  #     by nothing.  The `--no-default-features` lint is skipped here: the
+  #     ubuntu job already covers the platform-neutral code it reaches.
+  #   * `--no-fail-fast`, unlike the Unix jobs: this platform has no local
+  #     reproduction, so a run must report every failing target at once.
+  #     The baseline run stopped at the lib target and never built `tests/`.
+  #   * `shell: bash` on the multi-line step because the runner's default
+  #     shell on Windows is pwsh; bash keeps it identical to the Unix step.
+  #
+  # The watcher step exercises `notify`'s ReadDirectoryChangesW backend.  If
+  # it proves flaky on the runner's filesystem, gate *that step* — do not
+  # bring back `continue-on-error`, which reports a red check on every PR
+  # even though the workflow passes.
+  #
+  # The seven `#[cfg(unix)]` tests in `src/export/custom.rs` shell out to
+  # `cp` / `cat` / `false` and are compiled out here, so the custom-export
+  # runner has no Windows coverage.  Porting them is the first thing to
+  # hand a Windows contributor.
   windows:
-    name: Test (windows, non-blocking)
-    if: github.event_name == 'workflow_dispatch'
+    name: Test (windows)
     runs-on: windows-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --no-default-features
+      - name: Clippy (all features)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test
+        run: cargo test --no-fail-fast --no-default-features
+      - name: Test (watcher — needs live filesystem notifications)
+        shell: bash
+        run: |
+          cargo test --no-default-features --test watcher -- --ignored
+          cargo test --no-default-features --lib -- --ignored watcher::
 
   # Pins the `rust-version` declared in Cargo.toml.  Without this the MSRV
   # rots the first time anyone uses a newer language feature — or, more

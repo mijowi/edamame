@@ -211,16 +211,24 @@ impl Modal for DirtyConflictModal {
 mod tests {
     use super::*;
 
+    // A real directory rather than a `/tmp/…` literal: a `/`-rooted path
+    // has no drive letter, so on Windows it is *not* absolute and would
+    // get the cwd prepended — the test would then fail on a platform
+    // where the behaviour it asserts is correct.
     #[test]
     fn local_copy_path_appends_dot_local_with_extension() {
-        let p = Path::new("/tmp/notes.md");
-        assert_eq!(local_copy_path(Some(p)), "/tmp/notes.local.md");
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("notes.md");
+        let expected = dir.path().join("notes.local.md").display().to_string();
+        assert_eq!(local_copy_path(Some(&p)), expected);
     }
 
     #[test]
     fn local_copy_path_appends_dot_local_without_extension() {
-        let p = Path::new("/etc/README");
-        assert_eq!(local_copy_path(Some(p)), "/etc/README.local");
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("README");
+        let expected = dir.path().join("README.local").display().to_string();
+        assert_eq!(local_copy_path(Some(&p)), expected);
     }
 
     #[test]

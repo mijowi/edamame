@@ -59,6 +59,10 @@ cargo build --release
 
 Requires Rust 1.90 or newer.
 
+### Platforms
+
+Linux and macOS are the supported platforms; the prebuilt binaries cover both. Windows is best-effort: edamame builds from source and passes its test suite there in CI, but nobody smoke-tests the running program on Windows, so terminal behavior — images, the clipboard, opening links, the external editor — is unverified. Use [Windows Terminal](https://github.com/microsoft/terminal); the legacy console lacks the alternate screen and mouse support a TUI depends on. If you run it on Windows and something is off, [an issue](https://github.com/mijowi/edamame/issues) with the terminal name and version is the most useful thing you can send.
+
 ### Upgrading
 
 edamame checks for a new release once a day and tells you when one appears (see [getting started](https://github.com/mijowi/edamame/blob/main/docs/getting-started.md)). It does not update itself; use the same method you installed with:

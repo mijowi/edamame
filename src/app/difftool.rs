@@ -272,9 +272,22 @@ mod tests {
         assert!(!is_difftool_env(false, false));
     }
 
+    /// git hands us `/dev/null` for an added or deleted side; it must
+    /// read as empty, not as an error.  Unix-only because the assertion
+    /// is about the OS's null device — an empty *file* is covered below
+    /// on every platform.
     #[test]
+    #[cfg(unix)]
     fn read_side_reads_dev_null_as_an_empty_side() {
         assert_eq!(read_side(Path::new("/dev/null")).unwrap(), "");
+    }
+
+    #[test]
+    fn read_side_reads_an_empty_file_as_an_empty_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.md");
+        std::fs::write(&path, b"").unwrap();
+        assert_eq!(read_side(&path).unwrap(), "");
     }
 
     #[test]
