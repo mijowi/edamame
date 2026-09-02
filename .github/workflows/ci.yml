@@ -85,8 +85,13 @@ jobs:
       # a 30-second job into a multi-minute one.  Plain `cargo test` covers
       # lib + integration tests + doctests; the benches are compile-checked
       # by `clippy --all-targets` above.
+      #
+      # `--no-fail-fast`: plain `cargo test` stops at the first failing
+      # *target*, so a lib failure would abort the run before `tests/` is
+      # even built, and the log would show one failure where there may be
+      # many.  The Windows baseline run did exactly that.
       - name: Test
-        run: cargo test --no-default-features
+        run: cargo test --no-fail-fast --no-default-features
 
       # The four watcher tests that wait on an OS-delivered inotify /
       # FSEvents notification are `#[ignore]`d so that a bare `cargo test`
@@ -114,9 +119,6 @@ jobs:
   #     `--no-default-features`, so without this step that code is linted
   #     by nothing.  The `--no-default-features` lint is skipped here: the
   #     ubuntu job already covers the platform-neutral code it reaches.
-  #   * `--no-fail-fast`, unlike the Unix jobs: this platform has no local
-  #     reproduction, so a run must report every failing target at once.
-  #     The baseline run stopped at the lib target and never built `tests/`.
   #   * `shell: bash` on the multi-line step because the runner's default
   #     shell on Windows is pwsh; bash keeps it identical to the Unix step.
   #
