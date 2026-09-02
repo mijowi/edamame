@@ -61,13 +61,22 @@ pub fn visual_charwise_range(sel: &Selection, buf: &Buffer) -> Range<usize> {
 /// consumer of a vim Visual selection should call, so the highlight, the
 /// operators, and the clipboard can't disagree.  `None` yields the raw
 /// half-open span (the non-vim selection paths).
+///
+/// Every arm clamps to the current buffer length.  A non-vim selection (a
+/// mouse drag, a shift-arrow span) is *not* cleared by a vim Normal-mode
+/// edit, so a `dd` / `dw` / `x` that shortens the document below the stored
+/// span leaves `sel` pointing past the new end.  The render overlays feed
+/// this range straight into `Rope::char_to_byte`, which panics on an
+/// out-of-bounds char index — the two `Some` arms already guard against it,
+/// so the `None` arm has to as well.
 pub fn visual_span(sel: &Selection, buf: &Buffer, kind: Option<VisualKind>) -> Range<usize> {
     match kind {
         Some(VisualKind::Char) => visual_charwise_range(sel, buf),
         Some(VisualKind::Line) => visual_line_char_range(sel, buf),
         None => {
+            let len = buf.len_chars();
             let (lo, hi) = sel.range();
-            lo..hi
+            lo.min(len)..hi.min(len)
         }
     }
 }
@@ -183,5 +192,17 @@ mod tests {
         assert_eq!(visual_span(&s, &b, Some(VisualKind::Char)), 0..3);
         assert_eq!(visual_span(&s, &b, Some(VisualKind::Line)), 0..6);
         assert_eq!(visual_span(&s, &b, None), 0..2);
+    }
+
+    #[test]
+    fn visual_span_none_arm_clamps_a_stale_selection() {
+        // A non-vim selection (mouse drag / shift-arrow) is left in place
+        // when a vim Normal-mode edit shortens the buffer under it.  The
+        // stored offsets then reach past the new end; the render overlays
+        // feed this range straight to `Rope::char_to_byte`, which panics on
+        // an out-of-bounds char index.  Every arm must clamp, `None` too.
+        let b = buf("abc"); // len_chars() == 3
+        assert_eq!(visual_span(&sel(1, 4), &b, None), 1..3);
+        assert_eq!(visual_span(&sel(9, 12), &b, None), 3..3);
     }
 }
