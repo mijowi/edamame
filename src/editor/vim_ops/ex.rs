@@ -476,7 +476,7 @@ pub(crate) fn for_each_region_match<F>(
     mut on_match: F,
 ) -> Result<bool, ExError>
 where
-    F: FnMut(&fancy_regex::Captures<'_>, usize) -> std::ops::ControlFlow<()>,
+    F: FnMut(&fancy_regex::Captures<'_, str>, usize) -> std::ops::ControlFlow<()>,
 {
     if global {
         for cap in re.captures_iter(hay) {

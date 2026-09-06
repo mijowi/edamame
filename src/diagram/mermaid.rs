@@ -15,6 +15,7 @@
 //! block's entry.  The URL is opaque to every other part of the system;
 //! `ImageBlockInfo.source` is the reliable discriminator.
 
+use std::fmt::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use sha2::{Digest, Sha256};
@@ -95,7 +96,11 @@ pub fn synthetic_url(source: &DiagramSource) -> String {
     match source {
         DiagramSource::Mermaid(src) => {
             let digest = Sha256::digest(src.as_bytes());
-            format!("{SYNTHETIC_URL_PREFIX}{digest:x}")
+            let mut hex = String::with_capacity(digest.len() * 2);
+            for byte in digest {
+                write!(hex, "{byte:02x}").expect("writing to a String is infallible");
+            }
+            format!("{SYNTHETIC_URL_PREFIX}{hex}")
         }
     }
 }

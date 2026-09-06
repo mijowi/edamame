@@ -491,7 +491,7 @@ fn escape_literal(c: char, out: &mut String) {
 /// backreferences (`\1`–`\9`), the whole match (`&` / `\0`), and the case
 /// modifiers (`\u \U \l \L \e \E`).  Done by hand rather than via the engine's
 /// `$1` syntax because no Rust regex engine implements vim's case folding.
-pub fn expand_replacement(template: &str, caps: &Captures) -> String {
+pub fn expand_replacement(template: &str, caps: &Captures<'_, str>) -> String {
     let chars: Vec<char> = template.chars().collect();
     let mut out = String::new();
     // `one` upper/lowercases the next single output char (`\u` / `\l`);
@@ -539,7 +539,7 @@ pub fn expand_replacement(template: &str, caps: &Captures) -> String {
 /// Append capture group `n` (empty when it did not participate), applying the
 /// active case state to each character.
 fn push_group(
-    caps: &Captures,
+    caps: &Captures<'_, str>,
     n: usize,
     out: &mut String,
     one: &mut Option<bool>,
@@ -688,7 +688,7 @@ mod tests {
 
     // ── Replacement expansion ──
 
-    fn caps<'t>(pat: &str, hay: &'t str) -> Captures<'t> {
+    fn caps<'t>(pat: &str, hay: &'t str) -> Captures<'t, str> {
         Regex::new(pat)
             .unwrap()
             .captures(hay)
