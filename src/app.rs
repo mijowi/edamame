@@ -222,6 +222,19 @@ pub struct App {
     /// boxed-trait shape is chosen so multi-tab work can swap it for a per-tab map without
     /// touching anything but this field and the watch / unwatch sites.
     pub(crate) watcher: Option<Box<dyn FileWatcher>>,
+    /// The OS clipboard.  Production reads the real one; a test swaps in
+    /// a clipboard whose contents it wrote down, which is the only way
+    /// the paste path can be exercised without borrowing the developer's
+    /// clipboard (or racing parallel tests over it).  See
+    /// [`crate::clipboard`].
+    clipboard: Box<dyn crate::clipboard::ClipboardSource>,
+    /// Content hash of the last-observed-on-disk bytes for the open
+    /// file.  Updated from three sources: initial load, every
+    /// successful save, and every accepted incoming `FileChanged`.
+    /// Consulted by the `FileChanged` arm to suppress echoes of our
+    /// own writes (the hash matches → drop the event silently).
+    /// `None` only during the brief window between `App::new()` and
+    /// the initial load — `Some` for any open file thereafter.
     /// Hash of the last-observed on-disk bytes, updated on load, save, and every accepted
     /// `FileChanged`.  The `FileChanged` arm compares against it to drop echoes of our own writes.
     pub(crate) last_disk_hash: Option<u64>,
@@ -581,6 +594,7 @@ impl App {
             diff_advance_pending_since: None,
             search_advance_pending_since: None,
             watcher: None,
+            clipboard: crate::clipboard::default_source(),
             last_disk_hash: initial_disk_hash,
             latest_release: None,
             release_check_in_flight: false,

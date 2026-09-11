@@ -66,7 +66,9 @@ Note that **`Home` and `End` scroll the view; they do not move to line start/end
 |---|---|
 | `Shift-↑` `Shift-↓` `Shift-←` `Shift-→` | Extend selection |
 | `Ctrl-A` | Select all |
-| `Ctrl-C` / `Ctrl-X` / `Ctrl-V` | Copy / cut / paste (system clipboard) |
+| `Ctrl-C` / `Ctrl-X` | Copy / cut (system clipboard) |
+| `Ctrl-V` | Paste (system clipboard) — and paste an image when the clipboard holds one *and* no text: a screenshot, or a picture file copied in your file manager. See [editing.md](editing.md#images). |
+| *(palette)* | **Paste image from clipboard** — the same paste without the text rule; bindable as `PasteImage` |
 
 ## Formatting
 

@@ -960,6 +960,53 @@ mod tests {
     }
 
     #[test]
+    fn an_image_appearing_mid_session_queues_the_images_prompt() {
+        // A document opened *without* images leaves the ask gate unset; an
+        // image that appears afterwards — a pasted screenshot, or typed
+        // `![](…)` — must raise the prompt the on-load path would have,
+        // or `effective_images_enabled` stays false and it never decodes.
+        let mut app = app_with_buffer("Just prose.\n", 0);
+        assert_eq!(app.session_images_enabled, None);
+        assert!(!app.modal_stack.contains::<ImagesEnabledPromptModal>());
+
+        app.editor.buffer.insert(0, "![x](img.png)\n\n");
+        app.editor.set_viewport_width(80);
+        app.editor.refresh_parsed();
+        app.dispatch_visible_image_decodes(0, 20);
+
+        assert!(
+            app.modal_stack.contains::<ImagesEnabledPromptModal>(),
+            "an in-view image with the ask gate open must queue the prompt"
+        );
+    }
+
+    #[test]
+    fn dismissing_the_images_prompt_does_not_invite_it_back() {
+        // The mid-session queue runs on every frame, so a dismissal that
+        // left the ask gate open would raise the prompt again on the very
+        // next one and the user could never get rid of it: Escape records
+        // the same session answer `No` does, which is what closes the gate.
+        let mut app = app_with_buffer("Just prose.\n", 0);
+        app.editor.buffer.insert(0, "![x](img.png)\n\n");
+        app.editor.set_viewport_width(80);
+        app.editor.refresh_parsed();
+        app.dispatch_visible_image_decodes(0, 20);
+        assert!(app.modal_stack.contains::<ImagesEnabledPromptModal>());
+
+        app.dispatch_modal_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 20, 80);
+        assert!(
+            !app.modal_stack.contains::<ImagesEnabledPromptModal>(),
+            "Escape dismisses the prompt"
+        );
+
+        app.dispatch_visible_image_decodes(0, 20);
+        assert!(
+            !app.modal_stack.contains::<ImagesEnabledPromptModal>(),
+            "a dismissed prompt must not be re-queued by the next frame"
+        );
+    }
+
+    #[test]
     fn navigating_to_a_document_with_a_diagram_queues_the_diagrams_prompt() {
         let mut app = app_with_buffer("Just prose.\n", 0);
         let (_f, path) = md_file("```mermaid\ngraph TD;\n```\n");

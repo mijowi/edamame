@@ -176,6 +176,13 @@ pub enum Action {
     /// Insert an inline link snippet, or wrap the selection as the link text.  Same
     /// literal-block pre-flight as [`Action::InsertImage`].
     InsertLink,
+    /// Paste an image from the OS clipboard: a screenshot is saved to
+    /// `[images].save_dir` (or `EDAMAME_IMAGES_DIR`) and referenced as
+    /// `![](path)`; a copied image-file path is referenced directly.
+    PasteImage,
+    /// Insert an auto-numbered `[^N]` footnote reference at the cursor
+    /// (the next integer past the highest existing numeric footnote).
+    /// The user writes the matching definition wherever they want.
     /// Insert an auto-numbered `[^N]` footnote reference (next integer past the highest
     /// existing numeric footnote); the user writes the definition.
     InsertFootnote,
@@ -321,7 +328,7 @@ action_variants! {
     ShowCommandPalette, ShowMarkdownCheatSheet, ShowAbout, CheckForUpdates,
     OpenSettings, OpenWelcome, OpenKeybinds, OpenConfigFolder, SwitchTheme, CreateCustomTheme,
     ExportHtml, OpenInExternalEditor,
-    ToggleTableButtons, InsertTable, InsertImage, InsertLink,
+    ToggleTableButtons, InsertTable, InsertImage, InsertLink, PasteImage,
     ToggleBigH1, ToggleLineNumbers, ToggleBlinkCursor, ToggleAutosave,
     ToggleVisualLineNav, ToggleVimMode, ToggleLimitWidth, ToggleDiffOnChange,
     InsertFootnote, DeleteFootnote, RenumberFootnotes,

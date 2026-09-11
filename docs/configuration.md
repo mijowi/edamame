@@ -184,12 +184,15 @@ Note that an unrecognized value is accepted without complaint and behaves as `"d
 | `remote_policy` | `"ask"` \| `"always"` \| `"never"` | `"ask"` | overlay |
 | `max_width` | integer | `100` | file only |
 | `max_height` | integer | `24` | file only |
+| `save_dir` | string | global XDG data dir (`…/edamame/images`) | file only / `EDAMAME_IMAGES_DIR` env var |
 
 `enabled` is the master switch. `"ask"` prompts the first time you open a document containing images.
 
 `remote_policy` separately governs `http(s)://` image URLs — the same idea as an email client's "load remote images", and for the same reason: it stops a document tracking you the moment you open it. It has no effect when `enabled` is `"never"`.
 
 `max_width` / `max_height` are ceilings in terminal cells. Images scale to fit inside that box, keeping their aspect ratio.
+
+`save_dir` is where pasted screenshots are saved. It defaults to a global per-user directory under the XDG data dir (`~/.local/share/edamame/images` on Linux/macOS, `%APPDATA%\edamame\images` on Windows); a relative value resolves against the open document, an absolute value is used verbatim. Set the `EDAMAME_IMAGES_DIR` environment variable to override it. A copied image *file* — whether it arrives as a file-manager copy or as a path in text — is referenced directly in the Markdown and is never copied into this directory, so `save_dir` only ever holds screenshots.
 
 > **Images need 24-bit color** as well as a supporting terminal. Below that, edamame declines to render them regardless of these settings — for that session only, so a config shared with a capable terminal keeps working. See [editing.md](editing.md#images) and [terminal-compatibility.md](terminal-compatibility.md#images-and-diagrams).
 

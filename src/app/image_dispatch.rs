@@ -373,6 +373,15 @@ impl App {
             doc_height,
             VIEWPORT_DISPATCH_MARGIN,
         );
+        // A document that gains its first image *mid-session* — a pasted
+        // screenshot, or freshly typed `![](…)` — never passed the
+        // on-load prompt, so `session_images_enabled` stays unset and
+        // `effective_images_enabled` is false: the image would stay a raw
+        // source line forever.  Ask now.  The prompt is idempotent and
+        // only queues while the gate is still open.
+        if infos.iter().any(|info| info.source.is_none()) {
+            self.queue_images_enabled_prompt();
+        }
         if holding {
             infos.retain(|info| info.source.is_none());
         }

@@ -8,6 +8,14 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ## [Unreleased]
 
+### Added
+
+- `Ctrl-V` pastes an image when the clipboard holds one and no text: a screenshot is written into your images directory and referenced, and a picture file copied in your file manager is referenced where it lies — nothing is copied, so moving that file later breaks the link. Text on the clipboard still wins, leaving ordinary pasting unchanged. **Paste image from clipboard** in the command palette — bindable as `PasteImage` — does the same without the text rule.
+
+### Fixed
+
+- An image that arrives in the document *after* it was opened — a pasted screenshot, or an `![](…)` you type — now raises the images question like one that was there at load. Previously nothing asked, so the image stayed as its source line and never rendered.
+
 ## [0.1.4] - 2026-09-11
 
 ### Added

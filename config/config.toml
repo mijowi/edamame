@@ -102,6 +102,13 @@ enabled = "ask"
 
 # Policy for remote http(s) image URLs: "ask" | "always" | "never".
 remote_policy = "ask"
+# Directory where pasted screenshots are saved. Empty (the default) means a
+# global per-user directory under the XDG data dir (~/.local/share/edamame/images
+# on Linux/macOS, %APPDATA%\edamame\images on Windows). A relative value
+# resolves against the open document; absolute is used verbatim. Overridden
+# by the EDAMAME_IMAGES_DIR environment variable when set. Only screenshots
+# land here: a copied image *file* is referenced where it lies.
+# save_dir = ""
 
 # Size ceilings in terminal cells; images scale to fit while keeping aspect ratio.
 # max_width = 100

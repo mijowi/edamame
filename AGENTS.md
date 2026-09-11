@@ -130,6 +130,12 @@ src/
     doctor.rs       # `--doctor`: system facts (file reads only) + CapSummary rows
     help.rs         # `--help` / `--version` text; VERSION const
 
+  clipboard.rs /    # the OS clipboard behind one substitutable port.  source.rs
+    clipboard/      #   (ClipboardSource + OsClipboard/NullClipboard/default_source),
+                    #   data.rs (ClipboardData / Bitmap — the payload model every
+                    #   platform maps onto).  Interpreting a snapshot is
+                    #   `image::paste`'s job, not this module's
+
   config.rs / config/
     config.rs       # Config + sub-configs; LoadedConfig; load/save/ensure_default_files
     init.rs         # first-run scaffolding (writes the annotated config.toml)
@@ -179,7 +185,9 @@ src/
                     #   custom.rs (user command pipeline), runner.rs (tempfiles)
 
   image/            # loader.rs (decode worker, ureq fetch), cache.rs (URL →
-                    #   DynamicImage + failure memoisation), render.rs (Picker)
+                    #   DynamicImage + failure memoisation), render.rs (Picker),
+                    #   paste.rs (clipboard snapshot → Markdown destination:
+                    #   select / destination / save_image)
 
   input.rs / input/
     mode_handler/default.rs  # DefaultHandler; preview_safe_action() allowlist
@@ -267,7 +275,7 @@ Higher layers depend only on lower ones:
 6. `document` — `Buffer`, `Cursor`, `History`, `ParsedDoc`, `Selection`, `SourceMap`, grapheme helpers
 7. `markdown` — parser → AST → renderer; `parse_offsets` and `inline_col_map` feed `SourceMap`
 8. `config` — `Config`, `KeyMap`, `Theme` (loaded once at startup)
-9. `image`, `diagram`, `export`, `docs` — leaf subsystems used by the renderer / app
+9. `clipboard`, `image`, `diagram`, `export`, `docs` — leaf subsystems used by the renderer / app; `clipboard` is the leaf the others build on (`image::paste` consumes its payload model), and it imports nothing from this crate
 10. `terminal` — raw terminal setup / teardown / capability probing
 
 `docs` is the one leaf reached from *above* layer 3: `Action::OpenDoc` carries a `docs::DocId`, `config`'s first and only dependency on another top-level module. Legal because `docs` is a true leaf — static strings and slug metadata, parsing nothing, importing nothing from this crate — but worth knowing before adding a second edge into `config`.

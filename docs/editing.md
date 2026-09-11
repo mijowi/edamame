@@ -321,6 +321,10 @@ Move the cursor into an image and it's replaced by its `![alt](url)` source line
 
 ![An inline image collapsing to its Markdown source as the cursor enters it, and back again](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/image.gif)
 
+**Pasting one in.** `Ctrl-V` pastes an image when the clipboard holds one and no text — a screenshot goes straight into the document. A picture file copied in your file manager works too: you get a `![](…)` line pointing at the file where it lies, and nothing is copied, so moving or deleting that file later breaks the reference. A screenshot has nowhere to live, so it is written as a PNG into the directory `save_dir` names (see [configuration](configuration.md#images)) and the reference points at that copy; a relative `save_dir` resolves against the document, which means the document must have been saved at least once.
+
+Text still wins: `Ctrl-V` stays an ordinary paste whenever the clipboard holds text, even if it also holds an image. **Paste image from clipboard** in the command palette — bindable as `PasteImage` — is the explicit form: it skips that rule, and says so when the clipboard holds no image at all.
+
 **Formats:** PNG, JPEG, GIF, BMP, WebP, and SVG. Anything else is reported as an unsupported image rather than rendered — the list is kept deliberately short because edamame decodes images from documents you may not trust. Animation is not supported for any format.
 
 **Requirements:** an image protocol — Kitty, iTerm2, or Sixel — *and* 24-bit color. Below truecolor, edamame declines to render images at all, because the result would be badly quantized. Half-block rendering is available as a low-fidelity fallback and is used when images are clipped off screen and when scrolling, as an optimization. See [terminal-compatibility.md](terminal-compatibility.md#images-and-diagrams) for which terminals qualify.
