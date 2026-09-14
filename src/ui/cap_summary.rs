@@ -54,6 +54,7 @@ impl CapSummary {
             (Some(ImageProtocol::KittyGraphics), true) => ("Kitty graphics".to_owned(), true),
             (Some(ImageProtocol::Sixel), true) => ("Sixel".to_owned(), true),
             (Some(ImageProtocol::ITerm2), true) => ("iTerm2 inline images".to_owned(), true),
+            (Some(ImageProtocol::KittyDirect), true) => ("kitty direct placement".to_owned(), true),
             (Some(ImageProtocol::Halfblocks), true) => {
                 ("Unicode half-blocks (low fidelity)".to_owned(), false)
             }

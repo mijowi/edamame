@@ -441,6 +441,16 @@ impl App {
         } else {
             None
         };
+        // The row-addressed Kitty protocol is built on the same worker, but from the *native*
+        // picker: `SlicedProtocol::new_with_resize` dispatches on the picker's protocol type, and
+        // `scratch_picker` is forced to halfblocks.  The native picker's type already carries
+        // `resolve_protocol`'s Kitty -> Iterm2 override, so a terminal that merely answers the
+        // Kitty probe never gets a backend it cannot place.
+        let native_picker = self.capabilities.image_picker.clone();
+        // Whether this terminal renders by placing an already-transmitted image, in which case the
+        // prebuilt below is what the paint pass uses and no encoded payload is wanted at all.
+        let direct =
+            self.capabilities.image_protocol == Some(crate::terminal::ImageProtocol::KittyDirect);
 
         // Glyph colour for display math: the theme's text colour, so
         // formulas stay legible in the active theme (light or dark) when
@@ -481,6 +491,7 @@ impl App {
             let url = info.url.clone();
             let source = info.source.clone();
             let scratch_picker = scratch_picker.clone();
+            let native_picker = native_picker.clone();
             std::thread::spawn(move || {
                 let url_for_panic = url.clone();
                 // `ExpectedPanic` marks this thread for the process panic hook, which would
@@ -530,39 +541,92 @@ impl App {
 
                 let event = match result {
                     Ok(mut loaded) => {
-                        // Build the halfblocks scratch here so the UI thread's first paint is a
-                        // cache hit.  It gets its own `catch_unwind` because it runs *after* the
-                        // result exists: an escaping panic would kill the worker with the image in
-                        // hand and no event sent, pinning the cache entry `Pending` forever.  A
-                        // scratch is only an optimization, so on panic we log and send the image
-                        // without one.
+                        // Build the prebuilts here so the UI thread's first paint is a cache hit.
+                        // Each gets its own `catch_unwind` because they run *after* the result
+                        // exists: an escaping panic would kill the worker with the image in hand and
+                        // no event sent, pinning the cache entry `Pending` forever.  A prebuilt is
+                        // only an optimization, so on panic we log and send the image without it.
                         if let (Some(picker), Some(width), Some((mw, mh)), Some(fs)) =
                             (&scratch_picker, scratch_width, max_cells, font_size)
                         {
-                            let scratch = {
-                                let _expected = crate::terminal::ExpectedPanic::new();
-                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    let rows =
-                                        crate::image::aspect_rows_of(&loaded.image, mw, mh, fs)
-                                            as u16;
-                                    if width == 0 || rows == 0 {
-                                        return None;
+                            let rows =
+                                crate::image::aspect_rows_of(&loaded.image, mw, mh, fs) as u16;
+                            if width > 0 && rows > 0 {
+                                let rect = Rect::new(0, 0, width, rows);
+
+                                let scratch = {
+                                    let _expected = crate::terminal::ExpectedPanic::new();
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        crate::image::render_halfblocks_scratch(
+                                            picker,
+                                            loaded.image.clone(),
+                                            rect,
+                                        )
+                                    }))
+                                };
+                                match scratch {
+                                    Ok(buf) => loaded.scratch = Some((rect, buf)),
+                                    Err(_) => tracing::warn!(
+                                        target: "image", url = %loaded.url,
+                                        "halfblocks scratch render panicked; sending the image without a prebuilt scratch",
+                                    ),
+                                }
+
+                                // The band protocol (Kitty row addressing, Sixel band slicing), for
+                                // the same reason and behind the same guard.  `build_sliced` answers
+                                // `None` for every other protocol, so the guard only wraps band
+                                // work — and its payload is at least as large as the scratch's,
+                                // which is exactly why it must not be built on the UI thread.
+                                if let Some(native) = native_picker.as_ref() {
+                                    let sliced = {
+                                        let _expected = crate::terminal::ExpectedPanic::new();
+                                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                                            || {
+                                                crate::image::build_sliced(
+                                                    native,
+                                                    &loaded.image,
+                                                    rect,
+                                                )
+                                            },
+                                        ))
+                                    };
+                                    match sliced {
+                                        Ok(Some(s)) => loaded.sliced = Some((rect, s)),
+                                        Ok(None) => {}
+                                        Err(_) => tracing::warn!(
+                                            target: "image", url = %loaded.url,
+                                            "band protocol build panicked; sending the image without one",
+                                        ),
                                     }
-                                    let rect = Rect::new(0, 0, width, rows);
-                                    let buf = crate::image::render_halfblocks_scratch(
-                                        picker,
-                                        loaded.image.clone(),
-                                        rect,
-                                    );
-                                    Some((rect, buf))
-                                }))
-                            };
-                            match scratch {
-                                Ok(s) => loaded.scratch = s,
-                                Err(_) => tracing::warn!(
-                                    target: "image", url = %loaded.url,
-                                    "halfblocks scratch render panicked; sending the image without a prebuilt scratch",
-                                ),
+                                }
+
+                                // The direct-placement backend, for the same reason: the resize and
+                                // the base64 of a raw-RGBA payload belong off the UI thread.
+                                // Unlike the sliced build this reads no picker — the image id comes
+                                // from the URL — so the resolved protocol is the whole gate.
+                                if direct {
+                                    let built = {
+                                        let _expected = crate::terminal::ExpectedPanic::new();
+                                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                                            || {
+                                                crate::image::build_direct_placement(
+                                                    &loaded.url,
+                                                    fs,
+                                                    &loaded.image,
+                                                    rect,
+                                                )
+                                            },
+                                        ))
+                                    };
+                                    match built {
+                                        Ok(Some(direct)) => loaded.direct = Some((rect, direct)),
+                                        Ok(None) => {}
+                                        Err(_) => tracing::warn!(
+                                            target: "image", url = %loaded.url,
+                                            "direct placement build panicked; sending the image without one",
+                                        ),
+                                    }
+                                }
                             }
                         }
                         AppEvent::ImageReady(Ok(loaded))
@@ -627,6 +691,8 @@ mod tests {
                 url: "https://example.com/a.png".into(),
                 image: image::DynamicImage::new_rgba8(1, 1),
                 scratch: None,
+                sliced: None,
+                direct: None,
             },
         )));
         assert!(
@@ -652,6 +718,8 @@ mod tests {
                 url: "img.png".into(),
                 image: image::DynamicImage::new_rgba8(1, 1),
                 scratch: None,
+                sliced: None,
+                direct: None,
             },
         )));
         assert!(matches!(

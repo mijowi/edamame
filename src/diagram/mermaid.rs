@@ -80,6 +80,8 @@ pub fn resolve_mermaid(
         url,
         image,
         scratch: None,
+        sliced: None,
+        direct: None,
     })
 }
 

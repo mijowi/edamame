@@ -8,6 +8,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ## [Unreleased]
 
+
 ### Added
 
 - Daily tips: once a day at startup, edamame shows a short tip about a feature you might not know about. Turn it off with the tip's "Don't show tips" button or the "Daily tips" setting. See all tips with Ctrl-P → "Browse tips".
@@ -22,6 +23,8 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 - Manually-wrapped paragraphs now reflow to the editor width. A paragraph wrapped in the source is joined into a single line and wrapped to fit the editor, instead of showing one short row per source line. A hard break (two trailing spaces or a backslash) still splits. Can be turned off in settings (Reflow paragraphs).
 - edamame now displays LaTeX math. A `$$...$$` block renders as a formula image using pure Rust — no additional install needed. HTML export renders math as embedded images.
+- Images in WezTerm now stay sharp when only part of one is on screen. WezTerm lacks the Kitty protocol's unicode-placeholder extension, so edamame places the image itself with a source rectangle — no re-encode, and no flash as it scrolls.
+- Images in Sixel terminals — Windows Terminal 1.22 and later, foot, xterm with sixel enabled — now stay sharp when only part of one is on screen too, instead of dropping to half-blocks.
 
 ### Changed
 
@@ -33,6 +36,8 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 - Clicks now map to the correct character in table cells with formatting.
 - Mermaid diagrams no longer have missing text when rendered on some systems.
+- A partly visible image is no longer drawn as coarse blocks. Scrolling an image only part of the way off screen used to drop it to a low-resolution half-block rendering; it now keeps its true resolution, in kitty, Ghostty, WezTerm and Sixel terminals alike. (Terminals that speak only iTerm2 inline images still fall back — a separate change.)
+- A document that shows the same image twice now displays it in both places, instead of only the second.
 
 ## [0.1.3] - 2026-09-02
 

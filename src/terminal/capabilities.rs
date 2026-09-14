@@ -27,12 +27,24 @@ pub enum ColorDepth {
 /// Image protocol supported by the terminal emulator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageProtocol {
-    /// DEC Sixel graphics (xterm with `--enable-sixel-graphics`, foot, wezterm).
+    /// DEC Sixel graphics (Windows Terminal 1.22+, xterm with `--enable-sixel-graphics`, foot).
+    ///
+    /// The one protocol here that keeps no image on the terminal side: every sequence is drawn
+    /// where it is sent, so a partly visible image is a re-slice of the payload rather than a
+    /// placement.  See `docs/dev/plans/image-partial-rendering.md` (M2).
     Sixel,
     /// Kitty graphics protocol (kitty, ghostty, wezterm).
     KittyGraphics,
     /// iTerm2 inline-images protocol.
     ITerm2,
+    /// Kitty graphics through **direct placement**: the image is transmitted once, and every
+    /// frame places the visible rows of it with a source rectangle (`a=p`).
+    ///
+    /// For a terminal that implements the transmit, the placement and the delete but *not* the
+    /// `U=1` unicode-placeholder extension that `ratatui-image`'s Kitty backend renders through —
+    /// WezTerm today.  Without this variant such a terminal is served as iTerm2, and every partly
+    /// visible image falls back to halfblocks.
+    KittyDirect,
     /// Unicode half-block fallback (works in any truecolor terminal).
     Halfblocks,
 }
@@ -155,6 +167,7 @@ impl Capabilities {
             Some(ImageProtocol::Sixel) => "sixel",
             Some(ImageProtocol::KittyGraphics) => "kitty",
             Some(ImageProtocol::ITerm2) => "iterm2",
+            Some(ImageProtocol::KittyDirect) => "kitty-direct",
             Some(ImageProtocol::Halfblocks) => "halfblocks",
         };
         format!(
@@ -264,6 +277,28 @@ fn iterm2_hint_is_trustworthy() -> bool {
     is_iterm2_app() && env::var_os("TMUX").is_none()
 }
 
+/// True for the terminals this build serves through direct placement rather than through the
+/// protocol the stdio probe answers with.
+///
+/// WezTerm implements the Kitty protocol's transmit, its placement (with a source rectangle) and
+/// its delete, but **not** the `U=1` unicode-placeholder extension — and that extension is the
+/// only way `ratatui-image`'s Kitty backend renders.  It answers the iTerm2 query as well, which
+/// is what the probe concludes, so no capability query can route this: the missing feature is a
+/// sub-feature of a protocol the terminal does support.  Hence an identity hint, on the same
+/// footing as [`is_iterm2_app`].
+fn is_wezterm() -> bool {
+    env::var("TERM_PROGRAM").is_ok_and(|v| v.contains("WezTerm"))
+        || env::var("WEZTERM_PANE").is_ok()
+}
+
+/// Whether [`is_wezterm`] may route the protocol — the reasoning is [`iterm2_hint_is_trustworthy`]'s
+/// exactly.  `update-environment` carries neither `TERM_PROGRAM` nor `WEZTERM_PANE`, so a pane
+/// created in WezTerm and reattached from elsewhere still advertises it, and routing it to
+/// direct placement would then ask that terminal to place graphics it may not support at all.
+fn direct_placement_hint_is_trustworthy() -> bool {
+    is_wezterm() && env::var_os("TMUX").is_none()
+}
+
 /// Resolve the protocol to encode with from the one `Picker::from_query_stdio` probed.
 ///
 /// iTerm2 3.5+ answers the Kitty capability query affirmatively, so the picker comes back
@@ -306,6 +341,17 @@ fn detect_image_protocol() -> (Option<ImageProtocol>, Option<Picker>) {
         ProtocolType::Kitty => ImageProtocol::KittyGraphics,
         ProtocolType::Iterm2 => ImageProtocol::ITerm2,
         ProtocolType::Halfblocks => ImageProtocol::Halfblocks,
+    };
+    // Direct placement overrides the two protocols that mean "this terminal displayed the
+    // graphics it was asked about".  Halfblocks is left alone deliberately: it means the probe
+    // saw no graphics support at all, and an environment hint must not overrule that.
+    let protocol = match protocol {
+        ImageProtocol::ITerm2 | ImageProtocol::KittyGraphics
+            if direct_placement_hint_is_trustworthy() =>
+        {
+            ImageProtocol::KittyDirect
+        }
+        other => other,
     };
     (Some(protocol), Some(picker))
 }
@@ -431,6 +477,53 @@ mod tests {
         let _g2 = EnvGuard::unset("LC_TERMINAL");
         let _g3 = EnvGuard::unset("TMUX");
         assert!(!iterm2_hint_is_trustworthy());
+    }
+
+    /// WezTerm is recognised either way it announces itself — and by nothing else, since a
+    /// terminal that is not WezTerm would be asked to place graphics it may not support.
+    #[test]
+    fn the_direct_placement_hint_recognises_only_wezterm() {
+        let _lock = env_lock();
+        let _g3 = EnvGuard::unset("TMUX");
+
+        let _g1 = EnvGuard::set("TERM_PROGRAM", "WezTerm");
+        let _g2 = EnvGuard::unset("WEZTERM_PANE");
+        assert!(is_wezterm() && direct_placement_hint_is_trustworthy());
+
+        // The pane variable alone is enough: it is what survives a shell that rewrites
+        // `TERM_PROGRAM`.
+        let _g1 = EnvGuard::set("TERM_PROGRAM", "xterm-256color");
+        let _g2 = EnvGuard::set("WEZTERM_PANE", "0");
+        assert!(is_wezterm());
+
+        let _g1 = EnvGuard::set("TERM_PROGRAM", "iTerm.app");
+        let _g2 = EnvGuard::unset("WEZTERM_PANE");
+        assert!(
+            !is_wezterm(),
+            "iTerm2 has its own path and no a=p worth using"
+        );
+    }
+
+    /// Same distrust as [`iterm2_hint_is_trustworthy`], for the same reason: a stale forwarded
+    /// marker inside tmux must not pin a protocol the live pane cannot speak.  M4 additionally
+    /// needs `allow-passthrough`, which upstream turns on by spawning `tmux` — a subprocess
+    /// edamame will not spawn for this.
+    #[test]
+    fn the_direct_placement_hint_is_distrusted_inside_tmux() {
+        let _lock = env_lock();
+        let _g1 = EnvGuard::set("TERM_PROGRAM", "WezTerm");
+        let _g2 = EnvGuard::unset("WEZTERM_PANE");
+        {
+            let _g3 = EnvGuard::unset("TMUX");
+            assert!(
+                direct_placement_hint_is_trustworthy(),
+                "bare WezTerm is trusted"
+            );
+        }
+        {
+            let _g3 = EnvGuard::set("TMUX", "/tmp/tmux-501/default,1234,0");
+            assert!(!direct_placement_hint_is_trustworthy());
+        }
     }
 
     #[test]

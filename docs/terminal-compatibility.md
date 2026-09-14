@@ -100,7 +100,7 @@ edamame works under tmux, with two caveats worth knowing:
 
 **Windows is a best-effort platform.** edamame builds from source on Windows and passes its test suite there in CI, but nobody smoke-tests the running program, so everything on this page that depends on the terminal — images, mouse, the keyboard protocol, the clipboard, opening links, the external editor — is unverified there. If you run it, an [issue](https://github.com/mijowi/edamame/issues) with `edamame --doctor` output is the most useful thing you can send, whether or not something is wrong.
 
-- **Use [Windows Terminal](https://github.com/microsoft/terminal).** The legacy console (`conhost.exe`) has no alternate screen and no mouse reporting worth relying on; the TUI depends on both. Windows Terminal 1.22 and later can display Sixel images; it does not speak the Kitty graphics protocol.
+- **Use [Windows Terminal](https://github.com/microsoft/terminal).** The legacy console (`conhost.exe`) has no alternate screen and no mouse reporting worth relying on; the TUI depends on both. Windows Terminal 1.22 and later can display Sixel images; it does not speak the Kitty graphics protocol. A partly visible image is drawn at its true resolution through the same band path the Kitty terminals use — the half-block fallback applies only while scrolling.
 - **Config lives at `C:\Users\<you>\.config\edamame`**, not under `%APPDATA%` — see [configuration.md](configuration.md#where-config-lives).
 - **`CRLF` files are preserved as `CRLF`**, and a new file gets `CRLF` on Windows — see [editing.md](editing.md).
 
@@ -124,13 +124,13 @@ Windows Terminal is the usual host for WSL, so its notes above apply to the term
 |---|---|---|---|---|---|
 | kitty | ? | ? Kitty graphics | ? | ? | The protocols both features are named after |
 | Ghostty | ✓ truecolor | ✓ Kitty graphics | ✓ | ✓ | On macOS, `macos-option-as-alt` for the `Alt` chords outside U.S. layouts |
-| WezTerm | ? truecolor | ? | ? | ? |  |
-| foot | ? | ? Sixel | ? | ? | Wayland; clipboard needs `wayland-data-control` |
+| WezTerm | ✓ truecolor | ✓ Kitty direct | ✓ | ✓ | No unicode placeholders, so edamame places the image itself with `a=p` and a source rectangle — a partly scrolled image stays sharp instead of falling back to half-blocks |
+| foot | ? | ? Sixel | ? | ? | Wayland; clipboard needs `wayland-data-control`. A partly visible image uses the sixel band path |
 | iTerm2 | ✓ truecolor | ✓ iTerm2 inline | ✓ | ✓ | Answers the Kitty graphics query without supporting placements; edamame corrects for this |
 | Alacritty | ?  | ? | ? | ? recent | No image protocol |
 | Apple Terminal | ✗ 256 | ✗ | ✓ | ✗ | Themes fall back to `256 Dark` / `256 Light`; see the `Option` notes above |
 | VS Code terminal | ? | ? | ? | ? |  |
-| Windows Terminal | ? | ? Sixel (1.22+) | ? | ? | Best-effort platform, not yet tested — see [Windows and WSL](#windows-and-wsl) |
+| Windows Terminal | ? | ? Sixel (1.22+) | ? | ? | Best-effort platform, not yet tested — see [Windows and WSL](#windows-and-wsl). A partly visible image uses the sixel band path, so the half-block fallback is scroll-only there too |
 | tmux (any host) | ✓ | ✓ | ✓ | ✗ | Depends on configuration — see [above](#tmux-and-multiplexers). Some `Ctrl` chords don't work. |
 
 ---

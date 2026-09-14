@@ -45,7 +45,7 @@ Run both invocations before touching a `cfg(unix)` gate or a test module whose i
 
 Every layer `cargo test` reaches through `TestBackend` — parser, renderer, editing model, diff, source map, modals — is platform-neutral and is proven on Windows by the job above. What remains unproven:
 
-- Terminal setup and restore through ConPTY; `Picker::from_query_stdio` and the image protocols. Windows Terminal ≥ 1.22 has Sixel and no Kitty graphics; conhost has neither an alternate screen nor mouse reporting worth relying on.
+- Terminal setup and restore through ConPTY; `Picker::from_query_stdio` and the image protocols. Windows Terminal ≥ 1.22 has Sixel and no Kitty graphics, and its DA1 answer — sixel support — does survive ConPTY; conhost has neither an alternate screen nor mouse reporting worth relying on. A partly visible image takes the same sixel *band* path there as on the Kitty terminals, which is exactly the part nobody has watched on a real Windows Terminal.
 - `open::that` (`cmd /C start`) for links and non-Markdown files.
 - The external editor: `Command::new($EDITOR)` with the suspend/resume dance, and the `open::that` fallback when `$VISUAL` / `$EDITOR` are unset — which on Windows is the common case.
 - `arboard` at runtime.

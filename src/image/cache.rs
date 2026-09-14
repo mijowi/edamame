@@ -4,16 +4,20 @@
 //! `StatefulProtocol` encodings live on `EditorState` keyed by URL instead.  Protocols are keyed
 //! additionally by target cell dimensions, so a resize invalidates only the affected entries.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{mpsc, Arc};
+use std::time::Instant;
 
 use image::DynamicImage;
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use ratatui::layout::{Rect, Size};
 use ratatui::widgets::StatefulWidget;
 use ratatui_image::picker::{Picker, ProtocolType};
+use ratatui_image::sliced::SlicedProtocol;
 use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
 use ratatui_image::{Resize, StatefulImage};
+
+use super::kitty_direct::{self, Geometry};
 
 /// Encode `image` as halfblocks at `rect`, returning the rendered cells.
 ///
@@ -34,6 +38,115 @@ pub fn render_halfblocks_scratch(picker: &Picker, image: DynamicImage, rect: Rec
         .resize(Resize::Fit(None))
         .render(rect, &mut buf, &mut protocol);
     buf
+}
+
+/// Whether `protocol` paints a band through [`SlicedProtocol`]: the two terminals whose band is a
+/// *slice of what was already encoded* rather than a fresh encode per band — Kitty, whose
+/// placeholders address image rows, and Sixel, whose bands are cut out of the payload at render
+/// time.
+///
+/// One predicate rather than two `matches!`es, because [`build_sliced`]'s gate and the cold path's
+/// claim of the prebuilt have to agree: a protocol that builds a band but is not recognized here
+/// would build it, drop it, and paint the scratch anyway.
+fn is_band_protocol(protocol: ProtocolType) -> bool {
+    matches!(protocol, ProtocolType::Kitty | ProtocolType::Sixel)
+}
+
+/// Build the band protocol for `image` at `rect`, or `None` when `picker` speaks a protocol whose
+/// band cannot be expressed this way, or the build fails.
+///
+/// Two protocols get their band from `SlicedProtocol`, for opposite reasons.  Kitty's unicode
+/// placeholders address image rows by index, so the whole image is transmitted once and *any* row
+/// range can be painted afterwards with no re-encode.  Sixel has no image store at all — every
+/// sequence is drawn where it is sent — so its band is a re-slice of the encoded 6-px bands: still
+/// no re-encode, only a shorter payload.  Either way a partially scrolled image stays at native
+/// fidelity instead of falling back to halfblocks.  See
+/// `docs/dev/plans/image-partial-rendering.md`.
+///
+/// The protocol-type check is not a formality: `SlicedProtocol::new_with_resize` dispatches on the
+/// picker, so an iTerm2 or halfblocks picker would silently produce a different backend — one PNG
+/// per text row, or a row copy — which `paint_images` would then paint as if it were a band.
+///
+/// Build it off the UI thread.  Kitty formats the entire transmit string synchronously out of raw
+/// RGBA rather than PNG (`f=32,t=d`), so a full-width image is megabytes of base64; Sixel
+/// re-encodes the pixels and splits the result into bands.  Both are far more work than the
+/// halfblocks scratch this sits beside.
+pub fn build_sliced(picker: &Picker, image: &DynamicImage, rect: Rect) -> Option<SlicedProtocol> {
+    if !is_band_protocol(picker.protocol_type()) {
+        return None;
+    }
+    match SlicedProtocol::new_with_resize(
+        picker,
+        image.clone(),
+        Size::new(rect.width, rect.height),
+        Resize::Fit(None),
+    ) {
+        Ok(sliced) => Some(sliced),
+        Err(err) => {
+            tracing::debug!(
+                target: "image", %err,
+                "band protocol build failed; the image will paint as halfblocks",
+            );
+            None
+        }
+    }
+}
+
+/// One image's Kitty *direct placement* backend at one cell size.
+///
+/// The band is a placement parameter rather than part of an encoding, so this holds nothing
+/// that changes as the image scrolls: the transmit is written once, and every later frame is
+/// one `a=p` escape naming a source rectangle.  That is what keeps a clipped image sharp
+/// without a re-encode — and, unlike the iTerm2 route, without a re-send flash.
+///
+/// Built on the decode worker beside the scratch and the sliced protocol, for the same reason:
+/// the resize plus the base64 of a raw-RGBA payload is far too much work for the UI thread.
+pub struct DirectPlacement {
+    /// The terminal-side image id, stable per URL so a rebuild re-transmits into the same slot
+    /// instead of leaving the previous image resident.
+    pub id: u32,
+    /// The resized bitmap's geometry — its cell size, and one cell in pixels.
+    pub geometry: Geometry,
+    /// The one-time transmit, `Some` until the first placement has carried it.  Taken rather
+    /// than cloned: a payload is megabytes, and writing it twice would double the frame.
+    pub transmit: Option<String>,
+}
+
+/// Build the direct-placement backend for `image` at `rect`, or `None` when the geometry is
+/// empty or the resize produced nothing to send.
+///
+/// The resize is deliberately the **same call the Kitty and iTerm2 paths make** — `Fit(None)`
+/// with the default nearest filter — so an image does not change appearance crossing between
+/// backends.  It also pads to a whole number of cells, which is what makes the band's source
+/// rectangle an exact multiple of the cell height.
+///
+/// `url` supplies the image id ([`kitty_direct::image_id`]), so the id is a property of the
+/// image rather than of this build.
+pub fn build_direct_placement(
+    url: &str,
+    font_size: (u16, u16),
+    image: &DynamicImage,
+    rect: Rect,
+) -> Option<DirectPlacement> {
+    if rect.width == 0 || rect.height == 0 {
+        return None;
+    }
+    let cells = Size::new(rect.width, rect.height);
+    let font = ratatui_image::FontSize::new(font_size.0.max(1), font_size.1.max(1));
+    // `None` background: the letterbox padding stays transparent, so what shows through is the
+    // terminal's own background rather than a colour guessed from the theme.
+    let resized = Resize::Fit(None).resize(image, font, cells, None);
+    let geometry = Geometry::new(cells, font_size);
+    let id = kitty_direct::image_id(url, geometry);
+    let transmit = kitty_direct::transmit(id, &resized);
+    if transmit.is_empty() {
+        return None;
+    }
+    Some(DirectPlacement {
+        id,
+        geometry,
+        transmit: Some(transmit),
+    })
 }
 
 /// Free-function twin of [`ImageCache::aspect_rows`] over a borrowed image, for the decode
@@ -86,16 +199,18 @@ struct PendingResize {
 /// Record of a native-protocol transmission that is *still on screen*, so an unchanged image at
 /// an unchanged rect can be marked `skip` instead of re-rendered.
 ///
-/// Sixel and iTerm2 re-deliver the whole PNG on every render, writing the entire base64 payload
-/// into one cell's `symbol`.  Re-emitting that is doubly wrong: the escape starts with an ECH
-/// sweep, so the terminal blanks and redraws (a flash); and `Buffer::diff` carries
+/// iTerm2 re-delivers the whole PNG on every render, writing the entire base64 payload into one
+/// cell's `symbol`.  Re-emitting that is doubly wrong: the escape starts with an ECH sweep, so the
+/// terminal blanks and redraws (a flash); and `Buffer::diff` carries
 /// `invalidated = max(symbol.width(), invalidated) - 1` forward, so a 100 000-column payload
 /// symbol forces **every** later cell — including another image's payload — to re-emit each
 /// frame, which reads as a ~2 Hz flicker.
 ///
 /// A record is honored only on the *immediately* following frame, so any frame that paints the
 /// scratch there, suppresses the block, or scrolls it off screen invalidates it automatically.
-/// Kitty needs none of this, but the bookkeeping is protocol-blind and costs it nothing.
+/// Kitty and Sixel need none of it — both render through `paint_sliced`, whose payload lives in
+/// the cell and is therefore diffed like any other content — but the bookkeeping is protocol-blind
+/// and costs them nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativePaint {
     /// Screen rect the escape was rendered at.
@@ -128,8 +243,26 @@ pub struct ProtocolPair {
     /// The last frame the native escape was written on, and what it carried.  See [`NativePaint`].
     pub last_native_paint: Option<NativePaint>,
     /// Pre-rendered halfblocks cells for this `(url, width, height)`: the fallback rendering while
-    /// `native` encodes, during scroll on non-Kitty terminals, and during partial visibility.
+    /// `native` encodes, during scroll, and during partial visibility on a protocol that has no
+    /// band of its own.
     pub halfblocks_scratch: Option<Buffer>,
+    /// The band backend for this `(url, width, height)` — Kitty's row-addressed protocol, or
+    /// Sixel's band-sliced one — when the terminal speaks either.  Unlike `native` this is not
+    /// threaded: the build is long (megabytes of base64 for Kitty, a full re-encode for Sixel) but
+    /// happens once, on the decode worker, so by the time a pair exists it is already there.
+    ///
+    /// `paint_images` paints every such image through this, at whatever band is on screen, and
+    /// does not consult `native` or the scratch.  `None` for every other protocol, for a terminal
+    /// whose build failed, and while the prebuilt has not arrived.
+    pub sliced: Option<SlicedProtocol>,
+    /// The direct-placement backend for this `(url, width, height)`, when the terminal places an
+    /// already-transmitted image with a source rectangle.
+    ///
+    /// Mutually exclusive with `sliced`: a terminal that renders unicode placeholders gets that,
+    /// one that does not gets this.  As with `sliced`, `native` stays `None` — there is no encoded
+    /// payload to thread, and the iTerm2 route's per-frame re-send (and its flash) is exactly what
+    /// this backend exists to avoid.
+    pub kitty_direct: Option<DirectPlacement>,
 }
 
 /// Cache of decoded images + per-size protocol encodings.
@@ -144,6 +277,23 @@ pub struct ImageCache {
     /// that claims them.  Entries that never match (terminal resized between decode and first
     /// paint) stay until `set_decoded` or `invalidate_protocols` clears them.
     prebuilt_scratches: HashMap<(String, u16, u16), Buffer>,
+    /// The band counterpart: the row-addressed (Kitty) or band-sliced (Sixel) protocol, pre-built
+    /// on the decode worker, claimed by the same `get_protocol_pair` call and stale on the same
+    /// events.
+    prebuilt_sliced: HashMap<(String, u16, u16), SlicedProtocol>,
+    /// The direct-placement counterpart, claimed and staled the same way.
+    prebuilt_direct: HashMap<(String, u16, u16), DirectPlacement>,
+    /// `(image_id, placement_id)` pairs the terminal is showing, as of the last painted frame.
+    ///
+    /// Carried across frames because the snapshots of a frame that *stops* painting an image do
+    /// not mention it — and a placement is anchored to screen cells, so one that is no longer
+    /// painted has to be deleted explicitly or it stays behind while the document moves.  The pair
+    /// is what makes that precise: one stored image can be placed by several blocks at once, and a
+    /// block's index can move when the document is edited, so an id alone would delete a placement
+    /// another block is still using.
+    live_placements: HashSet<(u32, u32)>,
+    /// Deletes owed to the terminal, waiting for a cell that will be emitted to carry them.
+    pending_deletes: Vec<(u32, u32)>,
     /// Outstanding encode requests, FIFO in dispatch order.
     pending: VecDeque<PendingResize>,
     /// Sender into the encoder worker, cloned into each `ThreadProtocol`.  `None` disables image
@@ -167,6 +317,7 @@ impl ImageCache {
         self.protocols.clear();
         self.pending.clear();
         self.prebuilt_scratches.clear();
+        self.prebuilt_sliced.clear();
     }
 
     /// Whether an encoder-worker sender has been attached.  Exists for the App-level test that a
@@ -197,6 +348,37 @@ impl ImageCache {
         }
     }
 
+    // ── Direct-placement bookkeeping ──────────────────────────────────
+
+    /// Record the placements painted on this frame and queue a delete for every one that was
+    /// live before and is not now.
+    ///
+    /// Called once per frame that painted, with the `(image_id, placement_id)` pairs placed on it —
+    /// the set difference is what catches a block that was edited away or navigated off, which no
+    /// later snapshot mentions.
+    pub fn reconcile_placements(&mut self, placed: &[(u32, u32)]) {
+        let placed: HashSet<(u32, u32)> = placed.iter().copied().collect();
+        for pair in self.live_placements.difference(&placed) {
+            self.pending_deletes.push(*pair);
+        }
+        self.live_placements = placed;
+    }
+
+    /// Take the queued deletes, for the caller to write into a cell that will be emitted.
+    ///
+    /// Taken rather than read: the escapes are carried by a cell whose symbol changes only
+    /// because they were appended, so leaving them in place would stop the diff from emitting
+    /// the next frame's carrier at all.
+    pub fn take_pending_deletes(&mut self) -> Vec<(u32, u32)> {
+        std::mem::take(&mut self.pending_deletes)
+    }
+
+    /// Number of deletes waiting for a carrier.  Used by tests.
+    #[allow(dead_code)]
+    pub fn pending_deletes(&self) -> usize {
+        self.pending_deletes.len()
+    }
+
     /// Mark `url` as `Pending` iff it has no prior entry, returning true when a decode job should
     /// be dispatched.  A `Ready` or `Failed` URL is a no-op: there is no auto-retry.
     pub fn request(&mut self, url: &str) -> bool {
@@ -211,7 +393,7 @@ impl ImageCache {
     /// [`Self::set_decoded_with_prebuilt`] so the halfblocks scratch is captured too.
     #[allow(dead_code)]
     pub fn set_decoded(&mut self, url: &str, image: DynamicImage) {
-        self.set_decoded_with_prebuilt(url, image, None);
+        self.set_decoded_with_prebuilt(url, image, None, None, None);
     }
 
     /// [`Self::set_decoded`] plus a halfblocks scratch the decode worker already rendered; the
@@ -221,14 +403,26 @@ impl ImageCache {
         url: &str,
         image: DynamicImage,
         prebuilt_scratch: Option<(Rect, Buffer)>,
+        prebuilt_sliced: Option<(Rect, SlicedProtocol)>,
+        prebuilt_direct: Option<(Rect, DirectPlacement)>,
     ) {
         self.decoded
             .insert(url.to_owned(), DecodeStatus::Ready(Arc::new(image)));
         self.protocols.retain(|(u, _, _), _| u != url);
         self.prebuilt_scratches.retain(|(u, _, _), _| u != url);
+        self.prebuilt_sliced.retain(|(u, _, _), _| u != url);
+        self.prebuilt_direct.retain(|(u, _, _), _| u != url);
         if let Some((rect, buf)) = prebuilt_scratch {
             self.prebuilt_scratches
                 .insert((url.to_owned(), rect.width, rect.height), buf);
+        }
+        if let Some((rect, sliced)) = prebuilt_sliced {
+            self.prebuilt_sliced
+                .insert((url.to_owned(), rect.width, rect.height), sliced);
+        }
+        if let Some((rect, direct)) = prebuilt_direct {
+            self.prebuilt_direct
+                .insert((url.to_owned(), rect.width, rect.height), direct);
         }
     }
 
@@ -238,6 +432,8 @@ impl ImageCache {
             .insert(url.to_owned(), DecodeStatus::Failed(message));
         self.protocols.retain(|(u, _, _), _| u != url);
         self.prebuilt_scratches.retain(|(u, _, _), _| u != url);
+        self.prebuilt_sliced.retain(|(u, _, _), _| u != url);
+        self.prebuilt_direct.retain(|(u, _, _), _| u != url);
     }
 
     /// Look up the decode status for `url`.  Used by integration tests.
@@ -252,6 +448,13 @@ impl ImageCache {
     /// `None` when the URL is `Pending` or `Failed`, when no `native_picker` is supplied (no image
     /// support), or when no `resize_tx` is attached.  When the native protocol IS halfblocks the
     /// pair's `native` stays `None` — the scratch is both the preferred and fallback rendering.
+    /// On Kitty and Sixel it stays `None` too: `sliced` is the rendering there, and because it
+    /// carries the whole image, any visible band can be painted from it without a re-encode.
+    ///
+    /// `direct` says the terminal renders by placing an already-transmitted image with a source
+    /// rectangle, so the pair's `kitty_direct` is the rendering and nothing is encoded for the
+    /// worker.  It is a bool rather than an `ImageProtocol` because `image` sits below
+    /// `terminal` in the layer order and must not name its types.
     pub fn get_protocol_pair(
         &mut self,
         url: &str,
@@ -259,6 +462,7 @@ impl ImageCache {
         height: u16,
         native_picker: Option<&Picker>,
         halfblocks_picker: Option<&Picker>,
+        direct: bool,
     ) -> Option<&mut ProtocolPair> {
         let native_picker = native_picker?;
         let resize_tx = self.resize_tx.as_ref()?.clone();
@@ -275,24 +479,97 @@ impl ImageCache {
             let is_halfblocks_native = native_picker.protocol_type() == ProtocolType::Halfblocks;
 
             // Prefer the worker's prebuilt scratch, taken by `remove` so it isn't held twice.
-            // A missing or wrong-dimension one falls back to a ~5-20 ms sync encode here, rare
-            // enough not to regress scroll.
             let halfblocks_scratch = if let Some(buf) = self.prebuilt_scratches.remove(&key) {
                 Some(buf)
-            } else if is_halfblocks_native {
-                Some(render_halfblocks_scratch(
-                    native_picker,
-                    (*image_arc).clone(),
-                    full_rect,
-                ))
             } else {
-                halfblocks_picker
-                    .map(|p| render_halfblocks_scratch(p, (*image_arc).clone(), full_rect))
+                // Cold-path fallback: the prebuilt is missing, or keyed to other dims.  A resize
+                // is the usual cause — `on_resize` does not clear this map and `request` is a
+                // no-op once a URL is decoded, so nothing ever re-derives it.  Timed rather than
+                // assumed; see `docs/dev/plans/image-partial-rendering.md` § Rebuild triggers.
+                let sync_picker = if is_halfblocks_native {
+                    Some(native_picker)
+                } else {
+                    halfblocks_picker
+                };
+                let started = Instant::now();
+                let buf = sync_picker
+                    .map(|p| render_halfblocks_scratch(p, (*image_arc).clone(), full_rect));
+                tracing::debug!(
+                    target: "image",
+                    url = %key.0,
+                    width,
+                    height,
+                    micros = started.elapsed().as_micros() as u64,
+                    "halfblocks scratch built synchronously (prebuilt missed)",
+                );
+                buf
             };
 
-            // A ThreadProtocol runs the slow native encode on the worker; unnecessary when the
-            // native protocol is halfblocks, since the scratch above is then the rendering.
-            let native = if is_halfblocks_native {
+            // The band protocol, claimed the same way.  A miss here is a long synchronous build —
+            // for Kitty the transmit string is megabytes of base64, for Sixel a full re-encode —
+            // the same accepted cost as the scratch above, and reachable only when the geometry
+            // changed since the decode, since the renderer's reserved height is otherwise exactly
+            // the height the dispatch built at.
+            let is_band_native = is_band_protocol(native_picker.protocol_type());
+            let sliced = if is_band_native {
+                match self.prebuilt_sliced.remove(&key) {
+                    Some(sliced) => Some(sliced),
+                    None => {
+                        let started = Instant::now();
+                        let built = build_sliced(native_picker, &image_arc, full_rect);
+                        tracing::debug!(
+                            target: "image",
+                            url = %key.0,
+                            width,
+                            height,
+                            micros = started.elapsed().as_micros() as u64,
+                            ok = built.is_some(),
+                            "band protocol built synchronously (prebuilt missed)",
+                        );
+                        built
+                    }
+                }
+            } else {
+                None
+            };
+
+            // The direct-placement backend, claimed the same way.  Its build is a resize plus the
+            // base64 of a raw-RGBA payload — the same order as the scratch above, and the same
+            // accepted synchronous cost on a geometry change.
+            let kitty_direct = if direct {
+                match self.prebuilt_direct.remove(&key) {
+                    Some(built) => Some(built),
+                    None => {
+                        let started = Instant::now();
+                        let font = native_picker.font_size();
+                        let built = build_direct_placement(
+                            &key.0,
+                            (font.width, font.height),
+                            &image_arc,
+                            full_rect,
+                        );
+                        tracing::debug!(
+                            target: "image",
+                            url = %key.0,
+                            width,
+                            height,
+                            micros = started.elapsed().as_micros() as u64,
+                            ok = built.is_some(),
+                            "direct placement built synchronously (prebuilt missed)",
+                        );
+                        built
+                    }
+                }
+            } else {
+                None
+            };
+
+            // A ThreadProtocol runs the slow native encode on the worker.  Three cases skip it: the
+            // native protocol IS halfblocks, where the scratch above is the rendering; Kitty and
+            // Sixel, whose rendering is the band above — for those a threaded encode would be a
+            // second copy of the same bytes, never read; and direct placement, which has no
+            // encoded payload at all.
+            let native = if is_halfblocks_native || is_band_native || direct {
                 None
             } else {
                 let native_inner = native_picker.new_resize_protocol((*image_arc).clone());
@@ -307,6 +584,8 @@ impl ImageCache {
                     native_generation: 0,
                     last_native_paint: None,
                     halfblocks_scratch,
+                    sliced,
+                    kitty_direct,
                 },
             );
         }
@@ -369,6 +648,7 @@ impl ImageCache {
         self.protocols.clear();
         // Prebuilt scratches are keyed by the old dims, so they are stale after a resize.
         self.prebuilt_scratches.clear();
+        self.prebuilt_sliced.clear();
     }
 
     /// Rows a decoded image occupies when fitted into `max_width_cells × max_height_cells` at
@@ -431,6 +711,7 @@ impl ImageCache {
         self.decoded.remove(url);
         self.protocols.retain(|(u, _, _), _| u != url);
         self.prebuilt_scratches.retain(|(u, _, _), _| u != url);
+        self.prebuilt_sliced.retain(|(u, _, _), _| u != url);
     }
 
     /// Drop every entry for a remote URL, so the next dispatch re-resolves it under a changed
@@ -443,6 +724,8 @@ impl ImageCache {
             .retain(|(url, _, _), _| !crate::image::loader::is_remote(url));
         self.prebuilt_scratches
             .retain(|(url, _, _), _| !crate::image::loader::is_remote(url));
+        self.prebuilt_sliced
+            .retain(|(url, _, _), _| !crate::image::loader::is_remote(url));
         // `pending` is deliberately untouched: responses for evicted URLs become orphan pops,
         // which is what keeps the FIFO pairing correct.
     }
@@ -453,6 +736,8 @@ impl ImageCache {
         self.decoded.retain(|url, _| live.contains(url));
         self.protocols.retain(|(url, _, _), _| live.contains(url));
         self.prebuilt_scratches
+            .retain(|(url, _, _), _| live.contains(url));
+        self.prebuilt_sliced
             .retain(|(url, _, _), _| live.contains(url));
     }
 
@@ -469,6 +754,11 @@ impl ImageCache {
     #[cfg(test)]
     pub fn prebuilt_scratch_count(&self) -> usize {
         self.prebuilt_scratches.len()
+    }
+
+    #[cfg(test)]
+    pub fn prebuilt_sliced_count(&self) -> usize {
+        self.prebuilt_sliced.len()
     }
 }
 
@@ -493,6 +783,21 @@ mod tests {
     fn native_picker() -> Picker {
         let mut picker = Picker::from_fontsize((1, 2).into());
         picker.set_protocol_type(ProtocolType::Iterm2);
+        picker
+    }
+
+    /// A picker whose placeholders address image rows, so `build_sliced` produces a backend for it.
+    fn kitty_picker() -> Picker {
+        let mut picker = Picker::from_fontsize((1, 2).into());
+        picker.set_protocol_type(ProtocolType::Kitty);
+        picker
+    }
+
+    /// A picker whose band is a re-slice of the encoded 6-px bands — Windows Terminal 1.22+ and
+    /// the other sixel terminals, which have no image store and so no band parameter either.
+    fn sixel_picker() -> Picker {
+        let mut picker = Picker::from_fontsize((1, 2).into());
+        picker.set_protocol_type(ProtocolType::Sixel);
         picker
     }
 
@@ -593,7 +898,7 @@ mod tests {
         cache.set_decoded("a.png", DynamicImage::new_rgba8(1, 1));
         let picker = halfblocks_picker();
         assert!(cache
-            .get_protocol_pair("a.png", 10, 10, Some(&picker), Some(&picker))
+            .get_protocol_pair("a.png", 10, 10, Some(&picker), Some(&picker), false)
             .is_some());
         assert_eq!(cache.protocol_count(), 1);
         cache.set_decoded("a.png", DynamicImage::new_rgba8(2, 2));
@@ -610,12 +915,14 @@ mod tests {
             "a.png",
             DynamicImage::new_rgba8(8, 4),
             Some((rect, prebuilt)),
+            None,
+            None,
         );
         assert_eq!(cache.prebuilt_scratch_count(), 1);
 
         let picker = halfblocks_picker();
         let pair = cache
-            .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker))
+            .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker), false)
             .expect("pair for ready image");
         assert!(pair.halfblocks_scratch.is_some());
         // Prebuilt map was drained.
@@ -634,11 +941,13 @@ mod tests {
             "a.png",
             DynamicImage::new_rgba8(8, 4),
             Some((prebuilt_rect, prebuilt)),
+            None,
+            None,
         );
 
         let picker = halfblocks_picker();
         let pair = cache
-            .get_protocol_pair("a.png", 16, 4, Some(&picker), Some(&picker))
+            .get_protocol_pair("a.png", 16, 4, Some(&picker), Some(&picker), false)
             .expect("pair for ready image");
         assert!(pair.halfblocks_scratch.is_some());
         // The un-claimed prebuilt remains, for a future paint at matching dims.
@@ -654,6 +963,8 @@ mod tests {
             "a.png",
             DynamicImage::new_rgba8(8, 4),
             Some((rect, Buffer::empty(rect))),
+            None,
+            None,
         );
         assert_eq!(cache.prebuilt_scratch_count(), 1);
         cache.invalidate_protocols();
@@ -667,7 +978,7 @@ mod tests {
         cache.set_decoded("a.png", DynamicImage::new_rgba8(1, 1));
         let picker = halfblocks_picker();
         cache
-            .get_protocol_pair("a.png", 1, 1, Some(&picker), Some(&picker))
+            .get_protocol_pair("a.png", 1, 1, Some(&picker), Some(&picker), false)
             .expect("pair for ready image");
         cache.invalidate_protocols();
         assert_eq!(cache.protocol_count(), 0);
@@ -684,7 +995,7 @@ mod tests {
         cache.set_decoded("a.png", DynamicImage::new_rgba8(4, 4));
         let picker = halfblocks_picker();
         let pair = cache
-            .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker))
+            .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker), false)
             .expect("pair for ready image");
         assert!(pair.native.is_none());
         assert!(pair.halfblocks_scratch.is_some());
@@ -702,6 +1013,7 @@ mod tests {
                 4,
                 Some(&native_picker()),
                 Some(&halfblocks_picker()),
+                false,
             )
             .expect("pair for ready image");
         assert!(pair.native.is_some(), "native encode shipped off-thread");
@@ -740,7 +1052,80 @@ mod tests {
         let mut cache = cache_with_sender();
         cache.request("a.png");
         cache.set_decoded("a.png", DynamicImage::new_rgba8(1, 1));
-        assert!(cache.get_protocol_pair("a.png", 8, 4, None, None).is_none());
+        assert!(cache
+            .get_protocol_pair("a.png", 8, 4, None, None, false)
+            .is_none());
+    }
+
+    // ── Band protocols (Kitty row addressing, Sixel band slicing) ─────
+
+    #[test]
+    fn build_sliced_answers_for_the_band_protocols_only() {
+        let image = DynamicImage::new_rgba8(8, 8);
+        let rect = Rect::new(0, 0, 4, 2);
+        assert!(build_sliced(&kitty_picker(), &image, rect).is_some());
+        assert!(build_sliced(&sixel_picker(), &image, rect).is_some());
+        // The sliced backend dispatches on the picker, so a non-band picker would silently
+        // produce a different one — a list of one PNG per text row for iTerm2, a row copy for
+        // halfblocks — and `paint_images` would then paint it as if it were a band.
+        assert!(build_sliced(&halfblocks_picker(), &image, rect).is_none());
+        assert!(build_sliced(&native_picker(), &image, rect).is_none());
+    }
+
+    #[test]
+    fn kitty_prebuilt_is_claimed_at_matching_dims_and_skips_the_threaded_protocol() {
+        let mut cache = cache_with_sender();
+        cache.request("a.png");
+        let picker = kitty_picker();
+        let rect = Rect::new(0, 0, 8, 4);
+        let sliced = build_sliced(&picker, &DynamicImage::new_rgba8(8, 8), rect).expect("sliced");
+        cache.set_decoded_with_prebuilt(
+            "a.png",
+            DynamicImage::new_rgba8(8, 4),
+            None,
+            Some((rect, sliced)),
+            None,
+        );
+        assert_eq!(cache.prebuilt_sliced_count(), 1);
+
+        let pair = cache
+            .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker), false)
+            .expect("pair for ready image");
+        assert!(pair.sliced.is_some(), "the prebuilt was claimed");
+        assert!(
+            pair.native.is_none(),
+            "the band is the rendering; a threaded protocol would duplicate the payload"
+        );
+        assert_eq!(cache.prebuilt_sliced_count(), 0, "the prebuilt was drained");
+    }
+
+    /// The Sixel side of the same contract: a sixel terminal gets the band backend and no threaded
+    /// encode, which is what makes a partly visible image sharp on Windows Terminal instead of a
+    /// halfblocks mosaic.
+    #[test]
+    fn sixel_prebuilt_is_claimed_before_it_becomes_a_threaded_encode() {
+        let mut cache = cache_with_sender();
+        cache.request("a.png");
+        let picker = sixel_picker();
+        let rect = Rect::new(0, 0, 8, 4);
+        let sliced = build_sliced(&picker, &DynamicImage::new_rgba8(8, 8), rect).expect("sliced");
+        cache.set_decoded_with_prebuilt(
+            "a.png",
+            DynamicImage::new_rgba8(8, 4),
+            None,
+            Some((rect, sliced)),
+            None,
+        );
+
+        let pair = cache
+            .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker), false)
+            .expect("pair for ready image");
+        assert!(pair.sliced.is_some(), "the prebuilt was claimed");
+        assert!(
+            pair.native.is_none(),
+            "a second sixel encode on the worker would never be read"
+        );
+        assert_eq!(cache.prebuilt_sliced_count(), 0, "the prebuilt was drained");
     }
 
     #[test]
@@ -752,7 +1137,7 @@ mod tests {
         cache.set_decoded("a.png", DynamicImage::new_rgba8(1, 1));
         let picker = halfblocks_picker();
         assert!(cache
-            .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker))
+            .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker), false)
             .is_none());
     }
 
@@ -762,7 +1147,7 @@ mod tests {
         cache.request("a.png");
         let picker = halfblocks_picker();
         assert!(cache
-            .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker))
+            .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker), false)
             .is_none());
     }
 
@@ -775,7 +1160,7 @@ mod tests {
         cache.set_decoded("a.png", DynamicImage::new_rgba8(4, 4));
         let picker = halfblocks_picker();
         cache
-            .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker))
+            .get_protocol_pair("a.png", 8, 4, Some(&picker), Some(&picker), false)
             .expect("pair built");
         cache.track_pending_resize("a.png", 8, 4);
         assert_eq!(cache.pending.len(), 1);
