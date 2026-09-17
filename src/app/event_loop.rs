@@ -199,7 +199,8 @@ impl App {
         // After the update notice: a tip yields to an update, and reads whether one is pending.
         self.tick_daily_tip();
         self.tick_syntax_warm();
-        self.editor.modal_open = self.any_modal_open();
+        self.tick_clipboard_read();
+        self.editor.modal_open = self.any_modal_shown();
     }
 
     /// Repaint when the grammar warm worker has finished a language.
@@ -411,7 +412,7 @@ impl App {
         self.editor.images.begin_frame();
         let editor_ref = &mut self.editor;
         let view_state_ref = &mut self.view_state;
-        let modal_stack_top = self.modal_stack.top_mut();
+        let modal_stack_top = self.modal_stack.top_mut().filter(|m| m.is_shown());
         terminal.draw(|frame| {
             let view = EditorView {
                 state: editor_ref,
@@ -542,6 +543,9 @@ impl App {
             }
             AppEvent::ReleaseCheckResult(result) => {
                 self.handle_release_check_result(result);
+            }
+            AppEvent::ClipboardImageRead(read) => {
+                self.handle_clipboard_image_read(read);
             }
         }
     }
@@ -996,6 +1000,7 @@ impl App {
         if self.hovered_link.take().is_some() {
             self.needs_draw = true;
         }
+        self.last_editor_key_at = Some(Instant::now());
         let mut batch: Vec<Event> = vec![event];
         self.collect_key_burst(rx, &mut batch);
         self.dispatch_key_batch(batch, dims, terminal, rx);
@@ -1184,7 +1189,7 @@ impl App {
                 && self.vim.as_ref().is_some_and(|v| v.cmdline.is_some())
                 && keymap.action_for(key) == Some(&Action::Paste)
             {
-                let text = edit_ops::clipboard_text(&self.editor);
+                let text = self.read_paste_text();
                 self.paste_into_cmdline(&text, dims);
                 return;
             }

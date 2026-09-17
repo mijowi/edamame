@@ -531,25 +531,11 @@ pub fn apply(
                 }
             }
         }
+        // The App intercepts `Paste` to read the OS clipboard and calls `paste_text` itself;
+        // reaching here means there is no App (a direct `apply`), so paste the kill-ring.
         Action::Paste => {
-            enter_edit_if_preview(state, viewport_height);
-            let text = clipboard_text(state);
-            if !text.is_empty() {
-                if let Some(sel) = state.selection.take() {
-                    let (start, end) = sel.range();
-                    let removed = state
-                        .buffer
-                        .slice_to_string(start, end.min(state.buffer.len_chars()));
-                    state.cursor.offset = start;
-                    state.apply_delta(EditDelta {
-                        offset: start,
-                        removed,
-                        inserted: text,
-                    });
-                } else {
-                    insert_text(state, &text);
-                }
-            }
+            let text = state.kill_ring.clone();
+            paste_text(state, &text, viewport_height, viewport_width);
         }
 
         // ── Formatting ────────────────────────────────────────────
@@ -714,22 +700,31 @@ fn sync_preferred_visual(state: &mut EditorState, viewport_width: usize) {
 /// Move the cursor to the first visible block, unless it is already on screen.  Called on the
 /// Preview → editing transition so the cursor appears near what the user is looking at.
 fn sync_cursor_to_scroll(state: &mut EditorState, viewport_height: usize) {
+    state.cursor.offset = synced_cursor_offset(state, viewport_height);
+}
+
+/// Where [`sync_cursor_to_scroll`] would put the cursor, without moving it.
+fn synced_cursor_offset(state: &EditorState, viewport_height: usize) -> usize {
     let scroll = state.scroll;
     let cursor_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
     let cursor_lines = state.parsed.source_map.rendered_lines_for_byte(cursor_byte);
     if !cursor_lines.is_empty() {
         let visible_end = scroll + viewport_height;
         if cursor_lines.start >= scroll && cursor_lines.start < visible_end {
-            return;
+            return state.cursor.offset;
         }
     }
-    if let Some(byte) = state
+    match state
         .parsed
         .source_map
         .original_byte_for_rendered_line(scroll)
     {
-        let char_offset = state.buffer.rope().byte_to_char(byte);
-        state.cursor.offset = char_offset.min(state.buffer.len_chars());
+        Some(byte) => state
+            .buffer
+            .rope()
+            .byte_to_char(byte)
+            .min(state.buffer.len_chars()),
+        None => state.cursor.offset,
     }
 }
 
@@ -964,107 +959,24 @@ fn outside_wrapped(buf: &Buffer, start: usize, end: usize, marker: &str) -> bool
     true
 }
 
-/// Whether the OS-level clipboard paths are live.
+/// Put `text` in the kill-ring and stage it for the OS clipboard.
 ///
-/// **False in unit tests, always.** The OS clipboard is process-global state shared by every test
-/// thread, so a live one makes clipboard tests race (and leaks the developer's own clipboard into
-/// assertions); this constant is what enforces "tests assert against the kill-ring". It also keeps
-/// OSC 52 escapes out of test stdout.  Integration tests in `tests/` link the library without
-/// `cfg(test)` and are covered instead by CI's `--no-default-features`, which drops `arboard`.
-const OS_CLIPBOARD: bool = !cfg!(test);
-
-/// Write `text` to the OS clipboard (best-effort via arboard *and* OSC 52) and always mirror it
-/// into the kill-ring so internal paste works when neither external path is available.
-///
-/// `text` arrives in the rope's `\n`-only form and the kill-ring keeps it that way, but the
-/// external clipboard gets the buffer's on-disk newline convention — the counterpart of the
-/// save-time translation, keyed off the buffer (a CRLF file opened on Linux copies `\r\n` too),
-/// not the host platform.  Otherwise some applications render a copied CRLF document as one line.
+/// `edit_ops` never touches the OS: the App drains
+/// [`EditorState::pending_clipboard_write`] after the action and writes it through its
+/// [`crate::clipboard::ClipboardSource`], the single place the OS clipboard is reached.  Empty
+/// text is dropped, so copying an empty line never overwrites what another program has put on
+/// the clipboard since.
 fn copy_to_clipboard(state: &mut EditorState, text: String) {
-    if OS_CLIPBOARD {
-        let external = crate::document::buffer::encode_newlines(&text, state.buffer.line_ending());
-        #[cfg(feature = "clipboard")]
-        copy_to_system_clipboard(external.clone());
-        // OSC 52 is the only path that works over SSH, on Wayland without `wayland-data-control`,
-        // and in WSL.  Terminals that don't understand it ignore it, so emit unconditionally.
-        osc52_copy(&external);
+    if text.is_empty() {
+        return;
     }
+    state.pending_clipboard_write = Some(text.clone());
     state.kill_ring = text;
 }
 
-/// Linux copy.  Wayland/X11 hold clipboard data only while a process owns the selection, and
-/// arboard prints to *stderr* — corrupting the TUI — if the `Clipboard` drops too soon after
-/// `set_text`; hence a thread that owns the selection until another program takes over.  macOS and
-/// Windows clipboards persist past process exit and use the simple path below.
-#[cfg(all(feature = "clipboard", target_os = "linux"))]
-fn copy_to_system_clipboard(text: String) {
-    use arboard::SetExtLinux;
-    std::thread::spawn(move || {
-        if let Ok(mut cb) = arboard::Clipboard::new() {
-            let _ = cb.set().wait().text(text);
-        }
-    });
-}
-
-#[cfg(all(feature = "clipboard", not(target_os = "linux")))]
-fn copy_to_system_clipboard(text: String) {
-    if let Ok(mut cb) = arboard::Clipboard::new() {
-        let _ = cb.set_text(&text);
-    }
-}
-
-/// Write `text` to the terminal's clipboard via OSC 52 (`ESC ] 52 ; c ; base64 BEL`).
-fn osc52_copy(text: &str) {
-    use std::io::Write;
-    let encoded = base64_encode(text.as_bytes());
-    let mut stdout = std::io::stdout();
-    let _ = write!(stdout, "\x1b]52;c;{encoded}\x07");
-    let _ = stdout.flush();
-}
-
-/// Minimal RFC-4648 base64 encoder, hand-written to avoid a dependency for one caller.
-fn base64_encode(data: &[u8]) -> String {
-    const CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0];
-        let b1 = chunk.get(1).copied().unwrap_or(0);
-        let b2 = chunk.get(2).copied().unwrap_or(0);
-        out.push(CHARS[(b0 >> 2) as usize] as char);
-        out.push(CHARS[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(CHARS[(((b1 & 0x0F) << 2) | (b2 >> 6)) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(CHARS[(b2 & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
-}
-
-/// Read from the OS clipboard if available, else the kill-ring.  Public so callers that reshape
-/// the payload first (the App's linewise vim VisualLine paste) read the same source as
-/// `Action::Paste`.
-pub fn clipboard_text(state: &EditorState) -> String {
-    #[cfg(feature = "clipboard")]
-    if OS_CLIPBOARD {
-        if let Ok(mut cb) = arboard::Clipboard::new() {
-            if let Ok(text) = cb.get_text() {
-                // Collapse external CRLF so the rope invariant holds and a CRLF save does not
-                // double the `\r`.  The kill-ring is already `\n`-only.
-                return crate::document::buffer::normalize_newlines(text);
-            }
-        }
-    }
-    state.kill_ring.clone()
-}
-
-/// Insert `text` at the cursor (or over the selection) as if pasted.  Used by `App`'s
-/// bracketed-paste handler, so terminal-level pastes need no reachable OS clipboard.
+/// Insert `text` at the cursor (or over the selection) as if pasted.  Every paste lands here: the
+/// App reads the clipboard (or takes a bracketed paste's text) and hands the text down, so this
+/// module never reaches the OS.
 pub fn paste_text(
     state: &mut EditorState,
     text: &str,
@@ -1074,7 +986,8 @@ pub fn paste_text(
     if text.is_empty() {
         return;
     }
-    // Same CRLF collapse as `clipboard_text`.
+    // Collapse external CRLF so the rope invariant holds and a CRLF save does not double the
+    // `\r`.  The kill-ring is already `\n`-only.
     let text = crate::document::buffer::normalize_newlines(text.to_owned());
     let text = text.as_str();
     let buffer_len_before = state.buffer.len_chars();
@@ -1171,7 +1084,14 @@ pub fn insert_image_at_cursor(
     viewport_height: usize,
     viewport_width: usize,
 ) -> bool {
-    insert_inline_snippet(state, "!", "alt text", viewport_height, viewport_width)
+    insert_inline_snippet(
+        state,
+        "!",
+        "alt text",
+        SnippetUrl::Placeholder,
+        viewport_height,
+        viewport_width,
+    )
 }
 
 /// Insert a link snippet at the cursor.  See [`insert_inline_snippet`] for the behavior.
@@ -1180,7 +1100,150 @@ pub fn insert_link_at_cursor(
     viewport_height: usize,
     viewport_width: usize,
 ) -> bool {
-    insert_inline_snippet(state, "", "link text", viewport_height, viewport_width)
+    insert_inline_snippet(
+        state,
+        "",
+        "link text",
+        SnippetUrl::Placeholder,
+        viewport_height,
+        viewport_width,
+    )
+}
+
+/// Insert `![](url)` at the cursor, with the cursor landing in the empty `[]`, ready for alt text.
+/// A single-line selection becomes the alt text instead, and the cursor then lands past the
+/// reference.  Used by the clipboard paste flow, where the path is already known.
+/// Returns `false`, inserting nothing, where [`can_insert_image_reference`] refuses.
+///
+/// In a top-level paragraph (or on a blank line) the reference is framed as a paragraph of its
+/// own (see [`frame_own_paragraph`]), which is what makes it a block image.  Inside a container
+/// — a table, list, blockquote or footnote definition — it goes in inline, exactly where the
+/// cursor is: the framing's blank lines would end the container (a table cell holds only inline
+/// content, and an unindented paragraph after a blank line leaves a list, quote or footnote),
+/// while an inline image is valid in all of them.  `url` is written through
+/// [`crate::markdown::escape_destination`] — or, in a container,
+/// [`crate::markdown::escape_destination_in_table`], so a `|` can't end a cell — so any path is
+/// safe to pass.
+pub fn insert_image_reference_at_cursor(
+    state: &mut EditorState,
+    url: &str,
+    viewport_height: usize,
+    viewport_width: usize,
+) -> bool {
+    use crate::markdown::Block;
+    if !can_insert_image_reference(state, viewport_height) {
+        return false;
+    }
+    let byte = state
+        .buffer
+        .rope()
+        .char_to_byte(snippet_anchor(state, viewport_height));
+    let url = match state.parsed.real_block_for_byte(byte) {
+        // `real_block_for_byte` names the outermost block, so a list, quote or footnote may hold
+        // a table it doesn't show: escape `|` in all of them.  `\|` is a valid escape anywhere.
+        Some(
+            Block::Table { .. }
+            | Block::List { .. }
+            | Block::BlockQuote { .. }
+            | Block::FootnoteDefinition { .. },
+        ) => SnippetUrl::Inline(crate::markdown::escape_destination_in_table(url)),
+        _ => SnippetUrl::OwnParagraph(crate::markdown::escape_destination(url)),
+    };
+    insert_inline_snippet(state, "!", "", url, viewport_height, viewport_width)
+}
+
+/// Whether [`insert_image_reference_at_cursor`] would insert here: the paste flow asks before it
+/// writes the image, so a refusal leaves no orphan file behind.  Refused wherever an inline
+/// snippet is, and in a heading too: CommonMark allows an image there, but a pasted screenshot
+/// in a heading is never what the user meant, and framing it as its own paragraph would split
+/// the heading in two.
+///
+/// Moves nothing: in Preview it judges the offset the insert would sync the cursor to.  (`&mut`
+/// only to flush a deferred re-parse.)
+pub fn can_insert_image_reference(state: &mut EditorState, viewport_height: usize) -> bool {
+    let at = snippet_anchor(state, viewport_height);
+    if !block_allows_inline_markdown_at(state, at) {
+        return false;
+    }
+    let byte = state.buffer.rope().char_to_byte(at);
+    !matches!(
+        state.parsed.real_block_for_byte(byte),
+        Some(crate::markdown::Block::Heading { .. })
+    )
+}
+
+/// Where a snippet lands: the start of the selection it wraps, else the cursor — in Preview, where
+/// [`sync_cursor_to_scroll`] would move it.
+fn snippet_anchor(state: &EditorState, viewport_height: usize) -> usize {
+    snippet_wrap(state).map_or_else(
+        || {
+            if state.mode == Mode::Preview {
+                synced_cursor_offset(state, viewport_height)
+            } else {
+                state.cursor.offset
+            }
+        },
+        |(start, _)| start,
+    )
+}
+
+/// The single-line selection a snippet wraps, as `(start, text)`.
+fn snippet_wrap(state: &EditorState) -> Option<(usize, String)> {
+    let sel = state.selection.as_ref()?;
+    let (start, end) = sel.range();
+    let end = end.min(state.buffer.len_chars());
+    if start >= end {
+        return None;
+    }
+    let text = state.buffer.slice_to_string(start, end);
+    (!text.contains('\n')).then_some((start, text))
+}
+
+/// Frame `reference` as a paragraph of its own, replacing `start..end`: a blank line before it and
+/// after it, unless one (or the buffer's edge) is already there.  Returns the text to insert in
+/// one delta.
+///
+/// The parse only promotes an image to a block when it is a paragraph's sole content, so a
+/// reference flush against other text — on either side — would stay inline and render as a text
+/// placeholder instead of the image.
+fn frame_own_paragraph(
+    buffer: &crate::document::Buffer,
+    start: usize,
+    end: usize,
+    reference: &str,
+) -> String {
+    let rope = buffer.rope();
+    let len = rope.len_chars();
+    let start = start.min(len);
+    let end = end.clamp(start, len);
+    let at_line_start = start == 0 || rope.char(start - 1) == '\n';
+    let above_blank = start < 2 || rope.char(start - 2) == '\n';
+    let mut out = String::new();
+    if !(at_line_start && above_blank) {
+        out.push_str(if at_line_start { "\n" } else { "\n\n" });
+    }
+    out.push_str(reference);
+    if end >= len {
+        out.push('\n');
+    } else if rope.char(end) != '\n' {
+        out.push_str("\n\n");
+    } else if end + 1 < len && rope.char(end + 1) != '\n' {
+        out.push('\n');
+    }
+    out
+}
+
+/// What an inline snippet puts between its parentheses.
+enum SnippetUrl {
+    /// [`URL_PLACEHOLDER`], left selected for the user to type over — the image / link snippets.
+    Placeholder,
+    /// A fixed, already-escaped destination, inserted where the cursor is — the clipboard paste
+    /// inside a container block.  The cursor lands in the brackets when they are empty, past the reference
+    /// otherwise.
+    Inline(String),
+    /// As [`Self::Inline`], but framed as a paragraph of its own (see [`frame_own_paragraph`]) so
+    /// it parses as a block image — the clipboard paste everywhere else.
+    OwnParagraph(String),
 }
 
 /// Shared body of the image / link snippet inserts.  Returns `false` — mode, selection and buffer
@@ -1190,36 +1253,25 @@ pub fn insert_link_at_cursor(
 /// A single-line selection becomes the visible text and the URL placeholder is left selected;
 /// otherwise the whole snippet is inserted with the text placeholder selected.  A multi-line
 /// selection is dropped rather than wrapped — link text can't span blocks — so nothing is lost.
+///
+/// `url` says what goes between the parentheses; see [`SnippetUrl`].
 fn insert_inline_snippet(
     state: &mut EditorState,
     prefix: &str,
     text_placeholder: &str,
+    url: SnippetUrl,
     viewport_height: usize,
     viewport_width: usize,
 ) -> bool {
-    // Sync before the pre-flight so the guard classifies the block the snippet really lands in.
-    // Deliberately not `enter_edit_if_preview` yet: a denied insert must not leave Preview.
+    // The pre-flight judges where the snippet will land without moving the cursor, so a denied
+    // insert leaves the cursor, the mode and the selection alone.
+    if !block_allows_inline_markdown_at(state, snippet_anchor(state, viewport_height)) {
+        return false;
+    }
     if state.mode == Mode::Preview {
         sync_cursor_to_scroll(state, viewport_height);
     }
-    let wrap = state.selection.as_ref().and_then(|sel| {
-        let (start, end) = sel.range();
-        let end = end.min(state.buffer.len_chars());
-        if start >= end {
-            return None;
-        }
-        let text = state.buffer.slice_to_string(start, end);
-        if text.contains('\n') {
-            return None;
-        }
-        Some((start, text))
-    });
-    let insert_at = wrap
-        .as_ref()
-        .map_or(state.cursor.offset, |(start, _)| *start);
-    if !block_allows_inline_markdown_at(state, insert_at) {
-        return false;
-    }
+    let wrap = snippet_wrap(state);
     state.selection = None;
     enter_edit_if_preview(state, viewport_height);
     // `prefix`, the brackets and the placeholders are ASCII, so byte lengths double as char
@@ -1233,27 +1285,46 @@ fn insert_inline_snippet(
             false,
         ),
     };
-    let inserted = format!("{prefix}[{visible_text}]({URL_PLACEHOLDER})");
+    let dest = match &url {
+        SnippetUrl::Placeholder => URL_PLACEHOLDER,
+        SnippetUrl::Inline(url) | SnippetUrl::OwnParagraph(url) => url.as_str(),
+    };
+    let reference = format!("{prefix}[{visible_text}]({dest})");
+    let inserted = if matches!(url, SnippetUrl::OwnParagraph(_)) {
+        let end = offset + removed.chars().count();
+        frame_own_paragraph(&state.buffer, offset, end, &reference)
+    } else {
+        reference
+    };
+    let inserted_len = inserted.chars().count();
+    // The framing only ever adds newlines ahead of the reference.
+    let lead = inserted.chars().take_while(|&c| c == '\n').count();
     state.cursor.offset = offset;
     state.apply_delta(EditDelta {
         offset,
         removed,
         inserted,
     });
-    let (sel_start, sel_len) = if select_placeholder_url {
-        (
-            offset + prefix.len() + 1 + visible_text.chars().count() + 2,
-            URL_PLACEHOLDER.len(),
-        )
+    if matches!(url, SnippetUrl::Placeholder) {
+        let (sel_start, sel_len) = if select_placeholder_url {
+            (
+                offset + prefix.len() + 1 + visible_text.chars().count() + 2,
+                URL_PLACEHOLDER.len(),
+            )
+        } else {
+            (offset + prefix.len() + 1, text_placeholder.len())
+        };
+        let sel_end = sel_start + sel_len;
+        state.selection = Some(Selection {
+            anchor: sel_start,
+            active: sel_end,
+        });
+        state.cursor.offset = sel_end;
+    } else if visible_text.is_empty() {
+        state.cursor.offset = offset + lead + prefix.len() + 1;
     } else {
-        (offset + prefix.len() + 1, text_placeholder.len())
-    };
-    let sel_end = sel_start + sel_len;
-    state.selection = Some(Selection {
-        anchor: sel_start,
-        active: sel_end,
-    });
-    state.cursor.offset = sel_end;
+        state.cursor.offset = offset + inserted_len;
+    }
     state.cursor.preferred_col = state.cursor.cell_col(&state.buffer);
     state.update_cursor_block();
     state.ensure_cursor_visible(viewport_height, viewport_width);
@@ -1677,7 +1748,7 @@ fn list_move_horizontal(state: &mut EditorState, forward: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{base64_encode, paste_text};
+    use super::paste_text;
     use crate::config::Theme;
     use crate::document::Buffer;
     use crate::editor::{EditorState, Mode};
@@ -1713,31 +1784,5 @@ mod tests {
         let out = dir.path().join("out.md");
         state.buffer.save_copy(&out).expect("save");
         assert_eq!(std::fs::read(&out).expect("read"), b"X\r\na\r\nb\r\n");
-    }
-
-    #[test]
-    fn base64_encodes_empty() {
-        assert_eq!(base64_encode(b""), "");
-    }
-
-    #[test]
-    fn base64_encodes_one_byte() {
-        assert_eq!(base64_encode(b"f"), "Zg==");
-    }
-
-    #[test]
-    fn base64_encodes_two_bytes() {
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-    }
-
-    #[test]
-    fn base64_encodes_three_bytes() {
-        assert_eq!(base64_encode(b"foo"), "Zm9v");
-    }
-
-    #[test]
-    fn base64_encodes_rfc4648_vectors() {
-        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
-        assert_eq!(base64_encode(b"Hello, world!"), "SGVsbG8sIHdvcmxkIQ==");
     }
 }

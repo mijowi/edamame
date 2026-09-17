@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod code_layout;
+pub mod destination;
 pub mod highlight;
 pub mod inline_col_map;
 pub mod list_layout;
@@ -10,6 +11,7 @@ pub mod renderer;
 pub mod table_layout;
 
 pub use ast::{inlines_to_plain, Block, Inline};
+pub use destination::{escape_destination, escape_destination_in_table, local_image_urls};
 pub use inline_col_map::InlineColMap;
 pub use parser::{
     annotate_list_blanks, is_closing_fence, parse, parse_opening_fence, parse_raw_with_ranges,

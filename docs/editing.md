@@ -321,6 +321,17 @@ Move the cursor into an image and it's replaced by its `![alt](url)` source line
 
 ![An inline image collapsing to its Markdown source as the cursor enters it, and back again](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/image.gif)
 
+**Pasting images.** `Ctrl-V` pastes an image when the clipboard holds a screenshot (or other copied pixels) and no text. The image is stored as a PNG beside your document and is referenced by a relative path.
+
+- A prompt shows the path the image will be saved to, relative to the document's folder, e.g. `images/20260928-143012.png`. edamame infers the location from the other images in the document (default `images/`). The file is named with the current date and time.
+- The path must stay inside the document's folder, end in `.png`, and contain no `:` or control characters. An existing file is never overwritten.
+- An unsaved document has no folder yet, so you're asked to save it first.
+- The image is inserted on its own line, separated from the text around it by blank lines, which is what makes it render as an image rather than a line of text. Inside a table, list, blockquote, or footnote it's inserted at the cursor instead, since blank lines there would end the element early. edamame shows an image placeholder there rather than the picture, but GitHub and HTML export display it.
+
+An image can't be pasted into a heading, a code block, or other literal text. Text is preferred if both text and an image are on the clipboard. **Paste image from clipboard** in the command palette — bindable as `PasteImage` — always tries to paste an image, ignoring text. A picture *file* copied in a file manager isn't pixels, so it isn't pasted.
+
+edamame reads the clipboard of the machine it runs on, so over SSH an image paste finds nothing. Some terminals also keep `Ctrl-V` for their own paste, which only ever carries text; use the palette command instead.
+
 **Formats:** PNG, JPEG, GIF, BMP, WebP, and SVG. Anything else is reported as an unsupported image rather than rendered — the list is kept deliberately short because edamame decodes images from documents you may not trust. Animation is not supported for any format.
 
 **Requirements:** an image protocol — Kitty, iTerm2, or Sixel — *and* 24-bit color. Below truecolor, edamame declines to render images at all, because the result would be badly quantized. Half-block rendering is available as a low-fidelity fallback and is used when images are clipped off screen and when scrolling, as an optimization. See [terminal-compatibility.md](terminal-compatibility.md#images-and-diagrams) for which terminals qualify.

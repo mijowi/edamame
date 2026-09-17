@@ -41,6 +41,7 @@ impl Modal for DirtyConflictSaveCopyModal {
             theme: ctx.theme,
             cursor_visible: ctx.cursor_visible,
             title: "Save a Copy",
+            note: None,
         };
         frame.render_stateful_widget(view, area, &mut self.state);
     }

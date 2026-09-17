@@ -39,6 +39,11 @@ impl ModalStack {
         self.inner.is_empty()
     }
 
+    /// Whether any modal is drawn — see [`Modal::is_shown`].
+    pub fn any_shown(&self) -> bool {
+        self.inner.iter().any(|m| m.is_shown())
+    }
+
     /// Earliest [`Modal::next_deadline`] across the whole stack.  Every modal is consulted, not
     /// just the topmost, so an animated modal buried under an overlay resumes when revealed.
     pub fn next_deadline(&self) -> Option<std::time::Instant> {

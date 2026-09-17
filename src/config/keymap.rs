@@ -179,6 +179,10 @@ pub enum Action {
     /// Insert an inline link snippet, or wrap the selection as the link text.  Same
     /// literal-block pre-flight as [`Action::InsertImage`].
     InsertLink,
+    /// Store the bitmap on the OS clipboard — e.g. a screenshot — as a PNG beside the document,
+    /// after a prompt confirms its path, and insert `![](path)`.  Unlike `Paste`, text on the
+    /// clipboard does not take precedence.
+    PasteImage,
     /// Insert an auto-numbered `[^N]` footnote reference (next integer past the highest
     /// existing numeric footnote); the user writes the definition.
     InsertFootnote,
@@ -324,7 +328,7 @@ action_variants! {
     ShowCommandPalette, ShowMarkdownCheatSheet, BrowseTips, ShowAbout, CheckForUpdates,
     OpenSettings, OpenWelcome, OpenKeybinds, OpenConfigFolder, SwitchTheme, CreateCustomTheme,
     ExportHtml, OpenInExternalEditor,
-    ToggleTableButtons, InsertTable, InsertImage, InsertLink,
+    ToggleTableButtons, InsertTable, InsertImage, InsertLink, PasteImage,
     ToggleBigH1, ToggleLineNumbers, ToggleBlinkCursor, ToggleAutosave,
     ToggleVisualLineNav, ToggleVimMode, ToggleLimitWidth, ToggleDiffOnChange,
     InsertFootnote, DeleteFootnote, RenumberFootnotes,

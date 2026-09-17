@@ -11,7 +11,7 @@ use ratatui::{
 };
 
 use crate::config::Theme;
-use crate::ui::scroll_container::compute_pad_h;
+use crate::ui::scroll_container::modal_inner_width;
 
 /// One button in a row, rendered wrapped in `[ … ]` (e.g. `[ Save ]`).
 #[derive(Debug, Clone, Copy)]
@@ -80,16 +80,14 @@ pub fn button_rows_height(buttons: &[Button], width: u16) -> u16 {
 /// Rows a footer of `labels` needs inside a modal of `content_w` columns with padding capped at
 /// `max_pad_h`, in a terminal `area_w` wide.
 ///
-/// Runs the frame's real sizing arithmetic (width clamp then [`compute_pad_h`]) so the
+/// Runs the frame's real sizing arithmetic ([`modal_inner_width`]) so the
 /// reservation can never disagree with the packing in [`render_buttons`]; a flat
 /// [`crate::ui::MIN_PAD_H`] shortcut overestimates the inner width and reserves one row for a
 /// footer that wraps onto two.  `max_pad_h` must be the caller's own
 /// [`crate::ui::scroll_container::ContentSize::max_pad_h`] (the keybinds overlay raises it).
 pub fn footer_row_count(labels: &[&str], content_w: u16, area_w: u16, max_pad_h: u16) -> u16 {
     let buttons: Vec<Button> = labels.iter().map(|l| Button::bracketed(l)).collect();
-    let modal_w = content_w.saturating_add(2 * max_pad_h).min(area_w);
-    let pad_h = compute_pad_h(modal_w, content_w, max_pad_h);
-    let inner_w = modal_w.saturating_sub(2 * pad_h).max(1);
+    let inner_w = modal_inner_width(content_w, area_w, max_pad_h);
     button_rows_height(&buttons, inner_w).max(1)
 }
 
@@ -196,6 +194,7 @@ pub fn render_button_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::scroll_container::compute_pad_h;
     use crate::ui::scroll_container::MAX_PAD_H;
 
     #[test]

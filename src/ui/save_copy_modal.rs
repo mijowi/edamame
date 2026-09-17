@@ -1,6 +1,6 @@
 //! Shared path-entry widget ([`SaveCopyState`] + [`SaveCopyView`]): one "Path" field above a
-//! Save / Cancel row, used by Save As, the file-deleted recovery prompt, and the dirty-conflict
-//! "save aside" flow.  Each modal supplies its own title and decides what the path does when
+//! Save / Cancel row, used by Save As, the file-deleted recovery prompt, the dirty-conflict
+//! "save aside" flow, and the pasted-image path prompt.  Each modal supplies its own title and decides what the path does when
 //! [`SaveCopyResponse::Save`] fires; this widget is UI-only.
 
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Rect},
     text::{Line, Span},
-    widgets::{Paragraph, StatefulWidget, Widget},
+    widgets::{Paragraph, StatefulWidget, Widget, Wrap},
 };
 
 use crate::config::Theme;
@@ -18,7 +18,8 @@ use crate::ui::button_row::{button_row_width, footer_row_count, render_button_ro
 use crate::ui::controls;
 use crate::ui::cursor::text_field_spans;
 use crate::ui::scroll_container::{
-    centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind, MAX_PAD_H,
+    centered_rect_for_content, draw_frame, modal_inner_width, wrapped_rows, ContentSize, FrameOpts,
+    ModalKind, MAX_PAD_H,
 };
 
 const BUTTON_LABELS: &[&str] = &["Save", "Cancel"];
@@ -232,18 +233,30 @@ pub struct SaveCopyView<'a> {
     pub cursor_visible: bool,
     /// Frame title, supplied by the owning modal.
     pub title: &'static str,
+    /// Optional line above the path field saying what the path means.
+    pub note: Option<&'static str>,
 }
 
 impl<'a> StatefulWidget for SaveCopyView<'a> {
     type State = SaveCopyState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        // 1 path row + optional error row + 1 spacer, then the footer.
-        let base_rows = if state.last_error.is_some() { 3 } else { 2 };
+        let note = self
+            .note
+            .map(|note| Line::from(Span::styled(note, self.theme.modal_description)));
         let label_w = "Path".chars().count() as u16;
         let path_w = (state.path.chars().count() as u16 + 4).max(40);
+        // The note asks for one line; a terminal too narrow for that wraps it.
+        let note_w = note.as_ref().map_or(0, |line| line.width() as u16);
         let buttons_w = button_row_width(BUTTON_LABELS);
-        let content_width = (label_w + 2 + path_w).max(buttons_w);
+        let content_width = (label_w + 2 + path_w).max(buttons_w).max(note_w);
+        let note_h = note.as_ref().map_or(0, |line| {
+            let width = modal_inner_width(content_width, area.width, MAX_PAD_H);
+            wrapped_rows(std::slice::from_ref(line), width)
+        });
+        // Note + spacer, 1 path row + optional error row + 1 spacer, then the footer.
+        let note_rows = if note.is_some() { note_h + 1 } else { 0 };
+        let base_rows = note_rows + if state.last_error.is_some() { 3 } else { 2 };
         // The footer wraps rather than clipping; a flat one-row reservation would leave a
         // wrapped button unpainted but still focusable.
         let footer_rows = footer_row_count(BUTTON_LABELS, content_width, area.width, MAX_PAD_H);
@@ -273,6 +286,17 @@ impl<'a> StatefulWidget for SaveCopyView<'a> {
         }
 
         let mut row_y = inner.y;
+        if let Some(note) = note {
+            let height = note_h.min(inner.height);
+            Paragraph::new(note)
+                .wrap(Wrap { trim: false })
+                .style(self.theme.modal_bg)
+                .render(Rect { height, ..inner }, buf);
+            row_y = row_y.saturating_add(note_rows);
+            if row_y >= inner.y + inner.height {
+                return;
+            }
+        }
         render_path_row(
             buf,
             inner,
@@ -616,6 +640,7 @@ mod tests {
                     theme: theme(),
                     cursor_visible: true,
                     title: "Save a Copy",
+                    note: None,
                 };
                 frame.render_stateful_widget(m, frame.area(), &mut state);
             })
@@ -633,6 +658,53 @@ mod tests {
         assert!(painted.contains("[ Cancel ]"), "{painted}");
     }
 
+    /// `SaveCopyView` with `note`, drawn at `width` x `height`, one string per row.
+    fn render_with_note(note: &'static str, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let mut state = SaveCopyState::new("images/shot.png".to_owned());
+        terminal
+            .draw(|frame| {
+                let m = SaveCopyView {
+                    theme: theme(),
+                    cursor_visible: true,
+                    title: "Paste Image",
+                    note: Some(note),
+                };
+                frame.render_stateful_widget(m, frame.area(), &mut state);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buf[(x, y)].symbol().to_owned())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    const NOTE: &str = "Save the image to this path, relative to the document's folder:";
+
+    #[test]
+    fn a_note_fits_on_one_line_when_there_is_room() {
+        let rows = render_with_note(NOTE, 100, 14);
+        assert!(rows.iter().any(|row| row.contains(NOTE)), "{rows:#?}");
+    }
+
+    #[test]
+    fn a_narrow_terminal_wraps_the_note_above_the_path() {
+        let rows = render_with_note(NOTE, 44, 16);
+        let row_of = |needle: &str| {
+            rows.iter()
+                .position(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("{needle:?} missing: {rows:#?}"))
+        };
+        let (first, last) = (row_of("Save the image"), row_of("folder:"));
+        assert!(first < last, "the note wraps: {rows:#?}");
+        assert!(last < row_of("Path"), "the path row follows it: {rows:#?}");
+        row_of("[ Cancel ]");
+    }
+
     #[test]
     fn renders_title_path_and_buttons() {
         let backend = TestBackend::new(80, 12);
@@ -644,6 +716,7 @@ mod tests {
                     theme: theme(),
                     cursor_visible: true,
                     title: "Save a Copy",
+                    note: None,
                 };
                 frame.render_stateful_widget(m, frame.area(), &mut state);
             })

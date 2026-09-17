@@ -3,6 +3,7 @@ mod theme_fallback;
 
 mod actions;
 mod autosave;
+mod clipboard;
 mod cursor_style;
 mod diff_advance;
 pub mod difftool;
@@ -75,6 +76,9 @@ pub(crate) enum AppEvent {
     /// The export worker finished.  The `u64` is the spawning modal's generation id, so a result
     /// from a superseded export goes to the hint line instead of hijacking the modal now open.
     ExportDone(u64, crate::export::ExportOutcome),
+    /// The clipboard image read finished: the bitmap encoded as PNG, or none.  See
+    /// [`App::handle_clipboard_image_read`].
+    ClipboardImageRead(modal::paste_image::ClipboardImageRead),
 }
 
 /// Generic modal prompt hosted on the hint line.  `handler` receives the triggering `KeyCode`, so
@@ -232,6 +236,13 @@ pub struct App {
     /// [`DIAGRAM_RENDER_DEBOUNCE`](image_dispatch::DIAGRAM_RENDER_DEBOUNCE).  Re-armed on each edit;
     /// paired with [`Self::diagram_render_watch_version`] for edit-edge detection.
     diagram_render_hold_until: Option<Instant>,
+    /// When the last key press reached the editor (not a modal) — the typing clock the
+    /// mid-session images prompt waits on.  See
+    /// [`IMAGES_PROMPT_TYPING_PAUSE`](image_dispatch::IMAGES_PROMPT_TYPING_PAUSE).
+    last_editor_key_at: Option<Instant>,
+    /// When a held images prompt may open, so the run loop wakes for it; `None` when nothing
+    /// is held.
+    images_prompt_due: Option<Instant>,
     /// Last-observed `Buffer::version()` for the figure-render debounce.  `None` until the first
     /// dispatch pass so opening a document doesn't count as an edit and delay its first render.
     diagram_render_watch_version: Option<u64>,
@@ -249,6 +260,13 @@ pub struct App {
     /// boxed-trait shape is chosen so multi-tab work can swap it for a per-tab map without
     /// touching anything but this field and the watch / unwatch sites.
     pub(crate) watcher: Option<Box<dyn FileWatcher>>,
+    /// The clipboard — the only way the App reaches it.  [`NullClipboard`] until `main` installs
+    /// the real one with [`App::with_clipboard`], so no test borrows the developer's clipboard or
+    /// races another over it; a test that needs contents swaps in its own.  See
+    /// [`crate::clipboard`].
+    ///
+    /// [`NullClipboard`]: crate::clipboard::NullClipboard
+    clipboard: Box<dyn crate::clipboard::ClipboardSource>,
     /// Hash of the last-observed on-disk bytes, updated on load, save, and every accepted
     /// `FileChanged`.  The `FileChanged` arm compares against it to drop echoes of our own writes.
     pub(crate) last_disk_hash: Option<u64>,
@@ -639,12 +657,15 @@ impl App {
             autosave_pending_since: None,
             autosave_last_seen_version: 0,
             diagram_render_hold_until: None,
+            last_editor_key_at: None,
+            images_prompt_due: None,
             diagram_render_watch_version: None,
             section_jump_pending_since: None,
             section_jump_target_scroll: None,
             diff_advance_pending_since: None,
             search_advance_pending_since: None,
             watcher: None,
+            clipboard: Box::new(crate::clipboard::NullClipboard),
             last_disk_hash: initial_disk_hash,
             latest_release: None,
             release_check_in_flight: false,
@@ -665,6 +686,15 @@ impl App {
     #[must_use]
     pub fn with_startup_anchor(mut self, anchor: Option<String>) -> Self {
         self.startup_anchor = anchor;
+        self
+    }
+
+    /// Install the clipboard the app reads and writes — `main` passes
+    /// [`crate::clipboard::default_source`].  A builder for the same reason as
+    /// [`Self::with_startup_anchor`], and so that nothing else reaches the real clipboard.
+    #[must_use]
+    pub fn with_clipboard(mut self, clipboard: Box<dyn crate::clipboard::ClipboardSource>) -> Self {
+        self.clipboard = clipboard;
         self
     }
 

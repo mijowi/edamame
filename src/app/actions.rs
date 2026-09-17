@@ -106,6 +106,7 @@ pub(super) fn action_caps(action: &Action) -> ActionCaps {
             | InsertTable
             | InsertImage
             | InsertLink
+            | PasteImage
             | InsertFootnote
             | DeleteFootnote
             | RenumberFootnotes
@@ -175,6 +176,7 @@ pub(super) fn action_caps(action: &Action) -> ActionCaps {
         | TableMoveRowDown | TableMoveColumnLeft | TableMoveColumnRight | TableInsertRowAbove
         | TableInsertRowBelow | TableInsertColumnLeft | TableInsertColumnRight | TableDeleteRow
         | TableDeleteColumn | TableInsertBreak | InsertTable | InsertImage | InsertLink
+        | PasteImage
         | InsertFootnote | DeleteFootnote | RenumberFootnotes | FixListNumbering | SearchReplace
         | SearchReplaceAll | FollowLinkUnderCursor | NavigateBack | NavigateForward
         | GoToSection | OpenDoc(_) | Open | Save | SaveAs | ExportHtml
@@ -330,9 +332,10 @@ impl<'k> HandleEvent for DefaultHandler<'k> {
 }
 
 impl App {
-    /// Convenience for `!self.modal_stack.is_empty()`.
-    pub(super) fn any_modal_open(&self) -> bool {
-        !self.modal_stack.is_empty()
+    /// Whether a modal is drawn over the editor.  A hidden one (see
+    /// [`Modal::is_shown`](super::modal::Modal::is_shown)) still takes input but doesn't count.
+    pub(super) fn any_modal_shown(&self) -> bool {
+        self.modal_stack.any_shown()
     }
 
     /// Resolve an [`Action`] whose meaning depends on the cursor position, so every downstream
@@ -591,6 +594,10 @@ impl App {
                 self.needs_draw = true;
                 true
             }
+            Action::PasteImage | Action::Paste => {
+                self.dispatch_paste_action(action, doc_height, doc_width);
+                true
+            }
             Action::InsertFootnote => {
                 crate::editor::edit_ops::insert_footnote_at_cursor(
                     &mut self.editor,
@@ -824,6 +831,17 @@ impl App {
     /// guard, `edit_ops::apply`, scroll tracking, flashes, and link-follow draining are sequenced
     /// in exactly one place.
     pub fn dispatch_action(&mut self, action: Action, doc_height: usize, doc_width: usize) {
+        self.dispatch_action_unchecked(action, doc_height, doc_width);
+        // Every path that runs a Copy / Cut through `edit_ops` owes a `flush_clipboard_write`;
+        // one that skips it leaves the copy in the kill-ring alone, never reaching the OS.
+        debug_assert!(
+            self.editor.pending_clipboard_write.is_none(),
+            "a Copy / Cut path skipped App::flush_clipboard_write"
+        );
+    }
+
+    /// [`Self::dispatch_action`]'s body, split out so every early return passes its check.
+    fn dispatch_action_unchecked(&mut self, action: Action, doc_height: usize, doc_width: usize) {
         // Resolve the context-dependent meaning *before* any gate judges it — otherwise the
         // read-only gate sees `TableMoveColumnLeft` and denies what is really a Back navigation.
         let action = self.normalize_context_action(action);
@@ -901,6 +919,7 @@ impl App {
             if self.editor.scroll != scroll_before {
                 self.mark_scrolling();
             }
+            self.flush_clipboard_write();
             self.flash_for_action(&action, dirty_before);
             if let Some(target) = self.editor.pending_link_follow.take() {
                 self.follow_link(target, doc_height, doc_width);
@@ -924,23 +943,19 @@ impl App {
         };
         let range = crate::editor::vim_ops::visual_span(&sel, &self.editor.buffer, Some(kind));
         // A VisualLine paste needs a newline-terminated payload so it can't weld onto the
-        // following line, and an empty one must bail before the widening rather than consume the
-        // lines.  Charwise paste is an ordinary span replacement `edit_ops` handles.
+        // following line; a charwise one replaces the span as is.
         let payload = match action {
-            Action::Paste if kind == crate::editor::vim_ops::VisualKind::Line => {
-                let clipboard = edit_ops::clipboard_text(&self.editor);
-                let Some(text) = linewise_paste_payload(&self.editor.buffer, &range, clipboard)
-                else {
-                    return;
-                };
-                Some(text)
-            }
             Action::Paste => {
-                // As above: nothing to paste must not consume the span or exit Visual.
-                if edit_ops::clipboard_text(&self.editor).is_empty() {
+                let clipboard = self.read_paste_text();
+                // Nothing to paste must not consume the span or exit Visual.
+                if clipboard.is_empty() {
                     return;
                 }
-                None
+                if kind == crate::editor::vim_ops::VisualKind::Line {
+                    linewise_paste_payload(&self.editor.buffer, &range, clipboard)
+                } else {
+                    Some(clipboard)
+                }
             }
             _ => None,
         };
@@ -949,15 +964,13 @@ impl App {
             active: range.end,
         };
         self.editor.selection = Some(widened);
-        let dirty_before = self.editor.dirty;
         match &payload {
             Some(text) => edit_ops::paste_text(&mut self.editor, text, doc_height, doc_width),
             None => {
                 edit_ops::apply(&mut self.editor, action.clone(), doc_height, doc_width);
+                self.flush_clipboard_write();
             }
         }
-        // The shared dispatch's `flash_for_action` is skipped by our early return.
-        self.flash_for_action(&action, dirty_before);
         if matches!(action, Action::Cut | Action::Paste) {
             // The span is gone, so drop back to Normal.
             if let Some(vim) = self.vim.as_mut() {

@@ -4,6 +4,7 @@
 pub mod cache;
 pub mod kitty_direct;
 pub mod loader;
+pub mod paste;
 pub mod render;
 pub mod svg;
 

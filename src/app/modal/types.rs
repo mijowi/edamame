@@ -95,6 +95,15 @@ pub trait Modal {
         true
     }
 
+    /// Whether this modal is drawn.  `false` keeps its input capture but paints nothing — no
+    /// frame, no background dim, and the editor renders as if no modal were open — for a modal
+    /// that usually closes before it is worth showing
+    /// ([`ClipboardReadModal`](super::ClipboardReadModal)).  A modal that starts hidden owes a
+    /// [`Self::next_deadline`] for when it appears, and something that flips it at that time.
+    fn is_shown(&self) -> bool {
+        true
+    }
+
     /// When this modal next needs a redraw for time-driven content (spinner, rotating
     /// tagline); aggregated by [`super::ModalStack::next_deadline`].
     fn next_deadline(&self) -> Option<Instant> {

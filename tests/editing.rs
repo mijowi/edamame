@@ -1504,6 +1504,192 @@ fn insert_image_wraps_selection_and_selects_url_placeholder() {
 }
 
 #[test]
+fn insert_image_reference_lands_as_its_own_paragraph() {
+    // The parse promotes an image to a block only when it is a
+    // paragraph's sole content, so a pasted reference is framed with the
+    // blank line it needs — left flush it stays inline and paints as a
+    // text placeholder instead of the image.
+    let mut st = state("prose\n");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 6;
+    edit_ops::insert_image_reference_at_cursor(&mut st, "C:/x/y.png", VP, VW);
+    assert_eq!(st.contents(), "prose\n\n![](C:/x/y.png)\n");
+}
+
+#[test]
+fn insert_image_reference_splits_the_line_it_lands_on() {
+    let mut st = state("alpha\nbeta\n");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 2; // mid-word, after "al"
+    edit_ops::insert_image_reference_at_cursor(&mut st, "img.png", VP, VW);
+    assert_eq!(st.contents(), "al\n\n![](img.png)\n\npha\nbeta\n");
+    assert_eq!(
+        st.cursor.offset,
+        "al\n\n![".len(),
+        "the cursor waits in the empty alt text"
+    );
+}
+
+#[test]
+fn insert_image_reference_at_the_start_lands_in_the_alt_text() {
+    let mut st = state("");
+    st.mode = Mode::Rendered;
+    edit_ops::insert_image_reference_at_cursor(&mut st, "img.png", VP, VW);
+    assert_eq!(st.contents(), "![](img.png)\n");
+    assert_eq!(st.cursor.offset, "![".len());
+    assert!(st.selection.is_none());
+}
+
+#[test]
+fn insert_image_reference_with_a_selection_lands_past_it() {
+    // The selection became the alt text, so there is nothing left to type into the brackets.
+    use edamame::document::Selection;
+    let mut st = state("a shot\n");
+    st.mode = Mode::Rendered;
+    st.selection = Some(Selection {
+        anchor: 0,
+        active: 6,
+    });
+    st.cursor.offset = 6;
+    edit_ops::insert_image_reference_at_cursor(&mut st, "img.png", VP, VW);
+    assert_eq!(st.contents(), "![a shot](img.png)\n");
+    assert_eq!(st.cursor.offset, "![a shot](img.png)".len());
+}
+
+#[test]
+fn insert_image_reference_is_separated_from_the_paragraph_below() {
+    let mut st = state("prose\n\nnext\n");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 7; // start of "next"
+    edit_ops::insert_image_reference_at_cursor(&mut st, "img.png", VP, VW);
+    assert_eq!(st.contents(), "prose\n\n![](img.png)\n\nnext\n");
+}
+
+#[test]
+fn insert_image_reference_at_a_line_end_adds_the_blank_line_below() {
+    let mut st = state("prose\nnext\n");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 5; // end of "prose"
+    edit_ops::insert_image_reference_at_cursor(&mut st, "img.png", VP, VW);
+    assert_eq!(st.contents(), "prose\n\n![](img.png)\n\nnext\n");
+}
+
+#[test]
+fn insert_image_reference_escapes_the_destination() {
+    let mut st = state("");
+    st.mode = Mode::Rendered;
+    edit_ops::insert_image_reference_at_cursor(&mut st, "a b/image (1).png", VP, VW);
+    assert_eq!(st.contents(), "![](<a b/image (1).png>)\n");
+}
+
+#[test]
+fn insert_image_reference_in_a_table_goes_inline_in_the_cell() {
+    // A cell holds only inline content, so the blank lines that make a block image would split
+    // the table; an inline image in a cell is valid GFM.
+    let src = "| a | b |\n|---|---|\n| c | d |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    st.cursor.offset = src.find("d |").unwrap();
+    edit_ops::insert_image_reference_at_cursor(&mut st, "img.png", VP, VW);
+    assert_eq!(
+        st.contents(),
+        "| a | b |\n|---|---|\n| c | ![](img.png)d |\n"
+    );
+    assert_eq!(
+        st.cursor.offset,
+        src.find("d |").unwrap() + "![".len(),
+        "the cursor waits in the empty alt text"
+    );
+}
+
+#[test]
+fn insert_image_reference_in_a_container_goes_inline_and_keeps_it_whole() {
+    // Framing with blank lines would end the container: an unindented paragraph after a blank
+    // line leaves a list, a quote or a footnote, taking the rest of the line with it.
+    for (src, at, expected) in [
+        ("- item\n- two\n", "em", "- it![](img.png)em\n- two\n"),
+        ("- item\n- two\n", "\n- two", "- item![](img.png)\n- two\n"),
+        (
+            "1. one\n   more\n",
+            "\n   more",
+            "1. one![](img.png)\n   more\n",
+        ),
+        ("> quote text\n", " text", "> quote![](img.png) text\n"),
+        (
+            "Note[^1].\n\n[^1]: the note\n",
+            " note",
+            "Note[^1].\n\n[^1]: the![](img.png) note\n",
+        ),
+    ] {
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        st.cursor.offset = src.find(at).unwrap();
+        assert!(edit_ops::insert_image_reference_at_cursor(
+            &mut st, "img.png", VP, VW
+        ));
+        assert_eq!(st.contents(), expected, "source was {src:?}");
+        assert_eq!(
+            st.cursor.offset,
+            src.find(at).unwrap() + "![".len(),
+            "the cursor waits in the empty alt text: {src:?}"
+        );
+    }
+}
+
+#[test]
+fn can_insert_image_reference_in_preview_judges_the_synced_spot_without_moving() {
+    // Off screen in Preview, the insert would sync the cursor to the top of the view — a code
+    // block here — so the check refuses, and must leave the cursor where it was.
+    let src = "```\ncode\n```\n\nprose\n";
+    let mut st = state(src);
+    st.mode = Mode::Preview;
+    st.scroll = 0;
+    let offset = src.find("prose").unwrap();
+    st.cursor.offset = offset;
+    assert!(!edit_ops::can_insert_image_reference(&mut st, 1));
+    assert_eq!(st.cursor.offset, offset);
+    assert_eq!(st.mode, Mode::Preview);
+}
+
+#[test]
+fn insert_image_reference_in_a_table_nested_in_a_quote_escapes_pipes() {
+    // The block lookup sees the quote, not the table inside it, so every container escapes `|`.
+    let src = "> | a |\n> |---|\n> | c |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    st.cursor.offset = src.find("c |").unwrap() + 1;
+    edit_ops::insert_image_reference_at_cursor(&mut st, "a|b.png", VP, VW);
+    assert_eq!(st.contents(), "> | a |\n> |---|\n> | c![](a\\|b.png) |\n");
+}
+
+#[test]
+fn insert_image_reference_in_a_table_escapes_pipes() {
+    let src = "| a |\n|---|\n| c |\n";
+    let mut st = state(src);
+    st.mode = Mode::Rendered;
+    st.cursor.offset = src.find("c |").unwrap() + 1;
+    edit_ops::insert_image_reference_at_cursor(&mut st, "a|b.png", VP, VW);
+    assert_eq!(st.contents(), "| a |\n|---|\n| c![](a\\|b.png) |\n");
+}
+
+#[test]
+fn insert_image_reference_outside_a_table_leaves_pipes_alone() {
+    let mut st = state("");
+    st.mode = Mode::Rendered;
+    edit_ops::insert_image_reference_at_cursor(&mut st, "a|b.png", VP, VW);
+    assert_eq!(st.contents(), "![](a|b.png)\n");
+}
+
+#[test]
+fn insert_image_reference_needs_no_extra_break_after_a_blank_line() {
+    let mut st = state("prose\n\n");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 7;
+    edit_ops::insert_image_reference_at_cursor(&mut st, "img.png", VP, VW);
+    assert_eq!(st.contents(), "prose\n\n![](img.png)\n");
+}
+
+#[test]
 fn insert_link_wraps_multibyte_selection() {
     use edamame::document::Selection;
     let mut st = state("héllo wörld\n");

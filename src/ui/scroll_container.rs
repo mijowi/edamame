@@ -329,6 +329,15 @@ pub fn draw_frame(area: Rect, buf: &mut Buffer, opts: FrameOpts<'_>) -> FrameLay
     }
 }
 
+/// Text width inside a modal whose content wants `content_w` columns, in a terminal `area_w`
+/// wide.  Runs the frame's own width clamp and [`compute_pad_h`], so a modal that sizes itself
+/// by wrapped text, before its frame exists, wraps at the width the text renders at.
+pub fn modal_inner_width(content_w: u16, area_w: u16, max_pad_h: u16) -> u16 {
+    let modal_w = content_w.saturating_add(2 * max_pad_h).min(area_w);
+    let pad_h = compute_pad_h(modal_w, content_w, max_pad_h);
+    modal_w.saturating_sub(2 * pad_h).max(1)
+}
+
 /// Per-side horizontal padding: half the slack, clamped to `[MIN_PAD_H, max_pad_h]`.
 pub fn compute_pad_h(area_w: u16, content_w: u16, max_pad_h: u16) -> u16 {
     let slack = area_w.saturating_sub(content_w);
@@ -616,6 +625,13 @@ mod tests {
         assert_eq!(compute_pad_h(38, 30, MAX_PAD_H), 4);
         assert_eq!(compute_pad_h(36, 30, MAX_PAD_H), 3);
         assert_eq!(compute_pad_h(32, 30, MAX_PAD_H), MIN_PAD_H);
+    }
+
+    #[test]
+    fn modal_inner_width_is_the_content_width_when_it_fits() {
+        assert_eq!(modal_inner_width(30, 200, MAX_PAD_H), 30);
+        // Too narrow for the content: the frame clamps to the terminal and pads the minimum.
+        assert_eq!(modal_inner_width(60, 40, MAX_PAD_H), 40 - 2 * MIN_PAD_H);
     }
 
     #[test]

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use ratatui::layout::Rect;
 
 use super::{App, AppEvent};
+use crate::config::ImagesEnabled;
 
 /// Idle window after the last edit before a figure (diagram / `$$...$$` math) re-render is
 /// dispatched.  Typing in Rendered mode reparses each keystroke, minting a fresh content-hashed
@@ -14,6 +15,13 @@ use super::{App, AppEvent};
 /// user never sees mid-burst.  Matches the 120 ms `RAW_REVEAL_DELAY` so it lands about when the
 /// reveal settles.
 pub(super) const DIAGRAM_RENDER_DEBOUNCE: Duration = Duration::from_millis(120);
+
+/// How long typing must pause before the images prompt may open for an image that appeared
+/// mid-session.  The prompt takes bare `n` (decline), `y` and Space (press the focused button) as
+/// answers, so one opening mid-burst would swallow the next keystrokes *and* answer itself.  Long
+/// enough to outlast the gaps between words; short enough to arrive while the image is still
+/// what the user is looking at.
+pub(super) const IMAGES_PROMPT_TYPING_PAUSE: Duration = Duration::from_millis(1000);
 
 /// Prefetch margin in rendered lines above and below the visible area.  Tuned empirically: big
 /// enough that a fast scroll finds images decoded, small enough that opening a long image-heavy
@@ -373,6 +381,29 @@ impl App {
             doc_height,
             VIEWPORT_DISPATCH_MARGIN,
         );
+        // A document that gains its first image mid-session — a paste, or a typed `![](…)` —
+        // never passed the on-load prompt, so `session_images_enabled` is unset: ask now, unless
+        // the user is typing (see `IMAGES_PROMPT_TYPING_PAUSE`) or another modal is open, whose
+        // keystrokes the prompt would otherwise take as answers.  A prompt held for typing parks
+        // its due time for `next_deadline`, so the loop wakes to raise it with no key event of
+        // its own; one held for a modal needs no wake-up, since closing the modal redraws.  The
+        // queue is idempotent, so asking every frame is safe.
+        self.images_prompt_due = None;
+        let wants_prompt = matches!(self.config.images.enabled, ImagesEnabled::Ask)
+            && self.session_images_enabled.is_none()
+            && self.media_renderable()
+            && self.modal_stack.is_empty()
+            && infos.iter().any(|info| info.source.is_none());
+        if wants_prompt {
+            let typing_until = self
+                .last_editor_key_at
+                .map(|t| t + IMAGES_PROMPT_TYPING_PAUSE)
+                .filter(|&due| now < due);
+            match typing_until {
+                Some(due) => self.images_prompt_due = Some(due),
+                None => self.queue_images_enabled_prompt(),
+            }
+        }
         if holding {
             infos.retain(|info| info.source.is_none());
         }

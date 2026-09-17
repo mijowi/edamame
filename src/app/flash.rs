@@ -134,25 +134,19 @@ impl App {
     }
 
     /// Emit the flash matching `action` after dispatch, keeping UI messaging out of
-    /// `edit_ops::apply`.
+    /// `edit_ops::apply`.  Copy / Cut flash from `App::flush_clipboard_write` instead, which
+    /// knows whether anything was copied.
     pub(super) fn flash_for_action(
         &mut self,
         action: &crate::config::Action,
         dirty_before_save: bool,
     ) {
-        use crate::config::Action;
-        match action {
-            Action::Save => {
-                if dirty_before_save && !self.editor.dirty {
-                    self.flash("Saved", MessageKind::Success);
-                } else if dirty_before_save && self.editor.dirty {
-                    self.notify("Save failed", ModalKind::Error);
-                }
+        if *action == crate::config::Action::Save && dirty_before_save {
+            if self.editor.dirty {
+                self.notify("Save failed", ModalKind::Error);
+            } else {
+                self.flash("Saved", MessageKind::Success);
             }
-            Action::Copy | Action::Cut => {
-                self.flash("Copied", MessageKind::Info);
-            }
-            _ => {}
         }
     }
 
@@ -286,22 +280,6 @@ mod tests {
             app.transient.is_none(),
             "save failure no longer leaves a transient flash"
         );
-    }
-
-    #[test]
-    fn flash_for_action_copy_emits_copied() {
-        let mut app = make_app();
-        app.flash_for_action(&Action::Copy, /*dirty_before=*/ false);
-        let msg = app.transient.as_ref().expect("flash recorded");
-        assert_eq!(msg.text, "Copied");
-    }
-
-    #[test]
-    fn flash_for_action_cut_emits_copied() {
-        let mut app = make_app();
-        app.flash_for_action(&Action::Cut, /*dirty_before=*/ false);
-        let msg = app.transient.as_ref().expect("flash recorded");
-        assert_eq!(msg.text, "Copied");
     }
 
     #[test]

@@ -28,6 +28,12 @@ pub(crate) fn make_app() -> App {
     .expect("build app")
 }
 
+/// Close whatever modals `App::new` opened (the welcome, first of all), for a test whose
+/// behavior depends on nothing else being open.
+pub(crate) fn close_startup_modals(app: &mut App) {
+    while app.modal_stack.pop().is_some() {}
+}
+
 /// Build an `App` seeded with `text` and the cursor at byte
 /// `cursor_byte` (clamped to the buffer length).
 pub(crate) fn app_with_buffer(text: &str, cursor_byte: usize) -> App {

@@ -97,8 +97,10 @@ src/
   lib.rs            # declares all modules, `app` included
 
   app.rs / app/     # event loop, modals, timers.  actions.rs (Action → App side
-                    #   effects), autosave.rs, diff_advance.rs, difftool.rs (`--diff`
-                    #   helpers — in the library, not `main`, so they are testable),
+                    #   effects), autosave.rs, clipboard.rs (every OS clipboard read /
+                    #   write, via the port; paste + image-paste entry), diff_advance.rs,
+                    #   difftool.rs (`--diff` helpers — in the library, not `main`, so
+                    #   they are testable),
                     #   event_loop.rs, file_changed.rs (watcher event → diff review /
                     #   dirty-conflict modal / reconcile), external_editor.rs,
                     #   flash.rs (TransientMessage), frame_timer.rs,
@@ -130,14 +132,21 @@ src/
                     #   diff_quit_confirm, diff_resolve_confirm, dirty_guard,
                     #   export_success, export_theme, images_enabled, insert_table,
                     #   keybinds, markdown_cheat_sheet, notice, overwrite_confirm,
-                    #   post_upgrade, quit_confirm, remote_image, save_as, settings,
-                    #   terminal_capabilities, theme_picker, tips_index, update, welcome,
-                    #   width_injection
+                    #   paste_image, post_upgrade, quit_confirm, remote_image, save_as,
+                    #   settings, terminal_capabilities, theme_picker, tips_index,
+                    #   update, welcome, width_injection
 
   cli.rs / cli/
     args.rs         # Invocation / RunOpts / CliError; hand-rolled OsString flag parser
     doctor.rs       # `--doctor`: system facts (file reads only) + CapSummary rows
     help.rs         # `--help` / `--version` text; VERSION const
+
+  clipboard.rs /    # the OS clipboard behind one substitutable port.  source.rs
+    clipboard/      #   (ClipboardSource + OsClipboard / TerminalClipboard /
+                    #   NullClipboard / default_source), data.rs (Bitmap — the
+                    #   payload model every platform maps onto), osc52.rs (terminal
+                    #   copy, used by the real sources).  Turning a bitmap into a
+                    #   stored image is `image::paste`'s job
 
   config.rs / config/
     config.rs       # Config + sub-configs; LoadedConfig; load/save/ensure_default_files
@@ -192,7 +201,9 @@ src/
                     #   custom.rs (user command pipeline), runner.rs (tempfiles)
 
   image/            # loader.rs (decode worker, ureq fetch), cache.rs (URL →
-                    #   DynamicImage + failure memoisation), render.rs (Picker)
+                    #   DynamicImage + failure memoisation), render.rs (Picker),
+                    #   paste.rs (clipboard bitmap → PNG beside the document:
+                    #   encode_png / default_destination / resolve_destination / write)
 
   input.rs / input/
     mode_handler/default.rs  # DefaultHandler; preview_safe_action() allowlist
@@ -205,6 +216,8 @@ src/
     highlight.rs    # syntect tokenizer: scope → TokenClass, char-indexed ranges,
                     #   size caps, incremental per-line ParseState reuse
     code_layout.rs  # code-block raw ↔ rendered column geometry; line_allows_raw_reveal
+    destination.rs  # link destinations: local_image_urls (the document's own images),
+                    #   escape_destination (angle-bracket form for spaces / parens)
     inline_col_map.rs, list_layout.rs   # raw ↔ rendered column maps
     parse_offsets.rs # byte spans from pulldown-cmark; RangeTracker depth-0 scanner
     parser.rs (+ parser/post_pass.rs)   # → Vec<Block>; parse_raw_with_ranges
@@ -282,7 +295,7 @@ Higher layers depend only on lower ones:
 6. `document` — `Buffer`, `Cursor`, `History`, `ParsedDoc`, `Selection`, `SourceMap`, grapheme helpers
 7. `markdown` — parser → AST → renderer; `parse_offsets` and `inline_col_map` feed `SourceMap`
 8. `config` — `Config`, `KeyMap`, `Theme` (loaded once at startup)
-9. `image`, `diagram`, `export`, `docs` — leaf subsystems used by the renderer / app
+9. `clipboard`, `image`, `diagram`, `export`, `docs` — leaf subsystems used by the renderer / app; `clipboard` is the leaf the others build on (`image::paste` consumes its payload model), and it imports nothing from this crate
 10. `terminal` — raw terminal setup / teardown / capability probing
 
 `docs` is the one leaf reached from *above* layer 3: `Action::OpenDoc` carries a `docs::DocId`, `config`'s first and only dependency on another top-level module. Legal because `docs` is a true leaf — static strings and slug metadata, parsing nothing, importing nothing from this crate — but worth knowing before adding a second edge into `config`.

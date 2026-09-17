@@ -215,7 +215,9 @@ fn run(session: Session, opts: RunOpts) -> Result<()> {
         capabilities,
         config_warnings,
     ) {
-        Ok(app) => app.with_startup_anchor(startup_anchor),
+        Ok(app) => app
+            .with_startup_anchor(startup_anchor)
+            .with_clipboard(edamame::clipboard::default_source()),
         Err(e) => {
             let _ = terminal::restore();
             return Err(e);

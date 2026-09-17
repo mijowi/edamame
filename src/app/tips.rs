@@ -200,6 +200,17 @@ pub const ALL_TIPS: &[Tip] = &[
             fragment: Some("enabling-vim-mode"),
         }),
     },
+    Tip {
+        id: 16,
+        title: "Paste an image",
+        text: "Take a screenshot to the clipboard, then press Ctrl-V: edamame saves the image \
+               beside your document, in the folder your other images use, and inserts a \
+               reference to it. You confirm the path first, so you can rename it on the spot.",
+        link: Some(TipLink {
+            doc: DocId::Editing,
+            fragment: Some("images"),
+        }),
+    },
 ];
 
 /// The lowest-id tip the user has not seen, or `None` once every tip has been shown.

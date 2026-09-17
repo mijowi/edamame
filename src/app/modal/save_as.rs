@@ -64,6 +64,7 @@ impl Modal for SaveAsModal {
             theme: ctx.theme,
             cursor_visible: ctx.cursor_visible,
             title: "Save As",
+            note: None,
         };
         frame.render_stateful_widget(view, area, &mut self.state);
     }

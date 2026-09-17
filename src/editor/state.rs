@@ -159,7 +159,7 @@ pub struct EditorState {
     /// without bumping `Buffer::version()` would silently never autosave — keep the two in
     /// lockstep.  Clearing `dirty` without a save (a revert) is fine.
     pub dirty: bool,
-    /// Internal clipboard, used when arboard is unavailable.
+    /// Internal clipboard: what Copy / Cut last took, pasted when the OS clipboard holds no text.
     pub kill_ring: String,
     /// Scroll offset in visual rows for the active mode.
     pub scroll: usize,
@@ -245,6 +245,10 @@ pub struct EditorState {
     /// A requested link follow, consumed by the App on the next loop iteration.  Parking the
     /// intent here keeps `mouse_ops::apply` to its `&mut EditorState` contract.
     pub pending_link_follow: Option<crate::editor::link::LinkTarget>,
+    /// Text a Copy / Cut staged for the OS clipboard, drained by the App, which owns the
+    /// clipboard port — the same "park the intent" contract as [`Self::pending_link_follow`].
+    /// Always `\n`-only, like [`Self::kill_ring`]; the App applies the buffer's line ending.
+    pub pending_clipboard_write: Option<String>,
     /// Set when an in-line edit (no newline added or removed) has left `parsed` stale.  The
     /// rendered view paints the cursor block raw from the buffer, so the staleness is invisible
     /// until a parse-dependent path calls [`Self::flush_parsed_if_dirty`].  Cross-line edits
@@ -424,6 +428,7 @@ impl EditorState {
             viewport_width: 80,
             pending_column_widths_commit: None,
             pending_link_follow: None,
+            pending_clipboard_write: None,
             parsed_dirty: false,
             // Matches `ParsedDoc::build` above (reflow off).  The App's initial `refresh_parsed`
             // reconciles this with the Preview default before the first frame.

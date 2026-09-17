@@ -221,6 +221,7 @@ impl App {
             }
             Action::Copy => {
                 crate::editor::edit_ops::apply(&mut self.editor, action, doc_height, doc_width);
+                self.flush_clipboard_write();
                 self.needs_draw = true;
             }
             _ => {}

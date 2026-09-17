@@ -15,18 +15,19 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Daily tips: once a day at startup, edamame shows a short tip about a feature you might not know about. Turn it off with the tip's "Don't show tips" button or the "Daily tips" setting. See all tips with Ctrl-P → "Browse tips".
 - Partly visible images now display in full resolution instead of dropping to coarse half-blocks in kitty, Ghostty, WezTerm, and Sixel terminals.
 - Images now stay sharp *during* scroll in kitty, Ghostty, and WezTerm. Disable with the new `sharp_scrolling` setting under `[images]` in config.toml if images tear, flicker, or cause lag.
+- `Ctrl-V` pastes a screenshot (or any image) from the clipboard, saved as a PNG with a relative reference inserted. Text is preferred if the clipboard contains both, but **Paste image from clipboard** in the palette always pastes the image.
 
 ### Changed
 
 - edamame's bookkeeping (e.g. update-check timestamps) moved from config.toml to state.toml in your data directory. edamame migrates these values on the next launch, leaving config.toml fully hand-editable and safe to share across machines. No action needed.
+- `Ctrl-V` into a numbered list now renumbers the list, like a paste from the terminal (e.g. `Ctrl-Shift-V`) already did.
 
 ### Fixed
 
 - A document with the same image twice in the source now displays it in both places, instead of only the second.
-
-### Fixed
-
+- Copying an empty line no longer empties the system clipboard, and no longer hints "Copied".
 - CJK and other wide characters now cursor-place, render, and wrap correctly in table cells.
+- An image that arrives in the document *after* it was opened now raises the images question. Previously nothing was asked unless the document contained an image at load, so the image stayed as its source line and never rendered.
 
 ## [0.1.4] - 2026-09-11
 

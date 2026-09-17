@@ -59,6 +59,7 @@ impl App {
         // Figure render debounce: wake when the window expires so the deferred render
         // dispatches after the user stops typing, even with no key event of its own.
         push(self.diagram_render_hold_until);
+        push(self.images_prompt_due);
         push(self.section_jump_deadline());
         push(self.diff_advance_deadline());
         push(self.search_advance_deadline());

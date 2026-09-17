@@ -66,7 +66,9 @@ Note that **`Home` and `End` scroll the view; they do not move to line start/end
 |---|---|
 | `Shift-↑` `Shift-↓` `Shift-←` `Shift-→` | Extend selection |
 | `Ctrl-A` | Select all |
-| `Ctrl-C` / `Ctrl-X` / `Ctrl-V` | Copy / cut / paste (system clipboard) |
+| `Ctrl-C` / `Ctrl-X` | Copy / cut (system clipboard) |
+| `Ctrl-V` | Paste (system clipboard) — or, when the clipboard holds a screenshot *and* no text, save the image beside the document and insert a reference to it. See [editing.md](editing.md#images). |
+| *(palette)* | **Paste image from clipboard** — same as above, but the image is preferred over text; bindable as `PasteImage` |
 
 ## Formatting
 
