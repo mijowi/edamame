@@ -202,6 +202,12 @@ pub struct ImagesConfig {
     pub max_width: usize,
     pub max_height: usize,
     pub remote_policy: RemoteImagePolicy,
+    /// Directory where pasted screenshots are saved.  Empty — the default
+    /// — means the global per-user directory beside edamame's logs; a
+    /// relative value resolves against the open document, an absolute
+    /// value is used verbatim.  Overridden by the `EDAMAME_IMAGES_DIR`
+    /// environment variable when set.
+    pub save_dir: String,
 }
 
 impl Default for ImagesConfig {
@@ -211,10 +217,14 @@ impl Default for ImagesConfig {
             max_width: 100,
             max_height: 24,
             remote_policy: RemoteImagePolicy::Ask,
+            save_dir: String::new(),
         }
     }
 }
 
+/// Master switch for inline diagram rendering (e.g. mermaid).  `Ask`
+/// prompts the user the first time a document with diagrams is opened;
+/// `Always` renders without prompting; `Never` keeps the placeholder.
 /// Master switch for inline *figure* rendering — mermaid diagrams and `$$...$$` display math,
 /// which share this gate.  `Never` keeps the placeholder / source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

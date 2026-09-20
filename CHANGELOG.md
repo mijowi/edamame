@@ -13,10 +13,15 @@ Each released version's section is also what ships as the GitHub release notes: 
 - An uninstall script that removes edamame's config and state files, and the binary (deferring to the package manager if applicable).
 - edamame remembers where you left the cursor in files and reopens it there. Turn it off with the `remember_cursor` setting in `config.toml`.
 - Daily tips: once a day at startup, edamame shows a short tip about a feature you might not know about. Turn it off with the tip's "Don't show tips" button or the "Daily tips" setting. See all tips with Ctrl-P → "Browse tips".
+- `Ctrl-V` pastes an image when the clipboard holds one and no text: a screenshot is written into your images directory and referenced, and a picture file copied in your file manager is referenced where it lies — nothing is copied, so moving that file later breaks the link. Text on the clipboard still wins, leaving ordinary pasting unchanged. **Paste image from clipboard** in the command palette — bindable as `PasteImage` — does the same without the text rule.
 
 ### Changed
 
 - The bookkeeping edamame writes for itself (e.g. update-check timestamps) moved from config.toml to state.toml in your data directory. edamame migrates these values on the next launch, leaving config.toml fully hand-editable and safe to share across machines. No action needed.
+
+### Fixed
+
+- An image that arrives in the document *after* it was opened — a pasted screenshot, or an `![](…)` you type — now raises the images question like one that was there at load. Previously nothing asked, so the image stayed as its source line and never rendered.
 
 ## [0.1.4] - 2026-09-11
 

@@ -1504,6 +1504,37 @@ fn insert_image_wraps_selection_and_selects_url_placeholder() {
 }
 
 #[test]
+fn insert_image_reference_lands_as_its_own_paragraph() {
+    // The parse promotes an image to a block only when it is a
+    // paragraph's sole content, so a pasted reference is framed with the
+    // blank line it needs — left flush it stays inline and paints as a
+    // text placeholder instead of the image.
+    let mut st = state("prose\n");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 6;
+    edit_ops::insert_image_reference_at_cursor(&mut st, "C:/x/y.png", VP, VW);
+    assert_eq!(st.contents(), "prose\n\n![](C:/x/y.png)\n");
+}
+
+#[test]
+fn insert_image_reference_ends_the_line_it_lands_on() {
+    let mut st = state("alpha\nbeta\n");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 2; // mid-word, after "al"
+    edit_ops::insert_image_reference_at_cursor(&mut st, "img.png", VP, VW);
+    assert_eq!(st.contents(), "al\n\n![](img.png)\npha\nbeta\n");
+}
+
+#[test]
+fn insert_image_reference_needs_no_extra_break_after_a_blank_line() {
+    let mut st = state("prose\n\n");
+    st.mode = Mode::Rendered;
+    st.cursor.offset = 7;
+    edit_ops::insert_image_reference_at_cursor(&mut st, "img.png", VP, VW);
+    assert_eq!(st.contents(), "prose\n\n![](img.png)\n");
+}
+
+#[test]
 fn insert_link_wraps_multibyte_selection() {
     use edamame::document::Selection;
     let mut st = state("héllo wörld\n");
