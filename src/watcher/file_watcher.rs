@@ -396,7 +396,12 @@ mod tests {
     #[test]
     #[ignore = "requires live filesystem notifications (inotify/FSEvents)"]
     fn rapid_writes_coalesce_into_a_single_change() {
-        // Exact event count is platform-dependent; the assertion is "at least one, final wins".
+        // Exact event count is platform-dependent; the invariant is only that the *last*
+        // change delivered carries the final contents.  A `truncate`-then-`write` is two
+        // steps, so a debounced read can catch the file empty in between — and under CI
+        // scheduling pressure the window can outlast the debounce.  Draining to the last
+        // change sidesteps that: once the burst settles, the file is quiescent at "5", so
+        // the final read always sees it.  Any earlier empty/intermediate read is discarded.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("file.md");
         std::fs::write(&path, "0").expect("seed");
@@ -417,11 +422,16 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
 
-        let first = expect_change(
+        // The first change may arrive slowly on a loaded runner; give it a wide window,
+        // then keep collecting until the stream stays quiet past one debounce window.
+        let mut last = expect_change(
             rx.recv_timeout(Duration::from_millis(1500))
                 .expect("at least one event after the burst"),
         );
-        assert_eq!(first.contents, "5", "final contents must win");
+        while let Ok(ev) = rx.recv_timeout(Duration::from_millis(400)) {
+            last = expect_change(ev);
+        }
+        assert_eq!(last.contents, "5", "final contents must win");
     }
 
     #[test]
