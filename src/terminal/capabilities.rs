@@ -27,12 +27,35 @@ pub enum ColorDepth {
 /// Image protocol supported by the terminal emulator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageProtocol {
-    /// DEC Sixel graphics (xterm with `--enable-sixel-graphics`, foot, wezterm).
+    /// DEC Sixel graphics (Windows Terminal 1.22+, xterm with `--enable-sixel-graphics`, foot).
+    ///
+    /// The one protocol here that keeps no image on the terminal side: every sequence is drawn
+    /// where it is sent, so a partly visible image is a re-slice of the payload rather than a
+    /// placement.  See `docs/dev/plans/image-partial-rendering.md` (M2).
     Sixel,
-    /// Kitty graphics protocol (kitty, ghostty, wezterm).
+    /// Kitty graphics protocol through `ratatui_image`'s **unicode-placeholder** backend (kitty,
+    /// Ghostty).  A partly visible image is rendered sharply from the placeholder grid, but the
+    /// image re-composites wherever the placeholders move, so it drops to halfblocks *while
+    /// scrolling*.  When `images.sharp_scrolling` is on (the default) and outside tmux, kitty and
+    /// Ghostty are served as [`ImageProtocol::KittyDirect`] instead; this is the path they take with
+    /// that setting off, and always under tmux, where direct placement's passthrough is unavailable.
     KittyGraphics,
     /// iTerm2 inline-images protocol.
     ITerm2,
+    /// Kitty graphics through **direct placement**: the image is transmitted once, and every
+    /// frame places the visible rows of it with a source rectangle (`a=p`).  Unlike
+    /// [`ImageProtocol::KittyGraphics`] the placement is one short escape, so a partly visible image
+    /// stays sharp even while scrolling.
+    ///
+    /// Two kinds of terminal land here, both gated on `images.sharp_scrolling` (and never under
+    /// tmux):
+    /// - WezTerm, which implements the transmit, placement and delete but *not* the `U=1`
+    ///   unicode-placeholder extension `ratatui_image`'s Kitty backend renders through, so without
+    ///   this route it is served as iTerm2 and every partly visible image falls back to halfblocks.
+    /// - genuine kitty and Ghostty, which *do* render placeholders ([`ImageProtocol::KittyGraphics`]) but are
+    ///   cheaper to scroll through `a=p` than to re-composite; direct placement is the opt-out knob's
+    ///   whole subject for them.
+    KittyDirect,
     /// Unicode half-block fallback (works in any truecolor terminal).
     Halfblocks,
 }
@@ -69,12 +92,12 @@ impl Capabilities {
     /// alternate screen and raw mode, since the Picker probes stdout/stdin with escape
     /// sequences.  `kbd_enhancement` is passed in rather than re-queried: both it and the
     /// Picker probe read replies off the tty, and one could consume the other's.
-    pub fn detect(kbd_enhancement: bool) -> Self {
+    pub fn detect(kbd_enhancement: bool, sharp_scrolling: bool) -> Self {
         let term = env::var("TERM").unwrap_or_default();
         let color_depth = detect_color_depth(&term);
         let mouse = detect_mouse(&term);
         let unicode_full = detect_unicode_full();
-        let (image_protocol, image_picker) = detect_image_protocol();
+        let (image_protocol, image_picker) = detect_image_protocol(sharp_scrolling);
         let halfblocks_picker = image_picker
             .as_ref()
             .map(|p| halfblocks_from(p.font_size()));
@@ -155,6 +178,7 @@ impl Capabilities {
             Some(ImageProtocol::Sixel) => "sixel",
             Some(ImageProtocol::KittyGraphics) => "kitty",
             Some(ImageProtocol::ITerm2) => "iterm2",
+            Some(ImageProtocol::KittyDirect) => "kitty-direct",
             Some(ImageProtocol::Halfblocks) => "halfblocks",
         };
         format!(
@@ -264,6 +288,66 @@ fn iterm2_hint_is_trustworthy() -> bool {
     is_iterm2_app() && env::var_os("TMUX").is_none()
 }
 
+/// True for the terminals this build serves through direct placement rather than through the
+/// protocol the stdio probe answers with.
+///
+/// WezTerm implements the Kitty protocol's transmit, its placement (with a source rectangle) and
+/// its delete, but **not** the `U=1` unicode-placeholder extension — and that extension is the
+/// only way `ratatui-image`'s Kitty backend renders.  It answers the iTerm2 query as well, which
+/// is what the probe concludes, so no capability query can route this: the missing feature is a
+/// sub-feature of a protocol the terminal does support.  Hence an identity hint, on the same
+/// footing as [`is_iterm2_app`].
+fn is_wezterm() -> bool {
+    env::var("TERM_PROGRAM").is_ok_and(|v| v.contains("WezTerm"))
+        || env::var("WEZTERM_PANE").is_ok()
+}
+
+/// Whether [`is_wezterm`] may route the protocol — the reasoning is [`iterm2_hint_is_trustworthy`]'s
+/// exactly.  `update-environment` carries neither `TERM_PROGRAM` nor `WEZTERM_PANE`, so a pane
+/// created in WezTerm and reattached from elsewhere still advertises it, and routing it to
+/// direct placement would then ask that terminal to place graphics it may not support at all.
+fn direct_placement_hint_is_trustworthy() -> bool {
+    is_wezterm() && env::var_os("TMUX").is_none()
+}
+
+/// Whether a genuine kitty/Ghostty probe may be upgraded to direct placement.  The genuineness is
+/// the probe's own `Kitty` result (unlike WezTerm, which the probe reports as iTerm2); this adds
+/// only the tmux gate.  Inside tmux the upgrade is refused: `a=p` needs `allow-passthrough`, which
+/// upstream enables by spawning `tmux` — a subprocess edamame will not run — whereas
+/// `ratatui_image`'s placeholder backend keeps working through tmux's graphics passthrough, so the
+/// placeholder path ([`ImageProtocol::KittyGraphics`]) is the right one to leave in place there.
+fn kitty_direct_hint_is_trustworthy() -> bool {
+    env::var_os("TMUX").is_none()
+}
+
+/// Upgrade a probed protocol to [`ImageProtocol::KittyDirect`] when the user has opted in to
+/// `images.sharp_scrolling` (the default) and a hint says the terminal can place images.
+///
+/// `wezterm` is [`direct_placement_hint_is_trustworthy`] — a terminal that places images but lacks
+/// unicode placeholders, which the probe served as iTerm2 or Kitty.  `kitty` is
+/// [`kitty_direct_hint_is_trustworthy`] — a genuine `Kitty` probe outside tmux, which renders
+/// placeholders but is cheaper to scroll through `a=p`.  Halfblocks and Sixel are never touched:
+/// halfblocks means the probe saw no graphics support, and Sixel has no placement to make.
+fn resolve_direct_placement(
+    protocol: ImageProtocol,
+    sharp_scrolling: bool,
+    wezterm: bool,
+    kitty: bool,
+) -> ImageProtocol {
+    if !sharp_scrolling {
+        return protocol;
+    }
+    match protocol {
+        // The two protocols that mean "this terminal displayed the graphics it was asked about".
+        ImageProtocol::ITerm2 | ImageProtocol::KittyGraphics if wezterm => {
+            ImageProtocol::KittyDirect
+        }
+        // A genuine kitty/Ghostty probe (never iTerm2's, which cannot place).
+        ImageProtocol::KittyGraphics if kitty => ImageProtocol::KittyDirect,
+        other => other,
+    }
+}
+
 /// Resolve the protocol to encode with from the one `Picker::from_query_stdio` probed.
 ///
 /// iTerm2 3.5+ answers the Kitty capability query affirmatively, so the picker comes back
@@ -282,7 +366,7 @@ fn resolve_protocol(probed: ProtocolType, iterm2: bool) -> ProtocolType {
 
 /// Probe for an image protocol, returning it alongside the `Picker` the rendering layer
 /// reuses.  Halfblocks count as support — lower fidelity, still usable.
-fn detect_image_protocol() -> (Option<ImageProtocol>, Option<Picker>) {
+fn detect_image_protocol(sharp_scrolling: bool) -> (Option<ImageProtocol>, Option<Picker>) {
     // A panic here would corrupt terminal state, so catch and swallow.  Scoping the guard
     // to the `catch_unwind` alone is load-bearing: this runs on the main thread after the
     // hook is installed, so a guard live over the code below would let a real panic unwind
@@ -307,6 +391,15 @@ fn detect_image_protocol() -> (Option<ImageProtocol>, Option<Picker>) {
         ProtocolType::Iterm2 => ImageProtocol::ITerm2,
         ProtocolType::Halfblocks => ImageProtocol::Halfblocks,
     };
+    // Upgrade to direct placement where the user opted in and a hint applies (WezTerm, or a genuine
+    // kitty/Ghostty probe outside tmux).  Halfblocks and Sixel are left alone; see
+    // [`resolve_direct_placement`].
+    let protocol = resolve_direct_placement(
+        protocol,
+        sharp_scrolling,
+        direct_placement_hint_is_trustworthy(),
+        kitty_direct_hint_is_trustworthy(),
+    );
     (Some(protocol), Some(picker))
 }
 
@@ -431,6 +524,133 @@ mod tests {
         let _g2 = EnvGuard::unset("LC_TERMINAL");
         let _g3 = EnvGuard::unset("TMUX");
         assert!(!iterm2_hint_is_trustworthy());
+    }
+
+    /// WezTerm is recognised either way it announces itself — and by nothing else, since a
+    /// terminal that is not WezTerm would be asked to place graphics it may not support.
+    #[test]
+    fn the_direct_placement_hint_recognises_only_wezterm() {
+        let _lock = env_lock();
+        let _g3 = EnvGuard::unset("TMUX");
+
+        let _g1 = EnvGuard::set("TERM_PROGRAM", "WezTerm");
+        let _g2 = EnvGuard::unset("WEZTERM_PANE");
+        assert!(is_wezterm() && direct_placement_hint_is_trustworthy());
+
+        // The pane variable alone is enough: it is what survives a shell that rewrites
+        // `TERM_PROGRAM`.
+        let _g1 = EnvGuard::set("TERM_PROGRAM", "xterm-256color");
+        let _g2 = EnvGuard::set("WEZTERM_PANE", "0");
+        assert!(is_wezterm());
+
+        let _g1 = EnvGuard::set("TERM_PROGRAM", "iTerm.app");
+        let _g2 = EnvGuard::unset("WEZTERM_PANE");
+        assert!(
+            !is_wezterm(),
+            "iTerm2 has its own path and no a=p worth using"
+        );
+    }
+
+    /// Same distrust as [`iterm2_hint_is_trustworthy`], for the same reason: a stale forwarded
+    /// marker inside tmux must not pin a protocol the live pane cannot speak.  M4 additionally
+    /// needs `allow-passthrough`, which upstream turns on by spawning `tmux` — a subprocess
+    /// edamame will not spawn for this.
+    #[test]
+    fn the_direct_placement_hint_is_distrusted_inside_tmux() {
+        let _lock = env_lock();
+        let _g1 = EnvGuard::set("TERM_PROGRAM", "WezTerm");
+        let _g2 = EnvGuard::unset("WEZTERM_PANE");
+        {
+            let _g3 = EnvGuard::unset("TMUX");
+            assert!(
+                direct_placement_hint_is_trustworthy(),
+                "bare WezTerm is trusted"
+            );
+        }
+        {
+            let _g3 = EnvGuard::set("TMUX", "/tmp/tmux-501/default,1234,0");
+            assert!(!direct_placement_hint_is_trustworthy());
+        }
+    }
+
+    /// The opt-in gate: with `sharp_scrolling` off, no probe is ever upgraded to direct placement,
+    /// whichever hint applies.
+    #[test]
+    fn sharp_scrolling_off_never_upgrades_to_direct_placement() {
+        for protocol in [
+            ImageProtocol::KittyGraphics,
+            ImageProtocol::ITerm2,
+            ImageProtocol::Sixel,
+            ImageProtocol::Halfblocks,
+        ] {
+            assert_eq!(
+                resolve_direct_placement(protocol, false, true, true),
+                protocol,
+                "{protocol:?} must survive with sharp_scrolling off"
+            );
+        }
+    }
+
+    /// With the setting on: WezTerm's hint upgrades either protocol the probe reports it as, a
+    /// genuine Kitty probe upgrades on the kitty hint, and Sixel/Halfblocks never move.
+    #[test]
+    fn sharp_scrolling_on_upgrades_only_placeable_protocols() {
+        // WezTerm is served as iTerm2 or Kitty by the probe; its hint upgrades both.
+        assert_eq!(
+            resolve_direct_placement(ImageProtocol::ITerm2, true, true, false),
+            ImageProtocol::KittyDirect
+        );
+        assert_eq!(
+            resolve_direct_placement(ImageProtocol::KittyGraphics, true, true, false),
+            ImageProtocol::KittyDirect
+        );
+        // Genuine kitty/Ghostty: the Kitty probe upgrades on the kitty hint alone.
+        assert_eq!(
+            resolve_direct_placement(ImageProtocol::KittyGraphics, true, false, true),
+            ImageProtocol::KittyDirect
+        );
+        // iTerm2 without the WezTerm hint stays iTerm2 — real iTerm2 cannot place.
+        assert_eq!(
+            resolve_direct_placement(ImageProtocol::ITerm2, true, false, true),
+            ImageProtocol::ITerm2
+        );
+        // Sixel and Halfblocks are never touched, whatever the hints say.
+        for protocol in [ImageProtocol::Sixel, ImageProtocol::Halfblocks] {
+            assert_eq!(
+                resolve_direct_placement(protocol, true, true, true),
+                protocol,
+                "{protocol:?} has no placement to make"
+            );
+        }
+    }
+
+    /// A genuine kitty/Ghostty probe keeps the placeholder path under tmux, where direct
+    /// placement's passthrough is unavailable — the kitty hint is false there.
+    #[test]
+    fn the_kitty_direct_hint_is_distrusted_inside_tmux() {
+        let _lock = env_lock();
+        {
+            let _g = EnvGuard::unset("TMUX");
+            assert!(kitty_direct_hint_is_trustworthy(), "bare kitty is trusted");
+            assert_eq!(
+                resolve_direct_placement(ImageProtocol::KittyGraphics, true, false, true),
+                ImageProtocol::KittyDirect
+            );
+        }
+        {
+            let _g = EnvGuard::set("TMUX", "/tmp/tmux-501/default,1234,0");
+            assert!(!kitty_direct_hint_is_trustworthy());
+            assert_eq!(
+                resolve_direct_placement(
+                    ImageProtocol::KittyGraphics,
+                    true,
+                    false,
+                    kitty_direct_hint_is_trustworthy(),
+                ),
+                ImageProtocol::KittyGraphics,
+                "the placeholder path stays under tmux"
+            );
+        }
     }
 
     #[test]

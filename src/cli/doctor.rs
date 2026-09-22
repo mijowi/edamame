@@ -18,7 +18,8 @@ use std::io::IsTerminal;
 use anyhow::Result;
 
 use super::help::VERSION;
-use crate::terminal::{self, Capabilities, TerminalSetup};
+use crate::config::Config;
+use crate::terminal::{self, Capabilities, ColorDepth, TerminalSetup};
 use crate::ui::cap_summary::{CapRow, CapSummary};
 
 /// Value printed for any fact the environment doesn't carry.
@@ -46,7 +47,7 @@ pub fn run() -> Result<()> {
 
         // The hook stays installed for the rest of the process: `take_hook` would swap in the
         // *default* hook, and a panic while printing should still leave the terminal usable.
-        let caps = Capabilities::detect(keyboard_enhancement);
+        let caps = Capabilities::detect(keyboard_enhancement, sharp_scrolling());
         terminal::restore()?;
         caps
     } else {
@@ -55,6 +56,17 @@ pub fn run() -> Result<()> {
 
     print!("{}", report(&caps, interactive));
     Ok(())
+}
+
+/// The user's `images.sharp_scrolling` setting, so the reported image protocol matches the one the
+/// TUI would pick (direct placement vs. the placeholder/iTerm2 path).  The load is file-only —
+/// `persist_fallback = false` writes nothing — which keeps `--doctor` a pure read, and any failure
+/// falls back to the default (on).
+fn sharp_scrolling() -> bool {
+    let truecolor = Capabilities::detect_color_depth_from_env() == ColorDepth::TrueColor;
+    Config::load(truecolor, false)
+        .map(|loaded| loaded.config.images.sharp_scrolling)
+        .unwrap_or(true)
 }
 
 /// How confident the report is about one capability row.  [`CapRow`]'s two-state `ok` flag is

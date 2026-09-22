@@ -491,6 +491,8 @@ impl App {
                     &loaded.url,
                     loaded.image,
                     loaded.scratch,
+                    loaded.sliced,
+                    loaded.direct,
                 );
                 self.images_dirty = true;
                 self.needs_draw = true;

@@ -14,18 +14,39 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use crate::config::RemoteImagePolicy;
+use crate::image::cache::DirectPlacement;
 use crate::image::svg::{rasterize_svg, SvgError, SvgScaleMode, SvgSizing};
+use crate::image::SlicedProtocol;
 
 /// A decoded image plus the URL `ImageCache` keys it by.
 ///
 /// `scratch` is a pre-rendered halfblocks `Buffer` for a known target rect, built on the worker so
-/// the first paint doesn't pay a cold sync encode.  `None` without image support, or when the
-/// dispatcher supplied no picker and target width.
-#[derive(Debug)]
+/// the first paint doesn't pay a cold sync encode.  `sliced` is the row-addressed Kitty protocol
+/// for the same rect, built on the worker for the same reason — `SlicedProtocol::new_with_resize`
+/// formats the transmit string synchronously, and that string is megabytes of base64.  Both are
+/// `None` without image support, when the dispatcher supplied no picker and target width, or on the
+/// protocol's own cold-path failure.
+///
+/// `Debug` is written by hand below: `SlicedProtocol` is not `Debug`, and the interesting part of
+/// a prebuilt is its geometry, not megabytes of base64.
 pub struct LoadedImage {
     pub url: String,
     pub image: DynamicImage,
     pub scratch: Option<(Rect, Buffer)>,
+    pub sliced: Option<(Rect, SlicedProtocol)>,
+    pub direct: Option<(Rect, DirectPlacement)>,
+}
+
+impl std::fmt::Debug for LoadedImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadedImage")
+            .field("url", &self.url)
+            .field("image", &self.image)
+            .field("scratch", &self.scratch.as_ref().map(|(rect, _)| *rect))
+            .field("sliced", &self.sliced.as_ref().map(|(rect, _)| *rect))
+            .field("direct", &self.direct.as_ref().map(|(rect, _)| *rect))
+            .finish()
+    }
 }
 
 /// Errors from [`resolve`]; the UI falls back to the `[Image: alt]` placeholder on any of them.
@@ -135,7 +156,11 @@ pub fn resolve(
     Ok(LoadedImage {
         url: url.to_owned(),
         image,
+        // Both prebuilts are the decode dispatch's to fill in: it owns the picker and the target
+        // width, and builds them on the worker thread so the first paint is a cache hit.
         scratch: None,
+        sliced: None,
+        direct: None,
     })
 }
 

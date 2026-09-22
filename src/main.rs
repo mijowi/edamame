@@ -191,7 +191,7 @@ fn run(session: Session, opts: RunOpts) -> Result<()> {
     // ── Detect capabilities ───────────────────────────────────────
     // AFTER EnterAlternateScreen, so the probe talks to the live terminal; BEFORE `app.run`
     // spawns its event reader, whose competing reads would eat the escape-sequence replies.
-    let capabilities = Capabilities::detect(keyboard_enhancement);
+    let capabilities = Capabilities::detect(keyboard_enhancement, config.images.sharp_scrolling);
     log_capabilities(&capabilities);
 
     // ── Enable mouse reporting ────────────────────────────────────

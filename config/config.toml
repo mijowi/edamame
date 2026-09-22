@@ -114,6 +114,11 @@ remote_policy = "ask"
 # max_width = 100
 # max_height = 24
 
+# Keep a partly visible image sharp while it scrolls, on kitty-family terminals (kitty,
+# Ghostty, WezTerm), by placing it directly instead of dropping to coarse half-blocks.
+# Turn off if images tear, flicker, or leave residue on your terminal. No effect under tmux.
+# sharp_scrolling = true
+
 # ── Figures ───────────────────────────────────────────────────────────────────
 [figures]
 

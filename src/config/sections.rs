@@ -202,6 +202,16 @@ pub struct ImagesConfig {
     pub max_width: usize,
     pub max_height: usize,
     pub remote_policy: RemoteImagePolicy,
+    /// Keep a partly visible image sharp while it scrolls, on the kitty-family terminals (kitty,
+    /// Ghostty, WezTerm), by *placing* the image directly (`a=p`) rather than dropping it to the
+    /// coarse half-block fallback the moment it is not fully on screen.
+    ///
+    /// On by default.  Turning it off returns kitty and Ghostty to `ratatui_image`'s placeholder
+    /// renderer and WezTerm to the iTerm2 path — both of which still render partly visible images
+    /// as half-blocks — for a terminal where direct placement tears, flickers, or leaves residue.
+    /// No effect under tmux, where the placeholder renderer is always used because direct placement
+    /// needs a passthrough edamame does not enable.
+    pub sharp_scrolling: bool,
 }
 
 impl Default for ImagesConfig {
@@ -211,6 +221,7 @@ impl Default for ImagesConfig {
             max_width: 100,
             max_height: 24,
             remote_policy: RemoteImagePolicy::Ask,
+            sharp_scrolling: true,
         }
     }
 }

@@ -13,10 +13,16 @@ Each released version's section is also what ships as the GitHub release notes: 
 - An uninstall script that removes edamame's config and state files, and the binary (deferring to the package manager if applicable).
 - edamame remembers where you left the cursor in files and reopens it there. Turn it off with the `remember_cursor` setting in `config.toml`.
 - Daily tips: once a day at startup, edamame shows a short tip about a feature you might not know about. Turn it off with the tip's "Don't show tips" button or the "Daily tips" setting. See all tips with Ctrl-P → "Browse tips".
+- Partly visible images now display in full resolution instead of dropping to coarse half-blocks in kitty, Ghostty, WezTerm, and Sixel terminals.
+- Images now stay sharp *during* scroll in kitty, Ghostty, and WezTerm. Disable with the new `sharp_scrolling` setting under `[images]` in config.toml if images tear, flicker, or cause lag.
 
 ### Changed
 
-- The bookkeeping edamame writes for itself (e.g. update-check timestamps) moved from config.toml to state.toml in your data directory. edamame migrates these values on the next launch, leaving config.toml fully hand-editable and safe to share across machines. No action needed.
+- edamame's bookkeeping (e.g. update-check timestamps) moved from config.toml to state.toml in your data directory. edamame migrates these values on the next launch, leaving config.toml fully hand-editable and safe to share across machines. No action needed.
+
+### Fixed
+
+- A document with the same image twice in the source now displays it in both places, instead of only the second.
 
 ## [0.1.4] - 2026-09-11
 
