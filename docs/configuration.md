@@ -30,8 +30,6 @@ All four are created on first run and **never overwritten afterwards**. The ship
 
 To find the folder from inside edamame: `Ctrl-P` → "Open settings" → the first row is "Open config folder". The second, "Open config.toml", opens the file in `$VISUAL` / `$EDITOR`.
 
-Separately, edamame keeps a small machine-written bookkeeping file (`state.toml` — which terminals it has seen, update-check timestamps) in the platform data directory, not here: `$XDG_DATA_HOME/edamame` or `~/.local/share/edamame` on Linux, `~/Library/Application Support/edamame` on macOS. You never edit it.
-
 To remove both directories along with the binary, see the [uninstall script](https://github.com/mijowi/edamame#uninstalling).
 
 ### When something is wrong with your config
@@ -103,7 +101,7 @@ Change both from the theme picker: `Ctrl-P` → "Switch theme". There is no defa
 
 `cursor_blink_ms` is the half-period — the cursor toggles every this many milliseconds.
 
-`remember_cursor` reopens each file where its cursor was when you last quit, instead of at the top. Turning the switch off stops both the remembering and the restoring, but does not delete existing data. This setting can only be changed in `config.toml`.
+`remember_cursor` reopens each file where its cursor was when you last quit, instead of at the top. Disabling this stops both the remembering and the restoring, but does not delete existing data. This setting can only be changed in `config.toml`.
 
 `mouse_scroll_lines` is lines per wheel tick, and also governs trackpad scrolling (where `1` usually feels best). Keyboard scrolling always steps one line and ignores this.
 
@@ -141,11 +139,11 @@ A buffer with unsaved edits always prompts, regardless of this setting. edamame 
 
 `check_for_updates` is used by edamame to govern the automatic release check at startup. It runs at most once every 24 hours — and not before the first-run welcome screen has been answered, so turning it off there stops the first check too. It is silent unless there is a new release. Turning it off disables the automatic check.
 
-`daily_tips` shows an occasional startup tip pointing at a less-obvious feature. Like the update check it fires at most once a day, and never when an update notice is due — an update always takes precedence, so the two can't stack. Each tip is shown once and then not repeated. Turn it off here, in the settings overlay, or with the tip's own "Don't show tips" button. To read them on your own schedule, `Ctrl-P` → "Browse tips" lists every tip and opens any of them.
+`daily_tips` shows an occasional startup tip pointing at a less-obvious feature. Each tip is shown once. Turn it off here, in the settings overlay, or with the tip's own "Don't show tips" button. To read them any time, `Ctrl-P` → "Browse tips".
 
 ### Machine state (`state.toml`)
 
-A handful of values are written by edamame itself rather than by you, such as when it last checked for updates or where you left the cursor in each file (see [`remember_cursor`](#cursor-and-movement)). These live in a separate `state.toml` in the platform data directory, keeping `config.toml` entirely hand-editable and safe to share across machines:
+edamame's bookkeeping, such as when it last checked for updates or where you left the cursor in each file, live in a separate `state.toml` in the platform data directory, keeping `config.toml` entirely hand-editable and safe to share across machines:
 
 | Platform | Path |
 |---|---|

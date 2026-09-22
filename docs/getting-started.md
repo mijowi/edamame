@@ -53,11 +53,9 @@ To see the summary again, run [`edamame --doctor`](#command-line-flags) or choos
 
 Files open here for viewing. There's no cursor and nothing can be modified. You can scroll around and click links. **Any key that would edit or move the cursor takes you into Edit mode.**
 
-### EDIT — the one you'll use
+### EDIT — rendered editing
 
-The document stays rendered, except for the line your cursor is on, which shows its raw Markdown. Move away and it renders again. Inside a table only the *cell* you're in goes raw, inside the drawn grid.
-
-This is what edamame is for: it shows you a formatted document, with the raw source exactly where you need it.
+The document stays rendered, except for the line your cursor is on, which shows its raw Markdown. Move away and it renders again. Inside a table only the *cell* you're in is shown raw, inside the drawn grid.
 
 ![The cursor moving through a list, each line showing its Markdown source in turn](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/raw_reveal_and_list_ops.gif)
 
