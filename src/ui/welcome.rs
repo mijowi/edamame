@@ -421,7 +421,7 @@ the line the cursor is on; RAW is unformatted \n\
 • Vim mode — optional Vim-style editing (see docs for what's supported)";
 /// Hint shown below the capability summary when any capability is degraded.
 const DEGRADED_HINT: &str = "✗ — Consider upgrading to a modern terminal, \
-such as kitty, wezterm, or ghostty, for a better experience.";
+such as foot, Ghostty, kitty, or WezTerm, for a better experience.";
 /// Hint shown when the terminal is below 24-bit color.  `WelcomeState::new` forces images and
 /// figures to `Never` and Save persists that, so without this line the modal would silently
 /// write two settings the user never chose.  Says "24-bit color" rather than naming a depth:
