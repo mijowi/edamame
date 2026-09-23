@@ -129,7 +129,7 @@ Windows Terminal is the usual host for WSL, so its notes above apply to the term
 | iTerm2 | ✓ truecolor | ✓ iTerm2 inline | ✓ | ✓ | Answers the Kitty graphics query without supporting placements; edamame corrects for this |
 | Alacritty | ✓  | ✗| ✓ | ✓ recent | No image protocol |
 | Apple Terminal | ✗ 256 | ✗ | ✓ | ✗ | Themes fall back to `256 Dark` / `256 Light`; see the `Option` notes above |
-| VS Code terminal | ? | ? | ? | ? |  |
+| VS Code terminal | ✓| ✗ | ✓ | ✗ | No image protocol; several key chords conflict with VS Code bindings.|
 | Windows Terminal | ? | ? Sixel (1.22+) | ? | ? | Best-effort platform, not yet tested — see [Windows and WSL](#windows-and-wsl). |
 | tmux (any host) | ✓ | ✓ | ✓ | ✗ | Depends on configuration — see [above](#tmux-and-multiplexers). Some `Ctrl` chords don't work. |
 
