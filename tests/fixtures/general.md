@@ -47,6 +47,8 @@ edamame renders the document and lets you edit it in place. Only the line under 
 | `pulldown-cmark` | 0.13 | CommonMark + GFM parsing with source-map offsets |
 | `ropey` | 1.6 | Rope data structure for the text buffer |
 | `fancy-regex` | 0.17 | Backreferences and lookaround for `:s` substitution |
+| `unicode-width` | 0.2 | Cell widths: 日本語のテキスト takes two cells per glyph |
+| `unicode-segmentation` | 1.13 | Grapheme clusters, so 👨‍👩‍👧 and ❤️ are never split |
 
 Small tables size themselves to their content:
 

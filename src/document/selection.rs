@@ -1,4 +1,7 @@
+use ratatui::text::Line;
+
 use crate::document::Buffer;
+use crate::markdown::table_layout::char_cells;
 
 /// A text selection as two char offsets; the selected range is `min..max` of the two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,14 +13,35 @@ pub struct Selection {
 }
 
 /// The rendered-screen region of one table cell: the rendered-line range of its logical row plus
-/// the char-column band of the cell's content area. Stored on a [`VisualSelection`] that began
+/// the column band of the cell's content area. Stored on a [`VisualSelection`] that began
 /// inside the cell so painting, copy, and drag extension stay confined to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellBand {
     /// Inclusive rendered-line range of every wrapped sub-line of the logical table row.
     pub lines: (usize, usize),
-    /// Half-open rendered char-column range of the cell's content area.
+    /// Half-open *cell*-column range of the cell's content area. Cells, not chars: every
+    /// sub-line of the row shares them, while a wide glyph in another column shifts the char
+    /// columns sub-line by sub-line. Use [`CellBand::char_cols`] against a specific line.
     pub cols: (usize, usize),
+}
+
+impl CellBand {
+    /// The band as a half-open char-column range of `line`.
+    pub fn char_cols(&self, line: &Line<'_>) -> (usize, usize) {
+        let char_at = |target: usize| {
+            let mut cells = 0usize;
+            let mut idx = 0usize;
+            for ch in line.spans.iter().flat_map(|s| s.content.chars()) {
+                if cells >= target {
+                    break;
+                }
+                cells += char_cells(ch);
+                idx += 1;
+            }
+            idx
+        };
+        (char_at(self.cols.0), char_at(self.cols.1))
+    }
 }
 
 /// A selection over the rendered view in Preview mode, stored as `(rendered_line, char_col)`
@@ -91,6 +115,20 @@ mod tests {
 
     fn buf(s: &str) -> Buffer {
         Buffer::from_str(s)
+    }
+
+    /// The band is shared cells; its char columns differ per sub-line when a wide glyph in the
+    /// column to the left sits on one sub-line but not the other.
+    #[test]
+    fn cell_band_char_cols_follow_each_lines_glyph_widths() {
+        let band = CellBand {
+            lines: (0, 1),
+            cols: (9, 11),
+        };
+        // Cells: │0 ␠1 日2-3 本4-5 ␠6 │7 ␠8 a9 b10 ␠11 │12
+        assert_eq!(band.char_cols(&Line::from("│ 日本 │ ab │")), (7, 9));
+        // Cells: │0 ␠1 語2-3 ␠4 ␠5 ␠6 │7 ␠8 c9 d10 ␠11 │12
+        assert_eq!(band.char_cols(&Line::from("│ 語   │ cd │")), (8, 10));
     }
 
     #[test]

@@ -211,7 +211,9 @@ src/
                     #   (single-pass blocks + ranges); promotion + loose-list blanks
     render_cache.rs # memoization keyed by Block value + settings fingerprint
     renderer.rs (+ renderer/{list,table,util}.rs)  # Vec<Block> → Vec<Line<'static>>
-    table_layout.rs # column-width measurement and packed-comment hints
+    table_layout.rs # column widths in terminal cells (str_cells), the one shared cell
+                    #   wrap (wrap_ranges / word_ranges), pipe positions, and the
+                    #   packed-comment hints
 
   search.rs / search/  # search_keys.rs (hard-bound key table), state.rs (SearchState:
                     #   terms, match ranges, focus, buffer-version freshness),
@@ -308,6 +310,7 @@ These decisions are easy to break if you don't know they exist. Each subsystem's
 - [Footnote reference markers](docs/dev/footnotes.md) — plain-ASCII markers and how adjacent references fuse into one
 - [In-app documentation](docs/dev/in-app-docs.md) — the embedded manual: pathless read-only pages, relative-link and fragment resolution
 - [Inline links in modal bodies](docs/dev/modal-links.md) — clickable, Tab-focusable links in modal prose and the wrapping port that places them
+- [Table widths and wrapping](docs/dev/tables.md) — terminal cells as the one width unit, the one shared wrap, and the two pipe-position units
 - [Search and replace](docs/dev/search-replace.md) — the flow's capture gating, freshness, smartcase-vs-exact matching, and escape syntax
 - [Live `:s` substitution preview (vim `inccommand`)](docs/dev/substitute-preview.md) — the transient buffer rewrite, its three gates, and the shared match walk
 - [Vim commands inside a table](docs/dev/vim-tables.md) — scoped motions, the range guard, and the paste/visual rules that keep table chrome intact

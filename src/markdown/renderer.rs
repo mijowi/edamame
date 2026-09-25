@@ -18,6 +18,7 @@ use super::ast::{inlines_to_plain, Block, Inline, MetadataKind};
 use super::code_layout;
 use super::highlight::{self, Token};
 use super::render_cache::{is_cache_worthy, RenderCache, RenderSettings};
+use super::table_layout::str_cells;
 
 const IMAGE_PREFIX: &str = "Image: ";
 
@@ -786,22 +787,22 @@ impl<'t> Renderer<'t> {
 
     // ── Inline width helpers ──────────────────────────────────────
 
-    /// Character width of a single inline as it would appear when rendered.
-    /// Used for table column width calculation so borders align with content.
-    fn rendered_inline_char_width(&self, inline: &Inline) -> usize {
+    /// Terminal-cell width of a single inline as it would appear when rendered.  Used for table
+    /// column width calculation so borders align with content: a CJK glyph is two cells.
+    fn rendered_inline_width(&self, inline: &Inline) -> usize {
         match inline {
-            Inline::Text(t) => t.chars().count(),
+            Inline::Text(t) => str_cells(t),
             Inline::Bold(inner)
             | Inline::Italic(inner)
             | Inline::Strikethrough(inner)
-            | Inline::Highlight(inner) => self.rendered_inlines_char_width(inner),
+            | Inline::Highlight(inner) => self.rendered_inlines_width(inner),
             // Content only; the backticks are dropped, with no pad cells.
-            Inline::Code(c) => c.chars().count(),
+            Inline::Code(c) => str_cells(c),
             // The visible text, or a URL/filename fallback when empty.
             Inline::Link { text, url, .. } => {
-                let text_width = self.rendered_inlines_char_width(text);
+                let text_width = self.rendered_inlines_width(text);
                 if text_width == 0 {
-                    link_fallback(url).chars().count()
+                    str_cells(&link_fallback(url))
                 } else {
                     text_width
                 }
@@ -809,11 +810,11 @@ impl<'t> Renderer<'t> {
             // Image renders as "[Image: <alt-or-filename>]".
             Inline::Image { alt, url } => {
                 let name_width = if alt.trim().is_empty() {
-                    link_fallback(url).chars().count()
+                    str_cells(&link_fallback(url))
                 } else {
-                    alt.chars().count()
+                    str_cells(alt)
                 };
-                IMAGE_PREFIX.chars().count() + name_width + 2
+                str_cells(IMAGE_PREFIX) + name_width + 2
             }
             Inline::HtmlComment(_) => 0,
             // Unreachable: `footnote_run_at` matches a run of one as readily as
@@ -821,32 +822,31 @@ impl<'t> Renderer<'t> {
             // this arm is consulted.  Kept for exhaustiveness, and built from
             // `reference_marker` so it can't state a second format.
             Inline::FootnoteReference { label } => {
-                reference_marker(std::iter::once(label.as_str()))
-                    .chars()
-                    .count()
+                let marker = reference_marker(std::iter::once(label.as_str()));
+                str_cells(&marker)
             }
             // Math renders as its delimited source — width equals the raw
             // text width, so table borders and cursor columns stay aligned.
             Inline::Math { source, display } => {
                 let delim = if *display { "$$" } else { "$" };
-                delim.chars().count() + source.chars().count() + delim.chars().count()
+                str_cells(delim) + str_cells(source) + str_cells(delim)
             }
             Inline::SoftBreak | Inline::HardBreak => 1,
         }
     }
 
-    pub(super) fn rendered_inlines_char_width(&self, inlines: &[Inline]) -> usize {
+    pub(super) fn rendered_inlines_width(&self, inlines: &[Inline]) -> usize {
         let mut total = 0;
         let mut i = 0;
         while i < inlines.len() {
             // Adjacent references fuse, so measure the run through the same
             // helper that renders it.
             if let Some((marker, run_len)) = footnote_run_at(inlines, i) {
-                total += marker.chars().count();
+                total += str_cells(&marker);
                 i += run_len;
                 continue;
             }
-            total += self.rendered_inline_char_width(&inlines[i]);
+            total += self.rendered_inline_width(&inlines[i]);
             i += 1;
         }
         total

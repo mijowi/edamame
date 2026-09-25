@@ -6,11 +6,11 @@ use ratatui::text::{Line, Span};
 
 use crate::markdown::ast::Inline;
 use crate::markdown::renderer::util::{
-    extend_with_styled_chars, is_soft_break_space, link_fallback, truncate_to_width,
-    wrap_styled_chars, StyledChar,
+    extend_with_styled_chars, link_fallback, styled_cells, truncate_to_width, wrap_styled_chars,
+    StyledChar,
 };
 use crate::markdown::renderer::Renderer;
-use crate::markdown::table_layout::{self, MIN_COL_WIDTH};
+use crate::markdown::table_layout::{self, char_cells, str_cells, MIN_COL_WIDTH};
 
 /// Floor contribution of a cell token containing *breakable* content (inline code or link
 /// text).  Such tokens hard-split across rendered rows, so they don't pin the column to
@@ -18,32 +18,34 @@ use crate::markdown::table_layout::{self, MIN_COL_WIDTH};
 /// the viewport has room.
 const BREAKABLE_MIN_WIDTH: usize = 8;
 
-/// Per-cell `min` width for `compute_widths`: the longest run of characters that cannot
-/// be broken across rendered rows.
+/// Per-cell `min` width for `compute_widths`: the widest run of characters that cannot
+/// be broken across rendered rows, in terminal cells.
 ///
-/// Prose words are unbreakable ("never break a prose word to fit").  A token containing
-/// inline-code or link content contributes at most [`BREAKABLE_MIN_WIDTH`] — but never
-/// less than its longest contiguous prose run, so prose glued to a code span keeps its
-/// word intact.
+/// Words come from [`table_layout::word_ranges`] — the same split the wrap uses — so a wide
+/// glyph is a word to itself and a CJK run floors at its widest glyph.  Prose words are
+/// unbreakable ("never break a prose word to fit").  A word containing inline-code or link
+/// content contributes at most [`BREAKABLE_MIN_WIDTH`] — but never less than its longest
+/// contiguous prose run, so prose glued to a code span keeps its word intact.
 fn cell_min_width(inlines: &[Inline]) -> usize {
     let mut chars: Vec<(char, bool)> = Vec::new();
     flatten_breakable_chars(inlines, false, &mut chars);
+    let plain: Vec<char> = chars.iter().map(|&(ch, _)| ch).collect();
+
+    let run_cells = |run: &[(char, bool)]| run.iter().map(|&(ch, _)| char_cells(ch)).sum();
 
     let mut best = 0usize;
-    for token in chars.split(|&(ch, _)| is_soft_break_space(ch)) {
-        if token.is_empty() {
-            continue;
-        }
-        let len = token.len();
+    for word in table_layout::word_ranges(&plain) {
+        let token = &chars[word];
+        let cells = run_cells(token);
         let contribution = if token.iter().any(|&(_, breakable)| breakable) {
             let longest_prose_run = token
                 .split(|&(_, breakable)| breakable)
-                .map(<[(char, bool)]>::len)
+                .map(run_cells)
                 .max()
                 .unwrap_or(0);
-            longest_prose_run.max(len.min(BREAKABLE_MIN_WIDTH))
+            longest_prose_run.max(cells.min(BREAKABLE_MIN_WIDTH))
         } else {
-            len
+            cells
         };
         best = best.max(contribution);
     }
@@ -106,7 +108,7 @@ impl<'t> Renderer<'t> {
         let header_max: Vec<usize> = headers
             .iter()
             .take(col_count)
-            .map(|c| self.rendered_inlines_char_width(c))
+            .map(|c| self.rendered_inlines_width(c))
             .collect();
         let header_min: Vec<usize> = headers
             .iter()
@@ -119,7 +121,7 @@ impl<'t> Renderer<'t> {
             cell_max_widths.push(
                 row.iter()
                     .take(col_count)
-                    .map(|c| self.rendered_inlines_char_width(c))
+                    .map(|c| self.rendered_inlines_width(c))
                     .collect(),
             );
             cell_min_widths.push(
@@ -270,9 +272,10 @@ impl<'t> Renderer<'t> {
             for i in 0..col_count {
                 let width = widths.get(i).copied().unwrap_or(MIN_COL_WIDTH);
                 let row: &[StyledChar] = cell_rows[i].get(sub).map(|v| v.as_slice()).unwrap_or(&[]);
-                let row_w: usize = row.iter().map(|c| c.ch.to_string().chars().count()).sum();
-                // Overflow truncates with `…` — rare, and only for a single unbreakable
-                // token.  Plain text there, to avoid painting a partial styled run.
+                let row_w = styled_cells(row);
+                // Overflow truncates with `…` — rare: only a single grapheme cluster wider
+                // than a pinned column.  Plain text there, to avoid painting a partial
+                // styled run.
                 spans.push(Span::styled(" ", default_style));
                 if row_w <= width {
                     extend_with_styled_chars(&mut spans, row);
@@ -281,8 +284,12 @@ impl<'t> Renderer<'t> {
                 } else {
                     let plain: String = row.iter().map(|c| c.ch).collect();
                     let truncated = truncate_to_width(&plain, width.saturating_sub(1));
-                    spans.push(Span::styled(format!("{truncated}…"), default_style));
-                    spans.push(Span::styled(" ", default_style));
+                    // A wide glyph dropped at the limit leaves a cell to fill.
+                    let pad = width.saturating_sub(str_cells(&truncated) + 1);
+                    spans.push(Span::styled(
+                        format!("{truncated}…{} ", " ".repeat(pad)),
+                        default_style,
+                    ));
                 }
                 let is_last = i + 1 == col_count;
                 spans.push(Span::styled(
@@ -370,6 +377,32 @@ mod tests {
             title: None,
         }];
         assert_eq!(cell_min_width(&cell), BREAKABLE_MIN_WIDTH);
+    }
+
+    /// CJK breaks between glyphs, so a run floors at its widest glyph, not its full width.
+    #[test]
+    fn cell_min_width_cjk_run_floors_at_one_glyph() {
+        assert_eq!(cell_min_width(&[text("日本語日本語")]), 2);
+    }
+
+    #[test]
+    fn cell_min_width_prose_glued_to_cjk_keeps_its_word() {
+        assert_eq!(cell_min_width(&[text("日本語abc")]), 3);
+    }
+
+    #[test]
+    fn cell_min_width_cjk_code_span_floors_at_one_glyph() {
+        assert_eq!(
+            cell_min_width(&[Inline::Code("日本語日本語".to_owned())]),
+            2
+        );
+    }
+
+    /// A cluster is never split, so a ZWJ family (six painted cells) is its own floor.
+    #[test]
+    fn cell_min_width_zwj_family_is_one_unbreakable_glyph() {
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        assert_eq!(cell_min_width(&[text(&format!("ab {family}"))]), 6);
     }
 
     #[test]

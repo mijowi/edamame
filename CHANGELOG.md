@@ -24,6 +24,10 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 - A document with the same image twice in the source now displays it in both places, instead of only the second.
 
+### Fixed
+
+- CJK and other wide characters now cursor-place, render, and wrap correctly in table cells.
+
 ## [0.1.4] - 2026-09-11
 
 ### Added

@@ -7,7 +7,7 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 
 use crate::config::Theme;
-use crate::markdown::table_layout::preferred_cut;
+use crate::markdown::table_layout::{self, char_cells};
 
 /// One character tagged with its source span's style, so the table renderer's
 /// inline-aware wrap keeps styling across a cell's row breaks.
@@ -17,119 +17,20 @@ pub(super) struct StyledChar {
     pub(super) style: Style,
 }
 
-/// Whitespace that wrapping may break at or drop: everything
-/// `char::is_whitespace` matches except NBSP (U+00A0).  Table cells use NBSP for
-/// code-span pad cells, which must travel with the code token across a break
-/// rather than being trimmed like an inter-word space.
-pub(super) fn is_soft_break_space(ch: char) -> bool {
-    ch.is_whitespace() && ch != '\u{00A0}'
+/// Terminal columns a styled run occupies — the unit every table-cell width decision uses, so a
+/// CJK glyph costs two.
+pub(super) fn styled_cells(chars: &[StyledChar]) -> usize {
+    chars.iter().map(|c| char_cells(c.ch)).sum()
 }
 
-/// Tokenize into runs of leading-whitespace + non-whitespace, mirroring
-/// `split_soft`.  NBSP counts as a word char, so code-span pads bind to their
-/// code token.
-fn tokenize_styled(chars: &[StyledChar]) -> Vec<Vec<StyledChar>> {
-    let mut tokens: Vec<Vec<StyledChar>> = Vec::new();
-    let mut tok: Vec<StyledChar> = Vec::new();
-    let mut in_ws = true;
-    for c in chars {
-        if is_soft_break_space(c.ch) {
-            if !in_ws && !tok.is_empty() {
-                tokens.push(std::mem::take(&mut tok));
-            }
-            tok.push(*c);
-            in_ws = true;
-        } else {
-            tok.push(*c);
-            in_ws = false;
-        }
-    }
-    if !tok.is_empty() {
-        tokens.push(tok);
-    }
-    tokens
-}
-
-/// Wrap styled chars into rows of width ≤ `width`, hard-splitting an over-wide
-/// token.  Mirrors `table_layout::wrap_cell` but preserves per-char styles.
-///
-/// Returns at least one (possibly empty) row.
+/// Wrap styled chars into rows of width ≤ `width` cells through [`table_layout::wrap_ranges`],
+/// keeping each char's style.  Returns at least one (possibly empty) row.
 pub(super) fn wrap_styled_chars(chars: &[StyledChar], width: usize) -> Vec<Vec<StyledChar>> {
-    if width == 0 {
-        return vec![chars.to_vec()];
-    }
-    if chars.is_empty() {
-        return vec![Vec::new()];
-    }
-
-    let tokens = tokenize_styled(chars);
-
-    let mut rows: Vec<Vec<StyledChar>> = Vec::new();
-    let mut current: Vec<StyledChar> = Vec::new();
-    let mut current_w = 0usize;
-
-    for token in tokens {
-        let w = token.len();
-        if current.is_empty() {
-            if w <= width {
-                current.extend(&token);
-                current_w = w;
-            } else {
-                for chunk in hard_split_styled(&token, width) {
-                    rows.push(chunk);
-                }
-                current.clear();
-                current_w = 0;
-            }
-        } else if current_w + w <= width {
-            current.extend(&token);
-            current_w += w;
-        } else {
-            rows.push(std::mem::take(&mut current));
-            // Match `wrap_cell`'s `trim_start`.  NBSP pads survive it, so a
-            // code span starting the new row keeps its leading pad cell.
-            let trimmed: Vec<StyledChar> = token
-                .iter()
-                .skip_while(|c| is_soft_break_space(c.ch))
-                .copied()
-                .collect();
-            let tw = trimmed.len();
-            if tw <= width {
-                current.extend(&trimmed);
-                current_w = tw;
-            } else {
-                for chunk in hard_split_styled(&trimmed, width) {
-                    rows.push(chunk);
-                }
-                current_w = 0;
-            }
-        }
-    }
-    if !current.is_empty() {
-        rows.push(current);
-    }
-    if rows.is_empty() {
-        rows.push(Vec::new());
-    }
-    rows
-}
-
-/// Hard-split an over-wide token into chunks of size ≤ `width`, preferring a
-/// break just after punctuation.  Styled counterpart of
-/// `table_layout::hard_split`.
-fn hard_split_styled(token: &[StyledChar], width: usize) -> Vec<Vec<StyledChar>> {
-    if width == 0 || token.is_empty() {
-        return vec![token.to_vec()];
-    }
-    let mut rows = Vec::new();
-    let mut rest = token;
-    while rest.len() > width {
-        let cut = preferred_cut(width, |i| rest[i].ch);
-        rows.push(rest[..cut].to_vec());
-        rest = &rest[cut..];
-    }
-    rows.push(rest.to_vec());
-    rows
+    let plain: Vec<char> = chars.iter().map(|c| c.ch).collect();
+    table_layout::wrap_ranges(&plain, width)
+        .into_iter()
+        .map(|r| chars[r].to_vec())
+        .collect()
 }
 
 /// Append a `StyledChar` slice as `Span`s, coalescing same-style runs.
@@ -155,9 +56,20 @@ pub(super) fn extend_with_styled_chars(out: &mut Vec<Span<'static>>, chars: &[St
 
 /// Truncate `text` to at most `width` character cells.  The table renderer's
 /// single-line path uses this rather than overflow the trailing border when an
-/// inline-formatted cell exceeds its column allocation.
+/// inline-formatted cell exceeds its column allocation.  A wide glyph that would
+/// straddle the limit is dropped rather than half-drawn.
 pub(super) fn truncate_to_width(text: &str, width: usize) -> String {
-    text.chars().take(width).collect()
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let cw = char_cells(ch);
+        if used + cw > width {
+            break;
+        }
+        out.push(ch);
+        used += cw;
+    }
+    out
 }
 
 /// Display text for a link/image with empty bracket content: the full URL for
@@ -193,4 +105,43 @@ fn has_url_scheme(url: &str) -> bool {
         && scheme
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::style::{Color, Style};
+
+    use super::*;
+
+    fn styled(s: &str, style: Style) -> Vec<StyledChar> {
+        s.chars().map(|ch| StyledChar { ch, style }).collect()
+    }
+
+    fn text_of(row: &[StyledChar]) -> String {
+        row.iter().map(|c| c.ch).collect()
+    }
+
+    #[test]
+    fn truncate_to_width_drops_a_wide_glyph_straddling_the_limit() {
+        assert_eq!(truncate_to_width("日本語", 5), "日本");
+        assert_eq!(truncate_to_width("日本語", 1), "");
+        assert_eq!(truncate_to_width("ab日", 3), "ab");
+    }
+
+    #[test]
+    fn wrap_styled_chars_breaks_cjk_between_glyphs_and_keeps_styles() {
+        let bold = Style::default().fg(Color::Red);
+        let mut chars = styled("ab ", Style::default());
+        chars.extend(styled("日本語", bold));
+        let rows = wrap_styled_chars(&chars, 5);
+        let texts: Vec<String> = rows.iter().map(|r| text_of(r)).collect();
+        assert_eq!(texts, vec!["ab 日", "本語"]);
+        assert!(rows[1].iter().all(|c| c.style == bold));
+        assert!(rows.iter().all(|r| styled_cells(r) <= 5));
+    }
+
+    #[test]
+    fn wrap_styled_chars_returns_one_empty_row_for_empty_input() {
+        assert_eq!(wrap_styled_chars(&[], 5).len(), 1);
+    }
 }

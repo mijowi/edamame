@@ -402,9 +402,10 @@ pub fn build_snapshots(
             }
 
             if let Some(snap) = open_table.as_mut() {
-                // Fill col_ranges from the first row carrying `│` characters.
+                // Fill col_ranges from the first row carrying `│` characters.  Screen
+                // geometry, so pipe *cells*: a wide glyph to the left takes two.
                 if snap.col_ranges.is_empty() {
-                    let pipes = table_layout::rendered_pipe_positions(line);
+                    let pipes = table_layout::rendered_pipe_cells(line);
                     if pipes.len() == snap.col_count + 1 {
                         for i in 0..snap.col_count {
                             let start = pipes[i] as u16 + 1;

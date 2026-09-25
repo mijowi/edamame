@@ -52,8 +52,8 @@ fn natural_widths(info: &table_edit::TableInfo) -> Vec<usize> {
         let mut row_min_widths = Vec::with_capacity(col_count);
         for cell in row.cells.iter().take(col_count) {
             let trimmed = cell.raw.trim();
-            row_widths.push(trimmed.chars().count());
-            row_min_widths.push(longest_word_chars(trimmed));
+            row_widths.push(table_layout::str_cells(trimmed));
+            row_min_widths.push(longest_word_cells(trimmed));
         }
         while row_widths.len() < col_count {
             row_widths.push(0);
@@ -66,11 +66,14 @@ fn natural_widths(info: &table_edit::TableInfo) -> Vec<usize> {
     table_layout::compute_widths(&cell_widths, &cell_min_widths, col_count, usize::MAX, None)
 }
 
-/// Longest whitespace-delimited word in `text`, in chars — the per-cell width floor that keeps
-/// the column-width algorithm from breaking a word across rendered rows.
-fn longest_word_chars(text: &str) -> usize {
-    text.split_whitespace()
-        .map(|w| w.chars().count())
+/// Widest word in `text`, in terminal cells — the per-cell width floor that keeps the
+/// column-width algorithm from breaking a word across rendered rows.  Words split as the
+/// renderer's do ([`table_layout::word_ranges`]), so a CJK run floors at one glyph.
+fn longest_word_cells(text: &str) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    table_layout::word_ranges(&chars)
+        .into_iter()
+        .map(|r| table_layout::cells_of(&chars[r]))
         .max()
         .unwrap_or(0)
 }
@@ -347,5 +350,23 @@ mod tests {
         assert_eq!(state.buffer.contents(), src);
         assert_eq!(state.history.undo_depth(), 0);
         assert!(!state.dirty, "a refused chain must not dirty the buffer");
+    }
+
+    /// The drag anchors floor words exactly as the renderer does: a CJK run at one glyph.
+    #[test]
+    fn longest_word_cells_splits_cjk_like_the_renderer() {
+        assert_eq!(longest_word_cells("日本語日本語"), 2);
+        assert_eq!(longest_word_cells("日本 hello"), 5);
+    }
+
+    /// Ten wide glyphs are twenty cells of content, and the drag anchors must say so: they are
+    /// compared against (and persisted into) the renderer's column widths, so a char-counted
+    /// anchor would snap a CJK column to half the width it is drawn at.
+    #[test]
+    fn natural_widths_measure_wide_glyphs_in_cells() {
+        let src = format!("| {} |\n| --- |\n| 值 |\n", "哈".repeat(10));
+        let info = table_edit::find_table_at(&src, 0).expect("table at offset 0");
+
+        assert_eq!(natural_widths(&info), vec![20]);
     }
 }

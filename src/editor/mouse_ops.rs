@@ -192,7 +192,10 @@ fn apply_preview_action(
                     // A click inside a table cell pins drag, painting, and copy to that cell.
                     let band = preview_table_cell_band(state, line_idx, char_col);
                     let char_col = match band {
-                        Some(b) => char_col.clamp(b.cols.0, b.cols.1),
+                        Some(b) => {
+                            let (lo, hi) = b.char_cols(&state.parsed.lines[line_idx]);
+                            char_col.clamp(lo, hi)
+                        }
                         None => char_col,
                     };
                     state.visual_selection = Some(VisualSelection {
@@ -231,23 +234,21 @@ fn apply_preview_action(
                 if let Some(b) = preview_table_cell_band(state, line_idx, char_col) {
                     // Whole cell: every wrapped sub-line of the row within the column band,
                     // ending at the last sub-line's trimmed content (as `select_line_at_cursor`).
-                    let end_col = state
-                        .parsed
-                        .lines
-                        .get(b.lines.1)
-                        .map(|l| {
-                            let cell: String = l
-                                .spans
-                                .iter()
-                                .flat_map(|s| s.content.chars())
-                                .skip(b.cols.0)
-                                .take(b.cols.1 - b.cols.0)
-                                .collect();
-                            b.cols.0 + cell.trim_end().chars().count()
-                        })
-                        .unwrap_or(b.cols.1);
+                    let lines = &state.parsed.lines;
+                    let start_col = lines.get(b.lines.0).map_or(0, |l| b.char_cols(l).0);
+                    let end_col = lines.get(b.lines.1).map_or(start_col, |l| {
+                        let (lo, hi) = b.char_cols(l);
+                        let cell: String = l
+                            .spans
+                            .iter()
+                            .flat_map(|s| s.content.chars())
+                            .skip(lo)
+                            .take(hi - lo)
+                            .collect();
+                        lo + cell.trim_end().chars().count()
+                    });
                     state.visual_selection = Some(VisualSelection {
-                        anchor: (b.lines.0, b.cols.0),
+                        anchor: (b.lines.0, start_col),
                         active: (b.lines.1, end_col),
                         band: Some(b),
                     });
@@ -275,7 +276,10 @@ fn apply_preview_action(
                 if let Some(sel) = state.visual_selection.as_mut() {
                     if let Some(b) = sel.band {
                         active.0 = active.0.clamp(b.lines.0, b.lines.1);
-                        active.1 = active.1.clamp(b.cols.0, b.cols.1);
+                        if let Some(line) = state.parsed.lines.get(active.0) {
+                            let (lo, hi) = b.char_cols(line);
+                            active.1 = active.1.clamp(lo, hi);
+                        }
                     }
                     sel.active = active;
                 } else {

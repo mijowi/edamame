@@ -123,8 +123,9 @@ fn rendered_click_to_offset(
 
 /// Preview-mode click translator: the `(rendered_line_idx, char_col)` that seeds a
 /// `VisualSelection`.  `char_col` is the cumulative position within the flat rendered line,
-/// using the same wrap layout as `paint_preview_selection`, so drags across wrapped sub-rows
-/// highlight the right range.
+/// using the same wrap layout as [`line_render::patch_char_cols`], so drags across wrapped
+/// sub-rows highlight the right range.  `col` is a screen cell: a click on the right half of
+/// a wide glyph lands after it, as [`line_render::char_idx_at_cell_col`] snaps.
 pub(super) fn rendered_click_to_line_col(
     state: &EditorState,
     col: usize,
@@ -166,14 +167,16 @@ fn rendered_click_to_line_col_with_layout(
         .unwrap_or((0, chars.len(), chars.len()));
     let (row_start, _, _) = row;
     let max_in_row = line_render::last_col_in_row(row, sub + 1 == rows.len());
-    // Continuation rows carry `indent` cells of left padding (as `paint_preview_selection`).
+    // Continuation rows carry `indent` cells of left padding (as `patch_char_cols`).
     let row_indent = if sub == 0 { 0 } else { indent };
-    let local_col = col.saturating_sub(row_indent);
+    let chars: Vec<char> = chars.into_iter().map(|(c, _)| c).collect();
+    let local_col =
+        line_render::char_idx_at_cell_col(chars[row_start..].iter().copied(), col, row_indent);
     let char_col = (row_start + local_col).min(max_in_row);
     let layout = LineLayout {
         rows,
         indent,
-        char_count: chars.len(),
+        chars,
     };
     Some((idx, char_col, Some(layout)))
 }
@@ -191,12 +194,17 @@ pub(super) fn rendered_click_to_line_col_on_text(
     let (idx, char_col, layout) =
         rendered_click_to_line_col_with_layout(state, col, row, viewport_width)?;
     let layout = layout?;
-    if char_col >= layout.char_count {
-        return None;
-    }
-    // A real hit is one whose clamped column maps back to the clicked cell.
+    // The click snaps past a wide glyph whose right half it hit; step back onto that glyph.
+    let char_col = match cell_col_for_char_col(&layout, char_col) {
+        Some(cell) if cell > col => char_col.checked_sub(1)?,
+        _ => char_col,
+    };
+    let ch = *layout.chars.get(char_col)?;
+    // A real hit is one whose clamped column covers the clicked cell.
     let cell = cell_col_for_char_col(&layout, char_col)?;
-    (cell == col).then_some((idx, char_col))
+    (cell..cell + line_render::char_cells(ch).max(1))
+        .contains(&col)
+        .then_some((idx, char_col))
 }
 
 /// The wrap layout [`rendered_click_to_line_col`] resolved a click against, returned so the
@@ -207,7 +215,8 @@ pub(super) struct LineLayout {
     rows: Vec<(usize, usize, usize)>,
     /// Hanging indent applied to every row past the first.
     indent: usize,
-    char_count: usize,
+    /// The rendered line's chars, for measuring cells.
+    chars: Vec<char>,
 }
 
 /// Screen cell column at which `char_col` is painted, including a continuation row's hanging
@@ -216,7 +225,12 @@ fn cell_col_for_char_col(layout: &LineLayout, char_col: usize) -> Option<usize> 
     let (sub, _) = line_render::sub_line_of_col(&layout.rows, char_col);
     let (row_start, _, _) = layout.rows.get(sub).copied()?;
     let row_indent = if sub == 0 { 0 } else { layout.indent };
-    Some(row_indent + char_col.saturating_sub(row_start))
+    let row_chars = layout.chars.get(row_start..)?.iter().copied();
+    Some(line_render::cell_col_at_char_idx(
+        row_chars,
+        char_col.saturating_sub(row_start),
+        row_indent,
+    ))
 }
 
 /// Which `(rendered_line_idx, sub_row_within_line)` document-relative `row` falls on, walking
@@ -814,7 +828,7 @@ fn table_click_to_raw_col(
     sub: usize,
 ) -> Option<usize> {
     let raw_pipes = table_layout::raw_pipe_positions(raw_line);
-    let rendered_pipes = table_layout::rendered_pipe_positions(rendered_line);
+    let rendered_pipes = table_layout::rendered_pipe_cells(rendered_line);
     if raw_pipes.len() < 2 || rendered_pipes.len() != raw_pipes.len() {
         return None;
     }
@@ -872,16 +886,18 @@ fn table_click_to_raw_col(
         .collect();
     let chunks = table_layout::wrap_cell_with_indices(&rendered_content, cell_width);
     // Blank padding sub-lines of a short cell map to the end of its content.
-    let (chunk_start, chunk_len) = chunks
+    let (chunk_start, chunk_text) = chunks
         .get(sub)
-        .map(|(start, text)| (*start, text.chars().count()))
-        .unwrap_or((map.rendered_len(), 0));
+        .map(|(start, text)| (*start, text.as_str()))
+        .unwrap_or((map.rendered_len(), ""));
 
     let raw_offset_in_cell = if rend_offset_in_cell <= 1 {
         raw_leading + raw_content_col(chunk_start)
     } else {
-        let content_col = rend_offset_in_cell - 1;
-        raw_leading + raw_content_col(chunk_start + content_col.min(chunk_len))
+        // The click is a screen cell; a wide glyph before it spans two.
+        let content_col =
+            line_render::char_idx_at_cell_col(chunk_text.chars(), rend_offset_in_cell - 1, 0);
+        raw_leading + raw_content_col(chunk_start + content_col.min(chunk_text.chars().count()))
     };
 
     Some(raw_cell_start + raw_offset_in_cell.min(raw_chars.len()))
@@ -929,8 +945,12 @@ pub(super) fn preview_table_cell_band(
         last += 1;
     }
 
-    // Cell `i`'s content area is `[pipes[i] + 2, pipes[i + 1] - 1)`.
-    let pipes = table_layout::rendered_pipe_positions(&state.parsed.lines[rendered_line_idx]);
+    // `col` is a char column on the clicked line, so find the cell by char pipes; the band
+    // itself is in cells, which every sub-line of the row shares.  Cell `i`'s content area is
+    // `[pipes[i] + 2, pipes[i + 1] - 1)`.
+    let line = &state.parsed.lines[rendered_line_idx];
+    let pipes = table_layout::rendered_pipe_positions(line);
+    let pipe_cells = table_layout::rendered_pipe_cells(line);
     if pipes.len() < 2 {
         return None;
     }
@@ -938,7 +958,10 @@ pub(super) fn preview_table_cell_band(
     let cell_idx = (0..col_count)
         .find(|&i| col < pipes[i + 1])
         .unwrap_or(col_count - 1);
-    let cols = (pipes[cell_idx] + 2, (pipes[cell_idx + 1]).saturating_sub(1));
+    let cols = (
+        pipe_cells[cell_idx] + 2,
+        (pipe_cells[cell_idx + 1]).saturating_sub(1),
+    );
     if cols.0 >= cols.1 {
         return None;
     }
@@ -978,11 +1001,14 @@ pub(super) fn table_cell_char_range_at(
     ))
 }
 
-/// Upper bound for clamping a click past the end of a rendered line.  Returns the full char
-/// count regardless of sub-row: conservative (keeps clicks off the next line) and only loses
+/// Upper bound for clamping a click past the end of a rendered line.  Returns the full width
+/// in cells regardless of sub-row: conservative (keeps clicks off the next line) and only loses
 /// precision deep in the padding of wrapped lines.
 fn line_row_width(line: &Line<'_>, _sub_row: usize) -> usize {
-    line.spans.iter().map(|s| s.content.chars().count()).sum()
+    line.spans
+        .iter()
+        .map(|s| table_layout::str_cells(&s.content))
+        .sum()
 }
 
 #[cfg(test)]
@@ -993,6 +1019,84 @@ mod tests {
 
     fn theme() -> &'static Theme {
         Box::leak(Box::new(Theme::default()))
+    }
+
+    /// The band is built in cells so every sub-line of the row can share it.
+    #[test]
+    fn preview_table_cell_band_is_in_cells() {
+        let st = preview_state("| 日本 | ab |\n|---|---|\n| x | y |\n", 40);
+        let header = st
+            .parsed
+            .lines
+            .iter()
+            .position(|l| l.spans.iter().any(|s| s.content.contains('日')))
+            .expect("header line");
+        // Cells: │0 ␠1 日本2-5 ␠6 │7 ␠8 a9 b10 ␠11 ␠12 │13; `b` is char 8.
+        let band = preview_table_cell_band(&st, header, 8).expect("inside a cell");
+        assert_eq!(band.cols, (9, 12));
+    }
+
+    /// A Preview click is a screen cell, and the selection column it seeds is a char column:
+    /// past two wide glyphs the two differ by two, so `b` (cell 10) must be char 8, not the
+    /// `│` at char 10, and the pad cell at cell 6 belongs to the first cell, not the second.
+    #[test]
+    fn preview_click_maps_screen_cells_past_wide_glyphs() {
+        let st = preview_state("| 日本 | ab |\n|---|---|\n| x | y |\n", 40);
+        let header = st
+            .parsed
+            .lines
+            .iter()
+            .position(|l| l.spans.iter().any(|s| s.content.contains('日')))
+            .expect("header line");
+        // Cells: │0 ␠1 日2-3 本4-5 ␠6 │7 ␠8 a9 b10 ␠11 │12
+        // Chars: │0 ␠1 日2   本3   ␠4 │5 ␠6 a7 b8  ␠9  │10
+        let click = |col| rendered_click_to_line_col(&st, col, header, 40);
+        assert_eq!(click(10), Some((header, 8)));
+        assert_eq!(click(2), Some((header, 2)), "left half of 日");
+        assert_eq!(
+            click(3),
+            Some((header, 3)),
+            "right half of 日 lands after it"
+        );
+        let (_, pad) = click(6).unwrap();
+        let band = preview_table_cell_band(&st, header, pad).expect("inside a cell");
+        assert_eq!(band.cols, (2, 6), "the first cell's content area");
+    }
+
+    /// Hit-testing takes the glyph under either half of a wide glyph, and still declines the
+    /// blank cells past the end of the row.
+    #[test]
+    fn preview_hit_test_covers_both_halves_of_a_wide_glyph() {
+        let st = preview_state("日本x\n", 40);
+        let hit = |col| rendered_click_to_line_col_on_text(&st, col, 0, 40);
+        assert_eq!(hit(0), Some((0, 0)));
+        assert_eq!(hit(1), Some((0, 0)), "right half of 日");
+        assert_eq!(hit(3), Some((0, 1)), "right half of 本");
+        assert_eq!(hit(4), Some((0, 2)));
+        assert_eq!(hit(5), None, "past the text");
+    }
+
+    /// A click is a screen cell: a wide glyph in the cell to the left moves the later cells two
+    /// columns per glyph, and a click on a glyph's right half lands after it.
+    #[test]
+    fn table_click_maps_screen_cells_past_wide_glyphs() {
+        let raw = "| 日本 | ab |";
+        // Cells: │0 ␠1 日2-3 本4-5 ␠6 │7 ␠8 a9 b10 ␠11 │12
+        let line = Line::from("│ 日本 │ ab │");
+        let raw_col = |c: char| raw.chars().position(|x| x == c).unwrap();
+        assert_eq!(
+            table_click_to_raw_col(raw, &line, 10, 0),
+            Some(raw_col('b'))
+        );
+        assert_eq!(table_click_to_raw_col(raw, &line, 9, 0), Some(raw_col('a')));
+        assert_eq!(
+            table_click_to_raw_col(raw, &line, 2, 0),
+            Some(raw_col('日'))
+        );
+        assert_eq!(
+            table_click_to_raw_col(raw, &line, 3, 0),
+            Some(raw_col('本'))
+        );
     }
 
     /// Preview state with paragraph reflow reconciled, as `App::prepare_viewport` does each frame.

@@ -486,8 +486,9 @@ impl EditorState {
                 let mut col_end = if row == er { ec.min(row_len) } else { row_len };
                 // A cell-banded selection counts only the band, matching what copy extracts.
                 if let Some(band) = vs.band {
-                    col_start = col_start.max(band.cols.0);
-                    col_end = col_end.min(band.cols.1.min(row_len));
+                    let (lo, hi) = band.char_cols(line);
+                    col_start = col_start.max(lo);
+                    col_end = col_end.min(hi.min(row_len));
                 }
                 chars += col_end.saturating_sub(col_start);
                 lines += 1;

@@ -8,7 +8,8 @@ use ratatui::{
 use crate::config::Theme;
 use crate::editor::table_edit;
 use crate::editor::EditorState;
-use crate::markdown::table_layout::CellOverlay;
+use crate::markdown::table_layout::{char_cells, CellOverlay};
+use crate::ui::line_render;
 
 use super::raw_text::{raw_line_byte_start, raw_source_lines};
 use crate::markdown::code_layout::{code_raw_col_to_rendered_col, is_code_fence_row};
@@ -561,8 +562,9 @@ pub(crate) fn paint_yank_flash(editor: &EditorState, buf: &mut TuiBuf, area: Rec
     }
 }
 
-/// Paint `sel_bg` onto the rendered cells for rendered char cols in
-/// `[start_col, end_col)`, walking each visual row of the wrapped line.
+/// Paint `sel_bg` onto the rendered cells for rendered char cols in `[start_col, end_col)`,
+/// with `y_start` relative to `area` — [`line_render::patch_char_cols`] in this view's
+/// coordinates.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_cols_on_line(
     line: &Line<'_>,
@@ -575,48 +577,16 @@ pub(super) fn paint_cols_on_line(
     end_col: usize,
     sel_bg: Style,
 ) {
-    let width = area.width as usize;
-    if width == 0 || end_col <= start_col {
-        return;
-    }
-    let chars: Vec<(char, Style)> = line
-        .spans
-        .iter()
-        .flat_map(|span| {
-            let style = span.style;
-            span.content.chars().map(move |c| (c, style))
-        })
-        .collect();
-    let indent = crate::ui::line_render::compute_hanging_indent(line);
-    let rows = crate::ui::line_render::visual_rows_of_chars(&chars, width, indent);
-    for (painted_off, (row_off, &(row_start, row_end, _))) in
-        rows.iter().enumerate().skip(skip_rows).enumerate()
-    {
-        if painted_off as u16 >= rows_used {
-            break;
-        }
-        let y = area.y + y_start + painted_off as u16;
-        if y >= area.y + area.height {
-            break;
-        }
-        let row_sel_start = start_col.max(row_start);
-        let row_sel_end = end_col.min(row_end);
-        if row_sel_start >= row_sel_end {
-            continue;
-        }
-        // Continuation rows are pre-padded with `indent` cells; shift by the same amount.
-        let row_indent = if row_off == 0 { 0 } else { indent };
-        for i in row_sel_start..row_sel_end {
-            let x_off = row_indent + (i - row_start);
-            let x = area.x + x_off as u16;
-            if x >= area.x + area.width {
-                break;
-            }
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_style(cell.style().patch(sel_bg));
-            }
-        }
-    }
+    line_render::patch_char_cols(
+        line,
+        buf,
+        area,
+        area.y + y_start,
+        rows_used,
+        skip_rows,
+        start_col..end_col,
+        sel_bg,
+    );
 }
 
 /// Paint `overlay.raw_text` into the cell's rendered column range, directly into the buffer
@@ -636,21 +606,34 @@ pub(super) fn overlay_raw_cell(
         return;
     }
     let abs_y = area.y + visual_y;
-    let cell_width = overlay.rendered_end.saturating_sub(overlay.rendered_start);
-    let raw_chars: Vec<char> = overlay.raw_text.chars().collect();
+    let area_end = area.x.saturating_add(area.width);
     // Strip `theme.normal`'s bg so the table-row stripe under the cell survives.
     let base_style = Style {
         bg: None,
         ..theme.normal
     };
 
-    for i in 0..cell_width {
-        let col = overlay.rendered_start + i;
+    // Walk chars (indices address `raw_text`, then one blank cell each past its end) while
+    // advancing by cells, so a wide glyph takes two and the right border stays put.
+    let mut chars = overlay.raw_text.chars();
+    let mut col = overlay.rendered_start;
+    let mut i = 0usize;
+    while col < overlay.rendered_end {
+        let mut ch = chars.next().unwrap_or(' ');
+        let mut w = char_cells(ch);
+        if w == 0 {
+            // Zero-width chars merge into the preceding glyph, as in `line_render::paint_row`.
+            i += 1;
+            continue;
+        }
+        if col + w > overlay.rendered_end {
+            // Never straddle the border: blank the last cell instead.
+            (ch, w) = (' ', 1);
+        }
         let abs_x = area.x.saturating_add(col as u16);
-        if abs_x >= area.x.saturating_add(area.width) {
+        if abs_x >= area_end {
             break;
         }
-        let ch = raw_chars.get(i).copied().unwrap_or(' ');
         let mut style = base_style;
         if matches!(selection_cols, Some((s, e)) if i >= s && i < e) {
             style = style.patch(theme.selection);
@@ -665,6 +648,8 @@ pub(super) fn overlay_raw_cell(
             cell.set_char(ch);
             cell.set_style(style);
         }
+        col += w;
+        i += 1;
     }
 }
 
@@ -673,6 +658,51 @@ mod tests {
     use super::*;
 
     use crate::config::Theme;
+
+    fn overlay(start: usize, end: usize, raw: &str, cursor: Option<usize>) -> CellOverlay {
+        CellOverlay {
+            rendered_start: start,
+            rendered_end: end,
+            raw_text: raw.to_owned(),
+            cursor_in_cell: cursor,
+            raw_cell_byte_start: 0,
+        }
+    }
+
+    fn painted(ov: &CellOverlay, cursor: Style) -> TuiBuf {
+        let area = Rect::new(0, 0, 10, 1);
+        let mut buf = TuiBuf::empty(area);
+        for x in 0..10 {
+            buf[(x, 0)].set_char('x');
+        }
+        overlay_raw_cell(&mut buf, area, 0, ov, None, &Theme::default(), Some(cursor));
+        buf
+    }
+
+    /// A wide raw glyph advances two cells, so the chars after it and the cursor land where
+    /// the terminal draws them and the right border is untouched.
+    #[test]
+    fn overlay_raw_cell_advances_by_cells() {
+        let cursor = Style::default().bg(ratatui::style::Color::Magenta);
+        let buf = painted(&overlay(1, 6, "日a", Some(1)), cursor);
+        assert_eq!(buf[(1, 0)].symbol(), "日");
+        assert_eq!(buf[(3, 0)].symbol(), "a");
+        assert_eq!(buf[(3, 0)].bg, ratatui::style::Color::Magenta);
+        assert_eq!(buf[(4, 0)].symbol(), " ");
+        assert_eq!(buf[(5, 0)].symbol(), " ");
+        assert_eq!(
+            buf[(6, 0)].symbol(),
+            "x",
+            "the border cell is not the overlay's"
+        );
+    }
+
+    #[test]
+    fn overlay_raw_cell_blanks_a_glyph_that_would_straddle_the_border() {
+        let buf = painted(&overlay(1, 4, "ab日", None), Style::default());
+        assert_eq!(buf[(3, 0)].symbol(), " ");
+        assert_eq!(buf[(4, 0)].symbol(), "x");
+    }
 
     #[test]
     fn make_raw_line_keeps_source_text_verbatim() {

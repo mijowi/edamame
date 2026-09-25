@@ -6,11 +6,20 @@ use edamame::config::Theme;
 /// that alters rendered output to review and accept updated snapshots.
 use edamame::markdown::parser::parse;
 use edamame::markdown::renderer::Renderer;
+use edamame::markdown::table_layout::str_cells;
+use proptest::prelude::*;
+
+/// Render `md` at an arbitrary viewport width (terminal columns).
+fn render_at(md: &str, viewport: usize) -> Vec<ratatui::text::Line<'static>> {
+    let theme = Theme::default();
+    let blocks = parse(md);
+    Renderer::new(&theme)
+        .with_viewport_width(viewport)
+        .render(&blocks)
+}
 
 fn render(md: &str) -> Vec<ratatui::text::Line<'static>> {
-    let theme = Box::leak(Box::new(Theme::default()));
-    let blocks = parse(md);
-    Renderer::new(theme).render(&blocks)
+    render_at(md, 80)
 }
 
 /// Collect all text content from a rendered line (spans concatenated).
@@ -935,4 +944,161 @@ fn display_math_paragraph_renders_as_a_math_code_block_without_promotion() {
         !text.contains("$$"),
         "the styled block hides the `$$` delimiters (they reveal on cursor), got: {text:?}"
     );
+}
+
+// ── Table column widths are display columns ──────────────────────────────────
+
+/// Terminal cells a rendered line occupies as `line_render` paints it — two per CJK glyph.
+fn line_cells(line: &ratatui::text::Line<'_>) -> usize {
+    str_cells(&line_text(line))
+}
+
+fn table_widths(lines: &[ratatui::text::Line<'static>]) -> Vec<usize> {
+    lines
+        .iter()
+        .filter(|l| {
+            matches!(
+                line_text(l).chars().next(),
+                Some('┌' | '│' | '├' | '┝' | '└')
+            )
+        })
+        .map(line_cells)
+        .collect()
+}
+
+/// A cell holding ten wide glyphs is twenty columns of content, not ten: every line of the
+/// table — top rule, header, header rule, data row, bottom rule — must therefore occupy the
+/// same number of terminal columns.  Measuring a cell in `chars` sizes the column at half its
+/// content width, so the header row spills past the closing border.
+#[test]
+fn cjk_table_lines_all_span_the_border_width() {
+    // Ten wide glyphs = 20 content columns; box = "│ " + 20 + " │" = 24.
+    let wide = "哈".repeat(10);
+    let lines = render_at(&format!("| {wide} |\n| --- |\n| 值 |\n"), 40);
+    let widths = table_widths(&lines);
+    assert!(
+        widths.len() >= 4,
+        "expected a bordered table, got {widths:?}"
+    );
+    assert!(
+        widths.iter().all(|w| *w == 24),
+        "every table line must be 24 columns wide (20 content + padding + borders), got {widths:?}"
+    );
+}
+
+/// CJK prose has no spaces, but it breaks between any two glyphs — so a viewport narrower than
+/// the cell content must narrow the column and wrap the glyph run, not push the table past the
+/// right edge.  The budget for one column is `viewport - 4` (two pad cells, two borders).
+#[test]
+fn cjk_table_shrinks_into_a_narrow_viewport() {
+    let wide = "哈".repeat(10);
+    let lines = render_at(&format!("| {wide} |\n| --- |\n| 值 |\n"), 12);
+    let widths = table_widths(&lines);
+    assert!(
+        widths.iter().all(|w| *w == 12),
+        "every table line must fill the 12-column viewport without exceeding it, got {widths:?}"
+    );
+}
+
+/// Every line of the table (rules and rows) shares one width, and that width is `expected`.
+fn assert_table_width(md: &str, viewport: usize, expected: usize) {
+    let widths = table_widths(&render_at(md, viewport));
+    assert!(
+        widths.len() >= 4,
+        "expected a bordered table, got {widths:?}"
+    );
+    assert!(
+        widths.iter().all(|w| *w == expected),
+        "every table line must be {expected} cells at viewport {viewport}, got {widths:?}"
+    );
+}
+
+const MIXED_TABLE: &str = "| Name | 説明 | Notes |\n|---|---|---|\n\
+    | apple | 赤い果物です | crisp and sweet |\n\
+    | 梨 | pear | 日本の梨はとても甘い |\n";
+
+/// Mixed CJK / ASCII columns stay aligned as the viewport narrows, and fill it exactly while
+/// the column floors (5 + 4 + 5 cells plus 10 of borders = 24) still fit.
+#[test]
+fn mixed_cjk_table_fills_every_viewport_down_to_its_floor() {
+    for viewport in [24, 30, 40] {
+        assert_table_width(MIXED_TABLE, viewport, viewport);
+    }
+    // Below the floor the table overflows, but still as one straight box.
+    assert_table_width(MIXED_TABLE, 16, 24);
+}
+
+/// A CJK column narrows to its widest glyph: one 2-cell glyph per row in a 3-cell column.
+#[test]
+fn cjk_column_narrows_to_a_single_glyph() {
+    let md = format!("| {} |\n| --- |\n| 値 |\n", "哈".repeat(10));
+    assert_table_width(&md, 7, 7);
+}
+
+/// Emoji built from several chars size their column at the width `line_render` paints them:
+/// VS16 adds nothing and a ZWJ family is its three members.
+#[test]
+fn multi_char_emoji_cells_stay_aligned() {
+    let heart = "| a \u{2764}\u{FE0F} b |\n| --- |\n| x |\n";
+    assert_table_width(heart, 80, 9);
+    let family = "| \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} fam |\n| --- |\n| x |\n";
+    assert_table_width(family, 80, 14);
+}
+
+/// A cluster wider than a pinned column truncates, and the row is padded back to the column's
+/// width even when the dropped glyph was wide.
+#[test]
+fn truncated_wide_cluster_keeps_the_row_full_width() {
+    let md = "| \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} |\n| --- |\n| x |\n\
+              <!-- tui-columns: [4] -->\n";
+    let lines = render_at(md, 80);
+    assert!(
+        lines.iter().any(|l| line_text(l).contains('…')),
+        "fixture must hit the truncation path"
+    );
+    assert_table_width(md, 80, 8);
+}
+
+/// Cell text drawn from ASCII words, CJK, and multi-char emoji.
+fn cell_text() -> impl Strategy<Value = String> {
+    let piece = prop_oneof![
+        Just("word"),
+        Just("a"),
+        Just("日本語"),
+        Just("表"),
+        Just("\u{2764}\u{FE0F}"),
+        Just("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"),
+        Just("`code`"),
+        Just("é"),
+    ];
+    prop::collection::vec((piece, any::<bool>()), 1..6).prop_map(|parts| {
+        parts
+            .into_iter()
+            .map(|(p, spaced)| {
+                if spaced {
+                    format!("{p} ")
+                } else {
+                    p.to_owned()
+                }
+            })
+            .collect::<String>()
+            .trim()
+            .to_owned()
+    })
+}
+
+proptest! {
+    /// Whatever the content and viewport, every line of a table paints the same width.
+    #[test]
+    fn proptest_table_lines_share_one_width(
+        cells in prop::collection::vec(cell_text(), 4),
+        viewport in 8usize..60,
+    ) {
+        let md = format!(
+            "| {} | {} |\n|---|---|\n| {} | {} |\n",
+            cells[0], cells[1], cells[2], cells[3]
+        );
+        let widths = table_widths(&render_at(&md, viewport));
+        prop_assert!(widths.windows(2).all(|w| w[0] == w[1]), "{md:?} @ {viewport}: {widths:?}");
+    }
 }

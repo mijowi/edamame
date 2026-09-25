@@ -223,8 +223,9 @@ pub fn visual_selection_to_rendered_text(sel: VisualSelection, lines: &[Line<'_>
             chars.len()
         };
         if let Some(band) = sel.band {
-            lo = lo.max(band.cols.0);
-            hi = hi.min(band.cols.1);
+            let (band_lo, band_hi) = band.char_cols(line);
+            lo = lo.max(band_lo);
+            hi = hi.min(band_hi);
         }
         let lo = lo.min(chars.len());
         let hi = hi.min(chars.len());
@@ -246,7 +247,23 @@ pub fn visual_selection_to_rendered_text(sel: VisualSelection, lines: &[Line<'_>
 #[cfg(test)]
 mod marker_expansion_tests {
     use super::*;
-    use crate::document::Buffer;
+    use crate::document::{Buffer, CellBand};
+
+    /// Copying a banded selection takes the same cell from every sub-line, although the sub-lines
+    /// put it at different char columns.
+    #[test]
+    fn banded_copy_takes_the_cell_from_every_sub_line() {
+        let lines = [Line::from("│ 日本 │ ab │"), Line::from("│ 語   │ cd │")];
+        let sel = VisualSelection {
+            anchor: (0, 7),
+            active: (1, 10),
+            band: Some(CellBand {
+                lines: (0, 1),
+                cols: (9, 11),
+            }),
+        };
+        assert_eq!(visual_selection_to_rendered_text(sel, &lines), "ab cd");
+    }
 
     /// Regression: the marker probe must not panic when the adjacent bytes fall inside a
     /// multibyte char.  Selecting `b` puts the 1-byte-marker probe at source[2..3], inside the

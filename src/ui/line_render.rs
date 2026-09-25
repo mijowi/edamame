@@ -639,6 +639,73 @@ pub fn visual_rows_for_line(line: &Line<'_>, width: usize) -> usize {
     visual_rows_of_chars(&chars, width, indent).len().max(1)
 }
 
+/// Patch `style` onto the screen cells of `line`'s chars in `cols` (char columns), walking the
+/// line's wrapped rows as [`render_line`] lays them out at `area.width`.  `y_first` is the
+/// absolute row of the first painted sub-row, `skip_rows` the sub-rows scrolled off above it,
+/// and `rows_used` how many the line painted.  A wide glyph gets both its cells; trailing
+/// padding is never touched.  The one highlight painter behind Preview selection and Rendered
+/// search / selection.
+#[allow(clippy::too_many_arguments)]
+pub fn patch_char_cols(
+    line: &Line<'_>,
+    buf: &mut TuiBuf,
+    area: Rect,
+    y_first: u16,
+    rows_used: u16,
+    skip_rows: usize,
+    cols: std::ops::Range<usize>,
+    style: Style,
+) {
+    let width = area.width as usize;
+    if width == 0 || cols.is_empty() {
+        return;
+    }
+    let chars: Vec<(char, Style)> = line
+        .spans
+        .iter()
+        .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
+        .collect();
+    let indent = compute_hanging_indent(line);
+    let rows = visual_rows_of_chars(&chars, width, indent);
+    for (painted_off, (row_off, &(row_start, row_end, _))) in
+        rows.iter().enumerate().skip(skip_rows).enumerate()
+    {
+        if painted_off as u16 >= rows_used {
+            break;
+        }
+        let y = y_first + painted_off as u16;
+        if y >= area.y + area.height {
+            break;
+        }
+        let sel_start = cols.start.max(row_start);
+        let sel_end = cols.end.min(row_end);
+        if sel_start >= sel_end {
+            continue;
+        }
+        // Continuation rows are pre-padded with `indent` blank cells.  Columns are chars; the
+        // screen advances by cells, two for a wide glyph.
+        let row_indent = if row_off == 0 { 0 } else { indent };
+        let mut x_off = row_indent
+            + chars[row_start..sel_start]
+                .iter()
+                .map(|&(c, _)| char_cells(c))
+                .sum::<usize>();
+        for &(ch, _) in &chars[sel_start..sel_end] {
+            let w = char_cells(ch);
+            for dx in 0..w {
+                let x = area.x + (x_off + dx) as u16;
+                if x >= area.x + area.width {
+                    break;
+                }
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_style(cell.style().patch(style));
+                }
+            }
+            x_off += w;
+        }
+    }
+}
+
 /// Hanging indent in cells: the column where text begins after a list marker, so
 /// continuation rows align under it and the marker hangs off to the left.
 ///
@@ -778,7 +845,24 @@ pub fn sub_line_of_col(rows: &[(usize, usize, usize)], raw_col: usize) -> (usize
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Color;
     use ratatui::text::Span;
+
+    /// Highlight columns are chars; the painter places them in cells, so `a` after two wide
+    /// glyphs sits at cell 4, and a highlighted wide glyph covers both its cells.
+    #[test]
+    fn patch_char_cols_places_char_columns_in_cells() {
+        let sel = Style::default().bg(Color::Magenta);
+        let area = Rect::new(0, 0, 10, 1);
+        let mut buf = TuiBuf::empty(area);
+        patch_char_cols(&Line::from("日本ab"), &mut buf, area, 0, 1, 0, 1..3, sel);
+        let bg = |x: u16| buf[(x, 0)].bg;
+        assert_ne!(bg(1), Color::Magenta);
+        assert_eq!(bg(2), Color::Magenta);
+        assert_eq!(bg(3), Color::Magenta);
+        assert_eq!(bg(4), Color::Magenta, "`a` is at cell 4");
+        assert_ne!(bg(5), Color::Magenta);
+    }
 
     #[test]
     fn visual_rows_short_line() {

@@ -603,3 +603,14 @@ fn build_snapshots_does_not_panic_after_inline_emoji_paste() {
     // "byte index N is not a char boundary".
     let _ = table_view::build_snapshots(&st, Rect::new(0, 0, 80, 24), false);
 }
+
+/// Resize and cell hit ranges are screen geometry: the `日本` column is six cells wide
+/// (` 日本 `), so the second column starts at cell 8, not at its char position 6.
+#[test]
+fn column_hit_ranges_are_measured_in_cells() {
+    let src = "| 日本 | ab |\n|---|---|\n| x | y |\n";
+    let st = editor_at(src, "x");
+    let snaps = table_view::build_snapshots(&st, Rect::new(0, 0, 80, 24), false);
+    let snap = snaps.first().expect("a table snapshot");
+    assert_eq!(snap.col_ranges, vec![1..7, 8..13]);
+}
