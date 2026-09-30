@@ -10,15 +10,64 @@
   <a href="https://github.com/mijowi/edamame/blob/main/LICENSE"><img src="https://img.shields.io/crates/l/edamame.svg" alt="License: Apache-2.0" height="20"></a>
 </p>
 
+**Jump to:**
+1. [Docs](#documentation)
+2. [Installation](#installation)
+3. [Terminal Support](#terminal-support)
+
 ![Animation of clicking through a rendered document to reveal the raw Markdown on each line](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/edamame_hero.gif)
 
-edamame shows your document *rendered* with headings, drawn table grids, inline images, and more — while you edit it. Only the line your cursor is on drops to raw Markdown, and it snaps back the moment you move away.
+edamame shows your document *rendered* with headings, drawn table grids, inline images, and more — while you work on it. Only the line your cursor is on drops to raw Markdown, for easy editing.
 
 ---
 
 ## Demo
 
 <https://github.com/user-attachments/assets/85e2a303-08d6-4122-9f1f-18975613a127>
+
+---
+
+## Features
+
+- **Hybrid rendered/raw editing** — the document stays formatted; only the cursor's line shows its source
+- **Real table editing** — tables render as a grid, you edit cell by cell, `Tab` between cells, drag with the mouse to reorder or resize
+- **Inline images, Mermaid diagrams, and LaTeX math** on terminals that support them
+- **Search and replace**, with smartcase navigation
+- **Diff review for external changes** — when something else writes your file, accept or reject each change hunk by hunk instead of losing work
+- **Vim mode**, optional — motions, operators, text objects, `:s` with a live preview
+- **27 themes**, and a documented format for writing your own
+- **HTML export**, self-contained or linked
+- **Footnotes, task lists, list continuation and renumbering**
+- Mouse support, fuzzy command palette, jump-to-heading, navigation history
+
+### The hybrid view
+
+The document stays formatted while you work. The cursor's line shows its source, and renders again as soon as you leave it — so list markers, emphasis and links are editable in place without turning the page into syntax.
+
+![Editing a list in edamame, with the cursor's line showing raw Markdown while the rest stays rendered](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/raw_reveal_and_list_ops.gif)
+
+### Tables as grids
+
+Tables are drawn, not printed as pipes. `Tab` walks the cells, rows and columns can be added or removed in place, and the mouse can drag a divider to resize or a handle to reorder.
+
+![Reordering and resizing columns in an edamame table with the mouse](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/table_ops.gif)
+
+### Themes
+
+27 built in, and a documented TOML format for writing your own.
+
+![A grid of edamame's built-in themes](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/themes.jpg)
+
+## Documentation
+
+- [Getting started](https://github.com/mijowi/edamame/blob/main/docs/getting-started.md) — first run, the three view modes, reading the status bar
+- [Editing](https://github.com/mijowi/edamame/blob/main/docs/editing.md) — tables, lists, links, footnotes, search, diff review, images, export
+- [Keybindings](https://github.com/mijowi/edamame/blob/main/docs/keybindings.md) — every default chord and how to change it
+- [Terminal compatibility](https://github.com/mijowi/edamame/blob/main/docs/terminal-compatibility.md) — what depends on your terminal, and what to do about each gap
+- [Configuration](https://github.com/mijowi/edamame/blob/main/docs/configuration.md) — every setting
+- [Themes](https://github.com/mijowi/edamame/blob/main/docs/themes.md) — switching, and writing your own
+- [Vim mode](https://github.com/mijowi/edamame/blob/main/docs/vim-mode.md) — what's supported and how it differs from Vim
+- [Security](https://github.com/mijowi/edamame/blob/main/docs/security.md) — what protects you when you open a document you didn't write
 
 ## Installation
 
@@ -85,48 +134,6 @@ curl -LsSf https://raw.githubusercontent.com/mijowi/edamame/main/uninstall.sh | 
 ```
 
 It removes the binary (unless Homebrew or Cargo manages it, in which case it prints the right command instead) and then **asks** before touching your config and data — keeping them by default. Add `--purge` to remove everything without prompting, or `--yes` to remove only the binary.
-
-## Documentation
-
-- [Getting started](https://github.com/mijowi/edamame/blob/main/docs/getting-started.md) — first run, the three view modes, reading the status bar
-- [Editing](https://github.com/mijowi/edamame/blob/main/docs/editing.md) — tables, lists, links, footnotes, search, diff review, images, export
-- [Keybindings](https://github.com/mijowi/edamame/blob/main/docs/keybindings.md) — every default chord and how to change it
-- [Terminal compatibility](https://github.com/mijowi/edamame/blob/main/docs/terminal-compatibility.md) — what depends on your terminal, and what to do about each gap
-- [Configuration](https://github.com/mijowi/edamame/blob/main/docs/configuration.md) — every setting
-- [Themes](https://github.com/mijowi/edamame/blob/main/docs/themes.md) — switching, and writing your own
-- [Vim mode](https://github.com/mijowi/edamame/blob/main/docs/vim-mode.md) — what's supported and how it differs from Vim
-- [Security](https://github.com/mijowi/edamame/blob/main/docs/security.md) — what protects you when you open a document you didn't write
-
-## Features
-
-- **Hybrid rendered/raw editing** — the document stays formatted; only the cursor's line shows its source
-- **Real table editing** — tables render as a grid, you edit cell by cell, `Tab` between cells, drag with the mouse to reorder or resize
-- **Inline images, Mermaid diagrams, and LaTeX math** on terminals that support them
-- **Search and replace**, with smartcase navigation
-- **Diff review for external changes** — when something else writes your file, accept or reject each change hunk by hunk instead of losing work
-- **Vim mode**, optional — motions, operators, text objects, `:s` with a live preview
-- **27 themes**, and a documented format for writing your own
-- **HTML export**, self-contained or linked
-- **Footnotes, task lists, list continuation and renumbering**
-- Mouse support, fuzzy command palette, jump-to-heading, navigation history
-
-### The hybrid view
-
-The document stays formatted while you work. The cursor's line shows its source, and renders again as soon as you leave it — so list markers, emphasis and links are editable in place without turning the page into syntax.
-
-![Editing a list in edamame, with the cursor's line showing raw Markdown while the rest stays rendered](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/raw_reveal_and_list_ops.gif)
-
-### Tables as grids
-
-Tables are drawn, not printed as pipes. `Tab` walks the cells, rows and columns can be added or removed in place, and the mouse can drag a divider to resize or a handle to reorder.
-
-![Reordering and resizing columns in an edamame table with the mouse](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/table_ops.gif)
-
-### Themes
-
-27 built in, and a documented TOML format for writing your own.
-
-![A grid of edamame's built-in themes](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/themes.jpg)
 
 ## Terminal support
 
