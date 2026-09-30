@@ -4,12 +4,20 @@
 use std::time::{Duration, Instant};
 
 use crate::editor::RAW_REVEAL_DELAY;
+use crate::terminal::ImageProtocol;
 
 use super::App;
 
 /// After scrolling stops for this long, images upgrade from halfblocks back to the native
 /// protocol.  Must exceed the typical wheel-tick gap (well under 50 ms).
 pub(super) const SCROLL_QUIESCE: Duration = Duration::from_millis(150);
+
+/// [`SCROLL_QUIESCE`] on a Sixel terminal, which has no image store: every upgrade re-sends each
+/// visible image in full, measured at 1.3-2.2 MB and ~300-450 ms of terminal time in foot
+/// (the write, plus the next frame's write stalling while foot finishes decoding).  No input is
+/// read meanwhile, so a scroll resumed inside that window is applied late, in one jump.  The
+/// longer wait keeps a slow scroll's short pauses from each paying that cost.
+pub(super) const SIXEL_SCROLL_QUIESCE: Duration = Duration::from_millis(400);
 
 /// Minimum interval between `terminal.draw()` calls (~60 fps); events still mutate state
 /// in between and show up on the next draw.
@@ -28,11 +36,20 @@ impl App {
     /// Record a scroll; the image painter falls back to halfblocks while scrolling.
     pub(super) fn mark_scrolling(&mut self) {
         self.last_scroll_at = Some(Instant::now());
+        self.settle_frame_pending = true;
     }
 
-    /// True when `mark_scrolling` has fired within `SCROLL_QUIESCE`.
+    /// True when `mark_scrolling` has fired within the protocol's quiesce window.
     pub(super) fn is_scrolling(&self) -> bool {
-        is_scrolling_within(self.last_scroll_at, SCROLL_QUIESCE)
+        is_scrolling_within(self.last_scroll_at, self.scroll_quiesce())
+    }
+
+    /// How long scrolling must stop before images upgrade back to the native protocol.
+    fn scroll_quiesce(&self) -> Duration {
+        match self.capabilities.image_protocol {
+            Some(ImageProtocol::Sixel) => SIXEL_SCROLL_QUIESCE,
+            _ => SCROLL_QUIESCE,
+        }
     }
 
     /// Earliest instant the event loop must wake to apply a time-driven change, or `None`
@@ -50,7 +67,7 @@ impl App {
                 .cursor_block_entered_at
                 .map(|t| t + RAW_REVEAL_DELAY),
         );
-        push(self.last_scroll_at.map(|t| t + SCROLL_QUIESCE));
+        push(self.last_scroll_at.map(|t| t + self.scroll_quiesce()));
         push(self.resize_quiesce_at);
         push(self.transient_deadline());
         push(self.editor.cursor_blink.next_toggle());
@@ -97,5 +114,13 @@ mod tests {
             Some(now),
             Duration::from_millis(10_000)
         ));
+    }
+
+    #[test]
+    fn sixel_waits_longer_before_upgrading() {
+        let mut app = crate::app::test_utils::make_app();
+        assert_eq!(app.scroll_quiesce(), SCROLL_QUIESCE);
+        app.capabilities.image_protocol = Some(ImageProtocol::Sixel);
+        assert_eq!(app.scroll_quiesce(), SIXEL_SCROLL_QUIESCE);
     }
 }

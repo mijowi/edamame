@@ -169,6 +169,10 @@ pub struct App {
     /// Timestamp of the last scroll change.  `is_scrolling` reads it to fall back to halfblocks
     /// mid-scroll rather than re-encoding Sixel / iTerm2 graphics per frame.  Cleared on resize.
     last_scroll_at: Option<Instant>,
+    /// A scroll has happened and the first frame after its quiesce window — the one that upgrades
+    /// images back to the native protocol — has not been drawn yet.  That frame can be megabytes
+    /// on a Sixel terminal, so `App::defer_settle_frame` holds it while input is queued.
+    settle_frame_pending: bool,
     /// An `ImageReady` updated the cache but the parse hasn't caught up to the new row count.
     /// Consumed next iteration, coalescing N simultaneous decodes into one `refresh_parsed`.
     images_dirty: bool,
@@ -634,6 +638,7 @@ impl App {
             resize_tx: None,
             app_tx: None,
             last_scroll_at: None,
+            settle_frame_pending: false,
             last_draw_at: None,
             last_area_width: 0,
             last_doc_height: 0,
@@ -775,7 +780,7 @@ impl App {
             self.prepare_viewport(&dims);
 
             let since_draw = self.last_draw_at.map(|t| t.elapsed());
-            if self.should_draw(since_draw) {
+            if self.should_draw(since_draw) && !self.defer_settle_frame(&rx) {
                 self.draw_frame(&mut terminal)?;
             }
 

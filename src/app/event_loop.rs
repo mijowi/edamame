@@ -373,6 +373,37 @@ impl App {
         self.needs_draw && throttle_ok && !resize_pending
     }
 
+    /// Whether to hold back the frame that upgrades images after a scroll, because input is
+    /// already queued.
+    ///
+    /// That frame re-sends every visible image natively — megabytes on a Sixel terminal — and the
+    /// write blocks until the terminal has consumed it, so a scroll the user has already resumed
+    /// would sit unread behind it and then land in one jump.  Handling the input first lets a
+    /// resumed scroll re-arm the quiesce window instead.  Only the settle frame is held: any other
+    /// frame is cheap, and holding every frame while input is queued could starve drawing.
+    pub(super) fn defer_settle_frame(&mut self, rx: &mpsc::Receiver<AppEvent>) -> bool {
+        self.settle_frame_pending && !self.is_scrolling() && self.term_event_queued(rx)
+    }
+
+    /// Whether a terminal event is waiting.  One read off `rx` goes to `pending_events`, so
+    /// `next_event` still delivers it in order; async events met on the way are applied as
+    /// `collect_key_burst` does.
+    fn term_event_queued(&mut self, rx: &mpsc::Receiver<AppEvent>) -> bool {
+        if !self.pending_events.is_empty() {
+            return true;
+        }
+        loop {
+            match rx.try_recv() {
+                Ok(AppEvent::Term(e)) => {
+                    self.pending_events.push_back(e);
+                    return true;
+                }
+                Ok(ev) => self.handle_async_event(ev),
+                Err(_) => return false,
+            }
+        }
+    }
+
     /// Render one frame: the editor view plus the topmost modal, updating
     /// `last_draw_at` and clearing `needs_draw`.
     pub(super) fn draw_frame(
@@ -448,6 +479,9 @@ impl App {
         })?;
         self.last_draw_at = Some(Instant::now());
         self.needs_draw = false;
+        if !is_scrolling {
+            self.settle_frame_pending = false;
+        }
         Ok(())
     }
 
@@ -623,6 +657,7 @@ impl App {
         self.view_state.preview.image_snapshots_key = None;
         self.view_state.preview.link_snapshots_key = None;
         self.last_scroll_at = None;
+        self.settle_frame_pending = false;
         // A repaint of the whole screen invalidates every native transmission,
         // even one whose rect is unchanged.
         self.editor.images.invalidate_native_paints();
@@ -1633,6 +1668,60 @@ mod tests {
             app.vim.as_ref().unwrap().cmdline.as_ref().unwrap().input,
             "abc",
             "an ex command is not a search term — no escape syntax"
+        );
+    }
+
+    // ── Settle-frame deferral ─────────────────────────────────────────────
+
+    /// An app whose scroll quiesce window has already elapsed, so its next frame is the settle
+    /// frame.  Backdated rather than slept through.
+    fn settled_app() -> crate::app::App {
+        let mut app = app_with_buffer("hi\n", 0);
+        app.mark_scrolling();
+        app.last_scroll_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        app
+    }
+
+    fn key(c: char) -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn settle_frame_is_held_while_a_term_event_is_queued() {
+        let mut app = settled_app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(crate::app::AppEvent::Term(key('j'))).unwrap();
+        assert!(app.defer_settle_frame(&rx));
+        assert_eq!(
+            app.pending_events.front(),
+            Some(&key('j')),
+            "the peeked event must be stashed, not lost"
+        );
+    }
+
+    #[test]
+    fn settle_frame_draws_when_no_input_is_queued() {
+        let mut app = settled_app();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        assert!(!app.defer_settle_frame(&rx));
+    }
+
+    #[test]
+    fn only_the_settle_frame_is_held() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(crate::app::AppEvent::Term(key('j'))).unwrap();
+
+        let mut never_scrolled = app_with_buffer("hi\n", 0);
+        assert!(
+            !never_scrolled.defer_settle_frame(&rx),
+            "no scroll, so no settle frame to hold"
+        );
+
+        let mut mid_scroll = app_with_buffer("hi\n", 0);
+        mid_scroll.mark_scrolling();
+        assert!(
+            !mid_scroll.defer_settle_frame(&rx),
+            "a frame inside the quiesce window is cheap halfblocks, never held"
         );
     }
 }
