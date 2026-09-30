@@ -680,27 +680,12 @@ impl App {
             self.editor.cursor_blink.reset();
         }
 
-        let wheel_step = self.config.editor.mouse_scroll_lines;
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 self.dispatch_modal_key(*key, dims.doc_height, dims.doc_width);
                 self.needs_draw = true;
             }
-            Event::Mouse(me) => {
-                use crossterm::event::MouseButton;
-                match me.kind {
-                    MouseEventKind::Down(MouseButton::Left) => {
-                        self.dispatch_modal_click(me.column, me.row);
-                        self.needs_draw = true;
-                    }
-                    _ => {
-                        if let Some(top) = self.modal_stack.top_mut() {
-                            top.handle_wheel(modal_wheel_delta(me, wheel_step));
-                            self.needs_draw = true;
-                        }
-                    }
-                }
-            }
+            Event::Mouse(me) => self.dispatch_modal_mouse(me),
             Event::Paste(text) => {
                 self.dispatch_modal_paste(text);
                 self.needs_draw = true;
@@ -720,6 +705,27 @@ impl App {
         }
         if let Some(path) = self.pending_open_theme_in_editor.take() {
             self.open_theme_in_editor(&path, terminal, rx);
+        }
+    }
+
+    /// Route a mouse event to the topmost modal: a left click or a wheel tick.
+    ///
+    /// Everything else — pointer motion above all, which a terminal reports once per cell crossed
+    /// — is dropped without a redraw.  No modal reacts to it, and redrawing on each one repainted
+    /// the whole dimmed screen for every cell the pointer crossed on its way to a button.
+    fn dispatch_modal_mouse(&mut self, me: &MouseEvent) {
+        if me.kind == MouseEventKind::Down(crossterm::event::MouseButton::Left) {
+            self.dispatch_modal_click(me.column, me.row);
+            self.needs_draw = true;
+            return;
+        }
+        let delta = modal_wheel_delta(me, self.config.editor.mouse_scroll_lines);
+        if delta == 0 {
+            return;
+        }
+        if let Some(top) = self.modal_stack.top_mut() {
+            top.handle_wheel(delta);
+            self.needs_draw = true;
         }
     }
 
@@ -1723,5 +1729,38 @@ mod tests {
             !mid_scroll.defer_settle_frame(&rx),
             "a frame inside the quiesce window is cheap halfblocks, never held"
         );
+    }
+
+    // ── Modal mouse routing ───────────────────────────────────────────────
+
+    /// An app with a modal open and nothing waiting to be drawn.
+    fn app_with_modal() -> crate::app::App {
+        let mut app = crate::app::test_utils::make_app();
+        assert!(
+            !app.modal_stack.is_empty(),
+            "make_app opens the welcome modal"
+        );
+        app.needs_draw = false;
+        app
+    }
+
+    #[test]
+    fn pointer_motion_over_a_modal_does_not_redraw() {
+        let mut app = app_with_modal();
+        for kind in [
+            MouseEventKind::Moved,
+            MouseEventKind::Up(crossterm::event::MouseButton::Left),
+            MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+        ] {
+            app.dispatch_modal_mouse(&mouse(kind, 1, 1));
+            assert!(!app.needs_draw, "{kind:?} must not redraw");
+        }
+    }
+
+    #[test]
+    fn wheel_over_a_modal_redraws() {
+        let mut app = app_with_modal();
+        app.dispatch_modal_mouse(&mouse(MouseEventKind::ScrollDown, 1, 1));
+        assert!(app.needs_draw);
     }
 }
