@@ -173,6 +173,11 @@ nucleo-matcher = "0.3"
 # custom-command exports (pandoc, weasyprint, …), cleaned up on drop.
 base64 = "0.23"
 tempfile = "3"
+# Allowlist sanitizer for the exported HTML body (html5ever-based, the one
+# crates.io and docs.rs use): raw HTML in a document survives export minus
+# scripts, event handlers, and code-running link schemes.  See
+# `export::html::sanitize_body` and docs/dev/security-invariants.md.
+ammonia = "4.2"
 
 # Local wall-clock time for pasted screenshots' `YYYYMMDD-HHMMSS.png` names.
 # Only `clock` is needed; the default `oldtime` / `wasmbind` / `serde` are not.

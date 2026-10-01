@@ -22,12 +22,16 @@ Each released version's section is also what ships as the GitHub release notes: 
 - edamame's bookkeeping (e.g. update-check timestamps) moved from config.toml to state.toml in your data directory. edamame migrates these values on the next launch, leaving config.toml fully hand-editable and safe to share across machines. No action needed.
 - `Ctrl-V` into a numbered list now renumbers the list, like a paste from the terminal (e.g. `Ctrl-Shift-V`) already did.
 - A self-contained HTML export can now embed images from outside the document's folder, such as a shared `../assets/` folder. edamame lists them and asks first; before, they were silently left as links.
+- HTML export keeps raw HTML such as `<details>`, `<kbd>`, `<sub>`/`<sup>` and `<img width>`, removing only what could run in a browser. Before, all raw HTML was dropped.
+- HTML export keeps links to other apps (`obsidian://`, `vscode://`, `file://`, …); only `javascript:`, `vbscript:` and `data:` links are removed. Before, anything but `http`, `https`, `mailto` and `tel` was removed.
+- Exported diagrams and formulas are now SVG instead of PNG, so they stay sharp when zoomed or printed.
 
 ### Fixed
 
 - A document with the same image twice in the source now displays it in both places, instead of only the second.
 - Copying an empty line no longer empties the system clipboard, and no longer hints "Copied".
 - CJK and other wide characters now cursor-place, render, and wrap correctly in table cells.
+- Links to a heading (`[x](#section)`) now work in HTML export. Exported headings had no anchors, so these links went nowhere.
 - An image that arrives in the document *after* it was opened now raises the images question. Previously nothing was asked unless the document contained an image at load, so the image stayed as its source line and never rendered.
 
 ## [0.1.4] - 2026-09-11

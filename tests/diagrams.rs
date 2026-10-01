@@ -349,7 +349,7 @@ fn html_export_falls_back_when_render_figures_is_false() {
     assert!(!html.contains("<figure class=\"mermaid-diagram\">"));
 }
 
-/// `$$...$$` display math exports as a rasterized `math-formula` figure
+/// `$$...$$` display math exports as an SVG `math-formula` figure
 /// (the RaTeX path is CI-safe — KaTeX faces are bundled into the shared
 /// fontdb), and falls back to a styled `language-math` code block when
 /// figures are off — the delimiters stripped, the same padded box the
@@ -362,8 +362,11 @@ fn html_export_renders_display_math_as_a_figure() {
         on.contains("<figure class=\"math-formula\">"),
         "expected a math figure, got:\n{on}"
     );
-    assert!(on.contains("src=\"data:image/png;base64,"), "got:\n{on}");
-    assert!(!on.contains("<svg"), "rasterized, never inline SVG:\n{on}");
+    assert!(
+        on.contains("src=\"data:image/svg+xml;base64,"),
+        "got:\n{on}"
+    );
+    assert!(!on.contains("<svg"), "an <img>, never inline SVG:\n{on}");
 
     let off = render_html(md, &opts(false)).expect("render");
     assert!(
@@ -393,17 +396,17 @@ fn html_export_ignores_non_mermaid_code_blocks() {
 // `cargo test --test diagrams -- --ignored mermaid_live`.
 #[test]
 #[ignore = "requires system fonts; exercises live mermaid-rs-renderer"]
-fn mermaid_live_html_export_emits_png_figure() {
+fn mermaid_live_html_export_emits_svg_figure() {
     let md = "```mermaid\nflowchart TD\nA-->B\n```\n";
     let html = render_html(md, &opts(true)).expect("render");
     assert!(
         html.contains("<figure class=\"mermaid-diagram\">"),
         "expected figure wrapper, got:\n{html}"
     );
-    // The SVG is rasterized to a PNG data URI, never inlined (see
+    // The SVG is embedded as an `<img>` data URI, never inlined (see
     // `mermaid_export_never_emits_raw_svg_or_script`).
     assert!(
-        html.contains("src=\"data:image/png;base64,"),
+        html.contains("src=\"data:image/svg+xml;base64,"),
         "got:\n{html}"
     );
     assert!(!html.contains("<svg"), "no raw SVG may reach the export");

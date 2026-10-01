@@ -381,7 +381,7 @@ mod tests {
         let outcome = rx.recv().unwrap();
         assert_eq!(outcome.unwrap(), target);
         let body = std::fs::read_to_string(&target).unwrap();
-        assert!(body.contains("<h1>hello</h1>"));
+        assert!(body.contains("<h1 id=\"hello\">hello</h1>"));
     }
 
     #[test]
@@ -433,7 +433,10 @@ mod tests {
         );
         assert_eq!(rx.recv().unwrap().unwrap(), target);
         let body = std::fs::read_to_string(&target).unwrap();
-        assert!(body.contains("<h1>hello</h1>"), "stdout was captured");
+        assert!(
+            body.contains("<h1 id=\"hello\">hello</h1>"),
+            "stdout was captured"
+        );
     }
 
     /// A no-op converter over a target left by a *previous* export must not report

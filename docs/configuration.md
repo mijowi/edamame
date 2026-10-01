@@ -235,7 +235,7 @@ These are the values the export modal opens with — for a custom target as well
 
 `inline_images` base64-embeds local images into the HTML so the file is self-contained. Off by default, partly because it makes large files and partly because an embedded file leaves your machine when you share the export. Images from outside the document's folder are listed in the export modal and embedded only if you confirm.
 
-`figures` rasterizes mermaid diagrams and `$$...$$` math to PNG and embeds them in the export. If off, each is left as its source — the Mermaid code block, or the literal `$$...$$` text.
+`figures` renders mermaid diagrams and `$$...$$` math and embeds them in the export as SVG images, which stay sharp at any zoom and in print. If off, each is left as its source in a code block.
 
 See [editing.md](editing.md#exporting).
 

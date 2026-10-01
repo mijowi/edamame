@@ -1,3 +1,7 @@
+use std::borrow::Cow;
+use std::collections::hash_map::RandomState;
+use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -9,7 +13,9 @@ use pulldown_cmark::{
 
 use super::runner::{write_atomically, ExportOutcome};
 use crate::diagram;
-use crate::image::{rasterize_svg, SvgScaleMode, SvgSizing};
+use crate::document::parsed_doc::{gfm_slug, uniquify_slug};
+use crate::image::normalize_svg;
+use crate::markdown::parser::post_pass::is_html_comment_only;
 
 /// The compiled-in stylesheet, used for [`Stylesheet::Builtin`].
 pub const BUILTIN_STYLESHEET: &str = include_str!("../../config/export/default.css");
@@ -62,7 +68,7 @@ pub struct HtmlExportOptions {
     pub approved_outside: Vec<PathBuf>,
     /// `<title>` text; `None` falls back to `"Document"`.
     pub title: Option<String>,
-    /// Render *figures* — fenced ```mermaid code blocks and `$$...$$` display math — to PNG
+    /// Render *figures* — fenced ```mermaid code blocks and `$$...$$` display math — to SVG
     /// embedded in a `<figure>` (`mermaid-diagram` / `math-formula`), each falling back to its
     /// source form on failure so the source is never lost.  Independent of this flag, inline `$…$`
     /// is always emitted as literal source, matching the terminal preview.
@@ -85,15 +91,14 @@ impl Default for HtmlExportOptions {
 /// Render `markdown` to a standalone HTML document, mirroring the in-app renderer's parser
 /// options so an export looks like the terminal preview.
 ///
-/// **Raw HTML events are filtered out before serialization** — block *and* inline — so
-/// attacker-controlled Markdown cannot inject `<script>` or other executable content.
+/// **The serialized body passes through [`sanitize_body`] before anything edamame generated is
+/// added to it.**  Raw HTML in the document survives only as far as the allowlist lets it, so
+/// attacker-controlled Markdown cannot inject `<script>`, event handlers, or a code-running link.
+/// Figures are rendered as placeholders and swapped in afterwards ([`Figures`]), so the sanitizer
+/// never sees — and can never be asked to permit — the markup edamame writes itself.
 pub fn render_html(markdown: &str, opts: &HtmlExportOptions) -> Result<String> {
-    let parser = Parser::new_ext(markdown, parser_options(markdown));
-
-    // Collected so the image-rewrite pass can mutate events in place.
-    let mut events: Vec<Event> = parser
-        .filter(|e| !matches!(e, Event::Html(_) | Event::InlineHtml(_)))
-        .collect();
+    // Collected so the rewrite passes can mutate events in place.
+    let mut events: Vec<Event> = Parser::new_ext(markdown, parser_options(markdown)).collect();
 
     if opts.inline_images {
         if let Some(dir) = opts.source_dir.as_deref() {
@@ -101,19 +106,21 @@ pub fn render_html(markdown: &str, opts: &HtmlExportOptions) -> Result<String> {
         }
     }
 
+    // Before `replace_math`, which turns heading math into plain text: the slug reads the
+    // `InlineMath` events the in-app parser sees.
+    assign_heading_ids(&mut events);
+
+    let mut figures = Figures::new();
     if opts.render_figures {
-        events = replace_mermaid_with_image(events);
+        events = replace_mermaid_with_figure(events, &mut figures);
     }
     // Always run, so inline `$…$` and (with figures off) display math
     // collapse to literal source rather than a bare `<span class="math">`.
-    events = replace_math(events, opts.render_figures);
-
-    // pulldown-cmark's HTML writer performs no URL sanitization, so without this a
-    // `[x](javascript:…)` link survives into the exported `<a href>` and runs on click.
-    sanitize_link_urls(&mut events);
+    events = replace_math(events, opts.render_figures, &mut figures);
 
     let mut body = String::new();
     cmark_html::push_html(&mut body, events.into_iter());
+    let body = figures.insert_into(&sanitize_body(&body));
 
     let css = opts.stylesheet.load()?;
     let title = opts.title.as_deref().unwrap_or("Document");
@@ -169,9 +176,9 @@ fn parser_options(markdown: &str) -> Options {
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
     options.insert(Options::ENABLE_SMART_PUNCTUATION);
-    // Recognize math so `$$…$$` reaches `replace_math` as `Event::DisplayMath` (rasterized to a
+    // Recognize math so `$$…$$` reaches `replace_math` as `Event::DisplayMath` (rendered to a
     // figure) rather than surviving as literal text.  `replace_math` always runs when this is on —
-    // even with figures disabled — so inline `$…$` and un-rasterized display math collapse back to
+    // even with figures disabled — so inline `$…$` and un-rendered display math collapse back to
     // their literal source instead of pulldown's `<span class="math">` wrapper.
     options.insert(Options::ENABLE_MATH);
     // Without the frontmatter extension a `---` block parses as a thematic break plus a setext
@@ -185,63 +192,257 @@ fn parser_options(markdown: &str) -> Options {
     options
 }
 
-// ── Link URL sanitization ─────────────────────────────────────────────────
+// ── Heading anchors ───────────────────────────────────────────────────────
 
-/// Schemes permitted on an exported link destination; everything else is neutralized.
-const SAFE_LINK_SCHEMES: &[&str] = &["http", "https", "mailto", "tel"];
-
-/// Rewrite every link destination outside [`SAFE_LINK_SCHEMES`] to a harmless `#`.  Relative
-/// paths and anchors carry no scheme and are untouched.
-fn sanitize_link_urls(events: &mut [Event<'_>]) {
-    for event in events.iter_mut() {
-        if let Event::Start(Tag::Link { dest_url, .. }) = event {
-            if !is_safe_link_url(dest_url.as_ref()) {
-                *dest_url = CowStr::Borrowed("#");
+/// Give every heading the `id` a `[x](#fragment)` link names, so in-document links work in the
+/// export.  pulldown-cmark's writer emits an `id` only when the event carries one, and without
+/// `ENABLE_HEADING_ATTRIBUTES` none does — every heading came out bare and every `#anchor` link
+/// went nowhere.
+///
+/// The slug is the one `ParsedDoc::heading_anchors` keys the in-app jump on — [`gfm_slug`] over
+/// the same plain text `inlines_to_plain` builds, deduplicated by [`uniquify_slug`] — so a
+/// fragment that resolves in edamame resolves in the export.  Unlike the in-app table, which
+/// indexes top-level blocks only, a heading nested in a list or quote gets an id too, as on
+/// GitHub.  A nested heading also takes its slug's count, so where it shares text with a later
+/// top-level heading the fragment can name a different heading in each: `- # Intro` then
+/// `# Intro` exports as `intro` / `intro-1`, while edamame jumps `#intro` to the top-level one.
+fn assign_heading_ids(events: &mut [Event<'_>]) {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut i = 0;
+    while i < events.len() {
+        if !matches!(events[i], Event::Start(Tag::Heading { .. })) {
+            i += 1;
+            continue;
+        }
+        let mut text = String::new();
+        let mut j = i + 1;
+        while let Some(event) = events.get(j) {
+            match event {
+                Event::End(TagEnd::Heading(_)) => break,
+                Event::Text(t) | Event::Code(t) => text.push_str(t),
+                Event::InlineMath(m) => text.push_str(&literal_math(m, false)),
+                Event::DisplayMath(m) => text.push_str(&literal_math(m, true)),
+                Event::SoftBreak => text.push(' '),
+                Event::HardBreak => text.push('\n'),
+                // The in-app parser keeps non-comment inline HTML as text.
+                Event::InlineHtml(h) if !is_html_comment_only(h) => text.push_str(h),
+                _ => {}
+            }
+            j += 1;
+        }
+        let base = gfm_slug(&text);
+        if !base.is_empty() {
+            let slug = uniquify_slug(&base, &mut counts);
+            if let Event::Start(Tag::Heading { id, .. }) = &mut events[i] {
+                *id = Some(CowStr::Boxed(slug.into_boxed_str()));
             }
         }
+        i = j + 1;
     }
 }
 
-/// True when `url` has no scheme at all or an allowlisted one.  A "scheme" is an RFC-3986 token
-/// terminated by `:` *before* any `/`, `?`, or `#`; a later colon is part of the path
-/// (`foo/bar:baz`) and makes no scheme.
-fn is_safe_link_url(url: &str) -> bool {
-    let url = url.trim();
-    let Some(idx) = url.find([':', '/', '?', '#']) else {
-        return true; // no delimiter at all → relative
-    };
-    if url.as_bytes()[idx] != b':' {
-        return true; // a path/query/fragment delimiter came first → relative
+// ── Sanitization ──────────────────────────────────────────────────────────
+
+/// URL schemes that run code when a browser follows or loads them.  The list is closed: these
+/// three are the only schemes a browser executes.  `data:` is additionally allowed on `img src`,
+/// where it can only ever be an image (see [`sanitize_body`]).
+const BLOCKED_URL_SCHEMES: &[&str] = &["javascript", "vbscript", "data"];
+
+/// Clean the serialized body with `ammonia`'s allowlist, extended for what Markdown and README
+/// HTML produce.
+///
+/// * **Tags and attributes.**  ammonia's defaults (`details`/`summary`, `kbd`, `sub`/`sup`,
+///   `img` with `width`/`height`, tables, …) plus: `id`, `class` and `align` anywhere (heading
+///   anchors, footnotes, code-block languages, `<p align="center">`); `name` on `a`; `open` on
+///   `details`; a *checkbox* `input` for task lists; and `style` on `th`/`td`, filtered down to
+///   `text-align`, for table column alignment.  None of these can run anything: the export
+///   carries no script for `id`/`class` to steer, and every other CSS property — the ones that
+///   fetch (`url()`) or overlay the page — is dropped.  `<script>` and `<style>` are removed
+///   with their contents; comments are dropped, and any other unlisted tag is removed with its
+///   content kept.
+/// * **URL schemes — a denylist expressed as an allowlist.**  ammonia only takes an allowlist,
+///   and a fixed one would break every app link (`obsidian:`, `zotero:`, `vscode:`, `file:`)
+///   it didn't anticipate.  So the list handed to it is every scheme-shaped token in the body
+///   ([`url_schemes_in`]) minus [`BLOCKED_URL_SCHEMES`].  The safety argument rests only on the
+///   subtraction: ammonia parses each URL as a browser would (stripping tab/newline, decoding
+///   entities, lowercasing the scheme), and a parsed `javascript` is never in the set however
+///   the source spelled it.  A link whose scheme is refused loses its `href` and stays as text.
+/// * **`data:` on `img src` only.**  `data` is in the allowlist for the self-contained export's
+///   embedded images, and the attribute filter strips it from every other URL attribute.  Inside
+///   `<img>` even `data:image/svg+xml` is inert: a browser runs no script and loads no resource
+///   in an SVG used as an image.
+fn sanitize_body(html: &str) -> String {
+    let schemes = url_schemes_in(html);
+    let mut builder = ammonia::Builder::default();
+    builder
+        .url_schemes(schemes.iter().map(String::as_str).collect())
+        .add_url_schemes(["data"])
+        // ammonia's default adds `rel="noopener noreferrer"` to every `<a>`; that guards
+        // `target="_blank"`, which isn't allowed here, and would clutter every footnote link.
+        .link_rel(None)
+        .add_generic_attributes(["id", "class", "align"])
+        .add_tag_attributes("a", ["name"])
+        .add_tag_attributes("details", ["open"])
+        .add_tags(["input"])
+        .add_tag_attributes("input", ["checked", "disabled"])
+        .add_tag_attribute_values("input", "type", ["checkbox"])
+        .add_tag_attributes("th", ["style"])
+        .add_tag_attributes("td", ["style"])
+        .filter_style_properties(HashSet::from(["text-align"]))
+        .attribute_filter(|element, attribute, value| {
+            let is_url_attribute = matches!(attribute, "href" | "src" | "xlink:href" | "cite");
+            if is_url_attribute && has_data_scheme(value) && (element, attribute) != ("img", "src")
+            {
+                None
+            } else {
+                Some(Cow::Borrowed(value))
+            }
+        });
+    builder.clean(html).to_string()
+}
+
+/// Every lowercased, scheme-shaped token (`ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`) followed
+/// by a `:` anywhere in `html`, minus [`BLOCKED_URL_SCHEMES`].  Deliberately over-inclusive —
+/// words before a colon in prose land here too — because extra entries only widen what
+/// [`sanitize_body`] *permits*, and the blocked schemes are the safety boundary.
+fn url_schemes_in(html: &str) -> HashSet<String> {
+    let is_scheme_char = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.');
+    let bytes = html.as_bytes();
+    let mut schemes = HashSet::new();
+    for (colon, _) in html.match_indices(':') {
+        let start = bytes[..colon]
+            .iter()
+            .rposition(|&b| !is_scheme_char(b))
+            .map_or(0, |i| i + 1);
+        // Leading digits / `+-.` are not part of a scheme: skip to the first letter.
+        let Some(first_alpha) = bytes[start..colon].iter().position(u8::is_ascii_alphabetic) else {
+            continue;
+        };
+        let scheme = html[start + first_alpha..colon].to_ascii_lowercase();
+        if !BLOCKED_URL_SCHEMES.contains(&scheme.as_str()) {
+            schemes.insert(scheme);
+        }
     }
-    let scheme = &url[..idx];
-    let scheme_shaped = scheme
+    schemes
+}
+
+/// Whether a URL attribute value is a `data:` URL as a browser parses it: ASCII tab and newline
+/// removed anywhere, leading C0 controls and spaces trimmed, scheme case-insensitive.
+fn has_data_scheme(value: &str) -> bool {
+    let normalized: String = value
+        .trim_start_matches(|c: char| c <= ' ')
         .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic())
-        && scheme
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
-    if !scheme_shaped {
-        // Not a real scheme (a port-looking path segment) → relative.
-        return true;
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .take(5)
+        .collect();
+    normalized.eq_ignore_ascii_case("data:")
+}
+
+// ── Figures ───────────────────────────────────────────────────────────────
+
+/// Figure markup edamame generates, held out of the body until it has been sanitized.
+///
+/// Each figure enters the event stream as a placeholder element,
+/// `<div class="edamame-figure-{nonce}-{n}"></div>`, which [`sanitize_body`] serializes back
+/// verbatim, and [`insert_into`](Self::insert_into) swaps the markup in afterwards.  Two properties keep the swap in element context:
+///
+/// * **The nonce is random per export**, so a document cannot spell a placeholder itself.
+/// * **The placeholder contains `"` and `<`.**  Where the real one lands outside element content —
+///   swallowed by a document's unclosed `<p title="`, say — the sanitizer escapes or drops it
+///   (`&quot;` in an attribute value, `&lt;` in text), so it no longer matches and the figure is
+///   left out rather than spliced into an attribute.
+struct Figures {
+    /// `<div class="edamame-figure-{nonce}-`; the index and [`PLACEHOLDER_CLOSE`] follow.
+    open: String,
+    html: Vec<String>,
+}
+
+/// The tail of a [`Figures`] placeholder after its index.
+const PLACEHOLDER_CLOSE: &str = "\"></div>";
+
+impl Figures {
+    fn new() -> Self {
+        // `RandomState` is seeded from the OS RNG; two hashes give a 128-bit nonce with no
+        // extra dependency.  It only has to be unguessable to a document written in advance.
+        let nonce = (
+            RandomState::new().hash_one(0u8),
+            RandomState::new().hash_one(1u8),
+        );
+        Self {
+            open: format!(
+                "<div class=\"edamame-figure-{:016x}{:016x}-",
+                nonce.0, nonce.1
+            ),
+            html: Vec::new(),
+        }
     }
-    SAFE_LINK_SCHEMES
-        .iter()
-        .any(|s| scheme.eq_ignore_ascii_case(s))
+
+    /// Hold `html` back and return the placeholder event standing in for it.
+    fn placeholder(&mut self, html: String) -> Event<'static> {
+        let token = format!("{}{}{PLACEHOLDER_CLOSE}", self.open, self.html.len());
+        self.html.push(html);
+        Event::Html(CowStr::Boxed(token.into_boxed_str()))
+    }
+
+    /// Replace each placeholder in the sanitized `body` with its figure.
+    fn insert_into(&self, body: &str) -> String {
+        if self.html.is_empty() {
+            return body.to_owned();
+        }
+        let mut out =
+            String::with_capacity(body.len() + self.html.iter().map(String::len).sum::<usize>());
+        let mut rest = body;
+        while let Some(pos) = rest.find(&self.open) {
+            out.push_str(&rest[..pos]);
+            let after = &rest[pos + self.open.len()..];
+            let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+            let figure = after[..digits]
+                .parse::<usize>()
+                .ok()
+                .filter(|_| after[digits..].starts_with(PLACEHOLDER_CLOSE))
+                .and_then(|i| self.html.get(i));
+            match figure {
+                Some(html) => {
+                    out.push_str(html);
+                    rest = &after[digits + PLACEHOLDER_CLOSE.len()..];
+                }
+                None => {
+                    out.push_str(&self.open);
+                    rest = after;
+                }
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+}
+
+/// `<figure class="{class}">` around an `<img>` whose source is `svg`, normalized and embedded as
+/// a `data:image/svg+xml` URI, or `None` if usvg rejects it.
+///
+/// **The SVG goes in as an `<img>`, never inline.**  Inline `<svg>` can carry `<script>`,
+/// `foreignObject`, and `on*=` handlers; an SVG loaded as an image runs no script and fetches
+/// nothing, by browser design.  [`normalize_svg`] is the second layer — it re-serializes through
+/// usvg's tree, which cannot express any of that — and it converts text to paths, without which
+/// a formula's KaTeX glyphs would not display in a browser at all.
+fn svg_figure(svg: &str, class: &str, alt: &str) -> Option<String> {
+    let svg = normalize_svg(svg).ok()?;
+    Some(format!(
+        "<figure class=\"{class}\"><img alt=\"{alt}\" src=\"data:image/svg+xml;base64,{}\"></figure>",
+        BASE64.encode(svg)
+    ))
 }
 
 // ── Mermaid diagrams ──────────────────────────────────────────────────────
 
-/// Replace each mermaid fence with a single `Event::Html` figure, preserving the original events
-/// on render failure so the diagram source is never lost.
-///
-/// **The diagram is rasterized to a PNG `data:` image, never inlined as `<svg>`.**  Inline SVG can
-/// carry `<script>`, `foreignObject`, and `on*=` handlers that execute when the export is opened
-/// in a browser; flattening to pixels means no executable markup from the document-controlled,
-/// third-party-rendered SVG can survive.
+/// Replace each mermaid fence with a [`Figures`] placeholder for its [`svg_figure`], preserving the
+/// original events on render failure so the diagram source is never lost.
 ///
 /// Language matching is case-insensitive, like the in-app `promote_diagram_code_blocks`.
-fn replace_mermaid_with_image(events: Vec<Event<'_>>) -> Vec<Event<'_>> {
+fn replace_mermaid_with_figure<'a>(
+    events: Vec<Event<'a>>,
+    figures: &mut Figures,
+) -> Vec<Event<'a>> {
     let mut out: Vec<Event<'_>> = Vec::with_capacity(events.len());
     let mut iter = events.into_iter();
     while let Some(event) = iter.next() {
@@ -257,7 +458,7 @@ fn replace_mermaid_with_image(events: Vec<Event<'_>>) -> Vec<Event<'_>> {
             out.push(event);
             continue;
         }
-        // Collect Text events to the matching end, then either emit one `Event::Html` or replay
+        // Collect Text events to the matching end, then either emit a placeholder or replay
         // the originals for the default serializer's fallback.
         let mut buffered: Vec<Event<'_>> = vec![event];
         let mut source = String::new();
@@ -277,15 +478,8 @@ fn replace_mermaid_with_image(events: Vec<Event<'_>>) -> Vec<Event<'_>> {
                 }
             }
         }
-        match render_mermaid_png_data_uri(&source) {
-            Some(data_uri) => {
-                let html = format!(
-                    "<figure class=\"mermaid-diagram\">\
-                     <img alt=\"mermaid diagram\" src=\"{data_uri}\">\
-                     </figure>"
-                );
-                out.push(Event::Html(CowStr::Boxed(html.into_boxed_str())));
-            }
+        match render_mermaid_figure(&source) {
+            Some(html) => out.push(figures.placeholder(html)),
             None => {
                 // Fall back to the code block; a per-diagram failure is not fatal to the export.
                 out.extend(buffered);
@@ -295,37 +489,10 @@ fn replace_mermaid_with_image(events: Vec<Event<'_>>) -> Vec<Event<'_>> {
     out
 }
 
-/// Render mermaid `source` to a PNG `data:` URI, or `None` on any failure.  The intermediate SVG
-/// never reaches the HTML — rasterizing strips any script / `foreignObject` / event-handler
-/// payload a hostile node label smuggled through the renderer's escaping.
-fn render_mermaid_png_data_uri(source: &str) -> Option<String> {
+/// Render mermaid `source` to a `<figure class="mermaid-diagram">`, or `None` on any failure.
+fn render_mermaid_figure(source: &str) -> Option<String> {
     let svg = diagram::render_mermaid_svg(source).ok()?;
-    svg_to_png_data_uri(&svg)
-}
-
-/// Rasterize an already-rendered diagram/math SVG to a PNG `data:` URI on
-/// a white background (`None` on any failure).  Shared by the mermaid and
-/// display-math passes: both flatten their SVG to pixels — never inlining
-/// raw `<svg>`, which could carry `<script>` / `foreignObject` / `on*=`
-/// payloads — and embed the PNG as an `<img>`.  Natural sizing keeps the
-/// figure's own dimensions; `MAX_RASTER_*` in `image::svg` bounds them.
-fn svg_to_png_data_uri(svg: &str) -> Option<String> {
-    let image = rasterize_svg(
-        svg,
-        SvgSizing {
-            envelope: None,
-            font_size: None,
-            mode: SvgScaleMode::Natural,
-        },
-        Some([255, 255, 255, 255]),
-    )
-    .ok()?;
-    let mut png = std::io::Cursor::new(Vec::new());
-    image.write_to(&mut png, image::ImageFormat::Png).ok()?;
-    Some(format!(
-        "data:image/png;base64,{}",
-        BASE64.encode(png.into_inner())
-    ))
+    svg_figure(&svg, "mermaid-diagram", "mermaid diagram")
 }
 
 // ── Display math ──────────────────────────────────────────────────────────
@@ -337,7 +504,7 @@ fn svg_to_png_data_uri(svg: &str) -> Option<String> {
 ///   `$$…$$`, plus whitespace and breaks) is a *figure* paragraph: the
 ///   enclosing `<p>` is dropped (a block-level figure/code block can't nest
 ///   in `<p>`) and each formula becomes its own block.  With figures on it
-///   rasterizes to a PNG `<figure class="math-formula">`; with figures off,
+///   becomes an SVG `<figure class="math-formula">`; with figures off,
 ///   or on a render failure, it becomes a fenced `math` code block
 ///   (`push_display_math_source_block`) — the styled, padded box mermaid's
 ///   non-inlined fallback gets, delimiters removed — never loose `$$…$$`
@@ -353,10 +520,13 @@ fn svg_to_png_data_uri(svg: &str) -> Option<String> {
 /// MathJax ships with the export, so it would render as raw source anyway,
 /// only less predictably).
 ///
-/// Rasterizing to PNG rather than inlining SVG is the same defence the
-/// mermaid pass relies on: no executable markup from RaTeX's output can
-/// survive into the exported file.
-fn replace_math(events: Vec<Event<'_>>, render_figures: bool) -> Vec<Event<'_>> {
+/// The figure goes through [`svg_figure`], like mermaid's, so RaTeX's
+/// output reaches the export only as a normalized SVG inside an `<img>`.
+fn replace_math<'a>(
+    events: Vec<Event<'a>>,
+    render_figures: bool,
+    figures: &mut Figures,
+) -> Vec<Event<'a>> {
     let mut out: Vec<Event<'_>> = Vec::with_capacity(events.len());
     let mut iter = events.into_iter();
     while let Some(event) = iter.next() {
@@ -374,7 +544,7 @@ fn replace_math(events: Vec<Event<'_>>, render_figures: bool) -> Vec<Event<'_>> 
                 if is_display_math_only(&body) {
                     // A figure paragraph: drop the enclosing `<p>` (a
                     // block-level `<figure>` / `<pre>` can't nest in `<p>`)
-                    // and emit one block per formula — a rasterized
+                    // and emit one block per formula — an SVG
                     // `<figure>` when figures are on and the render
                     // succeeds, otherwise a fenced `math` code block (the
                     // export peer of the in-app figures-off `math` block,
@@ -384,7 +554,7 @@ fn replace_math(events: Vec<Event<'_>>, render_figures: bool) -> Vec<Event<'_>> 
                     for inner in body {
                         if let Event::DisplayMath(source) = inner {
                             if render_figures {
-                                push_display_math_figure(&mut out, &source);
+                                push_display_math_figure(&mut out, &source, figures);
                             } else {
                                 push_display_math_source_block(&mut out, &source);
                             }
@@ -431,20 +601,13 @@ fn push_math_as_literal<'a>(out: &mut Vec<Event<'a>>, event: Event<'a>) {
     }
 }
 
-/// Emit one display formula as a `<figure class="math-formula">` PNG, or
-/// fall back to a fenced `math` code block ([`push_display_math_source_block`])
-/// on render failure — the same styled, padded box a non-inlined mermaid
-/// diagram gets, not loose `$$…$$` text.
-fn push_display_math_figure(out: &mut Vec<Event<'_>>, source: &str) {
-    match render_latex_png_data_uri(source) {
-        Some(data_uri) => {
-            let html = format!(
-                "<figure class=\"math-formula\">\
-                 <img alt=\"math formula\" src=\"{data_uri}\">\
-                 </figure>"
-            );
-            out.push(Event::Html(CowStr::Boxed(html.into_boxed_str())));
-        }
+/// Emit one display formula as a [`Figures`] placeholder for a `<figure class="math-formula">`,
+/// or fall back to a fenced `math` code block ([`push_display_math_source_block`]) on render
+/// failure — the same styled, padded box a non-inlined mermaid diagram gets, not loose `$$…$$`
+/// text.
+fn push_display_math_figure(out: &mut Vec<Event<'_>>, source: &str, figures: &mut Figures) {
+    match render_math_figure(source) {
+        Some(html) => out.push(figures.placeholder(html)),
         None => push_display_math_source_block(out, source),
     }
 }
@@ -456,7 +619,7 @@ fn push_display_math_figure(out: &mut Vec<Event<'_>>, source: &str) {
 /// `Event::DisplayMath`, and the one surrounding newline on each side (the
 /// `$$` sitting on their own lines) is trimmed the way the in-app
 /// figures-off `math` block does.  Used whenever a display formula is *not*
-/// rasterized — figures off, or a render failure — so it reads as a
+/// rendered — figures off, or a render failure — so it reads as a
 /// formula rather than as source text stranded in a paragraph.
 ///
 /// Emitted as real code-block events, not raw `Event::Html`, so pulldown's
@@ -488,23 +651,23 @@ fn literal_math(source: &str, display: bool) -> CowStr<'static> {
 /// in-app raster sizes off the *terminal's* real cell height; the exporter
 /// has none, so it passes this instead — larger than the 16 px terminal
 /// default so a formula reads at a comfortable display size in the browser
-/// (and stays crisp) rather than the cramped ~1-line PNG a 16 px cell gave.
+/// rather than at the cramped ~1-line size a 16 px cell gives.  It sets the
+/// SVG's intrinsic size, which is the size the browser shows it at.
 /// `diagram::render_latex_svg` scales the formula from it exactly as the
 /// TUI path does, so the export tracks the in-app look, only bigger.
 const HTML_EXPORT_MATH_CELL_PX: u16 = 24;
 
-/// Render display-math `source` to a PNG `data:` URI, or `None` on any
-/// failure (so the caller falls back to the literal source text).  Glyphs
-/// are drawn opaque black for a light document background; the SVG is
-/// rasterized to pixels, never inlined.
-fn render_latex_png_data_uri(source: &str) -> Option<String> {
+/// Render display-math `source` to a `<figure class="math-formula">`, or
+/// `None` on any failure (so the caller falls back to a code block).
+/// Glyphs are drawn opaque black for a light document background.
+fn render_math_figure(source: &str) -> Option<String> {
     let svg = diagram::render_latex_svg(
         source,
         [0, 0, 0, 255],
         Some((HTML_EXPORT_MATH_CELL_PX, HTML_EXPORT_MATH_CELL_PX)),
     )
     .ok()?;
-    svg_to_png_data_uri(&svg)
+    svg_figure(&svg, "math-formula", "math formula")
 }
 
 // ── Image inlining ────────────────────────────────────────────────────────
@@ -649,7 +812,7 @@ mod tests {
     #[test]
     fn renders_basic_markdown() {
         let html = render_html("# Hello\n\nWorld", &opts_inline_css()).unwrap();
-        assert!(html.contains("<h1>Hello</h1>"));
+        assert!(html.contains("<h1 id=\"hello\">Hello</h1>"));
         assert!(html.contains("<p>World</p>"));
     }
 
@@ -658,7 +821,7 @@ mod tests {
     fn frontmatter_is_omitted_from_the_export() {
         let md = "---\ntitle: Foo\ndate: 2026-01-01\n---\n\n# Heading\n";
         let html = render_html(md, &opts_inline_css()).unwrap();
-        assert!(html.contains("<h1>Heading</h1>"));
+        assert!(html.contains("<h1 id=\"heading\">Heading</h1>"));
         assert!(!html.contains("title: Foo"), "got: {html}");
         assert!(!html.contains("<h2>"), "got: {html}");
     }
@@ -705,9 +868,10 @@ mod tests {
         let md = "text\n\n<script>alert('x')</script>\n\nmore";
         let html = render_html(md, &opts_inline_css()).unwrap();
         assert!(
-            !html.contains("<script>"),
-            "raw <script> must be stripped — got:\n{html}"
+            !html.contains("<script>") && !html.contains("alert"),
+            "raw <script> must be stripped with its contents — got:\n{html}"
         );
+        assert!(html.contains("more"));
     }
 
     #[test]
@@ -718,6 +882,68 @@ mod tests {
             !html.contains("onclick"),
             "inline HTML event handlers must be stripped — got:\n{html}"
         );
+        assert!(
+            html.contains("<b>inline</b>"),
+            "the tag itself is allowed:\n{html}"
+        );
+    }
+
+    /// The raw HTML READMEs lean on survives the sanitizer.
+    #[test]
+    fn keeps_readme_html() {
+        let md = "<p align=\"center\"><img src=\"logo.png\" width=\"120\" alt=\"logo\"></p>\n\n\
+                  <details open><summary>More</summary>\n\nHidden *text*.\n\n</details>\n\n\
+                  Press <kbd>Ctrl</kbd>+<kbd>S</kbd>, H<sub>2</sub>O, x<sup>2</sup>,<br>next line.\n";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        for needle in [
+            "<p align=\"center\">",
+            "width=\"120\"",
+            "src=\"logo.png\"",
+            "<details open=\"\">",
+            "<summary>More</summary>",
+            "<em>text</em>",
+            "<kbd>Ctrl</kbd>",
+            "<sub>2</sub>",
+            "<sup>2</sup>",
+            "<br>",
+        ] {
+            assert!(html.contains(needle), "missing {needle}:\n{html}");
+        }
+    }
+
+    /// `<style>` is dropped with its rules, and inline styles are dropped except the
+    /// `text-align` pulldown writes for table column alignment.
+    #[test]
+    fn strips_css_except_table_alignment() {
+        let md = "<style>body { background: url(https://t.example/x) }</style>\n\n\
+                  <p style=\"position: fixed; background: url(https://t.example/y)\">p</p>\n\n\
+                  | a | b |\n|:-:|--:|\n| 1 | 2 |\n";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert!(
+            !html.contains("t.example"),
+            "no CSS fetch may survive:\n{html}"
+        );
+        assert!(!html.contains("position"), "{html}");
+        assert!(html.contains("text-align:center"), "{html}");
+        assert!(html.contains("text-align:right"), "{html}");
+    }
+
+    #[test]
+    fn task_list_checkboxes_survive() {
+        let md = "- [x] done\n- [ ] todo\n";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert_eq!(html.matches("type=\"checkbox\"").count(), 2, "{html}");
+        assert!(html.contains("checked"), "{html}");
+        assert!(html.contains("disabled"), "{html}");
+    }
+
+    #[test]
+    fn footnotes_keep_their_anchors() {
+        let md = "Claim.[^1]\n\n[^1]: Source.\n";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert!(html.contains("class=\"footnote-reference\""), "{html}");
+        assert!(html.contains("href=\"#1\""), "{html}");
+        assert!(html.contains("id=\"1\""), "{html}");
     }
 
     #[test]
@@ -853,54 +1079,198 @@ mod tests {
             !html.contains("javascript:"),
             "javascript: href must be neutralized — got:\n{html}"
         );
-        assert!(html.contains("href=\"#\""));
+        // The link loses its target, not its text.
+        assert!(html.contains(">click</a>"), "{html}");
+        assert!(!html.contains("href"), "{html}");
+    }
+
+    /// Every spelling a browser would still parse as a code-running scheme is refused.
+    #[test]
+    fn neutralizes_obfuscated_script_schemes() {
+        let md = "[a](JaVaScRiPt:alert(1)) <a href=\"java&#9;script:alert(1)\">b</a> [c](vbscript:msgbox) \
+                  [d](&#106;avascript:alert(1)) \
+                  <a href=\"&#x6A;avascript:alert(1)\">e</a> <a href=\" javascript:alert(1)\">f</a> \
+                  <a href=\"java&#10;script:alert(1)\">g</a>";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert!(!html.contains("href"), "no href may survive:\n{html}");
+        for text in ["a", "b", "c", "d", "e", "f", "g"] {
+            assert!(
+                html.contains(&format!(">{text}</a>")),
+                "{text} lost:\n{html}"
+            );
+        }
     }
 
     #[test]
     fn neutralizes_data_html_link_scheme() {
-        let md = "[x](data:text/html;base64,PHNjcmlwdD4=)";
+        let md = "[x](data:text/html;base64,PHNjcmlwdD4=) \
+                  <a href=\"data:text/html,<script>alert(1)</script>\">y</a> \
+                  <a href=\"data:image/svg+xml,x\">z</a>";
         let html = render_html(md, &opts_inline_css()).unwrap();
         assert!(
-            !html.contains("data:text/html"),
+            !html.contains("data:"),
             "data: link must be neutralized:\n{html}"
         );
     }
 
+    /// `data:` survives on `img src`, where a browser can only treat it as an image.
     #[test]
-    fn preserves_safe_link_schemes_and_relative_targets() {
-        let md = "[a](https://example.com) [b](mailto:x@y.z) [c](./page.md) [d](#anchor) [e](foo/bar:baz)";
+    fn keeps_data_image_sources() {
+        let md = "<img src=\"data:image/png;base64,iVBORw0KGgo=\" alt=\"a\">";
         let html = render_html(md, &opts_inline_css()).unwrap();
-        assert!(html.contains("href=\"https://example.com\""));
-        assert!(html.contains("href=\"mailto:x@y.z\""));
-        assert!(html.contains("href=\"./page.md\""));
-        assert!(html.contains("href=\"#anchor\""));
-        // A colon after a path segment is not a scheme.
-        assert!(html.contains("href=\"foo/bar:baz\""));
+        assert!(
+            html.contains("src=\"data:image/png;base64,iVBORw0KGgo=\""),
+            "{html}"
+        );
     }
 
     #[test]
-    fn is_safe_link_url_classifies_schemes() {
-        assert!(is_safe_link_url("https://example.com"));
-        assert!(is_safe_link_url("HTTP://EXAMPLE.COM"));
-        assert!(is_safe_link_url("mailto:a@b.c"));
-        assert!(is_safe_link_url("/abs/path"));
-        assert!(is_safe_link_url("./rel"));
-        assert!(is_safe_link_url("#frag"));
-        assert!(is_safe_link_url("?q=1"));
-        assert!(is_safe_link_url("path/to:thing"));
-        assert!(!is_safe_link_url("javascript:alert(1)"));
-        assert!(!is_safe_link_url("  javascript:alert(1)"));
-        assert!(!is_safe_link_url("vbscript:msgbox"));
-        assert!(!is_safe_link_url("data:text/html,x"));
-        assert!(!is_safe_link_url("file:///etc/passwd"));
+    fn preserves_link_schemes_and_relative_targets() {
+        let md = "[a](https://example.com) [b](mailto:x@y.z) [c](./page.md) [d](#anchor) \
+                  [e](foo/bar:baz) [f](file:///home/me/notes.md) [g](obsidian://open?vault=v) \
+                  [h](vscode://file/src/main.rs) [i](zotero://select/items/ABC) \
+                  <a href=\"x-devonthink-item://123\">j</a>";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        for href in [
+            "https://example.com",
+            "mailto:x@y.z",
+            "./page.md",
+            "#anchor",
+            // A colon after a path segment is not a scheme.
+            "foo/bar:baz",
+            "file:///home/me/notes.md",
+            "obsidian://open?vault=v",
+            "vscode://file/src/main.rs",
+            "zotero://select/items/ABC",
+            "x-devonthink-item://123",
+        ] {
+            assert!(
+                html.contains(&format!("href=\"{href}\"")),
+                "{href} lost:\n{html}"
+            );
+        }
+    }
+
+    #[test]
+    fn url_schemes_in_collects_scheme_tokens_minus_the_blocked_ones() {
+        let found = url_schemes_in(
+            "<a href=\"Obsidian://x\">a</a> 12:30 x-dt.item+1:y JavaScript: vbscript: data: 9file:z",
+        );
+        for scheme in ["obsidian", "x-dt.item+1", "file"] {
+            assert!(found.contains(scheme), "{scheme} missing from {found:?}");
+        }
+        for scheme in BLOCKED_URL_SCHEMES {
+            assert!(!found.contains(*scheme), "{scheme} must never be allowed");
+        }
+        assert!(
+            !found.contains("12"),
+            "a scheme starts with a letter: {found:?}"
+        );
+    }
+
+    #[test]
+    fn has_data_scheme_reads_urls_as_a_browser_does() {
+        assert!(has_data_scheme("data:text/html,x"));
+        assert!(has_data_scheme("  DATA:text/html,x"));
+        assert!(has_data_scheme("\u{1}da\tta:x"));
+        assert!(has_data_scheme("d\na\rta:x"));
+        assert!(!has_data_scheme("dat"));
+        assert!(!has_data_scheme("./data:x"));
+        assert!(!has_data_scheme("https://data:x"));
+    }
+
+    // ── Heading anchors ────────────────────────────────────────────────
+
+    /// The bug this fixed: headings exported without an `id`, so every `#anchor` link was dead.
+    #[test]
+    fn headings_carry_the_gfm_slug_an_anchor_link_names() {
+        let md = "[Go](#getting-started)\n\n## Getting Started\n\n## Getting Started\n\n\
+                  ### The `--doctor` *flag*\n\n# !!!\n";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert!(html.contains("href=\"#getting-started\""), "{html}");
+        assert!(html.contains("<h2 id=\"getting-started\">"), "{html}");
+        assert!(html.contains("<h2 id=\"getting-started-1\">"), "{html}");
+        assert!(html.contains("<h3 id=\"the---doctor-flag\">"), "{html}");
+        // A heading with nothing to slug gets no id rather than an empty one.
+        assert!(html.contains("<h1>!!!</h1>"), "{html}");
+    }
+
+    /// The export's slugs are the in-app jump table's, so a fragment that works in edamame
+    /// works in the exported file.
+    #[test]
+    fn heading_ids_match_the_in_app_anchor_table() {
+        let md =
+            "# Intro\n\n## Math $x^2$ and <kbd>K</kbd>\n\n## Intro\n\n## Note[^1]\n\n[^1]: n\n";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        let theme = crate::config::Theme::default();
+        let parsed = crate::document::ParsedDoc::build(md, &theme, false, 4);
+        for slug in parsed.heading_anchors.keys() {
+            assert!(
+                html.contains(&format!("id=\"{slug}\"")),
+                "{slug} missing:\n{html}"
+            );
+        }
+        assert_eq!(parsed.heading_anchors.len(), 4);
+    }
+
+    // ── Figures ────────────────────────────────────────────────────────
+
+    /// A document cannot forge a figure placeholder: the nonce differs per export.
+    #[test]
+    fn figure_placeholders_cannot_be_forged() {
+        let mut figures = Figures::new();
+        let Event::Html(token) = figures.placeholder("<figure>F</figure>".into()) else {
+            panic!("placeholder is raw HTML");
+        };
+        let forged = format!("{}0{PLACEHOLDER_CLOSE}", Figures::new().open);
+        let body = format!("{forged}{token}");
+        assert_eq!(
+            figures.insert_into(&body),
+            format!("{forged}<figure>F</figure>")
+        );
+    }
+
+    /// The real placeholder, swallowed by an unclosed attribute in the document, is dropped
+    /// rather than spliced into the attribute value (where the figure's `"` would break out).
+    #[test]
+    fn figure_placeholders_stay_out_of_attribute_values() {
+        let mut figures = Figures::new();
+        let Event::Html(token) = figures.placeholder("<figure>F</figure>".into()) else {
+            panic!("placeholder is raw HTML");
+        };
+        let body = format!("<div title=\"\n{token}\n<p class=\"a\">after</p>");
+        let html = figures.insert_into(&sanitize_body(&body));
+        assert!(!html.contains("<figure>"), "{html}");
+    }
+
+    #[test]
+    fn figure_placeholders_survive_sanitization() {
+        let mut figures = Figures::new();
+        let Event::Html(token) = figures.placeholder("<figure>F</figure>".into()) else {
+            panic!("placeholder is raw HTML");
+        };
+        let body = format!("<ul><li>a\n{token}</li></ul>");
+        assert_eq!(
+            figures.insert_into(&sanitize_body(&body)),
+            "<ul><li>a\n<figure>F</figure></li></ul>"
+        );
+    }
+
+    /// The `data:image/svg+xml` payload of the first figure in `html`, decoded.
+    fn first_figure_svg(html: &str) -> Option<String> {
+        let marker = "src=\"data:image/svg+xml;base64,";
+        let start = html.find(marker)? + marker.len();
+        let end = start + html[start..].find('"')?;
+        let bytes = BASE64.decode(&html.as_bytes()[start..end]).ok()?;
+        String::from_utf8(bytes).ok()
     }
 
     // ── Vuln 3: mermaid export carries no raw SVG / script ─────────────
 
     #[test]
     fn mermaid_export_never_emits_raw_svg_or_script() {
-        // Holds whether or not the live renderer is available: a success rasterizes to PNG, a
-        // failure falls back to an escaped code block.
+        // Holds whether or not the live renderer is available: a success embeds a normalized SVG
+        // as an `<img>`, a failure falls back to an escaped code block.
         let md = "```mermaid\nflowchart TD\n  A[\"<script>alert(1)</script>\"] --> B\n```";
         let opts = HtmlExportOptions {
             stylesheet: Stylesheet::Inline(String::new()),
@@ -910,23 +1280,27 @@ mod tests {
         let html = render_html(md, &opts).unwrap();
         assert!(
             !html.contains("<svg"),
-            "no raw SVG may reach the export:\n{html}"
+            "no inline SVG may reach the export:\n{html}"
         );
         assert!(!html.contains("foreignObject"));
         assert!(
             !html.contains("<script>"),
             "no executable <script> may reach the export:\n{html}"
         );
+        if let Some(svg) = first_figure_svg(&html) {
+            assert!(!svg.contains("<script"), "{svg}");
+            assert!(!svg.contains("foreignObject"), "{svg}");
+            assert!(!svg.contains("<text"), "text must be outlined:\n{svg}");
+        }
     }
 
     // ── Display math ───────────────────────────────────────────────────
 
-    /// A `$$...$$` paragraph exports as a rasterized `math-formula` figure
-    /// (PNG data URI) — the same treatment mermaid gets — when figures are
-    /// on.  The KaTeX faces are bundled into the shared fontdb, so this
-    /// renders in CI without system fonts.
+    /// A `$$...$$` paragraph exports as a `math-formula` figure — an SVG `<img>`, the same
+    /// treatment mermaid gets — when figures are on.  The KaTeX faces are bundled into the shared
+    /// fontdb, so this renders in CI without system fonts.
     #[test]
-    fn display_math_exports_as_a_png_figure() {
+    fn display_math_exports_as_an_svg_figure() {
         let md = "$$\nx^2 + y^2 = z^2\n$$\n";
         let opts = HtmlExportOptions {
             stylesheet: Stylesheet::Inline(String::new()),
@@ -938,26 +1312,23 @@ mod tests {
             html.contains("<figure class=\"math-formula\">"),
             "expected a math-formula figure:\n{html}"
         );
-        assert!(
-            html.contains("src=\"data:image/png;base64,"),
-            "formula must be a rasterized PNG:\n{html}"
-        );
-        // Rasterized to pixels, never inlined as SVG / math markup.
-        assert!(!html.contains("<svg"), "no raw SVG:\n{html}");
+        let svg = first_figure_svg(&html).expect("formula is an SVG data URI");
+        // Glyphs are outlined: a browser has no KaTeX fonts to draw `<text>` with.
+        assert!(!svg.contains("<text"), "text must be outlined:\n{svg}");
+        assert!(svg.contains("<path"), "{svg}");
+        // Embedded as an image, never inlined as SVG / math markup.
+        assert!(!html.contains("<svg"), "no inline SVG:\n{html}");
         assert!(
             !html.contains("class=\"math math-"),
             "pulldown's math span must not survive:\n{html}"
         );
     }
 
-    /// The exported formula is rasterized at `HTML_EXPORT_MATH_CELL_PX`,
-    /// not the bare 16 px terminal-cell fallback, so a display equation
-    /// reads at a comfortable size in the browser instead of a cramped
-    /// ~1-line PNG.  Guards the export-sizing fix by decoding the figure
-    /// and asserting its pixel height clears what a 16 px cell produced.
+    /// The exported formula is sized from `HTML_EXPORT_MATH_CELL_PX`, not the bare 16 px
+    /// terminal-cell fallback, so a display equation reads at a comfortable size in the browser
+    /// instead of a cramped ~1-line one.  The SVG's intrinsic height is what the browser shows.
     #[test]
     fn exported_display_math_is_rendered_large_enough_to_read() {
-        use image::GenericImageView;
         let md = "$$\nx^2 + y^2 = z^2\n$$\n";
         let opts = HtmlExportOptions {
             stylesheet: Stylesheet::Inline(String::new()),
@@ -965,22 +1336,19 @@ mod tests {
             ..HtmlExportOptions::default()
         };
         let html = render_html(md, &opts).unwrap();
-        let marker = "data:image/png;base64,";
-        let start = html.find(marker).expect("png data uri present") + marker.len();
-        let end = start + html[start..].find('"').expect("data uri is quoted");
-        let bytes = BASE64
-            .decode(&html.as_bytes()[start..end])
-            .expect("valid base64 payload");
-        let (w, h) = image::load_from_memory(&bytes)
-            .expect("valid png")
-            .dimensions();
+        let svg = first_figure_svg(&html).expect("formula is an SVG data URI");
+        let attr = "height=\"";
+        let start = svg.find(attr).expect("svg height") + attr.len();
+        let h: f32 = svg[start..start + svg[start..].find('"').unwrap()]
+            .parse()
+            .expect("numeric height");
         // A single-line display formula at the 24 px reference cell
-        // (`HTML_EXPORT_MATH_CELL_PX`) rendered tens of pixels tall —
+        // (`HTML_EXPORT_MATH_CELL_PX`) is tens of pixels tall —
         // comfortably past the ~18 px a 16 px-cell fallback gave, and
         // nowhere near runaway.
         assert!(
-            (28..=160).contains(&h),
-            "exported formula height {h}px outside expected range (w={w})"
+            (28.0..=160.0).contains(&h),
+            "exported formula height {h}px out of range"
         );
     }
 
@@ -1013,7 +1381,7 @@ mod tests {
         );
     }
 
-    /// A display formula that can't be rasterized (here: over the
+    /// A display formula that can't be rendered (here: over the
     /// `MAX_LATEX_SOURCE_BYTES` cap, so `render_latex_svg` refuses it)
     /// falls back to the same `math` code block, not loose `$$...$$` text —
     /// figures on, but the render fails.
@@ -1192,6 +1560,6 @@ mod tests {
         let outcome = rx.recv().unwrap();
         assert_eq!(outcome.unwrap(), target);
         let written = std::fs::read_to_string(&target).unwrap();
-        assert!(written.contains("<h1>hi</h1>"));
+        assert!(written.contains("<h1 id=\"hi\">hi</h1>"));
     }
 }

@@ -23,4 +23,4 @@ pub use cache::{
 pub use kitty_direct::Geometry;
 pub use loader::{resolve, LoadedImage};
 pub use render::paint_halfblocks_partial;
-pub use svg::{rasterize_svg, SvgError, SvgScaleMode, SvgSizing};
+pub use svg::{normalize_svg, rasterize_svg, SvgError, SvgScaleMode, SvgSizing};

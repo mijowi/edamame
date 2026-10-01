@@ -227,8 +227,8 @@ fn add_formula_breathing_room(
 /// [`MAX_LATEX_SOURCE_BYTES`] cap as [`resolve_latex`].
 ///
 /// This is the shared entry point for both the TUI raster path (via
-/// [`resolve_latex`]) and the HTML exporter, which rasterizes the returned
-/// SVG to a PNG rather than inlining it — the exact parallel to
+/// [`resolve_latex`]) and the HTML exporter, which embeds the returned SVG
+/// as a normalized `<img>` rather than inlining it — the exact parallel to
 /// [`super::mermaid::render_mermaid_svg`].
 ///
 /// * `fg` — glyph colour as RGBA.  The TUI passes the theme's text colour;

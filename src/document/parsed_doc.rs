@@ -709,7 +709,7 @@ pub fn gfm_slug(text: &str) -> String {
 
 /// Append a `-N` suffix on collision, matching GitHub: first use is `base`, then `base-1`,
 /// `base-2`.  `counts` carries the per-base tally across calls.
-fn uniquify_slug(base: &str, counts: &mut HashMap<String, usize>) -> String {
+pub(crate) fn uniquify_slug(base: &str, counts: &mut HashMap<String, usize>) -> String {
     let entry = counts.entry(base.to_owned()).or_insert(0);
     let slug = if *entry == 0 {
         base.to_owned()

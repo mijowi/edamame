@@ -328,7 +328,7 @@ fn extract_lone_image(inlines: &[Inline]) -> Option<(String, String)> {
 
 /// Whether `body` is entirely well-formed `<!-- ... -->` comments plus whitespace.
 /// Anything else is `false`, so the renderer still shows the raw source for it.
-pub(super) fn is_html_comment_only(body: &str) -> bool {
+pub(crate) fn is_html_comment_only(body: &str) -> bool {
     let mut rest = body.trim();
     if rest.is_empty() {
         return false;

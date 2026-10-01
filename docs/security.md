@@ -26,7 +26,7 @@ Even after you allow it, edamame refuses to fetch from your own machine or your 
 
 ### Exported HTML is safe to share and open
 
-An exported HTML file is usually something you send to other people, so edamame removes anything in it that could run in a browser: raw HTML in the document is dropped, links are kept only if they use `http`, `https`, `mailto`, or `tel`, and diagrams and formulas are embedded as pictures rather than as SVG code.
+An exported HTML file is usually something you send to other people, so edamame removes anything in it that could run in a browser. Harmless raw HTML in the document is kept: formatting such as `<details>`, `<kbd>` and `<sub>` survives, while scripts, event handlers like `onclick`, and styles are removed. Links that would run code (`javascript:`, `vbscript:`, `data:`) lose their target but keep their text. Diagrams and formulas are embedded as images, which a browser never runs code from.
 
 ### HTML export asks before embedding files from outside the document's folder
 

@@ -243,8 +243,10 @@ sup.footnote-reference a::after { content: "]"; }
 
 /* ── Figures: mermaid diagrams and display math ──────────────────────────── */
 
-/* Wrappers around figures the exporter rasterizes to PNG and embeds as an
-   <img>: mermaid diagrams and `$$...$$` display math.  The fallback path —
+/* Wrappers around figures the exporter renders to SVG and embeds as an
+   <img>: mermaid diagrams and `$$...$$` display math.  Formulas are drawn
+   in black on a transparent background, for a light page; the dark palette
+   puts them on a white card (below).  The fallback path —
    when rendering fails or [export.html].figures is false — leaves each as a
    <pre><code class="language-mermaid"> / language-math block styled by the
    existing code-block rules, so no fallback styles are needed here. */
@@ -258,6 +260,18 @@ figure.mermaid-diagram img,
 figure.math-formula img {
     max-width: 100%;
     height: auto;
+}
+
+/* A dark page would hide the black strokes, so set each figure on a white
+   card.  Screen only, like the dark palette itself. */
+@media screen and (prefers-color-scheme: dark) {
+    figure.mermaid-diagram img,
+    figure.math-formula img {
+        box-sizing: border-box;
+        padding: var(--space-tight);
+        background: #ffffff;
+        border-radius: 4px;
+    }
 }
 
 /* ── Print ───────────────────────────────────────────────────────────────── */

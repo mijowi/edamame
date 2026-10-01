@@ -309,12 +309,11 @@ const MAX_RASTER_DIM: u32 = 8_192;
 
 /// Hard ceiling on pixmap area, applied **whether or not a cell envelope is supplied**.
 ///
-/// The envelope bounds every on-screen path, but `export::html::render_mermaid_png_data_uri`
-/// rasterizes at natural size — an exported PNG isn't sized in terminal cells.  Its SVG comes from
-/// a Mermaid block in a possibly untrusted document, and while `diagram::mermaid` caps that
-/// *source* at 64 KiB, a dense diagram turns a small source into arbitrarily large layout
-/// dimensions: input bound, output unbound.  4 M pixels is 16 MB of RGBA, ample for an embedded
-/// diagram.  Over-budget SVGs are scaled down rather than refused.
+/// The envelope bounds a caller that knows its cell geometry, but the image loader may pass none
+/// (`max_cells: None`), and then a document-supplied SVG's declared size is the pixmap size — a
+/// few bytes of `width="1e6"` would otherwise be an unbounded allocation.  4 M pixels is 16 MB of
+/// RGBA, ample for any image a terminal shows.  Over-budget SVGs are scaled down rather than
+/// refused.
 const MAX_RASTER_PIXELS: u64 = 4_000_000;
 
 /// The factor fitting a `px_w × px_h` pixmap inside both [`MAX_RASTER_DIM`] and
@@ -350,6 +349,36 @@ pub enum SvgError {
     Decode(String),
 }
 
+/// usvg options shared by every SVG parse: the shared fontdb, and a string resolver that refuses
+/// every path/URL `<image href>`.
+///
+/// usvg's default string resolver *reads local files*, so an untrusted SVG could pull arbitrary
+/// on-disk files into the render — an exfil channel once that SVG reaches an HTML export.  Only the
+/// path/URL branch is neutralized; embedded `data:` images still resolve.
+fn usvg_options() -> usvg::Options<'static> {
+    let mut opt = usvg::Options {
+        fontdb: shared_fontdb(),
+        ..Default::default()
+    };
+    opt.image_href_resolver.resolve_string = Box::new(|_href, _opts| None);
+    opt
+}
+
+/// Re-serialize an SVG through usvg's tree, for embedding in an HTML export as vector art.
+///
+/// The output can only express what usvg's tree models — shapes, paths, gradients, patterns,
+/// masks, filters, and embedded raster images — so `<script>`, `foreignObject`, `on*=` handlers,
+/// external references, and CSS are gone by construction, not by filtering.  Text is written as
+/// paths (`WriteOptions::preserve_text` stays `false`), which is what makes a RaTeX formula
+/// display at all outside edamame: its `<text font-family="KaTeX_*">` names fonts a browser does
+/// not have, and the glyph outlines come from the shared fontdb, where the KaTeX faces are
+/// registered.
+pub fn normalize_svg(svg: &str) -> Result<String, SvgError> {
+    let tree =
+        usvg::Tree::from_str(svg, &usvg_options()).map_err(|e| SvgError::Parse(format!("{e}")))?;
+    Ok(tree.to_string(&usvg::WriteOptions::default()))
+}
+
 /// Rasterize an SVG string into a `DynamicImage`.  `background` paints the pixmap before drawing
 /// (the Mermaid path passes white); `None` keeps the SVG's own transparency for the renderer to
 /// composite over the document background.
@@ -358,16 +387,8 @@ pub fn rasterize_svg(
     sizing: SvgSizing,
     background: Option<[u8; 4]>,
 ) -> Result<DynamicImage, SvgError> {
-    let mut opt = usvg::Options {
-        fontdb: shared_fontdb(),
-        ..Default::default()
-    };
-    // usvg's default string resolver *reads local files*, so an untrusted SVG could pull arbitrary
-    // on-disk files into the render — an exfil channel once that SVG is inlined into an HTML
-    // export.  Only the path/URL branch is neutralized; embedded `data:` images still resolve.
-    opt.image_href_resolver.resolve_string = Box::new(|_href, _opts| None);
-
-    let tree = usvg::Tree::from_str(svg, &opt).map_err(|e| SvgError::Parse(format!("{e}")))?;
+    let tree =
+        usvg::Tree::from_str(svg, &usvg_options()).map_err(|e| SvgError::Parse(format!("{e}")))?;
     let size = tree.size();
     let natural_w = (size.width().ceil() as u32).max(1);
     let natural_h = (size.height().ceil() as u32).max(1);

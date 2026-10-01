@@ -293,7 +293,7 @@ pub struct HtmlExportConfig {
     pub stylesheet: String,
     /// Embed local image references as `data:` URIs so the HTML is self-contained.
     pub inline_images: bool,
-    /// Render *figures* — fenced ```mermaid code blocks and `$$...$$` display math — to PNG
+    /// Render *figures* — fenced ```mermaid code blocks and `$$...$$` display math — to SVG
     /// embedded as `<img>` inside a `<figure>` (`mermaid-diagram` / `math-formula`).  A render
     /// failure falls back to the block's source form so it is never lost; set false to leave every
     /// figure as source (e.g. for pipelines shipping their own mermaid.js or MathJax).

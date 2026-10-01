@@ -139,7 +139,7 @@ enabled = "ask"
 # the document's folder are listed and embedded only after you confirm.
 # inline_images = false
 
-# Render mermaid diagrams and $$...$$ math to embedded PNG (false leaves them as source).
+# Render mermaid diagrams and $$...$$ math to embedded SVG images (false leaves them as source).
 # figures = true
 
 # Custom export targets each add a format to that modal.  edamame renders to HTML first,
