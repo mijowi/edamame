@@ -535,7 +535,7 @@ fn rewrite_images_to_data_uris(
 /// `source_dir`: through `..`, by absolute path, or via a symlink leading out.  Canonical, deduped,
 /// in document order.  The export modal lists these and asks before embedding any of them, since
 /// the exported file is typically shared and an out-of-folder image may be one the document's
-/// author has no business seeing — see `docs/security.md`.
+/// author has no business seeing — see `docs/dev/security-invariants.md`.
 pub fn outside_images(markdown: &str, source_dir: &Path) -> Vec<PathBuf> {
     let canon_dir = source_dir.canonicalize().ok();
     let mut out: Vec<PathBuf> = Vec::new();

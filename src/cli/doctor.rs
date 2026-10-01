@@ -9,7 +9,7 @@
 //! falls back to [`Capabilities::env_only`], marking the two probe-derived rows
 //! [`Status::Unknown`] rather than guessing.
 //!
-//! System facts are read from files, never a subprocess (`docs/security.md`); anything
+//! System facts are read from files, never a subprocess (`docs/dev/security-invariants.md`); anything
 //! unresolvable degrades to a coarser answer, never an error.
 
 use std::env;

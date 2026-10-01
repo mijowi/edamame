@@ -13,7 +13,7 @@ use crate::app::AppEvent;
 pub(crate) const GITHUB_URL: &str = "https://github.com/mijowi/edamame";
 
 /// The one endpoint this feature talks to.  A compile-time constant, never derived from the
-/// open document or from config — see `docs/security.md`.
+/// open document or from config — see `docs/dev/security-invariants.md`.
 const RELEASES_API_URL: &str = "https://api.github.com/repos/mijowi/edamame/releases/latest";
 
 /// Bounds connect / response / body phases so an unreachable endpoint can't pin the worker.

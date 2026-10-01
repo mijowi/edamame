@@ -24,4 +24,4 @@ edamame is built on the assumption that **the documents it opens are untrusted**
 
 **Out of scope:** a malicious local config (`config.toml`, `keybindings.toml`, `$EDITOR`) is trusted — an attacker who can write those files already controls your account. The terminal emulator is trusted too.
 
-The full threat model, and the hardening currently in place, is documented in [`docs/security.md`](docs/security.md). Contributors changing any content-handling path should also read [`docs/dev/security-invariants.md`](docs/dev/security-invariants.md).
+A plain-language overview of these protections is in [`docs/security.md`](docs/security.md). The full threat model and implementation detail, for contributors changing any content-handling path, are in [`docs/dev/security-invariants.md`](docs/dev/security-invariants.md).
