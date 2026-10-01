@@ -72,6 +72,7 @@ fn is_reference_definition(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::update_check::parse::{MAX_NOTES_BYTES, MAX_NOTES_LINES, TRUNCATION_MARKER};
 
     /// Shaped like the real file, trailing link-reference block included.
     const SAMPLE: &str = "\
@@ -193,6 +194,32 @@ First public release.
         assert!(
             notes.iter().any(|l| l.contains("Startup update check")),
             "expected 0.1.1's own notes, got {notes:?}"
+        );
+    }
+
+    #[test]
+    fn the_unreleased_section_fits_under_the_notes_caps() {
+        // A local-only nag, not a correctness check: an over-cap section ships with a `…` and
+        // the tail of its notes missing from both modals.  Checked while the section is still
+        // `[Unreleased]` and editable.  Skipped in CI (`CI` read at compile time, so no
+        // `env_lock`), which would otherwise go red on `main` between releases.  Released
+        // sections aren't checked, so a packager building a tag never trips it either.
+        if option_env!("CI").is_some() {
+            return;
+        }
+        let Some(raw) = section_for_version(CHANGELOG_MD, "Unreleased") else {
+            return;
+        };
+        let notes = sanitize_notes(&raw);
+        let bytes: usize = raw.trim().lines().map(|l| l.len() + 1).sum();
+        assert_ne!(
+            notes.last().map(String::as_str),
+            Some(TRUNCATION_MARKER),
+            "CHANGELOG.md's [Unreleased] section is {} lines / {bytes} bytes, over the \
+             {MAX_NOTES_LINES}-line / {MAX_NOTES_BYTES}-byte cap; the update and post-upgrade \
+             modals will cut it short.  Trim the section or raise the caps in \
+             src/app/update_check/parse.rs.",
+            raw.trim().lines().count(),
         );
     }
 }

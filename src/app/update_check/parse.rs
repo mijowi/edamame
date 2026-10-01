@@ -22,16 +22,17 @@ use super::status::ReleaseInfo;
 /// machine-generated install boilerplate, not release notes.
 const INSTALL_HEADING: &str = "## Install";
 
-/// Caps on what reaches the modal, so a runaway body is a non-event.
-const MAX_NOTES_LINES: usize = 30;
-const MAX_NOTES_BYTES: usize = 2_000;
+/// Caps on what reaches the modal, so a runaway body is a non-event.  Shared with the bundled
+/// changelog, whose `[Unreleased]` section a local-only test holds under them.
+pub(crate) const MAX_NOTES_LINES: usize = 60;
+pub(crate) const MAX_NOTES_BYTES: usize = 4_000;
 
 /// Cap on an accepted `tag_name`, so it can't perturb the modal's layout or the URL.
 const MAX_TAG_BYTES: usize = 64;
 
 /// Appended as its own line when either cap trimmed content, so a
 /// clipped summary never reads as a complete one.
-const TRUNCATION_MARKER: &str = "…";
+pub(crate) const TRUNCATION_MARKER: &str = "…";
 
 /// Parse a release response into the tag and its sanitized notes.  `None` without a
 /// usable `tag_name`; unreadable notes are not a failure — the tag alone is a useful
