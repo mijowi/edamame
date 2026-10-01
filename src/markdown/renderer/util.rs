@@ -85,8 +85,8 @@ pub(super) fn link_fallback(url: &str) -> String {
         .unwrap_or_else(|| url.to_string())
 }
 
-/// Link style by URL kind; anchors and local paths take the dim variants.
-/// See docs/dev/theming.md.
+/// Link style by URL kind: `#anchor` → `link_heading`, a URL with a scheme → `link_text`,
+/// anything else (a local path) → `link_file`.
 pub(super) fn link_style_for(url: &str, theme: &Theme) -> Style {
     if url.starts_with('#') {
         theme.link_heading

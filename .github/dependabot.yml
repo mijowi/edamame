@@ -55,7 +55,7 @@ updates:
     ignore:
       # Used ONLY by the dist-generated release.yml.  `dist init` (re-run
       # when dist itself is upgraded) is what bumps these — see
-      # docs/dev/plans/publish.md.
+      # docs/dev/releasing.md.
       - dependency-name: actions/upload-artifact
       - dependency-name: actions/download-artifact
       # Also used by ci.yml and audit.yml, so this one costs something: it

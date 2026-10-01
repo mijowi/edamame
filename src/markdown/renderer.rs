@@ -909,7 +909,7 @@ impl<'t> Renderer<'t> {
             }
 
             Inline::Link { text, url, .. } => {
-                // Per-link style by URL kind — see docs/dev/theming.md.
+                // Per-link style by URL kind.
                 let style = link_style_for(url, self.theme);
                 if inlines_to_plain(text).trim().is_empty() {
                     vec![Span::styled(link_fallback(url), style)]

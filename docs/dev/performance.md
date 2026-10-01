@@ -1,6 +1,6 @@
 # Performance — the parse/render pipeline
 
-Contributor-facing reference for the one hot path in edamame: the eager, full-document work an edit triggers. It records the budget that path is held to, what each stage costs, why the two optimizations in place exist, and which ceilings are known and deliberately unfixed.
+The one hot path in edamame is the eager, full-document work an edit triggers. This page records its budget, what each stage costs, the two optimizations that must not be undone, and the known ceilings.
 
 ## What runs on an edit
 
@@ -27,7 +27,7 @@ The frame throttle is 16 ms (`app::frame_timer::MIN_FRAME_INTERVAL`, ~60 fps). F
 
 ## The corpus
 
-`benches/pipeline.rs` generates its documents in-process — deterministic, no on-disk corpus — at **1k / 5k / 20k / 100k source lines** in seven mixes. The mixes exist because cost per block varies enormously; keep them stable, since they are what makes a future measurement comparable to the ones below.
+`benches/pipeline.rs` generates deterministic documents in-process at **1k / 5k / 20k / 100k source lines** in seven mixes. Cost per block varies enormously across them; keep them stable so future measurements stay comparable.
 
 | Corpus | Composition | Stresses |
 |---|---|---|
@@ -39,31 +39,26 @@ The frame throttle is 16 ms (`app::frame_timer::MIN_FRAME_INTERVAL`, ~60 fps). F
 | `nested` | Lists wrapping `rust` code, blockquotes wrapping tables | The cache's subtree-gate (`is_cache_worthy`): expensive content inside a cheap container must stay cached |
 | `mixed` | Blend + headings + footnotes | Anchors, source map, everything |
 
-`math` measures only the *synchronous* parse + promotion work: a `$$…$$` block promotes to a `Block::ImageBlock` that reserves space, and the RaTeX raster behind it is produced later by the async decode worker — off this path, like every image and mermaid diagram.
+`math` measures only the synchronous parse + promotion: a `$$…$$` block becomes a `Block::ImageBlock` whose RaTeX raster is produced later by the async decode worker, off this path like every image and mermaid diagram. `nested` guards the cache-worthy gate (below): if containers of expensive content stop being cached, its cold→memoized gap collapses.
 
-`nested` is the guard for the render cache's skip-cheap-blocks rule: its `Table`/`CodeBlock` blocks live inside a `List`/`BlockQuote`, so its cold→memoized gap collapses if a future change stops caching containers of expensive content. Its cold cost is high by design (highlighting + table measurement on every unit).
+Harness details that matter for reproducibility:
 
-Two details of the harness matter for reproducibility:
-
-- **Grammars are warmed on the bench thread first** (`warm_grammars`, calling `highlight::warm_inline`). Highlighting is eventually-consistent in the live app — a cold grammar renders plain while a background worker compiles it — so without the warm call the `code` and `mixed` numbers would be a coin-toss mixture of the highlighted and plain paths.
-- **`full_pipeline_memoized` alternates between two source variants differing in one character**, so every build is a warm cache with exactly one changed block. That is the steady-state edit cost; `full_pipeline` is the cold-open / paste-whole-document cost.
-- **`build_doc` runs with paragraph reflow on**, matching the shipped `reflow = true` default; `render_only` sets the same flag so the derived `other` residual stays honest.
+- **Grammars are warmed on the bench thread first** (`warm_grammars` → `highlight::warm_inline`). Highlighting is eventually-consistent in the live app ([syntax-highlighting.md](syntax-highlighting.md)), so without it the `code` and `mixed` numbers would mix the highlighted and plain paths.
+- **`full_pipeline_memoized` alternates between two sources differing in one character**, so every build is a warm cache with exactly one changed block — the steady-state edit cost. `full_pipeline` is the cold-open / whole-document-paste cost.
+- **`build_doc` runs with paragraph reflow on** (the shipped default); `render_only` sets the same flag so the derived `other` residual stays honest.
+- **`visual_cache_build` uses flat sampling** (`SamplingMode::Flat`, 5 s): one 100k-line rebuild is ~0.3 s, which criterion's default linear sampling misreports. Its width cycling forces a cold rebuild every call.
 
 `cargo bench --bench pipeline` to reproduce.
 
 ## Results
 
-Two reference machines, run with identical bench configuration (release profile, criterion sample size 10, reflow on, all seven mixes). The **shapes** — which stage dominates, how each mix scales — hold across both; the **absolute numbers** do not. The Linux box measures roughly **2–2.5× slower than the M3** (5k `prose` steady-state: 4.3 → 10.7 ms), so compare within a machine, never divide one machine's figure by the other's. All times are criterion means from one run.
-
-The analysis after each pair of tables (dominant stage, where memoization helps, linear scaling) describes machine-independent shape and is written once, against the M3 numbers.
+Two reference machines, identical bench configuration (release profile, criterion sample size 10), criterion means from one run. The **shapes** — which stage dominates, how each mix scales — hold across both; the absolute numbers do not (the Linux box is ~2–2.5× slower), so compare only within one machine. The analysis is written once, against the M3 numbers.
 
 ### Apple M3 (macOS)
 
 Run 2026-09-10 on an Apple M3 (8 cores, macOS 15.7.5), rustc 1.98.0, criterion 0.8.
 
 #### Steady-state edit — `full_pipeline_memoized`
-
-What a line-crossing keystroke costs in the live editor: warm `RenderCache`, one block changed.
 
 | Corpus | 1k lines | 5k | 20k | 100k |
 |---|---|---|---|---|
@@ -79,8 +74,6 @@ Against the budget: **every mix is inside one frame at 5k lines**, and `mixed` s
 
 #### Cold open — `full_pipeline`
 
-Opening a document, or pasting one wholesale: no cache, everything rendered.
-
 | Corpus | 1k lines | 5k | 20k | 100k |
 |---|---|---|---|---|
 | `prose` | 0.81 ms | 4.31 ms | 20.4 ms | 107.7 ms |
@@ -91,11 +84,11 @@ Opening a document, or pasting one wholesale: no cache, everything rendered.
 | `nested` | 6.40 ms | 33.4 ms | 135.0 ms | 691.2 ms |
 | `mixed` | 1.38 ms | 6.69 ms | 28.9 ms | 150.6 ms |
 
-No keystroke waits on a cold open, so the frame budget does not apply to this table the way it does to the one above — but this is what a whole-document paste costs, and it is the number to watch when adding work to the renderer.
+No keystroke waits on a cold open, but this is what a whole-document paste costs and the number to watch when adding renderer work.
 
 #### Stage breakdown at 20k lines
 
-`other` = `full − (parse_merged + render_only)`: post-passes, virtual blank-line blocks, `SourceMap`, anchors. `parse_offsets` and `parse_ast` are the pre-merge baselines, kept for comparison only — neither runs in the pipeline any more. Small residuals (`code`'s is slightly negative) are measurement noise.
+`other` = `full − (parse_merged + render_only)`: post-passes, virtual blank-line blocks, `SourceMap`, anchors; small residuals (`code`'s is slightly negative) are noise. `parse_offsets` / `parse_ast` are the pre-merge two-pass baselines — neither runs in the pipeline.
 
 | Corpus | full | `parse_merged` | `render_only` | other | dominant | (`parse_offsets` / `parse_ast`) |
 |---|---|---|---|---|---|---|
@@ -109,10 +102,8 @@ No keystroke waits on a cold open, so the frame budget does not apply to this ta
 
 `mixed` stage scaling across 1k / 5k / 20k / 100k is linear: `parse_merged` 0.35 / 1.78 / 7.49 / 40.4 ms, `render_only` 0.94 / 4.63 / 19.7 / 100.9 ms.
 
-Two shapes worth naming:
-
-- **`code` is the most expensive corpus to render cold.** Its parse is nearly free (0.45 ms — a fenced block is one AST node), so syntax highlighting is essentially the entire pipeline there. It is also the corpus the render cache helps most (81.3 → 4.33 ms at 20k), because a code block's AST is unchanged by edits to other blocks and the highlighter is never re-entered for it. `nested` (a `rust` fence wrapped in a list item) inherits the same profile at higher absolute cost.
-- **`math` is the one `other`-bound corpus.** Parse and render are both small; the residual is the per-formula `$$` source scan, image-block promotion, and source-map / anchor derivation over many short blocks — the inverse of every other mix, which is parse- or render-bound. It stays comfortably inside budget.
+- **`code` is render-bound by syntax highlighting.** Its parse is nearly free (a fence is one AST node), and it is the corpus the render cache helps most, since an unchanged code block is never re-highlighted. `nested` inherits the same profile at higher cost.
+- **`math` is the one `other`-bound corpus:** the per-formula `$$` scan, image-block promotion, and source-map / anchor derivation over many short blocks. It stays comfortably inside budget.
 
 #### Where memoization helps, and where it doesn't
 
@@ -128,15 +119,15 @@ Change in the 20k figure, `full_pipeline` → `full_pipeline_memoized`:
 | `lists` | +2% |
 | `math` | +2% |
 
-The cache pays off on the expensive-to-render mixes — `code`, `nested`, `tables`, `mixed` — where a re-render costs far more than a hash-and-clone lookup. The cheap-to-render mixes — `prose`, `lists`, `math` — no longer enter the cache at all (`render_cache::is_cache_worthy` skips them), so their memoized cost simply tracks their cold cost instead of paying hash-plus-clone for nothing. `nested` is the proof the gate walks *into* containers: its expensive `rust` fence and table stay cached even though the outer block is a cheap list/blockquote, so it drops from 135 ms cold to 11 ms memoized. See [the two optimizations](#the-two-optimizations-and-why-they-must-not-be-undone) and the clone-on-hit ceiling.
+The cache pays off where a re-render costs far more than a hash-and-clone lookup. The cheap mixes never enter it (the cache-worthy gate, [below](#the-two-optimizations-and-why-they-must-not-be-undone)), so their memoized cost tracks their cold cost; `nested` shows the gate walking *into* containers.
 
 #### Resize — `visual_cache_build`
 
-Cold prefix-sum rebuild on the `mixed` corpus: 1.37 / 6.68 / 24.7 / 114.5 ms at 1k / 5k / 20k / 100k. Over one frame from roughly 20k lines, but it fires only on a width change and is already behind the 80 ms `RESIZE_QUIESCE` window — leave it alone unless live resize jank shows up.
+Cold prefix-sum rebuild on `mixed`: 1.37 / 6.68 / 24.7 / 114.5 ms at 1k / 5k / 20k / 100k (see the resize ceiling below).
 
 ### Intel Core Ultra 7 258V (Linux)
 
-Run 2026-09-10 on an Intel Core Ultra 7 258V (8 cores, Linux 6.16 / Debian 13), rustc 1.98.0, criterion 0.8. Same shapes as the M3, ~2–2.5× slower in absolute terms. Against the 16 ms frame budget on *this* box, steady-state edits stay inside a frame only up to ~1k lines for the heavy mixes and cross it by 5–20k — a slower-hardware statement, not a regression.
+Run 2026-09-10 on an Intel Core Ultra 7 258V (8 cores, Linux 6.16 / Debian 13), rustc 1.98.0, criterion 0.8. On this box steady-state edits cross the 16 ms frame between 5k and 20k lines — a slower-hardware statement, not a regression.
 
 #### Steady-state edit — `full_pipeline_memoized`
 
@@ -173,35 +164,30 @@ Run 2026-09-10 on an Intel Core Ultra 7 258V (8 cores, Linux 6.16 / Debian 13), 
 | `math` | 24.6 ms | 7.4 ms | 3.6 ms | 13.6 ms | **other 55%** | 3.9 / 7.0 ms |
 | `mixed` | 67.7 ms | 19.1 ms | 43.4 ms | 5.3 ms | **render 64%** | 6.4 / 17.6 ms |
 
-`mixed` stage scaling across 1k / 5k / 20k / 100k stays linear: `parse_merged` 0.78 / 4.39 / 19.1 / 109.8 ms, `render_only` 1.90 / 10.1 / 43.4 / 233.2 ms.
+`mixed` stage scaling across 1k / 5k / 20k / 100k: `parse_merged` 0.78 / 4.39 / 19.1 / 109.8 ms, `render_only` 1.90 / 10.1 / 43.4 / 233.2 ms.
 
 #### Resize — `visual_cache_build`
 
-Cold prefix-sum rebuild on the `mixed` corpus: 3.02 / 14.5 / 61.7 / 296.1 ms at 1k / 5k / 20k / 100k. Same shape as the M3 row, ~2.5× slower. Fires only on a width change and sits behind the 80 ms `RESIZE_QUIESCE` window, so it is one rebuild per quiesced drag, not per frame — left alone.
-
-The `visual_cache_build` group uses **flat sampling** (`SamplingMode::Flat`, 5 s measurement time), not criterion's default linear sampling. A single rebuild at 100k lines is ~0.3 s — larger than a 2 s window can fit more than one iteration into per sample, which makes linear sampling misreport the mean wildly. Flat sampling runs a fixed iteration count per sample and reports slow routines correctly; the numbers above are stable across repeats. The group's width-cycling still forces a genuine cold rebuild every call.
+Cold prefix-sum rebuild on `mixed`: 3.02 / 14.5 / 61.7 / 296.1 ms at 1k / 5k / 20k / 100k.
 
 ## The two optimizations, and why they must not be undone
 
-- **One parse, not two.** The pipeline used to parse the document twice — once for byte offsets, once for the AST. `parse_raw_with_ranges` collects the ranges from a `parse_offsets::RangeTracker` observing the same offset-iterator events the AST builder consumes, so blocks and ranges stay 1:1 *by construction* rather than by a second pass agreeing with the first. Re-splitting them costs a full extra parse per reparse.
-- **Block-level render memoization.** `RenderCache` (owned by `EditorState`, threaded into every `refresh_parsed`) keys rendered lines by the `Block` AST value plus a render-settings fingerprint, so an unchanged block costs a clone of its lines instead of a re-render. This is what makes table-heavy documents editable at all — table column measurement dominates everything else. Keying by AST rather than source bytes is what keeps live table-width drags and post-pass promotions correct. Two properties of the cache earn their keep:
-  - The map hashes `Block` keys with `FxHasher` (`rustc-hash`), not std's SipHash. The keys are local document content, so SipHash's DoS resistance buys nothing, and its cost on the many small `write_*` calls a nested `Block` makes is pure overhead. (seahash, already in the tree, benches *slower* than SipHash here — it is tuned for whole byte buffers, not the small-write struct hashing a `Block` key does; hence `rustc-hash`.)
-  - Only *cache-worthy* blocks are stored (`render_cache::is_cache_worthy`): a `Table`/`CodeBlock`, or a `List`/`BlockQuote` containing one. Cheap blocks (paragraphs, plain lists, headings, rules) re-render for less than a lookup costs, so caching them is a net loss. The gate is a subtree walk, not a match on the outer kind — that is what keeps an expensive block wrapped in a cheap container (the `nested` mix) cached instead of re-rendering every keystroke.
+- **One parse, not two.** `parse_raw_with_ranges` collects top-level byte ranges from a `parse_offsets::RangeTracker` observing the same offset-iterator events the AST builder consumes, so blocks and ranges stay 1:1 *by construction*. Splitting them back into two passes costs a full extra parse per reparse.
+- **Block-level render memoization.** `RenderCache` maps an unchanged block to a clone of its lines instead of a re-render; this is what makes table- and code-heavy documents editable at all. Its correctness rules (AST-value keying, the `RenderSettings` fingerprint, `ImageBlock` exclusion) are in [editing-model.md](editing-model.md). Two cost properties:
+  - **Keys hash with `FxHasher` (`rustc-hash`), not SipHash.** The keys are local document content, so DoS resistance buys nothing, and SipHash is slow on the many small `write_*` calls a nested `Block` makes. (seahash benches *slower* than SipHash here — it is tuned for whole byte buffers.)
+  - **Only cache-worthy blocks are stored** (`render_cache::is_cache_worthy`): a `Table`/`CodeBlock`, or a `List`/`BlockQuote` containing one. Cheap blocks re-render for less than a lookup costs. The gate is a subtree walk, not a match on the outer kind, so an expensive block inside a cheap container stays cached.
 
-Both claims are asserted, not just documented:
-
-- `merged_parse_matches_two_pass_parse` (`src/markdown/parser.rs`) pins the merged parse to the old two-pass pairing.
-- `cached_render_matches_uncached`, plus the eviction, settings-invalidation, syntax-toggle and image-bypass tests (`src/markdown/renderer.rs`), pin cached rendering to uncached output. `cheap_blocks_bypass_cache` and `is_cache_worthy_follows_nested_expensive_content` pin the cache-worthy gate — including that a list/blockquote wrapping a `Table`/`CodeBlock` stays cached.
+Both are asserted: `merged_parse_matches_two_pass_parse` (`src/markdown/parser.rs`) pins the merged parse to the two-pass pairing; `cached_render_matches_uncached` plus the eviction, settings-invalidation, syntax-toggle and image-bypass tests (`src/markdown/renderer.rs`) pin cached output to uncached; `cheap_blocks_bypass_cache` and `is_cache_worthy_follows_nested_expensive_content` pin the gate.
 
 ## Known ceilings
 
-These are recorded as facts about the current design, not as tasks.
+Facts about the current design, not tasks.
 
-- **The full-document parse floor.** The single parse is O(document) and cannot be memoized the way rendering is — 7.5 ms at 20k `mixed`, 40 ms at 100k (M3). It is the dominant cost for prose and lists and the floor under everything else. Only region-limited / incremental reparsing removes it — reparsing the edited block and its neighbors, with care around fences, setext headings, lists and footnote definitions, all of which have non-local effects. That is a separate project, explicitly out of scope here.
-- **Clone-on-hit.** A cache hit hashes the `Block` to find its entry and then clones its `Vec<Line>` into the output. The `FxHasher` key hash and the cache-worthy gate (above) keep this from ever being a net loss: cheap blocks skip the cache entirely, so they no longer pay hash-plus-clone for nothing, and on the blocks that *are* cached (`tables`, `code`, nested containers) the clone is a small share of their large render. What remains is that clone — a haircut on the win, not a loss. Removing it means sharing lines as `Arc<[Line]>`, which changes `ParsedDoc::lines`' type and ripples through every view; worth it only if very large table-/code-heavy documents matter in practice.
-- **Resize.** `visual_cache_build` is the cold prefix-sum rebuild a width change forces (24.7 ms at 20k `mixed`, M3). It exceeds a frame on large documents, but fires only on resize and sits behind the 80 ms `RESIZE_QUIESCE` window (`app::frame_timer`), so it is left alone.
-- **`parse_offsets::top_level_block_ranges` is off the edit path entirely.** It survives as the pre-merge baseline the bench measures and as the oracle in `merged_parse_matches_two_pass_parse`; the diff subsystem uses the sibling `block_ranges_by`, not this. Its cost is not an editing cost.
+- **The full-document parse floor.** The single parse is O(document) and cannot be memoized — 7.5 ms at 20k `mixed`, 40 ms at 100k (M3) — and dominates prose and lists. Only incremental reparsing removes it, which must handle the non-local effects of fences, setext headings, lists and footnote definitions; a separate project.
+- **Clone-on-hit.** A hit still clones the block's `Vec<Line>`; on cached (expensive) blocks that is a small share of the render. Removing it means sharing lines as `Arc<[Line]>`, which changes `ParsedDoc::lines`' type and ripples through every view — worth it only if very large table-/code-heavy documents matter.
+- **Resize.** The `visual_cache_build` rebuild exceeds a frame from ~20k lines, but fires only on a width change behind the 80 ms `RESIZE_QUIESCE` window (`app::frame_timer`) — one rebuild per quiesced drag. Leave it unless live-resize jank shows up.
+- **`parse_offsets::top_level_block_ranges` is off the edit path** — it survives only as the bench baseline and the oracle in `merged_parse_matches_two_pass_parse` (the diff subsystem uses the sibling `block_ranges_by`).
 
 ## When to re-measure
 
-Re-run the benches and update the tables above when changing anything on the pipeline: a new render pass or block kind, a change to table layout or the inline renderer, a new `RenderSettings` field (which invalidates the whole cache when it changes), or a change to how highlighting is parsed or capped. Note the machine — these numbers are only comparable within one.
+Re-run the benches and update the tables when changing the pipeline: a new render pass or block kind, table layout or the inline renderer, a new `RenderSettings` field, or how highlighting is parsed or capped. Note the machine.
