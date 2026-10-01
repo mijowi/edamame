@@ -178,6 +178,9 @@ tempfile = "3"
 # scripts, event handlers, and code-running link schemes.  See
 # `export::html::sanitize_body` and docs/dev/security-invariants.md.
 ammonia = "4.2"
+# Decodes an exported image reference (`img/a%20b.png`) to the file a browser would load.
+# Already in the graph through `url` (via ammonia).
+percent-encoding = "2"
 
 # Local wall-clock time for pasted screenshots' `YYYYMMDD-HHMMSS.png` names.
 # Only `clock` is needed; the default `oldtime` / `wasmbind` / `serde` are not.

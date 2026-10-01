@@ -8,5 +8,7 @@ pub mod html;
 pub mod runner;
 
 pub use custom::{spawn_custom_export, CustomExportError};
-pub use html::{outside_images, render_html, spawn_html_export, HtmlExportOptions, Stylesheet};
-pub use runner::{preflight, target_for_source, ExportOutcome, PreflightError};
+pub use html::{
+    outside_images, render_html, spawn_html_export, HtmlExportOptions, ImageHandling, Stylesheet,
+};
+pub use runner::{preflight, target_for_source, ExportOutcome, Exported, PreflightError};

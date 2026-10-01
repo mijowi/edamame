@@ -47,7 +47,8 @@ pub use diff_intro_modal::{DiffIntroResponse, DiffIntroState, DiffIntroView};
 pub use diff_view::{DiffView, DiffViewState};
 pub use editor_view::{EditorView, EditorViewState};
 pub use export_modal::{
-    ExportChoices, ExportFormat, ExportPhase, ExportResponse, ExportState, ExportView,
+    left_out_note, ExportChoices, ExportFormat, ExportPhase, ExportResponse, ExportState,
+    ExportView,
 };
 pub use export_theme_modal::{ExportThemeResponse, ExportThemeState, ExportThemeView};
 pub use gutter::split_gutter;

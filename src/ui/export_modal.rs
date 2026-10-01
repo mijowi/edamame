@@ -47,6 +47,7 @@ const NOTE_INDENT: &str = "  ";
 // Current-state explanations for the two toggles; the active one shows beneath its toggle.
 const IMAGES_NOTE_ON: &str = "Inline images as data:URIs";
 const IMAGES_NOTE_OFF: &str = "Leave images as links";
+const IMAGES_NOTE_SEALED: &str = "Always inlined for converters";
 const FIGURES_NOTE_ON: &str = "Render diagrams and math as images";
 const FIGURES_NOTE_OFF: &str = "Leave diagrams and math as source";
 
@@ -79,6 +80,10 @@ pub struct ExportFormat {
     /// Success-phase primary button.  HTML opens a browser; a custom target goes to whatever the
     /// OS associates with its extension.
     pub open_result: String,
+    /// Images are always inlined (`export::ImageHandling::Sealed`), so the toggle shows on and
+    /// disabled.  `false` from both constructors; the App sets it from `ExportJob::seals_images`
+    /// (see `docs/dev/media-export.md`).
+    pub seals_images: bool,
 }
 
 impl ExportFormat {
@@ -87,6 +92,7 @@ impl ExportFormat {
         Self {
             label: "HTML".to_owned(),
             open_result: "Open in browser".to_owned(),
+            seals_images: false,
         }
     }
 
@@ -95,6 +101,7 @@ impl ExportFormat {
         Self {
             label: name.trim().to_owned(),
             open_result: "Open file".to_owned(),
+            seals_images: false,
         }
     }
 }
@@ -267,6 +274,8 @@ pub struct ExportState {
     pub outside_images: Vec<PathBuf>,
     /// Written file path, shown in the Success phase.
     pub result_path: Option<PathBuf>,
+    /// Images the written file is missing ([`left_out_note`]), shown in the Success phase.
+    pub images_left_out: usize,
     /// Failure message, shown in the Error phase.
     pub error_message: Option<String>,
     /// Form focus (meaningful in the Options phase).
@@ -319,6 +328,7 @@ impl ExportState {
             target: None,
             outside_images: Vec::new(),
             result_path: None,
+            images_left_out: 0,
             error_message: None,
             focus: OptFocus::Title,
             btn_focus: 0,
@@ -355,6 +365,13 @@ impl ExportState {
         }
     }
 
+    /// Whether the selected format ignores the Inline images toggle and always inlines.
+    fn seals_images(&self) -> bool {
+        self.formats
+            .get(self.format_idx)
+            .is_some_and(|f| f.seals_images)
+    }
+
     /// The success-phase primary button label for the chosen format.
     fn open_result_label(&self) -> String {
         self.formats
@@ -388,8 +405,9 @@ impl ExportState {
         self.phase = ExportPhase::Exporting;
     }
 
-    pub fn set_success(&mut self, path: PathBuf) {
+    pub fn set_success(&mut self, path: PathBuf, images_left_out: usize) {
         self.result_path = Some(path);
+        self.images_left_out = images_left_out;
         self.phase = ExportPhase::Success;
         self.btn_focus = 0;
     }
@@ -648,6 +666,7 @@ impl ExportState {
                         cycle_index(self.format_idx, self.formats.len(), input_delta(input));
                 }
             }
+            OptFocus::Images if self.seals_images() => {}
             OptFocus::Images => {
                 if let ControlEvent::Changed(ControlValue::Toggle(v)) =
                     Control::Toggle.apply(ControlValue::Toggle(self.inline_images), input)
@@ -738,7 +757,8 @@ impl<'a> StatefulWidget for ExportView<'a> {
         match state.phase {
             ExportPhase::Options => self.render_options(area, buf, state),
             ExportPhase::ConfirmOutsideImages => {
-                let lines = outside_images_lines(&state.outside_images, self.theme);
+                let lines =
+                    outside_images_lines(&state.outside_images, state.seals_images(), self.theme);
                 self.render_message(
                     area,
                     buf,
@@ -779,10 +799,14 @@ impl<'a> StatefulWidget for ExportView<'a> {
                     .as_ref()
                     .map(|p| p.display().to_string())
                     .unwrap_or_default();
-                let lines = vec![
+                let mut lines = vec![
                     owned_line("Exported to".to_owned(), self.theme),
                     owned_line(path, self.theme),
                 ];
+                if let Some(note) = left_out_note(state.images_left_out) {
+                    lines.push(Line::default());
+                    lines.push(owned_line(note, self.theme));
+                }
                 let buttons = [state.open_result_label(), OPEN_FOLDER_BUTTON.to_owned()];
                 let button_refs: Vec<&str> = buttons.iter().map(String::as_str).collect();
                 self.render_message(
@@ -929,12 +953,19 @@ impl<'a> ExportView<'a> {
                 }
                 FormRow::Images => {
                     let focused = state.focus == OptFocus::Images;
-                    let control = toggle_spans(state.inline_images, focused, false, self.theme);
+                    let sealed = state.seals_images();
+                    let control =
+                        toggle_spans(state.inline_images || sealed, focused, sealed, self.theme);
                     self.render_row(buf, row_area, "Inline images", label_w, focused, control);
                     state.images_rect = Some(control_rect(row_area.x, row_area.y, hit_w));
                 }
                 FormRow::ImagesNote => {
-                    self.render_note(buf, row_area, images_note(state.inline_images));
+                    let note = if state.seals_images() {
+                        IMAGES_NOTE_SEALED
+                    } else {
+                        images_note(state.inline_images)
+                    };
+                    self.render_note(buf, row_area, note);
                 }
                 FormRow::Figures => {
                     let focused = state.focus == OptFocus::Figures;
@@ -1195,6 +1226,22 @@ impl<'a> ExportView<'a> {
     }
 }
 
+/// Why a finished export is missing images, or `None` when it isn't.  Only a converter export
+/// removes images ([`crate::export::ImageHandling::Sealed`]), so this is its one report of them.
+pub fn left_out_note(count: usize) -> Option<String> {
+    let noun = if count == 1 {
+        "image was"
+    } else {
+        "images were"
+    };
+    (count > 0).then(|| {
+        format!(
+            "{count} {noun} left out: not approved for embedding, \
+             remote images not allowed, or unreadable."
+        )
+    })
+}
+
 fn owned_line(text: String, theme: &Theme) -> Line<'static> {
     Line::from(Span::styled(text, theme.modal_item))
 }
@@ -1209,8 +1256,9 @@ fn outside_response(idx: usize) -> ExportResponse {
 }
 
 /// Body of the ConfirmOutsideImages phase: every path in full (the point is to show *where* each
-/// file is), up to [`OUTSIDE_LIST_CAP`], then a count of the rest.
-fn outside_images_lines(images: &[PathBuf], theme: &Theme) -> Vec<Line<'static>> {
+/// file is), up to [`OUTSIDE_LIST_CAP`], then a count of the rest.  `sealed` says what "Don't
+/// embed" means: a link for HTML, but for a converter, which would follow the link, nothing.
+fn outside_images_lines(images: &[PathBuf], sealed: bool, theme: &Theme) -> Vec<Line<'static>> {
     let count = images.len();
     let noun = if count == 1 { "image" } else { "images" };
     let mut lines = vec![
@@ -1237,6 +1285,12 @@ fn outside_images_lines(images: &[PathBuf], theme: &Theme) -> Vec<Line<'static>>
         "Embedding copies them into the exported file.".to_owned(),
         theme,
     ));
+    if sealed {
+        lines.push(owned_line(
+            "Otherwise they are left out of it.".to_owned(),
+            theme,
+        ));
+    }
     lines
 }
 
@@ -1545,7 +1599,7 @@ mod tests {
     #[test]
     fn success_phase_buttons_open_browser_and_folder() {
         let mut s = state();
-        s.set_success(PathBuf::from("/docs/guide.html"));
+        s.set_success(PathBuf::from("/docs/guide.html"), 0);
         assert_eq!(s.phase, ExportPhase::Success);
         assert_eq!(
             s.handle_key(&key(KeyCode::Enter)),
@@ -1697,7 +1751,7 @@ mod tests {
     #[test]
     fn click_on_success_buttons_opens_browser_and_folder() {
         let mut s = state();
-        s.set_success(PathBuf::from("/docs/guide.html"));
+        s.set_success(PathBuf::from("/docs/guide.html"), 0);
         render_modal(&mut s, 70, 14);
         let browser = s.msg_button_rects[0];
         assert_eq!(
@@ -1758,7 +1812,7 @@ mod tests {
         let backend = TestBackend::new(70, 14);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut s = state();
-        s.set_success(PathBuf::from("/docs/guide.html"));
+        s.set_success(PathBuf::from("/docs/guide.html"), 0);
         terminal
             .draw(|frame| {
                 let view = ExportView {
@@ -1834,12 +1888,83 @@ mod tests {
         s
     }
 
+    fn rendered(s: &mut ExportState, h: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(80, h)).unwrap();
+        terminal
+            .draw(|f| {
+                let view = ExportView {
+                    theme: theme(),
+                    cursor_visible: false,
+                };
+                f.render_stateful_widget(view, f.area(), s);
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    /// A converter row as the App builds it (`ExportJob::format`).
+    fn sealed(name: &str) -> ExportFormat {
+        ExportFormat {
+            seals_images: true,
+            ..ExportFormat::custom(name)
+        }
+    }
+
+    /// A converter format always inlines, so its toggle says so and ignores input — keeping the
+    /// user's own value for when HTML is selected again.
+    #[test]
+    fn a_converter_format_pins_the_images_toggle_on() {
+        let mut s = state_with_selected(vec![ExportFormat::html(), sealed("PDF")], 1);
+        s.focus = OptFocus::Images;
+        s.apply_input(ControlInput::Activate);
+        assert!(!s.inline_images, "the toggle ignores input while sealed");
+        assert!(rendered(&mut s, 30).contains(IMAGES_NOTE_SEALED));
+
+        s.format_idx = 0;
+        assert!(rendered(&mut s, 30).contains(IMAGES_NOTE_OFF));
+        s.apply_input(ControlInput::Activate);
+        assert!(s.inline_images, "HTML honors the toggle");
+    }
+
+    /// A file missing images says so; one that isn't says nothing about images.
+    #[test]
+    fn the_success_phase_reports_images_left_out() {
+        let mut s = state_with_selected(vec![ExportFormat::html(), sealed("PDF")], 1);
+        s.set_success(PathBuf::from("/docs/guide.pdf"), 2);
+        assert!(rendered(&mut s, 30).contains("2 images were left out"));
+        s.set_success(PathBuf::from("/docs/guide.pdf"), 0);
+        assert!(!rendered(&mut s, 30).contains("left out"));
+        assert_eq!(left_out_note(0), None);
+        assert!(left_out_note(1)
+            .unwrap()
+            .starts_with("1 image was left out"));
+    }
+
+    /// For a converter, "Don't embed" can't mean "leave a link" — it would follow the link.
+    #[test]
+    fn the_outside_prompt_says_a_converter_leaves_unembedded_images_out() {
+        let images = vec![PathBuf::from("/shared/a.png")];
+        let mut s = state_with_selected(vec![ExportFormat::html(), sealed("PDF")], 1);
+        s.enter_confirm_outside_images(PathBuf::from("/docs/guide.pdf"), images.clone());
+        assert!(rendered(&mut s, 30).contains("left out"));
+
+        let mut s = state_with_selected(vec![ExportFormat::html(), sealed("PDF")], 0);
+        s.enter_confirm_outside_images(PathBuf::from("/docs/guide.html"), images);
+        assert!(!rendered(&mut s, 30).contains("left out"));
+    }
+
     /// The success button names what will actually open, so a custom format must not promise a
     /// browser.
     #[test]
     fn the_success_button_names_the_selected_format() {
-        let mut s = state_with_selected(vec![ExportFormat::html(), ExportFormat::custom("PDF")], 1);
-        s.set_success(PathBuf::from("/docs/guide.pdf"));
+        let mut s = state_with_selected(vec![ExportFormat::html(), sealed("PDF")], 1);
+        s.set_success(PathBuf::from("/docs/guide.pdf"), 0);
         let backend = TestBackend::new(70, 14);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
@@ -1866,8 +1991,8 @@ mod tests {
     /// The response surface is shared, so a success click must not depend on the button label.
     #[test]
     fn custom_success_buttons_still_resolve_to_open_and_folder() {
-        let mut s = state_with_selected(vec![ExportFormat::html(), ExportFormat::custom("PDF")], 1);
-        s.set_success(PathBuf::from("/docs/guide.pdf"));
+        let mut s = state_with_selected(vec![ExportFormat::html(), sealed("PDF")], 1);
+        s.set_success(PathBuf::from("/docs/guide.pdf"), 0);
         render_modal(&mut s, 70, 14);
         let open = s.msg_button_rects[0];
         let folder = s.msg_button_rects[1];

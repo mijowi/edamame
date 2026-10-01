@@ -4,8 +4,8 @@ use std::process::{Command, Stdio};
 
 use thiserror::Error;
 
-use super::html::{render_html, HtmlExportOptions};
-use super::runner::{write_atomically, ExportOutcome};
+use super::html::{render, HtmlExportOptions};
+use super::runner::{write_atomically, ExportOutcome, Exported};
 use crate::config::CustomExportEntry;
 
 /// Errors from a custom-export run, flattened to a `String` when they cross the worker
@@ -63,14 +63,14 @@ fn run_custom_export(
     markdown: &str,
     target: &Path,
     html_opts: &HtmlExportOptions,
-) -> Result<PathBuf, CustomExportError> {
+) -> Result<Exported, CustomExportError> {
     if entry.command.is_empty() {
         return Err(CustomExportError::EmptyCommand);
     }
 
     // `NamedTempFile` deletes on drop, so a failing converter leaves no stray files.
-    let html_string = render_html(markdown, html_opts)
-        .map_err(|e| CustomExportError::Render(format!("{e:#}")))?;
+    let rendered =
+        render(markdown, html_opts).map_err(|e| CustomExportError::Render(format!("{e:#}")))?;
 
     // Absolute, because the command's cwd is the document's folder: a relative `{out}`
     // from `edamame docs/guide.md` would resolve to `…/docs/docs/guide.pdf`.  Every later
@@ -78,9 +78,9 @@ fn run_custom_export(
     let abs_target = absolutize(target);
 
     // The temp HTML goes in the *output* directory, not the system temp dir: converters
-    // resolve a relative `src="images/logo.png"` against the input file's own location, so
-    // an intermediate under `/tmp` silently drops every non-inlined image (the common
-    // case — `inline_images` is off by default).
+    // resolve a relative URL against the input file's own location, so under `/tmp` every
+    // relative link in a PDF would point into `/tmp`.  Images no longer depend on this —
+    // `ImageHandling::Sealed` leaves the converter no image reference to resolve.
     let out_dir = abs_target
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -93,7 +93,7 @@ fn run_custom_export(
         .suffix(".html")
         .tempfile_in(&out_dir)
         .map_err(CustomExportError::TempFile)?;
-    tmp.write_all(html_string.as_bytes())
+    tmp.write_all(rendered.html.as_bytes())
         .map_err(CustomExportError::TempFile)?;
     tmp.flush().map_err(CustomExportError::TempFile)?;
     let tmp_path = tmp.path().to_path_buf();
@@ -155,7 +155,10 @@ fn run_custom_export(
         })?;
     }
 
-    Ok(abs_target)
+    Ok(Exported {
+        path: abs_target,
+        images_left_out: rendered.images_left_out,
+    })
 }
 
 /// Modification time *and* length of `p` — the "did this run write the file?" signal.
@@ -202,7 +205,9 @@ mod tests {
     fn html_opts(dir: &Path) -> HtmlExportOptions {
         HtmlExportOptions {
             stylesheet: crate::export::Stylesheet::Inline(String::new()),
-            inline_images: false,
+            images: crate::export::ImageHandling::Sealed {
+                fetch_remote: false,
+            },
             source_dir: Some(dir.to_path_buf()),
             approved_outside: Vec::new(),
             title: None,
@@ -258,7 +263,7 @@ mod tests {
         spawn_custom_export(entry, "# hi\n".into(), target.clone(), opts, move |o| {
             tx.send(o).unwrap()
         });
-        assert_eq!(rx.recv().unwrap().unwrap(), target);
+        assert_eq!(rx.recv().unwrap().unwrap().path, target);
         assert!(target.exists());
     }
 
@@ -317,7 +322,10 @@ mod tests {
             tx.send(o).unwrap()
         });
         let produced = rx.recv().unwrap().unwrap();
-        assert_eq!(produced, target, "returned path is the resolved target");
+        assert_eq!(
+            produced.path, target,
+            "returned path is the resolved target"
+        );
         assert!(target.exists(), "output written at the target, not the cwd");
         assert!(!work_dir.join("guide.copy").exists());
     }
@@ -379,7 +387,7 @@ mod tests {
             move |outcome| tx.send(outcome).unwrap(),
         );
         let outcome = rx.recv().unwrap();
-        assert_eq!(outcome.unwrap(), target);
+        assert_eq!(outcome.unwrap().path, target);
         let body = std::fs::read_to_string(&target).unwrap();
         assert!(body.contains("<h1 id=\"hello\">hello</h1>"));
     }
@@ -431,7 +439,7 @@ mod tests {
             html_opts(dir.path()),
             move |outcome| tx.send(outcome).unwrap(),
         );
-        assert_eq!(rx.recv().unwrap().unwrap(), target);
+        assert_eq!(rx.recv().unwrap().unwrap().path, target);
         let body = std::fs::read_to_string(&target).unwrap();
         assert!(
             body.contains("<h1 id=\"hello\">hello</h1>"),
@@ -518,7 +526,7 @@ mod tests {
             html_opts(dir.path()),
             move |outcome| tx.send(outcome).unwrap(),
         );
-        assert_eq!(rx.recv().unwrap().unwrap(), target);
+        assert_eq!(rx.recv().unwrap().unwrap().path, target);
         let html_path = std::fs::read_to_string(&target).unwrap();
         assert_eq!(
             Path::new(&html_path).parent(),

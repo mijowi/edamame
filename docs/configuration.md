@@ -233,7 +233,7 @@ These are the values the export modal opens with — for a custom target as well
 
 `stylesheet` is either the literal `"builtin"` or a path to a `.css` file. Drop stylesheets into the `export/` folder beside `config.toml` and they appear in the modal's picker. A `default.css.example` is written there on first run to copy from.
 
-`inline_images` base64-embeds local images into the HTML so the file is self-contained. Off by default, partly because it makes large files and partly because an embedded file leaves your machine when you share the export. Images from outside the document's folder are listed in the export modal and embedded only if you confirm.
+`inline_images` base64-embeds local images into the HTML so the file is self-contained. Off by default, partly because it makes large files and partly because an embedded file leaves your machine when you share the export. Images from outside the document's folder are listed in the export modal and embedded only if you confirm. A custom export (below) always embeds, whatever this is set to.
 
 `figures` renders mermaid diagrams and `$$...$$` math and embeds them in the export as SVG images, which stay sharp at any zoom and in print. If off, each is left as its source in a code block.
 
@@ -253,7 +253,7 @@ An array of tables: repeat the block once per converter. Each entry adds a forma
 
 `name` is what the format will be listed as in the export modal's Format list.
 
-`command` is an argv list, not a command line — it is executed directly, never through a shell, so quoting, globbing and `$VAR` don't apply. Use `["sh", "-c", "…"]` if you want them. Two placeholders are substituted anywhere in the list: `{html}` is the rendered intermediate file (a temp file, removed afterwards) and `{out}` is the file to write. A converter that writes to standard output instead is also handled — omit `{out}` and edamame captures and writes the output. The command runs with the document's directory as its working directory, so relative image paths resolve as they do in the document.
+`command` is an argv list, not a command line — it is executed directly, never through a shell, so quoting, globbing and `$VAR` don't apply. Use `["sh", "-c", "…"]` if you want them. Two placeholders are substituted anywhere in the list: `{html}` is the rendered intermediate file (a temp file, removed afterwards) and `{out}` is the file to write. A converter that writes to standard output instead is also handled — omit `{out}` and edamame captures and writes the output. The command runs with the document's directory as its working directory, so relative links resolve as they do in the document.
 
 `extension` sets the output extension. `notes/guide.md` with `extension = "pdf"` writes `notes/guide.pdf`.
 
@@ -271,7 +271,7 @@ command   = ["pandoc", "{html}", "-o", "{out}"]
 extension = "docx"
 ```
 
-The first entry adds "PDF (weasyprint)" to the Format list in the export modal, beside "HTML". Pick it and the rest of the form is unchanged — because the HTML your converter reads is the HTML those options describe, the stylesheet in particular. Choose your stylesheet with the final format in mind: for print, a `@page` rule in a custom `.css` is usually what you want.
+The first entry adds "PDF (weasyprint)" to the Format list in the export modal, beside "HTML". Pick it and the rest of the form is unchanged — because the HTML your converter reads is the HTML those options describe, the stylesheet in particular. The one exception is **Inline images**, which is always on for a custom format (see [security.md](security.md#exports-ask-before-embedding-files-from-outside-the-documents-folder) for why). Choose your stylesheet with the final format in mind: for print, a `@page` rule in a custom `.css` is usually what you want.
 
 Everything else works as it does for HTML — the output lands beside your document under the extension you configured, you're asked before overwriting, and the converter runs in the background so edamame stays responsive. If it fails, the modal shows you the error.
 

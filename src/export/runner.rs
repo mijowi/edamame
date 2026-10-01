@@ -4,7 +4,17 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 /// Result of a background export job; an owned `String` error so it is trivially `Send`.
-pub type ExportOutcome = Result<PathBuf, String>;
+pub type ExportOutcome = Result<Exported, String>;
+
+/// A finished export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Exported {
+    /// The file written.
+    pub path: PathBuf,
+    /// Images whose `src` the export removed rather than leave a reference behind
+    /// ([`super::ImageHandling::Sealed`]), so the user learns the output is missing them.
+    pub images_left_out: usize,
+}
 
 /// Reasons [`preflight`] may refuse to start an export.
 #[derive(Debug, Error)]

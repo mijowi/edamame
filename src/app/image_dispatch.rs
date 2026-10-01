@@ -119,9 +119,13 @@ impl App {
     /// `session_images_enabled`, which is `None` until the prompt is answered — false while it is
     /// pending, so nothing decodes behind the user's back.
     pub(super) fn effective_images_enabled(&self) -> bool {
-        if !self.media_renderable() {
-            return false;
-        }
+        self.media_renderable() && self.images_permitted()
+    }
+
+    /// Whether the user has turned images on: the policy, with `Ask` deferring to this session's
+    /// answer.  [`Self::effective_images_enabled`] without the terminal half, for custom export,
+    /// which fetches remote images on the same consent but displays nothing.
+    pub(super) fn images_permitted(&self) -> bool {
         match self.config.images.enabled {
             crate::config::ImagesEnabled::Always => true,
             crate::config::ImagesEnabled::Never => false,
@@ -332,13 +336,20 @@ impl App {
             return false;
         }
         if crate::image::loader::is_remote(url) {
-            return match self.config.images.remote_policy {
-                crate::config::RemoteImagePolicy::Always => true,
-                crate::config::RemoteImagePolicy::Ask => self.session_allow_remote,
-                crate::config::RemoteImagePolicy::Never => false,
-            };
+            return self.remote_images_permitted();
         }
         true
+    }
+
+    /// Whether remote images may be fetched right now: the policy, with `Ask` deferring to this
+    /// session's answer to the prompt.  Only half the test: on-screen decodes also need
+    /// [`Self::effective_images_enabled`], and custom export [`Self::images_permitted`].
+    pub(super) fn remote_images_permitted(&self) -> bool {
+        match self.config.images.remote_policy {
+            crate::config::RemoteImagePolicy::Always => true,
+            crate::config::RemoteImagePolicy::Ask => self.session_allow_remote,
+            crate::config::RemoteImagePolicy::Never => false,
+        }
     }
 
     /// Dispatch every image in the document, viewport regardless.  Called after a prompt unlocks

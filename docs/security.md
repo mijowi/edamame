@@ -28,13 +28,15 @@ Even after you allow it, edamame refuses to fetch from your own machine or your 
 
 An exported HTML file is usually something you send to other people, so edamame removes anything in it that could run in a browser. Harmless raw HTML in the document is kept: formatting such as `<details>`, `<kbd>` and `<sub>` survives, while scripts, event handlers like `onclick`, and styles are removed. Links that would run code (`javascript:`, `vbscript:`, `data:`) lose their target but keep their text. Diagrams and formulas are embedded as images, which a browser never runs code from.
 
-### HTML export asks before embedding files from outside the document's folder
+### Exports ask before embedding files from outside the document's folder
 
-With **Inline images** turned on (it's off by default), the export embeds the document's images into the HTML file. A document could reference a private image elsewhere on your computer, such as `../../Pictures/passport.jpg`, hoping you'll send it back inside the export. So:
+With **Inline images** turned on (it's off by default), the export embeds the document's images into the HTML file. A custom export format such as PDF always embeds them. A document could reference a private image elsewhere on your computer, such as `../../Pictures/passport.jpg`, hoping you'll send it back inside the export. So:
 
 - Images in the document's own folder (or below it) are embedded normally.
-- Images from anywhere else are listed by their full path, and edamame asks you first. **Embed** includes them; **Don't embed** leaves them as links.
+- Images from anywhere else are listed by their full path, and edamame asks you first. **Embed** includes them; **Don't embed** leaves them as links in HTML, and leaves them out of other formats.
 - Only image files are ever embedded, so a document can't use this to pull in something like an SSH key.
+
+A custom format always embeds because its converter (weasyprint, pandoc, …) would otherwise follow every image reference on its own, embedding a file from anywhere on your computer without asking and downloading remote images you haven't allowed. edamame does the embedding instead. Remote images are included only if you've allowed them, and are downloaded with the same protections as on screen.
 
 ### The update check sends nothing about you
 

@@ -325,11 +325,8 @@ fn revealing_a_diagram_at_the_fold_keeps_the_cursor_on_screen() {
 fn opts(render_figures: bool) -> HtmlExportOptions {
     HtmlExportOptions {
         stylesheet: Stylesheet::Inline(String::new()),
-        inline_images: false,
-        source_dir: None,
-        approved_outside: Vec::new(),
-        title: None,
         render_figures,
+        ..HtmlExportOptions::default()
     }
 }
 

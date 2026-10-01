@@ -211,7 +211,11 @@ fn resolve_local_path(url: &str, doc_path: Option<&Path>) -> Result<PathBuf, Ima
     }
 }
 
-fn fetch_remote(url: &str) -> Result<Vec<u8>, ImageLoadError> {
+/// GET `url`'s body, bounded in time (three timeouts) and size (ureq's body limit), through
+/// [`PublicOnlyResolver`].  The one remote fetch path: the decode worker uses it, and so does a
+/// custom export, which embeds remote images itself rather than let its converter reach the
+/// network unguarded.  Consent is the caller's to check.
+pub fn fetch_remote(url: &str) -> Result<Vec<u8>, ImageLoadError> {
     // All three phases are bounded, so a slow server can't hang the decode worker.
     let config = ureq::Agent::config_builder()
         .timeout_connect(Some(REMOTE_TIMEOUT))

@@ -136,7 +136,8 @@ enabled = "ask"
 # stylesheet = "builtin"
 
 # Base64-embed local images so the exported HTML is self-contained. Images from outside
-# the document's folder are listed and embedded only after you confirm.
+# the document's folder are listed and embedded only after you confirm.  Custom export
+# formats always embed, whatever this is set to.
 # inline_images = false
 
 # Render mermaid diagrams and $$...$$ math to embedded SVG images (false leaves them as source).

@@ -29,7 +29,7 @@ use ratatui::Frame;
 use super::types::{Modal, ModalOutcome, ModalRenderCtx};
 use crate::app::{App, AppEvent};
 use crate::config::{Config, CustomExportEntry};
-use crate::export::{self, HtmlExportOptions, PreflightError, Stylesheet};
+use crate::export::{self, HtmlExportOptions, ImageHandling, PreflightError, Stylesheet};
 use crate::ui::{ExportChoices, ExportFormat, ExportResponse, ExportState, ExportView, ModalKind};
 
 /// Monotonic export-generation ids, so a completion event from a dismissed-then-reopened export
@@ -57,11 +57,37 @@ impl ExportJob {
         }
     }
 
-    /// The Format-list row this job presents in the modal.
+    /// Whether this job hands the HTML to a converter that resolves image references itself, so
+    /// every image must be embedded or removed first ([`ImageHandling::Sealed`]).
+    fn seals_images(&self) -> bool {
+        matches!(self, ExportJob::Custom(_))
+    }
+
+    /// What this job's export does with images.  A sealed job fetches remote images on the terms
+    /// on-screen decodes do — images turned on, remote ones allowed — but not the terminal's
+    /// ability to display them, which has no bearing on a file.
+    fn image_handling(&self, app: &App) -> ImageHandling {
+        if self.seals_images() {
+            ImageHandling::Sealed {
+                fetch_remote: app.images_permitted() && app.remote_images_permitted(),
+            }
+        } else if app.config.export.html.inline_images {
+            ImageHandling::Embed
+        } else {
+            ImageHandling::Link
+        }
+    }
+
+    /// The Format-list row this job presents in the modal, carrying [`Self::seals_images`] so
+    /// the form shows the image handling the job will actually use.
     fn format(&self) -> ExportFormat {
-        match self {
+        let format = match self {
             ExportJob::Html => ExportFormat::html(),
             ExportJob::Custom(entry) => ExportFormat::custom(&entry.name),
+        };
+        ExportFormat {
+            seals_images: self.seals_images(),
+            ..format
         }
     }
 }
@@ -97,7 +123,7 @@ impl ExportModal {
     /// Advance the modal once the background export finishes.
     pub fn on_export_done(&mut self, outcome: export::ExportOutcome) {
         match outcome {
-            Ok(path) => self.state.set_success(path),
+            Ok(done) => self.state.set_success(done.path, done.images_left_out),
             Err(message) => self.state.set_error(message),
         }
     }
@@ -181,7 +207,9 @@ impl ExportModal {
         self.approved_outside.clear();
         // Inlining reads every referenced image into a file the user will likely share, so one
         // from outside the document's folder is embedded only once the user has seen its path.
-        if choices.inline_images {
+        // A custom export always embeds — its converter would otherwise read the file itself —
+        // so it always asks.
+        if choices.inline_images || job.seals_images() {
             let outside = source_dir_for(&target)
                 .map(|dir| export::outside_images(&app.editor.buffer.contents(), &dir))
                 .unwrap_or_default();
@@ -212,9 +240,10 @@ impl ExportModal {
             return;
         };
         let html = &app.config.export.html;
+        let job = self.selected_job();
         let opts = HtmlExportOptions {
             stylesheet: Stylesheet::from_config_value(&html.stylesheet),
-            inline_images: html.inline_images,
+            images: job.image_handling(app),
             source_dir: source_dir_for(&target),
             approved_outside: self.approved_outside.clone(),
             title: self.state.submitted_title.clone(),
@@ -229,7 +258,7 @@ impl ExportModal {
         let done = move |outcome| {
             let _ = tx.send(AppEvent::ExportDone(id, outcome));
         };
-        match self.selected_job() {
+        match job {
             ExportJob::Html => export::spawn_html_export(markdown, target, opts, done),
             ExportJob::Custom(entry) => {
                 export::spawn_custom_export(entry, markdown, target, opts, done)
@@ -374,10 +403,13 @@ impl App {
         match self.modal_stack.find_first_mut::<ExportModal>() {
             Some(modal) if modal.export_id == id => modal.on_export_done(outcome),
             _ => match outcome {
-                Ok(path) => self.flash(
-                    format!("Exported to {}", path.display()),
-                    crate::app::MessageKind::Success,
-                ),
+                Ok(done) => {
+                    let mut message = format!("Exported to {}", done.path.display());
+                    if let Some(note) = crate::ui::left_out_note(done.images_left_out) {
+                        message = format!("{message}. {note}");
+                    }
+                    self.flash(message, crate::app::MessageKind::Success)
+                }
                 Err(message) => self.notify(format!("Export failed: {message}"), ModalKind::Error),
             },
         }
@@ -478,6 +510,43 @@ mod tests {
         assert_eq!(format.open_result, "Open file");
         assert_eq!(ExportJob::Html.format().label, "HTML");
         assert_eq!(ExportJob::Html.format().open_result, "Open in browser");
+    }
+
+    /// The row's pinned toggle comes from the job, the one place that decides which formats
+    /// seal, so the form never shows a handling the export doesn't use.
+    #[test]
+    fn the_format_row_seals_exactly_when_the_job_does() {
+        for job in [ExportJob::Html, ExportJob::Custom(entry("PDF", "pdf"))] {
+            assert_eq!(job.format().seals_images, job.seals_images(), "{job:?}");
+        }
+        assert!(ExportJob::Custom(entry("PDF", "pdf")).seals_images());
+    }
+
+    /// A sealed export fetches remote images only on the consent on-screen decodes need: images
+    /// on *and* remote images allowed.
+    #[test]
+    fn a_sealed_export_fetches_remote_images_only_with_images_on() {
+        use crate::config::{ImagesEnabled, RemoteImagePolicy};
+        let mut app = make_app();
+        let job = ExportJob::Custom(entry("PDF", "pdf"));
+        app.config.images.remote_policy = RemoteImagePolicy::Always;
+        for (enabled, fetch_remote) in
+            [(ImagesEnabled::Always, true), (ImagesEnabled::Never, false)]
+        {
+            app.config.images.enabled = enabled;
+            assert_eq!(
+                job.image_handling(&app),
+                ImageHandling::Sealed { fetch_remote },
+            );
+        }
+        app.config.images.enabled = ImagesEnabled::Always;
+        app.config.images.remote_policy = RemoteImagePolicy::Never;
+        assert_eq!(
+            job.image_handling(&app),
+            ImageHandling::Sealed {
+                fetch_remote: false
+            },
+        );
     }
 
     fn entry(name: &str, extension: &str) -> CustomExportEntry {
@@ -647,6 +716,47 @@ mod tests {
             assert_eq!(export.state.phase, crate::ui::ExportPhase::ConfirmOverwrite);
             assert!(export.approved_outside.is_empty());
         }
+    }
+
+    /// A custom export always embeds — its converter would read the file itself otherwise — so an
+    /// outside image is confirmed even with the Inline images toggle off.
+    #[test]
+    fn a_custom_export_confirms_outside_images_with_inlining_off() {
+        let _guard = crate::test_env::config_isolation();
+        let root = tempfile::tempdir().unwrap();
+        let docs = root.path().join("docs");
+        std::fs::create_dir(&docs).unwrap();
+        let shared = root.path().join("shared.png");
+        image::RgbaImage::new(1, 1).save(&shared).unwrap();
+        let source = docs.join("guide.md");
+        std::fs::write(&source, "<img src=\"../shared.png\">\n").unwrap();
+
+        let mut app = make_app();
+        app.file_path = Some(source);
+        app.editor.buffer = crate::document::Buffer::from_str("<img src=\"../shared.png\">\n");
+        app.config.export.custom = vec![entry("PDF", "pdf")];
+        app.open_export_modal();
+        let mut modal = app.modal_stack.pop().expect("modal was pushed");
+        let export = modal.as_any_mut().downcast_mut::<ExportModal>().unwrap();
+        export.state.format_idx = 1;
+        export.resolve(
+            &mut app,
+            ExportResponse::Submit(ExportChoices {
+                title: None,
+                inline_images: false,
+                render_figures: false,
+                stylesheet: "builtin".to_owned(),
+            }),
+        );
+
+        assert_eq!(
+            export.state.phase,
+            crate::ui::ExportPhase::ConfirmOutsideImages
+        );
+        assert_eq!(
+            export.state.outside_images,
+            vec![shared.canonicalize().unwrap()]
+        );
     }
 
     /// The guard sits behind `output_extension`, so `" .md "` collides exactly like `"md"`.

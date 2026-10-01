@@ -324,7 +324,7 @@ Move the cursor into an image and it's replaced by its `![alt](url)` source line
 **Pasting images.** `Ctrl-V` pastes an image when the clipboard holds a screenshot (or other copied pixels) and no text. The image is stored as a PNG relative to your document and is referenced by that relative path.
 
 - A prompt shows the path the image will be saved to, relative to the document's folder, e.g. `images/20260928-143012.png`. edamame infers the location from the other images in the document (default `images/`). The file is named with the current date and time.
-- The path must be relative, end in `.png`, and contain no `:` or control characters. An existing file is never overwritten. Paths that traverse the parent directory (e.g. `../assets/`) are allowed, but require an extra confirmation when exporting (see [Security](security.md#html-export-asks-before-embedding-files-from-outside-the-documents-folder)).
+- The path must be relative, end in `.png`, and contain no `:` or control characters. An existing file is never overwritten. Paths that traverse the parent directory (e.g. `../assets/`) are allowed, but require an extra confirmation when exporting (see [Security](security.md#exports-ask-before-embedding-files-from-outside-the-documents-folder)).
 - An unsaved document has no folder yet, so you're asked to save it first.
 - The image is inserted on its own line, separated from the text around it by blank lines, which is what makes it render as an image rather than a line of text. Inside a table, list, blockquote, or footnote it's inserted at the cursor instead, since blank lines there would end the element early. edamame shows an image placeholder there rather than the picture, but GitHub and HTML export display it.
 
@@ -404,6 +404,8 @@ Raw HTML in the document is kept, so `<details>`, `<kbd>`, `<sub>`, `<sup>`, `<b
 ### Other formats
 
 HTML is the only format edamame writes itself, but it will hand that HTML to a converter you nominate, which is how you get PDF, DOCX, EPUB or anything else your tools can produce. See [configuration.md](configuration.md#exportcustom) for how to add your own custom export formats.
+
+For these formats **Inline images** is always on, and **Don't embed** leaves an outside image out of the file rather than as a link. [Security](security.md#exports-ask-before-embedding-files-from-outside-the-documents-folder) explains why. If any image had to be left out (not approved, a remote image you haven't allowed, or a file edamame couldn't read), the export's confirmation says how many.
 
 ---
 

@@ -3,6 +3,7 @@ use std::collections::hash_map::RandomState;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -11,11 +12,16 @@ use pulldown_cmark::{
     html as cmark_html, CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd,
 };
 
-use super::runner::{write_atomically, ExportOutcome};
+use super::runner::{write_atomically, ExportOutcome, Exported};
 use crate::diagram;
 use crate::document::parsed_doc::{gfm_slug, uniquify_slug};
 use crate::image::normalize_svg;
 use crate::markdown::parser::post_pass::is_html_comment_only;
+use images::{local_image, ImageResolver};
+
+mod images;
+
+pub use images::ImageHandling;
 
 /// The compiled-in stylesheet, used for [`Stylesheet::Builtin`].
 pub const BUILTIN_STYLESHEET: &str = include_str!("../../config/export/default.css");
@@ -57,11 +63,11 @@ impl Stylesheet {
 pub struct HtmlExportOptions {
     /// Source of the embedded CSS.
     pub stylesheet: Stylesheet,
-    /// Embed relative image references as `data:` URIs so the HTML is self-contained.  Requires
-    /// `source_dir`; remote and already-`data:` URLs are untouched either way.
-    pub inline_images: bool,
-    /// Resolves relative image paths, and bounds them: see [`embeddable_image`].  `None`
-    /// disables the rewrite even when `inline_images` is true.
+    /// What happens to each `<img src>`, Markdown image or raw HTML alike: see
+    /// [`ImageHandling`].
+    pub images: ImageHandling,
+    /// Resolves relative image paths, and bounds them: see [`images::local_image`].  `None`
+    /// means no local image is embedded.
     pub source_dir: Option<PathBuf>,
     /// Canonical paths *outside* `source_dir` the user agreed to embed, as listed by
     /// [`outside_images`].  An out-of-folder image not on this list stays a plain link.
@@ -79,7 +85,7 @@ impl Default for HtmlExportOptions {
     fn default() -> Self {
         Self {
             stylesheet: Stylesheet::Builtin,
-            inline_images: false,
+            images: ImageHandling::Link,
             source_dir: None,
             approved_outside: Vec::new(),
             title: None,
@@ -97,14 +103,19 @@ impl Default for HtmlExportOptions {
 /// Figures are rendered as placeholders and swapped in afterwards ([`Figures`]), so the sanitizer
 /// never sees — and can never be asked to permit — the markup edamame writes itself.
 pub fn render_html(markdown: &str, opts: &HtmlExportOptions) -> Result<String> {
+    render(markdown, opts).map(|rendered| rendered.html)
+}
+
+/// A rendered export, and how many images it left out ([`ImageResolver::left_out`]).
+pub(super) struct Rendered {
+    pub(super) html: String,
+    pub(super) images_left_out: usize,
+}
+
+/// [`render_html`], also reporting how many images were left out, for the export workers.
+pub(super) fn render(markdown: &str, opts: &HtmlExportOptions) -> Result<Rendered> {
     // Collected so the rewrite passes can mutate events in place.
     let mut events: Vec<Event> = Parser::new_ext(markdown, parser_options(markdown)).collect();
-
-    if opts.inline_images {
-        if let Some(dir) = opts.source_dir.as_deref() {
-            rewrite_images_to_data_uris(&mut events, dir, &opts.approved_outside);
-        }
-    }
 
     // Before `replace_math`, which turns heading math into plain text: the slug reads the
     // `InlineMath` events the in-app parser sees.
@@ -120,12 +131,18 @@ pub fn render_html(markdown: &str, opts: &HtmlExportOptions) -> Result<String> {
 
     let mut body = String::new();
     cmark_html::push_html(&mut body, events.into_iter());
-    let body = figures.insert_into(&sanitize_body(&body));
+    let images = Arc::new(ImageResolver::new(
+        opts.images,
+        opts.source_dir.as_deref(),
+        &opts.approved_outside,
+    ));
+    let hook = Arc::clone(&images);
+    let body = figures.insert_into(&sanitize_body(&body, move |src| hook.resolve(src)));
 
     let css = opts.stylesheet.load()?;
     let title = opts.title.as_deref().unwrap_or("Document");
 
-    Ok(format!(
+    let html = format!(
         "<!doctype html>\n\
          <html lang=\"en\">\n\
          <head>\n\
@@ -141,7 +158,11 @@ pub fn render_html(markdown: &str, opts: &HtmlExportOptions) -> Result<String> {
          </body>\n\
          </html>\n",
         title = html_escape(title),
-    ))
+    );
+    Ok(Rendered {
+        html,
+        images_left_out: images.left_out(),
+    })
 }
 
 /// Render `markdown` to `target` on a worker thread, invoking the closure there with the outcome.
@@ -155,16 +176,20 @@ pub fn spawn_html_export(
     on_done: impl FnOnce(ExportOutcome) + Send + 'static,
 ) {
     std::thread::spawn(move || {
-        let result = render_and_write(&markdown, &target, &opts).map(|()| target.clone());
+        let result = render_and_write(&markdown, &target, &opts).map(|images_left_out| Exported {
+            path: target.clone(),
+            images_left_out,
+        });
         on_done(result.map_err(|e| format!("{e:#}")));
     });
 }
 
-fn render_and_write(markdown: &str, target: &Path, opts: &HtmlExportOptions) -> Result<()> {
-    let html = render_html(markdown, opts)?;
-    write_atomically(target, html.as_bytes())
+/// Render and write `target`, returning how many images were left out.
+fn render_and_write(markdown: &str, target: &Path, opts: &HtmlExportOptions) -> Result<usize> {
+    let rendered = render(markdown, opts)?;
+    write_atomically(target, rendered.html.as_bytes())
         .with_context(|| format!("Failed to write export: {}", target.display()))?;
-    Ok(())
+    Ok(rendered.images_left_out)
 }
 
 /// The parser options every export pass uses, so [`outside_images`] sees exactly the images
@@ -271,7 +296,13 @@ const BLOCKED_URL_SCHEMES: &[&str] = &["javascript", "vbscript", "data"];
 ///   embedded images, and the attribute filter strips it from every other URL attribute.  Inside
 ///   `<img>` even `data:image/svg+xml` is inert: a browser runs no script and loads no resource
 ///   in an SVG used as an image.
-fn sanitize_body(html: &str) -> String {
+/// * **`img_src` decides every surviving `<img src>`** — `Some` to write that value, `None` to
+///   remove it.  It runs on attributes that already passed the checks above, so it can only
+///   narrow them, and it is the one place image references are handled ([`ImageResolver`]).
+fn sanitize_body<F>(html: &str, img_src: F) -> String
+where
+    F: for<'u> Fn(&'u str) -> Option<Cow<'u, str>> + Send + Sync + 'static,
+{
     let schemes = url_schemes_in(html);
     let mut builder = ammonia::Builder::default();
     builder
@@ -289,10 +320,12 @@ fn sanitize_body(html: &str) -> String {
         .add_tag_attributes("th", ["style"])
         .add_tag_attributes("td", ["style"])
         .filter_style_properties(HashSet::from(["text-align"]))
-        .attribute_filter(|element, attribute, value| {
+        .attribute_filter(move |element, attribute, value| {
+            if (element, attribute) == ("img", "src") {
+                return img_src(value);
+            }
             let is_url_attribute = matches!(attribute, "href" | "src" | "xlink:href" | "cite");
-            if is_url_attribute && has_data_scheme(value) && (element, attribute) != ("img", "src")
-            {
+            if is_url_attribute && has_data_scheme(value) {
                 None
             } else {
                 Some(Cow::Borrowed(value))
@@ -670,111 +703,44 @@ fn render_math_figure(source: &str) -> Option<String> {
     svg_figure(&svg, "math-formula", "math formula")
 }
 
-// ── Image inlining ────────────────────────────────────────────────────────
+// ── Out-of-folder images ──────────────────────────────────────────────────
 
-fn rewrite_images_to_data_uris(
-    events: &mut [Event<'_>],
-    source_dir: &Path,
-    approved_outside: &[PathBuf],
-) {
-    let canon_dir = source_dir.canonicalize().ok();
-    for event in events.iter_mut() {
-        if let Event::Start(Tag::Image { dest_url, .. }) = event {
-            let Some(path) = embeddable_image(dest_url.as_ref(), source_dir, canon_dir.as_deref())
-            else {
-                continue;
-            };
-            if !path.inside && !approved_outside.contains(&path.canonical) {
-                continue;
-            }
-            if let Some(new_url) = data_uri(&path.canonical) {
-                *dest_url = CowStr::Boxed(new_url.into_boxed_str());
-            }
-        }
-    }
-}
-
-/// The local images `markdown` references that a self-contained export would embed from *outside*
-/// `source_dir`: through `..`, by absolute path, or via a symlink leading out.  Canonical, deduped,
-/// in document order.  The export modal lists these and asks before embedding any of them, since
-/// the exported file is typically shared and an out-of-folder image may be one the document's
-/// author has no business seeing — see `docs/dev/security-invariants.md`.
+/// The local images `markdown` references that an embedding export would read from *outside*
+/// `source_dir`: through `..`, by absolute path or `file:` URL, or via a symlink leading out.
+/// Canonical, deduped, in document order.  The export modal lists these and asks before embedding
+/// any of them, since the exported file is typically shared and an out-of-folder image may be one
+/// the document's author has no business seeing — see `docs/dev/security-invariants.md`.
+///
+/// Read off the sanitized body through the same `img src` hook [`render_html`] resolves images
+/// with, so raw-HTML `<img>` tags are listed exactly like Markdown images, and nothing is listed
+/// that the export would not reach.
 pub fn outside_images(markdown: &str, source_dir: &Path) -> Vec<PathBuf> {
+    let mut body = String::new();
+    cmark_html::push_html(
+        &mut body,
+        Parser::new_ext(markdown, parser_options(markdown)),
+    );
+    let sources = Arc::new(Mutex::new(Vec::<String>::new()));
+    let record = Arc::clone(&sources);
+    sanitize_body(&body, move |src| {
+        record
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(src.to_owned());
+        Some(Cow::Borrowed(src))
+    });
+    let sources = std::mem::take(&mut *sources.lock().unwrap_or_else(|e| e.into_inner()));
+
     let canon_dir = source_dir.canonicalize().ok();
     let mut out: Vec<PathBuf> = Vec::new();
-    for event in Parser::new_ext(markdown, parser_options(markdown)) {
-        if let Event::Start(Tag::Image { dest_url, .. }) = event {
-            if let Some(path) = embeddable_image(&dest_url, source_dir, canon_dir.as_deref()) {
-                if !path.inside && !out.contains(&path.canonical) {
-                    out.push(path.canonical);
-                }
+    for src in sources {
+        if let Some(image) = local_image(&src, source_dir, canon_dir.as_deref()) {
+            if !image.inside && !out.contains(&image.canonical) {
+                out.push(image.canonical);
             }
         }
     }
     out
-}
-
-/// A local image an export could embed, resolved.
-struct ResolvedImage {
-    canonical: PathBuf,
-    /// Whether `canonical` lies under the canonicalized `source_dir`.
-    inside: bool,
-}
-
-/// Resolve an image `url` to an existing local file with an image extension, noting whether it
-/// stays inside `source_dir`.  `None` means "never embed": remote URLs, existing `data:` URIs,
-/// and anything missing or unclassifiable.  Containment is checked *after* `canonicalize`, so a
-/// symlink leading out of the folder counts as outside, exactly like a `..` path.
-///
-/// `canon_dir` is `source_dir` canonicalized once by the caller; `None` (the folder itself
-/// failed to resolve) counts every image as outside, so each one is asked about.
-fn embeddable_image(
-    url: &str,
-    source_dir: &Path,
-    canon_dir: Option<&Path>,
-) -> Option<ResolvedImage> {
-    if is_remote_url(url) {
-        return None;
-    }
-    let canonical = source_dir.join(url).canonicalize().ok()?;
-    if !canonical.is_file() {
-        return None;
-    }
-    mime_from_extension(&canonical)?;
-    let inside = canon_dir.is_some_and(|dir| canonical.starts_with(dir));
-    Some(ResolvedImage { canonical, inside })
-}
-
-/// `path`'s bytes as a `data:` URI; `None` if unreadable or of no known image type.
-fn data_uri(path: &Path) -> Option<String> {
-    let mime = mime_from_extension(path)?;
-    let bytes = std::fs::read(path).ok()?;
-    let mut encoded = String::from("data:");
-    encoded.push_str(mime);
-    encoded.push_str(";base64,");
-    encoded.push_str(&BASE64.encode(&bytes));
-    Some(encoded)
-}
-
-fn is_remote_url(url: &str) -> bool {
-    let lower = url.to_ascii_lowercase();
-    lower.starts_with("http://")
-        || lower.starts_with("https://")
-        || lower.starts_with("data:")
-        || lower.starts_with("file://")
-}
-
-fn mime_from_extension(path: &Path) -> Option<&'static str> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    Some(match ext.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "bmp" => "image/bmp",
-        "svg" => "image/svg+xml",
-        _ => return None,
-    })
 }
 
 // ── HTML escaping ─────────────────────────────────────────────────────────
@@ -1033,7 +999,7 @@ mod tests {
         let md = "![pixel](pixel.png)";
         let opts = HtmlExportOptions {
             stylesheet: Stylesheet::Inline(String::new()),
-            inline_images: true,
+            images: ImageHandling::Embed,
             source_dir: Some(dir.path().to_path_buf()),
             approved_outside: Vec::new(),
             title: None,
@@ -1052,7 +1018,7 @@ mod tests {
         let md = "![cat](https://example.com/cat.png)";
         let opts = HtmlExportOptions {
             stylesheet: Stylesheet::Inline(String::new()),
-            inline_images: true,
+            images: ImageHandling::Embed,
             source_dir: Some(PathBuf::from("/tmp")),
             approved_outside: Vec::new(),
             title: None,
@@ -1239,7 +1205,7 @@ mod tests {
             panic!("placeholder is raw HTML");
         };
         let body = format!("<div title=\"\n{token}\n<p class=\"a\">after</p>");
-        let html = figures.insert_into(&sanitize_body(&body));
+        let html = figures.insert_into(&sanitize_body(&body, |src| Some(Cow::Borrowed(src))));
         assert!(!html.contains("<figure>"), "{html}");
     }
 
@@ -1251,7 +1217,7 @@ mod tests {
         };
         let body = format!("<ul><li>a\n{token}</li></ul>");
         assert_eq!(
-            figures.insert_into(&sanitize_body(&body)),
+            figures.insert_into(&sanitize_body(&body, |src| Some(Cow::Borrowed(src)))),
             "<ul><li>a\n<figure>F</figure></li></ul>"
         );
     }
@@ -1445,7 +1411,7 @@ mod tests {
     fn inline_opts(source: &Path, approved_outside: Vec<PathBuf>) -> HtmlExportOptions {
         HtmlExportOptions {
             stylesheet: Stylesheet::Inline(String::new()),
-            inline_images: true,
+            images: ImageHandling::Embed,
             source_dir: Some(source.to_path_buf()),
             approved_outside,
             render_figures: false,
@@ -1540,6 +1506,208 @@ mod tests {
         assert!(!html.contains("data:image/png"), "{html}");
     }
 
+    // ── Raw-HTML images and sealed (custom-export) handling ────────────
+
+    #[test]
+    fn raw_html_images_are_listed_and_embedded_like_markdown_ones() {
+        let (_root, secret, source) = root_with_docs();
+        write_one_px_png(&source.join("inside.png"));
+        let md = "<img src=\"../secret.png\" width=\"10\"> <img src=\"inside.png\">";
+        assert_eq!(outside_images(md, &source), vec![secret.clone()]);
+
+        let html = render_html(md, &inline_opts(&source, Vec::new())).unwrap();
+        assert_eq!(
+            html.matches("data:image/png").count(),
+            1,
+            "inside only:\n{html}"
+        );
+        assert!(
+            html.contains("src=\"../secret.png\""),
+            "left as a link:\n{html}"
+        );
+
+        let html = render_html(md, &inline_opts(&source, vec![secret])).unwrap();
+        assert_eq!(html.matches("data:image/png").count(), 2, "{html}");
+    }
+
+    /// A reference is read as a browser would: percent-escapes decoded, query dropped.
+    #[test]
+    fn embedded_paths_are_percent_decoded() {
+        let dir = tempdir().unwrap();
+        write_one_px_png(&dir.path().join("my pic.png"));
+        let md = "![a](<my pic.png>) ![b](my%20pic.png?v=1)";
+        let html = render_html(md, &inline_opts(dir.path(), Vec::new())).unwrap();
+        assert_eq!(html.matches("data:image/png").count(), 2, "{html}");
+    }
+
+    /// `path` in a form that works as a Markdown destination on every platform: forward slashes,
+    /// without the `\\?\` prefix Windows' `canonicalize` adds (`\\` and `\?` are Markdown escapes).
+    fn slash_path(path: &Path) -> String {
+        let s = path.display().to_string();
+        s.strip_prefix(r"\\?\").unwrap_or(&s).replace('\\', "/")
+    }
+
+    /// `path` as a `file:` URL: `file:///abs` on Unix, `file:///C:/abs` on Windows.
+    fn file_url(path: &Path) -> String {
+        let s = slash_path(path);
+        format!("file://{}{s}", if s.starts_with('/') { "" } else { "/" })
+    }
+
+    fn sealed_opts(source: &Path, approved_outside: Vec<PathBuf>) -> HtmlExportOptions {
+        HtmlExportOptions {
+            images: ImageHandling::Sealed {
+                fetch_remote: false,
+            },
+            ..inline_opts(source, approved_outside)
+        }
+    }
+
+    /// The hole this closes: a converter reads every `<img src>` itself, so a sealed export
+    /// leaves it none that wasn't approved — no out-of-folder path, `file:` URL, remote URL, or
+    /// SVG `data:` URI.  Only embedded images and raster `data:` URIs remain.
+    #[test]
+    fn a_sealed_export_leaves_no_reference_for_a_converter_to_follow() {
+        let (_root, secret, source) = root_with_docs();
+        write_one_px_png(&source.join("inside.png"));
+        let md = format!(
+            "![a](inside.png) ![b](../secret.png) ![c]({abs}) ![d]({url}) \
+             <img src=\"../secret.png\"> ![e](https://example.com/x.png) ![f](missing.png) \
+             ![g](data:image/png;base64,iVBORw0KGgo=) ![h](data:image/svg+xml;base64,PHN2Zz4=) \
+             ![i](ftp://example.com/x.png)",
+            abs = slash_path(&secret),
+            url = file_url(&secret),
+        );
+        let rendered = render(&md, &sealed_opts(&source, Vec::new())).unwrap();
+        // b, c, d, the raw `<img>`, e, f, h and i: everything but the two kept below.
+        assert_eq!(rendered.images_left_out, 8);
+        let html = rendered.html;
+        let srcs: Vec<&str> = html
+            .split("src=\"")
+            .skip(1)
+            .map(|rest| &rest[..rest.find('"').unwrap()])
+            .collect();
+        assert_eq!(
+            srcs.len(),
+            2,
+            "only the inside image and the raster data URI:\n{html}"
+        );
+        assert!(
+            srcs.iter().all(|s| s.starts_with("data:image/png;base64,")),
+            "{srcs:?}"
+        );
+        assert!(
+            srcs.contains(&"data:image/png;base64,iVBORw0KGgo="),
+            "{srcs:?}"
+        );
+        assert!(
+            !html.contains("secret") && !html.contains("example.com"),
+            "{html}"
+        );
+        // Alt text survives, so the reader still sees something was there.
+        assert!(html.contains("alt=\"b\""), "{html}");
+    }
+
+    #[test]
+    fn a_sealed_export_embeds_approved_outside_images() {
+        let (_root, secret, source) = root_with_docs();
+        let md = format!("![a](../secret.png) ![b]({})", file_url(&secret));
+        let html = render_html(&md, &sealed_opts(&source, vec![secret])).unwrap();
+        assert_eq!(html.matches("data:image/png;base64,").count(), 2, "{html}");
+    }
+
+    /// Only a sealed export removes images, so only it reports any left out: the same document
+    /// exported as HTML leaves each one as a link instead.
+    #[test]
+    fn only_a_sealed_export_reports_images_left_out() {
+        let (_root, _secret, source) = root_with_docs();
+        let md = "![a](../secret.png) ![b](https://example.com/x.png) ![c](missing.png)";
+        let left_out = |opts| render(md, &opts).unwrap().images_left_out;
+        assert_eq!(left_out(sealed_opts(&source, Vec::new())), 3);
+        assert_eq!(left_out(inline_opts(&source, Vec::new())), 0);
+        assert_eq!(
+            left_out(HtmlExportOptions {
+                images: ImageHandling::Link,
+                ..inline_opts(&source, Vec::new())
+            }),
+            0
+        );
+    }
+
+    /// An SVG whose `<image>` names `target`, a real file: if the SVG pipeline ever read local
+    /// files again, the embedded output would carry it as an `<image>` with its bytes inlined.
+    fn svg_referencing(target: &Path) -> String {
+        write_one_px_png(target);
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="4" height="4"><rect width="4" height="4"/><image width="4" height="4" xlink:href="{}"/></svg>"#,
+            slash_path(target)
+        )
+    }
+
+    /// The first embedded SVG in `html`, decoded.
+    fn embedded_svg(html: &str) -> String {
+        let marker = "src=\"data:image/svg+xml;base64,";
+        let start = html.find(marker).expect("svg embedded") + marker.len();
+        let end = start + html[start..].find('"').unwrap();
+        String::from_utf8(BASE64.decode(&html[start..end]).unwrap()).unwrap()
+    }
+
+    /// An embedded SVG is re-serialized, so it can't carry a reference to a local file into the
+    /// converter (or the browser), and the file it names is not read into it either.
+    #[test]
+    fn embedded_svg_is_normalized() {
+        let dir = tempdir().unwrap();
+        let svg = svg_referencing(&dir.path().join("secret.png"));
+        std::fs::write(dir.path().join("pic.svg"), svg).unwrap();
+        for opts in [
+            inline_opts(dir.path(), Vec::new()),
+            sealed_opts(dir.path(), Vec::new()),
+        ] {
+            let svg = embedded_svg(&render_html("![x](pic.svg)", &opts).unwrap());
+            assert!(svg.contains("<path"), "{svg}");
+            assert!(!svg.contains("<image") && !svg.contains("secret"), "{svg}");
+        }
+    }
+
+    /// The extension doesn't type the bytes: an SVG named `.png` is embedded as a normalized SVG,
+    /// never as `image/png`, which a converter could still parse as SVG and follow references in.
+    /// The same goes for a `data:` URI declaring a raster type over SVG content.
+    #[test]
+    fn a_disguised_svg_is_typed_by_its_content() {
+        let dir = tempdir().unwrap();
+        let svg = svg_referencing(&dir.path().join("secret.png"));
+        std::fs::write(dir.path().join("pic.png"), &svg).unwrap();
+        let md = format!(
+            "![x](pic.png) ![y](data:image/png;base64,{})",
+            BASE64.encode(&svg)
+        );
+        for opts in [
+            inline_opts(dir.path(), Vec::new()),
+            sealed_opts(dir.path(), Vec::new()),
+        ] {
+            let html = render_html(&md, &opts).unwrap();
+            let embedded = embedded_svg(&html);
+            assert!(
+                !embedded.contains("<image") && !embedded.contains("secret"),
+                "{embedded}"
+            );
+            assert_eq!(html.matches("data:image/svg+xml").count(), 1, "{html}");
+        }
+        let html = render_html(&md, &sealed_opts(dir.path(), Vec::new())).unwrap();
+        assert!(!html.contains("data:image/png"), "{html}");
+    }
+
+    /// WeasyPrint embeds the target of `<a rel="attachment">` / `<link rel="attachment">` into
+    /// the PDF, a file read no image rule sees.  Neither may survive: `rel` is not on the `<a>`
+    /// allowlist and `<link>` is not an allowed tag.
+    #[test]
+    fn no_attachment_link_reaches_a_converter() {
+        let md = "<a rel=\"attachment\" href=\"../secret.txt\">a</a>\n\n\
+                  <link rel=\"attachment\" href=\"../secret.txt\">";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert!(!html.contains("rel="), "{html}");
+        assert!(!html.contains("<link"), "{html}");
+    }
+
     #[test]
     fn spawn_html_export_writes_file_and_reports_success() {
         use std::sync::mpsc;
@@ -1558,7 +1726,7 @@ mod tests {
             },
         );
         let outcome = rx.recv().unwrap();
-        assert_eq!(outcome.unwrap(), target);
+        assert_eq!(outcome.unwrap().path, target);
         let written = std::fs::read_to_string(&target).unwrap();
         assert!(written.contains("<h1 id=\"hi\">hi</h1>"));
     }

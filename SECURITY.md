@@ -18,7 +18,7 @@ edamame is built on the assumption that **the documents it opens are untrusted**
 
 - Image or SVG decoding that crashes, hangs, or exhausts memory
 - A document causing a network request you didn't consent to, or reaching a private/internal address
-- Reading files outside the document's own directory tree, especially where the content ends up in an HTML export
+- Reading files outside the document's own directory tree, especially where the content ends up in an export (HTML, or a custom format's converter output)
 - Executable content surviving into exported HTML (scripts, unsafe link schemes, inline SVG)
 - Anything reaching a shell, or a subprocess argument built from document content
 

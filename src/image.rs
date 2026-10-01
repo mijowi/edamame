@@ -21,6 +21,6 @@ pub use cache::{
     DirectPlacement, ImageCache, NativePaint,
 };
 pub use kitty_direct::Geometry;
-pub use loader::{resolve, LoadedImage};
+pub use loader::{fetch_remote, resolve, LoadedImage};
 pub use render::paint_halfblocks_partial;
 pub use svg::{normalize_svg, rasterize_svg, SvgError, SvgScaleMode, SvgSizing};

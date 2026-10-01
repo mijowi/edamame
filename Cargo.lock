@@ -908,6 +908,7 @@ dependencies = [
  "notify",
  "nucleo-matcher",
  "open",
+ "percent-encoding",
  "proptest",
  "pulldown-cmark",
  "ratatui",
