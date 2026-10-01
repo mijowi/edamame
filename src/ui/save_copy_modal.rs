@@ -16,7 +16,7 @@ use ratatui::{
 use crate::config::Theme;
 use crate::ui::button_row::{button_row_width, footer_row_count, render_button_row};
 use crate::ui::controls;
-use crate::ui::cursor::text_field_spans;
+use crate::ui::cursor::{insert_char_at, remove_char_at, text_field_spans};
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, modal_inner_width, wrapped_rows, ContentSize, FrameOpts,
     ModalKind, MAX_PAD_H,
@@ -188,23 +188,6 @@ impl SaveCopyState {
             return SaveCopyResponse::Continue;
         }
         SaveCopyResponse::Save(trimmed.to_owned())
-    }
-}
-
-/// Insert `ch` at char index `cursor` (appends when past the end).
-fn insert_char_at(s: &mut String, cursor: usize, ch: char) {
-    let byte_idx = s
-        .char_indices()
-        .nth(cursor)
-        .map(|(b, _)| b)
-        .unwrap_or(s.len());
-    s.insert(byte_idx, ch);
-}
-
-/// Remove the char at char index `cursor`; no-op when out of bounds.
-fn remove_char_at(s: &mut String, cursor: usize) {
-    if let Some((byte_idx, ch)) = s.char_indices().nth(cursor) {
-        s.replace_range(byte_idx..byte_idx + ch.len_utf8(), "");
     }
 }
 

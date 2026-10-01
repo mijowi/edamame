@@ -29,7 +29,7 @@ use crate::ui::controls::{
     self, control_input_for, control_row_spans, cycle_index, input_delta, pill_spans, pill_width,
     toggle_spans, toggle_width, Control, ControlEvent, ControlInput, ControlValue,
 };
-use crate::ui::cursor::text_field_spans;
+use crate::ui::cursor::{insert_char_at, remove_char_at, scrolled_field_spans};
 use crate::ui::overlay_nav::next_focusable_wrapping;
 use crate::ui::sanitize_paste;
 use crate::ui::scroll_container::{
@@ -37,8 +37,12 @@ use crate::ui::scroll_container::{
     ModalKind, ScrollContainerState, MAX_PAD_H, PROSE_CONTENT_WIDTH, VERTICAL_CHROME_ROWS,
 };
 
-/// Reserved cell width of the title input column.
-const TITLE_FIELD_WIDTH: usize = 30;
+/// The title row's label.  It sits outside the aligned label column of the other rows, so the
+/// field gets the whole rest of the row.
+const TITLE_LABEL: &str = "Title: ";
+/// Minimum cell width of the title field; the field widens with the modal when another row is
+/// wider.
+const TITLE_FIELD_WIDTH: usize = 39;
 /// Maximum title length, in characters.
 const TITLE_CHAR_CAP: usize = 120;
 /// Indent applied to a toggle's explanatory note, under its label.
@@ -258,8 +262,13 @@ pub struct ExportState {
     pub formats: Vec<ExportFormat>,
     /// Chosen format; doubles as the list's highlighted row while the field is focused.
     pub format_idx: usize,
-    /// Title field buffer (append-only, like the insert-table fields).
+    /// Title field buffer, edited at [`Self::title_cursor`].
     pub title: String,
+    /// Title cursor as a char index; clamped to the title's length wherever it is read.
+    title_cursor: usize,
+    /// First visible title char, kept between frames so the field scrolls only as far as the
+    /// cursor forces it (see [`scrolled_field_spans`]).
+    title_scroll: usize,
     pub inline_images: bool,
     pub render_figures: bool,
     /// `(display label, config value)` pairs; index 0 is the compiled-in default stylesheet.
@@ -319,6 +328,8 @@ impl ExportState {
             phase: ExportPhase::Options,
             formats,
             format_idx: 0,
+            title_cursor: title.chars().count(),
+            title_scroll: 0,
             title,
             inline_images,
             render_figures,
@@ -580,6 +591,10 @@ impl ExportState {
     }
 
     fn handle_options_key(&mut self, key: &KeyEvent) -> ExportResponse {
+        // The title field claims its editing keys first, Home / End included.
+        if self.focus == OptFocus::Title && self.handle_title_key(key.code) {
+            return ExportResponse::Continue;
+        }
         // PgUp / PgDn / Home / End scroll the body.  Up / Down are deliberately not consumed:
         // they move focus, and the window follows focus at render time.
         if self.scroll_state.handle_paging_key(key) {
@@ -605,10 +620,6 @@ impl ExportState {
                 self.move_focus_up();
                 ExportResponse::Continue
             }
-            KeyCode::Backspace if self.focus == OptFocus::Title => {
-                self.title.pop();
-                ExportResponse::Continue
-            }
             // Enter exports only from the focused button; elsewhere it advances focus, so a run
             // of Enters walks down to the button rather than exporting early.
             KeyCode::Enter => {
@@ -619,13 +630,9 @@ impl ExportState {
                     ExportResponse::Continue
                 }
             }
-            // Space submits from the button and types into the title; on a control it falls
-            // through to `control_input_for`.
+            // Space submits from the button; on a control it falls through to
+            // `control_input_for`.  The title field consumed its own keys above.
             KeyCode::Char(' ') if self.focus == OptFocus::Export => self.submit(),
-            KeyCode::Char(c) if self.focus == OptFocus::Title => {
-                self.push_title_char(c);
-                ExportResponse::Continue
-            }
             // Everything else routes through the shared control-input mapping, or no-ops.
             _ => {
                 if let Some(input) = control_input_for(key.code) {
@@ -692,11 +699,37 @@ impl ExportState {
         }
     }
 
-    /// Append a typed character to the title, mirroring the paste path: control chars dropped,
+    /// Apply an editing key to the focused title field; `false` leaves the key to the form
+    /// (Tab, Enter, Esc, the arrows that move focus, paging).
+    fn handle_title_key(&mut self, code: KeyCode) -> bool {
+        let len = self.title.chars().count();
+        let cursor = self.title_cursor.min(len);
+        match code {
+            KeyCode::Left => self.title_cursor = cursor.saturating_sub(1),
+            KeyCode::Right => self.title_cursor = (cursor + 1).min(len),
+            KeyCode::Home => self.title_cursor = 0,
+            KeyCode::End => self.title_cursor = len,
+            KeyCode::Backspace => {
+                if cursor > 0 {
+                    remove_char_at(&mut self.title, cursor - 1);
+                    self.title_cursor = cursor - 1;
+                }
+            }
+            KeyCode::Delete => remove_char_at(&mut self.title, cursor),
+            KeyCode::Char(c) => self.insert_title_char(c),
+            _ => return false,
+        }
+        true
+    }
+
+    /// Insert a character at the title cursor, mirroring the paste path: control chars dropped,
     /// length capped at [`TITLE_CHAR_CAP`].
-    fn push_title_char(&mut self, c: char) {
-        if !c.is_control() && self.title.chars().count() < TITLE_CHAR_CAP {
-            self.title.push(c);
+    fn insert_title_char(&mut self, c: char) {
+        let len = self.title.chars().count();
+        if !c.is_control() && len < TITLE_CHAR_CAP {
+            let cursor = self.title_cursor.min(len);
+            insert_char_at(&mut self.title, cursor, c);
+            self.title_cursor = cursor + 1;
         }
     }
 
@@ -739,7 +772,7 @@ impl ExportState {
             if self.title.chars().count() >= TITLE_CHAR_CAP {
                 break;
             }
-            self.title.push(c);
+            self.insert_title_char(c);
         }
     }
 }
@@ -841,16 +874,14 @@ impl<'a> StatefulWidget for ExportView<'a> {
 
 impl<'a> ExportView<'a> {
     fn render_options(&self, area: Rect, buf: &mut Buffer, state: &mut ExportState) {
-        let labels: [&str; 4] = ["Title", "Inline images", "Inline figures", "Stylesheet"];
+        let labels: [&str; 3] = ["Inline images", "Inline figures", "Stylesheet"];
         let label_w = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0);
         // Own the pill labels so the later `pill_spans` borrow doesn't pin `state` across the
         // `state.esc_button_rect` assignment below.
         let style_labels: Vec<String> = state.stylesheets.iter().map(|(l, _)| l.clone()).collect();
         let style_label_refs: Vec<&str> = style_labels.iter().map(String::as_str).collect();
-        let control_w = TITLE_FIELD_WIDTH
-            .max(toggle_width())
-            .max(pill_width(&style_label_refs));
-        let row_w = label_w + 2 + control_w;
+        let control_w = toggle_width().max(pill_width(&style_label_refs));
+        let row_w = (label_w + 2 + control_w).max(TITLE_LABEL.len() + TITLE_FIELD_WIDTH);
         // A note may be wider than the control rows; size to whichever is widest.
         let note_w = [
             IMAGES_NOTE_ON,
@@ -940,16 +971,30 @@ impl<'a> ExportView<'a> {
                 FormRow::Title => {
                     let focused = state.focus == OptFocus::Title;
                     let value_style = controls::text_value_style(focused, self.theme);
-                    let mut control = vec![Span::styled(" ", value_style)];
-                    control.extend(text_field_spans(
+                    // The field fills the rest of the row, so its background spans the modal's
+                    // inner width rather than the title's length.
+                    let field_w = (row_area.width as usize).saturating_sub(TITLE_LABEL.len());
+                    let control = scrolled_field_spans(
                         &state.title,
-                        state.title.chars().count(),
+                        state.title_cursor,
+                        &mut state.title_scroll,
+                        field_w,
                         focused && self.cursor_visible,
                         value_style,
                         self.theme.cursor,
-                    ));
-                    self.render_row(buf, row_area, "Title", label_w, focused, control);
-                    state.title_rect = Some(control_rect(row_area.x, row_area.y, hit_w));
+                    );
+                    let spans = control_row_spans(
+                        TITLE_LABEL.trim_end(),
+                        TITLE_LABEL.len(),
+                        control,
+                        focused,
+                        false,
+                        self.theme,
+                    );
+                    Paragraph::new(Line::from(spans))
+                        .style(self.theme.modal_bg)
+                        .render(row_area, buf);
+                    state.title_rect = Some(control_rect(row_area.x, row_area.y, row_area.width));
                 }
                 FormRow::Images => {
                     let focused = state.focus == OptFocus::Images;
@@ -1432,6 +1477,103 @@ mod tests {
         s.handle_key(&key(KeyCode::Tab));
         s.handle_key(&key(KeyCode::Char('x')));
         assert_eq!(s.title, "Hi");
+    }
+
+    #[test]
+    fn title_cursor_starts_at_the_end_and_edits_in_place() {
+        let mut s = state();
+        assert_eq!(s.title_cursor, "My Doc".chars().count());
+        s.handle_key(&key(KeyCode::Left));
+        s.handle_key(&key(KeyCode::Left));
+        s.handle_key(&key(KeyCode::Left));
+        s.handle_key(&key(KeyCode::Char('!')));
+        assert_eq!(s.title, "My !Doc");
+        s.handle_key(&key(KeyCode::Backspace));
+        assert_eq!(s.title, "My Doc");
+        s.handle_key(&key(KeyCode::Delete));
+        assert_eq!(s.title, "My oc");
+        s.handle_key(&key(KeyCode::Home));
+        s.handle_key(&key(KeyCode::Left));
+        assert_eq!(s.title_cursor, 0, "Left stops at the start");
+        s.handle_key(&key(KeyCode::Backspace));
+        assert_eq!(s.title, "My oc", "Backspace at the start is a no-op");
+        s.handle_key(&key(KeyCode::End));
+        s.handle_key(&key(KeyCode::Right));
+        assert_eq!(s.title_cursor, 5, "Right stops at the end");
+        assert_eq!(
+            s.focus,
+            OptFocus::Title,
+            "Left / Right never leave the field"
+        );
+    }
+
+    #[test]
+    fn paste_lands_at_the_title_cursor() {
+        let mut s = state();
+        s.handle_key(&key(KeyCode::Home));
+        s.paste("The ");
+        assert_eq!(s.title, "The My Doc");
+        assert_eq!(s.title_cursor, 4);
+    }
+
+    #[test]
+    fn a_long_title_scrolls_to_keep_the_cursor_visible() {
+        let mut s = state();
+        s.title = format!("{}END", "a".repeat(100));
+        s.title_cursor = s.title.chars().count();
+        let content = rendered(&mut s, 30);
+        assert!(
+            content.contains("Title: "),
+            "label breaks alignment: {content}"
+        );
+        assert!(content.contains("aEND"), "the tail is on screen: {content}");
+        assert!(s.title_scroll > 0);
+
+        // Back to the start: the window follows the cursor left.
+        s.handle_key(&key(KeyCode::Home));
+        rendered(&mut s, 30);
+        assert_eq!(s.title_scroll, 0);
+    }
+
+    #[test]
+    fn the_focused_title_fill_spans_the_row_whatever_the_title_length() {
+        let filled = |s: &mut ExportState| -> usize {
+            let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+            terminal
+                .draw(|f| {
+                    let view = ExportView {
+                        theme: theme(),
+                        cursor_visible: false,
+                    };
+                    f.render_stateful_widget(view, f.area(), s);
+                })
+                .unwrap();
+            let buf = terminal.backend().buffer();
+            (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| &buf[(x, y)])
+                        .collect::<Vec<_>>()
+                })
+                .find(|row| {
+                    row.iter()
+                        .map(|c| c.symbol())
+                        .collect::<String>()
+                        .contains("Title:")
+                })
+                .expect("a Title row")
+                .iter()
+                .filter(|c| c.modifier.contains(ratatui::style::Modifier::REVERSED))
+                .count()
+        };
+        let mut s = state();
+        let short = filled(&mut s);
+        assert!(
+            short >= TITLE_FIELD_WIDTH,
+            "the reversed fill spans the field: {short}"
+        );
+        s.title = "x".repeat(100);
+        assert_eq!(filled(&mut s), short, "a long title fills the same width");
     }
 
     #[test]
@@ -2169,12 +2311,24 @@ mod tests {
         render_modal(&mut s, 70, 16);
 
         s.handle_key(&key(KeyCode::PageDown));
-        assert!(s.scroll_state.scroll > 0, "PgDn pages the body");
+        assert!(
+            s.scroll_state.scroll > 0,
+            "PgDn pages the body, even from the title"
+        );
+        // On the title, Home belongs to the field cursor.
+        s.handle_key(&key(KeyCode::Home));
+        assert!(
+            s.scroll_state.scroll > 0,
+            "Home on the title leaves the body alone"
+        );
+        assert_eq!(s.title_cursor, 0);
+        // Off the title, Home scrolls the body.
+        s.focus = OptFocus::Images;
         s.handle_key(&key(KeyCode::Home));
         assert_eq!(s.scroll_state.scroll, 0);
 
         // Down still moves focus off the title, not the scroll.
-        assert_eq!(s.focus, OptFocus::Title);
+        s.focus = OptFocus::Title;
         s.handle_key(&key(KeyCode::Down));
         assert_eq!(s.focus, OptFocus::Images);
         assert_eq!(s.scroll_state.scroll, 0);
