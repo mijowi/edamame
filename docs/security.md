@@ -52,11 +52,16 @@ The exported HTML is the one artifact a user typically **shares**, so the export
 - **Link schemes are allowlisted.** pulldown-cmark's HTML writer performs no URL sanitization, so a `[x](javascript:…)` or `[x](data:text/html,…)` link would otherwise survive verbatim into the `<a href>` and run on click in a browser. `sanitize_link_urls` rewrites any link whose scheme is not in `SAFE_LINK_SCHEMES` (`http`, `https`, `mailto`, `tel`) to a harmless `#`. Relative paths, anchors, and `?query` targets carry no scheme and are preserved; scheme detection follows RFC 3986 (a colon after a `/`, `?`, or `#` is part of the path, not a scheme).
 - **Figures are rasterized, not inlined as SVG.** Inline SVG can carry `<script>`, `foreignObject`, and `on*=` handlers that execute when the file is opened in a browser. `render_mermaid_png_data_uri` and `render_latex_png_data_uri` render a Mermaid diagram / `$$...$$` formula, rasterize it to a PNG, and embed it as a `data:image/png` `<img>` — flattening any executable payload to pixels. On render failure each falls back to an HTML-escaped code block (`language-mermaid` / `language-math`), so the source is never lost. Inline `$...$` math is always emitted as literal source, never a math span.
 
-### HTML export confines local-file reads
+### HTML export asks before embedding files from outside the document's folder
 
-A self-contained export base64-embeds referenced images into the output. Because that output is shared, an embedded file *leaves the trust boundary* — unlike on-screen rendering, where the bytes never leave the victim's machine. A hostile `![x](/home/victim/private/diagram.svg)` could otherwise exfiltrate arbitrary on-disk files (text-based `.svg` especially) into an artifact the victim sends back.
+A self-contained export base64-embeds referenced images into the output. Because that output may be shared, an embedded file *leaves the trust boundary*, unlike on-screen rendering, where the bytes never leave the victim's machine. A hostile `![x](../../Pictures/passport.jpg)` could exfiltrate an image file of the victim's into an artifact the victim sends back.
 
-`resolve_relative` (`src/export/html.rs`) now confines inlining to the source tree: absolute paths and `../` traversal are rejected up front, and the resolved path is `canonicalize()`d and required to stay under `source_dir` (which also defeats symlink escapes). An out-of-tree reference is simply left non-inlined rather than embedded. Inlining is additionally off by default.
+These are the mitigations:
+- **Off by default.** Inlining itself is opt-in.
+- **Only image files.** A reference is embedded only if it is an existing file with an image extension (`png`, `jpg`/`jpeg`, `gif`, `webp`, `bmp`, `svg`), so `../../.ssh/id_rsa` is never a candidate. The extension is the check, not the contents.
+- **Images outside the document's folder are listed and confirmed.** Before exporting, `outside_images` (`src/export/html.rs`) collects every image that resolves *outside* — through `..`, by absolute path, or via a symlink leading out, since containment is checked after `canonicalize` — and the export modal lists each by its full canonical path. **Embed** adds exactly those paths to `approved_outside`; **Don't embed** leaves them as links.
+
+An image whose `canonicalize()`d path stays under the document's folder is embedded without a confirmation.
 
 ### Subprocesses take no document-controlled input
 

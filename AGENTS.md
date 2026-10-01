@@ -197,12 +197,13 @@ src/
     state_viewport.rs       # scroll + viewport clamping
     vim_ops/        # table scoping, :s preview, incsearch (see the vim sections)
 
-  export/           # html.rs (AST → HTML, data: URIs when self-contained),
-                    #   custom.rs (user command pipeline), runner.rs (tempfiles)
+  export/           # html.rs (AST → HTML, data: URIs when self-contained;
+                    #   outside_images lists out-of-folder embeds for the modal to
+                    #   confirm), custom.rs (user command pipeline), runner.rs (tempfiles)
 
   image/            # loader.rs (decode worker, ureq fetch), cache.rs (URL →
                     #   DynamicImage + failure memoisation), render.rs (Picker),
-                    #   paste.rs (clipboard bitmap → PNG beside the document:
+                    #   paste.rs (clipboard bitmap → PNG at a relative path:
                     #   encode_png / default_destination / resolve_destination / write)
 
   input.rs / input/

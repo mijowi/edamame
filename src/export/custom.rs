@@ -204,6 +204,7 @@ mod tests {
             stylesheet: crate::export::Stylesheet::Inline(String::new()),
             inline_images: false,
             source_dir: Some(dir.to_path_buf()),
+            approved_outside: Vec::new(),
             title: None,
             render_figures: false,
         }

@@ -321,10 +321,10 @@ Move the cursor into an image and it's replaced by its `![alt](url)` source line
 
 ![An inline image collapsing to its Markdown source as the cursor enters it, and back again](https://raw.githubusercontent.com/mijowi/mijowi.com/refs/heads/main/edamame/media/image.gif)
 
-**Pasting images.** `Ctrl-V` pastes an image when the clipboard holds a screenshot (or other copied pixels) and no text. The image is stored as a PNG beside your document and is referenced by a relative path.
+**Pasting images.** `Ctrl-V` pastes an image when the clipboard holds a screenshot (or other copied pixels) and no text. The image is stored as a PNG relative to your document and is referenced by that relative path.
 
 - A prompt shows the path the image will be saved to, relative to the document's folder, e.g. `images/20260928-143012.png`. edamame infers the location from the other images in the document (default `images/`). The file is named with the current date and time.
-- The path must stay inside the document's folder, end in `.png`, and contain no `:` or control characters. An existing file is never overwritten.
+- The path must be relative, end in `.png`, and contain no `:` or control characters. An existing file is never overwritten. Paths that traverse the parent directory (e.g. `../assets/`) are allowed, but require an extra confirmation when exporting (see [Security](security.md#html-export-asks-before-embedding-files-from-outside-the-documents-folder)).
 - An unsaved document has no folder yet, so you're asked to save it first.
 - The image is inserted on its own line, separated from the text around it by blank lines, which is what makes it render as an image rather than a line of text. Inside a table, list, blockquote, or footnote it's inserted at the cursor instead, since blank lines there would end the element early. edamame shows an image placeholder there rather than the picture, but GitHub and HTML export display it.
 
@@ -397,7 +397,7 @@ For your own stylesheet, drop a `.css` file into the `export/` folder in your co
 
 The output lands beside your document — `notes/guide.md` exports `notes/guide.html`.
 
-Some things are deliberately stripped on the way out, because an exported file is usually one you share: raw HTML, and links using schemes other than `http`, `https`, `mailto` and `tel`. Diagrams are rasterized rather than embedded as SVG. Only images inside the document's own folder are ever inlined. The reasoning is in [security.md](security.md).
+Some things are deliberately stripped on the way out, because an exported file is usually one you share: raw HTML, and links using schemes other than `http`, `https`, `mailto` and `tel`. Diagrams are rasterized rather than embedded as SVG. With **Inline images** on, an image from outside the document's folder — reached through `../`, an absolute path, or a symlink — is never embedded silently: edamame lists those files by their full path and asks first. **Embed** includes them; **Don't embed** leaves them as links. The reasoning is in [security.md](security.md).
 
 ### Other formats
 

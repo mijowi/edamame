@@ -1,4 +1,4 @@
-//! Turning a bitmap on the clipboard (a screenshot) into a PNG beside the document.
+//! Turning a bitmap on the clipboard (a screenshot) into a PNG relative to the document.
 //!
 //! The OS half lives in [`crate::clipboard`], which hands over a [`Bitmap`] and knows nothing
 //! else.  This module is the policy: where the image goes, whether a path the user confirmed is
@@ -13,8 +13,9 @@
 //!
 //! An image is always stored *relative to the document* and referenced by
 //! that relative path, so a document and its images move, sync and render
-//! elsewhere together.  A path that would leave the document's directory —
-//! absolute, or through `..` — is refused.
+//! elsewhere together.  An absolute path is refused; one through `..` is
+//! allowed, for the common layout of documents in subfolders sharing an
+//! image folder beside them.
 
 use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
@@ -94,10 +95,13 @@ pub struct Destination {
 /// Check the path the user confirmed, resolving it against `doc_dir`.
 ///
 /// `Err` carries the message the prompt shows.  Refused: an empty path, an absolute one, one
-/// through `..`, one holding a `:` or a control character, a name not ending in `.png`, and a
-/// file that already exists.  A `:` has no portable meaning in a relative path — on Windows it
-/// would name a drive or an NTFS alternate data stream rather than a file — and a control
-/// character (a newline above all) cannot be written into a Markdown link destination.
+/// holding a `:` or a control character, a name not ending in `.png`, and a file that already
+/// exists.  A `..` segment is kept, not refused: documents organized into subfolders commonly
+/// share an image folder beside them, and the user sees and confirms the full path.  An
+/// absolute path is refused because the link written into the document must stay relative.
+/// A `:` has no portable meaning in a relative path — on Windows it would name a drive or an
+/// NTFS alternate data stream rather than a file — and a control character (a newline above all)
+/// cannot be written into a Markdown link destination.
 pub fn resolve_destination(input: &str, doc_dir: &Path) -> Result<Destination, String> {
     let input = input.trim().replace('\\', "/");
     if input.is_empty() {
@@ -106,17 +110,15 @@ pub fn resolve_destination(input: &str, doc_dir: &Path) -> Result<Destination, S
     if is_rooted(&input) {
         return Err("Use a path relative to the document's folder".to_owned());
     }
-    if climbs_out(&input) {
-        return Err("The image must stay inside the document's folder".to_owned());
-    }
     if input.chars().any(|c| c == ':' || c.is_control()) {
         return Err("The path can't contain ':' or control characters".to_owned());
     }
-    // With the refusals above, only `Normal` and `CurDir` components remain.
+    // With the refusals above, only `Normal`, `CurDir` and `ParentDir` components remain.
     let parts: Vec<String> = Path::new(&input)
         .components()
         .filter_map(|component| match component {
             Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            Component::ParentDir => Some("..".to_owned()),
             _ => None,
         })
         .collect();
@@ -143,16 +145,11 @@ pub fn resolve_destination(input: &str, doc_dir: &Path) -> Result<Destination, S
 /// it starts at a root (`/`, `\`), or its first segment holds a colon — a scheme (`https:`) or a
 /// Windows drive (`C:`, including the drive-relative `C:foo`).  `/` and `\` both separate.
 ///
-/// With [`climbs_out`], the one rule for "stays beside the document", shared by
-/// [`resolve_destination`] and [`crate::markdown::local_image_urls`].
+/// The one rule for "relative to the document", shared by [`resolve_destination`] and
+/// [`crate::markdown::local_image_urls`].
 pub fn is_rooted(path: &str) -> bool {
     let first = path.split(['/', '\\']).next().unwrap_or_default();
     path.starts_with(['/', '\\']) || first.contains(':')
-}
-
-/// Whether `path` climbs out of its directory through a `..` segment.  See [`is_rooted`].
-pub fn climbs_out(path: &str) -> bool {
-    path.split(['/', '\\']).any(|part| part == "..")
 }
 
 // ── Encoding and writing ──────────────────────────────────────────────────
@@ -274,15 +271,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_rejects_paths_leaving_the_document_folder() {
+    fn resolve_rejects_rooted_paths() {
         let dir = tempfile::tempdir().expect("tempdir");
-        for bad in [
-            "/tmp/x.png",
-            "../x.png",
-            "images/../../x.png",
-            "C:/x.png",
-            r"\x.png",
-        ] {
+        for bad in ["/tmp/x.png", "C:/x.png", r"\x.png"] {
             assert!(
                 resolve_destination(bad, dir.path()).is_err(),
                 "{bad} must be refused"
@@ -300,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn the_stays_beside_the_document_rule() {
+    fn the_relative_to_the_document_rule() {
         for rooted in [
             "/a.png",
             r"\a.png",
@@ -314,8 +305,32 @@ mod tests {
         for relative in ["a.png", "./a/b.png", r"a\b.png", "a/b:c.png"] {
             assert!(!is_rooted(relative), "{relative}");
         }
-        assert!(climbs_out("../a.png") && climbs_out(r"a\..\..\b.png"));
-        assert!(!climbs_out("a/..b.png") && !climbs_out("a/b...png"));
+    }
+
+    /// A shared image folder beside the document's is a common layout, so `..` is kept in both
+    /// the link and the target rather than refused.
+    #[test]
+    fn resolve_keeps_parent_segments() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let doc_dir = root.path().join("docs");
+        std::fs::create_dir(&doc_dir).unwrap();
+        let dest = resolve_destination(r"..\assets\shot.png", &doc_dir).unwrap();
+        assert_eq!(dest.link, "../assets/shot.png");
+        assert_eq!(
+            dest.target,
+            doc_dir.join("..").join("assets").join("shot.png")
+        );
+
+        std::fs::write(root.path().join("taken.png"), b"x").unwrap();
+        let err = resolve_destination("../taken.png", &doc_dir).unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
+        assert!(resolve_destination("..", &doc_dir).is_err(), "no file name");
+    }
+
+    #[test]
+    fn infer_dir_keeps_parent_segments() {
+        let urls = ["../assets/a.png", "../assets/b.png", "local/c.png"];
+        assert_eq!(infer_dir(&urls), "../assets");
     }
 
     #[test]

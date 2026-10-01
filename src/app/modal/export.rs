@@ -19,7 +19,7 @@
 //! when the id still matches; a superseded result is flashed on the hint line instead.
 
 use std::any::Any;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crossterm::event::KeyEvent;
@@ -72,6 +72,8 @@ pub struct ExportModal {
     jobs: Vec<ExportJob>,
     /// Generation id of the in-flight export; `0` before any export starts.
     export_id: u64,
+    /// Out-of-folder images the user agreed to embed in this submission; cleared on each submit.
+    approved_outside: Vec<PathBuf>,
 }
 
 impl ExportModal {
@@ -80,6 +82,7 @@ impl ExportModal {
             state,
             jobs,
             export_id: 0,
+            approved_outside: Vec::new(),
         }
     }
 
@@ -109,6 +112,20 @@ impl ExportModal {
                 self.submit(app, choices);
                 ModalOutcome::Continue
             }
+            ExportResponse::EmbedOutsideImages(embed) => {
+                self.approved_outside = if embed {
+                    std::mem::take(&mut self.state.outside_images)
+                } else {
+                    Vec::new()
+                };
+                match self.state.target.clone() {
+                    Some(target) => self.preflight_then_export(app, target),
+                    None => self
+                        .state
+                        .set_error("Internal error: no export target.".to_owned()),
+                }
+                ModalOutcome::Continue
+            }
             ExportResponse::ProceedOverwrite => {
                 self.proceed_overwrite(app);
                 ModalOutcome::Continue
@@ -128,8 +145,9 @@ impl ExportModal {
         }
     }
 
-    /// Persist the chosen options, then start the export or pivot to overwrite-confirm.  The
-    /// title is per-document and stays on the state; the rest becomes next time's defaults.
+    /// Persist the chosen options, then start the export or pivot to a confirmation: first for
+    /// images outside the document's folder, then for an existing target.  The title is
+    /// per-document and stays on the state; the rest becomes next time's defaults.
     fn submit(&mut self, app: &mut App, choices: ExportChoices) {
         app.config.export.html.inline_images = choices.inline_images;
         app.config.export.html.figures = choices.render_figures;
@@ -160,6 +178,23 @@ impl ExportModal {
             ));
             return;
         }
+        self.approved_outside.clear();
+        // Inlining reads every referenced image into a file the user will likely share, so one
+        // from outside the document's folder is embedded only once the user has seen its path.
+        if choices.inline_images {
+            let outside = source_dir_for(&target)
+                .map(|dir| export::outside_images(&app.editor.buffer.contents(), &dir))
+                .unwrap_or_default();
+            if !outside.is_empty() {
+                self.state.enter_confirm_outside_images(target, outside);
+                return;
+            }
+        }
+        self.preflight_then_export(app, target);
+    }
+
+    /// Start the export, or pivot to overwrite-confirm when `target` already exists.
+    fn preflight_then_export(&mut self, app: &mut App, target: PathBuf) {
         match export::preflight(&target, false) {
             Ok(()) => self.begin_export(app, target),
             Err(PreflightError::TargetExists(_)) => self.state.enter_confirm_overwrite(target),
@@ -170,7 +205,7 @@ impl ExportModal {
     /// Spawn the selected format's worker and enter the Exporting phase.  The title comes from
     /// the state so it survives an overwrite-confirm detour.  A custom job gets the *same*
     /// [`HtmlExportOptions`] the HTML exporter would: that HTML is its input.
-    fn begin_export(&mut self, app: &mut App, target: std::path::PathBuf) {
+    fn begin_export(&mut self, app: &mut App, target: PathBuf) {
         let Some(tx) = app.app_tx.clone() else {
             self.state
                 .set_error("Internal error: no event channel.".to_owned());
@@ -180,12 +215,8 @@ impl ExportModal {
         let opts = HtmlExportOptions {
             stylesheet: Stylesheet::from_config_value(&html.stylesheet),
             inline_images: html.inline_images,
-            // Absolutize first: a bare `target.parent()` is the *empty* path for a file opened
-            // by a relative name (`edamame README.md`), breaking image inlining and the
-            // custom-export working directory alike.
-            source_dir: std::path::absolute(&target)
-                .ok()
-                .and_then(|t| t.parent().map(Path::to_path_buf)),
+            source_dir: source_dir_for(&target),
+            approved_outside: self.approved_outside.clone(),
             title: self.state.submitted_title.clone(),
             render_figures: html.figures,
         };
@@ -352,6 +383,16 @@ impl App {
         }
         self.needs_draw = true;
     }
+}
+
+/// The directory image paths resolve against: the export target's, which is the document's.
+/// Absolutized first: a bare `target.parent()` is the *empty* path for a file opened by a relative
+/// name (`edamame README.md`), breaking image inlining and the custom-export working directory
+/// alike.
+fn source_dir_for(target: &Path) -> Option<PathBuf> {
+    std::path::absolute(target)
+        .ok()
+        .and_then(|t| t.parent().map(Path::to_path_buf))
 }
 
 /// Whether `a` and `b` name the same file on disk.
@@ -549,6 +590,63 @@ mod tests {
         );
         assert_eq!(std::fs::read_to_string(&source).unwrap(), "# Guide\n");
         assert!(export.state.target.is_none());
+    }
+
+    /// With inlining on, an image outside the document's folder stops the flow at a prompt listing
+    /// it; the answer decides whether it is embedded, and the flow then carries on to the
+    /// overwrite check.  With inlining off there is nothing to ask.
+    #[test]
+    fn an_outside_image_is_confirmed_before_the_export_runs() {
+        let _guard = crate::test_env::config_isolation();
+        let root = tempfile::tempdir().unwrap();
+        let docs = root.path().join("docs");
+        std::fs::create_dir(&docs).unwrap();
+        let shared = root.path().join("shared.png");
+        image::RgbaImage::new(1, 1).save(&shared).unwrap();
+        let source = docs.join("guide.md");
+        std::fs::write(&source, "![x](../shared.png)\n").unwrap();
+        // Pre-create the target so the flow stops at ConfirmOverwrite instead of spawning.
+        std::fs::write(docs.join("guide.html"), b"old").unwrap();
+
+        let submit = |inline_images| {
+            ExportResponse::Submit(ExportChoices {
+                title: None,
+                inline_images,
+                render_figures: false,
+                stylesheet: "builtin".to_owned(),
+            })
+        };
+        for (embed, expected) in [
+            (true, vec![shared.canonicalize().unwrap()]),
+            (false, vec![]),
+        ] {
+            let mut app = make_app();
+            app.file_path = Some(source.clone());
+            app.editor.buffer = crate::document::Buffer::from_str("![x](../shared.png)\n");
+            app.open_export_modal();
+            let mut modal = app.modal_stack.pop().expect("modal was pushed");
+            let export = modal.as_any_mut().downcast_mut::<ExportModal>().unwrap();
+
+            export.resolve(&mut app, submit(true));
+            assert_eq!(
+                export.state.phase,
+                crate::ui::ExportPhase::ConfirmOutsideImages
+            );
+            assert_eq!(
+                export.state.outside_images,
+                vec![shared.canonicalize().unwrap()]
+            );
+
+            export.resolve(&mut app, ExportResponse::EmbedOutsideImages(embed));
+            assert_eq!(export.state.phase, crate::ui::ExportPhase::ConfirmOverwrite);
+            assert_eq!(export.approved_outside, expected, "embed = {embed}");
+
+            // A fresh submit forgets the earlier answer, and inlining off never asks.
+            export.state.phase = crate::ui::ExportPhase::Options;
+            export.resolve(&mut app, submit(false));
+            assert_eq!(export.state.phase, crate::ui::ExportPhase::ConfirmOverwrite);
+            assert!(export.approved_outside.is_empty());
+        }
     }
 
     /// The guard sits behind `output_extension`, so `" .md "` collides exactly like `"md"`.

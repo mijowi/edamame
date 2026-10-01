@@ -1,6 +1,7 @@
 //! Options form and phase machine for the export flow.  One modal walks every phase without
-//! leaving the stack — Options, ConfirmOverwrite, Exporting, Success, Error — so the async export,
-//! the overwrite confirmation, and the "open the result" buttons all live in one dismissable place.
+//! leaving the stack — Options, ConfirmOutsideImages, ConfirmOverwrite, Exporting, Success, Error —
+//! so the async export, both confirmations, and the "open the result" buttons all live in one
+//! dismissable place.
 //!
 //! **The format is a field, and the rest of the form is the same for every one of them — that is
 //! the point.**  A custom export renders to HTML first and pipes *that* through the converter, so
@@ -54,6 +55,9 @@ const OPTION_BUTTONS: &[&str] = &["Export"];
 /// Rows pinned below the scroll window: a spacer and the `[ Export ]` button row.
 const FOOTER_ROWS: u16 = 2;
 const OVERWRITE_BUTTONS: &[&str] = &["Overwrite", "Cancel"];
+const OUTSIDE_BUTTONS: &[&str] = &["Embed", "Don't embed", "Cancel"];
+/// Most out-of-folder image paths the confirmation lists before summarizing the rest.
+const OUTSIDE_LIST_CAP: usize = 8;
 const ERROR_BUTTONS: &[&str] = &["Back"];
 /// Success-phase second button; the first is per-format ([`ExportFormat::open_result`]).
 const OPEN_FOLDER_BUTTON: &str = "Open folder";
@@ -99,6 +103,8 @@ impl ExportFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportPhase {
     Options,
+    /// Inlining would embed images from outside the document's folder; list them and ask.
+    ConfirmOutsideImages,
     ConfirmOverwrite,
     Exporting,
     Success,
@@ -226,6 +232,9 @@ pub enum ExportResponse {
     Cancelled,
     /// Options `[ Export ]` activated with these choices.
     Submit(ExportChoices),
+    /// Out-of-folder images answered: `true` embeds the listed files, `false` leaves them as links.
+    /// Either way the export proceeds.
+    EmbedOutsideImages(bool),
     /// Overwrite confirmed — proceed with the export.
     ProceedOverwrite,
     /// Success-phase primary button — open the written file.
@@ -252,8 +261,10 @@ pub struct ExportState {
     /// Title captured at submit time so it survives an overwrite-confirm detour; it is
     /// per-document and never persisted to config.
     pub submitted_title: Option<String>,
-    /// Resolved export target, set at submit and reused by the confirm phase and the worker.
+    /// Resolved export target, set at submit and reused by the confirm phases and the worker.
     pub target: Option<PathBuf>,
+    /// Canonical paths of the out-of-folder images the ConfirmOutsideImages phase lists.
+    pub outside_images: Vec<PathBuf>,
     /// Written file path, shown in the Success phase.
     pub result_path: Option<PathBuf>,
     /// Failure message, shown in the Error phase.
@@ -306,6 +317,7 @@ impl ExportState {
             stylesheet_idx,
             submitted_title: None,
             target: None,
+            outside_images: Vec::new(),
             result_path: None,
             error_message: None,
             focus: OptFocus::Title,
@@ -353,6 +365,16 @@ impl ExportState {
 
     // ── Phase transitions (driven by the adapter) ──────────────────────────
 
+    /// Stash the submitted target and ask whether to embed `images`, which lie outside the
+    /// document's folder.  Focus starts on `[ Embed ]`, as the overwrite prompt's does on
+    /// `[ Overwrite ]`: the list above it is what the user is confirming.
+    pub fn enter_confirm_outside_images(&mut self, target: PathBuf, images: Vec<PathBuf>) {
+        self.target = Some(target);
+        self.outside_images = images;
+        self.phase = ExportPhase::ConfirmOutsideImages;
+        self.btn_focus = 0;
+    }
+
     /// Stash the submitted target and switch to the overwrite-confirm phase.
     pub fn enter_confirm_overwrite(&mut self, target: PathBuf) {
         self.target = Some(target);
@@ -390,6 +412,9 @@ impl ExportState {
         }
         match self.phase {
             ExportPhase::Options => self.handle_options_key(key),
+            ExportPhase::ConfirmOutsideImages => {
+                self.handle_button_key(key, OUTSIDE_BUTTONS.len(), outside_response)
+            }
             ExportPhase::ConfirmOverwrite => self.handle_button_key(key, 2, |idx| {
                 if idx == 0 {
                     ExportResponse::ProceedOverwrite
@@ -429,6 +454,9 @@ impl ExportState {
         }
         match self.phase {
             ExportPhase::Options => self.handle_options_click(col, row),
+            ExportPhase::ConfirmOutsideImages => {
+                self.handle_message_click(col, row, outside_response)
+            }
             ExportPhase::ConfirmOverwrite => self.handle_message_click(col, row, |idx| {
                 if idx == 0 {
                     ExportResponse::ProceedOverwrite
@@ -709,6 +737,18 @@ impl<'a> StatefulWidget for ExportView<'a> {
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         match state.phase {
             ExportPhase::Options => self.render_options(area, buf, state),
+            ExportPhase::ConfirmOutsideImages => {
+                let lines = outside_images_lines(&state.outside_images, self.theme);
+                self.render_message(
+                    area,
+                    buf,
+                    state,
+                    FRAME_TITLE,
+                    ModalKind::Warning,
+                    lines,
+                    OUTSIDE_BUTTONS,
+                );
+            }
             ExportPhase::ConfirmOverwrite => {
                 let target = state
                     .target
@@ -1159,6 +1199,47 @@ fn owned_line(text: String, theme: &Theme) -> Line<'static> {
     Line::from(Span::styled(text, theme.modal_item))
 }
 
+/// The ConfirmOutsideImages phase's buttons, in [`OUTSIDE_BUTTONS`] order.
+fn outside_response(idx: usize) -> ExportResponse {
+    match idx {
+        0 => ExportResponse::EmbedOutsideImages(true),
+        1 => ExportResponse::EmbedOutsideImages(false),
+        _ => ExportResponse::Cancelled,
+    }
+}
+
+/// Body of the ConfirmOutsideImages phase: every path in full (the point is to show *where* each
+/// file is), up to [`OUTSIDE_LIST_CAP`], then a count of the rest.
+fn outside_images_lines(images: &[PathBuf], theme: &Theme) -> Vec<Line<'static>> {
+    let count = images.len();
+    let noun = if count == 1 { "image" } else { "images" };
+    let mut lines = vec![
+        owned_line(
+            format!("This document uses {count} {noun} from outside its folder:"),
+            theme,
+        ),
+        Line::default(),
+    ];
+    lines.extend(
+        images
+            .iter()
+            .take(OUTSIDE_LIST_CAP)
+            .map(|p| owned_line(p.display().to_string(), theme)),
+    );
+    if count > OUTSIDE_LIST_CAP {
+        lines.push(owned_line(
+            format!("…and {} more", count - OUTSIDE_LIST_CAP),
+            theme,
+        ));
+    }
+    lines.push(Line::default());
+    lines.push(owned_line(
+        "Embedding copies them into the exported file.".to_owned(),
+        theme,
+    ));
+    lines
+}
+
 /// Current-state note for the "Inline images" toggle.
 fn images_note(on: bool) -> &'static str {
     if on {
@@ -1367,6 +1448,7 @@ mod tests {
     fn escape_cancels_in_every_phase() {
         for setup in [
             ExportPhase::Options,
+            ExportPhase::ConfirmOutsideImages,
             ExportPhase::ConfirmOverwrite,
             ExportPhase::Exporting,
             ExportPhase::Success,
@@ -1398,6 +1480,66 @@ mod tests {
             s.handle_key(&key(KeyCode::Enter)),
             ExportResponse::Cancelled
         );
+    }
+
+    #[test]
+    fn outside_images_phase_embeds_skips_and_cancels() {
+        let mut s = state();
+        let images = vec![PathBuf::from("/shared/a.png")];
+        s.enter_confirm_outside_images(PathBuf::from("/docs/guide.html"), images.clone());
+        assert_eq!(s.phase, ExportPhase::ConfirmOutsideImages);
+        assert_eq!(s.outside_images, images);
+        assert_eq!(s.target.as_deref(), Some(Path::new("/docs/guide.html")));
+        assert_eq!(
+            s.handle_key(&key(KeyCode::Enter)),
+            ExportResponse::EmbedOutsideImages(true)
+        );
+        s.handle_key(&key(KeyCode::Right));
+        assert_eq!(
+            s.handle_key(&key(KeyCode::Enter)),
+            ExportResponse::EmbedOutsideImages(false)
+        );
+        s.handle_key(&key(KeyCode::Right));
+        assert_eq!(
+            s.handle_key(&key(KeyCode::Enter)),
+            ExportResponse::Cancelled
+        );
+    }
+
+    #[test]
+    fn outside_images_prompt_lists_full_paths_and_caps_the_list() {
+        let images: Vec<PathBuf> = (0..OUTSIDE_LIST_CAP + 2)
+            .map(|i| PathBuf::from(format!("/shared/img{i}.png")))
+            .collect();
+        let mut s = state();
+        s.enter_confirm_outside_images(PathBuf::from("/docs/guide.html"), images);
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let view = ExportView {
+                    theme: theme(),
+                    cursor_visible: false,
+                };
+                f.render_stateful_widget(view, f.area(), &mut s);
+            })
+            .unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            content.contains("10 images from outside its folder"),
+            "{content}"
+        );
+        assert!(content.contains("/shared/img0.png"), "{content}");
+        assert!(content.contains("/shared/img7.png"), "{content}");
+        assert!(!content.contains("/shared/img8.png"), "{content}");
+        assert!(content.contains("and 2 more"), "{content}");
+        assert!(content.contains("Don't embed"), "{content}");
     }
 
     #[test]

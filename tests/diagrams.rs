@@ -327,6 +327,7 @@ fn opts(render_figures: bool) -> HtmlExportOptions {
         stylesheet: Stylesheet::Inline(String::new()),
         inline_images: false,
         source_dir: None,
+        approved_outside: Vec::new(),
         title: None,
         render_figures,
     }

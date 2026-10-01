@@ -111,7 +111,7 @@ impl App {
         self.open_paste_image_modal(png);
     }
 
-    /// Propose a destination beside the document — in the directory its images already use —
+    /// Propose a destination relative to the document — in the directory its images already use —
     /// and open the prompt that confirms it.
     fn open_paste_image_modal(&mut self, png: Vec<u8>) {
         let Some(doc_dir) = self.doc_dir() else {
@@ -530,15 +530,31 @@ mod tests {
     }
 
     #[test]
-    fn a_path_leaving_the_document_folder_keeps_the_prompt_open() {
+    fn an_absolute_path_keeps_the_prompt_open() {
         let (mut app, dir, rx) = app_in_dir("");
         stub(&mut app, screenshot());
         paste(&mut app, Action::PasteImage, &rx);
-        retype(&mut app, "../x.png");
+        retype(&mut app, "/x.png");
         key(&mut app, KeyCode::Enter);
         assert!(app.modal_stack.contains::<PasteImageModal>());
         assert!(files_under(dir.path()).is_empty());
         assert_eq!(app.editor.contents(), "");
+    }
+
+    /// Documents in subfolders commonly share an image folder beside them, so a `..` path is
+    /// written there and linked as typed.
+    #[test]
+    fn a_path_through_the_parent_folder_is_written_and_linked() {
+        let (mut app, dir, rx) = app_in_dir("");
+        let docs = dir.path().join("docs");
+        std::fs::create_dir(&docs).unwrap();
+        app.file_path = Some(docs.join("notes.md"));
+        stub(&mut app, screenshot());
+        paste(&mut app, Action::PasteImage, &rx);
+        retype(&mut app, "../assets/shot.png");
+        key(&mut app, KeyCode::Enter);
+        assert!(dir.path().join("assets/shot.png").exists());
+        assert_eq!(app.editor.contents(), "![](../assets/shot.png)\n");
     }
 
     #[test]

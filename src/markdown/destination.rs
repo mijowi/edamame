@@ -3,10 +3,10 @@
 
 use crate::markdown::ast::{Block, Inline};
 
-/// The destination of every image the document references *beside itself*: relative, without a
-/// scheme, and not through `..`, in document order.  Remote, absolute and escaping references are
-/// skipped, as are the synthetic URLs of promoted diagrams and anything inside code, HTML or
-/// frontmatter — literal text, not references.
+/// The destination of every image the document references by a relative path — `..` segments
+/// included — in document order.  Remote and absolute references are skipped, as are the
+/// synthetic URLs of promoted diagrams and anything inside code, HTML or frontmatter — literal
+/// text, not references.
 pub fn local_image_urls(blocks: &[Block]) -> Vec<&str> {
     let mut out = Vec::new();
     collect_blocks(blocks, &mut out);
@@ -66,11 +66,10 @@ fn collect_inlines<'a>(inlines: &'a [Inline], out: &mut Vec<&'a str>) {
     }
 }
 
-/// Relative, scheme-less, and staying inside the document's directory — the rule
-/// [`image::paste`](crate::image::paste) also checks a pasted image's path against.
+/// Relative and scheme-less — the rule [`image::paste`](crate::image::paste) also checks a
+/// pasted image's path against.
 fn is_local_relative(url: &str) -> bool {
-    use crate::image::paste::{climbs_out, is_rooted};
-    !url.is_empty() && !url.starts_with('#') && !is_rooted(url) && !climbs_out(url)
+    !url.is_empty() && !url.starts_with('#') && !crate::image::paste::is_rooted(url)
 }
 
 /// Write `dest` as a CommonMark link destination.  A plain destination may not contain spaces
@@ -165,8 +164,6 @@ Note[^1].
 
 ![c](/abs/path.png)
 
-![d](../outside.png)
-
 ![e](C:/drive.png)
 
 ```mermaid
@@ -174,6 +171,13 @@ graph TD; A-->B
 ```
 ";
         assert!(urls(src).is_empty(), "{:?}", urls(src));
+    }
+
+    /// A shared image folder above the document is a relative reference like any other, so the
+    /// paste prompt can propose it.
+    #[test]
+    fn keeps_references_through_a_parent_folder() {
+        assert_eq!(urls("![a](../assets/a.png)"), vec!["../assets/a.png"]);
     }
 
     #[test]

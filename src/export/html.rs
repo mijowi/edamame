@@ -54,9 +54,12 @@ pub struct HtmlExportOptions {
     /// Embed relative image references as `data:` URIs so the HTML is self-contained.  Requires
     /// `source_dir`; remote and already-`data:` URLs are untouched either way.
     pub inline_images: bool,
-    /// Resolves relative image paths, and bounds them: see [`resolve_relative`].  `None`
+    /// Resolves relative image paths, and bounds them: see [`embeddable_image`].  `None`
     /// disables the rewrite even when `inline_images` is true.
     pub source_dir: Option<PathBuf>,
+    /// Canonical paths *outside* `source_dir` the user agreed to embed, as listed by
+    /// [`outside_images`].  An out-of-folder image not on this list stays a plain link.
+    pub approved_outside: Vec<PathBuf>,
     /// `<title>` text; `None` falls back to `"Document"`.
     pub title: Option<String>,
     /// Render *figures* — fenced ```mermaid code blocks and `$$...$$` display math — to PNG
@@ -72,6 +75,7 @@ impl Default for HtmlExportOptions {
             stylesheet: Stylesheet::Builtin,
             inline_images: false,
             source_dir: None,
+            approved_outside: Vec::new(),
             title: None,
             render_figures: true,
         }
@@ -84,26 +88,7 @@ impl Default for HtmlExportOptions {
 /// **Raw HTML events are filtered out before serialization** — block *and* inline — so
 /// attacker-controlled Markdown cannot inject `<script>` or other executable content.
 pub fn render_html(markdown: &str, opts: &HtmlExportOptions) -> Result<String> {
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_TABLES);
-    options.insert(Options::ENABLE_FOOTNOTES);
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-    options.insert(Options::ENABLE_TASKLISTS);
-    options.insert(Options::ENABLE_SMART_PUNCTUATION);
-    // Recognize math so `$$…$$` reaches `replace_math` as `Event::DisplayMath` (rasterized to a
-    // figure) rather than surviving as literal text.  `replace_math` always runs when this is on —
-    // even with figures disabled — so inline `$…$` and un-rasterized display math collapse back to
-    // their literal source instead of pulldown's `<span class="math">` wrapper.
-    options.insert(Options::ENABLE_MATH);
-    // Without the frontmatter extension a `---` block parses as a thematic break plus a setext
-    // H2, and the export opens with the YAML keys as its loudest heading.  It is gated on *this*
-    // document's opening delimiter, through the shared `metadata_options_for`: the extensions are
-    // not anchored to the document start on their own, so leaving them on unconditionally would
-    // let a mid-document `---` claim the section under it — and the writer emits nothing for a
-    // metadata block, so that section would vanish from the export silently.
-    options |= crate::markdown::parse_offsets::metadata_options_for(markdown);
-
-    let parser = Parser::new_ext(markdown, options);
+    let parser = Parser::new_ext(markdown, parser_options(markdown));
 
     // Collected so the image-rewrite pass can mutate events in place.
     let mut events: Vec<Event> = parser
@@ -112,7 +97,7 @@ pub fn render_html(markdown: &str, opts: &HtmlExportOptions) -> Result<String> {
 
     if opts.inline_images {
         if let Some(dir) = opts.source_dir.as_deref() {
-            rewrite_images_to_data_uris(&mut events, dir);
+            rewrite_images_to_data_uris(&mut events, dir, &opts.approved_outside);
         }
     }
 
@@ -173,6 +158,31 @@ fn render_and_write(markdown: &str, target: &Path, opts: &HtmlExportOptions) -> 
     write_atomically(target, html.as_bytes())
         .with_context(|| format!("Failed to write export: {}", target.display()))?;
     Ok(())
+}
+
+/// The parser options every export pass uses, so [`outside_images`] sees exactly the images
+/// [`render_html`] would.
+fn parser_options(markdown: &str) -> Options {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_FOOTNOTES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TASKLISTS);
+    options.insert(Options::ENABLE_SMART_PUNCTUATION);
+    // Recognize math so `$$…$$` reaches `replace_math` as `Event::DisplayMath` (rasterized to a
+    // figure) rather than surviving as literal text.  `replace_math` always runs when this is on —
+    // even with figures disabled — so inline `$…$` and un-rasterized display math collapse back to
+    // their literal source instead of pulldown's `<span class="math">` wrapper.
+    options.insert(Options::ENABLE_MATH);
+    // Without the frontmatter extension a `---` block parses as a thematic break plus a setext
+    // H2, and the export opens with the YAML keys as its loudest heading.  It is gated on *this*
+    // document's opening delimiter, through the shared `metadata_options_for`: the extensions are
+    // not anchored to the document start on their own, so leaving them on unconditionally would
+    // let a mid-document `---` claim the section under it — and the writer emits nothing for a
+    // metadata block, so that section would vanish from the export silently.
+    options |= crate::markdown::parse_offsets::metadata_options_for(markdown);
+
+    options
 }
 
 // ── Link URL sanitization ─────────────────────────────────────────────────
@@ -499,25 +509,83 @@ fn render_latex_png_data_uri(source: &str) -> Option<String> {
 
 // ── Image inlining ────────────────────────────────────────────────────────
 
-fn rewrite_images_to_data_uris(events: &mut [Event<'_>], source_dir: &Path) {
+fn rewrite_images_to_data_uris(
+    events: &mut [Event<'_>],
+    source_dir: &Path,
+    approved_outside: &[PathBuf],
+) {
+    let canon_dir = source_dir.canonicalize().ok();
     for event in events.iter_mut() {
         if let Event::Start(Tag::Image { dest_url, .. }) = event {
-            if let Some(new_url) = inline_image_data_uri(dest_url.as_ref(), source_dir) {
+            let Some(path) = embeddable_image(dest_url.as_ref(), source_dir, canon_dir.as_deref())
+            else {
+                continue;
+            };
+            if !path.inside && !approved_outside.contains(&path.canonical) {
+                continue;
+            }
+            if let Some(new_url) = data_uri(&path.canonical) {
                 *dest_url = CowStr::Boxed(new_url.into_boxed_str());
             }
         }
     }
 }
 
-/// A `data:` URI for `url` if it resolves to a readable local image.  `None` means "leave as-is":
-/// remote URLs, existing `data:` URIs, and anything unreadable or unclassifiable.
-fn inline_image_data_uri(url: &str, source_dir: &Path) -> Option<String> {
+/// The local images `markdown` references that a self-contained export would embed from *outside*
+/// `source_dir`: through `..`, by absolute path, or via a symlink leading out.  Canonical, deduped,
+/// in document order.  The export modal lists these and asks before embedding any of them, since
+/// the exported file is typically shared and an out-of-folder image may be one the document's
+/// author has no business seeing — see `docs/security.md`.
+pub fn outside_images(markdown: &str, source_dir: &Path) -> Vec<PathBuf> {
+    let canon_dir = source_dir.canonicalize().ok();
+    let mut out: Vec<PathBuf> = Vec::new();
+    for event in Parser::new_ext(markdown, parser_options(markdown)) {
+        if let Event::Start(Tag::Image { dest_url, .. }) = event {
+            if let Some(path) = embeddable_image(&dest_url, source_dir, canon_dir.as_deref()) {
+                if !path.inside && !out.contains(&path.canonical) {
+                    out.push(path.canonical);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A local image an export could embed, resolved.
+struct ResolvedImage {
+    canonical: PathBuf,
+    /// Whether `canonical` lies under the canonicalized `source_dir`.
+    inside: bool,
+}
+
+/// Resolve an image `url` to an existing local file with an image extension, noting whether it
+/// stays inside `source_dir`.  `None` means "never embed": remote URLs, existing `data:` URIs,
+/// and anything missing or unclassifiable.  Containment is checked *after* `canonicalize`, so a
+/// symlink leading out of the folder counts as outside, exactly like a `..` path.
+///
+/// `canon_dir` is `source_dir` canonicalized once by the caller; `None` (the folder itself
+/// failed to resolve) counts every image as outside, so each one is asked about.
+fn embeddable_image(
+    url: &str,
+    source_dir: &Path,
+    canon_dir: Option<&Path>,
+) -> Option<ResolvedImage> {
     if is_remote_url(url) {
         return None;
     }
-    let path = resolve_relative(url, source_dir)?;
-    let bytes = std::fs::read(&path).ok()?;
-    let mime = mime_from_extension(&path)?;
+    let canonical = source_dir.join(url).canonicalize().ok()?;
+    if !canonical.is_file() {
+        return None;
+    }
+    mime_from_extension(&canonical)?;
+    let inside = canon_dir.is_some_and(|dir| canonical.starts_with(dir));
+    Some(ResolvedImage { canonical, inside })
+}
+
+/// `path`'s bytes as a `data:` URI; `None` if unreadable or of no known image type.
+fn data_uri(path: &Path) -> Option<String> {
+    let mime = mime_from_extension(path)?;
+    let bytes = std::fs::read(path).ok()?;
     let mut encoded = String::from("data:");
     encoded.push_str(mime);
     encoded.push_str(";base64,");
@@ -531,30 +599,6 @@ fn is_remote_url(url: &str) -> bool {
         || lower.starts_with("https://")
         || lower.starts_with("data:")
         || lower.starts_with("file://")
-}
-
-/// Resolve a relative image `url` against `source_dir`, **only if it stays within it**.  A
-/// self-contained export is an artifact the victim shares, so an out-of-tree path would let a
-/// hostile document exfiltrate arbitrary files base64-encoded into that output.  Absolute paths
-/// and `..` components are rejected up front; the post-`canonicalize` containment check defeats
-/// symlink escapes.
-///
-/// `None` leaves the original reference in place — the export doesn't embed it rather than leaking
-/// it.
-fn resolve_relative(url: &str, source_dir: &Path) -> Option<PathBuf> {
-    let p = Path::new(url);
-    if p.is_absolute() {
-        return None;
-    }
-    if p.components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return None;
-    }
-    let joined = source_dir.join(p);
-    let canon_dir = source_dir.canonicalize().ok()?;
-    let canon = joined.canonicalize().ok()?;
-    canon.starts_with(&canon_dir).then_some(canon)
 }
 
 fn mime_from_extension(path: &Path) -> Option<&'static str> {
@@ -765,6 +809,7 @@ mod tests {
             stylesheet: Stylesheet::Inline(String::new()),
             inline_images: true,
             source_dir: Some(dir.path().to_path_buf()),
+            approved_outside: Vec::new(),
             title: None,
             render_figures: false,
         };
@@ -783,6 +828,7 @@ mod tests {
             stylesheet: Stylesheet::Inline(String::new()),
             inline_images: true,
             source_dir: Some(PathBuf::from("/tmp")),
+            approved_outside: Vec::new(),
             title: None,
             render_figures: false,
         };
@@ -1028,49 +1074,102 @@ mod tests {
         std::fs::write(path, ONE_PX_PNG).unwrap();
     }
 
-    #[test]
-    fn inline_images_rejects_absolute_path() {
-        let outside = tempdir().unwrap();
-        let secret = outside.path().join("secret.png");
-        write_one_px_png(&secret);
-        let source = tempdir().unwrap();
-
-        let md = format!("![x]({})", secret.display());
-        let opts = HtmlExportOptions {
+    fn inline_opts(source: &Path, approved_outside: Vec<PathBuf>) -> HtmlExportOptions {
+        HtmlExportOptions {
             stylesheet: Stylesheet::Inline(String::new()),
             inline_images: true,
-            source_dir: Some(source.path().to_path_buf()),
+            source_dir: Some(source.to_path_buf()),
+            approved_outside,
             render_figures: false,
             ..HtmlExportOptions::default()
-        };
-        let html = render_html(&md, &opts).unwrap();
-        assert!(
-            !html.contains("data:image/png"),
-            "absolute out-of-tree path must not be inlined:\n{html}"
-        );
+        }
     }
 
-    #[test]
-    fn inline_images_rejects_parent_traversal() {
+    /// A shared root holding `secret.png` beside a `docs/` source folder.
+    fn root_with_docs() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let root = tempdir().unwrap();
         let secret = root.path().join("secret.png");
         write_one_px_png(&secret);
         let source = root.path().join("docs");
         std::fs::create_dir(&source).unwrap();
+        (root, secret.canonicalize().unwrap(), source)
+    }
 
-        let md = "![x](../secret.png)";
-        let opts = HtmlExportOptions {
-            stylesheet: Stylesheet::Inline(String::new()),
-            inline_images: true,
-            source_dir: Some(source.clone()),
-            render_figures: false,
-            ..HtmlExportOptions::default()
-        };
-        let html = render_html(md, &opts).unwrap();
+    #[test]
+    fn inline_images_skips_an_unapproved_absolute_path() {
+        let (_root, secret, source) = root_with_docs();
+        let md = format!("![x]({})", secret.display());
+        let html = render_html(&md, &inline_opts(&source, Vec::new())).unwrap();
         assert!(
             !html.contains("data:image/png"),
-            "../ traversal must not be inlined:\n{html}"
+            "an unapproved out-of-folder path must not be inlined:\n{html}"
         );
+    }
+
+    #[test]
+    fn inline_images_skips_unapproved_parent_traversal() {
+        let (_root, _secret, source) = root_with_docs();
+        let html = render_html("![x](../secret.png)", &inline_opts(&source, Vec::new())).unwrap();
+        assert!(
+            !html.contains("data:image/png"),
+            "unapproved ../ traversal must not be inlined:\n{html}"
+        );
+        assert!(
+            html.contains("src=\"../secret.png\""),
+            "left as a link:\n{html}"
+        );
+    }
+
+    #[test]
+    fn inline_images_embeds_an_approved_outside_image() {
+        let (_root, secret, source) = root_with_docs();
+        let opts = inline_opts(&source, vec![secret]);
+        let html = render_html("![x](../secret.png)", &opts).unwrap();
+        assert!(html.contains("src=\"data:image/png;base64,"), "{html}");
+    }
+
+    /// Approval covers the listed file only, not everything outside the folder.
+    #[test]
+    fn approval_does_not_extend_to_an_unlisted_outside_image() {
+        let (root, secret, source) = root_with_docs();
+        write_one_px_png(&root.path().join("other.png"));
+        let md = "![a](../secret.png) ![b](../other.png)";
+        let html = render_html(md, &inline_opts(&source, vec![secret])).unwrap();
+        assert_eq!(html.matches("data:image/png").count(), 1, "{html}");
+        assert!(html.contains("src=\"../other.png\""), "{html}");
+    }
+
+    #[test]
+    fn outside_images_lists_parent_and_absolute_references_once() {
+        let (_root, secret, source) = root_with_docs();
+        write_one_px_png(&source.join("inside.png"));
+        let md = format!(
+            "![a](../secret.png) ![b]({}) ![c](inside.png) ![d](../docs/inside.png) \
+             ![e](../missing.png) ![f](https://example.com/x.png)",
+            secret.display()
+        );
+        assert_eq!(outside_images(&md, &source), vec![secret]);
+    }
+
+    #[test]
+    fn outside_images_ignores_non_image_files() {
+        let root = tempdir().unwrap();
+        std::fs::write(root.path().join("notes.txt"), "private").unwrap();
+        let source = root.path().join("docs");
+        std::fs::create_dir(&source).unwrap();
+        assert!(outside_images("![x](../notes.txt)", &source).is_empty());
+    }
+
+    /// A symlink inside the folder that leads out counts as outside, so it is listed for approval
+    /// rather than embedded silently.
+    #[cfg(unix)]
+    #[test]
+    fn outside_images_sees_through_a_symlink_leading_out() {
+        let (_root, secret, source) = root_with_docs();
+        std::os::unix::fs::symlink(&secret, source.join("link.png")).unwrap();
+        assert_eq!(outside_images("![x](link.png)", &source), vec![secret]);
+        let html = render_html("![x](link.png)", &inline_opts(&source, Vec::new())).unwrap();
+        assert!(!html.contains("data:image/png"), "{html}");
     }
 
     #[test]
