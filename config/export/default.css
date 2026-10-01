@@ -10,11 +10,10 @@
  * in config.toml.
  *
  * The same file is what a [[export.custom]] converter (weasyprint,
- * pandoc, …) is handed, so the page geometry below is written for print
- * first: 1in margins on every side, and a text column sized to what that
- * leaves on a US Letter sheet.  On screen those same two numbers set the
- * gutters and the measure, so a browser window and the PDF break lines in
- * the same places.
+ * pandoc, …) is handed, so screen and print geometry are set separately:
+ * `@media screen` caps a centered column for a browser window, and
+ * `@page` / `@media print` give the sheet 1in margins and the full width
+ * between them.  Neither borrows the other's numbers.
  */
 
 :root {
@@ -27,17 +26,11 @@
     --code-bg: #f6f8fa;
     --quote-border: #d0d7de;
 
-    /* Page geometry.  `--measure` is 8.5in of paper less the two 1in
-       margins; changing `--page-margin` alone keeps the column centered
-       but no longer matches Letter, so change both together. */
-    --page-margin: 1in;
-    --measure: 6.5in;
-
-    /* 15px/1.5 on screen reads as ~11pt in print, the body size a printed
-       page conventionally uses; `@media print` states the pt value so a
-       converter that resolves px against something other than 96dpi still
-       lands there. */
-    --font-size: 15px;
+    /* 16px is the browser default body size; `@media print` drops to the
+       11pt a printed page conventionally uses, stated in pt so a converter
+       that resolves px against something other than 96dpi still lands
+       there. */
+    --font-size: 16px;
     --line-height: 1.5;
 
     /* One vertical rhythm for every block.  Headings take `--space-block`
@@ -79,16 +72,25 @@ body {
     overflow-wrap: break-word;
 }
 
-main.markdown-body {
-    box-sizing: border-box;
-    max-width: calc(var(--measure) + 2 * var(--page-margin));
-    margin: 0 auto;
-    padding: var(--page-margin);
+/* Screen only: print takes its margins from `@page` and its width from
+   the sheet, so it needs neither the cap nor the padding. */
+@media screen {
+    main.markdown-body {
+        /* `content-box`, so the 900px is the text column itself and the
+           gutters come on top — roughly GitHub's rendered-Markdown width,
+           wide enough for tables and code without a sideways scroll. */
+        box-sizing: content-box;
+        max-width: 900px;
+        margin: 0 auto;
+        /* Gutters scale with the window so a phone keeps its column. */
+        padding: 2rem clamp(1rem, 4vw, 2rem);
+    }
 }
 
-/* The document's own first and last blocks must not add to the page
-   margin — a leading h1 otherwise sat a full section-gap below a padding
-   that already measured 1in, while the side gutters stayed exactly 1in. */
+/* The document's own first and last blocks must not add to the
+   container's top and bottom space — a leading h1 otherwise sat a full
+   section-gap below the padding (on screen) or the page margin (in
+   print), while the side gutters stayed exact. */
 main.markdown-body > :first-child { margin-top: 0; }
 main.markdown-body > :last-child  { margin-bottom: 0; }
 
@@ -271,11 +273,7 @@ figure.math-formula img {
 @page {
     /* No `size` on purpose: the sheet is the converter's (and the user's)
        to choose, and pinning `letter` here would crop an A4 print.  The
-       1in margin is the part that is a convention rather than a locale.
-       Written as a literal rather than `var(--page-margin)`: a custom
-       property resolves against an element, and support for one inside
-       `@page` is uneven across converters.  It is the same 1in the
-       `:root` variable holds — change the two together. */
+       1in margin is the part that is a convention rather than a locale. */
     margin: 1in;
 }
 
@@ -292,13 +290,6 @@ figure.math-formula img {
         --code-bg: #f2f2f2;
         --quote-border: #999999;
         --font-size: 11pt;
-    }
-
-    /* The 1in comes from `@page` now; keeping it on the element too would
-       double it.  The measure is the page's, so the cap comes off as well. */
-    main.markdown-body {
-        max-width: none;
-        padding: 0;
     }
 
     /* Two lines is the typographic floor for a fragment left alone at a
