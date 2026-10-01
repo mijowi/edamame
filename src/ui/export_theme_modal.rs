@@ -13,6 +13,7 @@ use ratatui::{
 use crate::config::Theme;
 use crate::ui::button_row::{button_row_width, render_button_row};
 use crate::ui::controls;
+use crate::ui::cursor::{insert_char_at, remove_char_at};
 use crate::ui::modal_row::{format_modal_row, RowLayout};
 use crate::ui::scroll_container::{draw_frame, FrameOpts, ModalKind};
 use crate::ui::searchable_list::{
@@ -74,7 +75,8 @@ pub struct ExportThemeState {
     pub esc_button_rect: Option<Rect>,
     /// Set on the first edit of the Name field; after that, list moves no longer re-seed it.
     name_user_edited: bool,
-    /// Horizontal scroll offset (chars) of the name input.
+    /// First visible char of the name input, kept between frames (see
+    /// [`crate::ui::cursor::scrolled_field_spans`]).
     name_scroll: usize,
 }
 
@@ -310,24 +312,6 @@ fn default_copy_name(source: &str) -> String {
     format!("{source} copy")
 }
 
-fn char_byte_index(s: &str, cursor: usize) -> usize {
-    s.char_indices()
-        .nth(cursor)
-        .map(|(b, _)| b)
-        .unwrap_or(s.len())
-}
-
-fn insert_char_at(s: &mut String, cursor: usize, ch: char) {
-    let byte_idx = char_byte_index(s, cursor);
-    s.insert(byte_idx, ch);
-}
-
-fn remove_char_at(s: &mut String, cursor: usize) {
-    if let Some((byte_idx, ch)) = s.char_indices().nth(cursor) {
-        s.replace_range(byte_idx..byte_idx + ch.len_utf8(), "");
-    }
-}
-
 pub struct ExportThemeView<'a> {
     pub theme: &'a Theme,
     pub cursor_visible: bool,
@@ -476,16 +460,20 @@ impl<'a> StatefulWidget for ExportThemeView<'a> {
             row_y += 1;
         }
         if row_y < inner.y + inner.height {
-            render_name_row(
+            controls::render_text_field_row(
                 buf,
-                inner,
-                row_y,
+                Rect {
+                    y: row_y,
+                    height: 1,
+                    ..inner
+                },
+                "",
                 &state.name,
                 state.cursor,
                 &mut state.name_scroll,
                 matches!(state.focus, ExportThemeField::Name),
-                self.theme,
                 self.cursor_visible,
+                self.theme,
             );
             row_y += 1;
         }
@@ -547,79 +535,6 @@ fn fill_row(buf: &mut Buffer, inner: Rect, y: u16, theme: &Theme) {
     );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_name_row(
-    buf: &mut Buffer,
-    inner: Rect,
-    y: u16,
-    value: &str,
-    cursor: usize,
-    name_scroll: &mut usize,
-    focused: bool,
-    theme: &Theme,
-    cursor_visible: bool,
-) {
-    let area = Rect {
-        x: inner.x,
-        y,
-        width: inner.width,
-        height: 1,
-    };
-    let value_style = controls::text_value_style(focused, theme);
-    let total = value.chars().count();
-    let mut spans: Vec<Span<'_>> = Vec::with_capacity(6);
-    spans.push(Span::styled(" ", value_style));
-
-    if focused {
-        // Width = 1 pad + N chars + 1 cursor glyph + 1 pad, so N = width - 3.
-        let visible = (inner.width as usize).saturating_sub(3);
-        if cursor < *name_scroll {
-            *name_scroll = cursor;
-        } else if visible > 0 && cursor > *name_scroll + visible {
-            *name_scroll = cursor - visible;
-        }
-        let max_scroll = total.saturating_sub(visible);
-        if *name_scroll > max_scroll {
-            *name_scroll = max_scroll;
-        }
-        let start = *name_scroll;
-        let end = (start + visible).min(total);
-
-        let pre_end = cursor.min(end);
-        let post_start = cursor.max(start);
-        let pre: String = value.chars().skip(start).take(pre_end - start).collect();
-        let post: String = value
-            .chars()
-            .skip(post_start)
-            .take(end - post_start)
-            .collect();
-
-        if !pre.is_empty() {
-            spans.push(Span::styled(pre, value_style));
-        }
-        if cursor_visible {
-            spans.push(Span::styled(
-                crate::ui::cursor::CURSOR_BLOCK.to_string(),
-                theme.cursor,
-            ));
-        } else {
-            spans.push(Span::styled(" ", value_style));
-        }
-        if !post.is_empty() {
-            spans.push(Span::styled(post, value_style));
-        }
-        spans.push(Span::styled(" ", value_style));
-    } else {
-        let visible = (inner.width as usize).saturating_sub(2);
-        let shown: String = value.chars().take(visible).collect();
-        spans.push(Span::styled(shown, value_style));
-        spans.push(Span::styled(" ", value_style));
-    }
-    Paragraph::new(Line::from(spans))
-        .style(theme.modal_bg)
-        .render(area, buf);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,6 +550,48 @@ mod tests {
             "Edamame".to_owned(),
             "Dracula".to_owned(),
         ]
+    }
+
+    /// The name-input row as text, plus how many of its cells carry the focused field fill.
+    fn name_row(s: &mut ExportThemeState) -> (String, usize) {
+        use ratatui::{backend::TestBackend, Terminal};
+        let theme: &'static Theme = Box::leak(Box::new(Theme::default()));
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal
+            .draw(|f| {
+                let view = ExportThemeView {
+                    theme,
+                    cursor_visible: false,
+                };
+                f.render_stateful_widget(view, f.area(), s);
+            })
+            .unwrap();
+        let rows = controls::rows_with_fill(terminal.backend().buffer());
+        let label = rows
+            .iter()
+            .position(|(text, _)| text.contains("New theme name:"))
+            .expect("the name label");
+        rows[label + 1].clone()
+    }
+
+    #[test]
+    fn the_name_field_fills_its_row_and_scrolls_a_long_name() {
+        let mut s = ExportThemeState::new(sample_themes(), "Ayu");
+        s.focus = ExportThemeField::Name;
+        let (_, filled) = name_row(&mut s);
+        assert!(
+            filled > "Ayu copy".len() + 2,
+            "the fill spans the row: {filled}"
+        );
+
+        for _ in 0..80 {
+            s.handle_key(&key(KeyCode::Char('x')), &[]);
+        }
+        s.handle_key(&key(KeyCode::Char('Z')), &[]);
+        let (text, filled_after) = name_row(&mut s);
+        assert_eq!(filled_after, filled, "a long name fills the same width");
+        assert!(text.contains("xZ"), "the cursor end is in view: {text}");
+        assert!(!text.contains("Ayu"), "the start scrolled away: {text}");
     }
 
     #[test]

@@ -5,21 +5,14 @@
 //! mis-restores in VTE).  The cursor is always a block; context is signaled by color
 //! (see `docs/dev/theming.md`).
 //!
-//! Two block mechanisms, not interchangeable:
-//! 1. **Recolor-the-cell** ([`text_field_spans`]), preferred: the glyph under the cursor is
-//!    restyled, always one cell wide, so the field never jitters on blink.
-//! 2. **Insert-a-glyph** ([`CURSOR_BLOCK`]), fallback for rows whose cell styling is owned by a
-//!    shared formatter or scroll window (`settings_overlay`, `export_theme_modal`).  Only ever
-//!    placed at an append-only end-of-value position; the caller MUST emit a same-width space
-//!    on the hidden blink phase.  Don't move those sites onto mechanism 1 without first giving
-//!    them per-cell styling control.
+//! The block recolors the cell under the cursor ([`text_field_spans`]), so it is always one cell
+//! wide and the field never jitters on blink.  A field that can outgrow its width goes through
+//! [`scrolled_field_spans`], which windows the value around the cursor and pads the field out to
+//! its full width.
 
 use ratatui::style::Style;
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthChar;
-
-/// Full-cell block glyph for mechanism 2 (see the module doc).  Prefer [`text_field_spans`].
-pub const CURSOR_BLOCK: char = '█';
 
 /// The three spans of a single-line field value with a blink-stable block cursor at char index
 /// `cursor`.  The middle span is always one cell (the char under the cursor, or a space past

@@ -13,12 +13,16 @@ use ratatui::{
 use crate::config::Theme;
 use crate::ui::button_row::{button_row_width, footer_row_count, render_button_row};
 use crate::ui::controls;
-use crate::ui::cursor::text_field_spans;
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, ContentSize, FrameOpts, ModalKind, MAX_PAD_H,
 };
 
 const BUTTON_LABELS: &[&str] = &["Search", "Cancel"];
+/// The field labels, padded to one width so the fields align; the gap to the field included.
+const SEARCH_LABEL: &str = "Search   ";
+const REPLACE_LABEL: &str = "Replace  ";
+/// Minimum field width, in cells.
+const MIN_FIELD_WIDTH: u16 = 32;
 
 /// One of the four focus targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +80,13 @@ pub struct SearchModalState {
     /// In-field cursors, as char indices.
     pub query_cursor: usize,
     pub replace_cursor: usize,
+    /// First visible char of each field, kept between frames (see
+    /// [`crate::ui::cursor::scrolled_field_spans`]).
+    query_scroll: usize,
+    replace_scroll: usize,
+    /// Field width, fixed at open from the pre-filled values so the modal does not resize
+    /// while typing; a longer value scrolls.
+    field_width: u16,
     pub focus: SearchModalField,
     /// Last validation message; cleared when the user mutates a field.
     pub last_error: Option<String>,
@@ -88,11 +99,15 @@ impl SearchModalState {
     pub fn new(query: String, replace: String) -> Self {
         let query_cursor = query.chars().count();
         let replace_cursor = replace.chars().count();
+        let field_width = controls::text_field_width(&[&query, &replace], MIN_FIELD_WIDTH);
         Self {
             query,
             replace,
             query_cursor,
             replace_cursor,
+            query_scroll: 0,
+            replace_scroll: 0,
+            field_width,
             focus: SearchModalField::Query,
             last_error: None,
             esc_button_rect: None,
@@ -288,18 +303,12 @@ impl<'a> StatefulWidget for SearchModalView<'a> {
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         // Search row + note row + replace row + optional error row + spacer, then the buttons.
         let base_rows = if state.last_error.is_some() { 5 } else { 4 };
-        let label_w = "Replace".chars().count() as u16;
-        let longest_value = state
-            .query
-            .chars()
-            .count()
-            .max(state.replace.chars().count()) as u16;
-        let value_w = (longest_value + 4).max(32);
+        let label_w = REPLACE_LABEL.chars().count() as u16;
         let buttons_w = button_row_width(BUTTON_LABELS);
         // The indented note row must count toward the width or it renders clipped.
         let note = matching_mode_note(state);
         let note_w = NOTE_INDENT as u16 + note.chars().count() as u16;
-        let content_width = (label_w + 2 + value_w).max(buttons_w).max(note_w);
+        let content_width = (label_w + state.field_width).max(buttons_w).max(note_w);
         // The footer wraps rather than clipping; a flat one-row reservation would leave a
         // wrapped button unpainted yet still focusable.
         let footer_rows = footer_row_count(BUTTON_LABELS, content_width, area.width, MAX_PAD_H);
@@ -329,16 +338,20 @@ impl<'a> StatefulWidget for SearchModalView<'a> {
         }
 
         let mut row_y = inner.y;
-        render_field_row(
+        controls::render_text_field_row(
             buf,
-            inner,
-            row_y,
-            "Search ",
+            Rect {
+                y: row_y,
+                height: 1,
+                ..inner
+            },
+            SEARCH_LABEL,
             &state.query,
             state.query_cursor,
+            &mut state.query_scroll,
             state.focus == SearchModalField::Query,
-            self.theme,
             self.cursor_visible,
+            self.theme,
         );
         row_y = row_y.saturating_add(1);
         if row_y < inner.y + inner.height {
@@ -356,17 +369,23 @@ impl<'a> StatefulWidget for SearchModalView<'a> {
             .render(note_area, buf);
             row_y = row_y.saturating_add(1);
         }
-        render_field_row(
-            buf,
-            inner,
-            row_y,
-            "Replace",
-            &state.replace,
-            state.replace_cursor,
-            state.focus == SearchModalField::Replace,
-            self.theme,
-            self.cursor_visible,
-        );
+        if row_y < inner.y + inner.height {
+            controls::render_text_field_row(
+                buf,
+                Rect {
+                    y: row_y,
+                    height: 1,
+                    ..inner
+                },
+                REPLACE_LABEL,
+                &state.replace,
+                state.replace_cursor,
+                &mut state.replace_scroll,
+                state.focus == SearchModalField::Replace,
+                self.cursor_visible,
+                self.theme,
+            );
+        }
         row_y = row_y.saturating_add(1);
 
         if let Some(err) = state.last_error.as_deref() {
@@ -407,48 +426,6 @@ impl<'a> StatefulWidget for SearchModalView<'a> {
         };
         render_button_row(button_area, buf, BUTTON_LABELS, focused_idx, self.theme);
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_field_row(
-    buf: &mut Buffer,
-    inner: Rect,
-    y: u16,
-    label: &str,
-    value: &str,
-    cursor: usize,
-    focused: bool,
-    theme: &Theme,
-    cursor_visible: bool,
-) {
-    let area = Rect {
-        x: inner.x,
-        y,
-        width: inner.width,
-        height: 1,
-    };
-    let value_style = controls::text_value_style(focused, theme);
-
-    let mut spans: Vec<Span<'_>> = Vec::with_capacity(7);
-    spans.push(Span::styled(label.to_owned(), theme.modal_item));
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled(" ", value_style));
-    if focused {
-        spans.extend(text_field_spans(
-            value,
-            cursor,
-            cursor_visible,
-            value_style,
-            theme.cursor,
-        ));
-        spans.push(Span::styled(" ", value_style));
-    } else {
-        spans.push(Span::styled(value.to_owned(), value_style));
-        spans.push(Span::styled(" ", value_style));
-    }
-    Paragraph::new(Line::from(spans))
-        .style(theme.modal_bg)
-        .render(area, buf);
 }
 
 #[cfg(test)]
@@ -640,6 +617,51 @@ mod tests {
         let s = SearchModalState::new("naïve".to_owned(), "no".to_owned());
         assert_eq!(s.query_cursor, 5);
         assert_eq!(s.replace_cursor, 2);
+    }
+
+    /// The row containing `label` as text, plus how many of its cells carry the focused field
+    /// fill.
+    fn field_row(state: &mut SearchModalState, label: &str) -> (String, usize) {
+        let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
+        terminal
+            .draw(|frame| {
+                let m = SearchModalView {
+                    theme: theme(),
+                    cursor_visible: false,
+                };
+                frame.render_stateful_widget(m, frame.area(), state);
+            })
+            .unwrap();
+        controls::rows_with_fill(terminal.backend().buffer())
+            .into_iter()
+            .find(|(text, _)| text.contains(label))
+            .expect("a field row")
+    }
+
+    #[test]
+    fn the_fields_fill_a_fixed_width_and_scroll_a_long_value() {
+        let mut state = SearchModalState::new("ab".to_owned(), String::new());
+        let (_, filled) = field_row(&mut state, SEARCH_LABEL);
+        assert!(
+            filled >= MIN_FIELD_WIDTH as usize,
+            "the fill spans the field, not the value: {filled}"
+        );
+
+        for _ in 0..80 {
+            state.handle_key(&key(KeyCode::Char('x')));
+        }
+        state.handle_key(&key(KeyCode::Char('Z')));
+        let (text, filled_after) = field_row(&mut state, SEARCH_LABEL);
+        assert_eq!(filled_after, filled, "typing never resizes the field");
+        assert!(text.contains("xZ"), "the cursor end is in view: {text}");
+        assert!(!text.contains("ab"), "the start scrolled away: {text}");
+
+        state.handle_key(&key(KeyCode::Home));
+        let (text, _) = field_row(&mut state, SEARCH_LABEL);
+        assert!(
+            text.contains("abx"),
+            "Home scrolls back to the start: {text}"
+        );
     }
 
     #[test]

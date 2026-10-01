@@ -12,7 +12,7 @@ use crate::editor::{EditorState, Mode};
 use crate::terminal::Capabilities;
 
 use super::{
-    bottom_region::{BottomRegion, HintContent},
+    bottom_region::{BottomRegion, HintContent, HintLineState},
     diff_view::{DiffView, DiffViewState},
     image_view, link_view,
     preview::{PreviewState, PreviewView},
@@ -126,6 +126,8 @@ pub struct EditorViewState {
     /// Published each render so the App's mouse layer can hit-test the gutter without
     /// re-deriving it.  `None` when the content fits and no gutter is drawn.
     pub scrollbar: Option<ScrollbarMetrics>,
+    /// The hint line's cross-frame state (the vim command line's scroll).
+    pub hint: HintLineState,
 }
 
 impl EditorViewState {
@@ -455,7 +457,7 @@ impl<'a> StatefulWidget for EditorView<'a> {
             hint: self.hint,
             theme: self.theme,
         };
-        Widget::render(region, bar_area, buf);
+        StatefulWidget::render(region, bar_area, buf, &mut state.hint);
     }
 }
 

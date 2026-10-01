@@ -16,13 +16,17 @@ use ratatui::{
 use crate::config::Theme;
 use crate::ui::button_row::{button_row_width, footer_row_count, render_button_row};
 use crate::ui::controls;
-use crate::ui::cursor::{insert_char_at, remove_char_at, text_field_spans};
+use crate::ui::cursor::{insert_char_at, remove_char_at};
 use crate::ui::scroll_container::{
     centered_rect_for_content, draw_frame, modal_inner_width, wrapped_rows, ContentSize, FrameOpts,
     ModalKind, MAX_PAD_H,
 };
 
 const BUTTON_LABELS: &[&str] = &["Save", "Cancel"];
+/// The field's label, its gap to the field included.
+const PATH_LABEL: &str = "Path  ";
+/// Minimum path field width, in cells.
+const MIN_FIELD_WIDTH: u16 = 40;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SaveCopyField {
@@ -67,6 +71,12 @@ pub struct SaveCopyState {
     pub path: String,
     /// Char index into [`Self::path`]; starts at the end so the default can be edited at once.
     pub cursor: usize,
+    /// First visible path char, kept between frames (see
+    /// [`crate::ui::cursor::scrolled_field_spans`]).
+    scroll: usize,
+    /// Field width, fixed at open from the default path so the whole of it (directory
+    /// included) shows, and so the modal does not resize while typing; a longer path scrolls.
+    field_width: u16,
     pub focus: SaveCopyField,
     /// Last validation message; cleared when the field changes.
     pub last_error: Option<String>,
@@ -77,9 +87,12 @@ pub struct SaveCopyState {
 impl SaveCopyState {
     pub fn new(default_path: String) -> Self {
         let cursor = default_path.chars().count();
+        let field_width = controls::text_field_width(&[&default_path], MIN_FIELD_WIDTH);
         Self {
             path: default_path,
             cursor,
+            scroll: 0,
+            field_width,
             focus: SaveCopyField::Path,
             last_error: None,
             esc_button_rect: None,
@@ -227,12 +240,11 @@ impl<'a> StatefulWidget for SaveCopyView<'a> {
         let note = self
             .note
             .map(|note| Line::from(Span::styled(note, self.theme.modal_description)));
-        let label_w = "Path".chars().count() as u16;
-        let path_w = (state.path.chars().count() as u16 + 4).max(40);
+        let label_w = PATH_LABEL.chars().count() as u16;
         // The note asks for one line; a terminal too narrow for that wraps it.
         let note_w = note.as_ref().map_or(0, |line| line.width() as u16);
         let buttons_w = button_row_width(BUTTON_LABELS);
-        let content_width = (label_w + 2 + path_w).max(buttons_w).max(note_w);
+        let content_width = (label_w + state.field_width).max(buttons_w).max(note_w);
         let note_h = note.as_ref().map_or(0, |line| {
             let width = modal_inner_width(content_width, area.width, MAX_PAD_H);
             wrapped_rows(std::slice::from_ref(line), width)
@@ -280,15 +292,20 @@ impl<'a> StatefulWidget for SaveCopyView<'a> {
                 return;
             }
         }
-        render_path_row(
+        controls::render_text_field_row(
             buf,
-            inner,
-            row_y,
+            Rect {
+                y: row_y,
+                height: 1,
+                ..inner
+            },
+            PATH_LABEL,
             &state.path,
             state.cursor,
+            &mut state.scroll,
             state.focus == SaveCopyField::Path,
-            self.theme,
             self.cursor_visible,
+            self.theme,
         );
         row_y = row_y.saturating_add(1);
 
@@ -325,47 +342,6 @@ impl<'a> StatefulWidget for SaveCopyView<'a> {
         };
         render_buttons(button_area, buf, state.focus, self.theme);
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_path_row(
-    buf: &mut Buffer,
-    inner: Rect,
-    y: u16,
-    value: &str,
-    cursor: usize,
-    focused: bool,
-    theme: &Theme,
-    cursor_visible: bool,
-) {
-    let area = Rect {
-        x: inner.x,
-        y,
-        width: inner.width,
-        height: 1,
-    };
-    let value_style = controls::text_value_style(focused, theme);
-
-    let mut spans: Vec<Span<'_>> = Vec::with_capacity(6);
-    spans.push(Span::styled("Path", theme.modal_item));
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled(" ", value_style));
-    if focused {
-        spans.extend(text_field_spans(
-            value,
-            cursor,
-            cursor_visible,
-            value_style,
-            theme.cursor,
-        ));
-        spans.push(Span::styled(" ", value_style));
-    } else {
-        spans.push(Span::styled(value.to_owned(), value_style));
-        spans.push(Span::styled(" ", value_style));
-    }
-    Paragraph::new(Line::from(spans))
-        .style(theme.modal_bg)
-        .render(area, buf);
 }
 
 fn render_buttons(area: Rect, buf: &mut Buffer, focus: SaveCopyField, theme: &Theme) {
@@ -686,6 +662,52 @@ mod tests {
         assert!(first < last, "the note wraps: {rows:#?}");
         assert!(last < row_of("Path"), "the path row follows it: {rows:#?}");
         row_of("[ Cancel ]");
+    }
+
+    /// The Path row as text, plus how many of its cells carry the focused field fill.
+    fn path_row(state: &mut SaveCopyState) -> (String, usize) {
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                let m = SaveCopyView {
+                    theme: theme(),
+                    cursor_visible: false,
+                    title: "Save As",
+                    note: None,
+                };
+                frame.render_stateful_widget(m, frame.area(), state);
+            })
+            .unwrap();
+        controls::rows_with_fill(terminal.backend().buffer())
+            .into_iter()
+            .find(|(text, _)| text.contains("Path"))
+            .expect("a Path row")
+    }
+
+    #[test]
+    fn the_path_field_fills_a_fixed_width_and_scrolls_a_long_path() {
+        let mut state = SaveCopyState::new("a.md".to_owned());
+        let (_, filled) = path_row(&mut state);
+        assert_eq!(
+            filled, MIN_FIELD_WIDTH as usize,
+            "the fill spans the field, not the value"
+        );
+
+        for _ in 0..80 {
+            state.handle_key(&key(KeyCode::Char('x')));
+        }
+        state.handle_key(&key(KeyCode::Char('Z')));
+        let (text, filled_after) = path_row(&mut state);
+        assert_eq!(filled_after, filled, "typing never resizes the field");
+        assert!(text.contains("xZ"), "the cursor end is in view: {text}");
+        assert!(!text.contains("a.md"), "the start scrolled away: {text}");
+
+        state.handle_key(&key(KeyCode::Home));
+        let (text, _) = path_row(&mut state);
+        assert!(
+            text.contains("a.md"),
+            "Home scrolls back to the start: {text}"
+        );
     }
 
     #[test]

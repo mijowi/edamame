@@ -17,10 +17,14 @@
 //! value by handle position and the literal `on`/`off` text.
 
 use crossterm::event::KeyCode;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Paragraph, Widget};
 
 use crate::config::{ImagesEnabled, RemoteImagePolicy, Theme};
+use crate::ui::cursor::scrolled_field_spans;
 
 // ── Control kinds ─────────────────────────────────────────────────────────
 
@@ -225,6 +229,78 @@ pub fn button_spans(label: &str, focused: bool, theme: &Theme) -> Vec<Span<'stat
         format!("[ {label} ]"),
         button_style(focused, theme),
     )]
+}
+
+// ── Text input ──────────────────────────────────────────────────────────────
+
+/// Width of a text field sized to show each of `values` whole, never under `min`: the widest
+/// value plus [`render_text_field_row`]'s two padding cells, the end-of-text cursor cell, and
+/// one spare.  Computed once when a modal opens, so the field does not resize while typing; a
+/// longer value scrolls.
+pub fn text_field_width(values: &[&str], min: u16) -> u16 {
+    let widest = values
+        .iter()
+        .map(|v| Line::from(*v).width())
+        .max()
+        .unwrap_or(0);
+    u16::try_from(widest)
+        .unwrap_or(u16::MAX)
+        .saturating_add(4)
+        .max(min)
+}
+
+/// Render a one-row labeled text input across `area`: `label` (its trailing gap included; empty
+/// for a bare field) in `modal_item`, then the field, whose background runs to the right edge of
+/// `area` with one cell of padding at each end.  The value scrolls through
+/// [`scrolled_field_spans`] (which updates `scroll`); the cursor is drawn only when `focused` and
+/// in its `cursor_visible` blink phase.
+#[allow(clippy::too_many_arguments)]
+pub fn render_text_field_row(
+    buf: &mut Buffer,
+    area: Rect,
+    label: &str,
+    value: &str,
+    cursor: usize,
+    scroll: &mut usize,
+    focused: bool,
+    cursor_visible: bool,
+    theme: &Theme,
+) {
+    let value_style = text_value_style(focused, theme);
+    let label = Span::styled(label.to_owned(), theme.modal_item);
+    let field_w = (area.width as usize).saturating_sub(label.width() + 2);
+
+    let mut spans = vec![label, Span::styled(" ", value_style)];
+    spans.extend(scrolled_field_spans(
+        value,
+        cursor,
+        scroll,
+        field_w,
+        focused && cursor_visible,
+        value_style,
+        theme.cursor,
+    ));
+    spans.push(Span::styled(" ", value_style));
+    Paragraph::new(Line::from(spans))
+        .style(theme.modal_bg)
+        .render(area, buf);
+}
+
+/// Every row of `buf` as text, paired with how many of its cells carry a `REVERSED` fill (the
+/// focus fill, from [`focused_style`]).  For tests asserting a focused field spans its width.
+#[cfg(test)]
+pub(crate) fn rows_with_fill(buf: &Buffer) -> Vec<(String, usize)> {
+    (0..buf.area.height)
+        .map(|y| {
+            let cells: Vec<_> = (0..buf.area.width).map(|x| &buf[(x, y)]).collect();
+            let text = cells.iter().map(|c| c.symbol()).collect();
+            let filled = cells
+                .iter()
+                .filter(|c| c.modifier.contains(Modifier::REVERSED))
+                .count();
+            (text, filled)
+        })
+        .collect()
 }
 
 // ── Cycle / cascade logic ──────────────────────────────────────────────────

@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Paragraph, Widget},
+    widgets::{Paragraph, StatefulWidget, Widget},
 };
 
 use crate::config::keymap::format_key_compact;
@@ -452,13 +452,17 @@ pub fn lay_out_chords(chords: &[HintChord], theme: &Theme, bar_style: Style) -> 
     spans
 }
 
-/// Spans for a vim command line: a leading ` {prefix}` glyph then the typed text with the unified
-/// block cursor at char index `cursor`.  The cursor is one blink-stable cell (a space past
-/// end-of-line), so an empty `/` still reserves it and the row never jitters on blink.
+/// Spans for a vim command line `width` cells wide: a leading ` {prefix}` glyph then the typed
+/// text with the unified block cursor at char index `cursor`.  The cursor is one blink-stable
+/// cell (a space past end-of-line), so an empty `/` still reserves it and the row never jitters
+/// on blink; a line wider than the row scrolls (`scroll`) to keep the cursor on screen.
+#[allow(clippy::too_many_arguments)]
 fn command_line_spans(
     prefix: char,
     text: &str,
     cursor: usize,
+    scroll: &mut usize,
+    width: usize,
     cursor_visible: bool,
     theme: &Theme,
     bar_style: Style,
@@ -467,15 +471,27 @@ fn command_line_spans(
         Some(bg) => theme.hint_label.bg(bg),
         None => theme.hint_label,
     };
-    let mut spans = vec![Span::styled(format!(" {prefix}"), base)];
-    spans.extend(crate::ui::cursor::text_field_spans(
+    let lead = format!(" {prefix}");
+    let field_w = width.saturating_sub(Span::raw(lead.as_str()).width());
+    let mut spans = vec![Span::styled(lead, base)];
+    spans.extend(crate::ui::cursor::scrolled_field_spans(
         text,
         cursor,
+        scroll,
+        field_w,
         cursor_visible,
         base,
         theme.cursor,
     ));
     spans
+}
+
+/// Hint-line state that must outlive a frame: the vim command line's horizontal scroll, so the
+/// window moves only as far as the cursor forces it.  Owned by
+/// [`EditorViewState`](crate::ui::editor_view::EditorViewState).
+#[derive(Debug, Default)]
+pub struct HintLineState {
+    cmdline_scroll: usize,
 }
 
 /// The hint-line widget: one row of chords / transient / prompt with a trailing `bar_style` fill.
@@ -486,8 +502,10 @@ pub struct HintLine<'a> {
     pub bar_style: Style,
 }
 
-impl<'a> Widget for HintLine<'a> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
+impl<'a> StatefulWidget for HintLine<'a> {
+    type State = HintLineState;
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         if area.height == 0 || area.width == 0 {
             return;
         }
@@ -537,6 +555,8 @@ impl<'a> Widget for HintLine<'a> {
                 *prefix,
                 text,
                 *cursor,
+                &mut state.cmdline_scroll,
+                width,
                 *cursor_visible,
                 self.theme,
                 self.bar_style,
@@ -544,10 +564,7 @@ impl<'a> Widget for HintLine<'a> {
         };
 
         // Pad the trailing fill with the bar background, else the terminal's own shows through.
-        let used: usize = spans
-            .iter()
-            .map(|s| s.content.chars().count())
-            .sum::<usize>();
+        let used: usize = spans.iter().map(Span::width).sum();
         let mut all_spans = spans;
         if used < width {
             all_spans.push(Span::styled(" ".repeat(width - used), self.bar_style));
@@ -573,8 +590,10 @@ impl<'a> BottomRegion<'a> {
     }
 }
 
-impl<'a> Widget for BottomRegion<'a> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
+impl<'a> StatefulWidget for BottomRegion<'a> {
+    type State = HintLineState;
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         if area.height == 0 {
             return;
         }
@@ -593,7 +612,7 @@ impl<'a> Widget for BottomRegion<'a> {
             theme: self.theme,
             bar_style,
         }
-        .render(chunks[0], buf);
+        .render(chunks[0], buf, state);
         StatusBar {
             state: self.status,
             theme: self.theme,
@@ -1338,6 +1357,41 @@ mod tests {
 
     // ── BottomRegion rendering ────────────────────────────────────
 
+    #[test]
+    fn a_long_command_line_scrolls_to_keep_the_cursor_in_view() {
+        let t = theme();
+        let text = format!("s/start{}/tail", "x".repeat(40));
+        let end = text.chars().count();
+        let line = |cursor: usize, scroll: &mut usize| -> String {
+            command_line_spans(':', &text, cursor, scroll, 20, true, t, t.hint_bar)
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
+        let mut scroll = 0;
+        let at_end = line(end, &mut scroll);
+        assert_eq!(
+            Line::from(at_end.as_str()).width(),
+            20,
+            "exactly the row width"
+        );
+        assert!(at_end.starts_with(" :"), "the prefix stays: {at_end:?}");
+        assert!(
+            at_end.ends_with("/tail "),
+            "the cursor end is in view: {at_end:?}"
+        );
+
+        // A step left stays inside the window, so the text does not move.
+        let first = scroll;
+        let _ = line(end - 3, &mut scroll);
+        assert_eq!(
+            scroll, first,
+            "the window moves only when the cursor forces it"
+        );
+        let at_start = line(0, &mut scroll);
+        assert!(at_start.starts_with(" :s/start"), "{at_start:?}");
+    }
+
     fn render_region(width: u16, hint: HintContent) -> String {
         let t = theme();
         let height = BottomRegion::height();
@@ -1363,7 +1417,7 @@ mod tests {
                     hint,
                     theme: t,
                 };
-                frame.render_widget(region, frame.area());
+                frame.render_stateful_widget(region, frame.area(), &mut HintLineState::default());
             })
             .unwrap();
         let buf = terminal.backend().buffer().clone();

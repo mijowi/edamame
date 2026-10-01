@@ -141,6 +141,9 @@ pub struct SearchableList<T> {
     focus_policy: FocusPolicy,
 
     query: String,
+    /// First visible query char, kept between frames (see
+    /// [`crate::ui::cursor::scrolled_field_spans`]).
+    query_scroll: usize,
     /// Index into `visible` — always points at a [`VisibleRow::Item`] when one
     /// exists.
     focused: usize,
@@ -168,6 +171,7 @@ impl<T> SearchableList<T> {
             section_titles: None,
             focus_policy: FocusPolicy::ResetToTop,
             query: String::new(),
+            query_scroll: 0,
             focused: 0,
             visible: Vec::new(),
             matched_for_query: None,
@@ -488,6 +492,7 @@ impl<T> SearchableList<T> {
             buf,
             theme,
             &self.query,
+            &mut self.query_scroll,
             chrome.cursor_visible && chrome.field_focused,
             chrome.placeholder,
         );
@@ -562,28 +567,42 @@ impl<T> SearchableList<T> {
 }
 
 /// Paint the `› query` input row, with a muted `placeholder` when the query is empty.  The block
-/// cursor is drawn when `cursor_on` and is constant-width across blink phases.
+/// cursor sits at the end of the query (it is append-only) and is drawn when `cursor_on`; a query
+/// wider than the row scrolls to keep it on screen.
 fn render_search_input_row(
     area: Rect,
     buf: &mut Buffer,
     theme: &Theme,
     query: &str,
+    query_scroll: &mut usize,
     cursor_on: bool,
     placeholder: &str,
 ) {
-    let mut spans = vec![Span::styled("› ", theme.modal_item)];
-    spans.extend(crate::ui::cursor::text_field_spans(
-        query,
-        query.chars().count(),
-        cursor_on,
-        theme.modal_item,
-        theme.cursor,
-    ));
+    const PROMPT: &str = "› ";
+    let mut spans = vec![Span::styled(PROMPT, theme.modal_item)];
     if query.is_empty() && !placeholder.is_empty() {
+        // Nothing to scroll: the cursor cell, then the placeholder after it.
+        spans.extend(crate::ui::cursor::text_field_spans(
+            "",
+            0,
+            cursor_on,
+            theme.modal_item,
+            theme.cursor,
+        ));
         let muted = Style::default()
             .fg(theme.palette.text_muted)
             .bg(theme.palette.surface_elevated);
         spans.push(Span::styled(placeholder.to_owned(), muted));
+    } else {
+        spans.extend(crate::ui::cursor::scrolled_field_spans(
+            query,
+            query.chars().count(),
+            query_scroll,
+            (area.width as usize).saturating_sub(PROMPT.chars().count()),
+            cursor_on,
+            theme.modal_item,
+            theme.cursor,
+        ));
     }
     Paragraph::new(Line::from(spans))
         .style(theme.modal_bg)
@@ -832,6 +851,25 @@ mod tests {
         assert_eq!(l.handle_key(&key(KeyCode::Up)), ListEvent::FocusChanged(0));
         // Up at the top can't move: no spurious preview.
         assert_eq!(l.handle_key(&key(KeyCode::Up)), ListEvent::Continue);
+    }
+
+    #[test]
+    fn a_long_query_scrolls_to_keep_its_end_in_view() {
+        let mut l = list();
+        let query = format!("start{}tail", "x".repeat(40));
+        for c in query.chars() {
+            l.handle_key(&key(KeyCode::Char(c)));
+        }
+        let (flat, _) = render(&mut l, 60, 20);
+        assert!(
+            flat.contains("› x"),
+            "the prompt stays, the start scrolls off: {flat}"
+        );
+        assert!(
+            flat.contains("xtail"),
+            "the end of the query is in view: {flat}"
+        );
+        assert!(!flat.contains("start"), "{flat}");
     }
 
     #[test]

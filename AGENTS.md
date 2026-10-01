@@ -246,8 +246,10 @@ src/
     command_palette.rs (+ /actions.rs)   # PaletteView / PaletteState (nucleo)
     controls.rs         # Control enum (Toggle / Pill), toggle_spans / pill_spans,
                         #   control_label_style / button_style / focused_style,
-                        #   cycle_index + apply_images_cascade
-    cursor.rs           # text_field_spans, split_at_char, CURSOR_BLOCK
+                        #   cycle_index + apply_images_cascade,
+                        #   render_text_field_row / text_field_width (labeled inputs)
+    cursor.rs           # text_field_spans, scrolled_field_spans (windowed, padded
+                        #   fields), insert_char_at / remove_char_at
     dim.rs              # ContentSize, FrameOpts, centered_rect_for_content,
                         #   draw_frame, ModalKind, MAX_PAD_H
     diff_view.rs        # DiffView + DiffViewState (stacked review)
