@@ -336,7 +336,7 @@ These decisions are easy to break if you don't know they exist. Each subsystem's
 - [Keyboard and mouse input](docs/dev/input.md) — two-layer mouse dispatch, click-to-offset, table drags, and the distinct scroll bounds
 - [Unified UI controls](docs/dev/ui-controls.md) — the one control family — toggles, pills, buttons, text inputs — and shared focus language
 - [Modals, overlays, and the keybinds editor](docs/dev/modals.md) — the modal/overlay system, footer wrapping, scrolling, and the draft-keymap editor
-- [Update check](docs/dev/update-check.md) — the GitHub release check: one fetch, one cache, four states, three entry points
+- [Update check](docs/dev/update-check.md) — the GitHub release check: one fetch, one cache, five states, three entry points
 - [Post-upgrade notice](docs/dev/post-upgrade.md) — the one-time notice driven from the bundled CHANGELOG, distinct from the update check
 - [Machine state (`state.toml`)](docs/dev/machine-state.md) — the machine-written bookkeeping file, its data-dir home, and the one-time migration out of `config.toml`
 - [Images, diagrams, and export](docs/dev/media-export.md) — the image decode/encode workers, protocol quirks, Mermaid, and HTML/custom export
@@ -345,7 +345,7 @@ Longer-standing contributor docs live alongside them:
 
 - [Performance](docs/dev/performance.md) — the frame budget, per-stage costs, and remaining ceilings
 - [Security invariants](docs/dev/security-invariants.md) — the checklist for content-handling paths
-- [Theming](docs/dev/theming.md) — authoring themes and the focus-vs-selection styling convention
+- [Theming](docs/dev/theming.md) — the visual language: two-tier palette model, cursor color, focus vs. selection, control states
 - [Why](docs/dev/why.md) — design rationale
 - [Windows](docs/dev/windows.md) — the best-effort stance: what CI verifies, what nobody has run, and the path-literal rules for tests
 

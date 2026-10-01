@@ -1,13 +1,14 @@
-# edamame
+# Why edamame
+
+> Part of the edamame contributor deep-dives. Index and project-wide conventions: [`AGENTS.md`](../../AGENTS.md). Sibling docs live in [`docs/dev/`](.).
 
 ## Why make this
+
 Markdown is an excellent document format. It's great for creating documents with a low or medium amount of complexity, which is the vast majority. The constraints of the language offer just enough features to cover most use cases while keeping things simple and easy to reason about.
 
 Recently, Markdown has been thrust into the limelight as the chosen medium for working with large language models and AI agents (see e.g. Agent Skills). This makes viewing and editing Markdown files both commonplace and essential.
 
-Lots of dedicated Markdown editors and viewers already exist (and there is always the humble text editor), but I feel most of them don't do the job very well. Browser and Electron (aka browser) apps, while great, can be slow and janky. Native apps are few. Many apps have extra features that are great but beside the point and distracting if you just want to edit Markdown. Other apps lack good support for some Markdown features that make the format much more versatile, such as tables. Many apps are good at viewing or editing but not both.
-
-Many of these tools are great, but so far none I've tried has given me speedy, jank-less, full-featured, clean Markdown editing and viewing.
+Lots of dedicated Markdown editors and viewers already exist (and there is always the humble text editor), but I feel most of them don't do the job very well. Browser and Electron (aka browser) apps, while great, can be slow and janky. Native apps are few. Many apps have extra features that are great but beside the point and distracting if you just want to edit Markdown. Other apps lack good support for some Markdown features that make the format much more versatile, such as tables. Many apps are good at viewing or editing but not both. None I've tried has given me speedy, jank-less, full-featured, clean Markdown editing and viewing.
 
 ## Why a standalone app
 
@@ -22,6 +23,6 @@ Table editing makes this even clearer. In this editor, a table is always shown a
 VSCode is ruled out by the stated performance goals. A VSCode custom editor extension runs in a webview, which is Electron inside Electron — exactly the "slow and janky" category the project aims to escape.
 
 ## Why choose TUI
-Terminal apps are more portable, faster, and easier to develop compared to GUI apps. Multi-platform GUI libraries aren't as performant as native libraries, and going native introduces complexity. Also, Markdown is inherently text-based, so I think it makes sense to use a TUI. 
+Terminal apps are more portable, faster, and easier to develop compared to GUI apps. Multi-platform GUI libraries aren't as performant as native libraries, and going native introduces complexity. Also, Markdown is inherently text-based, so I think it makes sense to use a TUI.
 
 A standalone TUI app has the smallest possible dependency footprint (just a terminal), the highest performance ceiling (direct ratatui rendering, no IPC), full control over the editing model, and works anywhere: SSH sessions, minimal Linux environments, macOS, WSL — no editor installation required.

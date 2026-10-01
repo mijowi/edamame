@@ -1,15 +1,15 @@
 # Windows: support stance and status
 
-Windows is a **best-effort** platform, and will be until a Windows contributor shows up. This file is the single source of truth for what that means, what is verified, what is not, and how the verified half is enforced. The user-facing statement is the README's *Platforms* section and the *Windows and WSL* section of `docs/terminal-compatibility.md`; keep those consistent with this file when the stance changes.
+Windows is a **best-effort** platform until a Windows contributor shows up. This file is the source of truth for what is verified, what is not, and how. The user-facing statements are the README's *Platforms* section and [Windows and WSL](../terminal-compatibility.md#windows-and-wsl); keep them consistent with this file when the stance changes.
 
 ## The stance
 
-- edamame **must compile, lint, and pass its test suite** on `x86_64-pc-windows-msvc`. CI enforces that on every push and pull request, and a red Windows run blocks a merge the same way a red macOS run does. "Best-effort" describes what we *verify*, not what we tolerate in CI: a compile or deterministic-test failure on Windows is cheap to fix or `cfg`-gate. If a Linux-only contributor is stalled by a Windows-only failure, the escape hatch is a `#[cfg(not(windows))]` on the test with a comment saying why — never `continue-on-error`, which reports a red check on every PR even though the workflow passes.
-- **Nobody runs the program on Windows.** Terminal behavior — ConPTY setup and restore, Windows Terminal vs. conhost, image protocols, the OS clipboard, `start`-based link opening, the `$EDITOR`-less external-editor path, `git difftool` walks — is unverified, and the user docs say so. Bug reports from Windows users are wanted and are triaged on the same footing as any other; nothing is dismissed for being Windows.
+- edamame **must compile, lint, and pass its test suite** on `x86_64-pc-windows-msvc`. CI enforces that on every push and pull request, and a red Windows run blocks a merge like any other. "Best-effort" describes what we *verify*, not what we tolerate in CI. If a Linux-only contributor is stalled by a Windows-only failure, the escape hatch is a `#[cfg(not(windows))]` on the test with a comment saying why — never `continue-on-error`, which reports a red check on every PR even though the workflow passes.
+- **Nobody runs the program on Windows.** Terminal behavior — ConPTY setup and restore, Windows Terminal vs. conhost, image protocols, the OS clipboard, `start`-based link opening, the `$EDITOR`-less external-editor path, `git difftool` walks — is unverified, and the user docs say so. Windows bug reports are triaged like any other.
 - **No Windows binary is shipped.** `dist-workspace.toml` has no Windows target; users build from source. Shipping one is a separate decision from supporting the platform, revisited when someone can actually run what comes out.
-- **WSL is Linux.** It runs the Linux build and is covered by the Linux job. Its own limitations — no inotify on `/mnt/c`, no `xdg-open` by default, clipboard only with WSLg — come from WSL itself and are documented for users in `terminal-compatibility.md`; they are not tracked as edamame bugs.
+- **WSL is Linux.** It runs the Linux build and is covered by the Linux job. Its own limitations (documented for users in [terminal-compatibility.md](../terminal-compatibility.md#windows-and-wsl)) come from WSL itself and are not tracked as edamame bugs.
 
-Interactive testing without a Windows machine — a local KVM VM with a Microsoft eval image, or an Actions runner with an RDP tunnel — was considered and deliberately deferred. It is the route to promoting Windows to a supported platform if that ever becomes the goal, and this machine class can do it (KVM, enough RAM and disk); it is simply not worth the recurring cost for a platform nobody on the project uses.
+Interactive testing without a Windows machine — a local KVM VM with a Microsoft eval image, or an Actions runner with an RDP tunnel — was deliberately deferred: it is the route to promoting Windows to supported, but not worth the recurring cost for a platform nobody on the project uses.
 
 ## What is verified, and how
 
@@ -21,7 +21,7 @@ Interactive testing without a Windows machine — a local KVM VM with a Microsof
 2. `cargo test --no-fail-fast --no-default-features`. Same feature choice as the Unix jobs and for the same reason: the OS clipboard is process-global, and tests would race on it.
 3. The two `--ignored` watcher invocations, exercising `notify`'s `ReadDirectoryChangesW` backend — the only coverage that backend has. If it proves flaky under the runner's filesystem, gate *that step*, not the job.
 
-Warm-cache wall clock is about 2 minutes against ubuntu's 40 seconds, which does not dominate the workflow. If it grows, the first thing to move is the watcher step, to a nightly `schedule:`.
+If the job's wall clock (about 2 minutes warm) grows to dominate the workflow, move the watcher step to a nightly `schedule:` first.
 
 ### Locally: the msvc cross-check from Linux
 
@@ -33,13 +33,11 @@ cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets --all-features -
 cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets --no-default-features -- -D warnings
 ```
 
-`cargo-xwin` rather than a plain `--target` because exactly one crate in the tree compiles C: `ring` (via `ureq` → rustls), which needs the MSVC CRT headers. `xwin` downloads the CRT and SDK into `~/.cache/cargo-xwin` on first use (a few hundred MB; it accepts Microsoft's SDK license on your behalf) and drives `clang-cl` / `llvm-lib` / `lld-link`, all of which Debian's `clang` package provides. `cargo xwin build` produces a real `.exe` too, but there is nothing to run it with, so the documented surface is check and clippy only. The `x86_64-pc-windows-gnu` target would build without the SDK but is not what anyone on Windows uses, and its `cfg` surface is nearly identical — a second target that finds nothing new.
-
-Run both invocations before touching a `cfg(unix)` gate or a test module whose imports serve only `cfg(unix)` tests. `AGENTS.md` carries the same commands.
+Why `cargo-xwin` and when to run both passes are in [`AGENTS.md`](../../AGENTS.md#cross-checking-the-windows-build). Two additions: `xwin`'s first-use download (a few hundred MB) accepts Microsoft's SDK license on your behalf, and the `x86_64-pc-windows-gnu` target is deliberately not used — it would build without the SDK, but nobody on Windows uses it and its `cfg` surface is nearly identical, so it finds nothing new.
 
 ### Checkout: `.gitattributes`
 
-`* text=auto eol=lf`. GitHub's Windows runner images set `core.autocrlf=true`, which without this line converts every LF file to CRLF at checkout — the `insta` snapshots, `tests/fixtures/*.md` (byte offsets feed the source map), and the `include_str!`d `config/config.toml` and `CHANGELOG.md`. This was observed, not guessed: the one test that reads a fixture from disk and depends on byte offsets failed on Windows and nowhere else. It also protects the CRLF-preservation feature's own tests, which construct their `\r\n` input in code and must not have the surrounding source rewritten.
+`* text=auto eol=lf`. GitHub's Windows runner images set `core.autocrlf=true`, which without this line converts every LF file to CRLF at checkout — the `insta` snapshots, `tests/fixtures/*.md` (byte offsets feed the source map), and the `include_str!`d `config/config.toml` and `CHANGELOG.md`. (Observed: the one test reading an offset-sensitive fixture from disk failed on Windows only.) It also protects the CRLF-preservation feature's own tests, which construct their `\r\n` input in code and must not have the surrounding source rewritten.
 
 ## What is not verified
 
@@ -54,13 +52,13 @@ Every layer `cargo test` reaches through `TestBackend` — parser, renderer, edi
 
 ## Rules for tests, learned the hard way
 
-The first full Windows run (2026-09-01, before the job was armed) failed seven lib tests — and, without `--no-fail-fast`, never built `tests/`, so the integration suite had never run on Windows at all. Every CI test step now passes `--no-fail-fast`. The seven had three causes, and each yields a rule:
+The first full Windows run failed seven lib tests and, without `--no-fail-fast`, never built `tests/` at all — hence `--no-fail-fast` on every CI test step. The seven had three causes, each yielding a rule:
 
-**A `/`-rooted literal is not an absolute path on Windows.** `Path::new("/tmp/notes.md").is_absolute()` is `false` — there is no drive letter — so code that calls `std::path::absolute` prepends the cwd and code that checks `is_absolute()` takes its fallback branch. Five tests asserted correct behavior against a wrong fixture (`dirty_conflict::local_copy_path_*`, `save_copy_modal::save_as_default_*`, `export::custom::absolutize_*`, `config::config_dir_prefers_absolute_xdg_config_home`). The rule: **build paths from `tempfile::tempdir()` wherever a path reaches the filesystem or `absolute()`, and assert against `dir.path().join(..)`**; use a `cfg!(windows)`-selected literal (`C:\name` / `/name`, see `abs_root()` in `config::config::tests`) only for a pure function that never touches the disk. Never fix one of these with a `#[cfg(unix)]` gate — the point is that the behavior holds on Windows.
+**A `/`-rooted literal is not an absolute path on Windows.** `Path::new("/tmp/notes.md").is_absolute()` is `false` — there is no drive letter — so code that calls `std::path::absolute` prepends the cwd and code that checks `is_absolute()` takes its fallback branch. Tests asserted correct behavior against a wrong fixture (`dirty_conflict::local_copy_path_*`, `save_copy_modal::save_as_default_*`, `export::custom::absolutize_*`, `config::config_dir_prefers_absolute_xdg_config_home`). The rule: **build paths from `tempfile::tempdir()` wherever a path reaches the filesystem or `absolute()`, and assert against `dir.path().join(..)`**; use a `cfg!(windows)`-selected literal (`C:\name` / `/name`, see `abs_root()` in `config::config::tests`) only for a pure function that never touches the disk. Never fix one of these with a `#[cfg(unix)]` gate — the point is that the behavior holds on Windows.
 
 **A test of a Unix feature is Unix-only, and says so.** `difftool::read_side_reads_dev_null_as_an_empty_side` asserts on the OS's null device. It is `#[cfg(unix)]` with a comment, and an unconditional sibling (`read_side_reads_an_empty_file_as_an_empty_side`) covers the property everywhere. The rule: gate the *feature*, keep the *property* unconditional.
 
-**An import that only gated tests use is an error on the other platform.** `export::custom`'s test module imported `std::sync::mpsc` for its seven `cfg(unix)` tests; on Windows that was an unused import and a hard error under `-D warnings`. Gate the import alongside the tests, with a comment. The local cross-check above catches this before CI does.
+**An import that only gated tests use is an error on the other platform.** `export::custom`'s test module imported `std::sync::mpsc` for its seven `cfg(unix)` tests; on Windows that was an unused import and a hard error under `-D warnings`. Gate the import alongside the tests, with a comment. The local msvc cross-check catches this before CI does.
 
 ## Open items
 

@@ -3,7 +3,7 @@
 //!
 //! [`RenderCache`] keys each block's rendered lines by the block's AST *value*, not by its
 //! source bytes: everything that changes rendering without changing source text (table-width
-//! drag overrides, post-pass promotions, list splitting) mutates the AST, so such a block
+//! drag overrides, post-pass promotions) mutates the AST, so such a block
 //! simply misses the cache.
 //!
 //! `Block::ImageBlock` is never cached — its row count depends on the image decode cache,
