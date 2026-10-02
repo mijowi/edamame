@@ -56,20 +56,84 @@ Harness details that matter for reproducibility:
 
 ## Results
 
-*Pending a re-run with the current harness.* The previous results (2026-09-10) were measured with 100k-line documents, linear sampling and the since-removed two-pass benches, so they are not comparable with a run today and have been dropped. Record one machine per subsection, with its date, OS, rustc and criterion versions:
+### Apple M3 (macOS)
 
-- **Steady-state edit** — `full_pipeline_memoized`, every corpus × size. The number that decides whether typing stays inside [the budget](#the-budget).
-- **Cold open** — `full_pipeline`, every corpus × size. No keystroke waits on it, but it is what a whole-document paste costs, and the number to watch when adding renderer work.
-- **Stage breakdown at 20k** — `full`, `parse_merged`, `render_only`, the derived `other` = `full − (parse_merged + render_only)` (post-passes, virtual blank-line blocks, `SourceMap`, anchors; a small negative residual is noise), and the dominant stage.
-- **Memoization** — the 20k change from `full_pipeline` to `full_pipeline_memoized` per corpus.
-- **Resize** — `visual_cache_build` at each size.
+Measured 2026-10-02 on macOS 15.7.5 (24G624), `rustc 1.98.0 (88d9e12ae 2026-08-18)`, criterion 0.8.2. Each figure is the median of three full-suite runs' criterion means, in ms. A single run let a few slow samples inflate one case's mean by 22%, and the median of three absorbs that.
 
-What the last run showed, in shape rather than numbers — re-check it against the new figures:
+**Steady-state edit** (`full_pipeline_memoized`):
 
-- **Scaling is linear** in every corpus and stage; no stage is accidentally quadratic.
-- **`prose` and `lists` are parse-bound; `tables`, `code`, `nested` and `mixed` are render-bound.** `code` is render-bound by syntax highlighting — its parse is nearly free, since a fence is one AST node — and `nested` inherits the same profile at higher cost.
-- **`math` is the one `other`-bound corpus:** the per-formula `$$` scan, image-block promotion, and source-map / anchor derivation over many short blocks.
-- **Memoization pays off where a re-render costs far more than a hash-and-clone lookup** — `code` and `nested` above 90%, `tables` and `mixed` about half. The cheap mixes never enter the cache (the cache-worthy gate, [below](#the-two-optimizations-and-why-they-must-not-be-undone)), so their memoized cost tracks their cold cost; `nested` shows the gate walking *into* containers.
+| Corpus | 1k | 5k | 20k |
+|---|---|---|---|
+| `prose` | 0.859 | 4.27 | 20.4 |
+| `lists` | 0.715 | 3.64 | 16.2 |
+| `tables` | 0.974 | 5.33 | 24.8 |
+| `code` | 0.289 | 0.989 | 4.04 |
+| `math` | 0.448 | 2.25 | 9.67 |
+| `nested` | 0.441 | 2.20 | 10.6 |
+| `mixed` | 0.636 | 3.03 | 13.5 |
+
+Every corpus stays under 8 ms at 5k. At 20k, `prose`, `lists` and `tables` exceed the 16 ms budget, and `math`, `nested` and `mixed` are in the marginal band.
+
+**Cold open** (`full_pipeline`):
+
+| Corpus | 1k | 5k | 20k |
+|---|---|---|---|
+| `prose` | 0.809 | 4.27 | 20.0 |
+| `lists` | 0.686 | 3.63 | 15.9 |
+| `tables` | 2.92 | 15.8 | 66.6 |
+| `code` | 3.97 | 20.0 | 81.0 |
+| `math` | 0.451 | 2.24 | 9.82 |
+| `nested` | 6.36 | 32.9 | 136 |
+| `mixed` | 1.23 | 6.24 | 26.7 |
+
+`code` and `nested` exceed 16 ms from 5k, and `tables` is just under it there. At 20k, every corpus except `lists` and `math` takes longer than one frame.
+
+**Stage breakdown at 20k:**
+
+`other` = `full − (parse_merged + render_only)`: post-passes, virtual blank-line blocks, `SourceMap` and anchors. It is derived from three separately sampled figures, so a small negative residual (`code`'s) is measurement noise. `tables`' larger one comes from `render_only/tables/20000`, which measured 51.3, 61.8 and 57.9 ms across the three runs, while `full_pipeline/tables/20000` held at 66.6 ms. That one stage figure is unstable, so its share is approximate.
+
+| Corpus | full | `parse_merged` | `render_only` | other | Dominant |
+|---|---|---|---|---|---|
+| `prose` | 20.0 | 12.8 | 5.18 | 2.06 | parse (63.9%) |
+| `lists` | 15.9 | 9.22 | 4.47 | 2.22 | parse (58.0%) |
+| `tables` | 66.6 | 14.3 | 57.9 | −5.59 | render (86.9%) |
+| `code` | 81.0 | 0.424 | 80.8 | −0.229 | render (99.8%) |
+| `math` | 9.82 | 2.65 | 1.70 | 5.47 | other (55.7%) |
+| `nested` | 136 | 4.69 | 130 | 1.41 | render (95.5%) |
+| `mixed` | 26.7 | 7.16 | 17.0 | 2.54 | render (63.7%) |
+
+`mixed` across 1k / 5k / 20k: full 1.23 / 6.24 / 26.7, `parse_merged` 0.342 / 1.76 / 7.16, `render_only` 0.822 / 4.11 / 17.0, other 0.0659 / 0.373 / 2.54.
+
+Parse alone takes 12.8 ms for `prose` and 14.3 ms for `tables` at 20k, most of the 16 ms budget before any rendering. Memoization cannot remove that cost (see [Known ceilings](#known-ceilings)).
+
+**Memoization** (change from `full_pipeline` to `full_pipeline_memoized` at 20k):
+
+| Corpus | Change |
+|---|---|
+| `prose` | +1.78% |
+| `lists` | +1.76% |
+| `tables` | −62.8% |
+| `code` | −95.0% |
+| `math` | −1.55% |
+| `nested` | −92.2% |
+| `mixed` | −49.6% |
+
+Memoization brings `code` (81.0 → 4.04 ms), `nested` (136 → 10.6 ms) and `mixed` (26.7 → 13.5 ms) under the budget at 20k. `tables` (66.6 → 24.8 ms) still exceeds it there, because most of its remaining cost is the uncached parse.
+
+**Resize** (`visual_cache_build`, `mixed`):
+
+| 1k | 5k | 20k |
+|---|---|---|
+| 1.38 | 6.42 | 27.7 |
+
+A rebuild fits in one frame at 5k, but at 20k it takes 27.7 ms, nearly two frames. It runs once per quiesced resize, not once per keystroke (see [Known ceilings](#known-ceilings)).
+
+What these numbers show:
+
+- **Scaling is close to linear** in every corpus and measured stage: 20× the lines costs 20–25× the time, except memoized `code`, at 14.0× because fixed per-build overhead dominates at 1k. `mixed`'s derived `other` residual grows faster (39× from 1k to 20k), but at 1k it is 0.0659 ms, the small difference of three ~1 ms figures, so that ratio carries little signal.
+- **`prose` and `lists` are parse-bound; `tables`, `code`, `nested` and `mixed` are render-bound.** Syntax highlighting makes `code` render-bound. Its parse is nearly free (0.424 ms at 20k), since a fence is one AST node. `nested` has the same profile at higher cost.
+- **`math` is the one `other`-bound corpus** (55.7%): the per-formula `$$` scan, image-block promotion, and source-map / anchor derivation over many short blocks.
+- **Memoization pays off where a re-render costs far more than a hash-and-clone lookup.** At 20k it saves 95.0% for `code`, 92.2% for `nested`, 62.8% for `tables` and 49.6% for `mixed`. The cheap mixes never enter the cache (the cache-worthy gate, [below](#the-two-optimizations-and-why-they-must-not-be-undone)), so their memoized cost stays within ±1.8% of their cold cost. `nested` shows the gate walking *into* containers.
 
 ## The two optimizations, and why they must not be undone
 
@@ -84,9 +148,9 @@ Both are asserted: `merged_parse_matches_two_pass_parse` (`src/markdown/parser.r
 
 Facts about the current design, not tasks.
 
-- **The full-document parse floor.** The single parse is O(document) and cannot be memoized — and dominates prose and lists. Only incremental reparsing removes it, which must handle the non-local effects of fences, setext headings, lists and footnote definitions; a separate project.
+- **The full-document parse floor.** The single parse is O(document) and cannot be memoized (7.16 ms for `parse_merged/mixed/20000` on the Apple M3) — and dominates prose and lists. Only incremental reparsing removes it, which must handle the non-local effects of fences, setext headings, lists and footnote definitions; a separate project.
 - **Clone-on-hit.** A hit still clones the block's `Vec<Line>`; on cached (expensive) blocks that is a small share of the render. Removing it means sharing lines as `Arc<[Line]>`, which changes `ParsedDoc::lines`' type and ripples through every view — worth it only if very large table-/code-heavy documents matter.
-- **Resize.** The `visual_cache_build` rebuild exceeds a frame from ~20k lines, but fires only on a width change behind the 80 ms `RESIZE_QUIESCE` window (`app::frame_timer`) — one rebuild per quiesced drag. Leave it unless live-resize jank shows up.
+- **Resize.** The `visual_cache_build` rebuild exceeds a frame from roughly 12k lines (6.42 ms at 5k and 27.7 ms at 20k on the Apple M3), but fires only on a width change behind the 80 ms `RESIZE_QUIESCE` window (`app::frame_timer`) — one rebuild per quiesced drag. Leave it unless live-resize jank shows up.
 - **`parse_offsets::top_level_block_ranges` is off the edit path** — it survives only as the oracle in `merged_parse_matches_two_pass_parse` (the diff subsystem uses the sibling `block_ranges_by`).
 
 ## Checking a release for regressions
