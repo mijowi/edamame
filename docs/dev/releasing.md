@@ -14,6 +14,7 @@ On `main`:
 
 ```bash
 VERSION=0.1.0    # the new version, used by the commands below
+PREV=0.0.9       # the previous release: the benchmark baseline to compare against
 ```
 
 1. Write the `## [$VERSION]` section in `CHANGELOG.md` — it ships as the GitHub release body, the update-check modal's notes ([update-check.md](update-check.md)), and the post-upgrade notice ([post-upgrade.md](post-upgrade.md)).
@@ -26,22 +27,32 @@ VERSION=0.1.0    # the new version, used by the commands below
    cargo nextest run               # or: cargo test --no-fail-fast
    ```
 
-4. `dist plan` — confirm it announces `v$VERSION` and the five targets.
-5. Commit all three files together:
+4. Check for performance regressions against the previous release: one bench run, saved as this release's baseline for the next one, then compared against `v$PREV` without re-running. Use the same machine as last time, plugged in; full procedure and caveats in [performance.md](performance.md#checking-a-release-for-regressions):
+
+   ```bash
+   F='^(full_pipeline|visual_cache)'
+   cargo bench --bench pipeline -- --noplot "$F" --save-baseline "v$VERSION"
+   cargo bench --bench pipeline -- --noplot "$F" --load-baseline "v$VERSION" --baseline "v$PREV"
+   ```
+
+   Treat a "regressed" line as something to confirm, not a release blocker by itself. With no `v$PREV` baseline on this machine, run only the first command; this release's baseline starts the chain.
+
+5. `dist plan` — confirm it announces `v$VERSION` and the five targets.
+6. Commit all three files together:
 
    ```bash
    git add CHANGELOG.md Cargo.toml Cargo.lock
    git commit -m "chore(release): v$VERSION"
    ```
 
-6. **Push `main` first, and wait for CI to go green.** The tag push is what triggers the release; pushing it ahead of the branch publishes from a commit that is not yet on any branch.
+7. **Push `main` first, and wait for CI to go green.** The tag push is what triggers the release; pushing it ahead of the branch publishes from a commit that is not yet on any branch.
 
    ```bash
    git push origin main
    gh run watch
    ```
 
-7. Tag and push the tag to trigger the release workflow (rerun with `gh run rerun <id>` if needed). It builds every target, creates the GitHub Release with the archives, checksums and `edamame-installer.sh`, and pushes the Homebrew formula to the tap.
+8. Tag and push the tag to trigger the release workflow (rerun with `gh run rerun <id>` if needed). It builds every target, creates the GitHub Release with the archives, checksums and `edamame-installer.sh`, and pushes the Homebrew formula to the tap.
 
    ```bash
    git tag -a "v$VERSION" -m "edamame v$VERSION"
@@ -49,14 +60,14 @@ VERSION=0.1.0    # the new version, used by the commands below
    gh run watch
    ```
 
-8. **Publish to crates.io by hand** — `publish-jobs` covers Homebrew only:
+9. **Publish to crates.io by hand** — `publish-jobs` covers Homebrew only:
 
    ```bash
    cargo publish --dry-run
    cargo publish --locked
    ```
 
-9. Verify: `gh release view v$VERSION`, `brew upgrade edamame`, `cargo info edamame`, and the docs.rs build.
+10. Verify: `gh release view v$VERSION`, `brew upgrade edamame`, `cargo info edamame`, and the docs.rs build.
 
 ### Prerequisites
 

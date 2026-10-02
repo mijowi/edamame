@@ -27,7 +27,7 @@ The frame throttle is 16 ms (`app::frame_timer::MIN_FRAME_INTERVAL`, ~60 fps). F
 
 ## The corpus
 
-`benches/pipeline.rs` generates deterministic documents in-process at **1k / 5k / 20k / 100k source lines** in seven mixes. Cost per block varies enormously across them; keep them stable so future measurements stay comparable.
+`benches/pipeline.rs` generates deterministic documents in-process at **1k / 5k / 20k source lines** in seven mixes. Cost per block varies enormously across them; keep them stable so future measurements stay comparable.
 
 | Corpus | Composition | Stresses |
 |---|---|---|
@@ -46,129 +46,30 @@ Harness details that matter for reproducibility:
 - **Grammars are warmed on the bench thread first** (`warm_grammars` → `highlight::warm_inline`). Highlighting is eventually-consistent in the live app ([syntax-highlighting.md](syntax-highlighting.md)), so without it the `code` and `mixed` numbers would mix the highlighted and plain paths.
 - **`full_pipeline_memoized` alternates between two sources differing in one character**, so every build is a warm cache with exactly one changed block — the steady-state edit cost. `full_pipeline` is the cold-open / whole-document-paste cost.
 - **`build_doc` runs with paragraph reflow on** (the shipped default); `render_only` sets the same flag so the derived `other` residual stays honest.
-- **`visual_cache_build` uses flat sampling** (`SamplingMode::Flat`, 5 s): one 100k-line rebuild is ~0.3 s, which criterion's default linear sampling misreports. Its width cycling forces a cold rebuild every call.
+- **Every group uses flat sampling** (`SamplingMode::Flat`). Criterion's default linear sampling runs 1 + 2 + … + 10 = 55 iterations at sample size 10 no matter how slow one is, so the slow cases overran their 2 s budget many times over and the suite took ~15 min on an Intel Core Ultra 7 258V laptop. Flat sampling needs only 10. It changes how samples are taken, not what is measured.
+- **The noise threshold is 5%** (criterion's default is 1%). Laptop run-to-run noise is several percent, so at 1% most cases come back "changed"; see [Checking a release for regressions](#checking-a-release-for-regressions).
+- **`visual_cache_build`'s width cycling forces a cold rebuild every call.**
+- **The pre-merge two-pass benches are gone.** `parse_offsets` and `parse_ast` timed the two separate passes that `parse_merged` replaced. They proved the merge, which a test now pins (below), and one of them timed a function the app no longer runs.
+- **There is no 100k size.** Scaling is linear at every size measured, so it added no signal, and its cases were about half the suite's runtime.
 
 `cargo bench --bench pipeline` to reproduce.
 
 ## Results
 
-Two reference machines, identical bench configuration (release profile, criterion sample size 10), criterion means from one run. The **shapes** — which stage dominates, how each mix scales — hold across both; the absolute numbers do not (the Linux box is ~2–2.5× slower), so compare only within one machine. The analysis is written once, against the M3 numbers.
+*Pending a re-run with the current harness.* The previous results (2026-09-10) were measured with 100k-line documents, linear sampling and the since-removed two-pass benches, so they are not comparable with a run today and have been dropped. Record one machine per subsection, with its date, OS, rustc and criterion versions:
 
-### Apple M3 (macOS)
+- **Steady-state edit** — `full_pipeline_memoized`, every corpus × size. The number that decides whether typing stays inside [the budget](#the-budget).
+- **Cold open** — `full_pipeline`, every corpus × size. No keystroke waits on it, but it is what a whole-document paste costs, and the number to watch when adding renderer work.
+- **Stage breakdown at 20k** — `full`, `parse_merged`, `render_only`, the derived `other` = `full − (parse_merged + render_only)` (post-passes, virtual blank-line blocks, `SourceMap`, anchors; a small negative residual is noise), and the dominant stage.
+- **Memoization** — the 20k change from `full_pipeline` to `full_pipeline_memoized` per corpus.
+- **Resize** — `visual_cache_build` at each size.
 
-Run 2026-09-10 on an Apple M3 (8 cores, macOS 15.7.5), rustc 1.98.0, criterion 0.8.
+What the last run showed, in shape rather than numbers — re-check it against the new figures:
 
-#### Steady-state edit — `full_pipeline_memoized`
-
-| Corpus | 1k lines | 5k | 20k | 100k |
-|---|---|---|---|---|
-| `prose` | 0.89 ms | 4.34 ms | 20.4 ms | 107.3 ms |
-| `lists` | 0.75 ms | 3.65 ms | 16.3 ms | 86.8 ms |
-| `tables` | 1.01 ms | 5.43 ms | 24.8 ms | 134.3 ms |
-| `code` | 0.29 ms | 1.04 ms | 4.33 ms | 29.4 ms |
-| `math` | 0.48 ms | 2.21 ms | 9.70 ms | 51.9 ms |
-| `nested` | 0.49 ms | 2.27 ms | 11.0 ms | 70.9 ms |
-| `mixed` | 0.66 ms | 3.13 ms | 14.0 ms | 74.8 ms |
-
-Against the budget: **every mix is inside one frame at 5k lines**, and `mixed` still is at 20k (14.0 ms — marginal, past the 8 ms working target). At 20k `prose`, `lists` and `tables` exceed a frame; at 100k every mix does. Scaling is linear throughout — no stage is accidentally quadratic.
-
-#### Cold open — `full_pipeline`
-
-| Corpus | 1k lines | 5k | 20k | 100k |
-|---|---|---|---|---|
-| `prose` | 0.81 ms | 4.31 ms | 20.4 ms | 107.7 ms |
-| `lists` | 0.69 ms | 3.58 ms | 16.0 ms | 83.7 ms |
-| `tables` | 3.39 ms | 17.8 ms | 74.6 ms | 382.4 ms |
-| `code` | 4.01 ms | 20.1 ms | 81.3 ms | 413.1 ms |
-| `math` | 0.49 ms | 2.26 ms | 9.56 ms | 52.3 ms |
-| `nested` | 6.40 ms | 33.4 ms | 135.0 ms | 691.2 ms |
-| `mixed` | 1.38 ms | 6.69 ms | 28.9 ms | 150.6 ms |
-
-No keystroke waits on a cold open, but this is what a whole-document paste costs and the number to watch when adding renderer work.
-
-#### Stage breakdown at 20k lines
-
-`other` = `full − (parse_merged + render_only)`: post-passes, virtual blank-line blocks, `SourceMap`, anchors; small residuals (`code`'s is slightly negative) are noise. `parse_offsets` / `parse_ast` are the pre-merge two-pass baselines — neither runs in the pipeline.
-
-| Corpus | full | `parse_merged` | `render_only` | other | dominant | (`parse_offsets` / `parse_ast`) |
-|---|---|---|---|---|---|---|
-| `prose` | 20.4 ms | 12.8 ms | 5.16 ms | 2.45 ms | **parse 63%** | 4.39 / 12.7 ms |
-| `lists` | 16.0 ms | 9.20 ms | 4.60 ms | 2.19 ms | **parse 58%** | 2.86 / 9.01 ms |
-| `tables` | 74.6 ms | 14.6 ms | 57.4 ms | 2.70 ms | **render 77%** | 4.26 / 14.0 ms |
-| `code` | 81.3 ms | 0.45 ms | 81.5 ms | ~0 | **render ~100%** | 0.31 / 0.43 ms |
-| `math` | 9.56 ms | 2.73 ms | 1.76 ms | 5.06 ms | **other 53%** | 1.51 / 2.63 ms |
-| `nested` | 135.0 ms | 4.62 ms | 127.9 ms | 2.52 ms | **render 95%** | 1.55 / 4.52 ms |
-| `mixed` | 28.9 ms | 7.49 ms | 19.7 ms | 1.78 ms | **render 68%** | 2.30 / 7.00 ms |
-
-`mixed` stage scaling across 1k / 5k / 20k / 100k is linear: `parse_merged` 0.35 / 1.78 / 7.49 / 40.4 ms, `render_only` 0.94 / 4.63 / 19.7 / 100.9 ms.
-
-- **`code` is render-bound by syntax highlighting.** Its parse is nearly free (a fence is one AST node), and it is the corpus the render cache helps most, since an unchanged code block is never re-highlighted. `nested` inherits the same profile at higher cost.
-- **`math` is the one `other`-bound corpus:** the per-formula `$$` scan, image-block promotion, and source-map / anchor derivation over many short blocks. It stays comfortably inside budget.
-
-#### Where memoization helps, and where it doesn't
-
-Change in the 20k figure, `full_pipeline` → `full_pipeline_memoized`:
-
-| Corpus | Change |
-|---|---|
-| `code` | −95% |
-| `nested` | −92% |
-| `tables` | −67% |
-| `mixed` | −52% |
-| `prose` | ~0% |
-| `lists` | +2% |
-| `math` | +2% |
-
-The cache pays off where a re-render costs far more than a hash-and-clone lookup. The cheap mixes never enter it (the cache-worthy gate, [below](#the-two-optimizations-and-why-they-must-not-be-undone)), so their memoized cost tracks their cold cost; `nested` shows the gate walking *into* containers.
-
-#### Resize — `visual_cache_build`
-
-Cold prefix-sum rebuild on `mixed`: 1.37 / 6.68 / 24.7 / 114.5 ms at 1k / 5k / 20k / 100k (see the resize ceiling below).
-
-### Intel Core Ultra 7 258V (Linux)
-
-Run 2026-09-10 on an Intel Core Ultra 7 258V (8 cores, Linux 6.16 / Debian 13), rustc 1.98.0, criterion 0.8. On this box steady-state edits cross the 16 ms frame between 5k and 20k lines — a slower-hardware statement, not a regression.
-
-#### Steady-state edit — `full_pipeline_memoized`
-
-| Corpus | 1k | 5k | 20k | 100k |
-|---|---|---|---|---|
-| `prose` | 1.97 ms | 10.7 ms | 47.3 ms | 267.2 ms |
-| `lists` | 1.54 ms | 8.35 ms | 40.3 ms | 215.0 ms |
-| `tables` | 2.83 ms | 15.3 ms | 75.5 ms | 399.4 ms |
-| `code` | 1.00 ms | 4.06 ms | 22.4 ms | 172.1 ms |
-| `math` | 1.07 ms | 5.80 ms | 25.3 ms | 138.8 ms |
-| `nested` | 1.34 ms | 7.79 ms | 49.3 ms | 289.4 ms |
-| `mixed` | 1.56 ms | 7.86 ms | 39.8 ms | 215.9 ms |
-
-#### Cold open — `full_pipeline`
-
-| Corpus | 1k | 5k | 20k | 100k |
-|---|---|---|---|---|
-| `prose` | 1.67 ms | 9.61 ms | 45.2 ms | 283.3 ms |
-| `lists` | 1.47 ms | 7.89 ms | 39.8 ms | 203.7 ms |
-| `tables` | 6.32 ms | 35.8 ms | 153.6 ms | 762.7 ms |
-| `code` | 8.52 ms | 41.4 ms | 167.2 ms | 845.4 ms |
-| `math` | 1.06 ms | 5.67 ms | 24.6 ms | 134.5 ms |
-| `nested` | 12.9 ms | 67.7 ms | 289.9 ms | 1443 ms |
-| `mixed` | 2.94 ms | 15.0 ms | 67.7 ms | 344.9 ms |
-
-#### Stage breakdown at 20k lines
-
-| Corpus | full | `parse_merged` | `render_only` | other | dominant | (`parse_offsets` / `parse_ast`) |
-|---|---|---|---|---|---|---|
-| `prose` | 45.2 ms | 31.3 ms | 12.4 ms | 1.5 ms | **parse 69%** | 10.2 / 29.1 ms |
-| `lists` | 39.8 ms | 23.7 ms | 11.9 ms | 4.2 ms | **parse 60%** | 7.6 / 21.6 ms |
-| `tables` | 153.6 ms | 40.0 ms | 108.9 ms | 4.7 ms | **render 71%** | 11.4 / 36.9 ms |
-| `code` | 167.2 ms | 1.2 ms | 162.4 ms | ~3.5 ms | **render ~97%** | 0.7 / 1.1 ms |
-| `math` | 24.6 ms | 7.4 ms | 3.6 ms | 13.6 ms | **other 55%** | 3.9 / 7.0 ms |
-| `mixed` | 67.7 ms | 19.1 ms | 43.4 ms | 5.3 ms | **render 64%** | 6.4 / 17.6 ms |
-
-`mixed` stage scaling across 1k / 5k / 20k / 100k: `parse_merged` 0.78 / 4.39 / 19.1 / 109.8 ms, `render_only` 1.90 / 10.1 / 43.4 / 233.2 ms.
-
-#### Resize — `visual_cache_build`
-
-Cold prefix-sum rebuild on `mixed`: 3.02 / 14.5 / 61.7 / 296.1 ms at 1k / 5k / 20k / 100k.
+- **Scaling is linear** in every corpus and stage; no stage is accidentally quadratic.
+- **`prose` and `lists` are parse-bound; `tables`, `code`, `nested` and `mixed` are render-bound.** `code` is render-bound by syntax highlighting — its parse is nearly free, since a fence is one AST node — and `nested` inherits the same profile at higher cost.
+- **`math` is the one `other`-bound corpus:** the per-formula `$$` scan, image-block promotion, and source-map / anchor derivation over many short blocks.
+- **Memoization pays off where a re-render costs far more than a hash-and-clone lookup** — `code` and `nested` above 90%, `tables` and `mixed` about half. The cheap mixes never enter the cache (the cache-worthy gate, [below](#the-two-optimizations-and-why-they-must-not-be-undone)), so their memoized cost tracks their cold cost; `nested` shows the gate walking *into* containers.
 
 ## The two optimizations, and why they must not be undone
 
@@ -183,10 +84,26 @@ Both are asserted: `merged_parse_matches_two_pass_parse` (`src/markdown/parser.r
 
 Facts about the current design, not tasks.
 
-- **The full-document parse floor.** The single parse is O(document) and cannot be memoized — 7.5 ms at 20k `mixed`, 40 ms at 100k (M3) — and dominates prose and lists. Only incremental reparsing removes it, which must handle the non-local effects of fences, setext headings, lists and footnote definitions; a separate project.
+- **The full-document parse floor.** The single parse is O(document) and cannot be memoized — and dominates prose and lists. Only incremental reparsing removes it, which must handle the non-local effects of fences, setext headings, lists and footnote definitions; a separate project.
 - **Clone-on-hit.** A hit still clones the block's `Vec<Line>`; on cached (expensive) blocks that is a small share of the render. Removing it means sharing lines as `Arc<[Line]>`, which changes `ParsedDoc::lines`' type and ripples through every view — worth it only if very large table-/code-heavy documents matter.
 - **Resize.** The `visual_cache_build` rebuild exceeds a frame from ~20k lines, but fires only on a width change behind the 80 ms `RESIZE_QUIESCE` window (`app::frame_timer`) — one rebuild per quiesced drag. Leave it unless live-resize jank shows up.
-- **`parse_offsets::top_level_block_ranges` is off the edit path** — it survives only as the bench baseline and the oracle in `merged_parse_matches_two_pass_parse` (the diff subsystem uses the sibling `block_ranges_by`).
+- **`parse_offsets::top_level_block_ranges` is off the edit path** — it survives only as the oracle in `merged_parse_matches_two_pass_parse` (the diff subsystem uses the sibling `block_ranges_by`).
+
+## Checking a release for regressions
+
+Run the end-to-end groups before every release (the step lives in [releasing.md](releasing.md)) and compare them against the previous release's saved criterion baseline. One sampling run is enough: `--save-baseline` stores it under the new version's name, and `--load-baseline` compares that stored data against the old one without re-running:
+
+```bash
+F='^(full_pipeline|visual_cache)'
+cargo bench --bench pipeline -- --noplot "$F" --save-baseline v0.1.5
+cargo bench --bench pipeline -- --noplot "$F" --load-baseline v0.1.5 --baseline v0.1.4
+```
+
+- **The baseline lives in `target/criterion/`** on the machine that produced it, so one machine has to carry the check from release to release, and `cargo clean` deletes it. With no baseline from the previous release (the first check, a new machine, a `cargo clean`), the simplest course is to skip that release's comparison and only save. When the comparison matters, rebuild the baseline from the previous tag with `git worktree add ../edamame-prev v0.1.4`, then `cargo bench … --save-baseline v0.1.4` from inside it. Point `CARGO_TARGET_DIR` at the main checkout's `target/` so the baseline lands where the current tree's run will look, and expect a full rebuild, since the old tag's dependencies differ.
+- **Re-save the previous release's baseline after a toolchain or OS upgrade**, and keep the machine in the same power state both times (plugged in, same power profile). Either one shifts every number and reads as a regression or an improvement across the board.
+- **A "regressed" line is a lead, not a verdict.** On a laptop, unchanged code can move ±5–8% between runs. Confirm a suspect by running the two builds' bench binaries (`target/release/deps/pipeline-*`) back to back, a few rounds each, filtered to the suspect case. Drift affects both builds alike that way.
+- **`--noplot` skips criterion's HTML charts**, about a fifth of the run time. Drop it when you want the charts to look into a regression.
+- **The stage groups** (`parse_merged`, `render_only`) **are diagnostics.** Run them when an end-to-end case regresses, to find the stage that moved.
 
 ## When to re-measure
 

@@ -4,26 +4,31 @@
 //!   - `full_pipeline`      — `ParsedDoc::build_with_overrides` end to end, no cache
 //!   - `full_pipeline_memoized` — same, with a warm `RenderCache` and one
 //!     block changed per build (the steady-state edit cost)
-//!   - `parse_offsets`      — standalone byte-range pass (pre-merge baseline)
-//!   - `parse_ast`          — standalone AST pass (pre-merge baseline)
-//!   - `parse_merged`       — `parse_raw_with_ranges`, the single pass
-//!     the pipeline actually runs now
+//!   - `parse_merged`       — `parse_raw_with_ranges`, the single parse pass
 //!   - `render_only`        — `Renderer::render_with_counts` over a pre-parsed AST
 //!   - `visual_cache_build` — cold `VisualRowCache` rebuild (the resize cost)
 //!
 //! Source-map + anchors + post-pass cost is derived afterwards as
 //! `full_pipeline − (parse_merged + render_only)`.
+//!
+//! The pre-release regression check runs only the end-to-end groups
+//! (`full_pipeline`, `full_pipeline_memoized`, `visual_cache_build`); the stage
+//! groups are for diagnosing a regression once one shows.  See
+//! docs/dev/releasing.md.
 
 use std::time::Duration;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, SamplingMode};
+use criterion::measurement::WallTime;
+use criterion::{
+    criterion_group, criterion_main, BenchmarkGroup, BenchmarkId, Criterion, SamplingMode,
+};
 use std::hint::black_box;
 
 use edamame::config::Theme;
 use edamame::document::ParsedDoc;
 use edamame::markdown::highlight;
 use edamame::markdown::parser::parse_raw;
-use edamame::markdown::{parse_offsets, parse_raw_with_ranges, RenderCache, Renderer};
+use edamame::markdown::{parse_raw_with_ranges, RenderCache, Renderer};
 
 // ── Corpus generators ──────────────────────────────────────────────────────
 //
@@ -34,11 +39,25 @@ use edamame::markdown::{parse_offsets, parse_raw_with_ranges, RenderCache, Rende
 // but they measure only the synchronous parse + promotion work — the RaTeX
 // raster is produced later by the decode worker, off this path.
 
-fn fill(target_lines: usize, mut unit: impl FnMut(usize, &mut String)) -> String {
-    let mut s = String::new();
+fn fill(target_lines: usize, unit: impl FnMut(usize, &mut String)) -> String {
+    fill_from(String::new(), target_lines, unit)
+}
+
+/// [`fill`] after a fixed prefix.  Counts only the newlines each unit appends:
+/// recounting the whole document per unit made generation quadratic, which cost
+/// seconds per 20k corpus and a minute per 100k one.
+fn fill_from(
+    mut s: String,
+    target_lines: usize,
+    mut unit: impl FnMut(usize, &mut String),
+) -> String {
+    let newlines = |t: &str| t.bytes().filter(|&b| b == b'\n').count();
+    let mut lines = newlines(&s);
     let mut i = 0;
-    while s.bytes().filter(|&b| b == b'\n').count() < target_lines {
+    while lines < target_lines {
+        let start = s.len();
         unit(i, &mut s);
+        lines += newlines(&s[start..]);
         i += 1;
     }
     s
@@ -127,9 +146,7 @@ fn nested(target: usize) -> String {
 }
 
 fn mixed(target: usize) -> String {
-    let mut s = String::from("# Document Title\n\n");
-    let mut i = 0;
-    while s.bytes().filter(|&b| b == b'\n').count() < target {
+    fill_from(String::from("# Document Title\n\n"), target, |i, s| {
         s.push_str(&format!("## Section {i}\n\n"));
         s.push_str(&prose(2));
         s.push_str(&lists(6));
@@ -138,9 +155,7 @@ fn mixed(target: usize) -> String {
         ));
         s.push_str(&tables(8));
         s.push_str(&code(8));
-        i += 1;
-    }
-    s
+    })
 }
 
 /// Compile the corpus grammars on this thread before measuring.
@@ -157,7 +172,9 @@ fn warm_grammars() {
 /// A named corpus generator: (mix name, source generator).
 type Corpus = (&'static str, fn(usize) -> String);
 
-const SIZES: &[usize] = &[1_000, 5_000, 20_000, 100_000];
+/// No 100k size: scaling is linear (performance.md), so it added no signal, and
+/// its cases took about half the suite's runtime.
+const SIZES: &[usize] = &[1_000, 5_000, 20_000];
 const MIXES: &[Corpus] = &[
     ("prose", prose),
     ("lists", lists),
@@ -219,10 +236,22 @@ fn altered_variant(source: &str) -> String {
 
 // ── Benchmarks ─────────────────────────────────────────────────────────────
 
+/// A benchmark group with flat sampling.  Criterion's default linear sampling
+/// runs 1 + 2 + … + `sample_size` iterations (55 at size 10) however slow one
+/// iteration is, so a 20k cold build ran for many times its 2 s budget.  Flat
+/// sampling runs the same count per sample (10 minimum) and is what criterion
+/// recommends for long-running routines; it changes how samples are taken,
+/// not what is measured.
+fn group<'a>(c: &'a mut Criterion, name: &str) -> BenchmarkGroup<'a, WallTime> {
+    let mut g = c.benchmark_group(name);
+    g.sampling_mode(SamplingMode::Flat);
+    g
+}
+
 fn bench_full_pipeline(c: &mut Criterion) {
     warm_grammars();
     let theme = Theme::default();
-    let mut g = c.benchmark_group("full_pipeline");
+    let mut g = group(c, "full_pipeline");
     for (mix, gen) in MIXES {
         for &size in SIZES {
             let source = gen(size);
@@ -237,7 +266,7 @@ fn bench_full_pipeline(c: &mut Criterion) {
 fn bench_full_pipeline_memoized(c: &mut Criterion) {
     warm_grammars();
     let theme = Theme::default();
-    let mut g = c.benchmark_group("full_pipeline_memoized");
+    let mut g = group(c, "full_pipeline_memoized");
     for &(mix, gen) in MIXES {
         for &size in SIZES {
             let source = gen(size);
@@ -272,33 +301,9 @@ fn stage_pairs() -> Vec<(Corpus, usize)> {
     pairs
 }
 
-fn bench_parse_offsets(c: &mut Criterion) {
-    warm_grammars();
-    let mut g = c.benchmark_group("parse_offsets");
-    for ((mix, gen), size) in stage_pairs() {
-        let source = gen(size);
-        g.bench_with_input(BenchmarkId::new(mix, size), &source, |b, src| {
-            b.iter(|| parse_offsets::top_level_block_ranges(black_box(src)));
-        });
-    }
-    g.finish();
-}
-
-fn bench_parse_ast(c: &mut Criterion) {
-    warm_grammars();
-    let mut g = c.benchmark_group("parse_ast");
-    for ((mix, gen), size) in stage_pairs() {
-        let source = gen(size);
-        g.bench_with_input(BenchmarkId::new(mix, size), &source, |b, src| {
-            b.iter(|| parse_raw(black_box(src)));
-        });
-    }
-    g.finish();
-}
-
 fn bench_parse_merged(c: &mut Criterion) {
     warm_grammars();
-    let mut g = c.benchmark_group("parse_merged");
+    let mut g = group(c, "parse_merged");
     for ((mix, gen), size) in stage_pairs() {
         let source = gen(size);
         g.bench_with_input(BenchmarkId::new(mix, size), &source, |b, src| {
@@ -311,7 +316,7 @@ fn bench_parse_merged(c: &mut Criterion) {
 fn bench_render_only(c: &mut Criterion) {
     warm_grammars();
     let theme = Theme::default();
-    let mut g = c.benchmark_group("render_only");
+    let mut g = group(c, "render_only");
     for ((mix, gen), size) in stage_pairs() {
         let source = gen(size);
         let blocks = parse_raw(&source);
@@ -335,14 +340,7 @@ fn bench_render_only(c: &mut Criterion) {
 fn bench_visual_cache(c: &mut Criterion) {
     warm_grammars();
     let theme = Theme::default();
-    let mut g = c.benchmark_group("visual_cache_build");
-    // A single rebuild at 100k lines (~0.25 s) is far larger than the group's
-    // 2 s measurement window, so the default linear sampling can only fit one
-    // iteration per sample and then misreports the mean wildly (criterion warns
-    // "enable flat sampling").  Flat sampling runs a fixed iteration count per
-    // sample and reports slow routines correctly; give it room for the 100k row.
-    g.sampling_mode(SamplingMode::Flat);
-    g.measurement_time(Duration::from_secs(5));
+    let mut g = group(c, "visual_cache_build");
     for &size in SIZES {
         let source = mixed(size);
         let doc = build_doc(&source, &theme);
@@ -365,12 +363,16 @@ fn config() -> Criterion {
         .sample_size(10)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(2))
+        // Run-to-run noise on a laptop is several percent, so criterion's 1%
+        // default flags most cases as changed; at 5% the "regressed" lines
+        // are the ones worth a second look.
+        .noise_threshold(0.05)
 }
 
 criterion_group! {
     name = benches;
     config = config();
-    targets = bench_full_pipeline, bench_full_pipeline_memoized, bench_parse_offsets,
-              bench_parse_ast, bench_parse_merged, bench_render_only, bench_visual_cache
+    targets = bench_full_pipeline, bench_full_pipeline_memoized, bench_parse_merged,
+              bench_render_only, bench_visual_cache
 }
 criterion_main!(benches);

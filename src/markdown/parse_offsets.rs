@@ -182,7 +182,7 @@ where
 ///
 /// The editor pipeline gets its ranges from
 /// [`crate::markdown::parser::parse_raw_with_ranges`]; this is the standalone entry point for
-/// tests and benchmarks.
+/// tests.
 #[allow(dead_code)]
 pub fn top_level_block_ranges(source: &str) -> Vec<Range<usize>> {
     block_ranges_by(source, |kind| {
