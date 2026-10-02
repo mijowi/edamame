@@ -135,6 +135,74 @@ What these numbers show:
 - **`math` is the one `other`-bound corpus** (55.7%): the per-formula `$$` scan, image-block promotion, and source-map / anchor derivation over many short blocks.
 - **Memoization pays off where a re-render costs far more than a hash-and-clone lookup.** At 20k it saves 95.0% for `code`, 92.2% for `nested`, 62.8% for `tables` and 49.6% for `mixed`. The cheap mixes never enter the cache (the cache-worthy gate, [below](#the-two-optimizations-and-why-they-must-not-be-undone)), so their memoized cost stays within ±1.8% of their cold cost. `nested` shows the gate walking *into* containers.
 
+### Intel Core Ultra 7 258V (Linux)
+
+Measured 2026-10-02 on Debian 13 (Linux 7.1.8), `rustc 1.98.0 (88d9e12ae 2026-08-18)`, criterion 0.8.2, on AC power with the `power-saver` profile. The end-to-end figures are the median of three runs' criterion means, in ms. The stage figures (`parse_merged`, `render_only`) come from one run, since the release subset doesn't include them.
+
+**Steady-state edit** (`full_pipeline_memoized`):
+
+| Corpus | 1k | 5k | 20k |
+|---|---|---|---|
+| `prose` | 2.59 | 13.5 | 56.9 |
+| `lists` | 2.00 | 10.7 | 46.6 |
+| `tables` | 3.44 | 18.1 | 80.9 |
+| `code` | 1.21 | 5.00 | 34.2 |
+| `math` | 1.50 | 7.63 | 31.6 |
+| `nested` | 1.58 | 9.14 | 82.0 |
+| `mixed` | 2.08 | 10.1 | 45.4 |
+
+At 5k, `tables` already exceeds the 16 ms budget, and `prose`, `lists`, `mixed` and `math` are in the marginal band. At 20k every corpus exceeds it.
+
+**Cold open** (`full_pipeline`):
+
+| Corpus | 1k | 5k | 20k |
+|---|---|---|---|
+| `prose` | 2.25 | 13.0 | 54.7 |
+| `lists` | 2.00 | 10.4 | 45.5 |
+| `tables` | 7.82 | 40.1 | 178 |
+| `code` | 11.1 | 54.5 | 220 |
+| `math` | 1.47 | 7.57 | 31.7 |
+| `nested` | 18.1 | 92.8 | 379 |
+| `mixed` | 3.69 | 18.0 | 75.0 |
+
+**Stage breakdown at 20k:**
+
+| Corpus | full | `parse_merged` | `render_only` | other | Dominant |
+|---|---|---|---|---|---|
+| `prose` | 54.7 | 40.6 | 14.3 | −0.199 | parse (74.2%) |
+| `lists` | 45.5 | 27.1 | 14.5 | 3.89 | parse (59.5%) |
+| `tables` | 178 | 47.3 | 121 | 9.51 | render (68.1%) |
+| `code` | 220 | 1.63 | 214 | 3.42 | render (97.7%) |
+| `math` | 31.7 | 9.69 | 4.68 | 17.4 | other (54.7%) |
+| `nested` | 379 | 15.6 | 355 | 8.32 | render (93.7%) |
+| `mixed` | 75.0 | 23.0 | 46.6 | 5.42 | render (62.1%) |
+
+`mixed` across 1k / 5k / 20k: full 3.69 / 18.0 / 75.0, `parse_merged` 1.10 / 5.72 / 23.0, `render_only` 2.35 / 11.3 / 46.6.
+
+**Memoization** (change from `full_pipeline` to `full_pipeline_memoized` at 20k):
+
+| Corpus | Change |
+|---|---|
+| `prose` | +4.0% |
+| `lists` | +2.4% |
+| `tables` | −54.6% |
+| `code` | −84.4% |
+| `math` | −0.5% |
+| `nested` | −78.4% |
+| `mixed` | −39.4% |
+
+**Resize** (`visual_cache_build`, `mixed`):
+
+| 1k | 5k | 20k |
+|---|---|---|
+| 4.00 | 19.5 | 58.1 |
+
+### Linux compared with the M3
+
+- **The Linux machine is ~2.5–3.4× slower across the board.** Every cold-open figure falls in that band. A few stage figures land just outside it: `parse_merged` for `code` and `math` (3.9× and 3.7×), and `render_only/tables` and resize at 20k (both 2.1×; the M3's `render_only/tables` figure is unstable). The M3's shapes hold here: the same corpora are parse-, render- and `other`-bound, by similar shares.
+- **The exception is the memoized hit path on large documents.** Memoized `code` and `nested` are 4.2× and 3.6× slower than the M3 at 1k, but 8.5× and 7.7× at 20k. On Linux they scale superlinearly: `code` grows 6.8× from 5k to 20k (M3: 4.1×) and `nested` 9.0× (M3: 4.8×). Memoization therefore saves 84% and 78% at 20k here, against 95% and 92% on the M3. `main` and a battery-powered run show the same pattern, so it is not a regression. The cause is unmeasured. The cost the hit path adds, beyond what the cold path already pays, is hashing each cache-worthy `Block` and cloning its `Vec<Line>` ([clone-on-hit](#known-ceilings)): tens of thousands of small allocations, frees and pointer-chasing reads per build. That points at the allocator (glibc vs. macOS) or at the cache hierarchy.
+- **The budget crossover moves down a size.** On the M3 every corpus stays in budget at 5k. Here `tables` is over budget at 5k, and four more corpora are marginal.
+
 ## The two optimizations, and why they must not be undone
 
 - **One parse, not two.** `parse_raw_with_ranges` collects top-level byte ranges from a `parse_offsets::RangeTracker` observing the same offset-iterator events the AST builder consumes, so blocks and ranges stay 1:1 *by construction*. Splitting them back into two passes costs a full extra parse per reparse.
