@@ -16,6 +16,7 @@ use super::runner::{write_atomically, ExportOutcome, Exported};
 use crate::diagram;
 use crate::document::parsed_doc::{gfm_slug, uniquify_slug};
 use crate::image::normalize_svg;
+use crate::markdown::highlight::{self, TokenClass};
 use crate::markdown::parser::post_pass::is_html_comment_only;
 use images::{local_image, ImageResolver};
 
@@ -128,6 +129,8 @@ pub(super) fn render(markdown: &str, opts: &HtmlExportOptions) -> Result<Rendere
     // Always run, so inline `$…$` and (with figures off) display math
     // collapse to literal source rather than a bare `<span class="math">`.
     events = replace_math(events, opts.render_figures, &mut figures);
+    // Last, so the `math` fallback blocks `replace_math` emits pass through it like any other.
+    events = highlight_code_blocks(events);
 
     let mut body = String::new();
     cmark_html::push_html(&mut body, events.into_iter());
@@ -522,6 +525,126 @@ fn replace_mermaid_with_figure<'a>(
     out
 }
 
+/// Syntax-highlight each fenced code block whose info string names a known language, replacing
+/// its `Text` events with one `Event::Html` of escaped text and `<span class="hl-…">` runs
+/// ([`highlighted_code_html`]).  The `Start` / `End` events are kept, so pulldown still writes
+/// the `<pre><code class="language-…">` wrapper.
+///
+/// Uses the in-app tokenizer — same language lookup, same caps, same seven classes — so the
+/// export colors what the terminal colors.  A block the highlighter declines (unknown
+/// language, over a cap, a grammar error) keeps its original events and exports plain.
+///
+/// The emitted markup still passes through [`sanitize_body`], whose allowlist already
+/// permits `span` and `class`; every byte of code text is escaped here regardless.
+fn highlight_code_blocks(events: Vec<Event<'_>>) -> Vec<Event<'_>> {
+    let mut out: Vec<Event<'_>> = Vec::with_capacity(events.len());
+    let mut iter = events.into_iter();
+    while let Some(event) = iter.next() {
+        let lang = match &event {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang))) if !lang.is_empty() => {
+                lang.clone()
+            }
+            _ => {
+                out.push(event);
+                continue;
+            }
+        };
+        out.push(event);
+        let mut buffered: Vec<Event<'_>> = Vec::new();
+        let mut source = String::new();
+        let mut end = None;
+        for inner in iter.by_ref() {
+            match inner {
+                Event::End(TagEnd::CodeBlock) => {
+                    end = Some(inner);
+                    break;
+                }
+                Event::Text(ref t) => {
+                    source.push_str(t);
+                    buffered.push(inner);
+                }
+                other => buffered.push(other),
+            }
+        }
+        // Anything but text inside the fence is unexpected; leave such a block as it was.
+        let all_text = buffered.iter().all(|e| matches!(e, Event::Text(_)));
+        match all_text
+            .then(|| highlighted_code_html(&lang, &source))
+            .flatten()
+        {
+            Some(html) => out.push(Event::Html(CowStr::Boxed(html.into_boxed_str()))),
+            None => out.extend(buffered),
+        }
+        out.extend(end);
+    }
+    out
+}
+
+/// The escaped, span-wrapped body of one code block, or `None` when the highlighter has
+/// nothing to say about it.
+///
+/// Lines are split exactly as `Renderer::render_code_block` splits them, so the token rows
+/// line up with the text they describe.  [`highlight::highlight_block_unbudgeted`] compiles a
+/// cold grammar on this thread rather than deferring to the background worker: the export
+/// runs on its own worker thread, with no frame budget to protect, and must not come out
+/// plain just because the editor hasn't displayed that language yet.
+fn highlighted_code_html(lang: &str, source: &str) -> Option<String> {
+    let mut lines: Vec<&str> = source.split('\n').collect();
+    let trailing_newline = lines.last() == Some(&"");
+    if trailing_newline {
+        lines.pop();
+    }
+    let tokens = highlight::highlight_block_unbudgeted(Some(lang), &lines);
+    if tokens.is_empty() {
+        return None;
+    }
+    let mut html = String::with_capacity(source.len() * 2);
+    for (i, line) in lines.iter().enumerate() {
+        // Token ranges are char indices; `byte[c]` is char `c`'s byte offset, with the
+        // line's length appended so a range ending at the last char maps too.
+        let byte: Vec<usize> = line
+            .char_indices()
+            .map(|(b, _)| b)
+            .chain([line.len()])
+            .collect();
+        let chars = byte.len() - 1;
+        let mut col = 0;
+        for token in tokens.get(i).map(Vec::as_slice).unwrap_or(&[]) {
+            let start = token.range.start.min(chars);
+            let end = token.range.end.min(chars);
+            if start < col || start >= end {
+                continue;
+            }
+            push_html_escaped(&mut html, &line[byte[col]..byte[start]]);
+            html.push_str("<span class=\"");
+            html.push_str(token_css_class(token.class));
+            html.push_str("\">");
+            push_html_escaped(&mut html, &line[byte[start]..byte[end]]);
+            html.push_str("</span>");
+            col = end;
+        }
+        push_html_escaped(&mut html, &line[byte[col]..]);
+        if i + 1 < lines.len() || trailing_newline {
+            html.push('\n');
+        }
+    }
+    Some(html)
+}
+
+/// The stylesheet class for a token — one per [`TokenClass`], styled in
+/// `config/export/default.css`.
+fn token_css_class(class: TokenClass) -> &'static str {
+    match class {
+        TokenClass::Keyword => "hl-keyword",
+        TokenClass::String => "hl-string",
+        TokenClass::Comment => "hl-comment",
+        TokenClass::Number => "hl-number",
+        TokenClass::Type => "hl-type",
+        TokenClass::Function => "hl-function",
+        TokenClass::Attribute => "hl-attribute",
+    }
+}
+
 /// Render mermaid `source` to a `<figure class="mermaid-diagram">`, or `None` on any failure.
 fn render_mermaid_figure(source: &str) -> Option<String> {
     let svg = diagram::render_mermaid_svg(source).ok()?;
@@ -745,10 +868,16 @@ pub fn outside_images(markdown: &str, source_dir: &Path) -> Vec<PathBuf> {
 
 // ── HTML escaping ─────────────────────────────────────────────────────────
 
-/// Escape the five XML metacharacters.  Only for `<title>`; the body is escaped by
-/// `pulldown_cmark::html`.
+/// Escape the five XML metacharacters.  For `<title>` and highlighted code
+/// ([`push_html_escaped`]); the rest of the body is escaped by `pulldown_cmark::html`.
 fn html_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
+    push_html_escaped(&mut out, s);
+    out
+}
+
+/// [`html_escape`], appending to `out` rather than allocating.
+fn push_html_escaped(out: &mut String, s: &str) {
     for ch in s.chars() {
         match ch {
             '&' => out.push_str("&amp;"),
@@ -759,7 +888,6 @@ fn html_escape(s: &str) -> String {
             _ => out.push(ch),
         }
     }
-    out
 }
 
 #[cfg(test)]
@@ -780,6 +908,107 @@ mod tests {
         let html = render_html("# Hello\n\nWorld", &opts_inline_css()).unwrap();
         assert!(html.contains("<h1 id=\"hello\">Hello</h1>"));
         assert!(html.contains("<p>World</p>"));
+    }
+
+    #[test]
+    fn fenced_code_with_a_known_language_is_highlighted() {
+        let md = "```rust\nfn main() { let s = \"<b>\"; } // done\n```\n";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert!(
+            html.contains(
+                "<pre><code class=\"language-rust\"><span class=\"hl-keyword\">fn</span>"
+            ),
+            "wrapper kept and keyword classified:\n{html}"
+        );
+        assert!(
+            html.contains("<span class=\"hl-function\">main</span>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<span class=\"hl-comment\">// done</span>"),
+            "{html}"
+        );
+        // Code text stays escaped inside a token span.
+        assert!(html.contains("&lt;b&gt;"), "{html}");
+        assert!(!html.contains("<b>"), "{html}");
+        // The block's line structure is unchanged: one line, then the closing tag.
+        assert!(html.contains("// done</span>\n</code></pre>"), "{html}");
+    }
+
+    /// Token ranges are char indices; a multi-byte char must not shift the spans after it.
+    #[test]
+    fn non_ascii_code_keeps_token_boundaries() {
+        let md = "```rust\nlet é = \"ü→\"; // ñ\n```\n";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert!(
+            html.contains("<span class=\"hl-string\">\"ü→\"</span>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<span class=\"hl-comment\">// ñ</span>\n</code>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn multi_line_code_keeps_every_line_and_blank_lines() {
+        let md = "```python\ndef f():\n\n    return 1\n```\n";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert!(
+            html.contains(
+                "<span class=\"hl-keyword\">def</span> <span class=\"hl-function\">f</span>"
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(":\n\n    <span class=\"hl-keyword\">return</span> "),
+            "{html}"
+        );
+        assert!(
+            html.contains("<span class=\"hl-number\">1</span>\n</code></pre>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn unknown_language_and_unlabeled_code_export_plain() {
+        let md = "```no-such-lang\nfn x\n```\n\n```\nfn y\n```\n\n    fn z\n";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert!(!html.contains("hl-"), "{html}");
+        assert!(html.contains("<pre><code class=\"language-no-such-lang\">fn x\n</code></pre>"));
+        assert!(html.contains("<pre><code>fn y\n</code></pre>"), "{html}");
+        assert!(html.contains("<pre><code>fn z\n</code></pre>"), "{html}");
+    }
+
+    /// Raw HTML in the document can't smuggle markup into a highlighted block: the text is
+    /// escaped before any span is written, and the sanitizer still runs over the result.
+    #[test]
+    fn highlighted_code_cannot_inject_markup() {
+        let md = "```html\n<script>alert(1)</script><img src=x onerror=alert(1)>\n```\n";
+        let html = render_html(md, &opts_inline_css()).unwrap();
+        assert!(html.contains("hl-"), "html should highlight:\n{html}");
+        assert!(!html.contains("<script"), "{html}");
+        assert!(!html.contains("<img"), "{html}");
+        assert!(html.contains("&lt;"), "{html}");
+    }
+
+    #[test]
+    fn builtin_stylesheet_styles_every_token_class() {
+        for class in [
+            TokenClass::Keyword,
+            TokenClass::String,
+            TokenClass::Comment,
+            TokenClass::Number,
+            TokenClass::Type,
+            TokenClass::Function,
+            TokenClass::Attribute,
+        ] {
+            let selector = format!(".{} ", token_css_class(class));
+            assert!(
+                BUILTIN_STYLESHEET.contains(&selector),
+                "default.css has no rule for {selector}"
+            );
+        }
     }
 
     /// Without the extension the export reproduces the rule-plus-setext-H2 misparse.

@@ -15,6 +15,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 - Daily tips: once a day at startup, edamame shows a short tip about a feature you might not know about. Turn it off with the tip's "Don't show tips" button or the "Daily tips" setting. See all tips with Ctrl-P → "Browse tips".
 - Partly visible images now display in full resolution instead of dropping to coarse half-blocks in kitty, Ghostty, WezTerm, and Sixel terminals.
 - Images now stay sharp *during* scroll in kitty, Ghostty, and WezTerm. Disable with the new `sharp_scrolling` setting under `[images]` in config.toml if images tear, flicker, or cause lag.
+- Syntax highlighting added to HTML export. The bundled stylesheet colors them for light, dark, and print; a custom stylesheet can style the `hl-*` classes (see "Exporting" in `docs/editing.md`).
 - `Ctrl-V` pastes a screenshot (or any image) from the clipboard, saved as a PNG with a relative reference inserted. Text is preferred if the clipboard contains both, but **Paste image from clipboard** in the palette always pastes the image.
 
 ### Changed

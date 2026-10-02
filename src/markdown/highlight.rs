@@ -300,9 +300,11 @@ pub fn spawn_warm_worker() {
 /// Mark `language`'s grammar usable immediately, so the next [`highlight_block`] compiles
 /// it inline on the calling thread instead of rendering plain and waiting for the worker.
 ///
-/// The escape hatch for callers with **no frame budget to protect** — the test suite, which
-/// needs determinism rather than eventual consistency, and batch renders.  The render
-/// thread must never call it.  Spends no budget: that rations *background* compilation.
+/// The escape hatch for tests and benches, which need determinism rather than eventual
+/// consistency.  Production code must not call it: the mark is shared with the render
+/// thread, and it lifts the quarantine on a grammar whose warm parse panicked.  A batch
+/// render on its own thread wants [`highlight_block_unbudgeted`] instead.  Spends no
+/// budget: that rations *background* compilation.
 pub fn warm_inline(language: Option<&str>) -> bool {
     let Some(syntax) = lookup_syntax(language) else {
         return false;
@@ -755,14 +757,10 @@ fn tokenize_incremental(
 /// highlight" — unknown language, over [`MAX_HIGHLIGHT_SOURCE_BYTES`], a grammar error, or
 /// a panic.  Callers index with `.get(i)`, so all of those degrade identically.
 pub fn highlight_block(language: Option<&str>, raw_lines: &[&str]) -> Vec<HighlightedLine> {
-    let Some(syntax) = lookup_syntax(language) else {
+    // Byte cap first, so an over-cap block never spends a grammar slot.
+    let Some(syntax) = capped_syntax(language, raw_lines) else {
         return Vec::new();
     };
-    let bytes: usize = raw_lines.iter().map(|l| l.len() + 1).sum();
-    if bytes > MAX_HIGHLIGHT_SOURCE_BYTES {
-        return Vec::new();
-    }
-    // After the byte cap, so an over-cap block never spends a grammar slot.
     match admit(syntax) {
         Admission::Warm => {}
         // Cold: hand the worker this block's lines and render plain.  Deliberately not
@@ -782,6 +780,38 @@ pub fn highlight_block(language: Option<&str>, raw_lines: &[&str]) -> Vec<Highli
         }
         Admission::Wait => return Vec::new(),
     }
+    tokenize_guarded(syntax, raw_lines)
+}
+
+/// [`highlight_block`] for a batch render on its own thread (HTML export): a cold grammar
+/// compiles inline on the calling thread rather than going to the warm worker, so the result
+/// is complete on the first call.
+///
+/// Same lookup, same size caps, same panic guard — but it neither reads nor writes the
+/// shared [`GRAMMARS`] budget, which belongs to the render thread.  Marking a grammar warm
+/// from here would let the render thread parse it before it is compiled, and would undo
+/// `warm_worker`'s quarantine of a grammar that panicked.  The render thread must never call
+/// it.
+pub fn highlight_block_unbudgeted(
+    language: Option<&str>,
+    raw_lines: &[&str],
+) -> Vec<HighlightedLine> {
+    match capped_syntax(language, raw_lines) {
+        Some(syntax) => tokenize_guarded(syntax, raw_lines),
+        None => Vec::new(),
+    }
+}
+
+/// The grammar for `language`, or `None` when it is unknown or the block is over
+/// [`MAX_HIGHLIGHT_SOURCE_BYTES`].
+fn capped_syntax(language: Option<&str>, raw_lines: &[&str]) -> Option<&'static SyntaxReference> {
+    let syntax = lookup_syntax(language)?;
+    let bytes: usize = raw_lines.iter().map(|l| l.len() + 1).sum();
+    (bytes <= MAX_HIGHLIGHT_SOURCE_BYTES).then_some(syntax)
+}
+
+/// Tokenize with a panic guard; a grammar bug answers `[]` like any other decline.
+fn tokenize_guarded(syntax: &'static SyntaxReference, raw_lines: &[&str]) -> Vec<HighlightedLine> {
     // `AssertUnwindSafe` covers the thread-local cache, which a mid-parse panic leaves
     // untouched since the entry is committed only after the walk completes.
     //
@@ -1305,6 +1335,25 @@ mod tests {
         assert!(!warm_inline(Some("not-a-real-language")));
         let out = highlight_block(Some("rust"), &["fn main() {}"]);
         assert_eq!(class_at(&out[0], 0), Some(TokenClass::Keyword));
+    }
+
+    /// Erlang is named by no other test, so nothing else can have warmed it in parallel.
+    #[test]
+    fn unbudgeted_highlighting_leaves_the_shared_budget_alone() {
+        clear_cache();
+        let key = std::ptr::from_ref(lookup_syntax(Some("erlang")).unwrap()) as usize;
+        let out = highlight_block_unbudgeted(Some("erlang"), &["-module(m)."]);
+        assert!(!out.is_empty(), "a cold grammar compiles inline");
+        let grammars = GRAMMARS.lock().unwrap();
+        assert!(!grammars.warm.contains(&key));
+        assert!(!grammars.pending.contains(&key));
+    }
+
+    #[test]
+    fn unbudgeted_highlighting_keeps_the_byte_cap() {
+        let line = "x".repeat(1_000);
+        let lines = vec![line.as_str(); MAX_HIGHLIGHT_SOURCE_BYTES / 1_000 + 1];
+        assert!(highlight_block_unbudgeted(Some("rust"), &lines).is_empty());
     }
 
     #[test]

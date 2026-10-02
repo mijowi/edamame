@@ -399,6 +399,8 @@ The output lands beside your document — `notes/guide.md` exports `notes/guide.
 
 Headings get the same anchors as on GitHub, so a link to a section of the document works in the exported file.
 
+Fenced code blocks are syntax highlighted in the export, for the same languages the editor recognizes. The bundled stylesheet picks colors that suit a light page, a dark page, and print, rather than your edamame theme. In your own stylesheet, color the `hl-keyword`, `hl-string`, `hl-comment`, `hl-number`, `hl-type`, `hl-function`, and `hl-attribute` classes. A stylesheet that doesn't mention them shows code plain. edamame never overwrites the `default.css.example` in your config directory, so one written by an older version lacks these rules: delete it and the next launch writes a current copy.
+
 Raw HTML in the document is kept, so `<details>`, `<kbd>`, `<sub>`, `<sup>`, `<br>`, `<img width="…">` and `<p align="center">` work as they do on GitHub. Anything that could run in a browser is removed on the way out, because an exported file is usually one you share: scripts, event handlers such as `onclick`, `<style>` blocks and inline styles, and links using `javascript:`, `vbscript:` or `data:` (the link text stays). Links to other apps, such as `obsidian://`, `vscode://` or `file://`, are kept. With **Inline images** on, an image from outside the document's folder — reached through `../`, an absolute path, or a symlink — is never embedded silently: edamame lists those files by their full path and asks first. **Embed** includes them; **Don't embed** leaves them as links. The reasoning is in [security.md](security.md).
 
 ### Other formats

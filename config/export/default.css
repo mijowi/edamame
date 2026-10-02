@@ -26,6 +26,18 @@
     --code-bg: #f6f8fa;
     --quote-border: #d0d7de;
 
+    /* Syntax highlighting: one color per token class the exporter emits
+       (`span.hl-*` inside fenced code blocks with a recognized language).
+       Print keeps these light-page colors, since the dark palette below is
+       screen only. */
+    --hl-keyword: #cf222e;
+    --hl-string: #0a3069;
+    --hl-comment: #6e7781;
+    --hl-number: #0550ae;
+    --hl-type: #953800;
+    --hl-function: #8250df;
+    --hl-attribute: #116329;
+
     /* 16px is the browser default body size; `@media print` drops to the
        11pt a printed page conventionally uses, stated in pt so a converter
        that resolves px against something other than 96dpi still lands
@@ -53,6 +65,13 @@
         --link: #58a6ff;
         --code-bg: #161b22;
         --quote-border: #3b434b;
+        --hl-keyword: #ff7b72;
+        --hl-string: #a5d6ff;
+        --hl-comment: #8b949e;
+        --hl-number: #79c0ff;
+        --hl-type: #ffa657;
+        --hl-function: #d2a8ff;
+        --hl-attribute: #7ee787;
     }
 }
 
@@ -185,6 +204,16 @@ pre > code {
     font-size: 1em;
     white-space: pre;
 }
+
+/* Token colors only: the code surface's background and font come from the
+   rules above, so a highlighted block is the same box as a plain one. */
+.hl-keyword   { color: var(--hl-keyword); }
+.hl-string    { color: var(--hl-string); }
+.hl-comment   { color: var(--hl-comment); font-style: italic; }
+.hl-number    { color: var(--hl-number); }
+.hl-type      { color: var(--hl-type); }
+.hl-function  { color: var(--hl-function); }
+.hl-attribute { color: var(--hl-attribute); }
 
 /* ── Tables ──────────────────────────────────────────────────────────────── */
 

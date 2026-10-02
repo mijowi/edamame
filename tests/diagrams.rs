@@ -384,7 +384,9 @@ fn html_export_ignores_non_mermaid_code_blocks() {
     let html_off = render_html(md, &opts(false)).expect("render");
     assert_eq!(html_on, html_off);
     assert!(html_on.contains("<code class=\"language-rust\">"));
-    assert!(html_on.contains("fn main"));
+    // Syntax highlighting splits the text into token spans.
+    assert!(html_on
+        .contains("<span class=\"hl-keyword\">fn</span> <span class=\"hl-function\">main</span>"));
 }
 
 // The live-render tests below hit the real `mermaid-rs-renderer` crate,
