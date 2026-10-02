@@ -70,6 +70,15 @@ dirs = "6"
 thiserror = "2"
 anyhow = "1"
 
+# Global allocator, installed in `main.rs` and `benches/pipeline.rs`; the library
+# itself never names it.  Every edit allocates and frees tens of thousands of small
+# `String`s (cloning cached rendered lines, dropping the previous build), and glibc's
+# allocator handles that churn badly: on Linux it was half of a cached re-render and
+# grew faster than the document.  mimalloc cut 15–74% from every steady-state edit
+# bench (docs/dev/performance.md).  It is C, but unlike `onig` (see syntect below)
+# it parses no document content, and `ring` already needs a C compiler.
+mimalloc = "0.1"
+
 # Structured logging (to file only; never stdout)
 tracing = "0.1"
 tracing-appender = "0.2"

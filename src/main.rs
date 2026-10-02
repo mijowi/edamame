@@ -9,6 +9,12 @@ use edamame::cli::{self, Invocation, RunOpts};
 use edamame::config::{self, Config, LoadedConfig};
 use edamame::terminal::{self, Capabilities, ColorDepth, TerminalSetup};
 
+/// glibc's allocator is slow at the small-allocation churn every edit causes; see the
+/// `mimalloc` entry in `Cargo.toml`.  Declared here, in the binary, so the library and its
+/// tests keep the system allocator.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Usage-error exit status, by long-standing convention (1 means ran-and-failed).
 const EXIT_USAGE: i32 = 2;
 

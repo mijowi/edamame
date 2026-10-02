@@ -30,6 +30,11 @@ use edamame::markdown::highlight;
 use edamame::markdown::parser::parse_raw;
 use edamame::markdown::{parse_raw_with_ranges, RenderCache, Renderer};
 
+/// The allocator `main.rs` ships with.  A bench is its own binary, so without this it would
+/// measure the system allocator — on Linux, up to 4× slower on the memoized path.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 // ── Corpus generators ──────────────────────────────────────────────────────
 //
 // Each generator appends a fixed repeating unit until the document reaches

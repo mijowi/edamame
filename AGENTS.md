@@ -475,6 +475,7 @@ Use `tracing` macros — **never** `println!` / `eprintln!`, which would corrupt
 | `open` | Cross-platform URL / file opener |
 | `nucleo-matcher` | Fuzzy matching for the command palette |
 | `base64`, `tempfile` | Self-contained HTML export and custom-command pipelines |
+| `mimalloc` | Global allocator for the binary and benches (glibc's is slow at per-edit allocation churn) |
 | `ammonia` | Allowlist sanitizer for the HTML export body (raw HTML kept, scripts removed) |
 | `mermaid-rs-renderer` + `resvg` + `usvg` + `sha2` | Mermaid diagram rendering |
 | `tui-big-text` | Big-text rendering for H1 headings |

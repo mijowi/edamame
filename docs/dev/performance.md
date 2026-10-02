@@ -56,6 +56,8 @@ Harness details that matter for reproducibility:
 
 ## Results
 
+**The M3 figures were measured with the system allocator, before the binary and benches switched to mimalloc; the Linux figures are with mimalloc.** Re-measure the M3 before comparing it against a new run.
+
 ### Apple M3 (macOS)
 
 Measured 2026-10-02 on macOS 15.7.5 (24G624), `rustc 1.98.0 (88d9e12ae 2026-08-18)`, criterion 0.8.2. Each figure is the median of three full-suite runs' criterion means, in ms. A single run let a few slow samples inflate one case's mean by 22%, and the median of three absorbs that.
@@ -137,71 +139,75 @@ What these numbers show:
 
 ### Intel Core Ultra 7 258V (Linux)
 
-Measured 2026-10-02 on Debian 13 (Linux 7.1.8), `rustc 1.98.0 (88d9e12ae 2026-08-18)`, criterion 0.8.2, on AC power with the `power-saver` profile. The end-to-end figures are the median of three runs' criterion means, in ms. The stage figures (`parse_merged`, `render_only`) come from one run, since the release subset doesn't include them.
+Measured 2026-10-02 on Debian 13 (Linux 7.1.8), `rustc 1.98.0 (88d9e12ae 2026-08-18)`, criterion 0.8.2, mimalloc 0.1.52, on AC power with the `power-saver` profile. The end-to-end figures are the median of three runs' criterion means, in ms. The stage figures (`parse_merged`, `render_only`) come from one run, since the release subset doesn't include them.
 
 **Steady-state edit** (`full_pipeline_memoized`):
 
 | Corpus | 1k | 5k | 20k |
 |---|---|---|---|
-| `prose` | 2.59 | 13.5 | 56.9 |
-| `lists` | 2.00 | 10.7 | 46.6 |
-| `tables` | 3.44 | 18.1 | 80.9 |
-| `code` | 1.21 | 5.00 | 34.2 |
-| `math` | 1.50 | 7.63 | 31.6 |
-| `nested` | 1.58 | 9.14 | 82.0 |
-| `mixed` | 2.08 | 10.1 | 45.4 |
+| `prose` | 1.88 | 10.0 | 43.3 |
+| `lists` | 1.44 | 7.94 | 34.9 |
+| `tables` | 2.19 | 11.9 | 49.5 |
+| `code` | 0.608 | 2.01 | 9.19 |
+| `math` | 1.18 | 6.36 | 27.3 |
+| `nested` | 0.928 | 5.34 | 33.9 |
+| `mixed` | 1.31 | 7.03 | 31.6 |
 
-At 5k, `tables` already exceeds the 16 ms budget, and `prose`, `lists`, `mixed` and `math` are in the marginal band. At 20k every corpus exceeds it.
+Every corpus stays inside the 16 ms budget at 5k; `tables` and `prose` are in the marginal band there. At 20k only `code` stays inside it (marginal), and every other corpus exceeds it.
 
 **Cold open** (`full_pipeline`):
 
 | Corpus | 1k | 5k | 20k |
 |---|---|---|---|
-| `prose` | 2.25 | 13.0 | 54.7 |
-| `lists` | 2.00 | 10.4 | 45.5 |
-| `tables` | 7.82 | 40.1 | 178 |
-| `code` | 11.1 | 54.5 | 220 |
-| `math` | 1.47 | 7.57 | 31.7 |
-| `nested` | 18.1 | 92.8 | 379 |
-| `mixed` | 3.69 | 18.0 | 75.0 |
+| `prose` | 1.83 | 9.92 | 42.7 |
+| `lists` | 1.43 | 7.72 | 34.7 |
+| `tables` | 5.07 | 27.8 | 121 |
+| `code` | 9.50 | 47.6 | 193 |
+| `math` | 1.18 | 6.38 | 26.9 |
+| `nested` | 16.0 | 82.8 | 333 |
+| `mixed` | 2.34 | 12.4 | 53.7 |
 
 **Stage breakdown at 20k:**
 
 | Corpus | full | `parse_merged` | `render_only` | other | Dominant |
 |---|---|---|---|---|---|
-| `prose` | 54.7 | 40.6 | 14.3 | −0.199 | parse (74.2%) |
-| `lists` | 45.5 | 27.1 | 14.5 | 3.89 | parse (59.5%) |
-| `tables` | 178 | 47.3 | 121 | 9.51 | render (68.1%) |
-| `code` | 220 | 1.63 | 214 | 3.42 | render (97.7%) |
-| `math` | 31.7 | 9.69 | 4.68 | 17.4 | other (54.7%) |
-| `nested` | 379 | 15.6 | 355 | 8.32 | render (93.7%) |
-| `mixed` | 75.0 | 23.0 | 46.6 | 5.42 | render (62.1%) |
+| `prose` | 42.7 | 32.4 | 8.43 | 1.88 | parse (75.9%) |
+| `lists` | 34.7 | 22.6 | 10.4 | 1.73 | parse (65.0%) |
+| `tables` | 121 | 36.1 | 87.8 | −2.73 | render (72.4%) |
+| `code` | 193 | 1.35 | 188 | 3.71 | render (97.4%) |
+| `math` | 26.9 | 8.28 | 2.72 | 15.9 | other (59.1%) |
+| `nested` | 333 | 12.3 | 317 | 4.00 | render (95.1%) |
+| `mixed` | 53.7 | 19.2 | 30.8 | 3.74 | render (57.3%) |
 
-`mixed` across 1k / 5k / 20k: full 3.69 / 18.0 / 75.0, `parse_merged` 1.10 / 5.72 / 23.0, `render_only` 2.35 / 11.3 / 46.6.
+`mixed` across 1k / 5k / 20k: full 2.34 / 12.4 / 53.7, `parse_merged` 0.846 / 4.42 / 19.2, `render_only` 1.32 / 6.91 / 30.8.
 
 **Memoization** (change from `full_pipeline` to `full_pipeline_memoized` at 20k):
 
 | Corpus | Change |
 |---|---|
-| `prose` | +4.0% |
-| `lists` | +2.4% |
-| `tables` | −54.6% |
-| `code` | −84.4% |
-| `math` | −0.5% |
-| `nested` | −78.4% |
-| `mixed` | −39.4% |
+| `prose` | +1.4% |
+| `lists` | +0.6% |
+| `tables` | −59.2% |
+| `code` | −95.2% |
+| `math` | +1.3% |
+| `nested` | −89.8% |
+| `mixed` | −41.3% |
 
 **Resize** (`visual_cache_build`, `mixed`):
 
 | 1k | 5k | 20k |
 |---|---|---|
-| 4.00 | 19.5 | 58.1 |
+| 3.75 | 16.9 | 53.5 |
 
 ### Linux compared with the M3
 
-- **The Linux machine is ~2.5–3.4× slower across the board.** Every cold-open figure falls in that band. A few stage figures land just outside it: `parse_merged` for `code` and `math` (3.9× and 3.7×), and `render_only/tables` and resize at 20k (both 2.1×; the M3's `render_only/tables` figure is unstable). The M3's shapes hold here: the same corpora are parse-, render- and `other`-bound, by similar shares.
-- **The exception is the memoized hit path on large documents.** Memoized `code` and `nested` are 4.2× and 3.6× slower than the M3 at 1k, but 8.5× and 7.7× at 20k. On Linux they scale superlinearly: `code` grows 6.8× from 5k to 20k (M3: 4.1×) and `nested` 9.0× (M3: 4.8×). Memoization therefore saves 84% and 78% at 20k here, against 95% and 92% on the M3. `main` and a battery-powered run show the same pattern, so it is not a regression. The cause is unmeasured. The cost the hit path adds, beyond what the cold path already pays, is hashing each cache-worthy `Block` and cloning its `Vec<Line>` ([clone-on-hit](#known-ceilings)): tens of thousands of small allocations, frees and pointer-chasing reads per build. That points at the allocator (glibc vs. macOS) or at the cache hierarchy.
-- **The budget crossover moves down a size.** On the M3 every corpus stays in budget at 5k. Here `tables` is over budget at 5k, and four more corpora are marginal.
+The two sections differ in allocator as well as hardware, so the ratios below are not a pure hardware comparison.
+
+- **Linux is ~1.7–2.9× slower on cold opens** and ~2–2.8× on steady-state edits at 1k and 5k. The M3's shapes hold: the same corpora are parse-, render- and `other`-bound, by similar shares, and memoization saves about as much (95.2% / 89.8% for `code` / `nested`, against 95.0% / 92.2%).
+- **Rendering gains the most from mimalloc.** `render_only` is 1.5–2.4× the M3 figure, while `parse_merged` is 2.5–3.2×: rendering allocates the most per block, so its allocator speedup is the largest.
+- **Memoized `nested` still scales a little worse than linear.** It grows 6.4× from 5k to 20k (M3: 4.8×), while every other corpus grows 4.2–4.6×. It is minor, but worth watching.
+
+**Why the binary uses mimalloc.** Under glibc's allocator, memoized `code` and `nested` scaled superlinearly on Linux: 6.8× and 9.0× from 5k to 20k, reaching 8.5× and 7.7× the M3 figure at 20k, and memoization saved only 84% and 78%. A profile of `full_pipeline_memoized/code` put 51–55% of the time inside glibc's `malloc`/`free`, at 5k and 20k alike. Each hit clones the block's `Vec<Line>` ([clone-on-hit](#known-ceilings)), one `String` per span, and dropping the previous build frees them all. That churn costs more per allocation as the heap grows. Raising glibc's `tcache_count` only got 20k from 39 to 27 ms. mimalloc took it to 9.19 ms, and against the glibc figures it cut 14–73% from every steady-state edit, 11–37% from every cold open, 11–42% from rendering, 15–24% from parsing, and 6–13% from resizes.
 
 ## The two optimizations, and why they must not be undone
 
@@ -217,7 +223,7 @@ Both are asserted: `merged_parse_matches_two_pass_parse` (`src/markdown/parser.r
 Facts about the current design, not tasks.
 
 - **The full-document parse floor.** The single parse is O(document) and cannot be memoized (7.16 ms for `parse_merged/mixed/20000` on the Apple M3) — and dominates prose and lists. Only incremental reparsing removes it, which must handle the non-local effects of fences, setext headings, lists and footnote definitions; a separate project.
-- **Clone-on-hit.** A hit still clones the block's `Vec<Line>`; on cached (expensive) blocks that is a small share of the render. Removing it means sharing lines as `Arc<[Line]>`, which changes `ParsedDoc::lines`' type and ripples through every view — worth it only if very large table-/code-heavy documents matter.
+- **Clone-on-hit.** A hit still clones the block's `Vec<Line>`; on cached (expensive) blocks that is a small share of the render. The allocator decides what that costs: under glibc's it was half of a 20k memoized build on Linux, and mimalloc (see `Cargo.toml`) brought it back to a small share. Removing it means sharing lines as `Arc<[Line]>`, which changes `ParsedDoc::lines`' type and ripples through every view — worth it only if very large table-/code-heavy documents matter.
 - **Resize.** The `visual_cache_build` rebuild exceeds a frame from roughly 12k lines (6.42 ms at 5k and 27.7 ms at 20k on the Apple M3), but fires only on a width change behind the 80 ms `RESIZE_QUIESCE` window (`app::frame_timer`) — one rebuild per quiesced drag. Leave it unless live-resize jank shows up.
 - **`parse_offsets::top_level_block_ranges` is off the edit path** — it survives only as the oracle in `merged_parse_matches_two_pass_parse` (the diff subsystem uses the sibling `block_ranges_by`).
 
