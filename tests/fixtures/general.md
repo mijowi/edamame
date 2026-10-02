@@ -104,7 +104,7 @@ Inline code inside a long paragraph wraps with the rest of the text: ` let (non_
 
 **Bold text** and __underscore bold__, *italic* and _underscore italic_, ***both at once***, ~~struck through~~, and ==highlighted==.
 
-A [web link](https://github.com/mijowi/edamame), a [file link](./diagrams.md), and a [link to a heading](#the-stack) further up this document.
+A [web link](https://github.com/mijowi/edamame), a [file link](./diagrams.md), a [link to a heading](#the-stack) further up this document, and an email autolink: <edamame@example.com>.
 
 Escapes stay verbatim: \*not emphasized*, \# not a heading, \`not code`, 1\. not a list, and \&ouml; not a character entity.
 

@@ -272,7 +272,8 @@ src/
   test_env.rs       # #[cfg(test)] only — crate-wide env_lock() + EnvGuard
 
 tests/              # diagrams, search, editing, footnotes, list_edit, mouse, palette,
-                    #   renderer, source_map, table, ui; snapshots/ and fixtures/
+                    #   renderer, source_map, table, ui; doc_links (every relative link
+                    #   in the repo's Markdown resolves); snapshots/ and fixtures/
 
 config/             # config.toml (annotated reference, written on first run),
                     #   keybindings.toml, export/default.css

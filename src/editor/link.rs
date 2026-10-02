@@ -88,7 +88,7 @@ fn split_fragment(url: &str) -> (&str, Option<String>) {
 }
 
 /// True when `url` starts with a multi-character RFC-3986 scheme (one char is a drive letter).
-fn has_url_scheme(url: &str) -> bool {
+pub fn has_url_scheme(url: &str) -> bool {
     let Some((scheme, _rest)) = url.split_once(':') else {
         return false;
     };
