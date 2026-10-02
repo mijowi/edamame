@@ -32,6 +32,15 @@ pub(super) fn is_scrolling_within(last_scroll_at: Option<Instant>, quiesce: Dura
     last_scroll_at.is_some_and(|t| t.elapsed() < quiesce)
 }
 
+/// When [`App::next_deadline`] wants the loop woken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Deadline {
+    pub at: Instant,
+    /// False when only the syntax-warm poll is due: a wake that merely checks the warm
+    /// worker repaints nothing, or a stalled compile would redraw the screen every second.
+    pub redraw: bool,
+}
+
 impl App {
     /// Record a scroll; the image painter falls back to halfblocks while scrolling.
     pub(super) fn mark_scrolling(&mut self) {
@@ -54,8 +63,31 @@ impl App {
 
     /// Earliest instant the event loop must wake to apply a time-driven change, or `None`
     /// when it can block indefinitely on input.  Only deadlines still in the future
-    /// contribute, so an elapsed one drops out after its redraw fires.
-    pub(super) fn next_deadline(&self, now: Instant) -> Option<Instant> {
+    /// contribute, so an elapsed one drops out once handled.
+    pub(super) fn next_deadline(&self, now: Instant) -> Option<Deadline> {
+        let timer = self.timer_deadline(now);
+        let poll = self.syntax_warm_deadline(now).filter(|&d| d > now);
+        match (timer, poll) {
+            (Some(t), Some(p)) if p < t => Some(Deadline {
+                at: p,
+                redraw: false,
+            }),
+            (Some(t), _) => Some(Deadline {
+                at: t,
+                redraw: true,
+            }),
+            (None, Some(p)) => Some(Deadline {
+                at: p,
+                redraw: false,
+            }),
+            (None, None) => None,
+        }
+    }
+
+    /// Every [`Self::next_deadline`] contributor except the syntax-warm poll, which is the
+    /// one deadline that owes no redraw: `tick_syntax_warm` asks for one itself when a
+    /// compile landed.
+    pub(super) fn timer_deadline(&self, now: Instant) -> Option<Instant> {
         let mut earliest: Option<Instant> = None;
         let mut push = |candidate: Option<Instant>| {
             if let Some(c) = candidate.filter(|&c| c > now) {

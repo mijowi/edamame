@@ -32,7 +32,7 @@
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -187,6 +187,21 @@ impl GrammarBudget {
         true
     }
 
+    /// When [`Self::take_retry`] next answers true while a refusal stands, or `None` without
+    /// one.  Already past when a slot is banked — an `admit` refill can leave budget over
+    /// after queueing another grammar — otherwise the next refill.
+    fn retry_at(&self, interval: Duration) -> Option<Instant> {
+        if !self.refused {
+            return None;
+        }
+        let last = self.last_refill?;
+        Some(if self.budget > 0 {
+            last
+        } else {
+            last + interval
+        })
+    }
+
     /// Promote a finished grammar; only the warm worker calls it, only on a clean parse.
     fn mark_warm(&mut self, key: usize) {
         self.pending.retain(|k| *k != key);
@@ -207,13 +222,48 @@ static GRAMMARS: Mutex<GrammarBudget> = Mutex::new(GrammarBudget {
 /// Bumped once per grammar that finishes warming — how a block that rendered plain ever
 /// becomes colored.  [`RenderCache`](crate::markdown::RenderCache) keys on a `Block` value
 /// warming does not change, so the counter rides in `RenderSettings` to invalidate it.
-/// Polled on the existing loop tick rather than sent on a channel, because `markdown` sits
-/// well below `app` and must not learn about `AppEvent`.
+/// Polled by the event loop rather than sent on a channel, because `markdown` sits well
+/// below `app` and must not learn about `AppEvent`; [`warm_in_flight`] says when to poll.
 static WARM_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Changes exactly when a previously-plain code block could now be colored.
 pub fn warm_generation() -> u64 {
     WARM_GENERATION.load(Ordering::Relaxed)
+}
+
+/// Requests sent to the warm worker and not yet finished, panicked ones included.  A count
+/// rather than `GrammarBudget::pending`, which keeps a panicked grammar forever and would
+/// keep the event loop polling for the session.
+///
+/// Incremented *before* the send, so the worker's decrement can never underflow it, and
+/// decremented with `Release` *after* the generation bump: a reader that `Acquire`s zero
+/// therefore also sees the bump it would otherwise miss.
+static WARM_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+/// Set when the warm worker thread exits, which strands any count it held.
+static WARM_WORKER_GONE: AtomicBool = AtomicBool::new(false);
+
+/// When the warm worker started the request it is on, `None` between requests.  syntect's
+/// parse has no time limit, so this is how the event loop tells a stuck compile, which it
+/// should stop polling at frame rate, from a normal ~9 ms one.
+static WARM_BUSY_SINCE: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Is a grammar still compiling, so that [`warm_generation`] may yet move?  The event loop
+/// blocks indefinitely on input when nothing is due, so it needs this to know to wake.
+pub fn warm_in_flight() -> bool {
+    !WARM_WORKER_GONE.load(Ordering::Relaxed) && WARM_IN_FLIGHT.load(Ordering::Acquire) > 0
+}
+
+/// When the compile the warm worker is running began, or `None` while it is idle or between
+/// requests.
+pub fn warm_busy_since() -> Option<Instant> {
+    *WARM_BUSY_SINCE.lock().ok()?
+}
+
+fn set_warm_busy_since(at: Option<Instant>) {
+    if let Ok(mut busy) = WARM_BUSY_SINCE.lock() {
+        *busy = at;
+    }
 }
 
 /// Bumped once per retry granted by [`refused_grammar_retry_due`] — the companion to
@@ -257,21 +307,33 @@ static WARM_TX: LazyLock<std::sync::mpsc::Sender<WarmRequest>> = LazyLock::new(|
 /// so the block stays plain rather than being retried into the same panic.  The guard stops
 /// the process panic hook from restoring the terminal for a panic caught here.
 fn warm_worker(rx: &std::sync::mpsc::Receiver<WarmRequest>) {
+    /// Runs on any exit, unwinding included, so a dead worker can't pin [`warm_in_flight`].
+    struct Exit;
+    impl Drop for Exit {
+        fn drop(&mut self) {
+            WARM_WORKER_GONE.store(true, Ordering::Relaxed);
+        }
+    }
+    let _exit = Exit;
+
     LazyLock::force(&SYNTAXES);
     while let Ok(req) = rx.recv() {
         let key = std::ptr::from_ref(req.syntax) as usize;
+        set_warm_busy_since(Some(Instant::now()));
         let ok = {
             let _expected = crate::terminal::ExpectedPanic::new();
             catch_unwind(AssertUnwindSafe(|| compile_grammar(&req))).is_ok()
         };
-        if !ok {
+        set_warm_busy_since(None);
+        if ok {
+            if let Ok(mut grammars) = GRAMMARS.lock() {
+                grammars.mark_warm(key);
+            }
+            WARM_GENERATION.fetch_add(1, Ordering::Relaxed);
+        } else {
             tracing::warn!(syntax = %req.syntax.name, "panic while warming a grammar");
-            continue;
         }
-        if let Ok(mut grammars) = GRAMMARS.lock() {
-            grammars.mark_warm(key);
-        }
-        WARM_GENERATION.fetch_add(1, Ordering::Relaxed);
+        WARM_IN_FLIGHT.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -354,6 +416,13 @@ pub fn refused_grammar_retry_due() -> bool {
         RETRY_EPOCH.fetch_add(1, Ordering::Relaxed);
     }
     due
+}
+
+/// When [`refused_grammar_retry_due`] will next answer true, or `None` while nothing is
+/// refused — the event loop's wake-up for a retry, which no input or worker event would
+/// otherwise bring.  May be in the past.
+pub fn refused_grammar_retry_at() -> Option<Instant> {
+    GRAMMARS.lock().ok()?.retry_at(GRAMMAR_BUDGET_REFILL)
 }
 
 /// How many blocks the incremental cache remembers.  Small on purpose: `RenderCache`
@@ -771,7 +840,9 @@ pub fn highlight_block(language: Option<&str>, raw_lines: &[&str]) -> Vec<Highli
                 syntax,
                 lines: raw_lines.iter().map(|l| (*l).to_owned()).collect(),
             };
+            WARM_IN_FLIGHT.fetch_add(1, Ordering::Relaxed);
             if WARM_TX.send(request).is_err() {
+                WARM_IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
                 // The worker is gone; the grammar stays `pending`, so this language
                 // renders plain for the session rather than retrying into the failure.
                 tracing::warn!("syntax-highlighting warm worker is unavailable");
@@ -1189,6 +1260,44 @@ mod tests {
             b.admit(999, later, MAX_HIGHLIGHT_GRAMMARS, SEC),
             Admission::Queue
         );
+    }
+
+    #[test]
+    fn retry_at_names_the_instant_take_retry_first_answers_true() {
+        // The event loop sleeps until this instant; one early or absent would leave a
+        // refused language plain until the next keypress.
+        let mut b = budget();
+        let t = Instant::now();
+        fill(&mut b, 0..MAX_HIGHLIGHT_GRAMMARS, t);
+        assert_eq!(
+            b.retry_at(SEC),
+            None,
+            "nothing refused, nothing to wake for"
+        );
+
+        b.admit(999, t, MAX_HIGHLIGHT_GRAMMARS, SEC);
+        let at = b.retry_at(SEC).expect("a refusal stands");
+        assert!(!b.take_retry(at - Duration::from_millis(1), MAX_HIGHLIGHT_GRAMMARS, SEC));
+        assert!(b.take_retry(at, MAX_HIGHLIGHT_GRAMMARS, SEC));
+        assert_eq!(b.retry_at(SEC), None, "consumed with the retry");
+    }
+
+    #[test]
+    fn retry_at_is_already_due_when_a_refill_left_budget_over() {
+        // A later `admit` refills two slots and spends one, leaving `refused` standing with
+        // budget in hand: `take_retry` is true now, so waiting a further interval is late.
+        let mut b = budget();
+        let t = Instant::now();
+        fill(&mut b, 0..MAX_HIGHLIGHT_GRAMMARS, t);
+        b.admit(999, t, MAX_HIGHLIGHT_GRAMMARS, SEC);
+        let later = t + SEC * 2;
+        assert_eq!(
+            b.admit(1000, later, MAX_HIGHLIGHT_GRAMMARS, SEC),
+            Admission::Queue
+        );
+        let at = b.retry_at(SEC).expect("a refusal stands");
+        assert!(at <= later);
+        assert!(b.take_retry(later, MAX_HIGHLIGHT_GRAMMARS, SEC));
     }
 
     #[test]

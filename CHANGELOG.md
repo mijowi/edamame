@@ -36,6 +36,7 @@ Each released version's section is also what ships as the GitHub release notes: 
 - A custom export format (PDF, DOCX, …) no longer lets its converter read images from outside the document's folder without asking, or download remote images you haven't allowed. edamame now embeds every image itself, asking first about out-of-folder ones.
 - Links to a heading (`[x](#section)`) now work in HTML export. Exported headings had no anchors, so these links went nowhere.
 - An image that arrives in the document *after* it was opened now raises the images question. Previously nothing was asked unless the document contained an image at load, so the image stayed as its source line and never rendered.
+- With cursor blink turned off, a code block's syntax colors now appear on their own instead of waiting for the next keypress.
 
 ## [0.1.4] - 2026-09-11
 

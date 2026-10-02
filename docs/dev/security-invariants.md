@@ -88,6 +88,8 @@ Three caps in `src/markdown/highlight.rs` bound the cost, and all three bound **
 - `MAX_HIGHLIGHT_LINE_CHARS` (2 000) bounds the *per-keystroke* cost, which the byte cap cannot: incremental reuse needs an unchanged prefix, and a one-line block (a minified bundle, a pasted base64 blob) has none.
 - `MAX_HIGHLIGHT_GRAMMARS` (24) bounds *grammar compilation*, which scales with how many languages a document names rather than block size (fifty one-line fences in fifty languages pass both other caps and still cost ~430 ms of compiles). Compilation runs on the warm worker (`highlight::spawn_warm_worker`), so the cap bounds the background CPU and queue memory one document can claim, as a refilling burst rather than a lifetime limit.
 
+The warm worker's compile has no time limit either: a stuck one occupies the worker and leaves every grammar queued behind it plain, and the event loop's poll of it backs off to once a second after `SYNTAX_WARM_STALL` rather than waking an idle editor at frame rate (see [syntax-highlighting.md](syntax-highlighting.md)).
+
 The caps were sized against measurement — the `#[ignore]`d `throughput` test in that module. *Parsing* runs synchronously on the render thread, so there is no worker to absorb a slow parse; the tokenizer is wrapped in `catch_unwind` (with an `ExpectedPanic` guard, see the checklist) so a grammar bug degrades one block to plain text. The design behind the caps, the budget, and the sync/async split is in [syntax-highlighting.md](syntax-highlighting.md).
 
 ### SVG parsing reads no external entities, network, or local files

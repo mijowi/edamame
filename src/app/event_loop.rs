@@ -41,6 +41,53 @@ pub(super) struct DocDims {
     pub doc_area: Rect,
 }
 
+/// How long one warm compile may run before [`syntax_warm_wake`] stops polling it at frame
+/// rate.  A normal compile takes ~9 ms; syntect's parse has no time limit, so a grammar stuck
+/// on a hostile block would otherwise wake an idle editor ~60 times a second indefinitely.
+const SYNTAX_WARM_STALL: Duration = Duration::from_secs(1);
+
+/// What the warm worker is doing, as [`syntax_warm_wake`] sees it.
+#[derive(Debug, Clone, Copy)]
+enum WarmWork {
+    /// Nothing sent to it is unfinished.
+    Idle,
+    /// Work is waiting but the worker is between requests.
+    Queued,
+    /// The worker has been on its current compile since this instant.
+    Running(Instant),
+}
+
+/// What [`syntax_warm_wake`] decides from, read off the `highlight` globals.
+struct SyntaxWarmState {
+    now: Instant,
+    /// A compile landed that `tick_syntax_warm` has not yet repainted for.
+    unseen: bool,
+    work: WarmWork,
+    /// When a grammar the burst budget refused may be retried; may be past.
+    retry_at: Option<Instant>,
+}
+
+/// The wake-up policy behind [`App::syntax_warm_deadline`]: at frame rate while a landed
+/// compile is unseen or one is in flight, otherwise when a refused grammar's slot refills.
+/// A compile running past [`SYNTAX_WARM_STALL`] is polled only that often, or sooner if the
+/// retry is due first.  Clamped forward because each can already be due, and
+/// `next_deadline` drops a deadline that is not in the future.
+fn syntax_warm_wake(s: SyntaxWarmState) -> Option<Instant> {
+    let poll = s.now + MIN_FRAME_INTERVAL;
+    let retry = s.retry_at.map(|at| at.max(poll));
+    if s.unseen {
+        return Some(poll);
+    }
+    match s.work {
+        WarmWork::Idle => retry,
+        WarmWork::Running(since) if s.now.saturating_duration_since(since) >= SYNTAX_WARM_STALL => {
+            let slow = s.now + SYNTAX_WARM_STALL;
+            Some(retry.map_or(slow, |at| at.min(slow)))
+        }
+        WarmWork::Queued | WarmWork::Running(_) => Some(poll),
+    }
+}
+
 impl App {
     // ── Setup ─────────────────────────────────────────────────────────────────
 
@@ -210,7 +257,8 @@ impl App {
     /// `Block` value, so `RenderCache` would keep serving the plain render.  The
     /// generation rides in `RenderSettings`, so `refresh_parsed` misses the
     /// cache and re-renders with tokens.  Polled rather than pushed because
-    /// `markdown` sits far below `app` and must not learn about `AppEvent`.
+    /// `markdown` sits far below `app` and must not learn about `AppEvent`;
+    /// [`Self::syntax_warm_deadline`] wakes the loop to do the polling.
     ///
     /// **Two reasons to reparse, not one.**  The generation covers *queued*
     /// grammars; `refused_grammar_retry_due` covers those
@@ -238,6 +286,31 @@ impl App {
         self.syntax_warm_generation = generation;
         self.editor.refresh_parsed();
         self.needs_draw = true;
+    }
+
+    /// When the loop must wake for [`Self::tick_syntax_warm`], which nothing else
+    /// guarantees: with the cursor blink off, a loop that blocks on input would
+    /// leave a just-compiled language plain until the next keypress.  The policy
+    /// is [`syntax_warm_wake`]; this gathers its inputs from `highlight`.
+    pub(super) fn syntax_warm_deadline(&self, now: Instant) -> Option<Instant> {
+        use crate::markdown::highlight;
+
+        if !self.config.editor.syntax_highlighting {
+            return None;
+        }
+        // In-flight first: its `Acquire` of zero is what makes the generation
+        // read below see the worker's final bump.
+        let work = if highlight::warm_in_flight() {
+            highlight::warm_busy_since().map_or(WarmWork::Queued, WarmWork::Running)
+        } else {
+            WarmWork::Idle
+        };
+        syntax_warm_wake(SyntaxWarmState {
+            now,
+            unseen: highlight::warm_generation() != self.syntax_warm_generation,
+            work,
+            retry_at: highlight::refused_grammar_retry_at(),
+        })
     }
 
     /// Coalesce `ImageReady`-driven cache mutations into one parse-and-render
@@ -606,8 +679,9 @@ impl App {
         let mut push_wait = |w: Duration| {
             wait = Some(wait.map_or(w, |existing| existing.min(w)));
         };
-        if let Some(deadline) = self.next_deadline(now) {
-            push_wait(deadline.saturating_duration_since(now));
+        let deadline = self.next_deadline(now);
+        if let Some(deadline) = deadline {
+            push_wait(deadline.at.saturating_duration_since(now));
         }
         if self.needs_draw {
             match since_draw {
@@ -632,9 +706,12 @@ impl App {
                 None
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                // A deadline (reveal / quiesce / throttle) elapsed with no
-                // event.  Redraw once; the loop then blocks on `recv()` again.
-                self.needs_draw = true;
+                // A deadline (reveal / quiesce / throttle) elapsed with no event.
+                // Redraw once, unless it was only the syntax-warm poll (see
+                // `Deadline::redraw`); the loop then blocks on `recv()` again.
+                if deadline.is_none_or(|d| d.redraw) {
+                    self.needs_draw = true;
+                }
                 None
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -1391,6 +1468,8 @@ fn drop_indicator_for(
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use ratatui::layout::Rect;
 
@@ -1399,7 +1478,7 @@ mod tests {
     use crate::search::SearchState;
     use crate::ui::text_input::PASTE_CHAR_CAP;
 
-    use super::DocDims;
+    use super::{syntax_warm_wake, DocDims, SyntaxWarmState, WarmWork, SYNTAX_WARM_STALL};
 
     fn dims() -> DocDims {
         DocDims {
@@ -1762,5 +1841,142 @@ mod tests {
         let mut app = app_with_modal();
         app.dispatch_modal_mouse(&mouse(MouseEventKind::ScrollDown, 1, 1));
         assert!(app.needs_draw);
+    }
+
+    #[test]
+    fn an_unseen_grammar_compile_wakes_the_loop_at_frame_rate() {
+        // With the cursor blink off nothing else wakes the loop, so this deadline is the
+        // only way a just-compiled language gets its color without a keypress.
+        let mut app = app_with_buffer("", 0);
+        app.editor.cursor_blink.apply_config(false, 530);
+        app.config.editor.syntax_highlighting = true;
+        // Behind, not ahead: other tests' compiles bump the shared counter, and one landing
+        // here would make an ahead value current, leaving nothing to wake for.  The counter
+        // only rises, so it never returns to a behind value.
+        app.syntax_warm_generation = crate::markdown::highlight::warm_generation().wrapping_sub(1);
+        let now = Instant::now();
+        let poll = now + super::MIN_FRAME_INTERVAL;
+        assert_eq!(app.syntax_warm_deadline(now), Some(poll));
+        assert!(app.next_deadline(now).is_some_and(|d| d.at <= poll));
+
+        app.config.editor.syntax_highlighting = false;
+        assert_eq!(
+            app.syntax_warm_deadline(now),
+            None,
+            "off means nothing to warm"
+        );
+    }
+
+    fn warm_state(now: Instant) -> SyntaxWarmState {
+        SyntaxWarmState {
+            now,
+            unseen: false,
+            work: WarmWork::Idle,
+            retry_at: None,
+        }
+    }
+
+    #[test]
+    fn syntax_warm_wake_is_none_with_nothing_to_wait_for() {
+        assert_eq!(syntax_warm_wake(warm_state(Instant::now())), None);
+    }
+
+    #[test]
+    fn a_due_or_past_retry_is_clamped_to_the_next_frame() {
+        // `next_deadline` drops a deadline that is not in the future, so an unclamped past
+        // retry would let the loop block on input with the refused language still plain.
+        let now = Instant::now();
+        let poll = now + super::MIN_FRAME_INTERVAL;
+        for at in [now - Duration::from_secs(1), now] {
+            let s = SyntaxWarmState {
+                retry_at: Some(at),
+                ..warm_state(now)
+            };
+            assert_eq!(syntax_warm_wake(s), Some(poll));
+        }
+        let later = now + Duration::from_millis(700);
+        let s = SyntaxWarmState {
+            retry_at: Some(later),
+            ..warm_state(now)
+        };
+        assert_eq!(
+            syntax_warm_wake(s),
+            Some(later),
+            "a future retry is kept as is"
+        );
+    }
+
+    #[test]
+    fn a_stalled_compile_is_polled_slowly_but_a_landed_one_still_promptly() {
+        let now = Instant::now();
+        let poll = now + super::MIN_FRAME_INTERVAL;
+        let busy = |work| SyntaxWarmState {
+            work,
+            ..warm_state(now)
+        };
+        assert_eq!(
+            syntax_warm_wake(busy(WarmWork::Queued)),
+            Some(poll),
+            "queued"
+        );
+        assert_eq!(
+            syntax_warm_wake(busy(WarmWork::Running(now))),
+            Some(poll),
+            "just started"
+        );
+
+        let stuck = WarmWork::Running(now - SYNTAX_WARM_STALL);
+        assert_eq!(syntax_warm_wake(busy(stuck)), Some(now + SYNTAX_WARM_STALL));
+
+        // A compile that landed before the stuck one began is still shown at frame rate.
+        let s = SyntaxWarmState {
+            unseen: true,
+            ..busy(stuck)
+        };
+        assert_eq!(syntax_warm_wake(s), Some(poll));
+    }
+
+    #[test]
+    fn a_retry_due_during_a_stall_is_not_held_to_the_stall_interval() {
+        let now = Instant::now();
+        let stuck = |retry_at| SyntaxWarmState {
+            work: WarmWork::Running(now - SYNTAX_WARM_STALL),
+            retry_at,
+            ..warm_state(now)
+        };
+        let soon = now + Duration::from_millis(300);
+        assert_eq!(syntax_warm_wake(stuck(Some(soon))), Some(soon));
+        let late = now + SYNTAX_WARM_STALL * 3;
+        assert_eq!(
+            syntax_warm_wake(stuck(Some(late))),
+            Some(now + SYNTAX_WARM_STALL),
+            "the stall poll still runs when the retry is further off"
+        );
+    }
+
+    #[test]
+    fn a_wake_only_to_poll_the_warm_worker_does_not_redraw() {
+        // A stalled compile is polled once a second for as long as it runs; redrawing on
+        // each of those wakes would repaint an idle screen for nothing.
+        let mut app = app_with_buffer("", 0);
+        app.editor.cursor_blink.apply_config(false, 530);
+        app.config.editor.syntax_highlighting = true;
+        // Behind, not ahead: see `an_unseen_grammar_compile_wakes_the_loop_at_frame_rate`.
+        app.syntax_warm_generation = crate::markdown::highlight::warm_generation().wrapping_sub(1);
+        app.needs_draw = false;
+        let now = Instant::now();
+        let deadline = app.next_deadline(now).expect("the warm poll is armed");
+        assert!(
+            !deadline.redraw,
+            "the poll must be the first deadline: {:?}",
+            app.timer_deadline(now).map(|t| t - now)
+        );
+
+        let (_tx, rx) = std::sync::mpsc::channel();
+        assert!(
+            app.next_event(&rx, None).is_none(),
+            "the poll deadline elapsed"
+        );
+        assert!(!app.needs_draw);
     }
 }

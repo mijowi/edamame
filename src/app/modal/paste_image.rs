@@ -310,7 +310,7 @@ mod tests {
         );
         app.tick_clipboard_read();
         assert!(!app.any_modal_shown(), "hidden before the delay");
-        let wake = app.next_deadline(started).expect("a wake-up to show it");
+        let wake = app.next_deadline(started).expect("a wake-up to show it").at;
         assert!(wake <= Instant::now() + READ_MODAL_DELAY);
     }
 
