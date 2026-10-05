@@ -932,7 +932,7 @@ pub(super) fn preview_table_cell_band(
         ) => row == clicked,
         _ => false,
     };
-    if !kinds.get(block.sub_idx).is_some_and(&same_row) {
+    if !kinds.get(block.sub_idx).is_some_and(same_row) {
         return None;
     }
 
