@@ -8,6 +8,8 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-05
+
 ### Added
 
 - An uninstall script that removes edamame's config and state files, and the binary (deferring to the package manager if applicable).
