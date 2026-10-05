@@ -8,7 +8,7 @@ edition = "2021"
 # dependency tree.  Raising it is a deliberate change, not a side effect of
 # using a new language feature: re-run `cargo msrv find` and bump the CI job.
 rust-version = "1.90"
-description = "A fast TUI Markdown editor and viewer"
+description = "A Terminal Markdown editor that stays rendered while you edit"
 authors = ["mijowi"]
 license = "Apache-2.0"
 readme = "README.md"
