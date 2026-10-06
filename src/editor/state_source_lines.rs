@@ -306,6 +306,103 @@ mod tests {
         );
     }
 
+    /// A blank inside a code block nested in a list item renders a code row, unlike an
+    /// interior blank in the item's prose; counting it as rowless shifted every number below it.
+    #[test]
+    #[ignore = "row-provenance: phase 3"]
+    fn a_blank_inside_a_nested_code_block_keeps_its_number() {
+        let source = "8. Tag it.\n\n    ```bash\n    gh run watch\n\n      indented\n    ```\n";
+        let state = state_for(source, 80);
+        let labels = labels(&state, 80);
+        // Rows: item, ` bash ` label, body, blank body, body, closing fence.
+        assert_eq!(
+            labels[..6],
+            [Some(0), Some(2), Some(3), Some(4), Some(5), Some(6)],
+            "{labels:?}"
+        );
+    }
+
+    /// An item whose first block starts on its marker line renders the marker on a row of its
+    /// own, so that line spans two rows; counting it as one put every number below it a row
+    /// high.  The extra row (the fence label, the nested item, the quote) stays unnumbered,
+    /// and the cursor on each line lands on its numbered row.
+    #[test]
+    #[ignore = "row-provenance: phase 3"]
+    fn a_marker_line_opening_a_block_keeps_the_numbers_below_it() {
+        for (source, expected) in [
+            (
+                "- ```bash\n  code\n  ```\n- next item\n\n- third\n",
+                // Rows: `•`, ` bash ` label, body, closing fence, item, separator, item.
+                &[Some(0), None, Some(1), Some(2), Some(3), Some(4), Some(5)][..],
+            ),
+            (
+                "- - a\n  - b\n- c\n",
+                // Rows: `•`, nested `• a`, nested `• b`, `• c`.
+                &[Some(0), None, Some(1), Some(2)][..],
+            ),
+            (
+                "1. a\n   - ```\n     x\n     ```\n2. b\n",
+                // Rows: `1. a`, nested `•`, empty label, body, closing fence, `2. b`.
+                &[Some(0), Some(1), None, Some(2), Some(3), Some(4)][..],
+            ),
+            (
+                // An unclosed fence, as while typing it, still renders a closing row.
+                "- a\n  ```\n  x\n- b\n",
+                // Rows: `• a`, empty label, body, closing placeholder, `• b`.
+                &[Some(0), Some(1), Some(2), None, Some(3)][..],
+            ),
+            (
+                // A bare marker shares its paragraph's row: `• text`.
+                "-\n  text\n- b\n",
+                &[Some(1), Some(2)][..],
+            ),
+            (
+                "- a\n  soft\n- b\n",
+                // Rows: `• a`, `  soft`, `• b`.
+                &[Some(0), Some(1), Some(2)][..],
+            ),
+        ] {
+            let mut state = state_for(source, 80);
+            let labels = labels(&state, 80);
+            assert_eq!(labels[..expected.len()], *expected, "{source:?}");
+            for (row, line) in expected
+                .iter()
+                .enumerate()
+                .filter_map(|(row, l)| l.map(|line| (row, line)))
+            {
+                state.cursor.offset = state.buffer.line_to_char(line);
+                state.update_cursor_block();
+                assert_eq!(
+                    state.cursor_visual_row(80),
+                    row,
+                    "{source:?}: the cursor on line {line} must land on row {row}"
+                );
+            }
+        }
+    }
+
+    /// A loose list inside a blockquote renders tight, so the bare `>` between its items renders
+    /// no row; counting that line as a row put every number and cursor below it a row low.
+    #[test]
+    #[ignore = "row-provenance: phase 3"]
+    fn a_loose_list_in_a_blockquote_keeps_the_numbers_below_it() {
+        let source = "> - a\n>\n> - b\n>\n> tail\n";
+        let mut state = state_for(source, 80);
+        // Rows: `• a`, `• b`, the quoted blank, `tail`.
+        let expected = [Some(0), Some(2), Some(3), Some(4)];
+        let labels = labels(&state, 80);
+        assert_eq!(labels[..expected.len()], expected, "{labels:?}");
+        for (row, line) in [(0, 0), (1, 2), (2, 3), (3, 4)] {
+            state.cursor.offset = state.buffer.line_to_char(line);
+            state.update_cursor_block();
+            assert_eq!(
+                state.cursor_visual_row(80),
+                row,
+                "the cursor on line {line} must land on row {row}"
+            );
+        }
+    }
+
     /// Sweeps the gutter invariants (unique, ascending, agrees with where `{count}G` parks
     /// the cursor) over every block kind in the sample fixture at a wrapping and a
     /// non-wrapping width.  Compares against `cursor_visual_row`, not

@@ -1859,6 +1859,152 @@ fn click_on_code_block_body_lands_on_clicked_char() {
     }
 }
 
+/// A blank between a list item's paragraph and its nested code block renders no row, so the
+/// rows below it are not 1:1 with the block's source lines.  Indexing raw lines by rendered
+/// row landed every click below the gap on the source line above.
+#[test]
+#[ignore = "row-provenance: phase 3"]
+fn click_on_code_nested_in_list_item_lands_on_clicked_line() {
+    let src = "8. Tag it.\n\n    ```bash\n    git tag\n    gh run watch\n    ```\n";
+    // Rendered rows: 0 = "8. Tag it.", 1 = " bash ", 2 = " git tag", 3 = " gh run watch".
+    for (row, expected) in [
+        (0u16, "8. Tag it."),
+        (1, "    ```bash"),
+        (2, "    git tag"),
+        (3, "    gh run watch"),
+    ] {
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        let mut anchor: Option<mouse_ops::DragTarget> = None;
+        let mut mouse = MouseDispatcher::new();
+        if let Some(a) = mouse.dispatch(click_event(3, row), area()) {
+            mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+        }
+        let line = st.buffer.rope().char_to_line(st.cursor.offset);
+        assert_eq!(
+            st.buffer.line(line).unwrap().trim_end_matches('\n'),
+            expected,
+            "click on row {row}",
+        );
+    }
+}
+
+/// A nested item's continuation line renders at the renderer's child indent, two cells deeper
+/// than the source's; the generic prefix inference couldn't place it, so clicks landed two
+/// chars right of the target.
+#[test]
+#[ignore = "row-provenance: phase 4"]
+fn click_on_a_nested_items_continuation_lands_on_clicked_char() {
+    let src = "- a\n  - b\n    soft word\n";
+    // Rendered rows: 0 = "• a", 1 = "    • b", 2 = "      soft word".
+    for (screen_col, target) in [(6u16, "soft word"), (11, "word"), (2, "soft word")] {
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        let mut anchor: Option<mouse_ops::DragTarget> = None;
+        let mut mouse = MouseDispatcher::new();
+        if let Some(a) = mouse.dispatch(click_event(screen_col, 2), area()) {
+            mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+        }
+        assert_eq!(
+            st.cursor.offset,
+            src.find(target).unwrap(),
+            "click at col {screen_col} should land on {target:?}, landed on {:?}",
+            st.contents().chars().nth(st.cursor.offset),
+        );
+    }
+}
+
+/// A code body row nested in a list item is painted without the item's indent, so a click
+/// must add back the indent pulldown-cmark stripped, as for an indented code block.
+#[test]
+#[ignore = "row-provenance: phase 4"]
+fn click_on_code_nested_in_list_item_lands_on_clicked_char() {
+    let src = "8. Tag it.\n\n    ```bash\n    gh run watch\n\n      indented\n    ```\n";
+    // Rendered rows: 0 = "8. Tag it.", 1 = " bash ", 2 = " gh run watch", 3 = blank code
+    // row, 4 = "   indented".  Screen col c shows the body char c - 1.
+    for (screen_col, row, target) in [
+        (1u16, 2u16, "gh run watch"),
+        (4, 2, "run watch"),
+        (8, 2, "watch"),
+        (3, 4, "indented"),
+    ] {
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        let mut anchor: Option<mouse_ops::DragTarget> = None;
+        let mut mouse = MouseDispatcher::new();
+        if let Some(a) = mouse.dispatch(click_event(screen_col, row), area()) {
+            mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+        }
+        assert_eq!(
+            st.cursor.offset,
+            src.find(target).unwrap(),
+            "click at ({screen_col}, {row}) should land on {target:?}, landed on {:?}",
+            st.contents().chars().nth(st.cursor.offset),
+        );
+    }
+}
+
+/// A fence on an item's marker line renders the marker on a row of its own above the fence's
+/// label, so that source line spans two rows; mapping it to one put every click below it on
+/// the line above.  A click on the label row belongs to the fence line.
+#[test]
+#[ignore = "row-provenance: phase 3"]
+fn click_below_a_fence_on_a_list_marker_line_lands_on_clicked_line() {
+    let src = "- ```bash\n  gh run watch\n  ```\n- next item\n";
+    // Rendered rows: 0 = "•", 1 = " bash " label, 2 = " gh run watch", 3 = closing fence,
+    // 4 = "• next item".  Screen col c of the body row shows body char c - 1.
+    for (screen_col, row, target) in [
+        (0u16, 1u16, "- ```bash"),
+        (4, 2, "run watch"),
+        (2, 4, "next item"),
+    ] {
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        let mut anchor: Option<mouse_ops::DragTarget> = None;
+        let mut mouse = MouseDispatcher::new();
+        if let Some(a) = mouse.dispatch(click_event(screen_col, row), area()) {
+            mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+        }
+        let line = st.buffer.rope().char_to_line(st.cursor.offset);
+        let target_line = st.buffer.rope().char_to_line(src.find(target).unwrap());
+        assert_eq!(
+            line, target_line,
+            "click at ({screen_col}, {row}) landed on the wrong line"
+        );
+        if row != 1 {
+            assert_eq!(
+                st.cursor.offset,
+                src.find(target).unwrap(),
+                "click at ({screen_col}, {row}) should land on {target:?}",
+            );
+        }
+    }
+}
+
+/// A last item whose first block opens on its marker line (`- > q`, `- - b`) renders that block
+/// on a row below the line's own, past every row a source line starts on.  That row belongs to
+/// the line above it like any other; the trailing blank the block's range absorbs claimed it
+/// instead, putting the click on the blank line after the list.
+#[test]
+#[ignore = "row-provenance: phase 3"]
+fn click_on_the_extra_row_of_a_last_list_item_lands_on_its_line() {
+    for src in ["- a\n- > q\n\nafter\n", "- a\n- - b\n\nafter\n"] {
+        // Rendered rows: 0 = "• a", 1 = "•", 2 = the quote / nested item.
+        let mut st = state(src);
+        st.mode = Mode::Rendered;
+        let mut anchor: Option<mouse_ops::DragTarget> = None;
+        let mut mouse = MouseDispatcher::new();
+        if let Some(a) = mouse.dispatch(click_event(4, 2), area()) {
+            mouse_ops::apply(&mut st, a, &mut anchor, &[], VP, VW);
+        }
+        assert_eq!(
+            st.buffer.rope().char_to_line(st.cursor.offset),
+            1,
+            "{src:?}: a click on row 2 must land on the second item's line"
+        );
+    }
+}
+
 /// The indented-code twin: pulldown-cmark strips the leading indent, so
 /// the click has to add it back on top of removing the pad cell.
 #[test]

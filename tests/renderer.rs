@@ -265,6 +265,40 @@ fn ordered_list_numbers() {
     assert!(text.contains("2."), "got: {text:?}");
 }
 
+/// With reflow off, an item's first paragraph renders one row per source line, like its later
+/// ones and like a top-level paragraph.  Its breaks — soft or hard — once collapsed to spaces,
+/// which dropped the hard break.
+#[test]
+#[ignore = "row-provenance: phase 3"]
+fn a_list_items_first_paragraph_renders_one_row_per_source_line() {
+    let lines = render("- a\n  soft\n- b\\\n  hard\n1. c\nlazy\n");
+    let text: Vec<String> = lines.iter().map(line_text).collect();
+    assert_eq!(
+        text,
+        ["• a", "  soft", "• b", "  hard", "1. c", "   lazy"],
+        "{text:?}"
+    );
+}
+
+/// A blockquote renders one row per source line: a quoted blank row for each bare `>`, and none
+/// the source doesn't hold.  It once put a blank between every two children and dropped an
+/// empty quote, so every row below sat off from its source line.
+#[test]
+#[ignore = "row-provenance: phase 3"]
+fn a_blockquote_renders_one_row_per_source_line() {
+    for (src, rows) in [
+        ("> q\n> ```\n> x\n> ```\n", 4),
+        ("> a\n>\n>\n> b\n", 4),
+        (">\n", 1),
+        (">\n> a\n>\n", 3),
+    ] {
+        let lines = render(src);
+        let text: Vec<String> = lines.iter().map(line_text).collect();
+        assert_eq!(text.len(), rows, "{src:?}: {text:?}");
+        assert!(text.iter().all(|t| t.starts_with('▎')), "{src:?}: {text:?}");
+    }
+}
+
 #[test]
 fn horizontal_rule() {
     let lines = render("---\n");

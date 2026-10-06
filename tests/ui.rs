@@ -2027,6 +2027,222 @@ fn rendered_view_code_block_cursor_indicator_sits_on_its_char() {
     }
 }
 
+/// A code block nested in a list item belongs to the `List` block, which reveals its cursor
+/// line as raw source.  A code body line must not: the row keeps its highlighting, background
+/// and layout, and only gains the cursor indicator — on the char it is on, past the pad cell
+/// and the item indent pulldown-cmark stripped.
+#[test]
+#[ignore = "row-provenance: phase 4"]
+fn rendered_view_code_nested_in_list_item_does_not_reveal_its_body() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // Rendered rows: 0 = "8. Tag it.", 1 = " bash " label, 2 = " gh run watch".
+    let src = "8. Tag it.\n\n    ```bash\n    gh run watch\n    ```\n";
+    let width: u16 = 30;
+    let draw = |cursor: usize| {
+        let mut state = EditorState::new(Buffer::from_str(src), theme);
+        state.mode = Mode::Rendered;
+        state.cursor.offset = cursor;
+        state.set_viewport_width(width as usize);
+        state.update_cursor_block();
+        state.cursor_block_entered_at = None; // reveal fires immediately
+        let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+        let mut view_state = RenderedViewState::default();
+        terminal
+            .draw(|frame| {
+                let view = RenderedView {
+                    cursor_style: theme.status_mode_rendered,
+                    visual_kind: None,
+                    drop_indicator: None,
+                    show_table_buttons: false,
+                    state: &state,
+                    theme,
+                };
+                frame.render_stateful_widget(view, frame.area(), &mut view_state);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    };
+
+    let resting = draw(0);
+    // The `r` of `run`: raw col 7, rendered col 7 - 4 + 1 = 4.
+    let active = draw(src.find("run").unwrap());
+    let cursor_x = 4u16;
+    for x in 0..width {
+        let (r, a) = (resting.cell((x, 2)).unwrap(), active.cell((x, 2)).unwrap());
+        assert_eq!(a.symbol(), r.symbol(), "row text changed at col {x}");
+        if x != cursor_x {
+            assert_eq!(a.style(), r.style(), "row styling changed at col {x}");
+        }
+    }
+    assert_eq!(active.cell((cursor_x, 2)).unwrap().symbol(), "r");
+    assert_eq!(
+        active.cell((cursor_x, 2)).unwrap().style().bg,
+        theme.status_mode_rendered.bg,
+        "cursor indicator must sit on the `r`",
+    );
+}
+
+/// The selection overlay on a code body row nested in a list item maps through the pad cell
+/// and the stripped item indent, and finds the row's source line past the blank line that
+/// renders no row (a 1:1 lookup washed the line above).
+#[test]
+#[ignore = "row-provenance: phase 4"]
+fn rendered_view_selection_on_code_nested_in_list_item_covers_its_chars() {
+    use edamame::document::{Buffer, Selection};
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // Rendered rows: 0 = "8. Tag it.", 1 = " bash " label, 2 = " gh run watch".
+    let src = "8. Tag it.\n\n    ```bash\n    gh run watch\n    ```\n";
+    let width: u16 = 30;
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    state.set_viewport_width(width as usize);
+    let run = src.find("run").unwrap();
+    state.selection = Some(Selection {
+        anchor: run,
+        active: run + 3,
+    });
+    state.cursor.offset = 0;
+
+    let mut terminal = Terminal::new(TestBackend::new(width, 6)).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                cursor_style: theme.status_mode_rendered,
+                visual_kind: None,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let washed = |y: u16| -> Vec<u16> {
+        (0..width)
+            .filter(|&x| buf.cell((x, y)).unwrap().style().bg == theme.selection.bg)
+            .collect()
+    };
+    assert_eq!(
+        washed(2),
+        [4, 5, 6],
+        "`run` sits at cols 4..7 of the body row"
+    );
+    assert!(washed(1).is_empty(), "the label row must stay unselected");
+}
+
+/// The selection overlay on the nested item a last list item opens on its marker line: it
+/// renders below the line's own row, which the trailing blank the block's range absorbs used to
+/// claim, so nothing was washed.
+#[test]
+#[ignore = "row-provenance: phase 4"]
+fn rendered_view_selection_on_a_last_items_nested_item_covers_it() {
+    use edamame::document::{Buffer, Selection};
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // Rendered rows: 0 = "• a", 1 = "•", 2 = the nested "• q".
+    let src = "- a\n- - q\n\nafter\n";
+    let width: u16 = 30;
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    state.set_viewport_width(width as usize);
+    let q = src.find('q').unwrap();
+    state.selection = Some(Selection {
+        anchor: q,
+        active: q + 1,
+    });
+    state.cursor.offset = src.find("after").unwrap();
+    state.update_cursor_block();
+
+    let mut terminal = Terminal::new(TestBackend::new(width, 6)).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                cursor_style: theme.status_mode_rendered,
+                visual_kind: None,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let washed: Vec<&str> = (0..width)
+        .map(|x| buf.cell((x, 2)).unwrap())
+        .filter(|c| c.style().bg == theme.selection.bg)
+        .map(|c| c.symbol())
+        .collect();
+    assert_eq!(washed, ["q"], "the nested item's `q` must be washed");
+}
+
+/// A nested item's continuation line renders at the renderer's child indent, deeper than the
+/// source's; mapping it 1:1 washed the cells two to the left of the match.  The third level's
+/// six-space indent would parse as an indented code block on its own, so the map must not.
+#[test]
+#[ignore = "row-provenance: phase 4"]
+fn rendered_view_selection_on_a_nested_items_continuation_covers_it() {
+    use edamame::document::{Buffer, Selection};
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    // Rendered rows: 0 = "• a", 1 = "    • b", 2 = "      soft *word*", 3 = "        • c",
+    // 4 = "          deep word".
+    let src = "- a\n  - b\n    soft *word*\n    - c\n      deep word\n\nafter\n";
+    let width: u16 = 30;
+    for (needle, row, expected) in [("word*", 2u16, "word"), ("word\n", 4, "word")] {
+        let mut state = EditorState::new(Buffer::from_str(src), theme);
+        state.mode = Mode::Rendered;
+        state.set_viewport_width(width as usize);
+        let start = src.find(needle).unwrap();
+        state.selection = Some(Selection {
+            anchor: start,
+            active: start + 4,
+        });
+        state.cursor.offset = src.find("after").unwrap();
+        state.update_cursor_block();
+
+        let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+        let mut view_state = RenderedViewState::default();
+        terminal
+            .draw(|frame| {
+                let view = RenderedView {
+                    cursor_style: theme.status_mode_rendered,
+                    visual_kind: None,
+                    drop_indicator: None,
+                    show_table_buttons: false,
+                    state: &state,
+                    theme,
+                };
+                frame.render_stateful_widget(view, frame.area(), &mut view_state);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let washed: String = (0..width)
+            .map(|x| buf.cell((x, row)).unwrap())
+            .filter(|c| c.style().bg == theme.selection.bg)
+            .map(|c| c.symbol())
+            .collect();
+        assert_eq!(washed, expected, "row {row}");
+    }
+}
+
 /// Companion to the fenced case: pulldown-cmark strips an indented block's
 /// leading indent, so the rendered column is `raw - strip + pad`.
 #[test]
