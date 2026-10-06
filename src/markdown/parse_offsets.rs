@@ -77,7 +77,7 @@ const BASE_OPTIONS: Options = Options::ENABLE_TABLES
 ///
 /// Every parse of a document — AST, offset scan, HTML export — must pass that document's own
 /// text here, or the 1:1 blocks↔ranges pairing breaks.
-pub(crate) fn options_for(source: &str) -> Options {
+pub fn options_for(source: &str) -> Options {
     BASE_OPTIONS.union(metadata_options_for(source))
 }
 
@@ -122,6 +122,7 @@ impl<F: FnMut(BlockKind) -> bool> RangeTracker<F> {
         }
     }
 
+    #[inline]
     pub fn observe(&mut self, source: &str, event: &Event<'_>, byte_range: &Range<usize>) {
         match event {
             Event::Start(tag) => {

@@ -7,7 +7,6 @@ use crate::editor::list_edit::parse::{
     cursor_item_idx, line_end_byte, line_start_byte, parse_line_start, ContinueResult, ListInfo,
     ListItemInfo, MarkerKind,
 };
-use crate::markdown::{is_closing_fence, parse_opening_fence};
 
 /// Continue the list at `cursor_byte` with a new empty item, renumbering later ordered
 /// items.  `None` (caller falls through to a plain newline) when the cursor is inside the
@@ -550,6 +549,37 @@ pub fn renumber_ordered_runs_in_range(source: &str, start: usize, end: usize) ->
         removed: block.to_owned(),
         inserted: out,
     })
+}
+
+/// An opening fence marker: its character (`` ` `` or `~`) and run length.  Indentation of
+/// any depth is permitted — inside a list item the fence sits at the content column, and
+/// renumbering only needs to know whether a line is inside a fence.
+fn parse_opening_fence(line: &str) -> Option<(char, usize)> {
+    let trimmed = line.trim_start();
+    let first = trimmed.chars().next()?;
+    if first != '`' && first != '~' {
+        return None;
+    }
+    let count = trimmed.chars().take_while(|&c| c == first).count();
+    if count < 3 {
+        return None;
+    }
+    // Backtick fences disallow backticks anywhere in the info string.
+    if first == '`' && trimmed[count..].contains('`') {
+        return None;
+    }
+    Some((first, count))
+}
+
+/// A closing fence for an open `fence_char` × `min_count`: same character, at least as
+/// long, whitespace-only after it (CommonMark).
+fn is_closing_fence(line: &str, fence_char: char, min_count: usize) -> bool {
+    let trimmed = line.trim_start();
+    let count = trimmed.chars().take_while(|&c| c == fence_char).count();
+    if count < min_count {
+        return false;
+    }
+    trimmed[count..].chars().all(char::is_whitespace)
 }
 
 fn render_marker(indent: &str, kind: MarkerKind, number: u64) -> String {

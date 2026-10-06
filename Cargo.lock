@@ -904,6 +904,7 @@ dependencies = [
  "image",
  "insta",
  "libc",
+ "memchr",
  "mermaid-rs-renderer",
  "mimalloc",
  "notify",

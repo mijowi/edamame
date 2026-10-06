@@ -123,10 +123,15 @@ pub(super) fn paint_byte_range_overlay(
     let block_text = source
         .get(block_range.start..block_range.end.min(source.len()))
         .unwrap_or("");
-    let rendered_span = editor
-        .parsed
-        .source_map
-        .rendered_lines_for_byte(block_range.start);
+    let Some(block_idx) = editor.parsed.source_map.block_for_byte(block_range.start) else {
+        return;
+    };
+    // An image's reserved rows show no text to select.  A diagram's map 1:1 onto its source.
+    if editor.parsed.is_image_block(block_idx) && !editor.parsed.is_diagram_reveal_block(block_idx)
+    {
+        return;
+    }
+    let rendered_span = editor.parsed.source_map.rendered_lines_for_block(block_idx);
     let sub_idx_in_block = rendered_line_idx.saturating_sub(rendered_span.start);
     let is_table = table_edit::is_table_block(block_text);
 
@@ -191,7 +196,8 @@ pub(super) fn paint_byte_range_overlay(
             _ => return,
         }
     } else {
-        sub_idx_in_block
+        // The line the row shows, as the renderer recorded it.
+        crate::document::row_map::line_for_row(&editor.parsed, block_idx, sub_idx_in_block)
     };
 
     let raw_lines: Vec<&str> = block_text.split('\n').collect();

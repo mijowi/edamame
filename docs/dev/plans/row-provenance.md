@@ -1,6 +1,6 @@
 # Row provenance — the renderer records where each row came from
 
-Status: **DESIGN (2026-10-05).** Targeted at the next release, which ships every phase together, nested reflow included. Supersedes the discarded `list-row-mapping` patch (see [Phase 0](#phase-0--discard-the-patch-keep-its-tests)) and absorbs [`nested-reflow.md`](nested-reflow.md) as this plan's Phase 7. Sibling context: [`editing-model.md`](../editing-model.md), [`input.md`](../input.md), [`blockquotes.md`](../blockquotes.md), [`tables.md`](../tables.md).
+Status: **IN PROGRESS (2026-10-05)** — Phases 0–3 done; 4–7 open. Targeted at the next release, which ships every phase together, nested reflow included. Supersedes the discarded `list-row-mapping` patch (see [Phase 0](#phase-0--discard-the-patch-keep-its-tests)) and absorbs [`nested-reflow.md`](nested-reflow.md) as this plan's Phase 7. Sibling context: [`editing-model.md`](../editing-model.md), [`input.md`](../input.md), [`blockquotes.md`](../blockquotes.md), [`tables.md`](../tables.md).
 
 ## Problem
 
@@ -90,7 +90,7 @@ pub enum ContentKind {
     /// i.e. each line in `lines` sliced past its `content_col`, joined by `\n` (soft breaks
     /// render as spaces).  A raw char index into that text converts back to `(line, col)` by
     /// walking the slices.  For a top-level paragraph every `content_col` is 0, so this is
-    /// exactly today's block-wide map.
+    /// exactly today's block-wide map.  (Unsafe as written: see the Phase 2 notes.)
     Flow,
 }
 ```
@@ -133,7 +133,7 @@ A new `document::row_map` owns every question the consumers ask, answered from `
 
 **The functions.** All operate on rows shown rendered:
 
-- `row_for_line(block, line) -> usize`: the first row whose `lines.start >= L`, clamped to the block's last own row. This is the same prefix-sum rule `sub_lines_in_block` encodes today: a line rendering no row (an interior blank, a setext underline, a bare `-`) shares the next line's row.
+- `row_for_line(block, line) -> usize`: the first row whose lines reach `L` (`lines.end > L`), else the last row that shows a line. This is the same prefix-sum rule `sub_lines_in_block` encoded: a line rendering no row (an interior blank, a setext underline, a bare `-`) shares the next line's row, and an interior line of a multi-line `Flow` row lands on that row.
 - `line_for_row(block, row) -> usize`: the row's `lines.start`, or, for `None`, the nearest owned line above. This is the inverse the discarded `raw_lines_by_sub_row` reconstructed.
 - `raw_to_rendered_col(row, raw_col) -> Option<usize>` and `rendered_to_raw_col(row, rendered_col) -> usize`: one `match` on `ColOrigin`. Inside the prefix, both clamp to the content start. `raw_to_rendered_col` returns `None` where the inline map can't place a column, so the overlay skips instead of painting off by N. For a `Flow` row the raw side is a `(line, col)` pair, not a bare column.
 - `reveals(row) -> bool`.
@@ -167,7 +167,7 @@ Unchanged: `SourceMap`'s block-level role (byte → top-level block, extended ra
 - **Preview mode's mapping.** It never reveals, and it already reads the rendered rows. It benefits from `row_map` incidentally but gets no dedicated work.
 - **Reflowing across hard breaks.** The `HardBreak` fallback in `render_paragraph` stays.
 - **The wrap engine** (`line_render`) and `EffectiveRows`' reveal patch.
-- **Any rendering change** beyond the two in [Rendering decisions](#rendering-decisions) and the setext H2 rule moving (not changing) from `build` to the renderer.
+- **Any rendering change** beyond the two in [Rendering decisions](#rendering-decisions) and the setext H2 rule moving from `build` to the renderer. The review of Phases 1–3 added three small ones, recorded in their implementation notes: the setext H2 rule's reach, footnote continuation indents, and link definitions inside a quote.
 
 ## Phases
 
@@ -182,9 +182,9 @@ The uncommitted `list-row-mapping` patch fixed real bugs (code nested in list it
 3. Add the case the review found, which the patch also gets wrong: a loose list inside a blockquote (`> - a\n>\n> - b\n>\n> tail`) puts every row below it off.
 4. Leave out the tests of the patch's internals (`code_lines`, `list_lines`, `quote_blanks`, `raw_lines_by_sub_row`). They are gone with the patch. The agreement test's seed corpus is instead the sources of the behavioral tests that commit `0c65503` added (listed under [Phase 2](#phase-2--the-renderer-emits-roworigin-m)).
 
-The ignored set is the acceptance list; `grep -rn 'row-provenance: phase' src tests` shows what's left. It holds tests for Phases 3 and 4. Phases 1, 2, 5, 6 and 7 are refactors or new work with no failing behavior on HEAD, so their done criteria are spelled out per phase below instead.
+The ignored set is the acceptance list; `grep -rn 'row-provenance: phase' src tests` shows what's left. It holds tests for Phase 4. Phases 1, 2, 5, 6 and 7 are refactors or new work with no failing behavior on HEAD, so their done criteria are spelled out per phase below instead.
 
-### Phase 1 — positions in the AST (M)
+### Phase 1 — positions in the AST (M) — done
 
 - `parse_blocks` and helpers take `(Event, Range)`; leaf blocks get `SrcLines`, containers' children get spans.
 - **Still one parse.** A `#[cfg(test)]` thread-local counter in `markdown::parser`, incremented where `parse_raw_with_ranges` calls `Parser::new_ext`, asserts that one `ParsedDoc::build` increments it exactly once. It counts that call site only: `inline_col_map` builds a `Parser` per line and `parse_raw` builds one for tests and benches, and neither is the block parse. `state_source_lines`' `BUILD_COUNT` is the pattern.
@@ -200,7 +200,21 @@ The ignored set is the acceptance list; `grep -rn 'row-provenance: phase' src te
 - **No consumer changes and no rendering changes.** The only snapshot churn is the AST debug snapshots gaining `SrcLines` (see [Risks](#risks)).
 - **Done when:** the suite is green, the proptest and unit tests pass, and `annotate_list_blanks` and `ListItem::blank_lines_before` are gone.
 
-### Phase 2 — the renderer emits `RowOrigin` (M)
+**Implementation notes (2026-10-05).** The stream lives in `markdown::parser::stream` (`EventStream`): the parser asks it for events exactly as before, and it notes each consumed event's position against the open leaf. Deviations and findings:
+
+- **`content_col` needed four rules the design didn't state**, all forced by what pulldown-cmark emits:
+  - *Text runs across lines.* A code block's blank line arrives folded into the previous line's `Text` (`"x\n\n"`), so no event starts on it. A `Text` (or block `Html`) running onto a later line holds that line from column 0 — safe, because pulldown-cmark splits text wherever a container prefix intervenes.
+  - *Atomic inlines across lines.* A multi-line code span, math span or inline HTML spans a container prefix it doesn't hold (its payload is re-assembled), and renders on its first line's row. Its later lines are `None`, even when a later event starts on one (`d` `` ` `` ` e`). So `Some` marks exactly the lines a paragraph segment begins on, which the renderer relies on (Phase 2).
+  - *A line opening with a link's or image's close.* In `[a\n](u)`, the only event on line 1 is `End(Link)`, and an `End` repeats its `Start`'s range. The recorder notes such a line itself, past its container prefix (`>`, spaces, tabs; paragraph text can't begin with `>`). Without that, the line had no column, and `paragraph_rows` handed the next segment's row a chrome origin.
+  - *Images are atomic inlines too.* Their alt text renders on the image's first row, so alt lines after the first are `None`, like a code span's. The renderer counts no breaks inside an image, and before this a multi-line alt shifted every row below it up a line.
+  - The proptest re-derivation encodes the first two, so it reads: `Some(col)` is the earliest content event start on the line, or 0 if a text run begun above covers it; `None` means no content event starts there unless the line continues an atomic inline.
+- **Tabs.** Content starting inside a partly consumed tab arrives as an *empty-range* `Text` of synthesized spaces placed *past* the tab; the recorder maps it back to the tab's own column. A continuation line simply indented by a tab (`- a\n\tb`) records the column of `b`, after the tab — the tab there is whitespace, not content. Both are unit tests.
+- **Container spans.** A blockquote's span comes from its range (a trailing bare `>` is the quote's), less a last line the range only reaches partway into (pulldown-cmark ends some ranges inside the next line's `> ` prefix). A list's, an item's and a footnote definition's come from their children, because their ranges absorb the blank lines after them.
+- **Loose-list spacing differs from HEAD in two cases, both fixes.** The source scan `annotate_list_blanks` did never saw a fence opening on a marker line, and never closed a fence that ended with its container, so it double-counted a blank that is code content (`- ```\n\n- a`) or dropped a real separator after an unclosed nested fence. A differential run over 2,000 generated documents found no other disagreement; the existing suite is unchanged.
+- **CRLF.** A content event starting at a CRLF line's `\n` takes the `\r`'s column, so a blank CRLF code line records column 0, the same as an LF one.
+- The generator is shared by both proptests: `tests/support/markdown_gen.rs`.
+
+### Phase 2 — the renderer emits `RowOrigin` (M) — done
 
 - Sink, `ParsedDoc::build`'s own rows, container wrapping, cache, and `ParsedDoc::row_origins` as in §2. `Flow` origins for reflowed top-level paragraphs. The setext H2 rule moves into `render_heading`. Nothing reads origins yet.
 - **Agreement test, the safety net for the rest.** It lives in a new `tests/row_provenance.rs`. It runs over a fixed corpus plus a proptest generator (lists, quotes, code, nesting, headings and tables inside items, loose lists inside quotes, lazy continuation lines), with reflow both on and off.
@@ -237,7 +251,18 @@ The ignored set is the acceptance list; `grep -rn 'row-provenance: phase' src te
   - `tests/fixtures/general.md` and `tests/fixtures/syntax.md`
 - **Done when:** the suite is green with output byte-identical to HEAD, and the agreement test passes on the corpus and on 256 generated cases.
 
-### Phase 3 — row consumers and the rendering decisions (M)
+**Implementation notes (2026-10-05).** Types in `markdown::row_origin` (`RowOrigin`, `ColOrigin`, `ContentKind`, `RowSink`); `ParsedDoc::row_origins()`. The agreement test also passed 15,000 generated cases in stress runs. Since the Phases 1–3 review it runs each document four ways (reflow off and on, each plain and with big H1, striping and figures-off diagrams), and checks a row that continues an atomic inline by its letters and digits instead of skipping it; the Phase 1 position proptest gained a CRLF twin that must record the same lines and columns as LF. Deviations and findings:
+
+- **Tables are tagged now**, not in Phase 5: `TableRow { row, sub }` (row 0 the header, `1 + i` data row `i`). The heavy rule shows the delimiter line, each separator and the bottom border the line above them, and the top border none, so a line's first row is its content. Phase 5 still moves the consumers.
+- **Image rows: row `k` shows line `min(k, last)`, as chrome.** That encodes today's two behaviors directly: a one-line image pins every reserved row to its line, and a diagram's reveal maps rows 1:1 onto source lines. Phase 6 may revisit it.
+- **Figures-off `$$…$$` body rows take the opening line's column.** pulldown-cmark reports the formula as one span with its container prefixes stripped, so its later lines carry no column (see Phase 1). The opening line's column is right whenever the body shares its container prefix; a lazy line inside a nested formula would be off.
+- **Raw HTML rows are `Verbatim`** (settled 2026-10-06). At HEAD they reveal; Phase 4's "`Verbatim` never de-renders" gate stops that, which is harmless, since the raw and rendered text are the same.
+- **Multi-line rows outside reflow are `Flow`:** a list item's or setext heading's text spanning several lines, and a paragraph segment that runs onto the tail of a multi-line code span.
+- **The setext H2 rule** is emitted for every *top-level* setext H2, multi-line ones included, so the reveal has a row for the underline as it does under an H1. A nested setext H2 still gets none. That differs from HEAD, whose `detect_setext` gave a multi-line H2 no rule and missed `Foo\n   ---` and `#tag\n---`, both of which pulldown-cmark parses as setext. `detect_setext` is gone: `RenderedView` asks the AST (`Block::is_setext_heading`), so the view and the renderer can't disagree about which blocks have a rule row. A renderer-level test that pinned "no rule from the renderer" was updated to the new contract.
+- **Footnote continuation indent is in cells.** A definition's continuation lines align under its text by the leader's cell width, where HEAD counted chars, so `[^日本]: a\n    b` indents two cells further than before. It's an alignment fix, and the only other output change in Phase 2.
+- **Finding for Phase 4: `InlineColMap` over a slice is fragile.** Built on its own, a sliced line reading `2. a` parses as a list item, and a flow joined by `\n` turns a lazy `===` continuation into a setext underline. Neither was so in the document, so the §2 `Flow` definition (lines joined by `\n`) is unsafe as written. `InlineColMap` also doesn't model smart punctuation collapsing a run (`---` → `—`). The agreement test works around all three (a leading word pins paragraph context, flows are mapped line by line, smart-punctuation runs are skipped); `row_map`'s column functions need a real answer.
+
+### Phase 3 — row consumers and the rendering decisions (M) — done
 
 - Switch every row question to `row_map`: the cursor row, gutter, reveal-loop row selection, click row, overlay row, and `revealed_raw_row_count`'s line lookup. Delete `sub_lines_in_block` and the gutter's inversion rules.
 - Land both [rendering decisions](#rendering-decisions) in the same change. They change row counts, and only after this phase does every consumer read rows from origins. Landing them earlier would put the old `sub_lines_in_block` model out of step with the renderer for every quote and list in the interim.
@@ -246,6 +271,40 @@ The ignored set is the acceptance list; `grep -rn 'row-provenance: phase' src te
   - the click-line tests in `tests/mouse.rs`;
   - the quote/loose-list case;
   - the two rendering-decision tests in `tests/renderer.rs`.
+
+**Benchmarks after Phases 1–3 (2026-10-06, against HEAD `6cf3e85`).** Measured as user-space instruction counts on a pinned P-core (repeatable to 0.001%; wall-clock on the power-saver laptop swings ±10–20%), 20k-line corpora:
+
+| Corpus | `parse_merged` | `full_pipeline_memoized` (per edit) |
+|---|---|---|
+| prose | +8.8% | +4.7% |
+| lists | +15.1% | +8.8% |
+| tables | +10.0% | +11.1% |
+| code | +51% (of a ~13M-instruction parse) | +13.2% |
+| math | +16.2% | +11.6% |
+| nested | +16.4% | +2.7% |
+| mixed | +12.8% | +10.1% |
+
+Cycles run 5–10 points above the instruction deltas. The first pass measured +15–26% parse and +10–25% per-edit instructions; what brought it down:
+
+- **`SrcLines` stores its columns compactly**: a uniform column with at most two chrome lines is held inline, any other shape as one boxed slice. No leaf allocates for a common shape, and a cache key hashes a few words for it.
+- **The recorder borrows one reusable column buffer** and writes `u32`s directly.
+- **The range tracker lives in `EventStream`**, whose `pull` / `peek` / `next` are force-inlined: the `Map` closure layer and the out-of-line hand-off copied every `Event` several times.
+- **Line lookups ride the forward cursor** — a leaf's and a container's first line, `set_base`, and a range's last line counted forward from its first — and a single-line event's end line is one comparison, not a scan.
+- **`paragraph_rows` is a lazy iterator**, so a paragraph allocates nothing for its row origins.
+- **The render cache** pre-sizes each build's map (no rehash, so no re-hashing every key) and asks `prev` first, the common hit: two hashes per hit instead of three.
+
+What remains is mostly the recording itself, plus `Block` growing from 80 to 112 bytes (`Table` is the largest variant). Shrinking `Block` back was tried and did not improve these figures. Whether to accept them is still to be decided before release, and `performance.md` is not yet updated.
+
+**Implementation notes (2026-10-05).** `document::row_map` has `row_for_line`, `line_for_row` and `lines_of_row`; `sub_lines_in_block`, `cursor_sub_line_in_block` and the gutter's inversion rules are gone. Deviations:
+
+- **`row_for_line` is "the first row whose lines reach `L`" (`lines.end > L`)**, not "`lines.start >= L`". The two agree on one-line rows; the stated rule would send an interior line of a multi-line `Flow` row to the next block's row.
+- **The math-preview band is applied in `row_map`** (it reads `latex_source_offset`), since it is cursor state the origins can't carry. Phase 6's `revealed_diagram_line` can absorb it.
+- **Tables:** the cursor's row and the gutter read origins, but a click's and the overlay's *row* still come from `classify_table_sub_lines`. On origins, a click on the heavy rule would land on the delimiter line instead of the first data row, and Phase 5's done criteria require the table mapping tests unchanged. Phase 5 moves them.
+- **The gutter numbers a row with the first line it shows, and only the first row to reach a line** (a global ascending rule), so a code row and a virtual blank sharing a line can't both carry its number.
+- **Rendering decision 1 applies whether reflow is on or off.** The acceptance test runs in Rendered mode, where reflow is on, and expects one row per source line. That matches the item's later paragraphs, which never reflowed; Phase 7 reflows them all.
+- **`click_below_a_fence_on_a_list_marker_line_lands_on_clicked_line` is re-tagged phase 4.** Every click in it now lands on the right line, but on the code body row it also asserts the exact column, and a code row nested in a list item is Phase 4's column mapping (the same as `click_on_code_nested_in_list_item_lands_on_clicked_char`).
+- **The revealed cursor row paints the cursor's own line**, not the line its origin names. The two differ when the cursor's line renders no row (an interior blank, the second text line of a multi-line setext heading) and so shares the next line's row. `RenderedView`'s setext arm, `revealed_raw_row_count` and the click mapping all use the cursor's line on that row (`editor::state::cursor_raw_line`). Every other row reads its line through `line_for_row`.
+- **Link reference definitions inside a quote render nothing**, as at top level. The quote's gap-fill would have given each one a blank row, since no child covers it. The parser lists them in `BlockQuote::hidden`.
 
 ### Phase 4 — column consumers (M)
 
@@ -316,4 +375,4 @@ The ignored set is the acceptance list; `grep -rn 'row-provenance: phase' src te
 Both settled 2026-10-05; each lands in **Phase 3**, together with the row consumers that read the new row counts, and is encoded by an ignored Phase 3 test.
 
 1. **List-item paragraphs with reflow off.** At HEAD, an item's *first* paragraph joins soft breaks with spaces and its later paragraphs keep the source's lines, which is inconsistent. With origins, either is mappable (a joined row is a `Flow`). **Decision:** one row per source line, like a top-level paragraph with reflow off; with reflow on, Phase 7 reflows them all. Test: `a_list_items_first_paragraph_renders_one_row_per_source_line`.
-2. **Bare `>` lines.** **Decision:** render one quoted blank row per bare `>` line, as the discarded patch did, instead of one blank between every pair of children. It's a fidelity fix the spans make free. Test: `a_blockquote_renders_one_row_per_source_line`.
+2. **Bare `>` lines.** **Decision:** render one quoted blank row per bare `>` line, as the discarded patch did, instead of one blank between every pair of children. It's a fidelity fix the spans make free. A bare `>` between a loose list's items lies inside the list's span, so a list directly inside a quote keeps its loose spacing to give that line its row (settled 2026-10-06). Test: `a_blockquote_renders_one_row_per_source_line`.

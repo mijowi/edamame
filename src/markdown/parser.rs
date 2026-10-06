@@ -1,23 +1,32 @@
 pub mod post_pass;
+mod stream;
 
 pub use post_pass::{
-    annotate_list_blanks, attach_trailing_tui_columns_comments, is_closing_fence,
-    parse_opening_fence, promote_diagram_code_blocks, promote_display_math_paragraphs,
-    promote_html_comments, promote_image_paragraphs, reconstruct_broken_display_math,
-    split_display_math_paragraphs,
+    attach_trailing_tui_columns_comments, promote_diagram_code_blocks,
+    promote_display_math_paragraphs, promote_html_comments, promote_image_paragraphs,
+    reconstruct_broken_display_math, split_display_math_paragraphs,
 };
 
 use std::ops::Range;
 
 use pulldown_cmark::{CodeBlockKind, Event, MetadataBlockKind, Parser, Tag, TagEnd};
 
-use super::ast::{inlines_to_plain, Block, Inline, ListItem, MetadataKind};
+use super::ast::{inlines_to_plain, Block, Inline, ListItem, MetadataKind, SrcLines};
 use super::parse_offsets;
+use stream::{EventStream, LeafMode};
+
+#[cfg(test)]
+thread_local! {
+    /// Block parses run on this thread: incremented where [`parse_raw_with_ranges`] builds its
+    /// `Parser`, so a test can assert one `ParsedDoc::build` is still exactly one pulldown-cmark
+    /// pass.  The per-line `InlineColMap` parses and [`parse_raw`] are not the block parse and
+    /// don't count.
+    pub(crate) static BLOCK_PARSE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// Parse a Markdown string into a list of `Block` AST nodes.
 pub fn parse(text: &str) -> Vec<Block> {
-    let (mut blocks, ranges) = parse_raw_with_ranges(text);
-    annotate_list_blanks(&mut blocks, &ranges, text);
+    let mut blocks = parse_raw(text);
     // The comment promotion must run first so the merge can find comments by their new
     // variant; keeping the two passes separate is what lets an isolated
     // `<!-- tui-columns -->` outside any table survive as a hidden comment.
@@ -30,35 +39,28 @@ pub fn parse(text: &str) -> Vec<Block> {
 /// [`parse`] without the trailing-`<!-- tui-columns -->` merge, so callers walking blocks
 /// 1:1 against `parse_offsets::top_level_block_ranges` can apply
 /// [`attach_trailing_tui_columns_comments`] after their own range-aware mutations.  The
-/// editor pipeline uses [`parse_raw_with_ranges`]; this is the ranges-free entry point for
-/// module tests and benchmarks.
-#[allow(dead_code)]
+/// editor pipeline uses [`parse_raw_with_ranges`]; this is the ranges-free entry point, which
+/// skips draining the events the AST builder leaves unread.
 pub fn parse_raw(text: &str) -> Vec<Block> {
     let parser = Parser::new_ext(text, parse_offsets::options_for(text));
-    let mut events = parser.peekable();
-    parse_blocks(&mut events)
+    let mut events = EventStream::new(text, parser.into_offset_iter());
+    parse_blocks(&mut events, true)
 }
 
 /// [`parse_raw`] plus each block's top-level byte range, in a **single** pulldown-cmark
-/// pass: a [`parse_offsets::RangeTracker`] observes the same events the AST builder
-/// consumes, so blocks and ranges are 1:1 by construction.
+/// pass: the [`EventStream`]'s [`parse_offsets::RangeTracker`] observes the same events the AST
+/// builder consumes, so blocks and ranges are 1:1 by construction.
 ///
 /// The editor pipeline's parse entry point.  Folding the second pass in saved ~18% of the
-/// pipeline — see docs/dev/performance.md.
+/// pipeline — see docs/dev/performance.md.  The same pass records every leaf's
+/// [`SrcLines`] and every container's span.
 pub fn parse_raw_with_ranges(text: &str) -> (Vec<Block>, Vec<Range<usize>>) {
-    let mut tracker = parse_offsets::RangeTracker::new(|_| true);
-    let mut events = Parser::new_ext(text, parse_offsets::options_for(text))
-        .into_offset_iter()
-        .map(|(event, byte_range)| {
-            tracker.observe(text, &event, &byte_range);
-            event
-        })
-        .peekable();
-    let blocks = parse_blocks(&mut events);
-    // Drain defensively so the tracker has seen every event before we take its ranges.
-    while events.next().is_some() {}
-    drop(events);
-    (blocks, tracker.into_ranges())
+    #[cfg(test)]
+    BLOCK_PARSE_COUNT.with(|c| c.set(c.get() + 1));
+    let parser = Parser::new_ext(text, parse_offsets::options_for(text));
+    let mut events = EventStream::new(text, parser.into_offset_iter());
+    let blocks = parse_blocks(&mut events, true);
+    (blocks, events.into_ranges())
 }
 
 // ─── Block parsing ────────────────────────────────────────────────────────────
@@ -67,13 +69,18 @@ pub fn parse_raw_with_ranges(text: &str) -> (Vec<Block>, Vec<Range<usize>>) {
 // is what lets tight list items work, where pulldown-cmark emits `Text` directly inside an
 // `Item` with no surrounding `Paragraph`.
 
-fn parse_blocks<'a, I>(events: &mut std::iter::Peekable<I>) -> Vec<Block>
+/// `top_level` anchors each block's relative line numbers at its own first line; nested calls
+/// (container children) inherit their top-level block's anchor.
+fn parse_blocks<'a, I>(events: &mut EventStream<'a, I>, top_level: bool) -> Vec<Block>
 where
-    I: Iterator<Item = Event<'a>>,
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     let mut blocks = Vec::new();
 
     loop {
+        if top_level {
+            events.set_base();
+        }
         match events.peek() {
             None | Some(Event::End(_)) => break,
 
@@ -99,15 +106,21 @@ where
                 blocks.push(parse_table_block(events));
             }
             Some(Event::Rule) => {
+                events.begin_leaf(None, LeafMode::Verbatim);
                 events.next();
-                blocks.push(Block::HorizontalRule);
+                blocks.push(Block::HorizontalRule {
+                    src: events.end_leaf(),
+                });
             }
             Some(Event::Start(Tag::HtmlBlock)) => {
                 blocks.push(parse_html_block(events));
             }
             Some(Event::Html(_)) => {
+                events.begin_leaf(None, LeafMode::Verbatim);
                 if let Some(Event::Html(html)) = events.next() {
-                    blocks.push(Block::Html(html.into_string()));
+                    blocks.push(Block::Html(html.into_string(), events.end_leaf()));
+                } else {
+                    events.end_leaf();
                 }
             }
             Some(Event::Start(Tag::FootnoteDefinition(_))) => {
@@ -120,6 +133,10 @@ where
             // Tight lists emit inline content directly inside Item, no Paragraph wrapper.
             Some(Event::Text(_))
             | Some(Event::Code(_))
+            | Some(Event::InlineMath(_))
+            | Some(Event::DisplayMath(_))
+            | Some(Event::InlineHtml(_))
+            | Some(Event::FootnoteReference(_))
             | Some(Event::SoftBreak)
             | Some(Event::HardBreak)
             | Some(Event::Start(Tag::Emphasis))
@@ -127,9 +144,11 @@ where
             | Some(Event::Start(Tag::Strikethrough))
             | Some(Event::Start(Tag::Link { .. }))
             | Some(Event::Start(Tag::Image { .. })) => {
+                events.begin_leaf(None, LeafMode::Prose);
                 let inlines = parse_inlines(events);
+                let src = events.end_leaf();
                 if !inlines.is_empty() {
-                    blocks.push(Block::Paragraph { inlines });
+                    blocks.push(Block::Paragraph { inlines, src });
                 }
             }
 
@@ -144,68 +163,98 @@ where
 
 /// Consume `Start(Paragraph) … End(Paragraph)`.  An empty paragraph collapses to `None`
 /// so `parse_blocks` doesn't push a noise entry.
-fn parse_paragraph_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Option<Block>
+fn parse_paragraph_block<'a, I>(events: &mut EventStream<'a, I>) -> Option<Block>
 where
-    I: Iterator<Item = Event<'a>>,
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     events.next();
+    events.begin_leaf(Some(events.last_range()), LeafMode::Prose);
     let inlines = parse_inlines(events);
+    let src = events.end_leaf();
     consume_end(events);
     if inlines.is_empty() {
         None
     } else {
-        Some(Block::Paragraph { inlines })
+        Some(Block::Paragraph { inlines, src })
     }
 }
 
 /// Consume `Start(Heading { .. }) … End(Heading)`.  `None` only if the peeked event was
 /// not in fact a heading — defensive against a malformed event stream.
-fn parse_heading_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Option<Block>
+fn parse_heading_block<'a, I>(events: &mut EventStream<'a, I>) -> Option<Block>
 where
-    I: Iterator<Item = Event<'a>>,
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     let level = match events.next()? {
         Event::Start(Tag::Heading { level, .. }) => level,
         _ => return None,
     };
+    events.begin_leaf(Some(events.last_range()), LeafMode::Prose);
     let inlines = parse_inlines(events);
+    let src = events.end_leaf();
     consume_end(events);
-    Some(Block::Heading { level, inlines })
+    Some(Block::Heading {
+        level,
+        inlines,
+        src,
+    })
 }
 
-fn parse_blockquote_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block
+fn parse_blockquote_block<'a, I>(events: &mut EventStream<'a, I>) -> Block
 where
-    I: Iterator<Item = Event<'a>>,
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     events.next();
-    let inner = parse_blocks(events);
+    let start = events.open_container();
+    let inner = parse_blocks(events, false);
     consume_end(events);
-    Block::BlockQuote { blocks: inner }
+    // A bare `>` before or after the children is the quote's own line, so its range counts.
+    let span = events.container_span(&start, children_end(&inner), true);
+    // Uncovered lines that aren't bare `>`: link reference definitions.  The empty range at
+    // the span's end closes the gap after the last child.
+    let mut hidden = Vec::new();
+    let mut next_line = span.start;
+    for child in inner
+        .iter()
+        .map(Block::span)
+        .chain(std::iter::once(span.end..span.end))
+    {
+        hidden.extend((next_line..child.start).filter(|&line| !events.is_bare_line(line)));
+        next_line = next_line.max(child.end);
+    }
+    Block::BlockQuote {
+        blocks: inner,
+        span,
+        hidden,
+    }
 }
 
 /// Consume a footnote definition, parsing its body as a nested block sequence.
-fn parse_footnote_definition_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block
+fn parse_footnote_definition_block<'a, I>(events: &mut EventStream<'a, I>) -> Block
 where
-    I: Iterator<Item = Event<'a>>,
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     let label = match events.next() {
         Some(Event::Start(Tag::FootnoteDefinition(l))) => l.into_string(),
         _ => String::new(),
     };
-    let inner = parse_blocks(events);
+    let start = events.open_container();
+    let inner = parse_blocks(events, false);
     consume_end(events);
+    let span = events.container_span(&start, children_end(&inner), false);
     Block::FootnoteDefinition {
         label,
         blocks: inner,
+        span,
     }
 }
 
 /// Consume a metadata block.  The body arrives as plain `Event::Text` (no inline parsing
 /// inside), so `content` is the frontmatter verbatim, minus the two delimiter lines that
 /// the events' *ranges* — but not their payloads — cover.
-fn parse_metadata_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block
+fn parse_metadata_block<'a, I>(events: &mut EventStream<'a, I>) -> Block
 where
-    I: Iterator<Item = Event<'a>>,
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     let kind = match events.next() {
         Some(Event::Start(Tag::MetadataBlock(MetadataBlockKind::PlusesStyle))) => {
@@ -214,13 +263,14 @@ where
         // YAML is the flavor `---` opens.
         _ => MetadataKind::Yaml,
     };
-    let content = collect_text_until_end(events);
-    Block::MetadataBlock { kind, content }
+    events.begin_leaf(Some(events.last_range()), LeafMode::Verbatim);
+    let (content, src) = collect_text_until_end(events);
+    Block::MetadataBlock { kind, content, src }
 }
 
-fn parse_code_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block
+fn parse_code_block<'a, I>(events: &mut EventStream<'a, I>) -> Block
 where
-    I: Iterator<Item = Event<'a>>,
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     let (language, fenced) = match events.next() {
         Some(Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang)))) => {
@@ -230,54 +280,64 @@ where
         Some(Event::Start(Tag::CodeBlock(CodeBlockKind::Indented))) => (None, false),
         _ => (None, false),
     };
-    let content = collect_text_until_end(events);
+    events.begin_leaf(Some(events.last_range()), LeafMode::Verbatim);
+    let (content, src) = collect_text_until_end(events);
     Block::CodeBlock {
         language,
         content,
         fenced,
+        src,
     }
 }
 
-fn parse_list_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block
+fn parse_list_block<'a, I>(events: &mut EventStream<'a, I>) -> Block
 where
-    I: Iterator<Item = Event<'a>>,
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     let start = match events.next() {
         Some(Event::Start(Tag::List(s))) => s,
         _ => None,
     };
+    let start_range = events.open_container();
     let items = parse_list_items(events);
     consume_end(events);
+    let items_end = items.iter().map(|item| item.span.end).max();
+    let span = events.container_span(&start_range, items_end, false);
     Block::List {
         ordered: start.is_some(),
         start,
         items,
+        span,
     }
 }
 
-fn parse_table_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block
+fn parse_table_block<'a, I>(events: &mut EventStream<'a, I>) -> Block
 where
-    I: Iterator<Item = Event<'a>>,
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     events.next();
+    events.begin_leaf(Some(events.last_range()), LeafMode::Table);
     let (headers, rows, col_count) = parse_table(events);
+    let src = events.end_leaf();
     consume_end(events);
     Block::Table {
         col_count,
         headers,
         rows,
         user_widths: None,
+        src,
     }
 }
 
 /// Consume the `Start(HtmlBlock)` / `End(HtmlBlock)` wrapper pulldown-cmark 0.11+ puts
 /// around `Html(...)` events, so the outer loop's `End(_) => break` doesn't swallow every
 /// block after an HTML block.
-fn parse_html_block<'a, I>(events: &mut std::iter::Peekable<I>) -> Block
+fn parse_html_block<'a, I>(events: &mut EventStream<'a, I>) -> Block
 where
-    I: Iterator<Item = Event<'a>>,
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     events.next();
+    events.begin_leaf(Some(events.last_range()), LeafMode::Verbatim);
     let mut body = String::new();
     loop {
         match events.peek() {
@@ -293,14 +353,19 @@ where
             },
         }
     }
-    Block::Html(body)
+    Block::Html(body, events.end_leaf())
+}
+
+/// The last line any of `blocks` covers, end exclusive; `None` for no blocks.
+fn children_end(blocks: &[Block]) -> Option<u32> {
+    blocks.iter().map(|b| b.span().end).max()
 }
 
 // ─── List parsing ─────────────────────────────────────────────────────────────
 
-fn parse_list_items<'a, I>(events: &mut std::iter::Peekable<I>) -> Vec<ListItem>
+fn parse_list_items<'a, I>(events: &mut EventStream<'a, I>) -> Vec<ListItem>
 where
-    I: Iterator<Item = Event<'a>>,
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     let mut items = Vec::new();
 
@@ -309,6 +374,7 @@ where
             None | Some(Event::End(_)) => break,
             Some(Event::Start(Tag::Item)) => {
                 events.next(); // consume Start(Item)
+                let item_range = events.open_container();
 
                 // A loose list wraps the marker in a Paragraph, a tight one doesn't.  In
                 // the loose case the `Start(Paragraph)` is consumed speculatively, since
@@ -319,10 +385,10 @@ where
                         task = Some(checked);
                     }
                 }
-                let mut paragraph_consumed = false;
+                let mut paragraph_range: Option<Range<usize>> = None;
                 if task.is_none() && matches!(events.peek(), Some(Event::Start(Tag::Paragraph))) {
                     events.next(); // consume Start(Paragraph)
-                    paragraph_consumed = true;
+                    paragraph_range = Some(events.last_range());
                     if let Some(Event::TaskListMarker(_)) = events.peek() {
                         if let Some(Event::TaskListMarker(checked)) = events.next() {
                             task = Some(checked);
@@ -331,24 +397,24 @@ where
                 }
 
                 let mut blocks: Vec<Block> = Vec::new();
-                if paragraph_consumed {
+                if let Some(range) = paragraph_range {
                     // Close the paragraph we opened, then let `parse_blocks` take the
-                    // rest of the item (nested lists, further paragraphs).
+                    // rest of the item (nested lists, further paragraphs).  The leaf opens
+                    // past the task marker, which is the item's chrome, not its content.
+                    events.begin_leaf(Some(range), LeafMode::Prose);
                     let inlines = parse_inlines(events);
+                    let src = events.end_leaf();
                     consume_end(events); // End(Paragraph)
                     if !inlines.is_empty() {
-                        blocks.push(Block::Paragraph { inlines });
+                        blocks.push(Block::Paragraph { inlines, src });
                     }
-                    blocks.extend(parse_blocks(events));
+                    blocks.extend(parse_blocks(events, false));
                 } else {
-                    blocks = parse_blocks(events);
+                    blocks = parse_blocks(events, false);
                 }
                 consume_end(events); // End(Item)
-                items.push(ListItem {
-                    blocks,
-                    task,
-                    blank_lines_before: 0,
-                });
+                let span = events.container_span(&item_range, children_end(&blocks), false);
+                items.push(ListItem { blocks, task, span });
             }
             _ => {
                 events.next(); // skip unexpected events
@@ -365,9 +431,9 @@ where
 /// header / row cell is a `Vec<Inline>`.
 type ParsedTable = (Vec<Vec<Inline>>, Vec<Vec<Vec<Inline>>>, usize);
 
-fn parse_table<'a, I>(events: &mut std::iter::Peekable<I>) -> ParsedTable
+fn parse_table<'a, I>(events: &mut EventStream<'a, I>) -> ParsedTable
 where
-    I: Iterator<Item = Event<'a>>,
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     let mut headers: Vec<Vec<Inline>> = Vec::new();
     let mut rows: Vec<Vec<Vec<Inline>>> = Vec::new();
@@ -397,9 +463,9 @@ where
     (headers, rows, col_count)
 }
 
-fn parse_table_row<'a, I>(events: &mut std::iter::Peekable<I>) -> Vec<Vec<Inline>>
+fn parse_table_row<'a, I>(events: &mut EventStream<'a, I>) -> Vec<Vec<Inline>>
 where
-    I: Iterator<Item = Event<'a>>,
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     let mut cells = Vec::new();
 
@@ -422,7 +488,6 @@ where
 
     cells
 }
-
 // ─── Highlight post-processing ────────────────────────────────────────────────
 
 /// Split a text string into `Inline`s, detecting `==highlight==` spans — pulldown-cmark
@@ -459,9 +524,9 @@ fn parse_highlight_in_text(text: &str) -> Vec<Inline> {
 
 // ─── Inline parsing ───────────────────────────────────────────────────────────
 
-fn parse_inlines<'a, I>(events: &mut std::iter::Peekable<I>) -> Vec<Inline>
+fn parse_inlines<'a, I>(events: &mut EventStream<'a, I>) -> Vec<Inline>
 where
-    I: Iterator<Item = Event<'a>>,
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     let mut inlines = Vec::new();
 
@@ -565,7 +630,13 @@ where
                     display: true,
                 });
             }
-            Event::TaskListMarker(_) => {}
+            // A list item's paragraph takes its task box before its text is parsed, so one
+            // reaching here opens something else: pulldown-cmark reports it inside a setext
+            // heading that opens the item.  GFM has a box only at the start of a paragraph, so
+            // it stays the heading's literal text.
+            Event::TaskListMarker(_) => {
+                inlines.push(Inline::Text(format!("{} ", events.last_text())))
+            }
 
             _ => {}
         }
@@ -577,19 +648,20 @@ where
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Consume one `Event::End(_)` if it is next in the stream.
-fn consume_end<'a, I>(events: &mut std::iter::Peekable<I>)
+fn consume_end<'a, I>(events: &mut EventStream<'a, I>)
 where
-    I: Iterator<Item = Event<'a>>,
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     if matches!(events.peek(), Some(Event::End(_))) {
         events.next();
     }
 }
 
-/// Collect `Event::Text` content until the next `Event::End`, consuming that `End`.
-fn collect_text_until_end<'a, I>(events: &mut std::iter::Peekable<I>) -> String
+/// Collect `Event::Text` content until the next `Event::End`, consuming that `End`, and close
+/// the leaf the caller opened.
+fn collect_text_until_end<'a, I>(events: &mut EventStream<'a, I>) -> (String, SrcLines)
 where
-    I: Iterator<Item = Event<'a>>,
+    I: Iterator<Item = (Event<'a>, Range<usize>)>,
 {
     let mut text = String::new();
     loop {
@@ -601,8 +673,9 @@ where
             text.push_str(&t);
         }
     }
+    let src = events.end_leaf();
     consume_end(events);
-    text
+    (text, src)
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -612,6 +685,10 @@ mod tests {
     use super::*;
     use crate::markdown::ast::{Block, Inline};
     use pulldown_cmark::HeadingLevel;
+
+    fn src_lines(first: u32, content_col: &[Option<u32>]) -> SrcLines {
+        SrcLines::new(first, content_col)
+    }
 
     /// The merged parse must produce exactly what the two-pass pairing produced.
     #[test]
@@ -633,6 +710,7 @@ mod tests {
             vec![Block::Heading {
                 level: HeadingLevel::H1,
                 inlines: vec![Inline::Text("Hello".into())],
+                src: src_lines(0, &[Some(2)]),
             }]
         );
     }
@@ -657,7 +735,7 @@ mod tests {
     #[test]
     fn parse_paragraph() {
         let blocks = parse("Hello world\n");
-        assert!(matches!(&blocks[0], Block::Paragraph { inlines } if !inlines.is_empty()));
+        assert!(matches!(&blocks[0], Block::Paragraph { inlines, .. } if !inlines.is_empty()));
     }
 
     /// A `$$...$$` math block standing alone in a paragraph must parse as a
@@ -674,6 +752,8 @@ mod tests {
                     source: "\nx^2 + y^2 = z^2\n".into(),
                     display: true,
                 }],
+                // The formula's later lines continue the one math span begun on line 0.
+                src: src_lines(0, &[Some(0), None, None]),
             }],
             "a paragraph holding only $$...$$ should parse as one display-math inline"
         );
@@ -682,7 +762,7 @@ mod tests {
     #[test]
     fn parse_bold_and_italic() {
         let blocks = parse("**bold** and *italic*\n");
-        if let Block::Paragraph { inlines } = &blocks[0] {
+        if let Block::Paragraph { inlines, .. } = &blocks[0] {
             assert!(inlines.iter().any(|i| matches!(i, Inline::Bold(_))));
             assert!(inlines.iter().any(|i| matches!(i, Inline::Italic(_))));
         } else {
@@ -693,7 +773,7 @@ mod tests {
     #[test]
     fn parse_code_span() {
         let blocks = parse("`code`\n");
-        if let Block::Paragraph { inlines } = &blocks[0] {
+        if let Block::Paragraph { inlines, .. } = &blocks[0] {
             assert!(inlines.iter().any(|i| matches!(i, Inline::Code(_))));
         } else {
             panic!("Expected paragraph");
@@ -712,7 +792,9 @@ mod tests {
     #[test]
     fn parse_horizontal_rule() {
         let blocks = parse("---\n");
-        assert!(blocks.contains(&Block::HorizontalRule));
+        assert!(blocks
+            .iter()
+            .any(|b| matches!(b, Block::HorizontalRule { .. })));
     }
 
     #[test]
@@ -793,7 +875,7 @@ mod tests {
         if let Block::List { items, .. } = &blocks[0] {
             assert!(!items.is_empty(), "list has no items");
             assert!(!items[0].blocks.is_empty(), "first item has no blocks");
-            if let Block::Paragraph { inlines } = &items[0].blocks[0] {
+            if let Block::Paragraph { inlines, .. } = &items[0].blocks[0] {
                 let text = super::super::ast::inlines_to_plain(inlines);
                 assert!(text.contains("item one"), "text was: {text:?}");
             } else {
@@ -809,7 +891,7 @@ mod tests {
         let blocks = parse("![cat](cat.png)\n");
         assert_eq!(blocks.len(), 1);
         match &blocks[0] {
-            Block::ImageBlock { alt, url } => {
+            Block::ImageBlock { alt, url, .. } => {
                 assert_eq!(alt, "cat");
                 assert_eq!(url, "cat.png");
             }
@@ -832,7 +914,7 @@ mod tests {
     fn mixed_content_paragraph_keeps_inline_image() {
         let blocks = parse("Prefix ![cat](cat.png) suffix\n");
         match &blocks[0] {
-            Block::Paragraph { inlines } => {
+            Block::Paragraph { inlines, .. } => {
                 assert!(inlines.iter().any(|i| matches!(i, Inline::Image { .. })));
             }
             other => panic!("expected Paragraph, got {other:?}"),
@@ -863,7 +945,7 @@ mod tests {
         let blocks = parse("<!-- hello -->\n");
         assert_eq!(blocks.len(), 1, "got {blocks:?}");
         assert!(
-            matches!(&blocks[0], Block::HtmlComment(body) if body.trim() == "<!-- hello -->"),
+            matches!(&blocks[0], Block::HtmlComment(body, _) if body.trim() == "<!-- hello -->"),
             "got {:?}",
             blocks[0]
         );
@@ -872,7 +954,7 @@ mod tests {
     #[test]
     fn block_level_html_tag_is_not_promoted() {
         let blocks = parse("<div>stuff</div>\n");
-        assert!(matches!(&blocks[0], Block::Html(_)), "got {:?}", blocks[0]);
+        assert!(matches!(&blocks[0], Block::Html(..)), "got {:?}", blocks[0]);
     }
 
     #[test]
@@ -881,7 +963,7 @@ mod tests {
         // `Block::HtmlComment` rather than being dropped.
         let blocks = parse("<!-- tui-columns: [10, 20, 30] -->\n\nSome text.\n");
         assert!(
-            matches!(&blocks[0], Block::HtmlComment(_)),
+            matches!(&blocks[0], Block::HtmlComment(..)),
             "got {:?}",
             blocks[0]
         );
@@ -892,7 +974,7 @@ mod tests {
     fn inline_html_comment_produces_inline_html_comment_variant() {
         let blocks = parse("hello <!-- aside --> world\n");
         match &blocks[0] {
-            Block::Paragraph { inlines } => {
+            Block::Paragraph { inlines, .. } => {
                 assert!(
                     inlines.iter().any(|i| matches!(i, Inline::HtmlComment(_))),
                     "inlines: {inlines:?}"
@@ -906,7 +988,7 @@ mod tests {
     fn inline_html_tag_stays_as_text() {
         let blocks = parse("line <br> end\n");
         match &blocks[0] {
-            Block::Paragraph { inlines } => {
+            Block::Paragraph { inlines, .. } => {
                 assert!(
                     inlines
                         .iter()
@@ -935,10 +1017,10 @@ mod tests {
         ));
     }
 
-    // ── Loose-list blank annotation ───────────────────────────────────────
+    // ── Loose-list spacing ───────────────────────────────────────
 
     /// The single `Block::List` in `blocks` — loose lists stay one block, so every test
-    /// below asserts against one list plus its per-item blank counts.
+    /// below asserts against one list plus the blank lines between its items' spans.
     fn only_list(blocks: &[Block]) -> (&[ListItem], bool, Option<u64>) {
         let lists: Vec<&Block> = blocks
             .iter()
@@ -950,17 +1032,28 @@ mod tests {
                 items,
                 ordered,
                 start,
+                ..
             } => (items, *ordered, *start),
             _ => unreachable!(),
         }
     }
 
+    /// Blank source lines between each item's span and the previous one's — what the renderer
+    /// spaces a loose list with.
     fn blanks_before(items: &[ListItem]) -> Vec<usize> {
-        items.iter().map(|it| it.blank_lines_before).collect()
+        let mut prev_end: Option<u32> = None;
+        items
+            .iter()
+            .map(|it| {
+                let gap = prev_end.map_or(0, |end| it.span.start.saturating_sub(end));
+                prev_end = Some(it.span.end);
+                gap as usize
+            })
+            .collect()
     }
 
     #[test]
-    fn ordered_list_blank_between_items_stays_one_list_and_is_annotated() {
+    fn ordered_list_blank_between_items_stays_one_list_with_a_gap() {
         // A blank makes the list loose but keeps it one ordered list; numbering comes
         // straight from pulldown-cmark and the item after the blank counts 1.
         let blocks = parse("1. a\n2. b\n\n3. c\n4. d\n");
@@ -984,7 +1077,7 @@ mod tests {
     }
 
     #[test]
-    fn bullet_list_blank_between_items_stays_one_list_and_is_annotated() {
+    fn bullet_list_blank_between_items_stays_one_list_with_a_gap() {
         let blocks = parse("- a\n- b\n\n- c\n- d\n");
         let (items, ordered, _) = only_list(&blocks);
         assert!(!ordered);
@@ -993,7 +1086,7 @@ mod tests {
     }
 
     #[test]
-    fn list_item_with_fenced_code_block_containing_blank_line_is_not_annotated() {
+    fn a_blank_in_an_items_fenced_code_block_is_not_a_gap() {
         // A blank inside an embedded fence is not an inter-item separator.
         let src = "- intro\n  ```toml\n  [a]\n\n  [b]\n  ```\n  trailing\n- next item\n";
         let blocks = parse(src);
@@ -1003,7 +1096,7 @@ mod tests {
     }
 
     #[test]
-    fn ordered_list_no_blank_line_annotates_all_zero() {
+    fn ordered_list_without_blank_lines_has_no_gaps() {
         let blocks = parse("1. a\n2. b\n3. c\n");
         let (items, ordered, _) = only_list(&blocks);
         assert!(ordered);
@@ -1021,7 +1114,7 @@ mod tests {
     }
 
     #[test]
-    fn every_gap_blank_separated_ordered_list_is_annotated_per_item() {
+    fn every_blank_separated_item_has_its_gap() {
         let blocks = parse("1. a\n\n1. b\n\n1. c\n");
         let (items, ordered, start) = only_list(&blocks);
         assert!(ordered);
@@ -1031,7 +1124,7 @@ mod tests {
     }
 
     #[test]
-    fn interior_blank_without_separator_blank_is_not_annotated() {
+    fn an_interior_blank_is_not_a_gap() {
         // A blank interior to an item's content is not an inter-item separator.
         let blocks = parse("- a\n\n  cont\n- b\n");
         let (items, _, _) = only_list(&blocks);
@@ -1051,11 +1144,278 @@ mod tests {
     fn multi_line_item_content_before_separator_blank_counts_one() {
         // Only the blank directly above item 2 is counted.
         let src = "1. **first** item\n   continuation\n\n   ```rust\n   let x = 1;\n   ```\n\n2. second\n";
-        let (mut blocks, ranges) = parse_raw_with_ranges(src);
-        annotate_list_blanks(&mut blocks, &ranges, src);
+        let blocks = parse(src);
         let (items, _, _) = only_list(&blocks);
         assert_eq!(items.len(), 2);
         assert_eq!(blanks_before(items), vec![0, 1]);
+    }
+
+    // ── Source positions ──────────────────────────────────────────────────
+
+    fn first_src(src: &str) -> SrcLines {
+        parse_raw(src)[0].src().cloned().expect("a leaf")
+    }
+
+    #[test]
+    fn paragraph_lines_start_past_container_prefixes_and_markers() {
+        assert_eq!(first_src("a\n  b\n"), src_lines(0, &[Some(0), Some(2)]));
+        let Block::BlockQuote { blocks, span, .. } = &parse_raw("> a\n> b\nlazy\n")[0] else {
+            panic!("expected a quote");
+        };
+        assert_eq!(*span, 0..3);
+        assert_eq!(
+            blocks[0].src(),
+            Some(&src_lines(0, &[Some(2), Some(2), Some(0)]))
+        );
+    }
+
+    #[test]
+    fn chrome_lines_are_none() {
+        // Fences, a setext underline, a table's delimiter row.
+        assert_eq!(
+            first_src("```rust\nx\n```\n"),
+            src_lines(0, &[None, Some(0), None])
+        );
+        assert_eq!(first_src("Title\n---\n"), src_lines(0, &[Some(0), None]));
+        assert_eq!(
+            first_src("| a | b |\n|---|---|\n| 1 | 2 |\n"),
+            src_lines(0, &[Some(0), None, Some(0)])
+        );
+        // An unclosed fence has no closing line.
+        assert_eq!(first_src("```\nx\n"), src_lines(0, &[None, Some(0)]));
+    }
+
+    #[test]
+    fn a_code_blocks_blank_line_has_a_column() {
+        // pulldown-cmark folds a blank code line into the previous line's text; it is still a
+        // body line, and it has no prefix to skip.
+        assert_eq!(
+            first_src("    a\n\n    b\n"),
+            src_lines(0, &[Some(4), Some(0), Some(4)])
+        );
+        // CRLF the same: the blank line's text starts at its `\r`, not past it.
+        assert_eq!(
+            first_src("```\r\nx\r\n\r\ny\r\n```\r\n"),
+            src_lines(0, &[None, Some(0), Some(0), Some(0), None])
+        );
+    }
+
+    #[test]
+    fn a_rule_and_a_comment_record_where_they_start() {
+        assert_eq!(first_src("  ***\n"), src_lines(0, &[Some(2)]));
+        let blocks = parse("<!-- a\nb -->\n");
+        assert_eq!(blocks[0].src(), Some(&src_lines(0, &[Some(0), Some(0)])));
+    }
+
+    #[test]
+    fn nested_leaves_are_relative_to_their_top_level_block() {
+        let blocks = parse_raw("intro\n\n- a\n- ```bash\n  code\n  ```\n\n  tail\n");
+        let Block::List { items, span, .. } = &blocks[1] else {
+            panic!("expected a list: {blocks:?}");
+        };
+        assert_eq!(*span, 0..6);
+        assert_eq!(items[0].span, 0..1);
+        assert_eq!(items[1].span, 1..6);
+        // The fence opens on the marker line, so its first line is chrome; the body is past
+        // the item's indent.
+        assert_eq!(
+            items[1].blocks[0].src(),
+            Some(&src_lines(1, &[None, Some(2), None]))
+        );
+        assert_eq!(items[1].blocks[1].src(), Some(&src_lines(5, &[Some(2)])));
+    }
+
+    #[test]
+    fn a_task_marker_is_not_content() {
+        for src in ["- [ ] task\n", "- [ ] a\n\n- [x] b\n"] {
+            let Block::List { items, .. } = &parse_raw(src)[0] else {
+                panic!("expected a list");
+            };
+            assert_eq!(
+                items[0].blocks[0].src(),
+                Some(&src_lines(0, &[Some(6)])),
+                "{src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_item_span_stops_at_its_content_not_its_trailing_blanks() {
+        // pulldown-cmark's item range runs through the bare `>` below it.
+        let Block::BlockQuote { blocks, span, .. } = &parse_raw("> - a\n>\n> - b\n>\n> tail\n")[0]
+        else {
+            panic!("expected a quote");
+        };
+        assert_eq!(*span, 0..5);
+        let Block::List { items, span, .. } = &blocks[0] else {
+            panic!("expected a list");
+        };
+        assert_eq!(*span, 0..3);
+        assert_eq!([items[0].span.clone(), items[1].span.clone()], [0..1, 2..3]);
+        assert_eq!(blocks[1].span(), 4..5);
+    }
+
+    /// A tab the container consumes part of: pulldown-cmark synthesizes its unconsumed columns
+    /// as spaces placed past the tab, but a raw char column can only name the tab itself.
+    #[test]
+    fn content_starting_inside_a_tab_records_the_tabs_own_column() {
+        // A continuation line indented by a tab: the tab is whitespace, `b` is the content.
+        let Block::List { items, .. } = &parse_raw("- a\n\tb\n")[0] else {
+            panic!("expected a list");
+        };
+        assert_eq!(
+            items[0].blocks[0].src(),
+            Some(&src_lines(0, &[Some(2), Some(1)]))
+        );
+        // The item takes two of the first tab's columns, and the indented code begins two
+        // columns into the second tab.
+        let Block::List { items, .. } = &parse_raw("- a\n\n\t\tcode\n")[0] else {
+            panic!("expected a list");
+        };
+        assert_eq!(items[0].blocks[1].src(), Some(&src_lines(2, &[Some(1)])));
+    }
+
+    /// An HTML block's leading spaces arrive as an empty-range `Text` placed past them; the
+    /// recorder counts back over those spaces only, never into the container's prefix.
+    #[test]
+    fn indented_html_starts_at_its_indent_not_inside_the_prefix() {
+        let Block::BlockQuote { blocks, .. } = &parse_raw(">   <div>\n")[0] else {
+            panic!("expected a quote");
+        };
+        assert_eq!(blocks[0].src(), Some(&src_lines(0, &[Some(2)])));
+        let Block::List { items, .. } = &parse_raw("- a\n\n   <div>\n")[0] else {
+            panic!("expected a list");
+        };
+        assert_eq!(items[0].blocks[1].src(), Some(&src_lines(2, &[Some(2)])));
+    }
+
+    /// A column is bounded by line length, not terminal width, so it must not narrow to `u16`.
+    #[test]
+    fn a_column_past_u16_max_is_recorded_whole() {
+        let src = format!("> a\n{}b\n", " ".repeat(70_000));
+        let Block::BlockQuote { blocks, .. } = &parse_raw(&src)[0] else {
+            panic!("expected a quote");
+        };
+        assert_eq!(
+            blocks[0].src(),
+            Some(&src_lines(0, &[Some(2), Some(70_000)]))
+        );
+    }
+
+    #[test]
+    fn a_multi_line_code_span_continues_on_its_first_lines_row() {
+        assert_eq!(
+            first_src("a `b\nc` d\ne\n"),
+            src_lines(0, &[Some(0), None, Some(0)])
+        );
+    }
+
+    /// A tight item's text is a bare inline run, which can open with any inline event.
+    #[test]
+    fn a_tight_item_keeps_content_that_opens_with_math_html_or_a_footnote() {
+        for (src, first) in [
+            (
+                "- $x$ y\n",
+                Inline::Math {
+                    source: "x".into(),
+                    display: false,
+                },
+            ),
+            ("- <b>x</b> y\n", Inline::Text("<b>".into())),
+            (
+                "- [^n] y\n\n[^n]: note\n",
+                Inline::FootnoteReference { label: "n".into() },
+            ),
+        ] {
+            let Block::List { items, .. } = &parse_raw(src)[0] else {
+                panic!("expected a list: {src:?}");
+            };
+            let Block::Paragraph {
+                inlines,
+                src: lines,
+            } = &items[0].blocks[0]
+            else {
+                panic!("expected a paragraph: {src:?}");
+            };
+            assert_eq!(inlines[0], first, "{src:?}");
+            assert_eq!(*lines, src_lines(0, &[Some(2)]), "{src:?}");
+        }
+    }
+
+    /// GFM has a task box only at the start of a paragraph, so `[ ]` opening a setext heading
+    /// is the heading's literal text (pulldown-cmark reports it as a task marker regardless).
+    #[test]
+    fn a_task_box_opening_a_heading_is_its_text() {
+        for (src, text) in [("- [ ] a\n  ---\n", "[ ] a"), ("- [X] a\n  ===\n", "[X] a")] {
+            let Block::List { items, .. } = &parse_raw(src)[0] else {
+                panic!("expected a list");
+            };
+            assert_eq!(items[0].task, None, "{src:?}");
+            let Block::Heading {
+                inlines,
+                src: lines,
+                ..
+            } = &items[0].blocks[0]
+            else {
+                panic!("expected a heading: {src:?}");
+            };
+            assert_eq!(inlines_to_plain(inlines), text, "{src:?}");
+            assert_eq!(*lines, src_lines(0, &[Some(2), None]), "{src:?}");
+        }
+    }
+
+    /// The closing `](u)` is the line's only event, an `End` repeating the whole link's range.
+    #[test]
+    fn a_line_opening_with_a_links_close_has_a_column() {
+        assert_eq!(
+            first_src("[a\n](u)\nc\n"),
+            src_lines(0, &[Some(0), Some(0), Some(0)])
+        );
+        assert_eq!(
+            first_src("x [a\n](u) t\n"),
+            src_lines(0, &[Some(0), Some(0)])
+        );
+        let Block::BlockQuote { blocks, .. } = &parse_raw("> x [a\n>  ](u)\n")[0] else {
+            panic!("expected a quote");
+        };
+        assert_eq!(blocks[0].src(), Some(&src_lines(0, &[Some(2), Some(3)])));
+    }
+
+    /// Alt text renders on the image's first row, whatever lines it spans.
+    #[test]
+    fn a_multi_line_image_continues_on_its_first_lines_row() {
+        assert_eq!(
+            first_src("x ![a\nb](x)\nc\n"),
+            src_lines(0, &[Some(0), None, Some(0)])
+        );
+        // A code span inside the alt doesn't cut the image's run short.
+        assert_eq!(
+            first_src("![`a\nb` c\nd](x)\ne\n"),
+            src_lines(0, &[Some(0), None, None, Some(0)])
+        );
+    }
+
+    #[test]
+    fn promotions_keep_the_replaced_blocks_lines() {
+        assert_eq!(
+            parse("  ![cat](cat.png)\n")[0],
+            Block::ImageBlock {
+                alt: "cat".into(),
+                url: "cat.png".into(),
+                src: src_lines(0, &[Some(2)]),
+            }
+        );
+    }
+
+    #[test]
+    fn a_split_formula_is_relative_to_its_own_range() {
+        let src = "$$\nx\n$$\n$$\ny\n$$\n";
+        let (mut blocks, mut ranges) = parse_raw_with_ranges(src);
+        split_display_math_paragraphs(&mut blocks, &mut ranges, src);
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        for block in &blocks {
+            assert_eq!(block.src(), Some(&src_lines(0, &[Some(0), None, None])));
+        }
     }
 
     // ── Footnotes ─────────────────────────────────────────────────────────
@@ -1064,7 +1424,7 @@ mod tests {
     fn footnote_reference_and_definition_parse() {
         let blocks = parse("Text.[^1]\n\n[^1]: The note.\n");
         match &blocks[0] {
-            Block::Paragraph { inlines } => {
+            Block::Paragraph { inlines, .. } => {
                 assert!(
                     inlines.iter().any(
                         |i| matches!(i, Inline::FootnoteReference { label, .. } if label == "1")
@@ -1090,7 +1450,7 @@ mod tests {
         let blocks = parse(src);
         let mut ref_labels: Vec<String> = Vec::new();
         for b in &blocks {
-            if let Block::Paragraph { inlines } = b {
+            if let Block::Paragraph { inlines, .. } = b {
                 for i in inlines {
                     if let Inline::FootnoteReference { label } = i {
                         ref_labels.push(label.clone());
@@ -1114,7 +1474,7 @@ mod tests {
         // A reference with no definition is literal text.
         let blocks = parse("A dangling[^x] marker.\n");
         match &blocks[0] {
-            Block::Paragraph { inlines } => {
+            Block::Paragraph { inlines, .. } => {
                 assert!(
                     !inlines
                         .iter()
@@ -1147,6 +1507,7 @@ mod tests {
             Block::MetadataBlock {
                 kind: MetadataKind::Yaml,
                 content: "title: Foo\ntags: [a]\n".into(),
+                src: src_lines(0, &[None, Some(0), Some(0), None]),
             }
         );
     }
@@ -1159,6 +1520,7 @@ mod tests {
             Block::MetadataBlock {
                 kind: MetadataKind::Toml,
                 content: "title = \"Foo\"\n".into(),
+                src: src_lines(0, &[None, Some(0), None]),
             }
         );
     }
@@ -1186,7 +1548,10 @@ mod tests {
                 .any(|b| matches!(b, Block::MetadataBlock { .. })),
             "got: {blocks:?}",
         );
-        assert_eq!(blocks[1], Block::HorizontalRule);
+        assert!(
+            matches!(blocks[1], Block::HorizontalRule { .. }),
+            "got: {blocks:?}"
+        );
     }
 
     /// Opening `+++` enables only the TOML flavor, so a later `---` pair can't be claimed.
@@ -1203,6 +1568,7 @@ mod tests {
             &Block::MetadataBlock {
                 kind: MetadataKind::Toml,
                 content: "a = 1\n".into(),
+                src: src_lines(0, &[None, Some(0), None]),
             }
         );
     }
@@ -1222,7 +1588,10 @@ mod tests {
     #[test]
     fn an_unclosed_frontmatter_delimiter_stays_a_rule() {
         let blocks = parse("---\ntitle: Foo\n\nBody.\n");
-        assert_eq!(blocks[0], Block::HorizontalRule);
+        assert!(
+            matches!(blocks[0], Block::HorizontalRule { .. }),
+            "got: {blocks:?}"
+        );
     }
 }
 
@@ -1237,7 +1606,7 @@ mod math_regression_tests {
     fn dollar_amount_stays_text() {
         let blocks = parse("Cost: $5 and $10 total.\n");
         assert!(
-            matches!(&blocks[0], Block::Paragraph { inlines } if inlines.iter().all(|i| !matches!(i, Inline::Math { .. }))),
+            matches!(&blocks[0], Block::Paragraph { inlines, .. } if inlines.iter().all(|i| !matches!(i, Inline::Math { .. }))),
             "unclosed $ must not parse as math: {:?}",
             blocks
         );
@@ -1248,7 +1617,7 @@ mod math_regression_tests {
     fn inline_math_parses_non_display() {
         let blocks = parse("Solve $x^2$ for x.\n");
         assert!(
-            matches!(&blocks[0], Block::Paragraph { inlines } if inlines.iter().any(|i| matches!(i, Inline::Math { display: false, .. }))),
+            matches!(&blocks[0], Block::Paragraph { inlines, .. } if inlines.iter().any(|i| matches!(i, Inline::Math { display: false, .. }))),
             "expected inline math: {:?}",
             blocks
         );
@@ -1259,7 +1628,7 @@ mod math_regression_tests {
     fn escaped_dollar_stays_text() {
         let blocks = parse(r"Price: \$5.\n");
         assert!(
-            matches!(&blocks[0], Block::Paragraph { inlines } if !inlines.iter().any(|i| matches!(i, Inline::Math { .. }))),
+            matches!(&blocks[0], Block::Paragraph { inlines, .. } if !inlines.iter().any(|i| matches!(i, Inline::Math { .. }))),
             "escaped $ must stay text: {:?}",
             blocks
         );
@@ -1285,13 +1654,13 @@ x^2
 ",
         );
         assert!(
-            matches!(&blocks[0], Block::Paragraph { inlines } if inlines.iter().all(|i| !matches!(i, Inline::Math { .. }))),
+            matches!(&blocks[0], Block::Paragraph { inlines, .. } if inlines.iter().all(|i| !matches!(i, Inline::Math { .. }))),
             r"\[..\] must stay literal until custom pre-scan lands: {:?}",
             blocks
         );
         // Sanity: the paragraph is NOT a lone display-math paragraph.
         assert!(
-            !matches!(&blocks[0], Block::Paragraph { inlines } if inlines.len() == 1 && matches!(&inlines[0], Inline::Math { display: true, .. }))
+            !matches!(&blocks[0], Block::Paragraph { inlines, .. } if inlines.len() == 1 && matches!(&inlines[0], Inline::Math { display: true, .. }))
         );
     }
 }

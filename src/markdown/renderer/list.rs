@@ -3,8 +3,10 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::markdown::ast::{Block, ListItem};
-use crate::markdown::renderer::Renderer;
+use crate::markdown::ast::{to_u32, Block, ListItem};
+use crate::markdown::renderer::{paragraph_rows, Renderer};
+use crate::markdown::row_origin::{RowOrigin, RowSink};
+use crate::markdown::table_layout::str_cells;
 
 impl<'t> Renderer<'t> {
     pub(super) fn render_list(
@@ -12,8 +14,11 @@ impl<'t> Renderer<'t> {
         ordered: bool,
         start: Option<u64>,
         items: &[ListItem],
-        out: &mut Vec<Line<'static>>,
+        out: &mut RowSink,
         indent_prefix: &str,
+        // Whether to render loose-list spacing: for a top-level list or one directly inside a
+        // quote.  A loose list nested in an item renders tight.
+        spaced: bool,
     ) {
         // `marker_width` is the prefix printed before each item's first line; `nested_indent_width`
         // is the leading whitespace before each nested block.  The latter is `max(4, marker_width)`
@@ -28,12 +33,19 @@ impl<'t> Renderer<'t> {
         let child_indent_prefix = format!("{indent_prefix}{}", " ".repeat(nested_indent_width));
 
         let mut counter = first_num;
+        let mut prev_end: Option<u32> = None;
         for item in items {
-            // Loose-list spacing.  These blanks stay 1:1 with the source lines the reveal maps
-            // against, so the count comes straight from `annotate_list_blanks`.
-            for _ in 0..item.blank_lines_before {
-                out.push(Line::raw(""));
+            // Loose-list spacing: one blank row per source line between this item's span and
+            // the last one's.  A blank inside an item (in a fence, or between its paragraphs)
+            // lies within that item's span, so it never counts.
+            if spaced {
+                if let Some(end) = prev_end {
+                    for line in end..item.span.start {
+                        out.push(Line::raw(""), RowOrigin::chrome(Some(line)));
+                    }
+                }
             }
+            prev_end = Some(item.span.end);
             // A task is a decorated bullet — the same marker plus the checkbox span below — so
             // task items and plain bullets can coexist in one list.
             let (marker, marker_style) = if ordered {
@@ -76,26 +88,52 @@ impl<'t> Renderer<'t> {
                 Style::default()
             };
 
+            // The marker row shows the item's first line; a marker-only row is chrome.
+            let marker_row = RowOrigin::chrome(Some(item.span.start));
             // An empty item still emits its marker so the block produces at least one line.
             if item.blocks.is_empty() {
                 let mut spans = vec![Span::styled(marker.clone(), marker_style)];
                 if let Some(tp) = task_prefix.clone() {
                     spans.push(tp);
                 }
-                out.push(Line::from(spans));
+                out.push(Line::from(spans), marker_row);
                 continue;
             }
 
             for (i, block) in item.blocks.iter().enumerate() {
                 if i == 0 {
                     match block {
-                        Block::Paragraph { inlines } => {
+                        Block::Paragraph { inlines, src } => {
                             let mut spans = vec![Span::styled(marker.clone(), marker_style)];
                             if let Some(tp) = task_prefix.clone() {
                                 spans.push(tp);
                             }
-                            spans.extend(self.render_inlines(inlines, checked_text_style));
-                            out.push(Line::from(spans));
+                            // Marker and task box are prefix; the text's later rows sit under
+                            // its first, behind the same width of indent.
+                            let prefix_cells: usize =
+                                spans.iter().map(|s| str_cells(&s.content)).sum();
+                            let continuation = " ".repeat(prefix_cells);
+                            // One row per source line, like the item's later paragraphs: no
+                            // nested paragraph reflows (see `render_paragraph`).
+                            let mut rows =
+                                paragraph_rows(inlines, src, false, to_u32(prefix_cells))
+                                    .peekable();
+                            let mut first = true;
+                            while let Some((segment, origin)) = rows.next() {
+                                let rendered = self.render_inlines(segment, checked_text_style);
+                                if std::mem::take(&mut first) {
+                                    spans.extend(rendered);
+                                    out.push(Line::from(std::mem::take(&mut spans)), origin);
+                                } else if rows.peek().is_some()
+                                    || rendered.iter().any(|s| !s.content.trim().is_empty())
+                                {
+                                    // Only a trailing segment with nothing to show is
+                                    // suppressed, as in `render_paragraph`.
+                                    let mut row = vec![Span::raw(continuation.clone())];
+                                    row.extend(rendered);
+                                    out.push(Line::from(row), origin);
+                                }
+                            }
                         }
                         other => {
                             // A non-paragraph first block gets the marker on a line of its own.
@@ -103,7 +141,7 @@ impl<'t> Renderer<'t> {
                             if let Some(tp) = task_prefix.clone() {
                                 spans.push(tp);
                             }
-                            out.push(Line::from(spans));
+                            out.push(Line::from(spans), marker_row.clone());
                             self.render_block(other, out, &child_indent_prefix, false);
                         }
                     }

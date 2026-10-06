@@ -236,10 +236,10 @@ pub fn collect_link_runs_from_block_public(block: &Block, out: &mut Vec<LinkRun>
 /// twice: the walk does not descend into a link's own text, and the renderer emits one run.
 fn collect_link_runs_from_block(block: &Block, out: &mut Vec<LinkRun>) {
     match block {
-        Block::Heading { inlines, .. } | Block::Paragraph { inlines } => {
+        Block::Heading { inlines, .. } | Block::Paragraph { inlines, .. } => {
             collect_link_runs_from_inlines(inlines, out);
         }
-        Block::BlockQuote { blocks } | Block::FootnoteDefinition { blocks, .. } => {
+        Block::BlockQuote { blocks, .. } | Block::FootnoteDefinition { blocks, .. } => {
             for inner in blocks {
                 collect_link_runs_from_block(inner, out);
             }
@@ -262,9 +262,9 @@ fn collect_link_runs_from_block(block: &Block, out: &mut Vec<LinkRun>) {
             }
         }
         Block::CodeBlock { .. }
-        | Block::HorizontalRule
-        | Block::Html(_)
-        | Block::HtmlComment(_)
+        | Block::HorizontalRule { .. }
+        | Block::Html(..)
+        | Block::HtmlComment(..)
         | Block::MetadataBlock { .. }
         | Block::ImageBlock { .. } => {}
     }

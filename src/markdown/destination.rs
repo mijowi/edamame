@@ -17,10 +17,10 @@ pub fn local_image_urls(blocks: &[Block]) -> Vec<&str> {
 fn collect_blocks<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
     for block in blocks {
         match block {
-            Block::Heading { inlines, .. } | Block::Paragraph { inlines } => {
+            Block::Heading { inlines, .. } | Block::Paragraph { inlines, .. } => {
                 collect_inlines(inlines, out);
             }
-            Block::BlockQuote { blocks } | Block::FootnoteDefinition { blocks, .. } => {
+            Block::BlockQuote { blocks, .. } | Block::FootnoteDefinition { blocks, .. } => {
                 collect_blocks(blocks, out);
             }
             Block::List { items, .. } => {
@@ -38,9 +38,9 @@ fn collect_blocks<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
             }
             Block::ImageBlock { .. }
             | Block::CodeBlock { .. }
-            | Block::HorizontalRule
-            | Block::Html(_)
-            | Block::HtmlComment(_)
+            | Block::HorizontalRule { .. }
+            | Block::Html(..)
+            | Block::HtmlComment(..)
             | Block::MetadataBlock { .. } => {}
         }
     }
@@ -216,7 +216,7 @@ graph TD; A-->B
                 panic!("{dest:?} did not parse as one list: {blocks:?}");
             };
             match items[0].blocks.as_slice() {
-                [Block::Paragraph { inlines }] => match inlines.as_slice() {
+                [Block::Paragraph { inlines, .. }] => match inlines.as_slice() {
                     [Inline::Image { url, .. }] => assert_eq!(url, dest, "source was {src:?}"),
                     other => panic!("{dest:?} is not one image: {other:?}"),
                 },

@@ -46,6 +46,9 @@ crossterm = "0.29"
 
 # Markdown parsing
 pulldown-cmark = "0.13"
+# SIMD newline search for the parser's source-position index (already in the tree via
+# pulldown-cmark; it beat std's byte search there)
+memchr = "2.7"
 
 # Rope-based text buffer
 ropey = "1.6"

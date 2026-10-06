@@ -30,6 +30,12 @@ impl InlineColMap {
                 Event::Text(_) => walk.push_text(raw_line, range),
                 Event::Code(s) => walk.push_code(raw_line, &s, range),
                 Event::SoftBreak | Event::HardBreak => walk.push_break(range.start),
+                // The renderer shows inline HTML as its text, except a lone comment.
+                Event::InlineHtml(s)
+                    if !crate::markdown::parser::post_pass::is_html_comment_only(&s) =>
+                {
+                    walk.push_text(raw_line, range)
+                }
                 // No `FootnoteReference` arm: built per line, there is no definition in scope, so
                 // pulldown emits `[^label]` as literal `Text`.  `collapse_footnote_refs` then
                 // narrows those entries to the renderer's `[label]` marker width.
@@ -258,6 +264,16 @@ fn footnote_collapse_char_indices(raw_line: &str) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Inline HTML renders as its text, so it maps like text; a lone comment renders nothing.
+    #[test]
+    fn inline_html_maps_like_text_and_a_comment_like_nothing() {
+        let map = InlineColMap::build("a <b>x</b>");
+        assert_eq!(map.rendered_len(), 10);
+        assert_eq!(map.rendered_to_raw(2), 2);
+        let map = InlineColMap::build("a <!-- c --> x");
+        assert_eq!(map.rendered_len(), 4);
+    }
 
     #[test]
     fn plain_text_maps_one_to_one() {

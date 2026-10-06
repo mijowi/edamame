@@ -1243,11 +1243,11 @@ pub(super) fn rendered_cursor_visual_row(state: &EditorState, width: usize) -> u
         // raw source line — so it supplies that sub-row exactly.
         let cursor_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
         let raw = crate::ui::rendered_view::raw_block_cursor(state, cursor_byte);
-        return er.raw_line_visual_row(raw.raw_line) + cursor_sub_line_in_rendered(state, 0, width);
+        return er.raw_line_visual_row(raw.raw_line) + cursor_sub_line_in_rendered(state, width);
     }
     let cursor_rendered = cursor_rendered_line_idx(state);
     let rows_before = state.parsed.visual_rows_before(cursor_rendered, width);
-    rows_before + cursor_sub_line_in_rendered(state, cursor_rendered, width)
+    rows_before + cursor_sub_line_in_rendered(state, width)
 }
 
 fn set_rendered_scroll_for_screen_row(state: &mut EditorState, target_row: usize, width: usize) {
@@ -1257,11 +1257,7 @@ fn set_rendered_scroll_for_screen_row(state: &mut EditorState, target_row: usize
 /// Visual sub-line offset of the cursor within its rendered line.  The wrap is taken over the
 /// *buffer* text, because the reveal path paints the cursor's line from the live buffer and the
 /// rendered text can drop or expand chars relative to source.
-fn cursor_sub_line_in_rendered(
-    state: &EditorState,
-    _cursor_rendered: usize,
-    width: usize,
-) -> usize {
+fn cursor_sub_line_in_rendered(state: &EditorState, width: usize) -> usize {
     let (cursor_buf_line, cursor_col) = state.cursor.line_col(&state.buffer);
     let line_text = line_text_trimmed(&state.buffer, cursor_buf_line);
     let rows = crate::ui::line_render::visual_rows_of_str(&line_text, width);
@@ -1270,7 +1266,9 @@ fn cursor_sub_line_in_rendered(
 }
 
 /// Rendered-line index where the cursor appears, mirroring `ui::rendered_view`'s own computation
-/// so scroll arithmetic lands on the line the view actually paints.
+/// so scroll arithmetic lands on the line the view actually paints: the row
+/// [`row_map::row_for_line`](crate::document::row_map::row_for_line) gives the cursor's source
+/// line, which the view, the mouse hit-test and the gutter all ask the same way.
 pub(crate) fn cursor_rendered_line_idx(state: &EditorState) -> usize {
     let cursor_offset = state.cursor.offset;
     let cursor_byte = state.buffer.rope().char_to_byte(cursor_offset);
@@ -1286,183 +1284,23 @@ pub(crate) fn cursor_rendered_line_idx(state: &EditorState) -> usize {
     if cursor_block_lines.is_empty() {
         return state.scroll;
     }
-    let cursor_block_own = state.parsed.block_own_line_count(cursor_block_idx);
 
+    cursor_block_lines.start
+        + crate::document::row_map::row_for_line(
+            &state.parsed,
+            cursor_block_idx,
+            cursor_raw_line(state),
+        )
+}
+
+/// The cursor's line within its block: the raw line the revealed cursor row paints.  It can
+/// differ from the line that row's origin names, since a line rendering no row of its own (an
+/// interior blank) shares the next line's.
+pub(crate) fn cursor_raw_line(state: &EditorState) -> usize {
+    let cursor_byte = state.buffer.rope().char_to_byte(state.cursor.offset);
     // Shared with `RenderedView`, which has one extra branch for a stale parse; this path always
     // sees a fresh one.
-    let raw = crate::ui::rendered_view::raw_block_cursor(state, cursor_byte);
-    let raw_lines: Vec<&str> = crate::ui::rendered_view::raw_source_lines(&raw.source);
-
-    let cursor_in_block = cursor_sub_line_in_block(
-        &state.parsed,
-        cursor_byte,
-        cursor_block_idx,
-        cursor_block_own,
-        &raw.source,
-        &raw_lines,
-        raw.raw_line,
-    );
-
-    cursor_block_lines.start + cursor_in_block
-}
-
-/// Single-line entry point into [`sub_lines_in_block`]: which rendered sub-line the reveal paints
-/// this raw line onto.
-///
-/// Three callers must agree here — the view (which row to paint raw), `cursor_rendered_line_idx`
-/// (where the cursor appears), and `mouse_ops::coord` (whether a click landed on a revealed row).
-/// When they disagree, clicks on a revealed line map against the *rendered* spans instead of the
-/// raw text on screen, which is wrong for any line with dropped markers.
-///
-/// `raw_lines` must come from `rendered_view::raw_text::raw_source_lines`.  A `cursor_raw_line`
-/// past the last raw line clamps to the block's end.
-pub(crate) fn cursor_sub_line_in_block(
-    parsed: &ParsedDoc,
-    cursor_byte: usize,
-    cursor_block_idx: usize,
-    cursor_block_own: usize,
-    raw_block_source: &str,
-    raw_lines: &[&str],
-    cursor_raw_line: usize,
-) -> usize {
-    let subs = sub_lines_in_block(
-        parsed,
-        cursor_byte,
-        cursor_block_idx,
-        cursor_block_own,
-        raw_block_source,
-        raw_lines,
-    );
-    subs.get(cursor_raw_line)
-        .or_else(|| subs.last())
-        .copied()
-        .unwrap_or(0)
-}
-
-/// Rendered sub-line index, relative to the block's first rendered line, for **every** raw line of
-/// one block plus one trailing entry for an index past the last (which a stale cursor byte can
-/// produce).  The result is always `raw_lines.len() + 1` long.
-///
-/// The crate's single raw-line → rendered-row derivation; see [`cursor_sub_line_in_block`] for
-/// what breaks when a caller re-derives it.  Batch form because the gutter needs a whole block at
-/// once and per-line answers were quadratic in the block's length.
-///
-/// `classify_byte` only picks the block's *flavor*, so any byte inside the block will do.
-pub(crate) fn sub_lines_in_block(
-    parsed: &ParsedDoc,
-    classify_byte: usize,
-    block_idx: usize,
-    block_own: usize,
-    raw_block_source: &str,
-    raw_lines: &[&str],
-) -> Vec<usize> {
-    use crate::markdown::list_layout::raw_list_marker_char_width;
-    use crate::ui::table_view::TableSubLineKind;
-
-    let n = raw_lines.len();
-
-    let is_table = crate::editor::table_edit::is_table_block(raw_block_source);
-    if is_table && block_own >= 3 {
-        let rendered = parsed.source_map.rendered_lines_for_block(block_idx);
-        let block_lines = parsed.lines.get(rendered).unwrap_or(&[]);
-        let kinds = crate::ui::table_view::classify_table_sub_lines(block_lines);
-        let last_replaceable = block_own.saturating_sub(2);
-        // Invert `kinds` in one pass; first occurrence wins, matching the `position()` scans
-        // this replaces.
-        let mut header: Option<usize> = None;
-        let mut thick: Option<usize> = None;
-        let mut data: Vec<Option<usize>> = Vec::new();
-        for (i, kind) in kinds.iter().enumerate() {
-            match *kind {
-                TableSubLineKind::Header { sub: 0 } => header.get_or_insert(i),
-                TableSubLineKind::ThickSeparator => thick.get_or_insert(i),
-                TableSubLineKind::DataRow { row, sub: 0 } => {
-                    if data.len() <= row {
-                        data.resize(row + 1, None);
-                    }
-                    data[row].get_or_insert(i)
-                }
-                _ => continue,
-            };
-        }
-        return (0..=n)
-            .map(|r| {
-                let sub = match r {
-                    0 => header.unwrap_or(1),
-                    1 => thick.unwrap_or(2),
-                    r => data
-                        .get(r - 2)
-                        .copied()
-                        .flatten()
-                        .unwrap_or_else(|| 2 * r - 1),
-                };
-                sub.min(last_replaceable)
-            })
-            .collect();
-    }
-
-    // These all map 1:1: a diagram block's reveal (mermaid fence or `$$...$$` math) paints onto
-    // its reserved rows, and code and metadata blocks render every body line including blanks (as
-    // NBSP-padded rows).  Falling through to the counting branch below would drift the cursor up
-    // one row per blank.
-    let is_diagram_reveal = parsed.is_diagram_reveal_block(block_idx);
-    let real_block = parsed.real_block_for_byte(classify_byte);
-    let is_verbatim = matches!(
-        real_block,
-        Some(
-            crate::markdown::Block::CodeBlock { .. } | crate::markdown::Block::MetadataBlock { .. }
-        ) // A figures-off `$$...$$` paragraph renders as a fenced-style `math`
-          // code block (see `display_math_block_body`), so its rendered rows map
-          // 1:1 onto source lines — including any blank line inside the formula,
-          // which the prose branch below would otherwise drop.
-    ) || real_block
-        .is_some_and(|b| crate::markdown::parser::post_pass::display_math_block_body(b).is_some());
-    if is_diagram_reveal || is_verbatim {
-        let last = block_own.saturating_sub(1);
-        // A `$$...$$` block revealed with the math preview reserves a top
-        // band for the rendered formula and paints the raw source below
-        // it, so each source line r lands on rendered row `r + band`.  The
-        // offset is 0 for mermaid, verbatim blocks, and a preview-off math
-        // reveal, leaving those 1:1.
-        let offset = parsed.latex_source_offset(block_idx);
-        return (0..=n).map(|r| (r + offset).min(last)).collect();
-    }
-
-    // One rendered line per raw line, except that interior blanks and soft-break continuations
-    // produce none.  A *separator* blank — one directly before a top-level item marker — does
-    // render (loose-list spacing).  So a line's sub-row is the count of preceding raw lines that
-    // render: every non-blank, plus separator blanks.
-    let base_indent = raw_lines
-        .first()
-        .map(|l| l.len() - l.trim_start().len())
-        .unwrap_or(0);
-    let is_top_level_marker = |line: &str| {
-        let indent = line.len() - line.trim_start().len();
-        indent == base_indent && raw_list_marker_char_width(line).is_some()
-    };
-    // Backwards, because a blank renders only if its contiguous run ends at a top-level marker:
-    // walking from the end answers that in O(1) per line, and a trailing run with no following
-    // line correctly stays false.
-    let mut renders = vec![false; n];
-    let mut run_ends_at_marker = false;
-    for i in (0..n).rev() {
-        if raw_lines[i].trim().is_empty() {
-            renders[i] = run_ends_at_marker;
-        } else {
-            renders[i] = true;
-            run_ends_at_marker = is_top_level_marker(raw_lines[i]);
-        }
-    }
-
-    let last = block_own.saturating_sub(1);
-    let mut subs = Vec::with_capacity(n + 1);
-    let mut rendered_before = 0usize;
-    for renders_row in renders {
-        subs.push(rendered_before.min(last));
-        rendered_before += usize::from(renders_row);
-    }
-    subs.push(rendered_before.min(last));
-    subs
+    crate::ui::rendered_view::raw_block_cursor(state, cursor_byte).raw_line
 }
 
 #[cfg(test)]
@@ -2099,7 +1937,7 @@ mod tests {
 
     /// The flip: with the preview on, the revealed source rows are pushed
     /// below the formula band, so `math_source_offset` records the band
-    /// height for `block_idx` and `sub_lines_in_block` maps source line 0
+    /// height for `block_idx` and `row_map::row_for_line` maps source line 0
     /// onto rendered row `band` (not row 0).  With the preview off there is
     /// no band and the mapping stays 1:1 from the block's top.
     #[test]
@@ -2126,22 +1964,19 @@ mod tests {
             "the source offset equals the reserved preview band"
         );
         // Source line 0 (`$$`) now renders `band` rows down, not at the top.
-        let raw = crate::ui::rendered_view::raw_block_cursor(
-            &state,
-            state.buffer.rope().char_to_byte(state.cursor.offset),
+        assert_eq!(
+            crate::document::row_map::row_for_line(&state.parsed, latex_idx, 0),
+            with.preview_rows,
+            "first source line sits below the band"
         );
-        let raw_lines = crate::ui::rendered_view::raw_source_lines(&raw.source);
-        let subs = sub_lines_in_block(
-            &state.parsed,
-            state.buffer.rope().char_to_byte(state.cursor.offset),
-            latex_idx,
-            state.parsed.block_own_line_count(latex_idx),
-            &raw.source,
-            &raw_lines,
+        // A band row shows no source line; the first row past it shows line 0.
+        assert_eq!(
+            crate::document::row_map::line_for_row(&state.parsed, latex_idx, 0),
+            0
         );
         assert_eq!(
-            subs[0], with.preview_rows,
-            "first source line sits below the band"
+            crate::document::row_map::line_for_row(&state.parsed, latex_idx, with.preview_rows + 1),
+            1
         );
     }
 

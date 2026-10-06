@@ -3,7 +3,7 @@
 Status: **IMPLEMENTED (phases 1–5 complete, 2026-09-07).** Reflow is on by default
 (`config.editor.reflow`) in Preview and Rendered; the deep-dive now lives in
 [`editing-model.md`](../editing-model.md) ("Prose reflow breaks the 1:1 …") and the user page
-[`docs/editing.md`](../../editing.md) ("Paragraphs reflow …"). Originally written 2026-09-05 as design, not a commitment, for
+[`docs/editing.md`](../../editing.md) ("Paragraphs reflow …"). Its row-mapping references (`sub_lines_in_block` and the per-kind chains) are historical: [`row-provenance.md`](row-provenance.md) replaced them with recorded row origins read through `document::row_map`. Originally written 2026-09-05 as design, not a commitment, for
 **Design A′** (see the design fork below) so the analysis isn't lost before the work is
 scheduled. Sibling context: [`docs/dev/editing-model.md`](../editing-model.md) (the
 invariant this plan removes), [`docs/dev/input.md`](../input.md),

@@ -210,6 +210,7 @@ mod tests {
                 language: Some("rust".into()),
                 content: "let x = 1;\n".into(),
                 fenced: true,
+                src: Default::default(),
             }),
             1,
             &lines,
@@ -234,13 +235,18 @@ mod tests {
             language: Some("rust".into()),
             content: "x\n".into(),
             fenced: true,
+            src: Default::default(),
         };
         let indented = Block::CodeBlock {
             language: None,
             content: "x\n".into(),
             fenced: false,
+            src: Default::default(),
         };
-        let para = Block::Paragraph { inlines: vec![] };
+        let para = Block::Paragraph {
+            inlines: vec![],
+            src: Default::default(),
+        };
 
         let fenced_lines = ["```rust", "x", "```"];
         let indented_lines = ["    x", "    y"];
@@ -267,6 +273,7 @@ mod tests {
                 source: "\nE = mc^2\n".into(),
                 display: true,
             }],
+            src: Default::default(),
         };
         let lines = ["$$", "E = mc^2", "$$"];
         assert!(

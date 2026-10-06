@@ -1,9 +1,9 @@
 //! Block-level render memoization for the parse → render pipeline; see
 //! docs/dev/performance.md.
 //!
-//! [`RenderCache`] keys each block's rendered lines by the block's AST *value*, not by its
-//! source bytes: everything that changes rendering without changing source text (table-width
-//! drag overrides, post-pass promotions) mutates the AST, so such a block
+//! [`RenderCache`] keys each block's rendered rows (lines and their origins) by the block's AST
+//! *value*, not by its source bytes: everything that changes rendering without changing source
+//! text (table-width drag overrides, post-pass promotions) mutates the AST, so such a block
 //! simply misses the cache.
 //!
 //! `Block::ImageBlock` is never cached — its row count depends on the image decode cache,
@@ -15,6 +15,7 @@ use ratatui::text::Line;
 use rustc_hash::FxBuildHasher;
 
 use super::ast::Block;
+use super::row_origin::RowOrigin;
 
 /// The cache's block map. Keyed by whole `Block` AST values, so a lookup hashes a deep
 /// structure — many small `write_*` calls — on every query. std's DoS-resistant SipHash is
@@ -24,10 +25,17 @@ use super::ast::Block;
 /// struct keys and measurably faster here; the AST keying — hence correctness — is unchanged.
 /// (seahash, the crate's other non-crypto hasher, is for whole byte buffers and benched *slower*
 /// than SipHash on these keys.)
-pub(super) type BlockMap = HashMap<Block, Vec<Line<'static>>, FxBuildHasher>;
+pub(super) type BlockMap = HashMap<Block, CachedRows, FxBuildHasher>;
+
+/// One block's memoized rows: its rendered lines and their origins, in lockstep.
+#[derive(Debug, Clone)]
+pub(super) struct CachedRows {
+    pub lines: Vec<Line<'static>>,
+    pub origins: Vec<RowOrigin>,
+}
 
 /// Whether a block is worth memoizing. A cache hit costs a hash of the whole `Block` plus a clone
-/// of its `Vec<Line>`; only blocks whose render is *more* expensive than that come out ahead. That
+/// of its rows; only blocks whose render is *more* expensive than that come out ahead. That
 /// is `Table` (column measurement) and `CodeBlock` (syntax highlighting) — and any `List` or
 /// `BlockQuote` that *contains* one, since skipping those would re-run the expensive nested render
 /// on every keystroke. Cheap blocks (paragraphs, plain lists, headings, rules) render for less than
@@ -37,7 +45,7 @@ pub(super) type BlockMap = HashMap<Block, Vec<Line<'static>>, FxBuildHasher>;
 pub(super) fn is_cache_worthy(block: &Block) -> bool {
     match block {
         Block::Table { .. } | Block::CodeBlock { .. } => true,
-        Block::BlockQuote { blocks } => blocks.iter().any(is_cache_worthy),
+        Block::BlockQuote { blocks, .. } => blocks.iter().any(is_cache_worthy),
         Block::List { items, .. } => items.iter().flat_map(|it| &it.blocks).any(is_cache_worthy),
         _ => false,
     }
@@ -69,7 +77,7 @@ pub(super) struct RenderSettings {
     pub highlight_retry_epoch: u64,
 }
 
-/// Memoized rendered lines per top-level block, owned by `EditorState` and threaded into
+/// Memoized rendered rows per top-level block, owned by `EditorState` and threaded into
 /// `ParsedDoc::build_with_overrides` on every reparse.  Eviction is by document membership:
 /// each build moves the entries it hits into a fresh map and drops the old one.
 #[derive(Debug, Default)]
@@ -87,7 +95,13 @@ impl RenderCache {
             self.entries.clear();
             self.settings = Some(settings);
         }
-        std::mem::take(&mut self.entries)
+        // Sized for the last build's blocks, which this one mostly repeats: growing from empty
+        // would rehash — and so re-hash every `Block` key — at each doubling.
+        let capacity = self.entries.len();
+        std::mem::replace(
+            &mut self.entries,
+            BlockMap::with_capacity_and_hasher(capacity, FxBuildHasher),
+        )
     }
 }
 
@@ -120,9 +134,15 @@ mod tests {
         ] {
             let mut cache = RenderCache::default();
             cache.begin_build(settings());
-            cache
-                .entries
-                .insert(Block::HorizontalRule, vec![Line::from("x")]);
+            cache.entries.insert(
+                Block::HorizontalRule {
+                    src: Default::default(),
+                },
+                CachedRows {
+                    lines: vec![Line::from("x")],
+                    origins: vec![RowOrigin::chrome(None)],
+                },
+            );
 
             let prev = cache.begin_build(settings());
             assert_eq!(prev.len(), 1, "an unchanged fingerprint must not clear");

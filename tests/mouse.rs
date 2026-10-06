@@ -1863,7 +1863,6 @@ fn click_on_code_block_body_lands_on_clicked_char() {
 /// rows below it are not 1:1 with the block's source lines.  Indexing raw lines by rendered
 /// row landed every click below the gap on the source line above.
 #[test]
-#[ignore = "row-provenance: phase 3"]
 fn click_on_code_nested_in_list_item_lands_on_clicked_line() {
     let src = "8. Tag it.\n\n    ```bash\n    git tag\n    gh run watch\n    ```\n";
     // Rendered rows: 0 = "8. Tag it.", 1 = " bash ", 2 = " git tag", 3 = " gh run watch".
@@ -1947,8 +1946,11 @@ fn click_on_code_nested_in_list_item_lands_on_clicked_char() {
 /// A fence on an item's marker line renders the marker on a row of its own above the fence's
 /// label, so that source line spans two rows; mapping it to one put every click below it on
 /// the line above.  A click on the label row belongs to the fence line.
+///
+/// Phase 3 lands every click on its line; the exact column on the code body row (row 2) is a
+/// code row nested in a list item, which is Phase 4's column mapping.
 #[test]
-#[ignore = "row-provenance: phase 3"]
+#[ignore = "row-provenance: phase 4"]
 fn click_below_a_fence_on_a_list_marker_line_lands_on_clicked_line() {
     let src = "- ```bash\n  gh run watch\n  ```\n- next item\n";
     // Rendered rows: 0 = "•", 1 = " bash " label, 2 = " gh run watch", 3 = closing fence,
@@ -1986,7 +1988,6 @@ fn click_below_a_fence_on_a_list_marker_line_lands_on_clicked_line() {
 /// the line above it like any other; the trailing blank the block's range absorbs claimed it
 /// instead, putting the click on the blank line after the list.
 #[test]
-#[ignore = "row-provenance: phase 3"]
 fn click_on_the_extra_row_of_a_last_list_item_lands_on_its_line() {
     for src in ["- a\n- > q\n\nafter\n", "- a\n- - b\n\nafter\n"] {
         // Rendered rows: 0 = "• a", 1 = "•", 2 = the quote / nested item.

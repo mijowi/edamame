@@ -181,7 +181,9 @@ src/
                     #   grapheme steps; memoised visual-row counts; Selection +
                     #   VisualSelection; block byte-range ↔ rendered-line mapping
     history.rs      # undo/redo stack of EditDelta; merges inserts into word-groups
-    parsed_doc.rs   # re-parse on change; caches AST + source map; virtual blank blocks
+    parsed_doc.rs   # re-parse on change; caches AST + source map + row origins;
+                    #   virtual blank blocks
+    row_map.rs      # rendered row ↔ source line, from the recorded RowOrigins
 
   editor.rs / editor/   # EditorState, Mode, RAW_REVEAL_DELAY
     edit_ops.rs     # Action → EditorState mutations
@@ -215,7 +217,8 @@ src/
     vim/feed.rs     # vim keystroke reducer (see the vim sections)
 
   markdown.rs / markdown/
-    ast.rs          # Block, Inline, ListItem; inlines_to_plain()
+    ast.rs          # Block, Inline, ListItem, SrcLines (block-relative source positions);
+                    #   inlines_to_plain()
     highlight.rs    # syntect tokenizer: scope → TokenClass, char-indexed ranges,
                     #   size caps, incremental per-line ParseState reuse
     code_layout.rs  # code-block raw ↔ rendered column geometry; line_allows_raw_reveal
@@ -223,9 +226,11 @@ src/
                     #   escape_destination (angle-bracket form for spaces / parens)
     inline_col_map.rs, list_layout.rs   # raw ↔ rendered column maps
     parse_offsets.rs # byte spans from pulldown-cmark; RangeTracker depth-0 scanner
-    parser.rs (+ parser/post_pass.rs)   # → Vec<Block>; parse_raw_with_ranges
-                    #   (single-pass blocks + ranges); promotion + loose-list blanks
+    parser.rs (+ parser/{post_pass,stream}.rs)   # → Vec<Block>; parse_raw_with_ranges
+                    #   (single-pass blocks + ranges + positions); promotions.  stream.rs
+                    #   records SrcLines / spans from pulldown-cmark's event offsets
     render_cache.rs # memoization keyed by Block value + settings fingerprint
+    row_origin.rs   # RowOrigin (lines + column relation per rendered row), RowSink
     renderer.rs (+ renderer/{list,table,util}.rs)  # Vec<Block> → Vec<Line<'static>>
     table_layout.rs # column widths in terminal cells (str_cells), the one shared cell
                     #   wrap (wrap_ranges / word_ranges), pipe positions, and the
@@ -272,8 +277,10 @@ src/
   test_env.rs       # #[cfg(test)] only — crate-wide env_lock() + EnvGuard
 
 tests/              # diagrams, search, editing, footnotes, list_edit, mouse, palette,
-                    #   renderer, source_map, table, ui; doc_links (every relative link
-                    #   in the repo's Markdown resolves); snapshots/ and fixtures/
+                    #   renderer, row_provenance, source_map, table, ui; doc_links
+                    #   (every relative link in the repo's Markdown resolves);
+                    #   snapshots/ and fixtures/; support/markdown_gen.rs (shared
+                    #   proptest document generator)
 
 config/             # config.toml (annotated reference, written on first run),
                     #   keybindings.toml, export/default.css
@@ -475,6 +482,7 @@ Use `tracing` macros — **never** `println!` / `eprintln!`, which would corrupt
 | `open` | Cross-platform URL / file opener |
 | `nucleo-matcher` | Fuzzy matching for the command palette |
 | `base64`, `tempfile` | Self-contained HTML export and custom-command pipelines |
+| `memchr` | SIMD newline search for the parser's source-position index (already in the tree via `pulldown-cmark`) |
 | `mimalloc` | Global allocator for the binary and benches (the system allocator is slow at per-edit allocation churn, on macOS as well as Linux) |
 | `ammonia` | Allowlist sanitizer for the HTML export body (raw HTML kept, scripts removed) |
 | `mermaid-rs-renderer` + `resvg` + `usvg` + `sha2` | Mermaid diagram rendering |

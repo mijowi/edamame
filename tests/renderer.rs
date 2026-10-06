@@ -269,7 +269,6 @@ fn ordered_list_numbers() {
 /// ones and like a top-level paragraph.  Its breaks — soft or hard — once collapsed to spaces,
 /// which dropped the hard break.
 #[test]
-#[ignore = "row-provenance: phase 3"]
 fn a_list_items_first_paragraph_renders_one_row_per_source_line() {
     let lines = render("- a\n  soft\n- b\\\n  hard\n1. c\nlazy\n");
     let text: Vec<String> = lines.iter().map(line_text).collect();
@@ -282,20 +281,27 @@ fn a_list_items_first_paragraph_renders_one_row_per_source_line() {
 
 /// A blockquote renders one row per source line: a quoted blank row for each bare `>`, and none
 /// the source doesn't hold.  It once put a blank between every two children and dropped an
-/// empty quote, so every row below sat off from its source line.
+/// empty quote, so every row below sat off from its source line.  A link reference definition
+/// renders nothing, inside a quote as at top level.
 #[test]
-#[ignore = "row-provenance: phase 3"]
 fn a_blockquote_renders_one_row_per_source_line() {
     for (src, rows) in [
-        ("> q\n> ```\n> x\n> ```\n", 4),
-        ("> a\n>\n>\n> b\n", 4),
-        (">\n", 1),
-        (">\n> a\n>\n", 3),
+        ("> q\n> ```\n> x\n> ```\n", &["▎ q", "▎", "▎  x", "▎"][..]),
+        ("> a\n>\n>\n> b\n", &["▎ a", "▎", "▎", "▎ b"]),
+        (">\n", &["▎"]),
+        (">\n> a\n>\n", &["▎", "▎ a", "▎"]),
+        ("> [d]: /url\n> b\n", &["▎ b"]),
+        ("> b\n>\n> [d]: /url\n", &["▎ b", "▎"]),
+        (
+            "> - a\n>\n> - b\n>\n> tail\n",
+            &["▎ • a", "▎", "▎ • b", "▎", "▎ tail"],
+        ),
     ] {
-        let lines = render(src);
-        let text: Vec<String> = lines.iter().map(line_text).collect();
-        assert_eq!(text.len(), rows, "{src:?}: {text:?}");
-        assert!(text.iter().all(|t| t.starts_with('▎')), "{src:?}: {text:?}");
+        let text: Vec<String> = render(src)
+            .iter()
+            .map(|l| line_text(l).trim_end().to_owned())
+            .collect();
+        assert_eq!(text, rows, "{src:?}");
     }
 }
 

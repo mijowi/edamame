@@ -8,6 +8,19 @@ Each released version's section is also what ships as the GitHub release notes: 
 
 ## [Unreleased]
 
+### Changed
+
+- Text in a list item keeps your line breaks, with each source line on its own row, the way the item's later paragraphs already did. Before, an item's first paragraph was joined onto one row.
+- Blank `>` lines in a blockquote show as empty quoted rows, exactly as many as you wrote. Before, the quote put one blank row between its parts whether or not the source had one.
+
+### Fixed
+
+- Clicks, the cursor, and line numbers no longer land on the wrong line in lists and blockquotes that contain code blocks, nested lists, or blank lines, and a list item holding a code block no longer gains or loses a blank row before the next item.
+- A list item starting with inline math, inline HTML, or a footnote reference no longer loses that text.
+- A setext heading (text underlined with `===` or `---`) spanning several lines now shows the cursor on every line while you edit it, and an H2 one keeps its rule.
+- A `[ ]` or `[x]` at the start of a list item's setext heading now shows as the heading's text instead of disappearing.
+- A footnote whose label holds wide characters (such as CJK) now lines up its continuation lines under its text.
+
 ## [0.1.5] - 2026-10-05
 
 ### Added

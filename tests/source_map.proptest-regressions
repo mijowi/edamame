@@ -7,3 +7,6 @@
 cc 48f7c06871d070cd2837f0d6aa1032d514d42145431d2e873559655be8fa5061 # shrinks to src = "*\nA"
 cc 266383f57237b766b35f2191aaad22181e9c01c389273208102abd911ea199e6 # shrinks to initial = "\n", inserts = []
 cc 74e3cbe5bb5b5be3f772871c1fcfa0303e77d0b3c6438b9d7ea1d93956e8abf9 # shrinks to src = "\n"
+cc d16c5e1835e03833b91e2343a4b9c27ad492c6091c6a1f56f90ec21d1c4434a3 # shrinks to src = "- ```\n\na\n"
+cc cd62d834c421dd5af9bd35a8063b07a80f90f68bfea50e6ba9fd5590f177bb80 # shrinks to src = "- [ ] - a\n    ---\n"
+cc 06dbc340976d07a40d202fd99da495e1fe16f25775458103aa3bc734253cd7de # shrinks to src = "- - [ ]     a\n  - [ ] <div>\n    x\n    </div>\n- a\n"

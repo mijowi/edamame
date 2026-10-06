@@ -247,9 +247,10 @@ fn walk_rendered_rows(
     }
     let (mut idx, mut first_sub_row) =
         state.rendered_line_at_visual_row(state.scroll, viewport_width);
+    let reveal = cursor_reveal(state);
     let mut y = 0usize;
     while idx < lines.len() {
-        let rows_used = revealed_raw_row_count(state, idx, viewport_width)
+        let rows_used = revealed_raw_row_count(state, reveal.as_ref(), idx, viewport_width)
             .unwrap_or_else(|| state.parsed.visual_rows_for_line_at(idx, viewport_width))
             .max(1);
         let used = rows_used.saturating_sub(first_sub_row).max(1);
@@ -291,24 +292,14 @@ pub fn rendered_sub_line_to_offset(
         let (raw_idx, sub) = table_raw_line_idx(state, &block, block_text);
         table_sub = sub;
         raw_idx
-    } else if state.parsed.is_image_block(block.idx)
-        && !state.parsed.is_diagram_reveal_block(block.idx)
-    {
-        // An image reserves many rendered rows for one source line; mapping a reserved row through
-        // `sub_idx` would index a phantom raw line and poison the inline-map cache for an unrelated
-        // buffer line.  Diagram-reveal blocks (mermaid fences, `$$...$$` math) are excluded: their
-        // reveal overlay paints raw source 1:1 onto the reserved rows, so `sub_idx` is the correct
-        // source line there.
-        0
+    } else if is_revealed_cursor_row(state, block.idx, rendered_line_idx) {
+        crate::editor::state::cursor_raw_line(state)
     } else {
-        // Diagram-reveal blocks map the rendered sub-row to a raw source
-        // line 1:1, minus the math-preview band a `$$...$$` reveal reserves
-        // above the source (0 for mermaid, a preview-off reveal, or any
-        // ordinary block).  A click on the band rows themselves resolves to
-        // the first source line.
-        block
-            .sub_idx
-            .saturating_sub(state.parsed.latex_source_offset(block.idx))
+        // The line the clicked row shows, as the renderer recorded it.  An image's reserved
+        // rows all show its one line, so a reserved row never indexes a phantom raw line (which
+        // would poison the inline-map cache for an unrelated buffer line); a diagram's show its
+        // source lines 1:1 below any math-preview band, whose own rows resolve to the first.
+        crate::document::row_map::line_for_row(&state.parsed, block.idx, block.sub_idx)
     };
 
     // Virtual blank blocks: place the cursor at block start.
@@ -549,28 +540,26 @@ fn table_raw_line_idx(
     }
 }
 
-/// When the reveal is active and `rendered_line_idx` is inside the cursor's block, the wrap
-/// count of the raw source line the painter actually paints there (raw text carries markers
-/// and may wrap to more rows than the rendered form).  `None` otherwise; callers fall back to
-/// the per-line cache.  Covers mermaid blocks (every reserved row) and the non-table cursor
-/// line.
-fn revealed_raw_row_count(
-    state: &EditorState,
-    rendered_line_idx: usize,
-    viewport_width: usize,
-) -> Option<usize> {
+/// The revealed cursor block, gathered once per click: [`walk_rendered_rows`] asks
+/// [`revealed_raw_row_count`] about every row it passes, and the block text and cursor row each
+/// cost a copy of the document.
+struct CursorReveal {
+    block_idx: usize,
+    block_lines: std::ops::Range<usize>,
+    block_start: usize,
+    text: String,
+    /// The revealed cursor row and the raw line it paints (see [`is_revealed_cursor_row`]).
+    cursor_row: usize,
+    cursor_line: usize,
+}
+
+/// The cursor block's [`CursorReveal`]; `None` while the reveal is off.
+fn cursor_reveal(state: &EditorState) -> Option<CursorReveal> {
     if !state.cursor_block_revealed() {
         return None;
     }
-    let cursor_block_idx = state.cursor_block_idx?;
-    let block_lines = state
-        .parsed
-        .source_map
-        .rendered_lines_for_block(cursor_block_idx);
-    if !block_lines.contains(&rendered_line_idx) {
-        return None;
-    }
-
+    let block_idx = state.cursor_block_idx?;
+    let block_lines = state.parsed.source_map.rendered_lines_for_block(block_idx);
     let block_start_byte = state
         .parsed
         .source_map
@@ -580,51 +569,87 @@ fn revealed_raw_row_count(
         .source_map
         .original_range_for_byte(block_start_byte)?;
     let source = state.buffer.contents();
-    let block_text = source
+    let text = source
         .get(block_range.start..block_range.end.min(source.len()))
-        .unwrap_or("");
+        .unwrap_or("")
+        .to_owned();
+    Some(CursorReveal {
+        block_idx,
+        block_lines,
+        block_start: block_range.start,
+        text,
+        cursor_row: crate::editor::state::cursor_rendered_line_idx(state),
+        cursor_line: crate::editor::state::cursor_raw_line(state),
+    })
+}
 
-    if state.parsed.is_diagram_reveal_block(cursor_block_idx) {
-        // Shift past the math-preview band (0 unless this is a `$$...$$`
-        // reveal with the preview on) so the rendered row maps to its raw
-        // source line; band rows clamp to the first line.
-        let band = state.parsed.latex_source_offset(cursor_block_idx);
-        let sub = (rendered_line_idx - block_lines.start).saturating_sub(band);
-        let raw_line = block_text.split('\n').nth(sub).unwrap_or("");
+/// When the reveal is active and `rendered_line_idx` is inside the cursor's block, the wrap
+/// count of the raw source line the painter actually paints there (raw text carries markers
+/// and may wrap to more rows than the rendered form).  `None` otherwise; callers fall back to
+/// the per-line cache.  Covers mermaid blocks (every reserved row) and the non-table cursor
+/// line.
+fn revealed_raw_row_count(
+    state: &EditorState,
+    reveal: Option<&CursorReveal>,
+    rendered_line_idx: usize,
+    viewport_width: usize,
+) -> Option<usize> {
+    let reveal = reveal?;
+    if !reveal.block_lines.contains(&rendered_line_idx) {
+        return None;
+    }
+    let block_text = reveal.text.as_str();
+
+    if state.parsed.is_diagram_reveal_block(reveal.block_idx) {
+        // The source line the row shows, past any math-preview band (whose rows clamp to the
+        // first line).
+        let row_line = crate::document::row_map::line_for_row(
+            &state.parsed,
+            reveal.block_idx,
+            rendered_line_idx - reveal.block_lines.start,
+        );
+        let raw_line = block_text.split('\n').nth(row_line).unwrap_or("");
         return Some(revealed_raw_rows(raw_line, viewport_width).0.len().max(1));
     }
 
     // Tables keep their rendered chrome, so skip them.
-    let is_table = table_edit::is_table_block(block_text);
-    if is_table {
+    if table_edit::is_table_block(block_text) {
         return None;
     }
     // A revealed reflowed paragraph is one rendered line that reveals to its *stacked* raw lines,
     // so its row count is the sum of every raw line's wrap count — not just the first line's.
-    if state.parsed.is_reflowed_paragraph_at(block_range.start) {
+    if state.parsed.is_reflowed_paragraph_at(reveal.block_start) {
         let total: usize = crate::ui::rendered_view::revealed_source_lines(block_text)
             .iter()
             .map(|rl| revealed_raw_rows(rl, viewport_width).0.len().max(1))
             .sum();
         return Some(total.max(1));
     }
-    let cursor_line = crate::editor::state::cursor_rendered_line_idx(state);
-    if rendered_line_idx != cursor_line {
+    if rendered_line_idx != reveal.cursor_row {
         return None;
     }
 
-    let sub = rendered_line_idx - block_lines.start;
-    let raw_line = block_text.split('\n').nth(sub).unwrap_or("");
+    let cursor_line = reveal.cursor_line;
+    let raw_line = block_text.split('\n').nth(cursor_line).unwrap_or("");
     // A row the view doesn't de-render (a code block's body) still shows its padded rendered
     // line; the raw wrap count would mis-walk every row below it.
     if !crate::markdown::code_layout::line_allows_raw_reveal(
-        state.parsed.real_block_for_byte(block_range.start),
-        sub,
+        state.parsed.real_block_for_byte(reveal.block_start),
+        cursor_line,
         &crate::ui::rendered_view::raw_source_lines(block_text),
     ) {
         return None;
     }
     Some(revealed_raw_rows(raw_line, viewport_width).0.len().max(1))
+}
+
+/// Whether `rendered_line_idx` is the revealed cursor row of block `block_idx`, which paints
+/// the cursor's raw line rather than the line its origin names.  Diagram blocks paint every row
+/// 1:1 from its origin, so they never count.
+fn is_revealed_cursor_row(state: &EditorState, block_idx: usize, rendered_line_idx: usize) -> bool {
+    state.cursor_block_revealed()
+        && !state.parsed.is_diagram_reveal_block(block_idx)
+        && rendered_line_idx == crate::editor::state::cursor_rendered_line_idx(state)
 }
 
 /// Wrap layout of a raw source line exactly as the reveal painter lays it out, plus the
@@ -1149,6 +1174,29 @@ mod tests {
         // Col 2 within that row → the second 'r' of "three".
         let off_col = rendered_sub_line_to_offset(&st, 0, 2, 2, 80);
         assert_eq!(off_col, 10);
+    }
+
+    /// A cursor on a line rendering no row of its own (the blank between an item's paragraphs)
+    /// shares the next line's row, and the revealed row paints the cursor's line, not that one:
+    /// its wrap count and a click on it must both be the blank line's.
+    #[test]
+    fn revealed_cursor_row_measures_the_cursors_own_line() {
+        let src = format!("- a\n\n  {}\n", "word ".repeat(20));
+        let mut st = EditorState::new(Buffer::from_str(&src), theme());
+        st.mode = Mode::Rendered;
+        st.set_viewport_width(20);
+        st.sync_reflow_for_mode();
+        st.cursor.offset = 4; // the blank line
+        st.update_cursor_block();
+        st.cursor_block_entered_at = None;
+        assert!(st.cursor_block_revealed());
+        let row = crate::editor::state::cursor_rendered_line_idx(&st);
+        let reveal = cursor_reveal(&st);
+        assert_eq!(
+            revealed_raw_row_count(&st, reveal.as_ref(), row, 20),
+            Some(1)
+        );
+        assert_eq!(rendered_sub_line_to_offset(&st, row, 0, 5, 20), 4);
     }
 
     /// A hard break makes a paragraph render one row per source line (it no longer reflows), so

@@ -625,6 +625,58 @@ fn setext_heading_reveals_both_title_and_underline_on_cursor() {
     );
 }
 
+/// A multi-line setext heading renders its text on one row; with the cursor on the text's
+/// second line, that row reveals the cursor's line and carries the cursor.
+#[test]
+fn multi_line_setext_heading_reveals_the_cursors_line() {
+    use edamame::document::Buffer;
+    use edamame::editor::EditorState;
+    use edamame::ui::{RenderedView, RenderedViewState};
+
+    let theme = Box::leak(Box::new(Theme::default()));
+    let src = "Title\nmore\n=====\n\nBody\n";
+    let mut state = EditorState::new(Buffer::from_str(src), theme);
+    state.mode = Mode::Rendered;
+    state.cursor.offset = src.find("more").unwrap() + 1;
+
+    let backend = TestBackend::new(20, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut view_state = RenderedViewState::default();
+    terminal
+        .draw(|frame| {
+            let view = RenderedView {
+                cursor_style: theme.status_mode_rendered,
+                visual_kind: None,
+                drop_indicator: None,
+                show_table_buttons: false,
+                state: &state,
+                theme,
+            };
+            frame.render_stateful_widget(view, frame.area(), &mut view_state);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer().clone();
+    let row_text = |y: u16| -> String {
+        (0..20u16)
+            .map(|x| {
+                buf.cell((x, y))
+                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+            })
+            .collect()
+    };
+    assert!(row_text(0).starts_with("more"), "row 0 = {:?}", row_text(0));
+    assert!(
+        row_text(1).starts_with("====="),
+        "row 1 = {:?}",
+        row_text(1)
+    );
+    let cursor_bg = theme.status_mode_rendered.bg;
+    let bg_at = |x: u16| buf.cell((x, 0)).map(|c| c.bg);
+    assert_eq!(bg_at(1), cursor_bg, "the cursor sits on the `o` of `more`");
+    assert_ne!(bg_at(0), cursor_bg);
+}
+
 /// The quote's background wash reaches the viewport edge (the way a code
 /// block's does), and the one row revealed as raw source while the cursor
 /// rests in it keeps that wash rather than dropping out of the block.

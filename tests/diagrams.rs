@@ -35,26 +35,31 @@ fn promote_diagram_only_matches_mermaid_tag() {
             language: Some("mermaid".into()),
             content: "flowchart TD\nA-->B".into(),
             fenced: true,
+            src: Default::default(),
         },
         Block::CodeBlock {
             language: Some("Mermaid".into()),
             content: "pie\n\"A\": 50\n\"B\": 50".into(),
             fenced: true,
+            src: Default::default(),
         },
         Block::CodeBlock {
             language: Some("mermaidjs".into()),
             content: "flowchart TD\nA-->B".into(),
             fenced: true,
+            src: Default::default(),
         },
         Block::CodeBlock {
             language: Some("diagram".into()),
             content: "flowchart TD\nA-->B".into(),
             fenced: true,
+            src: Default::default(),
         },
         Block::CodeBlock {
             language: Some("rust".into()),
             content: "fn main() {}".into(),
             fenced: true,
+            src: Default::default(),
         },
     ];
     let sources = promote_diagram_code_blocks(&mut blocks);
@@ -72,6 +77,7 @@ fn promote_diagram_preserves_alt_text() {
         language: Some("mermaid".into()),
         content: "flowchart TD\nA-->B".into(),
         fenced: true,
+        src: Default::default(),
     }];
     promote_diagram_code_blocks(&mut blocks);
     if let Block::ImageBlock { alt, .. } = &blocks[0] {
@@ -88,6 +94,7 @@ fn promote_diagram_url_matches_synthetic_url() {
         language: Some("mermaid".into()),
         content: src.into(),
         fenced: true,
+        src: Default::default(),
     }];
     let sources = promote_diagram_code_blocks(&mut blocks);
     let Block::ImageBlock { url, .. } = &blocks[0] else {

@@ -9,44 +9,11 @@ use crate::diagram::DiagramSource;
 use crate::document::visual_cache::VisualRowCache;
 use crate::document::SourceMap;
 use crate::markdown::{
-    annotate_list_blanks, inlines_to_plain, parse_raw_with_ranges, promote_diagram_code_blocks,
+    inlines_to_plain, parse_raw_with_ranges, promote_diagram_code_blocks,
     promote_display_math_paragraphs, promote_html_comments, promote_image_paragraphs,
     reconstruct_broken_display_math, split_display_math_paragraphs, Block, ImageRowOverride,
-    InlineColMap, RenderCache, Renderer,
+    InlineColMap, RenderCache, Renderer, RowOrigin,
 };
-
-/// Setext heading style detected from raw block source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SetextKind {
-    H1,
-    H2,
-}
-
-/// The setext variant for `source`: a non-blank line not starting with `#`, followed by
-/// one consisting entirely of `=` (H1) or `-` (H2).  Trailing spaces on the underline are
-/// allowed per CommonMark.
-pub fn detect_setext(source: &str) -> Option<SetextKind> {
-    let mut lines = source.lines();
-    let first = lines.next()?;
-    let second = lines.next()?;
-    if first.trim().is_empty() {
-        return None;
-    }
-    if first.trim_start().starts_with('#') {
-        return None;
-    }
-    let second = second.trim_end();
-    if second.is_empty() {
-        return None;
-    }
-    if second.chars().all(|c| c == '=') {
-        return Some(SetextKind::H1);
-    }
-    if second.chars().all(|c| c == '-') {
-        return Some(SetextKind::H2);
-    }
-    None
-}
 
 /// Metadata for one `Block::ImageBlock`, for the image loader and placeholder.
 #[derive(Debug, Clone)]
@@ -68,6 +35,11 @@ pub struct ImageBlockInfo {
 pub struct ParsedDoc {
     /// Rendered styled lines.
     pub lines: Vec<Line<'static>>,
+    /// Where each of [`lines`](Self::lines) came from, 1:1 with it: the source lines it shows,
+    /// relative to its block's first line, and how its columns relate to theirs.  Recorded by
+    /// the renderer as it emits each row (and by `build` for the blank rows it adds), never
+    /// re-derived.  See `docs/dev/plans/row-provenance.md`.
+    row_origins: Vec<RowOrigin>,
     /// The text this parse was built from — the coordinate space of every byte range in
     /// [`source_map`](Self::source_map) and [`real_ranges`](Self::real_ranges).
     ///
@@ -205,9 +177,6 @@ impl ParsedDoc {
         // unabsorbed and flashing into the rendered view between drag events.
         let (mut blocks, mut real_ranges) = parse_raw_with_ranges(source);
         let total_bytes = source.len();
-        // Loose-list items carry their preceding blank-line count so the renderer can
-        // space them while the list stays one `Block::List`.
-        annotate_list_blanks(&mut blocks, &real_ranges, source);
         // FIRST: the merge below looks for a `Block::HtmlComment` next to a
         // `Block::Table`, so it must run against the promoted variant.  Order and count
         // are preserved, so `real_ranges` stays 1:1.
@@ -261,7 +230,7 @@ impl ParsedDoc {
         if let Some(override_fn) = image_row_override {
             renderer = renderer.with_image_row_override(override_fn);
         }
-        let (rendered_lines, real_per_block_counts) = match render_cache {
+        let (rendered_rows, real_per_block_counts) = match render_cache {
             Some(cache) => renderer.render_with_counts_cached(&blocks, cache),
             None => renderer.render_with_counts(&blocks),
         };
@@ -273,12 +242,16 @@ impl ParsedDoc {
         // real block backs up past them (`content_end_of_block`) and then counts forward:
         // the first `\n` ends the block, each additional one is a blank line.
         let src_bytes = source.as_bytes();
-        let mut lines: Vec<Line<'static>> = Vec::with_capacity(rendered_lines.len());
-        let mut rendered_to_block: Vec<usize> = Vec::with_capacity(rendered_lines.len());
+        let row_capacity = rendered_rows.lines.len();
+        let mut lines: Vec<Line<'static>> = Vec::with_capacity(row_capacity);
+        let mut row_origins: Vec<RowOrigin> = Vec::with_capacity(row_capacity);
+        let mut rendered_to_block: Vec<usize> = Vec::with_capacity(row_capacity);
         let mut all_original: Vec<Range<usize>> = Vec::new();
         let mut all_per_block_own: Vec<usize> = Vec::new();
 
+        // A blank line's virtual block owns one row: its only line, chrome.
         let push_blank = |lines: &mut Vec<Line<'static>>,
+                          origins: &mut Vec<RowOrigin>,
                           r2b: &mut Vec<usize>,
                           origs: &mut Vec<Range<usize>>,
                           owns: &mut Vec<usize>,
@@ -289,6 +262,7 @@ impl ParsedDoc {
             owns.push(if emit { 1 } else { 0 });
             if emit {
                 lines.push(Line::raw(""));
+                origins.push(RowOrigin::chrome(Some(0)));
                 r2b.push(idx);
             }
         };
@@ -303,6 +277,7 @@ impl ParsedDoc {
             if src_bytes[bp] == b'\n' {
                 push_blank(
                     &mut lines,
+                    &mut row_origins,
                     &mut rendered_to_block,
                     &mut all_original,
                     &mut all_per_block_own,
@@ -314,9 +289,9 @@ impl ParsedDoc {
         }
 
         // Real blocks, each followed by the blank lines in the gap after it.
-        // `rendered_lines` is consumed by move: cloning each `Line<'static>` deep-copies
+        // `rendered_rows` is consumed by move: cloning each `Line<'static>` deep-copies
         // every span's Cow, which is measurable on large documents.
-        let mut rendered_iter = rendered_lines.into_iter();
+        let mut rendered_iter = rendered_rows.into_rows();
         let mut image_blocks = Vec::new();
         let mut heading_anchors: HashMap<String, usize> = HashMap::new();
         let mut footnote_anchors: HashMap<String, usize> = HashMap::new();
@@ -325,7 +300,7 @@ impl ParsedDoc {
             let idx = all_original.len();
             all_original.push(real_ranges[i].clone());
             all_per_block_own.push(count);
-            if let Block::ImageBlock { alt, url } = &blocks[i] {
+            if let Block::ImageBlock { alt, url, .. } = &blocks[i] {
                 let source = diagram_sources.get(url).cloned();
                 image_blocks.push(ImageBlockInfo {
                     block_idx: idx,
@@ -346,21 +321,10 @@ impl ParsedDoc {
                 footnote_anchors.insert(label.clone(), lines.len());
             }
             for _ in 0..count {
-                if let Some(line) = rendered_iter.next() {
+                if let Some((line, origin)) = rendered_iter.next() {
                     lines.push(line);
+                    row_origins.push(origin);
                     rendered_to_block.push(idx);
-                }
-            }
-
-            // A setext H2 has two raw lines but renders as one, so append a rule to keep
-            // `RenderedView`'s reveal 1:1 with the source — what setext H1 already does in
-            // `Renderer::render_heading`.
-            let block_source = &source[real_ranges[i].start..real_ranges[i].end.min(total_bytes)];
-            if count == 1 && matches!(detect_setext(block_source), Some(SetextKind::H2)) {
-                lines.push(Line::styled("─".repeat(viewport_width.max(1)), theme.rule));
-                rendered_to_block.push(idx);
-                if let Some(n) = all_per_block_own.last_mut() {
-                    *n += 1;
                 }
             }
 
@@ -381,6 +345,7 @@ impl ParsedDoc {
                         let emit = preserve_blank_lines || emitted_in_gap == 0;
                         push_blank(
                             &mut lines,
+                            &mut row_origins,
                             &mut rendered_to_block,
                             &mut all_original,
                             &mut all_per_block_own,
@@ -396,9 +361,12 @@ impl ParsedDoc {
             }
         }
 
-        // Defensive: stray rendered lines go to the most recently pushed block.
-        for line in rendered_iter {
+        // Defensive: stray rendered lines go to the most recently pushed block.  The per-block
+        // counts come from the same render, so this never fires.
+        for (line, origin) in rendered_iter {
+            debug_assert!(false, "the renderer emitted a row no block counted");
             lines.push(line);
+            row_origins.push(origin);
             let last = all_original.len().saturating_sub(1);
             rendered_to_block.push(last);
         }
@@ -415,6 +383,7 @@ impl ParsedDoc {
         if total_bytes == 0 || src_bytes[total_bytes - 1] == b'\n' {
             push_blank(
                 &mut lines,
+                &mut row_origins,
                 &mut rendered_to_block,
                 &mut all_original,
                 &mut all_per_block_own,
@@ -432,9 +401,11 @@ impl ParsedDoc {
             total_bytes,
         );
 
+        debug_assert_eq!(row_origins.len(), lines.len(), "rows and origins drifted");
         let line_count = source.split('\n').count();
         Self {
             lines,
+            row_origins,
             source: source.into(),
             source_map,
             blocks,
@@ -474,6 +445,11 @@ impl ParsedDoc {
                 let r = self.source_map.rendered_lines_for_byte(byte);
                 r.end.saturating_sub(r.start) == 1
             }
+    }
+
+    /// Every row's origin, 1:1 with [`lines`](Self::lines).
+    pub fn row_origins(&self) -> &[RowOrigin] {
+        &self.row_origins
     }
 
     /// Number of rendered lines.
@@ -560,12 +536,9 @@ impl ParsedDoc {
         })
     }
 
-    /// True for a `Block::ImageBlock` (real image or promoted diagram).  Such a block has one
-    /// source line but reserves *many* rendered rows, so a caller translating a rendered sub-row
-    /// back to a raw line must not use the sub-row index directly: the byte range can absorb a
-    /// trailing blank line, and a naive `sub_idx` then addresses the wrong buffer line.
-    /// `mouse_ops::coord` pins every reserved row to raw line 0; `rendered_view::paint` skips them
-    /// via its `raw_line_idx` bounds check.
+    /// True for a `Block::ImageBlock` (real image or promoted diagram).  Such a block reserves
+    /// more rendered rows than it has source lines; their origins pin each to a source line
+    /// (see `row_map::line_for_row`), and `rendered_view::paint` skips a real image's rows.
     pub fn is_image_block(&self, block_idx: usize) -> bool {
         self.image_blocks
             .iter()
@@ -754,12 +727,12 @@ fn merge_trailing_tui_columns_comments(
     while i + 1 < blocks.len() {
         let is_pair = matches!(
             (&blocks[i], &blocks[i + 1]),
-            (Block::Table { user_widths: None, .. }, Block::HtmlComment(body))
+            (Block::Table { user_widths: None, .. }, Block::HtmlComment(body, _))
                 if crate::markdown::table_layout::parse_column_widths_comment(body).is_some()
         );
         if is_pair {
             let body = match &blocks[i + 1] {
-                Block::HtmlComment(s) => s.clone(),
+                Block::HtmlComment(s, _) => s.clone(),
                 _ => unreachable!(),
             };
             let widths = crate::markdown::table_layout::parse_column_widths_comment(&body).unwrap();
@@ -826,6 +799,17 @@ mod tests {
         Box::leak(Box::new(Theme::default()))
     }
 
+    /// Recording source positions must not cost a second pulldown-cmark pass: one build is one
+    /// block parse.
+    #[test]
+    fn a_build_runs_exactly_one_block_parse() {
+        use crate::markdown::parser::BLOCK_PARSE_COUNT;
+        let src = "# T\n\n- a\n  - b\n\n> q\n\n```\nx\n```\n\n| a |\n|---|\n| 1 |\n";
+        let before = BLOCK_PARSE_COUNT.with(|c| c.get());
+        ParsedDoc::build(src, theme(), true, 24);
+        assert_eq!(BLOCK_PARSE_COUNT.with(|c| c.get()) - before, 1);
+    }
+
     #[test]
     fn build_single_paragraph() {
         let doc = ParsedDoc::build("Hello world\n", theme(), false, 24);
@@ -867,24 +851,6 @@ mod tests {
         assert_eq!(doc.line_count(), 1);
         assert_eq!(doc.source_map.block_for_byte(0), Some(0));
         assert!(!doc.source_map.rendered_lines_for_byte(0).is_empty());
-    }
-
-    #[test]
-    fn detect_setext_recognises_h1_and_h2() {
-        assert_eq!(detect_setext("Title\n=====\n"), Some(SetextKind::H1));
-        assert_eq!(detect_setext("Title\n-----\n"), Some(SetextKind::H2));
-    }
-
-    #[test]
-    fn detect_setext_rejects_atx() {
-        assert_eq!(detect_setext("# Title\n"), None);
-        assert_eq!(detect_setext("## Title\n"), None);
-    }
-
-    #[test]
-    fn detect_setext_requires_underline() {
-        assert_eq!(detect_setext("Only one line"), None);
-        assert_eq!(detect_setext("Title\nbody\n"), None);
     }
 
     /// An image-only paragraph promotes to a `Block::ImageBlock` reserving
@@ -970,6 +936,12 @@ mod tests {
                 math_blocks[0].source
             );
         }
+        // Columns shaped like a formula pulldown-cmark parsed itself: only the first line's.
+        let src = "$$\nx^2 = z^{123\n$$\n";
+        let (mut blocks, ranges) = crate::markdown::parse_raw_with_ranges(src);
+        reconstruct_broken_display_math(&mut blocks, &ranges, src);
+        let (ok, _) = crate::markdown::parse_raw_with_ranges("$$\nx^2 = z^{123}\n$$\n");
+        assert_eq!(blocks[0].src(), ok[0].src());
     }
 
     /// A paragraph that merely mentions dollar signs — not a lone `$$...$$` block — must NOT be
@@ -1464,7 +1436,7 @@ mod tests {
         assert!(
             doc.blocks
                 .iter()
-                .any(|b| matches!(b, Block::HtmlComment(_))),
+                .any(|b| matches!(b, Block::HtmlComment(..))),
             "blocks: {:?}",
             doc.blocks
         );
@@ -1498,7 +1470,7 @@ mod tests {
         assert!(
             !doc.blocks
                 .iter()
-                .any(|b| matches!(b, Block::HtmlComment(_))),
+                .any(|b| matches!(b, Block::HtmlComment(..))),
             "comment should have been absorbed: {:?}",
             doc.blocks
         );

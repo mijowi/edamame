@@ -5,7 +5,6 @@ mod raw_text;
 use ratatui::{buffer::Buffer as TuiBuf, layout::Rect, style::Style, widgets::StatefulWidget};
 
 use crate::config::Theme;
-use crate::document::detect_setext;
 use crate::editor::table_edit;
 use crate::editor::vim_ops::VisualKind;
 use crate::editor::EditorState;
@@ -121,7 +120,8 @@ impl<'a> StatefulWidget for RenderedView<'a> {
 
         // The raw line index is an index *into* this source, so derive both together. A stale
         // parse rebuilds from the cached buffer-line range so unparsed typing is visible;
-        // otherwise `raw_block_cursor` is shared with `cursor_rendered_line_idx`.
+        // otherwise `raw_block_cursor` is the same derivation `editor::state::cursor_raw_line`
+        // (and so `cursor_rendered_line_idx` and the click mapping) reads.
         let (raw_block_source, cursor_raw_line, cursor_col) =
             match (use_cache, editor.cursor_block_line_range.clone()) {
                 (true, Some(range)) => {
@@ -147,7 +147,6 @@ impl<'a> StatefulWidget for RenderedView<'a> {
         let raw_lines: Vec<&str> = raw_source_lines(&raw_block_source);
 
         let is_table = table_edit::is_table_block(&raw_block_source);
-        let is_setext = detect_setext(&raw_block_source).is_some();
         // In a fenced code block only the fence lines de-render (body rows already render
         // 1:1); the rule lives in `markdown::code_layout::line_allows_raw_reveal`.
         let cursor_block_ast = editor
@@ -156,6 +155,7 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             .iter()
             .position(|r| r.start <= cursor_byte && cursor_byte < r.end)
             .and_then(|i| editor.parsed.blocks.get(i));
+        let is_setext = cursor_block_ast.is_some_and(crate::markdown::Block::is_setext_heading);
         // Diagram blocks (mermaid fences and `$$...$$` math) are synthetic `Block::ImageBlock`s;
         // with the cursor inside, every reserved row shows the corresponding raw line, like a
         // fenced code block.
@@ -188,15 +188,12 @@ impl<'a> StatefulWidget for RenderedView<'a> {
             cursor_raw_line,
             &raw_lines,
         );
-        // Shared with `cursor_rendered_line_idx` (and the mouse hit-test's revealed-line
-        // shortcut) so the three agree on which row shows raw source.
-        let cursor_in_block = crate::editor::state::cursor_sub_line_in_block(
+        // The row showing the cursor's source line, asked the way `cursor_rendered_line_idx`
+        // (and the mouse hit-test's revealed-line shortcut) ask it, so all agree on which row
+        // shows raw source.
+        let cursor_in_block = crate::document::row_map::row_for_line(
             &editor.parsed,
-            cursor_byte,
             cursor_block_idx,
-            cursor_block_own,
-            &raw_block_source,
-            &raw_lines,
             cursor_raw_line,
         );
         // Data-row cell in a row that wraps: one raw chunk per rendered sub. `None` for
@@ -369,8 +366,15 @@ impl<'a> StatefulWidget for RenderedView<'a> {
                     ) as usize;
                 }
             } else if reveal_raw && is_setext && in_cursor_block {
-                // Every rendered row of the block reveals its matching raw line.
-                let sub = virtual_idx - cursor_block_lines.start;
+                // Every rendered row of the block reveals the raw line it shows, except that the
+                // cursor's row shows the cursor's line: a multi-line heading's text is one row
+                // over several lines.
+                let row = virtual_idx - cursor_block_lines.start;
+                let sub = if row == cursor_in_block {
+                    cursor_raw_line
+                } else {
+                    crate::document::row_map::line_for_row(&editor.parsed, cursor_block_idx, row)
+                };
                 let raw_text = raw_lines.get(sub).copied().unwrap_or("");
                 let cursor_on_this = cursor_raw_line == sub;
                 let sel_cols = selection_bytes.and_then(|(sa, sb)| {

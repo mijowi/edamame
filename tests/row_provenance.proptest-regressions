@@ -1,0 +1,14 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 8579aecbc19bb5e3f14c38b46aee4e802cdb4514546649724e6fd0fa393bcdcc # shrinks to src = "- 1. ```\n\n     a\n  a\n  2. a\n"
+cc 2f5b7c37a197af9f3050e1062a47f05540ad0d0be61511667ebfcb088da7cade # shrinks to src = "1. ```\n\n   a\na\n2. > | a | b |\n   > |---|---|\n"
+cc cba3c4ada948810c8e2fc2cab0f4f491a0d3ab8a67dced2666110f78dba27b82 # shrinks to src = "- [ ] ><div>\n  >x\n  ></div>\n"
+cc ffd959481d52c17d2e83e5eea8a62696941361915da7888614bac26593fb86d7 # shrinks to src = ">-     a\n>\n>  <div>\n>  x\n>  </div>\n"
+cc d3355a3ad954c9c529a4b782e1b0b3c7962450ed1f72c920fc60cf5f67ef83b7 # shrinks to src = ">- - <div>\n>    x\n>    </div>\n"
+cc 63f1aef93f6c0f9469bcca46a6ff5523e8ecf5eaddaad9d6cc36f7530e838092 # shrinks to src = ">1. a\n>\n>   a\n>2. [^a]: a\n"
+cc fcd8fb3e0ed1c5a65c0838a1a9cf25c1dbdcd588b1abf57f61d54af289a92bdf # shrinks to src = "- >- $$\n  >  x^2\n  >  $$\n"
+cc 41f393c46f27193c45d03fcda3ee0a9f568a6bf71d289cd262d5b69fd655dda1 # shrinks to src = ">- >a\\\n>  >a\n"

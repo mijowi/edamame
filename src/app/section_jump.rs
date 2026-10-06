@@ -106,7 +106,7 @@ fn collect_heading_entries(
     let mut entries: Vec<HeadingEntry> = Vec::new();
     let width = doc_width.max(1);
     for (block_idx, block) in state.parsed.blocks.iter().enumerate() {
-        let Block::Heading { level, inlines } = block else {
+        let Block::Heading { level, inlines, .. } = block else {
             continue;
         };
         let text = heading_plain_text(inlines);

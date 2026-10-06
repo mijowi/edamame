@@ -14,10 +14,11 @@ use tui_big_text::{BigText, PixelSize};
 use crate::config::Theme;
 
 use self::util::{link_fallback, link_style_for};
-use super::ast::{inlines_to_plain, Block, Inline, MetadataKind};
+use super::ast::{inlines_to_plain, to_u32, Block, Inline, MetadataKind, SrcLines};
 use super::code_layout;
 use super::highlight::{self, Token};
-use super::render_cache::{is_cache_worthy, RenderCache, RenderSettings};
+use super::render_cache::{is_cache_worthy, CachedRows, RenderCache, RenderSettings};
+use super::row_origin::{ContentKind, RowOrigin, RowSink};
 use super::table_layout::str_cells;
 
 const IMAGE_PREFIX: &str = "Image: ";
@@ -135,28 +136,28 @@ impl<'t> Renderer<'t> {
     /// `ui::preview` only; production uses `render_with_counts`.
     #[allow(dead_code)]
     pub fn render(&self, blocks: &[Block]) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
+        let mut sink = RowSink::default();
         for block in blocks {
-            self.render_block(block, &mut lines, "", true);
+            self.render_block(block, &mut sink, "", true);
         }
-        lines
+        sink.lines
     }
 
     /// Render blocks and also return the number of rendered lines each block produced.
     ///
-    /// Returns `(lines, per_block_counts)` where `per_block_counts[i]` is the
-    /// number of entries that block `i` appended to `lines`.
-    pub fn render_with_counts(&self, blocks: &[Block]) -> (Vec<Line<'static>>, Vec<usize>) {
-        let mut lines = Vec::new();
+    /// Returns `(rows, per_block_counts)` where `per_block_counts[i]` is the number of rows
+    /// (lines and their origins, in lockstep) that block `i` appended to `rows`.
+    pub fn render_with_counts(&self, blocks: &[Block]) -> (RowSink, Vec<usize>) {
+        let mut rows = RowSink::default();
         let mut counts = Vec::with_capacity(blocks.len());
 
         for block in blocks {
-            let before = lines.len();
-            self.render_block(block, &mut lines, "", true);
-            counts.push(lines.len() - before);
+            let before = rows.len();
+            self.render_block(block, &mut rows, "", true);
+            counts.push(rows.len() - before);
         }
 
-        (lines, counts)
+        (rows, counts)
     }
 
     /// Like [`render_with_counts`](Self::render_with_counts), but memoizes
@@ -167,7 +168,7 @@ impl<'t> Renderer<'t> {
         &self,
         blocks: &[Block],
         cache: &mut RenderCache,
-    ) -> (Vec<Line<'static>>, Vec<usize>) {
+    ) -> (RowSink, Vec<usize>) {
         let mut prev = cache.begin_build(RenderSettings {
             theme_addr: self.theme as *const Theme as usize,
             viewport_width: self.viewport_width,
@@ -197,32 +198,39 @@ impl<'t> Renderer<'t> {
             },
         });
 
-        let mut lines = Vec::new();
+        let mut rows = RowSink::default();
         let mut counts = Vec::with_capacity(blocks.len());
         for block in blocks {
-            let before = lines.len();
+            let before = rows.len();
             // ImageBlock row counts track the decode cache, which changes
             // without the AST changing — never cache them.  Cheap-to-render
             // blocks bypass the cache too: a hash + line-clone costs more than
             // re-rendering them (#35 §2, `is_cache_worthy`).
             if matches!(block, Block::ImageBlock { .. }) || !is_cache_worthy(block) {
-                self.render_block(block, &mut lines, "", true);
-            } else if let Some(hit) = cache.entries.get(block) {
-                lines.extend(hit.iter().cloned());
+                self.render_block(block, &mut rows, "", true);
             } else if let Some((key, hit)) = prev.remove_entry(block) {
-                lines.extend(hit.iter().cloned());
+                // The common hit, so it is asked first: each `Block` hash walks a deep value.
+                rows.extend_from(&hit.lines, &hit.origins);
                 cache.entries.insert(key, hit);
+            } else if let Some(hit) = cache.entries.get(block) {
+                // A block repeated earlier in this build, already moved over.
+                rows.extend_from(&hit.lines, &hit.origins);
             } else {
-                self.render_block(block, &mut lines, "", true);
-                cache
-                    .entries
-                    .insert(block.clone(), lines[before..].to_vec());
+                self.render_block(block, &mut rows, "", true);
+                // Origins are block-relative, so a cached block's rows hold wherever it moves.
+                cache.entries.insert(
+                    block.clone(),
+                    CachedRows {
+                        lines: rows.lines[before..].to_vec(),
+                        origins: rows.origins[before..].to_vec(),
+                    },
+                );
             }
-            counts.push(lines.len() - before);
+            counts.push(rows.len() - before);
         }
 
         // `prev` drops here, evicting entries whose block is gone.
-        (lines, counts)
+        (rows, counts)
     }
 
     // ── Block rendering ───────────────────────────────────────────
@@ -230,18 +238,23 @@ impl<'t> Renderer<'t> {
     pub(super) fn render_block(
         &self,
         block: &Block,
-        out: &mut Vec<Line<'static>>,
+        out: &mut RowSink,
         indent_prefix: &str,
         // Whether `block` is a top-level document block.  Nested calls (blockquote children,
-        // list-item blocks, footnote-definition bodies) pass `false` so their paragraphs never
-        // reflow — see `render_paragraph`.
+        // list-item blocks, footnote-definition bodies) pass `false`: their paragraphs never
+        // reflow (see `render_paragraph`), a setext H2 gets no rule, and a list renders loose
+        // spacing only directly inside a quote (see `render_blockquote`).
         top_level: bool,
     ) {
         match block {
-            Block::Heading { level, inlines } => {
-                self.render_heading(*level, inlines, out);
+            Block::Heading {
+                level,
+                inlines,
+                src,
+            } => {
+                self.render_heading(*level, inlines, src, top_level, out);
             }
-            Block::Paragraph { inlines } => {
+            Block::Paragraph { inlines, src } => {
                 // A `$$...$$`-only paragraph that survived promotion (figures disabled) renders
                 // as a fenced-style ` math ` code block — the source counterpart of the
                 // display-math reveal — matching how a `` ```mermaid `` fence stays a code block
@@ -249,10 +262,18 @@ impl<'t> Renderer<'t> {
                 if let Some(body) =
                     crate::markdown::parser::post_pass::display_math_block_body(block)
                 {
-                    self.render_code_block(Some("math"), &body, true, out);
+                    self.render_code_block(
+                        Some("math"),
+                        &body,
+                        true,
+                        src,
+                        CodeCols::FirstLine,
+                        out,
+                    );
                 } else {
                     self.render_paragraph(
                         inlines,
+                        src,
                         out,
                         indent_prefix,
                         self.reflow_paragraphs && top_level,
@@ -263,55 +284,79 @@ impl<'t> Renderer<'t> {
                 language,
                 content,
                 fenced,
+                src,
             } => {
-                self.render_code_block(language.as_deref(), content, *fenced, out);
+                self.render_code_block(
+                    language.as_deref(),
+                    content,
+                    *fenced,
+                    src,
+                    CodeCols::PerLine,
+                    out,
+                );
             }
-            Block::BlockQuote { blocks } => {
-                self.render_blockquote(blocks, out);
+            Block::BlockQuote {
+                blocks,
+                span,
+                hidden,
+            } => {
+                self.render_blockquote(blocks, span, hidden, out);
             }
             Block::List {
                 ordered,
                 start,
                 items,
+                ..
             } => {
-                self.render_list(*ordered, *start, items, out, indent_prefix);
+                self.render_list(*ordered, *start, items, out, indent_prefix, top_level);
             }
-            Block::HorizontalRule => {
-                out.push(Line::styled(
-                    "─".repeat(self.viewport_width.max(1)),
-                    self.theme.rule,
-                ));
+            Block::HorizontalRule { src } => {
+                out.push(
+                    Line::styled("─".repeat(self.viewport_width.max(1)), self.theme.rule),
+                    RowOrigin::chrome(Some(src.first)),
+                );
             }
             Block::Table {
                 col_count,
                 headers,
                 rows,
                 user_widths,
+                src,
             } => {
-                self.render_table(*col_count, headers, rows, user_widths.as_deref(), out);
+                self.render_table(*col_count, headers, rows, user_widths.as_deref(), src, out);
             }
-            Block::Html(html) => {
-                for line in html.lines() {
-                    out.push(Line::styled(
-                        format!("{indent_prefix}{line}"),
-                        self.theme.code_block_text,
-                    ));
+            Block::Html(html, src) => {
+                let prefix_cells = str_cells(indent_prefix);
+                for (k, line) in html.lines().enumerate() {
+                    out.push(
+                        Line::styled(format!("{indent_prefix}{line}"), self.theme.code_block_text),
+                        verbatim_origin(src, k, prefix_cells),
+                    );
                 }
             }
-            Block::HtmlComment(_) => {
+            Block::HtmlComment(..) => {
                 // Annotation, not content: zero rendered lines (raw mode reads
                 // the rope directly, so the source stays visible there).
             }
-            Block::ImageBlock { alt, url } => {
-                self.render_image_block(alt, url, out);
+            Block::ImageBlock { alt, url, src } => {
+                self.render_image_block(alt, url, src, out);
             }
-            Block::MetadataBlock { kind, content } => {
-                self.render_metadata_block(*kind, content, out);
+            Block::MetadataBlock { kind, content, src } => {
+                self.render_metadata_block(*kind, content, src, out);
             }
-            Block::FootnoteDefinition { label, blocks } => {
-                self.render_footnote_definition(label, blocks, out);
+            Block::FootnoteDefinition {
+                label,
+                blocks,
+                span,
+            } => {
+                self.render_footnote_definition(label, blocks, span, out);
             }
         }
+        debug_assert_eq!(
+            out.lines.len(),
+            out.origins.len(),
+            "rows and origins drifted"
+        );
     }
 
     // ── Frontmatter ───────────────────────────────────────────────
@@ -325,20 +370,23 @@ impl<'t> Renderer<'t> {
         &self,
         kind: MetadataKind,
         content: &str,
-        out: &mut Vec<Line<'static>>,
+        src: &SrcLines,
+        out: &mut RowSink,
     ) {
         let delim = kind.delimiter();
-        out.push(Line::styled(
-            delim.to_string(),
-            self.theme.frontmatter_delimiter,
-        ));
+        out.push(
+            Line::styled(delim.to_string(), self.theme.frontmatter_delimiter),
+            RowOrigin::chrome(Some(src.first)),
+        );
+        let mut k = 0;
         for line in content.lines() {
-            out.push(self.metadata_line(kind, line));
+            k += 1;
+            out.push(self.metadata_line(kind, line), verbatim_origin(src, k, 0));
         }
-        out.push(Line::styled(
-            delim.to_string(),
-            self.theme.frontmatter_delimiter,
-        ));
+        out.push(
+            Line::styled(delim.to_string(), self.theme.frontmatter_delimiter),
+            RowOrigin::chrome(Some(line_at(src, k + 1))),
+        );
     }
 
     /// Split one frontmatter line into a `key`-styled head and a
@@ -374,26 +422,33 @@ impl<'t> Renderer<'t> {
         &self,
         label: &str,
         blocks: &[Block],
-        out: &mut Vec<Line<'static>>,
+        span: &super::ast::LineSpan,
+        out: &mut RowSink,
     ) {
-        let mut body: Vec<Line<'static>> = Vec::new();
+        let mut body = RowSink::default();
         for b in blocks {
             self.render_block(b, &mut body, "", false);
         }
         let leader = format!("  {label}.  ");
-        let cont_indent = " ".repeat(leader.chars().count());
+        // Every row sits behind the leader or its width of indent, measured once in cells; the
+        // `↩` is trailing chrome.
+        let shift = str_cells(&leader);
+        let cont_indent = " ".repeat(shift);
         let back = " ↩";
 
         if body.is_empty() {
-            out.push(Line::from(vec![
-                Span::styled(leader, self.theme.footnote),
-                Span::styled(back.to_string(), self.theme.footnote),
-            ]));
+            out.push(
+                Line::from(vec![
+                    Span::styled(leader, self.theme.footnote),
+                    Span::styled(back.to_string(), self.theme.footnote),
+                ]),
+                RowOrigin::chrome(Some(span.start)),
+            );
             return;
         }
 
         let last = body.len() - 1;
-        for (i, line) in body.into_iter().enumerate() {
+        for (i, (line, origin)) in body.into_rows().enumerate() {
             let mut spans: Vec<Span<'static>> = Vec::new();
             if i == 0 {
                 spans.push(Span::styled(leader.clone(), self.theme.footnote));
@@ -404,7 +459,7 @@ impl<'t> Renderer<'t> {
             if i == last {
                 spans.push(Span::styled(back.to_string(), self.theme.footnote));
             }
-            out.push(Line::from(spans));
+            out.push(Line::from(spans), origin.shifted(shift));
         }
     }
 
@@ -418,7 +473,7 @@ impl<'t> Renderer<'t> {
     // — which keeps `per_block_own` stable while pending or failed, so
     // navigation doesn't depend on decode order.
 
-    fn render_image_block(&self, alt: &str, url: &str, out: &mut Vec<Line<'static>>) {
+    fn render_image_block(&self, alt: &str, url: &str, src: &SrcLines, out: &mut RowSink) {
         let name = if alt.trim().is_empty() {
             link_fallback(url)
         } else {
@@ -434,7 +489,11 @@ impl<'t> Renderer<'t> {
             ),
             Span::styled("]", self.theme.image_placeholder),
         ]);
-        out.push(placeholder);
+        // Reserved row `k` shows source line `k`, clamped to the last: a one-line image pins every
+        // row to its line, and a diagram's reveal paints its source lines 1:1 onto these rows.
+        let last_line = src.len().saturating_sub(1);
+        let origin = |k: usize| RowOrigin::chrome(Some(line_at(src, k.min(last_line))));
+        out.push(placeholder, origin(0));
         let ordinal = self.image_block_seq.get();
         self.image_block_seq.set(ordinal + 1);
         let rows = self
@@ -442,8 +501,8 @@ impl<'t> Renderer<'t> {
             .and_then(|f| f(url, ordinal))
             .unwrap_or(self.image_max_height)
             .max(1);
-        for _ in 1..rows {
-            out.push(Line::raw(""));
+        for k in 1..rows {
+            out.push(Line::raw(""), origin(k));
         }
     }
 
@@ -453,12 +512,28 @@ impl<'t> Renderer<'t> {
         &self,
         level: pulldown_cmark::HeadingLevel,
         inlines: &[Inline],
-        out: &mut Vec<Line<'static>>,
+        src: &SrcLines,
+        top_level: bool,
+        out: &mut RowSink,
     ) {
         use pulldown_cmark::HeadingLevel::*;
 
-        if level == H1 && self.big_h1 && self.try_render_h1_big(inlines, out) {
-            return;
+        // A setext heading's last source line is its underline, which holds no content; an
+        // ATX heading is one line.
+        let setext = src.len() >= 2;
+        let text_lines = if setext { src.len() - 1 } else { 1 };
+        let underline = setext.then(|| line_at(src, text_lines));
+        // The rule under an H1 shows the underline when there is one, else the heading's line.
+        let rule_origin = RowOrigin::chrome(Some(underline.unwrap_or(src.first)));
+
+        if level == H1 && self.big_h1 {
+            let glyph_origin = RowOrigin {
+                lines: Some(src.first..line_at(src, text_lines)),
+                cols: super::row_origin::ColOrigin::Chrome,
+            };
+            if self.try_render_h1_big(inlines, &glyph_origin, &rule_origin, out) {
+                return;
+            }
         }
 
         let prefix = match level {
@@ -475,13 +550,36 @@ impl<'t> Renderer<'t> {
         let mut spans = vec![Span::styled(prefix, prefix_style)];
         spans.extend(self.render_inlines(inlines, style));
 
-        out.push(Line::from(spans));
+        // A multi-line setext heading's text joins onto one row: a flow.
+        let kind = if text_lines > 1 {
+            ContentKind::Flow
+        } else {
+            ContentKind::Inline
+        };
+        let text_origin = match src.col(0) {
+            Some(raw_col) => RowOrigin::content(
+                src.first..line_at(src, text_lines),
+                raw_col,
+                to_u32(str_cells(prefix)),
+                kind,
+            ),
+            // An empty heading (`#`) has no content to map.
+            None => RowOrigin::chrome(Some(src.first)),
+        };
+        out.push(Line::from(spans), text_origin);
 
         if level == H1 {
-            out.push(Line::styled(
-                "─".repeat(self.viewport_width.max(1)),
-                self.theme.h1_rule,
-            ));
+            out.push(
+                Line::styled("─".repeat(self.viewport_width.max(1)), self.theme.h1_rule),
+                rule_origin,
+            );
+        } else if level == H2 && top_level && setext {
+            // A setext H2's underline renders as a rule of its own the way an H1's does, so
+            // the reveal has a row to show it on.
+            out.push(
+                Line::styled("─".repeat(self.viewport_width.max(1)), self.theme.rule),
+                rule_origin,
+            );
         }
     }
 
@@ -497,7 +595,13 @@ impl<'t> Renderer<'t> {
     // covers ASCII only), when one word is wider than the viewport, or when it
     // needs 3+ wrapped lines — past two, an H1 reads as a poster.  The caller
     // then falls back to the one-line styled rendering.
-    fn try_render_h1_big(&self, inlines: &[Inline], out: &mut Vec<Line<'static>>) -> bool {
+    fn try_render_h1_big(
+        &self,
+        inlines: &[Inline],
+        glyph_origin: &RowOrigin,
+        rule_origin: &RowOrigin,
+        out: &mut RowSink,
+    ) -> bool {
         const GLYPH_W_PER_CHAR: usize = 4;
         const GLYPH_H: u16 = 2;
         const MAX_WRAPPED_LINES: usize = 2;
@@ -530,7 +634,7 @@ impl<'t> Renderer<'t> {
             // Gap between wrapped chunks, so they don't merge into one
             // 4-row block.
             if chunk_idx > 0 {
-                out.push(blank_spacer.clone());
+                out.push(blank_spacer.clone(), glyph_origin.clone());
             }
             let chunk_glyph_w = chunk.len() * GLYPH_W_PER_CHAR;
             let area = Rect::new(0, 0, viewport as u16, GLYPH_H);
@@ -555,10 +659,13 @@ impl<'t> Renderer<'t> {
                 }
             }
             for y in 0..GLYPH_H {
-                out.push(buffer_row_to_line(&buf, y));
+                out.push(buffer_row_to_line(&buf, y), glyph_origin.clone());
             }
         }
-        out.push(Line::styled("─".repeat(viewport), self.theme.h1_rule));
+        out.push(
+            Line::styled("─".repeat(viewport), self.theme.h1_rule),
+            rule_origin.clone(),
+        );
         true
     }
 
@@ -567,7 +674,8 @@ impl<'t> Renderer<'t> {
     fn render_paragraph(
         &self,
         inlines: &[Inline],
-        out: &mut Vec<Line<'static>>,
+        src: &SrcLines,
+        out: &mut RowSink,
         indent_prefix: &str,
         // Reflow this paragraph.  Only true for a genuinely top-level `Block::Paragraph`: the
         // rendered-row ↔ source-line consumers (gutter, mouse, overlay, `EffectiveRows`) key on
@@ -580,16 +688,9 @@ impl<'t> Renderer<'t> {
         let reflow = reflow && !inlines.iter().any(|i| matches!(i, Inline::HardBreak));
 
         let prefix = indent_prefix.to_string();
-        // Reflow joins a paragraph's soft breaks into one flow that `line_render` wraps to the
-        // viewport; without it, each break gets its own row (CommonMark collapses soft breaks to
-        // spaces, but the rendered form then mirrors the source line-for-line).  Split via
-        // `render_inlines`, not inline-by-inline, so adjacent footnote references still fuse.
-        let segments: Vec<&[Inline]> = inlines
-            .split(|i| !reflow && matches!(i, Inline::HardBreak | Inline::SoftBreak))
-            .collect();
-        let last = segments.len() - 1;
-
-        for (i, segment) in segments.iter().enumerate() {
+        let mut rows =
+            paragraph_rows(inlines, src, reflow, to_u32(str_cells(indent_prefix))).peekable();
+        while let Some((segment, origin)) = rows.next() {
             let mut spans: Vec<Span<'static>> = Vec::new();
             if !prefix.is_empty() {
                 spans.push(Span::raw(prefix.clone()));
@@ -599,10 +700,10 @@ impl<'t> Renderer<'t> {
             // Every break emits its line, blank ones included; only a trailing
             // segment holding nothing but the indent prefix is suppressed.
             #[allow(clippy::nonminimal_bool)]
-            let keep = i < last
+            let keep = rows.peek().is_some()
                 || (!spans.is_empty() && !(spans.len() == 1 && spans[0].content.trim().is_empty()));
             if keep {
-                out.push(Line::from(spans));
+                out.push(Line::from(spans), origin);
             }
         }
     }
@@ -667,7 +768,9 @@ impl<'t> Renderer<'t> {
         language: Option<&str>,
         content: &str,
         fenced: bool,
-        out: &mut Vec<Line<'static>>,
+        src: &SrcLines,
+        cols: CodeCols,
+        out: &mut RowSink,
     ) {
         // Strip exactly one trailing empty string (pulldown-cmark always ends
         // code content with '\n'), so a genuine blank line inside the block
@@ -681,18 +784,45 @@ impl<'t> Renderer<'t> {
         // would wrap in the terminal and add a blank line after every code row.
         let block_width = self.viewport_width.max(1);
 
+        // Body line `i` is the block's source line `i`, or `i + 1` past an opening fence.
+        let body_first = usize::from(fenced);
+        let first_col = src.col(0);
+        let body_origin = |i: usize, chunk_start: usize| -> RowOrigin {
+            let k = body_first + i;
+            // A body line past the recorded lines can't happen while `display_math_block_body`
+            // wants its `$$` on lines of their own; were it to, the row is chrome on the last.
+            if k >= src.len() {
+                return RowOrigin::chrome(src.span().end.checked_sub(1));
+            }
+            let col = match cols {
+                CodeCols::PerLine => src.col(k),
+                CodeCols::FirstLine => first_col,
+            };
+            let line = line_at(src, k);
+            match col {
+                Some(c) => RowOrigin::content(
+                    line..line.saturating_add(1),
+                    c.saturating_add(to_u32(chunk_start)),
+                    to_u32(code_layout::CODE_PAD_COLS),
+                    ContentKind::Verbatim,
+                ),
+                None => RowOrigin::chrome(Some(line)),
+            }
+        };
+
         // Opening-fence row: a ` lang ` label when tagged, else an NBSP-padded
         // placeholder.  The ``` glyphs appear only when the cursor enters the
         // row and `RenderedView` reveals its raw source.
         if fenced {
+            let fence = RowOrigin::chrome(Some(src.first));
             if let Some(lang) = language {
-                out.push(Line::styled(
-                    format!(" {} ", lang),
-                    self.theme.code_block_lang,
-                ));
+                out.push(
+                    Line::styled(format!(" {} ", lang), self.theme.code_block_lang),
+                    fence,
+                );
             } else {
                 let padded = "\u{00A0}".repeat(block_width);
-                out.push(Line::styled(padded, self.theme.code_block_text));
+                out.push(Line::styled(padded, self.theme.code_block_text), fence);
             }
         }
 
@@ -709,24 +839,32 @@ impl<'t> Renderer<'t> {
         let row_tokens = |i: usize| tokens.get(i).map(Vec::as_slice).unwrap_or(&[]);
 
         if self.code_wrap {
-            let wrap_at = self.viewport_width.max(1);
+            // Chars per row: the viewport less the pad cell, and at least one, or a one-cell
+            // viewport would never advance.
+            let chunk = self.viewport_width.saturating_sub(1).max(1);
             for (i, line) in raw_lines.iter().enumerate() {
                 let chars: Vec<char> = line.chars().collect();
                 if chars.is_empty() {
                     // NBSP, not spaces: ratatui's WordWrapper treats it as
                     // non-whitespace and so emits no extra blank line.
                     let padded = "\u{00A0}".repeat(block_width);
-                    out.push(Line::styled(padded, self.theme.code_block_text));
+                    out.push(
+                        Line::styled(padded, self.theme.code_block_text),
+                        body_origin(i, 0),
+                    );
                     continue;
                 }
                 let mut start = 0;
                 while start < chars.len() {
-                    let end = (start + wrap_at - 1).min(chars.len());
+                    let end = (start + chunk).min(chars.len());
                     let slice: String = chars[start..end].iter().collect();
                     // Tokens address the whole source line, so each segment
                     // takes the overlapping part re-based to its own column 0.
                     let seg = highlight::slice_tokens(row_tokens(i), start, end);
-                    out.push(self.code_body_row(&slice, &seg, block_width));
+                    out.push(
+                        self.code_body_row(&slice, &seg, block_width),
+                        body_origin(i, start),
+                    );
                     start = end;
                 }
             }
@@ -739,34 +877,73 @@ impl<'t> Renderer<'t> {
                 if line.is_empty() {
                     // NBSP, as in the wrapped path above.
                     let padded = "\u{00A0}".repeat(block_width);
-                    out.push(Line::styled(padded, self.theme.code_block_text));
+                    out.push(
+                        Line::styled(padded, self.theme.code_block_text),
+                        body_origin(i, 0),
+                    );
                 } else {
-                    out.push(self.code_body_row(line, row_tokens(i), block_width));
+                    out.push(
+                        self.code_body_row(line, row_tokens(i), block_width),
+                        body_origin(i, 0),
+                    );
                 }
             }
         }
 
-        // Closing-fence placeholder, revealed the same way as the opening one.
+        // Closing-fence placeholder, revealed the same way as the opening one.  An unclosed
+        // fence — every fence while it is being typed — still gets one, which no source line
+        // owns.
         if fenced {
             let padded = "\u{00A0}".repeat(block_width);
-            out.push(Line::styled(padded, self.theme.code_block_text));
+            let k = body_first + raw_lines.len();
+            let closing = (k < src.len()).then(|| line_at(src, k));
+            out.push(
+                Line::styled(padded, self.theme.code_block_text),
+                RowOrigin::chrome(closing),
+            );
         }
     }
 
     // ── Blockquote ────────────────────────────────────────────────
 
-    fn render_blockquote(&self, blocks: &[Block], out: &mut Vec<Line<'static>>) {
-        // A blank line between consecutive child blocks keeps a bare `>` in the
-        // source visible as a quoted blank row.
-        let mut inner_lines: Vec<Line<'static>> = Vec::new();
-        for (i, block) in blocks.iter().enumerate() {
-            if i > 0 {
-                inner_lines.push(Line::from(""));
+    fn render_blockquote(
+        &self,
+        blocks: &[Block],
+        span: &super::ast::LineSpan,
+        hidden: &[u32],
+        out: &mut RowSink,
+    ) {
+        // Every bare `>` line renders as a quoted blank row of its own — before, between, or
+        // after the children, wherever the source has one — so the quote stays one row per
+        // source line.  Those are the lines the children don't cover, less the `hidden` ones.
+        let mut inner = RowSink::default();
+        let blanks = |lines: std::ops::Range<u32>, inner: &mut RowSink| {
+            for line in lines.filter(|line| !hidden.contains(line)) {
+                inner.push(Line::from(""), RowOrigin::chrome(Some(line)));
             }
-            self.render_block(block, &mut inner_lines, "", false);
+        };
+        let mut next_line = span.start;
+        for block in blocks {
+            let child = block.span();
+            blanks(next_line..child.start, &mut inner);
+            match block {
+                // A loose list keeps its spacing here, so a bare `>` between its items has its
+                // row like any other.
+                Block::List {
+                    ordered,
+                    start,
+                    items,
+                    ..
+                } => self.render_list(*ordered, *start, items, &mut inner, "", true),
+                _ => self.render_block(block, &mut inner, "", false),
+            }
+            next_line = next_line.max(child.end);
         }
+        blanks(next_line..span.end, &mut inner);
 
-        for line in inner_lines {
+        // The bar is prefix: content behind it starts two cells later.
+        let bar_cells = str_cells("▎ ");
+        for (line, origin) in inner.into_rows() {
             // The quote style is the *base*, not a replacement: each inner span
             // keeps its own resolved style and inherits the wash underneath.
             // Overwriting wholesale silenced every inline style inside a quote
@@ -781,7 +958,7 @@ impl<'t> Renderer<'t> {
             }
             // `line_render` fills trailing cells and wrapped-row indents with
             // the line-level style, so the wash reaches the viewport edge.
-            out.push(Line::from(spans).style(base));
+            out.push(Line::from(spans).style(base), origin.shifted(bar_cells));
         }
     }
 
@@ -973,6 +1150,108 @@ impl<'t> Renderer<'t> {
                 vec![Span::raw(" ")]
             }
         }
+    }
+}
+
+/// A paragraph's rows: its inline segments — split at every top-level soft or hard
+/// break, unless `join` keeps them one flow — each with the origin of the lines it shows behind
+/// `prefix_cells` of prefix.  The caller renders each segment with one `render_inlines` call,
+/// so adjacent footnote references still fuse.  Never empty; lazy, so a paragraph allocates
+/// nothing here.
+pub(super) fn paragraph_rows<'a>(
+    inlines: &'a [Inline],
+    src: &'a SrcLines,
+    join: bool,
+    prefix_cells: u32,
+) -> impl Iterator<Item = (&'a [Inline], RowOrigin)> + 'a {
+    // A segment begins on a line with a content column — the first line, and every line after a
+    // break — and runs through the lines after it that have none (the tail of a multi-line code
+    // span).  A break nested in emphasis or a link doesn't split the segment, but its line still
+    // has a column of its own, so the segment spans that many more.
+    let len = src.len();
+    let next_start = move |from: usize| (from..len).find(|&k| src.col(k).is_some());
+    let mut line = 0usize;
+    // Joining makes a paragraph's soft breaks one flow that `line_render` wraps to the
+    // viewport; without it, each break gets its own row (CommonMark collapses soft breaks to
+    // spaces, but the rendered form then mirrors the source line-for-line).
+    inlines
+        .split(move |i| !join && matches!(i, Inline::HardBreak | Inline::SoftBreak))
+        .map(move |segment| {
+            if join {
+                let raw_col = (0..len).find_map(|k| src.col(k)).unwrap_or(0);
+                let origin =
+                    RowOrigin::content(src.span(), raw_col, prefix_cells, ContentKind::Flow);
+                return (segment, origin);
+            }
+            let Some(k) = next_start(line) else {
+                line = len;
+                return (segment, RowOrigin::chrome(src.span().end.checked_sub(1)));
+            };
+            let mut end = k + 1;
+            for _ in 0..nested_breaks(segment) {
+                end = next_start(end).map_or(len, |s| s + 1);
+            }
+            end = next_start(end).unwrap_or(len);
+            line = end;
+            let kind = if end - k > 1 {
+                ContentKind::Flow
+            } else {
+                ContentKind::Inline
+            };
+            let raw_col = src.col(k).unwrap_or(0);
+            let lines = line_at(src, k)..line_at(src, end);
+            (
+                segment,
+                RowOrigin::content(lines, raw_col, prefix_cells, kind),
+            )
+        })
+}
+
+/// Soft and hard breaks inside `inlines`' emphasis, links and highlights: line breaks that don't
+/// split a paragraph segment.
+fn nested_breaks(inlines: &[Inline]) -> usize {
+    inlines
+        .iter()
+        .map(|i| match i {
+            Inline::SoftBreak | Inline::HardBreak => 1,
+            Inline::Bold(inner)
+            | Inline::Italic(inner)
+            | Inline::Strikethrough(inner)
+            | Inline::Highlight(inner)
+            | Inline::Link { text: inner, .. } => nested_breaks(inner),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Where a code block's body rows take their raw columns from.
+#[derive(Debug, Clone, Copy)]
+enum CodeCols {
+    /// Each body line's own recorded column: a real code block.
+    PerLine,
+    /// The opening line's column for every body line: a figures-off `$$…$$` paragraph, whose
+    /// formula pulldown-cmark reports as one span, so its later lines carry no column of their
+    /// own.  Right whenever the body shares the opening line's container prefix.
+    FirstLine,
+}
+
+/// The block-relative line of `src`'s `k`th line.
+fn line_at(src: &SrcLines, k: usize) -> u32 {
+    src.first.saturating_add(to_u32(k))
+}
+
+/// A verbatim row showing `src`'s `k`th line behind `prefix_cells` of prefix; chrome when the
+/// line has no content column.
+fn verbatim_origin(src: &SrcLines, k: usize, prefix_cells: usize) -> RowOrigin {
+    let line = line_at(src, k);
+    match src.col(k) {
+        Some(c) => RowOrigin::content(
+            line..line.saturating_add(1),
+            c,
+            to_u32(prefix_cells),
+            ContentKind::Verbatim,
+        ),
+        None => RowOrigin::chrome(Some(line)),
     }
 }
 
@@ -1197,10 +1476,13 @@ mod tests {
         let mut cache = RenderCache::default();
 
         let narrow = renderer().with_viewport_width(40);
-        let (narrow_lines, _) = narrow.render_with_counts_cached(&blocks, &mut cache);
+        let narrow_lines = narrow
+            .render_with_counts_cached(&blocks, &mut cache)
+            .0
+            .lines;
 
         let wide = renderer().with_viewport_width(120);
-        let (wide_lines, _) = wide.render_with_counts_cached(&blocks, &mut cache);
+        let wide_lines = wide.render_with_counts_cached(&blocks, &mut cache).0.lines;
 
         assert_ne!(
             narrow_lines, wide_lines,
@@ -1219,16 +1501,16 @@ mod tests {
         let mut cache = RenderCache::default();
 
         let off = renderer().with_syntax_highlighting(false);
-        let (off_lines, _) = off.render_with_counts_cached(&blocks, &mut cache);
+        let off_lines = off.render_with_counts_cached(&blocks, &mut cache).0.lines;
 
         let on = renderer().with_syntax_highlighting(true);
-        let (on_lines, _) = on.render_with_counts_cached(&blocks, &mut cache);
+        let on_lines = on.render_with_counts_cached(&blocks, &mut cache).0.lines;
 
         assert_ne!(off_lines, on_lines, "the toggle must re-render the block");
         assert_eq!(on_lines, on.render(&blocks));
 
         // ...and back again, so the invalidation is not one-way.
-        let (off_again, _) = off.render_with_counts_cached(&blocks, &mut cache);
+        let off_again = off.render_with_counts_cached(&blocks, &mut cache).0.lines;
         assert_eq!(off_again, off_lines);
     }
 
@@ -1238,6 +1520,7 @@ mod tests {
         let blocks = vec![Block::ImageBlock {
             alt: "a".into(),
             url: "img.png".into(),
+            src: Default::default(),
         }];
         let mut cache = RenderCache::default();
         renderer().render_with_counts_cached(&blocks, &mut cache);
@@ -1269,38 +1552,56 @@ mod tests {
             language: None,
             content: "x\n".into(),
             fenced: true,
+            src: Default::default(),
         };
         let table = || Block::Table {
             col_count: 1,
             headers: vec![vec![]],
             rows: vec![],
             user_widths: None,
+            src: Default::default(),
         };
         let item = |blocks| ListItem {
             blocks,
             task: None,
-            blank_lines_before: 0,
+            span: Default::default(),
         };
         let list = |items| Block::List {
             ordered: false,
             start: None,
             items,
+            span: Default::default(),
         };
 
         assert!(is_cache_worthy(&code()));
         assert!(is_cache_worthy(&table()));
         assert!(is_cache_worthy(&Block::BlockQuote {
-            blocks: vec![table()]
+            blocks: vec![table()],
+            span: Default::default(),
+            hidden: vec![],
         }));
         assert!(is_cache_worthy(&list(vec![item(vec![code()])])));
 
-        assert!(!is_cache_worthy(&Block::Paragraph { inlines: vec![] }));
-        assert!(!is_cache_worthy(&Block::HorizontalRule));
+        assert!(!is_cache_worthy(&Block::Paragraph {
+            inlines: vec![],
+            src: Default::default(),
+        }));
+        assert!(!is_cache_worthy(&Block::HorizontalRule {
+            src: Default::default()
+        }));
         assert!(!is_cache_worthy(&Block::BlockQuote {
-            blocks: vec![Block::Paragraph { inlines: vec![] }]
+            blocks: vec![Block::Paragraph {
+                inlines: vec![],
+                src: Default::default(),
+            }],
+            span: Default::default(),
+            hidden: vec![],
         }));
         assert!(!is_cache_worthy(&list(vec![item(vec![
-            Block::Paragraph { inlines: vec![] }
+            Block::Paragraph {
+                inlines: vec![],
+                src: Default::default(),
+            }
         ])])));
     }
 
@@ -1664,6 +1965,17 @@ mod tests {
             string_rows > 1,
             "the literal should stay styled across every wrapped row"
         );
+    }
+
+    #[test]
+    fn a_one_cell_viewport_still_wraps_code_one_char_per_row() {
+        let blocks = parse("```\nabc\n```\n");
+        let lines = renderer()
+            .with_viewport_width(1)
+            .with_code_wrap(true)
+            .render(&blocks);
+        // The label row, three body rows, the closing row.
+        assert_eq!(lines.len(), 5);
     }
 
     #[test]
@@ -2075,29 +2387,22 @@ mod tests {
         assert_eq!(lines.len(), 0, "got {lines:?}");
     }
 
+    /// A setext H2's heading row is an ATX H2's; its underline, a source line of its own,
+    /// renders as a rule below it the way an H1's does, so the block stays one row per line.
     #[test]
-    fn setext_h2_renders_same_as_atx_h2() {
+    fn setext_h2_renders_as_atx_h2_plus_its_underline_rule() {
         let atx_lines = render("## H2 text\n");
         let setext_lines = render("H2 text\n---\n");
-        eprintln!(
-            "ATX H2 lines: {:?}",
-            atx_lines.iter().map(line_text).collect::<Vec<_>>()
-        );
-        eprintln!(
-            "Setext H2 lines: {:?}",
-            setext_lines.iter().map(line_text).collect::<Vec<_>>()
-        );
-        assert_eq!(
-            atx_lines.len(),
-            setext_lines.len(),
-            "ATX: {:?}, Setext: {:?}",
-            atx_lines.iter().map(line_text).collect::<Vec<_>>(),
-            setext_lines.iter().map(line_text).collect::<Vec<_>>()
-        );
+        assert_eq!(atx_lines.len(), 1);
+        assert_eq!(setext_lines.len(), 2, "{setext_lines:?}");
+        assert_eq!(setext_lines[0], atx_lines[0]);
+        assert!(line_text(&setext_lines[1]).chars().all(|c| c == '─'));
+        // Nested, it renders as before the rule moved here: no rule.
+        let nested = render("- a\n\n  H2 text\n  ---\n");
         assert!(
-            !setext_lines.iter().map(line_text).any(|t| t.contains('─')),
-            "Setext H2 should not have a horizontal rule: {:?}",
-            setext_lines.iter().map(line_text).collect::<Vec<_>>()
+            !nested.iter().map(line_text).any(|t| t.contains('─')),
+            "{:?}",
+            nested.iter().map(line_text).collect::<Vec<_>>()
         );
     }
 }

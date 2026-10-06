@@ -3,21 +3,22 @@
 //! (`{count}G`, the Raw gutter) counts buffer lines, so the gutter translates.
 //!
 //! Invariants:
-//! - The map is built by *calling* [`sub_lines_in_block`], the crate's single source-line →
-//!   sub-row implementation, never by a hand-written inverse that could silently drift.
-//! - **Last writer wins**: a line with no row of its own (an interior blank in a list item)
-//!   shares its sub-row with the *next* line, whose text the row shows.  The number beside a
-//!   row must be that text's line; numbers are omitted, never reassigned.  Artifact rows
-//!   (table borders, image reserves, wrapped continuations) stay blank.
+//! - The map is a walk over the rows' recorded origins (`ParsedDoc::row_origins`, through
+//!   [`row_map::lines_of_row`]), never a derivation of its own that could drift from the
+//!   renderer.
+//! - **A row is numbered with the first line it shows, and only the first row to reach a line
+//!   numbers it.**  A marker on a row of its own and the block below it, a table row's wrap
+//!   chunks and separators, an image's reserves: the later rows stay blank.  A line with no row
+//!   of its own (an interior blank in a list item) is omitted, never reassigned.  Numbers
+//!   therefore ascend and never repeat.
 //! - The walk reads [`ParsedDoc::source`], never the live `Buffer`: it resolves parse-time
 //!   byte ranges, and a deferred in-line edit leaves the buffer ahead of the parse.  The
 //!   table is memoized per parse, so a mislabel would persist until the next re-parse.
 
+use crate::document::row_map;
 use crate::document::ParsedDoc;
 use crate::editor::effective_rows::EffectiveRows;
-use crate::editor::state::sub_lines_in_block;
 use crate::editor::EditorState;
-use crate::ui::rendered_view::raw_source_lines;
 
 #[cfg(test)]
 thread_local! {
@@ -79,8 +80,8 @@ impl EditorState {
     }
 }
 
-/// Walk every block, asking [`sub_lines_in_block`] where each raw line lands among its
-/// rendered rows.  Reads [`ParsedDoc::source`] only (see the module doc).
+/// Walk every block's rows, numbering each with the first source line its origin shows.
+/// Reads [`ParsedDoc::source`] only (see the module doc).
 fn build_source_line_map(parsed: &ParsedDoc) -> Vec<Option<usize>> {
     #[cfg(test)]
     BUILD_COUNT.with(|c| c.set(c.get() + 1));
@@ -93,6 +94,8 @@ fn build_source_line_map(parsed: &ParsedDoc) -> Vec<Option<usize>> {
     // Running newline count instead of `byte_to_line` per block, which would be quadratic.
     let mut scanned = 0usize;
     let mut block_line = 0usize;
+    // The highest line reached so far: a row reaching no further shows nothing new.
+    let mut numbered: Option<usize> = None;
 
     for block_idx in 0..parsed.source_map.block_count() {
         let Some(range) = parsed.source_map.original_range_for_block(block_idx) else {
@@ -112,35 +115,24 @@ fn build_source_line_map(parsed: &ParsedDoc) -> Vec<Option<usize>> {
         // *own* row count: `rendered_lines_for_block` hands such a block its neighbor's
         // range as a fallback, which would label another block's row with this one's line.
         let own = parsed.block_own_line_count(block_idx);
-        if own == 0 {
-            continue;
-        }
-        let rendered = parsed.source_map.rendered_lines_for_block(block_idx);
-        let source = contents
-            .get(start..range.end.min(contents.len()))
-            .unwrap_or("");
-        let raw_lines = raw_source_lines(source);
-
-        // Trailing blanks absorbed into the block range already own virtual blocks of their
-        // own; labeling them here too would print the same number twice.
-        let last_content = raw_lines
-            .iter()
-            .rposition(|l| !l.trim().is_empty())
-            .unwrap_or(0);
-
-        let subs = sub_lines_in_block(parsed, start, block_idx, own, source, &raw_lines);
-        // Last writer wins (module doc): overwrite, never `get_or_insert` — *except* a reflowed
-        // paragraph, whose several source lines all collapse onto one rendered flow row (`subs`
-        // is all-zeros because `block_own == 1` caps them).  There the row shows the flow's first
-        // character, so it must be labeled with the *first* source line — first writer wins.
-        let reflowed = parsed.is_reflowed_paragraph_at(start);
-        for (raw_line, &sub) in subs.iter().enumerate().take(last_content + 1) {
-            if let Some(slot) = map.get_mut(rendered.start + sub) {
-                if reflowed {
-                    slot.get_or_insert(block_line + raw_line);
-                } else {
-                    *slot = Some(block_line + raw_line);
-                }
+        let first_row = parsed.source_map.rendered_lines_for_block(block_idx).start;
+        for row in 0..own {
+            let Some(lines) = row_map::lines_of_row(parsed, block_idx, row) else {
+                continue;
+            };
+            let line = block_line + lines.start as usize;
+            if numbered.is_some_and(|n| line <= n) {
+                continue;
+            }
+            if let Some(slot) = map.get_mut(first_row + row) {
+                *slot = Some(line);
+                // A row showing several lines (a flow) reaches its last one too.
+                numbered = Some(
+                    block_line
+                        + (lines.end as usize)
+                            .saturating_sub(1)
+                            .max(lines.start as usize),
+                );
             }
         }
     }
@@ -309,7 +301,6 @@ mod tests {
     /// A blank inside a code block nested in a list item renders a code row, unlike an
     /// interior blank in the item's prose; counting it as rowless shifted every number below it.
     #[test]
-    #[ignore = "row-provenance: phase 3"]
     fn a_blank_inside_a_nested_code_block_keeps_its_number() {
         let source = "8. Tag it.\n\n    ```bash\n    gh run watch\n\n      indented\n    ```\n";
         let state = state_for(source, 80);
@@ -322,12 +313,20 @@ mod tests {
         );
     }
 
+    /// Emphasis wrapped across a line break renders both lines on one row; taking that row for
+    /// one line numbered every row below it with the line above its own.
+    #[test]
+    fn emphasis_across_a_break_keeps_the_numbers_below_it() {
+        let state = state_for("- *a\n  b* c\n  d\n", 80);
+        // Rows: `• a b c` (lines 0–1), `d`.
+        assert_eq!(labels(&state, 80)[..2], [Some(0), Some(2)]);
+    }
+
     /// An item whose first block starts on its marker line renders the marker on a row of its
     /// own, so that line spans two rows; counting it as one put every number below it a row
     /// high.  The extra row (the fence label, the nested item, the quote) stays unnumbered,
     /// and the cursor on each line lands on its numbered row.
     #[test]
-    #[ignore = "row-provenance: phase 3"]
     fn a_marker_line_opening_a_block_keeps_the_numbers_below_it() {
         for (source, expected) in [
             (
@@ -381,18 +380,17 @@ mod tests {
         }
     }
 
-    /// A loose list inside a blockquote renders tight, so the bare `>` between its items renders
-    /// no row; counting that line as a row put every number and cursor below it a row low.
+    /// A loose list inside a blockquote keeps its spacing, so every bare `>` line has a row of
+    /// its own and each number and cursor row matches its source line.
     #[test]
-    #[ignore = "row-provenance: phase 3"]
     fn a_loose_list_in_a_blockquote_keeps_the_numbers_below_it() {
         let source = "> - a\n>\n> - b\n>\n> tail\n";
         let mut state = state_for(source, 80);
-        // Rows: `• a`, `• b`, the quoted blank, `tail`.
-        let expected = [Some(0), Some(2), Some(3), Some(4)];
+        // Rows: `• a`, the quoted blank, `• b`, the quoted blank, `tail`.
+        let expected = [Some(0), Some(1), Some(2), Some(3), Some(4)];
         let labels = labels(&state, 80);
         assert_eq!(labels[..expected.len()], expected, "{labels:?}");
-        for (row, line) in [(0, 0), (1, 2), (2, 3), (3, 4)] {
+        for (row, line) in [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)] {
             state.cursor.offset = state.buffer.line_to_char(line);
             state.update_cursor_block();
             assert_eq!(

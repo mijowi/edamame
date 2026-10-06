@@ -4,12 +4,13 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::markdown::ast::Inline;
+use crate::markdown::ast::{to_u32, Inline, SrcLines};
 use crate::markdown::renderer::util::{
     extend_with_styled_chars, link_fallback, styled_cells, truncate_to_width, wrap_styled_chars,
     StyledChar,
 };
 use crate::markdown::renderer::Renderer;
+use crate::markdown::row_origin::{ContentKind, RowOrigin, RowSink};
 use crate::markdown::table_layout::{self, char_cells, str_cells, MIN_COL_WIDTH};
 
 /// Floor contribution of a cell token containing *breakable* content (inline code or link
@@ -96,11 +97,32 @@ impl<'t> Renderer<'t> {
         headers: &[Vec<Inline>],
         rows: &[Vec<Vec<Inline>>],
         user_widths: Option<&[Option<usize>]>,
-        out: &mut Vec<Line<'static>>,
+        src: &SrcLines,
+        out: &mut RowSink,
     ) {
         if col_count == 0 {
             return;
         }
+
+        // Source line `k` of the table: the header is 0, the delimiter row 1, data row `i` is
+        // `2 + i`.  A row's chunks are its own line's; a border or separator is chrome showing
+        // the line above it, except the top border, which shows none, so the header line's row
+        // is its first content row.
+        let line = |k: usize| src.first.saturating_add(to_u32(k));
+        let row_origin = |row: usize, k: usize| {
+            move |sub: usize| match src.col(k) {
+                Some(raw_col) => RowOrigin::content(
+                    line(k)..line(k).saturating_add(1),
+                    raw_col,
+                    0,
+                    ContentKind::TableRow {
+                        row: to_u32(row),
+                        sub: to_u32(sub),
+                    },
+                ),
+                None => RowOrigin::chrome(Some(line(k))),
+            }
+        };
 
         // Headers participate in the column metrics alongside data rows.
         let mut cell_max_widths: Vec<Vec<usize>> = Vec::with_capacity(rows.len() + 1);
@@ -150,9 +172,16 @@ impl<'t> Renderer<'t> {
                 format!("{}{}", "─".repeat(w + 2), sep)
             }))
             .collect();
-        out.push(Line::styled(top, border_style));
+        out.push(Line::styled(top, border_style), RowOrigin::chrome(None));
 
-        self.render_table_row(headers, &widths, col_count, header_style, out);
+        self.render_table_row(
+            headers,
+            &widths,
+            col_count,
+            header_style,
+            row_origin(0, 0),
+            out,
+        );
 
         // Heavy horizontals (`━`) with light-vertical joins, so the header rule reads
         // thicker than the inter-row `─` while the side pipes still match `│`.
@@ -162,7 +191,10 @@ impl<'t> Renderer<'t> {
                 format!("{}{}", "━".repeat(w + 2), corner)
             }))
             .collect();
-        out.push(Line::styled(header_border, header_border_style));
+        out.push(
+            Line::styled(header_border, header_border_style),
+            RowOrigin::chrome(Some(line(1))),
+        );
 
         // Inter-row separator: a thin `├─┼─┤` rule, or — under `row_striping`, where the
         // rule would clash with the alternating fill — a blank line carrying the row
@@ -183,12 +215,23 @@ impl<'t> Renderer<'t> {
             } else {
                 self.theme.table_cell
             };
-            self.render_table_row(row, &widths, col_count, cell_style, out);
+            self.render_table_row(
+                row,
+                &widths,
+                col_count,
+                cell_style,
+                row_origin(1 + i, 2 + i),
+                out,
+            );
             if i + 1 < rows.len() {
+                let separator = RowOrigin::chrome(Some(line(2 + i)));
                 if self.row_striping {
-                    out.push(self.blank_table_separator(&widths, col_count, cell_style));
+                    out.push(
+                        self.blank_table_separator(&widths, col_count, cell_style),
+                        separator,
+                    );
                 } else {
-                    out.push(Line::styled(thin.clone(), border_style));
+                    out.push(Line::styled(thin.clone(), border_style), separator);
                 }
             }
         }
@@ -199,7 +242,10 @@ impl<'t> Renderer<'t> {
                 format!("{}{}", "─".repeat(w + 2), corner)
             }))
             .collect();
-        out.push(Line::styled(bottom, border_style));
+        out.push(
+            Line::styled(bottom, border_style),
+            RowOrigin::chrome(Some(line(1 + rows.len()))),
+        );
     }
 
     /// Stripe-aware blank separator: a `│ … │ … │` row whose cells carry `cell_style`'s
@@ -244,7 +290,8 @@ impl<'t> Renderer<'t> {
         widths: &[usize],
         col_count: usize,
         default_style: Style,
-        out: &mut Vec<Line<'static>>,
+        origin: impl Fn(usize) -> RowOrigin,
+        out: &mut RowSink,
     ) {
         let outer_border = self.theme.table_border;
         let inner_border = match default_style.bg {
@@ -297,7 +344,7 @@ impl<'t> Renderer<'t> {
                     if is_last { outer_border } else { inner_border },
                 ));
             }
-            out.push(Line::from(spans));
+            out.push(Line::from(spans), origin(sub));
         }
     }
 

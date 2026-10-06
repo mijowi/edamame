@@ -35,7 +35,7 @@ impl EditorState {
     fn section_chain_for_buffer_line(&self, anchor_line: usize) -> Vec<String> {
         let mut at_or_before: Vec<(HeadingLevel, String)> = Vec::new();
         for (block_idx, block) in self.parsed.blocks.iter().enumerate() {
-            let Block::Heading { level, inlines } = block else {
+            let Block::Heading { level, inlines, .. } = block else {
                 continue;
             };
             let Some(range) = self.parsed.real_ranges.get(block_idx) else {
